@@ -1,5 +1,6 @@
 import { inputGroups, sdkInputMessages } from "./input-messages.mjs";
 // Claude Agent SDK adapter for Studio's existing local session protocol.
+import { interruptInputQueue } from "./stop-inputs.mjs";
 import { browserEnvironment } from "./browser-environment.mjs";
 import {
   query,
@@ -1132,6 +1133,10 @@ async function finishTurn(s, active, result, error) {
   // Input already handed to Claude without an echo has an unknown outcome.
   const unappliedSteers = [];
   for (const item of turn.items) {
+    if (item.delivery === "steer" && item.deliveryStatus === "cancelled") {
+      unappliedSteers.push(item.id);
+      continue;
+    }
     if (item.delivery !== "steer" || item.deliveryStatus !== "submitted")
       continue;
     const queued = active.input.values.findIndex(
@@ -2584,7 +2589,7 @@ async function handle(method, p) {
       } catch (error) {
         // The running turn ended before this input reached Claude. Nothing
         // was submitted, so the input starts the next turn instead.
-        if (!error.steerNotSubmitted) throw error;
+        if (!error.steerNotSubmitted || running.interrupted) throw error;
         await finishingTurns.get(running);
         if (queries.get(s.id)?.turn) throw error;
       }
@@ -2774,14 +2779,18 @@ async function handle(method, p) {
   if (method === "turn/steer") {
     const s = await session(p.threadId),
       active = queries.get(s.id);
-    if (!active?.turn || active.turn.id !== p.expectedTurnId)
+    if (
+      !active?.turn ||
+      active.turn.interrupted ||
+      active.turn.id !== p.expectedTurnId
+    )
       throw new Error("The steer belongs to a different Claude turn");
     const turn = active.turn,
       id = p.clientUserMessageId;
     if (!id) throw new Error("Steer requires its original message identity");
     const previous = turn.items.find((item) => item.id === id);
     if (previous) {
-      if (previous.deliveryStatus === "not_applied")
+      if (["not_applied", "cancelled"].includes(previous.deliveryStatus))
         throw new Error(previous.error);
       if (JSON.stringify(previous.content) !== JSON.stringify(p.input))
         throw new Error("This message identity has different content");
@@ -2799,6 +2808,7 @@ async function handle(method, p) {
     try {
       const groups = await inputGroups(p.input, content);
       if (
+        turn.interrupted ||
         active.turn !== turn ||
         queries.get(s.id) !== active ||
         active.input.closed
@@ -2822,6 +2832,7 @@ async function handle(method, p) {
         throw isDiskFull(error) ? diskFullInputError(error) : error;
       }
       if (
+        turn.interrupted ||
         active.turn !== turn ||
         queries.get(s.id) !== active ||
         active.input.closed
@@ -2858,6 +2869,7 @@ async function handle(method, p) {
     if (!active?.turn) throw new Error("no active turn to interrupt");
     if (p.turnId && p.turnId !== active.turn.id)
       throw new Error("The interrupt belongs to a different Claude turn");
+    const s = sessions.get(p.threadId);
     active.turn.interrupted = true;
     if (active.reservingInput) {
       // An interrupt can race the durable pre-input receipt. Invalidate only
@@ -2866,19 +2878,35 @@ async function handle(method, p) {
       active.reservingInput = false;
       catalogCache.activityChanged();
     }
-    if (p.stopBackgroundTasks !== false && active.tasks.size) {
-      if (typeof active.q?.stopTask !== "function")
-        throw new Error("Claude does not support stopping background tasks");
-      const results = await Promise.allSettled(
-        [...active.tasks.keys()].map((taskId) => active.q.stopTask(taskId)),
+    const stopTasks = p.stopBackgroundTasks !== false && active.tasks.size;
+    if (stopTasks && typeof active.q?.stopTask !== "function")
+      throw new Error("Claude does not support stopping background tasks");
+    let results = [];
+    const receipt = await interruptInputQueue(
+      s,
+      active,
+      stopTasks
+        ? async () => {
+            results = await Promise.allSettled(
+              [...active.tasks.keys()].map((taskId) =>
+                active.q.stopTask(taskId),
+              ),
+            );
+          }
+        : undefined,
+    );
+    await persistLive(s);
+    const failure = results.find((result) => result.status === "rejected");
+    if (failure?.status === "rejected")
+      throw Object.assign(
+        new Error(
+          failure.reason?.message || "Claude background task stop failed",
+        ),
+        {
+          data: { interruptReceipt: receipt },
+        },
       );
-      await active.q.interrupt();
-      const failure = results.find((result) => result.status === "rejected");
-      if (failure?.status === "rejected") throw failure.reason;
-      return {};
-    }
-    await active.q?.interrupt();
-    return {};
+    return receipt;
   }
   if (method === "thread/name/set") {
     const s = await session(p.threadId);

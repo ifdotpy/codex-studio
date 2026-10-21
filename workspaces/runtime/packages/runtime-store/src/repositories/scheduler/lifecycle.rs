@@ -2705,10 +2705,26 @@ pub(super) fn deliver_attempt_events(
     event_ids: &(String, usize),
     turn_id: &str,
 ) -> StoreResult<()> {
+    // A terminal frame proves the turn ended, not that input cancelled by an
+    // atomic interrupt reached the model. Preserve its exact queue receipt.
+    let held: i64 = transaction.query_row_cached(
+        "SELECT COUNT(*) FROM runtime_events WHERE agent=?1 AND epoch=?2 \
+         AND id IN (SELECT value FROM json_each(?3)) \
+         AND ((status='cancelled' AND error=?4) OR (status='uncertain' AND error=?5))",
+        params![
+            agent_id,
+            epoch,
+            event_ids.0,
+            super::steer::STOP_CANCELLED_ERROR,
+            super::steer::STOP_QUEUED_ERROR
+        ],
+        |row| row.get(0),
+    )?;
     let changed = transaction.execute_cached(
-        "UPDATE runtime_events SET status='delivered',turn_id=?1,error=NULL WHERE agent=?2 AND epoch=?3 AND id IN (SELECT value FROM json_each(?4)) AND (status IN ('reserved','dispatching','uncertain') OR (status='delivered' AND turn_id=?1))",
-        params![turn_id, agent_id, epoch, event_ids.0])?;
-    require_membership(changed, event_ids.1, agent_id)?;
+        "UPDATE runtime_events SET status='delivered',turn_id=?1,error=NULL WHERE agent=?2 AND epoch=?3 AND id IN (SELECT value FROM json_each(?4)) AND (status IN ('reserved','dispatching','uncertain') OR (status='delivered' AND turn_id=?1)) AND NOT (status='uncertain' AND error IS ?5)",
+        params![turn_id, agent_id, epoch, event_ids.0, super::steer::STOP_QUEUED_ERROR])?;
+    let held = usize::try_from(held).map_err(|_| invalid_agent(agent_id))?;
+    require_membership(changed + held, event_ids.1, agent_id)?;
     let event_ids: Vec<String> = serde_json::from_str(&event_ids.0)?;
     SchedulerRepository::project_delivered_chat_events(
         transaction,
@@ -2731,6 +2747,24 @@ impl SchedulerRepository {
         turn_id: &str,
         event_ids: &[String],
     ) -> StoreResult<()> {
+        Self::project_chat_event_status(
+            transaction,
+            agent_id,
+            epoch,
+            turn_id,
+            event_ids,
+            "delivered",
+        )
+    }
+
+    pub(super) fn project_chat_event_status(
+        transaction: &Transaction<'_>,
+        agent_id: &str,
+        epoch: i64,
+        turn_id: &str,
+        event_ids: &[String],
+        status: &str,
+    ) -> StoreResult<()> {
         let messages_table_exists: bool = transaction.query_row_cached(
         "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_chat_messages')",
         [],
@@ -2749,8 +2783,8 @@ impl SchedulerRepository {
             };
             if event.agent.0 != agent_id
                 || event.epoch != epoch
-                || event.status != "delivered"
-                || event.turn_id.as_deref() != Some(turn_id)
+                || event.status != status
+                || (status == "delivered" && event.turn_id.as_deref() != Some(turn_id))
                 || event.kind != "agent_message"
             {
                 continue;
@@ -2787,9 +2821,14 @@ impl SchedulerRepository {
                 .deliveries
                 .as_object_mut()
                 .and_then(|deliveries| deliveries.get_mut(agent_id))
-                && matches!(delivery.as_str(), Some("queued" | "pending"))
+                && (matches!(delivery.as_str(), Some("queued" | "pending"))
+                    || (status != "delivered" && delivery.as_str() == Some("delivered")))
             {
-                *delivery = json!("delivered");
+                *delivery = json!(if status == "uncertain" {
+                    "pending"
+                } else {
+                    status
+                });
                 crate::MessageRepository::put(transaction, &message)?;
             }
         }

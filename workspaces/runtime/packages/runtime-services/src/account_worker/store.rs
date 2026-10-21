@@ -1243,6 +1243,18 @@ fn settle_outcome(
                     }
                 },
                 Method::TurnInterrupt => {
+                    let response = match &body {
+                        ResponseBody::Result(response) => response,
+                        ResponseBody::Error(error) => &error["data"]["interruptReceipt"],
+                    };
+                    SchedulerRepository::settle_interrupt_inputs(
+                        tx,
+                        &i.agent_id,
+                        &i.account_key,
+                        ticket.generation,
+                        i.thread_id.as_deref().unwrap_or_default(),
+                        response,
+                    )?;
                     SchedulerRepository::settle_interrupt(
                         tx,
                         &id_string(&ticket.id),
