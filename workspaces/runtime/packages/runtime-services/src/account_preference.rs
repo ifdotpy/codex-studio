@@ -16,9 +16,90 @@ use studio_runtime_schema::shared_values::{
     DEFAULT_CLAUDE_LEAD_MODEL,
 };
 
-/// Group name field of an account registry row and of its public projection.
+/// File beside `accounts/registry.json` that holds the account groups and the
+/// default order. It is a separate file so that an older build, whose registry
+/// schema rejects unknown fields, still reads the registry after a rollback.
+pub const ACCOUNT_ORDER_FILE: &str = "account-order.json";
+/// Version of [`ACCOUNT_ORDER_FILE`].
+const ACCOUNT_ORDER_VERSION: u64 = 1;
+
+/// Account groups by account key, and the default account order.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct AccountOrder {
+    pub groups: std::collections::BTreeMap<String, String>,
+    pub default_groups: Vec<String>,
+}
+
+impl AccountOrder {
+    /// Read the file at `path`. A missing or unreadable file, another version, and
+    /// invalid names give no order: the order is a preference, and account reads
+    /// must not fail because of it.
+    #[must_use]
+    pub fn read(path: &std::path::Path) -> Self {
+        let Some(value) = std::fs::read(path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+            .filter(|value| {
+                value.get("version").and_then(Value::as_u64) == Some(ACCOUNT_ORDER_VERSION)
+            })
+        else {
+            return Self::default();
+        };
+        let groups = value
+            .get("groups")
+            .and_then(Value::as_object)
+            .map(|rows| {
+                rows.iter()
+                    .filter_map(|(key, group)| Some((key.clone(), group.as_str()?.to_owned())))
+                    .filter(|(_, group)| valid_group(group))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let default_groups = groups_of(value.get(DEFAULT_GROUPS_FIELD));
+        Self {
+            groups,
+            default_groups: if validate_groups(&default_groups).is_ok() {
+                default_groups
+            } else {
+                Vec::new()
+            },
+        }
+    }
+
+    /// The file content.
+    #[must_use]
+    pub fn encode(&self) -> Vec<u8> {
+        serde_json::to_vec(&serde_json::json!({
+            "version": ACCOUNT_ORDER_VERSION,
+            "groups": self.groups,
+            DEFAULT_GROUPS_FIELD: self.default_groups,
+        }))
+        .unwrap_or_default()
+    }
+
+    /// Add each account's group and the default order to a public snapshot.
+    pub fn apply(&self, snapshot: &mut crate::account_policy::AccountsSnapshot) {
+        for row in snapshot
+            .accounts
+            .iter_mut()
+            .chain(snapshot.archived_accounts.iter_mut())
+        {
+            let group = row
+                .get("id")
+                .and_then(Value::as_str)
+                .and_then(|key| self.groups.get(key))
+                .cloned();
+            if let (Some(group), Some(object)) = (group, row.as_object_mut()) {
+                object.insert(ACCOUNT_GROUP_FIELD.to_owned(), Value::String(group));
+            }
+        }
+        snapshot.default_account_groups = self.default_groups.clone();
+    }
+}
+
+/// Group name field of the public account projection.
 pub const ACCOUNT_GROUP_FIELD: &str = "group";
-/// Default order field of the account registry and of `GET /api/accounts`.
+/// Default order field of the account order file and of `GET /api/accounts`.
 pub const DEFAULT_GROUPS_FIELD: &str = "defaultAccountGroups";
 /// Account order field of a project record.
 pub const PROJECT_GROUPS_FIELD: &str = "accountGroups";

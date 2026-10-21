@@ -4068,23 +4068,34 @@ mod tests {
             })
             .await
             .expect("seed project and conversation");
-        let registry = |default_groups: &str| {
-            format!(
-                r#"{{"version":1,"defaultAccountKey":"codex-own","defaultAccountGroups":{default_groups},"accounts":{{
-                "codex-own":{{"id":"codex-own","home":"/a","label":"A","source":"Codex CLI","status":"ready","group":"own"}},
-                "codex-work":{{"id":"codex-work","home":"/b","label":"B","source":"Codex CLI","status":"ready","group":"work"}},
-                "claude-own":{{"id":"claude-own","home":"/c","label":"C","source":"Claude Code","provider":"claude","status":"ready","group":"own"}},
-                "claude-work":{{"id":"claude-work","home":"/d","label":"D","source":"Claude Code","provider":"claude","status":"ready","group":"work"}}
-                }},"logins":{{}},"deleteReceipts":{{}}}}"#
-            )
-        };
-        let accounts = AccountPolicyState::from_startup(Some(registry("[\"own\"]").as_bytes()), [])
-            .expect("valid account policy");
+        // Claude profiles name their own config folders, so the credential watch
+        // stays inside the fixture.
+        let config = |name: &str| state.path().join(name).to_string_lossy().into_owned();
+        let registry = json!({"version":1,"defaultAccountKey":"codex-own","accounts":{
+            "codex-own":{"id":"codex-own","home":config("a"),"label":"A","source":"Codex CLI","status":"ready"},
+            "codex-work":{"id":"codex-work","home":config("b"),"label":"B","source":"Codex CLI","status":"ready"},
+            "claude-own":{"id":"claude-own","home":config("c"),"label":"C","source":"Claude Code","provider":"claude","status":"ready","claudeOptions":{"configDir":config("c")}},
+            "claude-work":{"id":"claude-work","home":config("d"),"label":"D","source":"Claude Code","provider":"claude","status":"ready","claudeOptions":{"configDir":config("d")}}
+        },"logins":{},"deleteReceipts":{}});
+        let registry_path = state.path().join("accounts/registry.json");
+        std::fs::create_dir_all(registry_path.parent().expect("registry parent"))
+            .expect("registry folder");
+        std::fs::write(&registry_path, registry.to_string()).expect("write registry");
+        std::fs::write(
+            registry_path.with_file_name(crate::account_preference::ACCOUNT_ORDER_FILE),
+            json!({"version":1,"defaultAccountGroups":["own"],"groups":{
+                "codex-own":"own","codex-work":"work","claude-own":"own","claude-work":"work"}})
+            .to_string(),
+        )
+        .expect("write account order");
+        let driver = std::sync::Arc::new(
+            crate::account_driver::AccountDriver::open(&registry_path).expect("open accounts"),
+        );
         let validate = |_: &str, _: &Value| true;
         let context = Context {
             store: std::sync::Arc::new(store),
-            accounts: Some(&accounts),
-            driver: None,
+            accounts: None,
+            driver: Some(driver),
             catalog: None,
             managed_creation_environment: None,
             validate: std::sync::Arc::new(validate),

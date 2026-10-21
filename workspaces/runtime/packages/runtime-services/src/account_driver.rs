@@ -838,8 +838,19 @@ pub struct AccountDriver<R = SystemProviderAuthReader> {
 struct RegistryState {
     value: Value,
     order: RegistryOrder,
+    /// Account groups and the default account order, kept beside the registry.
+    account_order: crate::account_preference::AccountOrder,
     revision: u64,
     change_signal: AccountChangeSignal,
+}
+
+impl RegistryState {
+    /// The public projection with the account order applied.
+    fn public_snapshot(&self) -> Result<AccountsSnapshot, AccountDriverError> {
+        let mut snapshot = project_snapshot(&self.value, &self.order)?;
+        self.account_order.apply(&mut snapshot);
+        Ok(snapshot)
+    }
 }
 
 /// Coalescing signal for public profile and retained-session changes.
@@ -1720,11 +1731,14 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
             decode_registry(&bytes).map_err(|_| AccountDriverError::InvalidRegistry)?;
         let change_signal = AccountChangeSignal::new();
         reader.watch(&live_profiles(&value));
+        let account_order =
+            crate::account_preference::AccountOrder::read(&account_order_path(&path));
         Ok(Self {
             path,
             state: Mutex::new(RegistryState {
                 value,
                 order,
+                account_order,
                 revision: 0,
                 change_signal: change_signal.clone(),
             }),
@@ -1796,7 +1810,7 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
             .state
             .lock()
             .map_err(|_| AccountDriverError::Poisoned)?;
-        project_snapshot(&state.value, &state.order)
+        state.public_snapshot()
     }
 
     /// Internal selected-account record, including the non-secret identity pin.
@@ -1838,12 +1852,16 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
     /// Refresh the response projection from credentials without persisting it.
     pub fn listing_snapshot(&self) -> Result<AccountsSnapshot, AccountDriverError> {
         // Provider reads run on this copy, so the registry lock is not held during I/O.
-        let (mut updated, order) = {
+        let (mut updated, order, account_order) = {
             let state = self
                 .state
                 .lock()
                 .map_err(|_| AccountDriverError::Poisoned)?;
-            (state.value.clone(), state.order.clone())
+            (
+                state.value.clone(),
+                state.order.clone(),
+                state.account_order.clone(),
+            )
         };
         for key in &order.accounts {
             let stored = registry_account(&updated, key)?.clone();
@@ -1853,7 +1871,9 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
                 *registry_account_mut(&mut updated, key)? = stored;
             }
         }
-        project_snapshot(&updated, &order)
+        let mut snapshot = project_snapshot(&updated, &order)?;
+        account_order.apply(&mut snapshot);
+        Ok(snapshot)
     }
 
     pub fn set_default(
@@ -1865,7 +1885,7 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
             .lock()
             .map_err(|_| AccountDriverError::Poisoned)?;
         let Some(account) = account else {
-            return project_snapshot(&state.value, &state.order);
+            return state.public_snapshot();
         };
         let mut updated = state.value.clone();
         self.refresh_value(&mut updated, account, true)?;
@@ -1874,7 +1894,7 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
         }
         updated["defaultAccountKey"] = Value::String(account.to_owned());
         self.persist(&mut state, updated)?;
-        project_snapshot(&state.value, &state.order)
+        state.public_snapshot()
     }
 
     pub fn set_name(
@@ -1917,7 +1937,8 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
     }
 
     /// Set or clear (`None`) the group of `account`. A repeated request sets the
-    /// same value. See [`crate::account_preference`].
+    /// same value. Groups live in `account-order.json` beside the registry, so an
+    /// older build that does not know them still reads the registry.
     pub fn set_group(
         &self,
         account: &str,
@@ -1931,26 +1952,21 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
             .state
             .lock()
             .map_err(|_| AccountDriverError::Poisoned)?;
-        let mut updated = state.value.clone();
-        let row = registry_account_mut(&mut updated, account)?;
+        let row = registry_account(&state.value, account)?;
         if row.get("deleted") == Some(&Value::Bool(true)) {
             return Err(AccountDriverError::DeletedAccount);
         }
-        let field = crate::account_preference::ACCOUNT_GROUP_FIELD;
-        match (group, row.as_object_mut()) {
-            (Some(group), Some(object)) => {
-                object.insert(field.to_owned(), Value::String(group.to_owned()));
+        let mut updated = state.account_order.clone();
+        match group {
+            Some(group) => {
+                updated.groups.insert(account.to_owned(), group.to_owned());
             }
-            (None, Some(object)) => {
-                object.remove(field);
+            None => {
+                updated.groups.remove(account);
             }
-            (_, None) => return Err(AccountDriverError::InvalidRegistry),
         }
-        if updated != state.value {
-            self.persist(&mut state, updated)?;
-        }
-        drop(state);
-        self.snapshot()
+        self.persist_account_order(&mut state, updated)?;
+        state.public_snapshot()
     }
 
     /// Replace the default account order of projects without their own order.
@@ -1965,21 +1981,33 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
             .state
             .lock()
             .map_err(|_| AccountDriverError::Poisoned)?;
-        let mut updated = state.value.clone();
-        let field = crate::account_preference::DEFAULT_GROUPS_FIELD;
-        let Some(root) = updated.as_object_mut() else {
-            return Err(AccountDriverError::InvalidRegistry);
-        };
-        if groups.is_empty() {
-            root.remove(field);
-        } else {
-            root.insert(field.to_owned(), serde_json::json!(groups));
+        let mut updated = state.account_order.clone();
+        updated.default_groups = groups.to_vec();
+        self.persist_account_order(&mut state, updated)?;
+        state.public_snapshot()
+    }
+
+    fn persist_account_order(
+        &self,
+        state: &mut RegistryState,
+        updated: crate::account_preference::AccountOrder,
+    ) -> Result<(), AccountDriverError> {
+        if updated == state.account_order {
+            return Ok(());
         }
-        if updated != state.value {
-            self.persist(&mut state, updated)?;
+        let bytes = updated.encode();
+        let result = atomic_replace(&account_order_path(&self.path), &bytes);
+        match result {
+            Err(ReplaceError::NotReplaced) => return Err(AccountDriverError::WriteRegistry),
+            Ok(()) | Err(ReplaceError::ReplacedNotDurable) => {
+                state.account_order = updated;
+                state.publish_profile_change();
+            }
         }
-        drop(state);
-        self.snapshot()
+        if matches!(result, Err(ReplaceError::ReplacedNotDurable)) {
+            return Err(AccountDriverError::DurabilityUnconfirmed);
+        }
+        Ok(())
     }
 
     /// Replace the turn start throttle of `account`. A repeated request sets
@@ -2024,7 +2052,7 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
             if previous.get("accountKey").and_then(Value::as_str) != Some(account) {
                 return Err(AccountDriverError::DeleteRequestConflict);
             }
-            return project_snapshot(&state.value, &state.order);
+            return state.public_snapshot();
         }
         registry_account(&state.value, account)?;
         let mut updated = state.value.clone();
@@ -2055,7 +2083,7 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
                 .as_secs_f64(),
         });
         self.persist(&mut state, updated)?;
-        project_snapshot(&state.value, &state.order)
+        state.public_snapshot()
     }
 
     pub fn disconnect(&self, account: &str) -> Result<AccountsSnapshot, AccountDriverError> {
@@ -2080,7 +2108,7 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
         } else if updated != state.value {
             self.persist(&mut state, updated)?;
         }
-        project_snapshot(&state.value, &state.order)
+        state.public_snapshot()
     }
 
     pub fn reconnect(&self, account: &str) -> Result<AccountsSnapshot, AccountDriverError> {
@@ -2098,7 +2126,7 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
             .ok_or(AccountDriverError::InvalidRegistry)?
             .remove("disconnected");
         self.persist(&mut state, updated)?;
-        project_snapshot(&state.value, &state.order)
+        state.public_snapshot()
     }
 
     pub fn register(&self, home: &str) -> Result<AccountsSnapshot, AccountDriverError> {
@@ -2120,7 +2148,7 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
         if register_metadata(&mut updated, &mut order, &path, &metadata, true)? {
             self.persist_registry(&mut state, updated, &order)?;
         }
-        project_snapshot(&state.value, &state.order)
+        state.public_snapshot()
     }
 
     pub fn discover_codex(&self) -> Result<AccountsSnapshot, AccountDriverError> {
@@ -2178,7 +2206,7 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
         if changed {
             self.persist_registry(&mut state, updated, &order)?;
         }
-        project_snapshot(&state.value, &state.order)
+        state.public_snapshot()
     }
 
     pub fn claude_discovery_available() -> bool {
@@ -2939,6 +2967,11 @@ fn nonempty_str(value: &Value) -> Option<&str> {
     value.as_str().filter(|value| !value.is_empty())
 }
 
+/// The account order file beside `registry` (see [`crate::account_preference`]).
+fn account_order_path(registry: &Path) -> PathBuf {
+    registry.with_file_name(crate::account_preference::ACCOUNT_ORDER_FILE)
+}
+
 fn read_registry(path: &Path) -> Result<Vec<u8>, AccountDriverError> {
     let file = File::open(path).map_err(|_| AccountDriverError::ReadRegistry)?;
     let limit = studio_runtime_store::account_state::MAX_PERSISTED_DOCUMENT_BYTES;
@@ -3523,6 +3556,7 @@ exit 0
             FakeReader(metadata(AuthStatus::Ready, Some("a"), Some("chatgpt:a"))),
         )
         .expect("open registry");
+        let registry_before = fs::read(&path).expect("read registry");
         let snapshot = driver
             .set_group("default", Some("personal"))
             .expect("set group");
@@ -3540,6 +3574,16 @@ exit 0
         let snapshot = reopened.snapshot().expect("snapshot");
         assert_eq!(snapshot.accounts[0]["group"], "personal");
         assert_eq!(snapshot.default_account_groups, order);
+        // Rollback: the registry stays byte for byte what an older build reads,
+        // and its strict schema (unchanged by this feature) still accepts it.
+        let registry_after = fs::read(&path).expect("read registry");
+        assert_eq!(registry_after, registry_before);
+        assert!(crate::account_policy::decode_registry(&registry_after).is_ok());
+        assert!(
+            fs::read_to_string(path.with_file_name("account-order.json"))
+                .expect("account order file")
+                .contains("personal")
+        );
         // Invalid names and repeats are refused without a write.
         for bad in [
             vec!["Personal".to_owned()],
@@ -3558,8 +3602,21 @@ exit 0
         assert!(cleared.accounts[0].get("group").is_none());
         let cleared = reopened.set_default_groups(&[]).expect("clear order");
         assert!(cleared.default_account_groups.is_empty());
-        let persisted = fs::read_to_string(&path).expect("read registry");
-        assert!(!persisted.contains("defaultAccountGroups"));
+        // An unreadable order file gives no order instead of failing account reads.
+        fs::write(path.with_file_name("account-order.json"), b"{not json")
+            .expect("corrupt order file");
+        let reopened = AccountDriver::open_with_reader(
+            &path,
+            FakeReader(metadata(AuthStatus::Ready, Some("a"), Some("chatgpt:a"))),
+        )
+        .expect("a corrupt order file does not block the registry");
+        assert!(
+            reopened
+                .snapshot()
+                .expect("snapshot")
+                .default_account_groups
+                .is_empty()
+        );
     }
 
     #[test]

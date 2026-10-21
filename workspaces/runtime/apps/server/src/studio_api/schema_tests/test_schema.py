@@ -549,6 +549,7 @@ class SchemaContractTests(unittest.TestCase):
             "GET /api/processes", "GET /api/processes/action", "POST /api/processes/action",
             "GET /api/orchestration/settings", "POST /api/orchestration/settings",
             "POST /api/accounts/throttle",
+            "POST /api/accounts/group", "POST /api/accounts/default-groups",
         })
         reviewed_baseline = copy.deepcopy(baseline_document)
         paths = reviewed_baseline["paths"]
@@ -811,6 +812,31 @@ class SchemaContractTests(unittest.TestCase):
         ):
             for field in ("_syncEntities", "_syncEntitiesAfter"):
                 add(f"{prefix}/{field}", "@nullable", "@nullableBranch")
+
+        # Account orders (Rust backend): an account's optional group, the default
+        # order, and a project's optional order with its revision.
+        accounts = "/components/schemas/AccountsResponse/properties"
+        for pointer in (
+            "/components/schemas/Account/properties/group",
+            f"{accounts}/accounts/items/properties/group",
+            f"{accounts}/archivedAccounts/items/properties/group",
+            "/components/schemas/AccountGroupRequest/properties/group",
+            "/paths/~1api~1accounts~1group/post/requestBody/content/application~1json/schema/properties/group",
+        ):
+            add(pointer, "@nullable", "@nullableBranch")
+        add(f"{accounts}/defaultAccountGroups", "property")
+        for prefix in (
+            "/components/schemas/PeerProjectResponse/properties",
+            "/components/schemas/Project/properties",
+            "/components/schemas/ProjectMutationRecord/properties",
+            "/components/schemas/ProjectReadResponse/properties/items/items/properties",
+        ):
+            for field in ("accountGroups", "accountGroupsRevision"):
+                add(f"{prefix}/{field}", "@nullable", "@nullableBranch")
+        add("/components/schemas/ProjectWriteRequest/properties/account_groups",
+            "property", "@nullable", "@nullableBranch")
+        add("/components/schemas/ProjectWriteRequest/properties/action", "enum")
+        add("/paths/~1api~1projects/post/requestBody/content/application~1json/schema", "@anyOf")
 
         # The orchestration settings response carries the standard sync envelope.
         for field in ("_syncEntities", "_syncEntitiesAfter"):

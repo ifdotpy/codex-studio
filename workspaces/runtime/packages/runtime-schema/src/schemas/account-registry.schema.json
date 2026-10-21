@@ -101,17 +101,6 @@
           ],
           "title": "Error"
         },
-        "group": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "title": "Group"
-        },
         "home": {
           "title": "Home",
           "type": "string"
@@ -514,13 +503,6 @@
       },
       "title": "Accounts",
       "type": "object"
-    },
-    "defaultAccountGroups": {
-      "items": {
-        "type": "string"
-      },
-      "title": "Defaultaccountgroups",
-      "type": "array"
     },
     "defaultAccountKey": {
       "title": "Defaultaccountkey",

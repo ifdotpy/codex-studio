@@ -3529,10 +3529,10 @@
           "accounts",
           "archivedAccounts",
           "defaultAccountKey",
+          "defaultAccountGroups",
           "logins",
           "supportsDisconnect",
-          "supportsDelete",
-          "defaultAccountGroups"
+          "supportsDelete"
         ],
         "title": "AccountsResponse",
         "type": "object"
@@ -23766,8 +23766,7 @@
             },
             "maxItems": 16,
             "title": "Groups",
-            "type": "array",
-            "uniqueItems": true
+            "type": "array"
           }
         },
         "required": [
@@ -40389,8 +40388,7 @@
                   "type": "string"
                 },
                 "maxItems": 16,
-                "type": "array",
-                "uniqueItems": true
+                "type": "array"
               },
               {
                 "type": "null"
