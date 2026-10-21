@@ -52,6 +52,9 @@ pub trait ControlSession: Send + Sync {
 /// Every method compares source, epoch and reservation inside the same transaction.
 /// `reserve` resolves shared workspace idle evidence before its comparison transaction.
 pub trait ControlStorage: Send + Sync {
+    fn execution_key(&self, request: &ControlRequest) -> String {
+        format!("{:p}:{}", self, request.id)
+    }
     fn reserve(
         &self,
         request: ControlRequest,
@@ -79,36 +82,15 @@ pub trait ControlStorage: Send + Sync {
 pub struct Controls {
     store: Arc<dyn ControlStorage>,
     session: Arc<dyn ControlSession>,
-    active: std::sync::Mutex<std::collections::BTreeSet<String>>,
-}
-struct Running<'a> {
-    owner: &'a Controls,
-    id: String,
-}
-impl Drop for Running<'_> {
-    fn drop(&mut self) {
-        if let Ok(mut active) = self.owner.active.lock() {
-            active.remove(&self.id);
-        }
-    }
 }
 impl Controls {
     pub fn new(store: Arc<dyn ControlStorage>, session: Arc<dyn ControlSession>) -> Self {
-        Self {
-            store,
-            session,
-            active: std::sync::Mutex::new(Default::default()),
-        }
+        Self { store, session }
     }
     pub async fn execute(&self, request: ControlRequest) -> Result<Value> {
-        let id = request.operation_id();
-        {
-            let mut active = self.active.lock().map_err(|_| ControlError::Unavailable)?;
-            if active.len() >= 64 || !active.insert(id.clone()) {
-                return Err(ControlError::Busy);
-            }
-        }
-        let _running = Running { owner: self, id };
+        let _running =
+            crate::checkpoints::RestoreExecution::acquire(self.store.execution_key(&request))
+                .map_err(|_| ControlError::Busy)?;
         let binding = self.session.binding();
         let mut snapshot = self.store.reserve(request.clone(), binding.clone()).await?;
         if snapshot.agent.account_key != binding.account {
@@ -198,12 +180,31 @@ impl Controls {
                 } else {
                     (
                         "thread/rollback",
-                        json!({"threadId":thread,"turnId":request.turn,"requestId":request.request_id}),
+                        json!({"threadId":thread,"turnId":request.turn,"requestId":request.request_id,"restoreFiles":request.restore_files}),
                     )
                 };
-                match self.bound_call(binding, &scope, method, params, 25).await {
+                match self
+                    .bound_call(
+                        binding,
+                        &scope,
+                        method,
+                        params,
+                        if request.restore_files {
+                            FILE_RESTORE_TIMEOUT_SECONDS
+                        } else {
+                            25
+                        },
+                    )
+                    .await
+                {
                     Err(error @ (ControlError::NotSent | ControlError::Request)) => {
-                        *uncertain = false;
+                        // A provider rejection can follow a partial file restore.
+                        // Only an explicit not-sent receipt proves no file effect.
+                        if !request.restore_files || matches!(error, ControlError::NotSent) {
+                            *uncertain = false;
+                        } else {
+                            return Err(ControlError::Unknown);
+                        }
                         return Err(error);
                     }
                     result => result?,
@@ -301,7 +302,7 @@ impl Controls {
                     return Err(ControlError::Unknown);
                 }
                 if let Some(op) = snapshot.saved {
-                    result["controlOperation"] = json!({"requestId":op.get("requestId"),"turnId":op.get("turnId"),"phase":op.get("phase"),"error":op.get("error")});
+                    result["controlOperation"] = json!({"requestId":op.get("requestId"),"turnId":op.get("turnId"),"restoreFiles":op.get("restoreFiles").and_then(Value::as_bool).unwrap_or(false),"phase":op.get("phase"),"error":op.get("error")});
                 }
                 Ok(result)
             }

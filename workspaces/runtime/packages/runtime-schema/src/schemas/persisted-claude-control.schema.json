@@ -137,6 +137,9 @@
       "title": "Requestid",
       "type": "string"
     },
+    "restoreFiles": {
+      "type": "boolean"
+    },
     "result": {
       "$ref": "#/$defs/JsonValue"
     },

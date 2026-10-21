@@ -18823,6 +18823,13 @@
           "truncated": {
             "title": "Truncated",
             "type": "boolean"
+          },
+          "restoreUnavailableReason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
           }
         },
         "required": [
@@ -19406,7 +19413,8 @@
               "provider_pending",
               "provider_ready",
               "completed",
-              "failed"
+              "failed",
+              "recovery_required"
             ],
             "title": "Phase",
             "type": "string"
@@ -19426,6 +19434,10 @@
             ],
             "default": null,
             "title": "Turnid"
+          },
+          "restoreFiles": {
+            "type": "boolean",
+            "default": false
           }
         },
         "required": [
@@ -19942,6 +19954,14 @@
           "threadId": {
             "title": "Threadid",
             "type": "string"
+          },
+          "filesRestored": {
+            "type": "boolean",
+            "default": false
+          },
+          "fileResult": {
+            "type": "object",
+            "additionalProperties": true
           }
         },
         "required": [
@@ -20003,6 +20023,10 @@
           "turn_id": {
             "title": "Turn Id",
             "type": "string"
+          },
+          "restore_files": {
+            "type": "boolean",
+            "default": false
           }
         },
         "required": [
@@ -20491,6 +20515,17 @@
           "text": {
             "title": "Text",
             "type": "string"
+          },
+          "canRestoreFiles": {
+            "type": "boolean",
+            "default": false
+          },
+          "restoreFilesUnavailableReason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
           }
         },
         "required": [

@@ -9457,6 +9457,8 @@ export interface components {
       expectedTree: string;
       /** Patch */
       patch: string;
+      /** @default null */
+      restoreUnavailableReason?: string | null;
       /** Truncated */
       truncated: boolean;
     };
@@ -9684,9 +9686,16 @@ export interface components {
        * Phase
        * @enum {string}
        */
-      phase: "provider_pending" | "provider_ready" | "completed" | "failed";
+      phase:
+        | "provider_pending"
+        | "provider_ready"
+        | "completed"
+        | "failed"
+        | "recovery_required";
       /** Requestid */
       requestId: string;
+      /** @default false */
+      restoreFiles?: boolean;
       /**
        * Turnid
        * @default null
@@ -9931,6 +9940,11 @@ export interface components {
        * @default null
        */
       _syncEntitiesAfter?: number | null;
+      fileResult?: {
+        [key: string]: unknown;
+      };
+      /** @default false */
+      filesRestored?: boolean;
       /** Nativeid */
       nativeId: string;
       /** Removedturns */
@@ -9963,6 +9977,8 @@ export interface components {
       id: string;
       /** Request Id */
       request_id: string;
+      /** @default false */
+      restore_files?: boolean;
       /** Turn Id */
       turn_id: string;
     };
@@ -10134,8 +10150,12 @@ export interface components {
     };
     /** ClaudeTurn */
     ClaudeTurn: {
+      /** @default false */
+      canRestoreFiles?: boolean;
       /** Id */
       id: string;
+      /** @default null */
+      restoreFilesUnavailableReason?: string | null;
       /**
        * Status
        * @enum {string}

@@ -336,3 +336,241 @@ async fn durable_control_store_boundaries_resume_or_hold_without_duplicate_write
         }
     }
 }
+
+struct RewindNative(Mutex<Vec<Value>>, bool);
+impl ControlSession for RewindNative {
+    fn binding(&self) -> ControlBinding {
+        ControlBinding::new("account".into(), "connection".into(), 1).unwrap()
+    }
+    fn call(&self, method: &str, params: Value) -> ControlFuture<'_, Value> {
+        if method == "thread/rollback" && self.1 {
+            return Box::pin(async { Err(ControlError::Request) });
+        }
+        self.0
+            .lock()
+            .unwrap()
+            .push(json!({"method":method,"params":params}));
+        let result = match method {
+            "claude/state" => {
+                json!({"tasks":[],"turns":[{"id":"one","status":"completed","canRestoreFiles":true},{"id":"two","status":"completed","canRestoreFiles":true},{"id":"three","status":"completed","canRestoreFiles":true}]})
+            }
+            "thread/queue/list" => json!({"data":[]}),
+            "thread/rollback" => {
+                assert_eq!(params["restoreFiles"], true);
+                assert_eq!(params["turnId"], "two");
+                json!({"threadId":"thread","nativeId":"restored","filesRestored":true})
+            }
+            _ => panic!("unexpected method {method}"),
+        };
+        Box::pin(async move { Ok(result) })
+    }
+}
+
+#[tokio::test]
+async fn combined_rewind_for_image_workspace_settles_history_and_replays_once() {
+    let root = tempfile::tempdir().unwrap();
+    let cwd = root.path().join("image");
+    let state = root.path().join("state");
+    std::fs::create_dir(&cwd).unwrap();
+    std::fs::create_dir(&state).unwrap();
+    seed_state(&state, &cwd).await;
+    let store = Arc::new(RuntimeStore::open(Some(&state)).await.unwrap());
+    store.transaction(|tx| {
+        tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.imageWorkspace',json('true'),'$.worktreeReady',json('false')) WHERE id='agent'",[])?;
+        Ok(())
+    }).await.unwrap();
+    let native = Arc::new(RewindNative(Mutex::new(vec![]), false));
+    let controls = Controls::new(
+        Arc::new(StoredControls::new(store.clone(), Arc::new(|_| {}))),
+        native.clone(),
+    );
+    let body = json!({"id":"agent","action":"rollback","turn_id":"two","request_id":"combined","restore_files":true});
+    let result = controls
+        .execute(ControlRequest::from_value(&body).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(result["filesRestored"], true);
+    assert_eq!(
+        controls
+            .execute(ControlRequest::from_value(&body).unwrap())
+            .await
+            .unwrap(),
+        result
+    );
+    let calls = native.0.lock().unwrap();
+    assert_eq!(
+        calls
+            .iter()
+            .filter(|call| call["method"] == "thread/rollback")
+            .count(),
+        1
+    );
+    drop(calls);
+    let db = store.test_reader().unwrap();
+    let agent = AgentRepository::get(&db, &AgentId("agent".into()))
+        .unwrap()
+        .unwrap()
+        .value();
+    assert_eq!(agent["lastCompletedTurn"], "one");
+    assert_eq!(agent["status"], "paused");
+    assert!(agent["workspaceOperation"].is_null());
+    let removed: i64 = db.query_row("SELECT count(*) FROM runtime_items WHERE json_extract(record,'$.afterRestore') IS NOT NULL",[],|row|row.get(0)).unwrap();
+    assert_eq!(removed, 2);
+    let mut changed = body;
+    changed["restore_files"] = json!(false);
+    assert!(matches!(
+        controls
+            .execute(ControlRequest::from_value(&changed).unwrap())
+            .await,
+        Err(ControlError::Conflict)
+    ));
+}
+
+#[tokio::test]
+async fn combined_rewind_rejection_holds_the_workspace_for_recovery() {
+    let root = tempfile::tempdir().unwrap();
+    let cwd = root.path().join("shared");
+    let state = root.path().join("state");
+    std::fs::create_dir(&cwd).unwrap();
+    std::fs::create_dir(&state).unwrap();
+    seed_state(&state, &cwd).await;
+    let store = Arc::new(RuntimeStore::open(Some(&state)).await.unwrap());
+    let controls = Controls::new(
+        Arc::new(StoredControls::new(store.clone(), Arc::new(|_| {}))),
+        Arc::new(RewindNative(Mutex::new(vec![]), true)),
+    );
+    let request = || {
+        ControlRequest::from_value(&json!({"id":"agent","action":"rollback","turn_id":"two","request_id":"combined","restore_files":true})).unwrap()
+    };
+    assert!(matches!(
+        controls.execute(request()).await,
+        Err(ControlError::Unknown)
+    ));
+    let db = store.test_reader().unwrap();
+    let agent = AgentRepository::get(&db, &AgentId("agent".into()))
+        .unwrap()
+        .unwrap()
+        .value();
+    assert_eq!(agent["workspaceOperation"], "branch_recovery");
+    assert_eq!(agent["status"], "paused");
+    let visible: i64 = db.query_row("SELECT count(*) FROM runtime_items WHERE json_extract(record,'$.afterRestore') IS NULL",[],|row|row.get(0)).unwrap();
+    assert_eq!(visible, 3);
+    assert!(matches!(
+        controls.execute(request()).await,
+        Err(ControlError::Unknown)
+    ));
+}
+
+struct HeldRewind {
+    inner: RewindNative,
+    entered: tokio::sync::Notify,
+    release: tokio::sync::Notify,
+}
+impl ControlSession for HeldRewind {
+    fn binding(&self) -> ControlBinding {
+        self.inner.binding()
+    }
+    fn call(&self, method: &str, params: Value) -> ControlFuture<'_, Value> {
+        let result = self.inner.call(method, params);
+        let hold = method == "thread/rollback";
+        Box::pin(async move {
+            if hold {
+                self.entered.notify_one();
+                self.release.notified().await;
+            }
+            result.await
+        })
+    }
+}
+#[tokio::test]
+async fn separate_control_instances_cannot_release_an_in_progress_rewind() {
+    let root = tempfile::tempdir().unwrap();
+    let cwd = root.path().join("workspace");
+    let state = root.path().join("state");
+    std::fs::create_dir(&cwd).unwrap();
+    std::fs::create_dir(&state).unwrap();
+    seed_state(&state, &cwd).await;
+    let store = Arc::new(RuntimeStore::open(Some(&state)).await.unwrap());
+    let native = Arc::new(HeldRewind {
+        inner: RewindNative(Mutex::new(vec![]), false),
+        entered: tokio::sync::Notify::new(),
+        release: tokio::sync::Notify::new(),
+    });
+    let first = Controls::new(
+        Arc::new(StoredControls::new(store.clone(), Arc::new(|_| {}))),
+        native.clone(),
+    );
+    let second = Controls::new(
+        Arc::new(StoredControls::new(store.clone(), Arc::new(|_| {}))),
+        native.clone(),
+    );
+    let request = || {
+        ControlRequest::from_value(&json!({"id":"agent","action":"rollback","turn_id":"two","request_id":"race","restore_files":true})).unwrap()
+    };
+    let first_request = request();
+    let task = tokio::spawn(async move { first.execute(first_request).await });
+    tokio::time::timeout(std::time::Duration::from_secs(5), native.entered.notified())
+        .await
+        .unwrap();
+    assert!(matches!(
+        second.execute(request()).await,
+        Err(ControlError::Busy)
+    ));
+    let agent = AgentRepository::get(&store.test_reader().unwrap(), &AgentId("agent".into()))
+        .unwrap()
+        .unwrap()
+        .value();
+    assert!(!agent["workspaceReservationId"].is_null());
+    assert_eq!(agent["workspaceOperation"], "branch");
+    native.release.notify_one();
+    assert_eq!(task.await.unwrap().unwrap()["filesRestored"], true);
+    assert_eq!(
+        second.execute(request()).await.unwrap()["filesRestored"],
+        true
+    );
+    assert_eq!(
+        native
+            .inner
+            .0
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|call| call["method"] == "thread/rollback")
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn stale_failure_cannot_clear_a_newer_durable_submission() {
+    let root = tempfile::tempdir().unwrap();
+    let cwd = root.path().join("workspace");
+    let state = root.path().join("state");
+    std::fs::create_dir(&cwd).unwrap();
+    std::fs::create_dir(&state).unwrap();
+    seed_state(&state, &cwd).await;
+    let store = Arc::new(RuntimeStore::open(Some(&state)).await.unwrap());
+    let adapter = StoredControls::new(store.clone(), Arc::new(|_| {}));
+    let request=ControlRequest::from_value(&json!({"id":"agent","action":"rollback","turn_id":"two","request_id":"race","restore_files":true})).unwrap();
+    let binding = ControlBinding::new("account".into(), "connection".into(), 1).unwrap();
+    let stale = adapter.reserve(request.clone(), binding).await.unwrap();
+    let submitted=adapter.submitted(stale.clone(),request,json!({"tasks":[],"turns":[{"id":"one","status":"completed","canRestoreFiles":true},{"id":"two","status":"completed","canRestoreFiles":true},{"id":"three","status":"completed","canRestoreFiles":true}]}),json!({"data":[]})).await.unwrap();
+    assert!(matches!(
+        adapter.failed(stale, false).await,
+        Err(ControlError::Changed)
+    ));
+    let agent = AgentRepository::get(&store.test_reader().unwrap(), &AgentId("agent".into()))
+        .unwrap()
+        .unwrap()
+        .value();
+    assert_eq!(agent["workspaceOperation"], "branch");
+    assert!(!agent["workspaceReservationId"].is_null());
+    // Even a caller that reports certainty cannot discard durable submitted evidence.
+    adapter.failed(submitted, false).await.unwrap();
+    let agent = AgentRepository::get(&store.test_reader().unwrap(), &AgentId("agent".into()))
+        .unwrap()
+        .unwrap()
+        .value();
+    assert_eq!(agent["workspaceOperation"], "branch_recovery");
+    assert!(!agent["workspaceReservationId"].is_null());
+}

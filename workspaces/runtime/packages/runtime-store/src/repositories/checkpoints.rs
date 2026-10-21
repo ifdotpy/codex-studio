@@ -790,6 +790,8 @@ fn same_workspace_activity(current: &WorkspaceSnapshot, expected: &WorkspaceSnap
         "threadId",
         "rootId",
         "lastCompletedTurn",
+        "worktreeReady",
+        "status",
         "inFlight",
         "workspaceOperation",
         "workspaceReservationId",

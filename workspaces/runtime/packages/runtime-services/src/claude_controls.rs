@@ -4,6 +4,8 @@ pub mod store;
 use crate::event_write::{request_signature, truthy};
 use serde::Deserialize;
 use serde_json::{Value, json};
+/// Seconds for a dry-run, a history fork, and the SDK file restore.
+pub(crate) const FILE_RESTORE_TIMEOUT_SECONDS: u64 = 90;
 /// Claude session permission modes accepted by settings and child creation.
 pub(crate) const PERMISSION_MODES: &[&str] = &[
     "default",
@@ -72,6 +74,7 @@ pub struct ControlRequest {
     action: Action,
     settings: Option<Value>,
     turn: Option<String>,
+    restore_files: bool,
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Action {
@@ -106,7 +109,13 @@ impl ControlRequest {
             Some("rollback") => Action::Rollback,
             _ => return Err(ControlError::Request),
         };
+        let restore_files = match body.get("restore_files") {
+            None => false,
+            Some(Value::Bool(value)) if action == Action::Rollback => *value,
+            _ => return Err(ControlError::Request),
+        };
         Ok(Self {
+            restore_files,
             id: text("id")?,
             request_id: text("request_id")?,
             action,
@@ -128,9 +137,12 @@ impl ControlRequest {
         format!("claude-control:{}", self.request_id)
     }
     fn signature(&self) -> String {
-        request_signature(
-            &json!({"agent":self.id,"action":self.action.name(),"settings":self.settings,"turn":self.turn}),
-        )
+        let mut value = json!({"agent":self.id,"action":self.action.name(),"settings":self.settings,"turn":self.turn});
+        // Preserve signatures for existing context-only receipts.
+        if self.restore_files {
+            value["restoreFiles"] = json!(true);
+        }
+        request_signature(&value)
     }
 }
 impl ControlSnapshot {
@@ -212,7 +224,10 @@ impl ControlSnapshot {
         if request.action == Action::Rollback && (pending || self.agent.thread_id.is_none()) {
             return Err(ControlError::Busy);
         }
-        let operation = json!({"id":request.operation_id(),"requestId":request.request_id,"kind":format!("claude_{}",request.action.name()),"agent":request.id,"turnId":request.turn,"signature":request.signature(),"source":self.source(),"phase":"provider_pending","created":now});
+        let mut operation = json!({"id":request.operation_id(),"requestId":request.request_id,"kind":format!("claude_{}",request.action.name()),"agent":request.id,"turnId":request.turn,"signature":request.signature(),"source":self.source(),"phase":"provider_pending","created":now});
+        if request.restore_files {
+            operation["restoreFiles"] = json!(true);
+        }
         let mut agent = self.raw.clone();
         agent["workspaceOperation"] = json!("branch");
         agent["workspaceReservationId"] = json!(request.operation_id());
@@ -259,6 +274,11 @@ impl ControlSnapshot {
                 .iter()
                 .position(|t| t.get("id").and_then(Value::as_str) == request.turn.as_deref())
                 .ok_or(ControlError::Request)?;
+            if request.restore_files
+                && turns[index].get("canRestoreFiles").and_then(Value::as_bool) != Some(true)
+            {
+                return Err(ControlError::Request);
+            }
             let removed: Vec<&str> = turns[index..]
                 .iter()
                 .map(|t| {
@@ -303,6 +323,11 @@ impl ControlSnapshot {
             .filter(|v| v.is_object())
             .cloned()
             .ok_or(ControlError::Unknown)?;
+        if request.restore_files
+            && result.get("filesRestored").and_then(Value::as_bool) != Some(true)
+        {
+            return Err(ControlError::Unknown);
+        }
         let mut agent = self.raw.clone();
         let mut removed = vec![];
         if request.action == Action::Settings {

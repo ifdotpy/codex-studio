@@ -124,7 +124,10 @@ export function ClaudeSettings({
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const windowSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const call = (body: ClaudeSessionRequest) =>
-    post("/api/claude/session", body, { timeoutMs: 15000 });
+    post("/api/claude/session", body, {
+      timeoutMs:
+        body.action === "rollback" && body.restore_files ? 120000 : 15000,
+    });
   const mutate = async (body: ClaudeSessionMutation) => {
     const storageKey = `claude-control:${agent.accountKey}:${agent.id}:${body.action}:${JSON.stringify({ ...body, id: undefined, action: undefined })}`;
     const requestId =
@@ -244,6 +247,7 @@ export function ClaudeSettings({
     void saveSetting("Auto-compact limit", { autoCompactWindow: limit });
   };
   const historyTurns = [...state.turns];
+  const selectedHistoryTurn = historyTurns.find((item) => item.id === turn);
   const recoveryTurn = state.controlOperation?.turnId;
   if (recoveryTurn && !historyTurns.some((item) => item.id === recoveryTurn))
     historyTurns.push({
@@ -491,6 +495,8 @@ export function ClaudeSettings({
                           action: "rollback",
                           turn_id: turn,
                           request_id: state.controlOperation.requestId,
+                          restore_files:
+                            state.controlOperation.restoreFiles === true,
                         })
                       : mutate({
                           id: agent.id,
@@ -502,6 +508,34 @@ export function ClaudeSettings({
               }
             >
               Roll back context
+            </Button>
+            <p className="claude-setting-help">
+              Restore files and context together to before this message. SDK
+              checkpoints cover Claude file tools, not shell commands.
+            </p>
+            {!selectedHistoryTurn?.canRestoreFiles && (
+              <p className="claude-setting-help">
+                {selectedHistoryTurn?.restoreFilesUnavailableReason ||
+                  "Select a message with an SDK file checkpoint."}
+              </p>
+            )}
+            <Button
+              color="orange"
+              disabled={locked || !selectedHistoryTurn?.canRestoreFiles}
+              onClick={() =>
+                void run(
+                  () =>
+                    mutate({
+                      id: agent.id,
+                      action: "rollback",
+                      turn_id: turn,
+                      restore_files: true,
+                    }),
+                  true,
+                )
+              }
+            >
+              Restore files and conversation
             </Button>
           </details>
           <p className="claude-version">

@@ -105,7 +105,7 @@ async fn session(
             .map_err(session_error)?
     };
     let controls = Controls::new(
-        Arc::new(StoredControls::new(store, Arc::new(|_| {}))),
+        Arc::new(StoredControls::new(store.clone(), Arc::new(|_| {}))),
         session,
     );
     let result = match action {
@@ -126,7 +126,31 @@ async fn session(
         }
     };
     state.event_wake.notify_one();
-    result.map(Json).map_err(control_error)
+    let mut result = result.map_err(control_error)?;
+    if action == "state" {
+        let workspace = studio_runtime_services::checkpoints::capture_context(&store, &id)
+            .await
+            .map_err(|_| ApiError::internal())?;
+        let reason = studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-http/claude-controls/restore-availability",
+            move || {
+                studio_runtime_services::checkpoints::ensure_workspace_idle(&workspace, None)
+                    .err()
+                    .map(|error| error.to_string())
+            },
+        )
+        .await
+        .map_err(|_| ApiError::internal())?;
+        if let Some(reason) = reason
+            && let Some(turns) = result.get_mut("turns").and_then(Value::as_array_mut)
+        {
+            for turn in turns {
+                turn["canRestoreFiles"] = json!(false);
+                turn["restoreFilesUnavailableReason"] = json!(reason);
+            }
+        }
+    }
+    Ok(Json(result))
 }
 
 async fn require_claude_account(state: &HttpState, agent: &Value) -> Result<(), ApiError> {

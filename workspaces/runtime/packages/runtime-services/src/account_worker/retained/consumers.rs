@@ -70,6 +70,13 @@ impl ClaudeSessionPort for ClaudePort {
                     request
                 ]))
             );
+            let timeout_seconds = if call.identity.method == Method::ThreadRollback
+                && call.params["restoreFiles"] == true
+            {
+                crate::claude_controls::FILE_RESTORE_TIMEOUT_SECONDS
+            } else {
+                20
+            };
             let receipt = self
                 .port
                 .request(SessionRequest {
@@ -85,8 +92,9 @@ impl ClaudeSessionPort for ClaudePort {
                     deleted_actor_session: None,
                     method: call.identity.method,
                     params: call.params,
-                    deadline: (tokio::time::Instant::now() + std::time::Duration::from_secs(20))
-                        .into_std(),
+                    deadline: (tokio::time::Instant::now()
+                        + std::time::Duration::from_secs(timeout_seconds))
+                    .into_std(),
                 })
                 .await
                 .map_err(|e| match e {

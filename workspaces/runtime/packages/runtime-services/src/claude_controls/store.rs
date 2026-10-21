@@ -50,6 +50,10 @@ fn now() -> f64 {
         .map_or(0.0, |v| v.as_secs_f64())
 }
 impl ControlStorage for StoredControls {
+    fn execution_key(&self, request: &ControlRequest) -> String {
+        format!("{}:{}", self.store.state_dir().display(), request.id)
+    }
+
     fn reserve(
         &self,
         request: ControlRequest,
@@ -216,7 +220,11 @@ impl ControlStorage for StoredControls {
                     {
                         return Err(ControlError::Changed);
                     }
-                    let unknown = uncertain || truthy(operation.get("provider"));
+                    // A stale caller must not settle another caller's submission.
+                    if Some(&operation) != expected.saved.as_ref() {
+                        return Err(ControlError::Changed);
+                    }
+                    let unknown = uncertain || truthy(operation.get("submitted")) || truthy(operation.get("provider"));
                     operation["phase"] = json!(if unknown {
                         "recovery_required"
                     } else {
