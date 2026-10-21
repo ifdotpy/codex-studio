@@ -308,7 +308,8 @@ class AnalyticsContract(unittest.TestCase):
         errors = []
         def delayed_step():
             entered.set()
-            if not release.wait(5):
+            # The test releases the batch; the wait only guards against a hang.
+            if not release.wait(HANG_GUARD_SECONDS):
                 raise AssertionError('The test did not release the history batch')
             # The real importer reacquires this lock to commit its checkpoint.
             with self.runtime.lock, self.runtime.db(analytics=True) as db:

@@ -300,7 +300,9 @@ class WindowsSupervisorContract(unittest.TestCase):
         started = time.monotonic()
         with self.assertRaises(TimeoutError):
             supervisor._recv(connection, reader)
-        self.assertLess(time.monotonic() - started, 1)
+        # The supervisor never answers, so a read without the 0.1 s socket timeout
+        # blocks until the suite deadline. Fifty times the timeout absorbs load.
+        self.assertLess(time.monotonic() - started, 5)
         reader.close()
         connection.close()
 

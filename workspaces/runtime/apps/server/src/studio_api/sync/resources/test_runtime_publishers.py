@@ -45,6 +45,8 @@ from studio_api.sync.resources.models import (
 )
 
 
+# An expected event waits HANG_GUARD_SECONDS; that wait only guards against a
+# hang. The short waits that expect no event stay short.
 class RuntimeResourcePublisherTests(unittest.IsolatedAsyncioTestCase):
     def test_transcript_projection_changes_publish_but_maintenance_writes_stay_quiet(self) -> None:
         before = {
@@ -102,7 +104,7 @@ class RuntimeResourcePublisherTests(unittest.IsolatedAsyncioTestCase):
                     runtime.put(connection, "agents", {**prior, "status": "interrupted"})
                 runtime._queue_staged_resource_changes(staged, overflowed, connection)
                 runtime._publish_committed_resource_changes()
-                event = await subscription.next_event(timeout=1)
+                event = await subscription.next_event(timeout=HANG_GUARD_SECONDS)
                 self.assertIsNotNone(event)
 
                 for terminal_status in ("failed", "paused"):
@@ -115,7 +117,7 @@ class RuntimeResourcePublisherTests(unittest.IsolatedAsyncioTestCase):
                             runtime.put(connection, "agents", {**current, "status": terminal_status})
                     runtime._queue_staged_resource_changes(staged, overflowed, connection)
                     runtime._publish_committed_resource_changes()
-                    self.assertIsNotNone(await subscription.next_event(timeout=1), terminal_status)
+                    self.assertIsNotNone(await subscription.next_event(timeout=HANG_GUARD_SECONDS), terminal_status)
 
                 staged[connection] = {}
                 current = json.loads(connection.execute(
@@ -210,7 +212,7 @@ class RuntimeResourcePublisherTests(unittest.IsolatedAsyncioTestCase):
                 ):
                     runtime.disconnected("default", "connection-a")
                 runtime._publish_committed_resource_changes()
-                event = await transcript.next_event(timeout=1)
+                event = await transcript.next_event(timeout=HANG_GUARD_SECONDS)
                 self.assertIsNotNone(event)
                 self.assertEqual(
                     event.resources,
@@ -408,7 +410,7 @@ class RuntimeResourcePublisherTests(unittest.IsolatedAsyncioTestCase):
                 runtime._queue_staged_resource_changes(resources, overflowed, connection)
                 runtime._publish_committed_resource_changes()
                 for subscription, agent_id in zip(subscriptions, ("lead", "worker-a", "worker-b")):
-                    event = await subscription.next_event(timeout=1)
+                    event = await subscription.next_event(timeout=HANG_GUARD_SECONDS)
                     self.assertIsNotNone(event, agent_id)
                     assert event is not None
                     self.assertEqual(
@@ -416,7 +418,7 @@ class RuntimeResourcePublisherTests(unittest.IsolatedAsyncioTestCase):
                         [ResourceRef(TasksResource(kind="tasks", agentId=agent_id))],
                     )
                 # The transcript endpoint derives linked toolStatus from task records.
-                self.assertIsNotNone(await worker_transcript_subscription.next_event(timeout=1))
+                self.assertIsNotNone(await worker_transcript_subscription.next_event(timeout=HANG_GUARD_SECONDS))
                 with (
                     patch("codex_sync_entities.put"),
                     patch("codex_sync_entities.sync_task_agent_change"),
@@ -428,10 +430,10 @@ class RuntimeResourcePublisherTests(unittest.IsolatedAsyncioTestCase):
                 runtime._queue_staged_resource_changes(resources, overflowed, connection)
                 runtime._publish_committed_resource_changes()
                 for subscription in subscriptions[:2]:
-                    event = await subscription.next_event(timeout=1)
+                    event = await subscription.next_event(timeout=HANG_GUARD_SECONDS)
                     self.assertIsNotNone(event)
                 self.assertIsNone(await subscriptions[2].next_event(timeout=0.01))
-                self.assertIsNotNone(await transcript_subscription.next_event(timeout=1))
+                self.assertIsNotNone(await transcript_subscription.next_event(timeout=HANG_GUARD_SECONDS))
             finally:
                 for subscription in subscriptions:
                     subscription.close()
@@ -476,7 +478,7 @@ class RuntimeResourcePublisherTests(unittest.IsolatedAsyncioTestCase):
                 runtime._queue_staged_resource_changes(resources, overflowed, connection)
                 runtime._publish_committed_resource_changes()
                 for subscription in (queue, receipts):
-                    event = await subscription.next_event(timeout=1)
+                    event = await subscription.next_event(timeout=HANG_GUARD_SECONDS)
                     self.assertIsNotNone(event)
                     assert event is not None
                     self.assertEqual(len(event.resources), 1)
@@ -550,7 +552,7 @@ class RuntimeResourcePublisherTests(unittest.IsolatedAsyncioTestCase):
                 })
                 runtime._publish_committed_resource_changes()
                 for subscription, kind in ((queue, "queue"), (receipts, "receipts")):
-                    event = await subscription.next_event(timeout=1)
+                    event = await subscription.next_event(timeout=HANG_GUARD_SECONDS)
                     self.assertIsNotNone(event)
                     assert event is not None
                     self.assertEqual(event.resources[0].root.kind, kind)
@@ -613,7 +615,7 @@ class RuntimeResourcePublisherTests(unittest.IsolatedAsyncioTestCase):
                 runtime._queue_staged_resource_changes(staged, overflowed, connection)
                 runtime.schedule()
                 for subscription in (queue, receipts):
-                    event = await subscription.next_event(timeout=1)
+                    event = await subscription.next_event(timeout=HANG_GUARD_SECONDS)
                     self.assertIsNotNone(event)
             finally:
                 queue.close()
@@ -674,7 +676,7 @@ class RuntimeResourcePublisherTests(unittest.IsolatedAsyncioTestCase):
                     db.execute("UPDATE runtime_events SET status='reserved' WHERE id='event-a'")
                 runtime._publish_committed_resource_changes()
                 for subscription in (queue, receipts):
-                    self.assertIsNotNone(await subscription.next_event(timeout=1))
+                    self.assertIsNotNone(await subscription.next_event(timeout=HANG_GUARD_SECONDS))
 
                 with runtime.db() as db:
                     db.execute("UPDATE runtime_events SET status='reserved' WHERE id='event-a'")
@@ -686,7 +688,7 @@ class RuntimeResourcePublisherTests(unittest.IsolatedAsyncioTestCase):
                     db.execute("DELETE FROM runtime_events WHERE id='event-a'")
                 runtime._publish_committed_resource_changes()
                 for subscription in (queue, receipts):
-                    self.assertIsNotNone(await subscription.next_event(timeout=1))
+                    self.assertIsNotNone(await subscription.next_event(timeout=HANG_GUARD_SECONDS))
 
                 with runtime.db() as db:
                     db.execute(
@@ -695,19 +697,19 @@ class RuntimeResourcePublisherTests(unittest.IsolatedAsyncioTestCase):
                     )
                 runtime._publish_committed_resource_changes()
                 for subscription in (queue, receipts):
-                    self.assertIsNotNone(await subscription.next_event(timeout=1))
+                    self.assertIsNotNone(await subscription.next_event(timeout=HANG_GUARD_SECONDS))
 
                 with runtime.db() as db:
                     db.execute("UPDATE runtime_events SET status='failed' WHERE id='event-b'")
                 runtime._publish_committed_resource_changes()
                 for subscription in (queue, receipts):
-                    self.assertIsNotNone(await subscription.next_event(timeout=1))
+                    self.assertIsNotNone(await subscription.next_event(timeout=HANG_GUARD_SECONDS))
 
                 with runtime.db() as db:
                     db.execute("UPDATE runtime_events SET status='cancelled' WHERE id='event-b'")
                 runtime._publish_committed_resource_changes()
                 for subscription in (queue, receipts):
-                    self.assertIsNotNone(await subscription.next_event(timeout=1))
+                    self.assertIsNotNone(await subscription.next_event(timeout=HANG_GUARD_SECONDS))
             finally:
                 queue.close()
                 receipts.close()
@@ -806,7 +808,7 @@ class RuntimeResourcePublisherTests(unittest.IsolatedAsyncioTestCase):
                     )
                 self.assertTrue(disconnected.wait(HANG_GUARD_SECONDS), "supervisor exit did not reach Runtime.disconnected")
                 runtime._publish_committed_resource_changes()
-                event = await subscription.next_event(timeout=1)
+                event = await subscription.next_event(timeout=HANG_GUARD_SECONDS)
                 self.assertIsNotNone(event)
                 assert event is not None
                 self.assertEqual(event.resources, [ResourceRef(DesktopResource(kind="desktop"))])
@@ -862,7 +864,7 @@ class RuntimeResourcePublisherTests(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(runtime.store_rate_limits("default", initial))
                 self.assertTrue(runtime.changed.is_set())
                 runtime._publish_committed_resource_changes()
-                event = await subscription.next_event(timeout=1)
+                event = await subscription.next_event(timeout=HANG_GUARD_SECONDS)
                 self.assertIsNotNone(event)
                 assert event is not None
                 self.assertEqual(event.resources, [
@@ -881,7 +883,7 @@ class RuntimeResourcePublisherTests(unittest.IsolatedAsyncioTestCase):
                 }
                 self.assertTrue(runtime.store_rate_limits("default", changed))
                 runtime._publish_committed_resource_changes()
-                changed_event = await subscription.next_event(timeout=1)
+                changed_event = await subscription.next_event(timeout=HANG_GUARD_SECONDS)
                 self.assertIsNotNone(changed_event)
                 assert changed_event is not None
                 self.assertEqual(changed_event.resources, [
@@ -909,7 +911,7 @@ class RuntimeResourcePublisherTests(unittest.IsolatedAsyncioTestCase):
                     )
                 self.assertIsNone(await token_subscription.next_event(timeout=0.01))
                 runtime._publish_committed_resource_changes()
-                committed_event = await token_subscription.next_event(timeout=1)
+                committed_event = await token_subscription.next_event(timeout=HANG_GUARD_SECONDS)
                 self.assertIsNotNone(committed_event)
                 assert committed_event is not None
                 self.assertEqual(committed_event.resources, [
@@ -953,7 +955,7 @@ class RuntimeResourcePublisherTests(unittest.IsolatedAsyncioTestCase):
             )
             try:
                 runtime._publish_committed_resource_changes()
-                event = await subscription.next_event(timeout=1)
+                event = await subscription.next_event(timeout=HANG_GUARD_SECONDS)
                 self.assertIsNotNone(event)
                 assert event is not None
                 self.assertEqual(event.reason, "overflow")

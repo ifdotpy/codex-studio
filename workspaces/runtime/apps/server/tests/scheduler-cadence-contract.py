@@ -46,7 +46,8 @@ class SchedulerCadence(unittest.TestCase):
                     return False
                 if self.calls == 3:
                     idle_tick.set()
-                    release_changed.wait(2)
+                    # Hold the scheduler until the test releases it.
+                    release_changed.wait(HANG_GUARD_SECONDS)
                     return True
                 runtime.closed = True
                 return False

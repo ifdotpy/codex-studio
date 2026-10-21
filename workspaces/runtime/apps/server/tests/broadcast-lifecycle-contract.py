@@ -50,7 +50,8 @@ class BroadcastLifecycle(unittest.TestCase):
 
         def gated_archive(*args):
             archive_started.set()
-            if not archive_release.wait(5):
+            # The test releases the archival; the wait only guards against a hang.
+            if not archive_release.wait(HANG_GUARD_SECONDS):
                 raise AssertionError("Test did not release reviewer archival")
             try:
                 return archive(*args)

@@ -7,6 +7,7 @@ from test_isolation import isolate_supervisor_environment
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import HANG_GUARD_SECONDS
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
 isolate_supervisor_environment()
@@ -72,7 +73,7 @@ with tempfile.TemporaryDirectory() as root:
                 runtime.lock.release()
         checker = threading.Thread(target=check_locks)
         checker.start()
-        checker.join(1)
+        checker.join(HANG_GUARD_SECONDS)  # Only guards against a hang.
         publications.append((agent, acquired == [True]))
     voice._publish_voice = observe_publication
     args = ("lead","session","one","user","Exact path: /a/b, budget 37")

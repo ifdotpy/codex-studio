@@ -34,6 +34,12 @@ from codex_native_errors import NativeRpcError
 from codex_provider_limits import CALLBACK_QUEUE_LIMIT
 
 
+# Seconds AppServer.close may take while a callback or the clock writer is
+# blocked. Its only own wait is the 1 s reader join; the margin covers a busy
+# machine, and a close that joins the blocked worker takes far longer.
+CLOSE_WITHOUT_JOIN_SECONDS = 5
+
+
 class Pipe:
     def __init__(self):
         self.lines = queue.Queue()
@@ -98,7 +104,7 @@ class ReaderContract(unittest.TestCase):
         self.release.set()
         if self.server:
             self.server.close()
-            self.assertTrue(self.server.join_callbacks(2))
+            self.assertTrue(self.server.join_callbacks(HANG_GUARD_SECONDS))
         self.temp.cleanup()
 
     def start(self, limit=4096, clock_limit=128, notification_dispatcher_closed=None):
@@ -129,7 +135,7 @@ class ReaderContract(unittest.TestCase):
         data = {"codexErrorInfo": {"activeTurnNotSteerable": {"turnKind": "compact"}}}
         proc.emit({"id": pending[0], "error": {"code": -32600, "message": "Cannot steer", "data": data}})
         with self.assertRaises(NativeRpcError) as result:
-            server.wait(pending, 0.5)
+            server.wait(pending, HANG_GUARD_SECONDS)
         self.assertEqual(result.exception.code, -32600)
         self.assertEqual(result.exception.data, data)
         self.assertNotIn(pending[0], server.pending)
@@ -145,7 +151,7 @@ class ReaderContract(unittest.TestCase):
         self.assertEqual(server.wait(pending, HANG_GUARD_SECONDS), {"config": "ready"})
         with proc.condition:
             self.assertTrue(proc.condition.wait_for(
-                lambda: any(m.get("id") == "clock-1" for m in proc.writes), 0.5))
+                lambda: any(m.get("id") == "clock-1" for m in proc.writes), HANG_GUARD_SECONDS))
         self.assertEqual(self.records, [])
         done = threading.Event()
         server.after_events(lambda: (self.records.append("completed"), done.set()))
@@ -186,7 +192,9 @@ class ReaderContract(unittest.TestCase):
     def test_slow_result_callback_does_not_block_later_response(self):
         server, proc = self.start()
         pending = server.submit("thread/start", {})
-        server.on_result(pending, lambda _: (self.entered.set(), self.release.wait(3)))
+        # The callback stays blocked until tearDown, longer than the hang guard
+        # below, so a later response queued behind it fails the wait.
+        server.on_result(pending, lambda _: (self.entered.set(), self.release.wait(2 * HANG_GUARD_SECONDS)))
         proc.emit({"id": pending[0], "result": {}})
         self.assertTrue(self.entered.wait(HANG_GUARD_SECONDS))
         second = server.submit("model/list", {})
@@ -201,6 +209,7 @@ class ReaderContract(unittest.TestCase):
             self.assertEqual(server.wait(pending, HANG_GUARD_SECONDS), {"config": "ready"})
 
     def test_clock_behind_blocked_writer_does_not_block_config_response(self):
+        requested_at = int(time.time())
         server, proc = self.start()
         pending = server.submit("config/read", {})
         with server.write_lock:
@@ -210,9 +219,11 @@ class ReaderContract(unittest.TestCase):
             self.assertFalse(any(m.get("id") == "delayed-clock" for m in proc.writes))
         with proc.condition:
             self.assertTrue(proc.condition.wait_for(
-                lambda: any(m.get("id") == "delayed-clock" for m in proc.writes), 0.5))
+                lambda: any(m.get("id") == "delayed-clock" for m in proc.writes), HANG_GUARD_SECONDS))
         response = next(m for m in proc.writes if m.get("id") == "delayed-clock")
-        self.assertLessEqual(abs(response["result"]["currentTimeAt"] - time.time()), 1)
+        # The reply carries the time of its own write, in whole seconds.
+        self.assertGreaterEqual(response["result"]["currentTimeAt"], requested_at)
+        self.assertLessEqual(response["result"]["currentTimeAt"], time.time())
 
     def test_clock_reply_queue_saturation_fails_explicitly(self):
         server, proc = self.start(clock_limit=1)
@@ -221,9 +232,9 @@ class ReaderContract(unittest.TestCase):
             for index in range(3):
                 proc.emit({"id": f"clock-{index}", "method": "currentTime/read"})
             with self.assertRaisesRegex(RuntimeError, "clock reply queue saturated.*outcome unknown"):
-                server.wait(pending, 0.5)
+                server.wait(pending, HANG_GUARD_SECONDS)
             self.assertIsNotNone(proc.poll())
-        self.assertTrue(server.join_callbacks(1))
+        self.assertTrue(server.join_callbacks(HANG_GUARD_SECONDS))
         self.assertIn("clock reply queue saturated", (self.root / "app-server.log").read_text())
 
     def test_close_does_not_join_clock_writer_under_write_lock(self):
@@ -232,11 +243,13 @@ class ReaderContract(unittest.TestCase):
         with server.write_lock:
             proc.emit({"id": "clock", "method": "currentTime/read"})
             proc.emit({"id": pending[0], "result": {}})
-            server.wait(pending, 0.5)
+            server.wait(pending, HANG_GUARD_SECONDS)
             started = time.monotonic()
             server.close()
-            self.assertLess(time.monotonic() - started, 0.5)
-        self.assertTrue(server.join_callbacks(1))
+            # A close that waits for the clock writer behind this lock fails the
+            # bound; the reader join of close is the only legitimate wait.
+            self.assertLess(time.monotonic() - started, CLOSE_WITHOUT_JOIN_SECONDS)
+        self.assertTrue(server.join_callbacks(HANG_GUARD_SECONDS))
 
     def test_notification_dispatcher_closes_its_reused_runtime_connection(self):
         import gc
@@ -270,7 +283,7 @@ class ReaderContract(unittest.TestCase):
         self.assertEqual(failures, [])
         wal_path = Path(str(runtime.db_path) + "-wal")
         runtime.close()
-        self.assertTrue(server.join_callbacks(3))
+        self.assertTrue(server.join_callbacks(HANG_GUARD_SECONDS))
         self.assertFalse(server.dispatcher.is_alive())
         gc.collect()
         self.assertEqual(len(connection_refs), 1)
@@ -284,11 +297,11 @@ class ReaderContract(unittest.TestCase):
         proc.emit({"id": "req", "method": "tool/request"})
         proc.terminate()
         with self.assertRaisesRegex(RuntimeError, "disconnected; outcome unknown"):
-            server.wait(pending, 0.5)
+            server.wait(pending, HANG_GUARD_SECONDS)
         self.assertFalse(server.pending)
         self.assertEqual(self.records, [])
         self.release.set()
-        self.assertTrue(server.join_callbacks(1))
+        self.assertTrue(server.join_callbacks(HANG_GUARD_SECONDS))
         self.assertEqual(self.records, ["blocked", "tool/request", "died"])
         server.close()
         server.close()
@@ -302,10 +315,11 @@ class ReaderContract(unittest.TestCase):
         self.block(proc)
         started = time.monotonic()
         server.close()
-        self.assertLess(time.monotonic() - started, 0.5)
+        # A close that waits for the blocked callback fails the bound.
+        self.assertLess(time.monotonic() - started, CLOSE_WITHOUT_JOIN_SECONDS)
         self.assertFalse(server.join_callbacks(0))
         self.release.set()
-        self.assertTrue(server.join_callbacks(1))
+        self.assertTrue(server.join_callbacks(HANG_GUARD_SECONDS))
         self.assertEqual(self.records, ["blocked"])
 
     def test_terminal_output_burst_keeps_connection_and_receipts(self):
@@ -503,12 +517,12 @@ class ReaderContract(unittest.TestCase):
         proc.emit({"method": "accepted-2"})
         proc.emit({"method": "rejected-3", "id": "overflow-request"})
         with self.assertRaisesRegex(RuntimeError, "callback queue saturated.*outcome unknown"):
-            server.wait(pending, 0.5)
+            server.wait(pending, HANG_GUARD_SECONDS)
         self.assertIsNotNone(proc.poll())
         with self.assertRaisesRegex(RuntimeError, "offline"):
             server.submit("turn/start", {})
         self.release.set()
-        self.assertTrue(server.join_callbacks(1))
+        self.assertTrue(server.join_callbacks(HANG_GUARD_SECONDS))
         self.assertEqual(self.records, ["blocked", "accepted-1", "accepted-2", "died"])
         self.assertIn("callback queue saturated", (self.root / "app-server.log").read_text())
 

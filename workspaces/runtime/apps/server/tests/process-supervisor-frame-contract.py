@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import HANG_GUARD_SECONDS
 
 from test_isolation import isolate_supervisor_environment
 
@@ -72,7 +73,8 @@ class ProcessSupervisorFrameContract(unittest.TestCase):
             reader.close()
             receiver.close()
             sender.close()
-            thread.join(timeout=2)
+            # The join only guards against a hang; a stuck sender still fails below.
+            thread.join(timeout=HANG_GUARD_SECONDS)
         self.assertFalse(thread.is_alive())
 
     def test_server_reads_only_a_bounded_oversized_posix_request(self):

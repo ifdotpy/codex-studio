@@ -409,7 +409,8 @@ os._exit(0)
         self.await_status(rid, {'pending'})
         job = self.login.jobs[rid]
         self.assertEqual(self.login.cancel(rid)['status'], 'cancelled')
-        job['process'].wait(timeout=3)
+        # The wait only guards against a hang; cancel must stop the owned process.
+        job['process'].wait(timeout=HANG_GUARD_SECONDS)
         self.assertIsNotNone(job['process'].returncode)
         self.assertEqual(self.login.start('claude-test', rid)['status'], 'cancelled')
         self.assertEqual(self.login.code(rid, 'valid-code')['status'], 'cancelled')
@@ -556,7 +557,7 @@ os._exit(0)
             self.assertEqual(request(path + '/cancel', {'login_id':rid}, headers)[1]['status'],'cancelled')
         finally:
             server.shutdown()
-            thread.join(timeout=5)
+            thread.join(timeout=HANG_GUARD_SECONDS)
             self.assertFalse(thread.is_alive(), 'HTTP server did not stop')
             server.server_close()
 

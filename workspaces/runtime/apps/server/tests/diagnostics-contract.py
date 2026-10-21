@@ -5,6 +5,7 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import HANG_GUARD_SECONDS
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
 from test_isolation import isolate_supervisor_environment
@@ -218,7 +219,10 @@ class DiagnosticsContract(unittest.TestCase):
             connection = None
             try:
                 with patch("codex_diagnostics.snapshot", return_value=fixture):
-                    connection = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+                    # The timeouts in this test only guard against a hang.
+                    connection = http.client.HTTPConnection(
+                        "127.0.0.1", server.server_port, timeout=HANG_GUARD_SECONDS,
+                    )
                     connection.request("GET", "/api/diagnostics")
                     response = connection.getresponse()
                     self.assertEqual(response.status, 200)
@@ -237,7 +241,7 @@ class DiagnosticsContract(unittest.TestCase):
                         )
                     cli = subprocess.run([str(binary), "--port",
                                           str(server.server_port)], capture_output=True,
-                                         text=True, timeout=5, check=True)
+                                         text=True, timeout=HANG_GUARD_SECONDS, check=True)
                     printed = json.loads(cli.stdout)
                     self.assertEqual(printed.pop("supervisor"), supervisor)
                     self.assertEqual(printed, body)
@@ -245,7 +249,7 @@ class DiagnosticsContract(unittest.TestCase):
                 if connection is not None:
                     connection.close()
                 server.shutdown()
-                thread.join(5)
+                thread.join(HANG_GUARD_SECONDS)
                 server.server_close()
                 self.assertFalse(thread.is_alive())
 

@@ -858,7 +858,9 @@ class CrossServer(unittest.TestCase):
                 self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
                 threads.append(threading.Thread(target=tick))
                 threads[-1].start()
-                responsive = tick_done.wait(.25)
+                # A tick that waits behind the receive thread ends only after Runtime.db
+                # gives up its 15 s busy wait. A third of that absorbs load and still fails.
+                responsive = tick_done.wait(5)
         finally:
             writer.rollback()
             writer.close()

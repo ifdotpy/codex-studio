@@ -56,8 +56,9 @@ class ReservationRecovery(unittest.TestCase):
             try:
                 yield
             finally:
+                # Each wait only guards against a hang of a released fixture job.
                 for future in jobs:
-                    future.result(timeout=5)
+                    future.result(timeout=HANG_GUARD_SECONDS)
 
     def test_capture_receipt_identifies_owner_and_settlement_then_dispatches_once(self):
         owner = self.lead('owner')
@@ -82,7 +83,7 @@ class ReservationRecovery(unittest.TestCase):
                 self.runtime.send(peer['id'], 'Exact follow-up', 'capture-wait-input')
             finally:
                 release.set()
-                capture_future.result(5)
+                capture_future.result(HANG_GUARD_SECONDS)
         self.assertEqual(self.operation(blocker['operationId'])['phase'], 'completed')
         self.runtime.dispatch()
         f.eventually(lambda: self.runtime.agent(peer['id']).get('turnId'))
@@ -104,7 +105,7 @@ class ReservationRecovery(unittest.TestCase):
                 self.agent_update(a, workspaceOperation='restore_recovery', workspaceReservationId='replacement')
             finally:
                 release.set()
-                future.result(5)
+                future.result(HANG_GUARD_SECONDS)
         current = self.runtime.agent(a['id'])
         self.assertEqual(current['workspaceOperation'], 'restore_recovery')
         self.assertEqual(current['workspaceReservationId'], 'replacement')

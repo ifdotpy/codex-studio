@@ -462,7 +462,9 @@ class WorkerLifecycleRestartContract(unittest.TestCase):
                 child = self.runtime.agent(worker_id, db)
                 child['reviewArchiveScheduled'] = 'replaced'
                 self.runtime.put(db, 'agents', child)
-            worker.join(5)
+            # The replaced schedule ends the worker at its next wake; this join
+            # only guards against a hang.
+            worker.join(HANG_GUARD_SECONDS)
         self.assertFalse(worker.is_alive())
         self.assertLessEqual(attempts, 2)
         self.assertEqual(self.runtime.agent(worker_id)['reviewArchiveAttempts'], attempts)

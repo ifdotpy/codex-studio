@@ -70,7 +70,8 @@ class LogRotationContract(unittest.TestCase):
                 server.reader.join(timeout=HANG_GUARD_SECONDS)
                 self.assertFalse(server.reader.is_alive())
                 if server.stderr_writer:
-                    server.stderr_writer.join(timeout=3)
+                    # The join only guards against a hang; the log check fails on content.
+                    server.stderr_writer.join(timeout=HANG_GUARD_SECONDS)
                 self.assertIn("native diagnostic", (root / "app-server.log").read_text())
             finally:
                 server.close()

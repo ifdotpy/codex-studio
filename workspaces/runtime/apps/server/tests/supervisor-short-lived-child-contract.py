@@ -17,7 +17,7 @@ import unittest
 from unittest.mock import patch
 
 import codex_process_supervisor as process_supervisor
-from server_test_waits import wait_for_condition
+from server_test_waits import HANG_GUARD_SECONDS, wait_for_condition
 
 
 @unittest.skipUnless(sys.platform.startswith("linux"), "Linux zombie identity contract")
@@ -103,8 +103,9 @@ class ShortLivedChildContract(unittest.TestCase):
                 self.assertEqual(exit_events, [{"returnCode": 0}])
 
                 child = instance.children["short-lived-contract"]
-                child.reader.join(timeout=2)
-                child.stderr.join(timeout=2)
+                # The child exited; these joins only guard against a hang.
+                child.reader.join(timeout=HANG_GUARD_SECONDS)
+                child.stderr.join(timeout=HANG_GUARD_SECONDS)
                 self.assertFalse(child.reader.is_alive())
                 self.assertFalse(child.stderr.is_alive())
             finally:

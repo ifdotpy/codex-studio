@@ -235,7 +235,9 @@ class HistoricalBatchReceipt(f.HistoricalInputWait):
             connection.execute('BEGIN EXCLUSIVE')
             started = time.monotonic()
             self.assertEqual(self.proof(captures), {})
-            self.assertLess(time.monotonic() - started, .5)
+            # A read that waits for the 5 s default sqlite3 busy timeout fails
+            # this bound; half of that default leaves room for a busy machine.
+            self.assertLess(time.monotonic() - started, 2.5)
         finally:
             connection.rollback()
             connection.close()

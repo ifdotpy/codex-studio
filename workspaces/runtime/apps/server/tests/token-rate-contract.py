@@ -7,6 +7,7 @@ from test_isolation import isolate_supervisor_environment
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import HANG_GUARD_SECONDS
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT, SERVER_TESTS_ROOT
 
 isolate_supervisor_environment()
@@ -316,7 +317,8 @@ class RateContract(unittest.TestCase):
 
         def blocked_publish(_root, _snapshot):
             entered.set()
-            if not release.wait(2):
+            # Hold the publication until the test releases it, past the event wait.
+            if not release.wait(HANG_GUARD_SECONDS):
                 raise AssertionError('publication was not released')
             return True
 
@@ -328,7 +330,7 @@ class RateContract(unittest.TestCase):
                 rates.observe(agent, 'turn/started', {'turn': {'id': 'turn'}}, 'a', 'c', 0)
                 flush = threading.Thread(target=DeferredTimer.instances[0].fire)
                 flush.start()
-                self.assertTrue(entered.wait(2))
+                self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
 
                 event_done = threading.Event()
                 event = threading.Thread(target=lambda: (
@@ -337,11 +339,14 @@ class RateContract(unittest.TestCase):
                     }, 'a', 'c', 1), event_done.set()))
                 event.start()
                 try:
-                    self.assertTrue(event_done.wait(.5), 'event waited for publication lock')
+                    # The publication stays blocked until release, so an event that
+                    # waits for it still fails; the wait only tolerates a busy machine.
+                    self.assertTrue(event_done.wait(HANG_GUARD_SECONDS / 2),
+                                    'event waited for publication lock')
                 finally:
                     release.set()
-                    flush.join(2)
-                    event.join(2)
+                    flush.join(HANG_GUARD_SECONDS)
+                    event.join(HANG_GUARD_SECONDS)
                 self.assertFalse(flush.is_alive())
                 self.assertFalse(event.is_alive())
                 self.assertEqual(len(DeferredTimer.instances), 2)

@@ -25,6 +25,7 @@ from studio_api.models import MAX_SAFE_INTEGER
 from runtime_test_environment import runtime_environment
 from http_backend_harness import TimedHTTPContractTest, start_contract_backend, no_write_snapshot
 from http_runtime_test_support import answer_refusal_error
+from server_test_waits import HANG_GUARD_SECONDS
 
 
 COMPLAINT_WRITE_TABLES = frozenset({
@@ -337,7 +338,8 @@ class QuestionsWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         server.bind(str(socket_path))
         server.listen(1)
-        server.settimeout(5)
+        # The accept timeout only guards against a hang of the backend request.
+        server.settimeout(HANG_GUARD_SECONDS)
         requests: list[dict[str, object]] = []
 
         def answer_from_host_bridge() -> None:
@@ -361,7 +363,8 @@ class QuestionsWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             server.close()
             socket_path.unlink(missing_ok=True)
         self.assertEqual(response.status, 200, response.body[:1000])
-        worker.join(timeout=5)
+        # The join only guards against a hang; a missing answer still fails below.
+        worker.join(timeout=HANG_GUARD_SECONDS)
         self.assertFalse(worker.is_alive(), "host bridge did not receive the answer")
         self._assert_mutation_payload(response.json(), {
             "status": "answered", "openUrl": "https://login.example.test/",

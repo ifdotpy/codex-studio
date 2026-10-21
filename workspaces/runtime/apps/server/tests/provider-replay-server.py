@@ -130,7 +130,8 @@ def handle(line):
             while not release.exists() and time.monotonic() < deadline:
                 time.sleep(.01)
         if fixture.get("parentChildOrder") and thread_id.endswith("-1"):
-            child_finished.wait(8)
+            # The parent only waits for its child; this wait only guards against a hang.
+            child_finished.wait(HANG_GUARD_SECONDS)
         selected_events = fixture.get("eventsByThread", {}).get(
             thread_id, fixture.get("events", []),
         )

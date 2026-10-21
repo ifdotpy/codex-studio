@@ -357,7 +357,8 @@ class ContextWait(f.NativeActionRepair):
                     patch.object(self.runtime.recovery_pool, 'submit', side_effect=track_history_check):
                 self.runtime.dispatch()
                 self.assertEqual(len(history_checks), 1)
-                history_checks[0].result(timeout=8)
+                # The result wait only guards against a hang of the history check.
+                history_checks[0].result(timeout=HANG_GUARD_SECONDS)
                 # Runtime.agent may return a shared cached record. Copy it so
                 # the forced second pass cannot mutate the asserted snapshot.
                 current = copy.deepcopy(self.runtime.agent(self.a['id']))
@@ -407,7 +408,8 @@ class ContextWait(f.NativeActionRepair):
         def blocked_history(method, params, timeout=10):
             if method == 'thread/read':
                 history_entered.set()
-                if not allow_history.wait(5):
+                # The test releases the read; the wait only guards against a hang.
+                if not allow_history.wait(HANG_GUARD_SECONDS):
                     raise TimeoutError('fixture history read was not released')
             return original_call(method, params, timeout)
         self.server.call = blocked_history

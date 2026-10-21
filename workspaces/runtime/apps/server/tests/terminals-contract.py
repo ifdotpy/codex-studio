@@ -34,7 +34,7 @@ spec.loader.exec_module(f)
 from codex_terminals import TerminalManager, HISTORY_LIMIT
 from codex_canvas import Canvas, make_server
 from studio_api.testing import read_session_token
-from server_test_waits import wait_for_condition
+from server_test_waits import HANG_GUARD_SECONDS, wait_for_condition
 
 
 def read_text_if_present(path):
@@ -315,7 +315,7 @@ sys.exit(7)
         with patch("codex_terminals.subprocess.check_output", side_effect=
                    subprocess.TimeoutExpired(["/bin/ps"], 5)):
             server.proc.kill()
-            server.proc.wait(5)
+            server.proc.wait(HANG_GUARD_SECONDS)  # Only guards against a hang.
             f.eventually(lambda: not self.manager.processes)
         output = self.manager.output(first["id"])
         self.assertEqual(output["status"], "exited")
@@ -432,7 +432,7 @@ sys.exit(7)
                 data=None if body is None else json.dumps(body).encode(),
                 headers=headers or {},
             )
-            with urllib.request.urlopen(req, timeout=5) as result:
+            with urllib.request.urlopen(req, timeout=HANG_GUARD_SECONDS) as result:  # Hang guard.
                 return json.load(result)
 
         try:

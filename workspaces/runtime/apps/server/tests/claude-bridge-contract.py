@@ -258,6 +258,10 @@ class Bridge(unittest.TestCase):
     def setUp(self):
         if self._testMethodName.startswith('test_preparation_'):
             self.preparation_timeout_ms = 1000
+        if self._testMethodName == 'test_preparation_stall_keeps_metadata_read_available_and_rejects_before_input':
+            # The metadata read must answer inside the stall; a longer stall gives
+            # a busy machine room without hiding a read that waits for it.
+            self.preparation_timeout_ms = 5000
         self.temp = tempfile.TemporaryDirectory(prefix='claude-bridge-test-')
         self.addCleanup(self.temp.cleanup)
         root = Path(self.temp.name)
@@ -852,9 +856,10 @@ class Bridge(unittest.TestCase):
             self.call('turn/interrupt',{'threadId':self.thread,'turnId':result['id']})
 
     def test_interrupt_keeps_background_task_query_open(self):
+        # Each deadline below waits for a state that must arrive; it only guards against a hang.
         started = self.turn('background-stop-hold', 'background-hold-stop')
         task = None
-        deadline = time.monotonic() + 5
+        deadline = time.monotonic() + HANG_GUARD_SECONDS
         while time.monotonic() < deadline and task is None:
             tasks = self.call('thread/backgroundTerminals/list', {'threadId': self.thread})['data']
             task = next((item for item in tasks if item.get('task_id') == 'worker-1'), None)
@@ -864,13 +869,13 @@ class Bridge(unittest.TestCase):
             task,
             f'The background task must be active before interrupt; events={self.notifications!r}',
         )
-        deadline = time.monotonic() + 5
+        deadline = time.monotonic() + HANG_GUARD_SECONDS
         while time.monotonic() < deadline and not (self.root / '.background-waiting').exists():
             time.sleep(.01)
         self.assertTrue((self.root / '.background-waiting').exists(), 'The turn must be waiting before interrupt')
         self.call('turn/interrupt', {'threadId': self.thread, 'turnId': started['turn']['id'], 'stopBackgroundTasks': False})
         completed = None
-        deadline = time.monotonic() + 5
+        deadline = time.monotonic() + HANG_GUARD_SECONDS
         while time.monotonic() < deadline and completed is None:
             row = self.read()
             if (row.get('method') == 'turn/completed'
@@ -882,15 +887,16 @@ class Bridge(unittest.TestCase):
         self.assertFalse((self.root / '.query-closes').exists(), 'Turn interrupt must not close the query')
 
     def test_global_stop_interrupt_stops_each_claude_background_task(self):
+        # Each deadline below waits for a state that must arrive; it only guards against a hang.
         started = self.turn('background-stop-hold', 'background-hold-global-stop')
-        deadline = time.monotonic() + 5
+        deadline = time.monotonic() + HANG_GUARD_SECONDS
         while time.monotonic() < deadline:
             tasks = self.call('thread/backgroundTerminals/list', {'threadId': self.thread})['data']
             if any(item.get('task_id') == 'worker-1' for item in tasks):
                 break
             time.sleep(.01)
         self.assertTrue(tasks, 'The background task must be active before global Stop')
-        deadline = time.monotonic() + 5
+        deadline = time.monotonic() + HANG_GUARD_SECONDS
         while time.monotonic() < deadline and not (self.root / '.background-waiting').exists():
             time.sleep(.01)
         self.assertTrue((self.root / '.background-waiting').exists(), 'The turn must be waiting before global Stop')
@@ -898,7 +904,7 @@ class Bridge(unittest.TestCase):
             'threadId': self.thread, 'turnId': started['turn']['id'],
         })
         completed = None
-        deadline = time.monotonic() + 5
+        deadline = time.monotonic() + HANG_GUARD_SECONDS
         while time.monotonic() < deadline and completed is None:
             row = self.read()
             if (row.get('method') == 'turn/completed'
@@ -916,7 +922,8 @@ class Bridge(unittest.TestCase):
             'input': [{'type': 'text', 'text': 'tool'}]}})
         turn_id = None
         tool_request = None
-        deadline = time.monotonic() + 5
+        # These deadlines wait for rows that must arrive; they only guard against a hang.
+        deadline = time.monotonic() + HANG_GUARD_SECONDS
         # The start reply and the tool request are independent lines; either may come first.
         while time.monotonic() < deadline and (turn_id is None or tool_request is None):
             row = self.rows.get(timeout=max(.01, deadline - time.monotonic()))
@@ -934,7 +941,7 @@ class Bridge(unittest.TestCase):
         interrupt_reply = None
         completed = None
         repeated_tool_requests = []
-        deadline = time.monotonic() + 5
+        deadline = time.monotonic() + HANG_GUARD_SECONDS
         while time.monotonic() < deadline and (interrupt_reply is None or completed is None):
             row = self.rows.get(timeout=max(.01, deadline - time.monotonic()))
             if row.get('id') == interrupt_id:
@@ -1203,7 +1210,10 @@ class Bridge(unittest.TestCase):
         start = time.monotonic()
         metadata = self.call('thread/read', {'threadId': self.thread, 'includeTurns': False})
         self.assertEqual(metadata['thread']['status']['type'], 'idle')
-        self.assertLess(time.monotonic() - start, .5)
+        # A read that waited for the stalled preparation would answer after the
+        # rejection of the pending input, at the preparation timeout.
+        self.assertFalse([row for row in self.notifications if row.get('id') == pending])
+        self.assertLess(time.monotonic() - start, self.preparation_timeout_ms / 2000)
         while True:
             row = self.read()
             if row.get('id') == pending:
@@ -1240,10 +1250,20 @@ class Bridge(unittest.TestCase):
 
     def test_preparation_probe_timeout_does_not_depend_on_sdk_abort(self):
         (self.root / '.hang-account').write_text('yes')
-        start = time.monotonic()
-        with self.assertRaisesRegex(ValueError, 'timed out'):
-            self.call('account/rateLimits/read', {'cwd': str(self.root)})
-        self.assertLess(time.monotonic() - start, 3)
+        self.sequence += 1
+        request = self.sequence
+        self.write({'id': request, 'method': 'account/rateLimits/read', 'params': {'cwd': str(self.root)}})
+        while True:
+            row = self.read()
+            if row.get('id') == request:
+                break
+            self.notified(row)
+        # The fake account read ignores the SDK abort, so only the bridge's own
+        # deadline can end it. The bridge measures that time itself; a second
+        # deadline would make it at least twice the budget.
+        self.assertIn('timed out', row['error']['message'])
+        self.assertLess(row['error']['data']['claudePreparationElapsedMs'],
+                        2 * self.preparation_timeout_ms - 100)
         (self.root / '.hang-account').unlink()
         self.assertEqual(self.call('account/rateLimits/read', {'cwd': str(self.root)})
                          ['rateLimits']['primary']['usedPercent'], 11)
@@ -1272,7 +1292,8 @@ class Bridge(unittest.TestCase):
 
     def restart_bridge(self):
         self.proc.kill()
-        self.proc.wait(timeout=5)
+        # The process is killed; this wait only guards against a hang.
+        self.proc.wait(timeout=HANG_GUARD_SECONDS)
         self.proc.stdin.close()
         self.proc.stdout.close()
         self.proc.stderr.close()

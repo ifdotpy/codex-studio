@@ -5,6 +5,7 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import HANG_GUARD_SECONDS
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -508,7 +509,7 @@ class ContextRepair(unittest.TestCase):
         with patch.object(repair, 'WAIT_SECONDS', 0.01), self.assertRaises(PreparationPending) as caught:
             repair.repair_before_start(self.runtime, a)
         self.server.futures[0].set_result({'thread': {'id': 'new-native'}})
-        caught.exception.future.result(1)
+        caught.exception.future.result(HANG_GUARD_SECONDS)  # Only guards against a hang.
         current = self.runtime.agent(a['id'])
         self.assertEqual(current['startAttempt']['id'], 'start-exact')
         self.assertEqual(current['startAttempt']['threadId'], 'new-native')
