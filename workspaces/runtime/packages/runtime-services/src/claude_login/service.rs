@@ -12,6 +12,7 @@ use std::{
     },
     time::Duration,
 };
+use studio_runtime_store::path_identity::CanonicalPath;
 use tokio::sync::{Mutex, mpsc, oneshot};
 const MAX_ACTIVE: usize = 16;
 const OUTPUT_LIMIT: usize = 32768;
@@ -946,7 +947,9 @@ impl LoginService {
                         .map_err(|_| LoginError::Unavailable)?;
                 }
             }
-            absolute.canonicalize().map_err(|_| LoginError::Unavailable)
+            CanonicalPath::existing(&absolute)
+                .map(CanonicalPath::into_path_buf)
+                .map_err(|_| LoginError::Unavailable)
         })
         .await
     }

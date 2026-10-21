@@ -18,6 +18,7 @@ use std::{
     sync::Arc,
     time::Duration,
 };
+use studio_runtime_store::path_identity::CanonicalPath;
 use studio_runtime_store::{AgentId, AgentRecord, AgentRepository, RuntimeStore};
 
 const VM_UPLOAD_CHUNK_BYTES: usize = 256 * 1024;
@@ -43,7 +44,7 @@ impl From<crate::linux_vm_guest::GuestError> for VmProjectUploadError {
 }
 
 pub fn vm_project_archive(source: &Path) -> std::io::Result<VmProjectArchive> {
-    let source = fs::canonicalize(source)?;
+    let source = CanonicalPath::existing(source)?;
     if !source.is_dir() {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
@@ -59,7 +60,7 @@ pub fn vm_project_archive(source: &Path) -> std::io::Result<VmProjectArchive> {
         gzip.append_directory(".", vm_tar_mode(&metadata))?;
         identities
             .borrow_mut()
-            .insert(source.clone(), vm_archive_identity(&metadata));
+            .insert(source.to_path_buf(), vm_archive_identity(&metadata));
         add_vm_tar_directory(&mut gzip, &source, &source, &exclusions, &identities)?;
         let _archive_file = gzip.finish()?;
     }
@@ -469,7 +470,7 @@ fn vm_archive_excluded_by_ancestor(
     false
 }
 
-fn read_gitdir_pointer(directory: &Path, marker: &Path) -> std::io::Result<std::path::PathBuf> {
+fn read_gitdir_pointer(directory: &Path, marker: &Path) -> std::io::Result<CanonicalPath> {
     let contents = fs::read_to_string(marker)?;
     let line = contents
         .strip_suffix("\r\n")
@@ -491,14 +492,14 @@ fn read_gitdir_pointer(directory: &Path, marker: &Path) -> std::io::Result<std::
                 "VM source has malformed Git pointer metadata",
             )
         })?;
-    fs::canonicalize(directory.join(target))
+    CanonicalPath::existing(directory.join(target))
 }
 
 fn validate_vm_repository_objects(root: &Path, directory: &Path) -> std::io::Result<()> {
     let marker = directory.join(".git");
     let marker_metadata = fs::symlink_metadata(&marker)?;
     let git_dir = if marker_metadata.is_dir() && !marker_metadata.file_type().is_symlink() {
-        fs::canonicalize(&marker)?
+        CanonicalPath::existing(&marker)?
     } else if marker_metadata.is_file() && !marker_metadata.file_type().is_symlink() {
         let target = read_gitdir_pointer(directory, &marker)?;
         if !vm_internal_git_modules(root, &target) {
@@ -539,7 +540,7 @@ fn validate_vm_git_object_store(git_dir: &Path) -> std::io::Result<()> {
             "VM source repository has an external Git object store",
         ));
     }
-    let canonical_objects = fs::canonicalize(&objects)?;
+    let canonical_objects = CanonicalPath::existing(&objects)?;
     if !canonical_objects.starts_with(git_dir) {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
@@ -553,7 +554,7 @@ fn validate_vm_git_object_store(git_dir: &Path) -> std::io::Result<()> {
             "VM source repository uses external Git object alternates",
         ));
     }
-    let mut pending = vec![canonical_objects];
+    let mut pending = vec![canonical_objects.into_path_buf()];
     while let Some(path) = pending.pop() {
         for entry in fs::read_dir(path)? {
             let entry = entry?;
@@ -1916,7 +1917,7 @@ mod tests {
         fs::write(&marker, "gitdir: ../.git/modules/submodule\r\n").unwrap();
         assert_eq!(
             read_gitdir_pointer(&directory, &marker).unwrap(),
-            fs::canonicalize(&git_dir).unwrap()
+            CanonicalPath::existing(&git_dir).unwrap()
         );
         fs::write(&marker, "gitdir: ../.git/modules/submodule\ngarbage\n").unwrap();
         assert_eq!(

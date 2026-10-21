@@ -531,9 +531,12 @@ mod room_preparation_tests {
         let link = state.path().join("project-link");
         std::os::unix::fs::symlink(project.path(), &link).expect("project link");
         let first =
-            crate::agents_create::canonical_project_directory(&link).expect("resolved linked cwd");
-        let second = crate::agents_create::canonical_project_directory(project.path())
-            .expect("resolved real cwd");
+            studio_runtime_store::path_identity::CanonicalPath::existing_utf8_directory(&link)
+                .expect("resolved linked cwd");
+        let second = studio_runtime_store::path_identity::CanonicalPath::existing_utf8_directory(
+            project.path(),
+        )
+        .expect("resolved real cwd");
         let runtime = tempfile::tempdir().expect("runtime state directory");
         let store = studio_runtime_store::RuntimeStore::open(Some(runtime.path()))
             .await

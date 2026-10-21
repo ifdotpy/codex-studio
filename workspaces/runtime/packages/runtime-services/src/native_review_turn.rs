@@ -30,6 +30,8 @@ use std::{
     time::{Duration, Instant},
 };
 use studio_runtime_providers::Method;
+#[cfg(test)]
+use studio_runtime_store::path_identity::CanonicalPath;
 use studio_runtime_store::{AgentId, AgentRecord, AgentRepository, RuntimeStore, Transaction};
 
 /// Prefix of the native action request ID of a review child's first turn.
@@ -715,7 +717,7 @@ pub(crate) mod tests {
     /// (the shape of live agent 8388eb70).
     async fn fixture(session: Arc<Session>) -> Fixture {
         let directory = tempfile::tempdir().unwrap();
-        let cwd = std::fs::canonicalize(directory.path())
+        let cwd = CanonicalPath::existing(directory.path())
             .unwrap()
             .join("repo");
         std::fs::create_dir(&cwd).unwrap();

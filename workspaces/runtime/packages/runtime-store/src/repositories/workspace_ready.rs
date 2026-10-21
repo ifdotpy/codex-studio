@@ -1,4 +1,5 @@
 //! Durable identity and compare-before-publication for host worktree provisioning.
+use crate::path_identity::{CanonicalPath, LexicalPath};
 use rusqlite::{OptionalExtension, Transaction, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -19,10 +20,10 @@ pub struct ProvisionIdentity {
     /// thread/start does not refuse a prepared workspace.
     #[serde(default)]
     pub thread_id: Value,
-    pub repository: PathBuf,
-    pub common_dir: PathBuf,
-    pub destination: PathBuf,
-    pub cwd: PathBuf,
+    pub repository: CanonicalPath,
+    pub common_dir: CanonicalPath,
+    pub destination: LexicalPath,
+    pub cwd: LexicalPath,
     pub branch: String,
     pub base_commit: String,
 }
@@ -166,7 +167,6 @@ pub fn overlaps(a: &Path, b: &Path) -> bool {
 pub struct WorkspacePaths(BTreeMap<PathBuf, PathBuf>);
 impl WorkspacePaths {
     pub fn capture(snapshot: &WorkspaceSnapshot, extra: impl IntoIterator<Item = PathBuf>) -> Self {
-        crate::debug_assert_outside_sql();
         let paths = std::iter::once(&snapshot.agent)
             .chain(&snapshot.agents)
             .chain(&snapshot.operations)
@@ -175,8 +175,9 @@ impl WorkspacePaths {
         Self(
             paths
                 .map(|path| {
-                    let resolved =
-                        crate::path_identity::resolve(&path).unwrap_or_else(|| path.clone());
+                    let resolved = crate::path_identity::resolve(&path)
+                        .map(crate::path_identity::CanonicalPath::into_path_buf)
+                        .unwrap_or_else(|| path.clone());
                     (path, resolved)
                 })
                 .collect(),
@@ -200,7 +201,9 @@ impl WorkspacePaths {
 pub fn reservations(snapshot: &WorkspaceSnapshot) -> Vec<Reservation> {
     reservations_with(snapshot, |v| {
         let path = PathBuf::from(v.as_str().unwrap_or("/"));
-        crate::path_identity::resolve(&path).unwrap_or(path)
+        crate::path_identity::resolve(&path)
+            .map(crate::path_identity::CanonicalPath::into_path_buf)
+            .unwrap_or(path)
     })
 }
 

@@ -205,7 +205,10 @@ impl CredentialLocation {
         spellings.extend(
             self.directories
                 .iter()
-                .filter_map(|directory| path_identity::resolve(directory))
+                .filter_map(|directory| {
+                    path_identity::resolve(directory)
+                        .map(path_identity::CanonicalPath::into_path_buf)
+                })
                 .filter(|resolved| !self.directories.contains(resolved)),
         );
         spellings

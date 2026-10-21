@@ -11,6 +11,7 @@ use crate::analytics_rollout::{RolloutAction, RolloutContext};
 use rusqlite::OptionalExtension;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
+use studio_runtime_store::path_identity::CanonicalPath;
 mod read_proof;
 use read_proof::ReadProof;
 mod discovery;
@@ -769,8 +770,8 @@ pub fn prepare(
             ));
         }
     };
-    let resolved = fs::canonicalize(&path).map_err(HistoryError::io(ROLLOUT_FILE))?;
-    let root = fs::canonicalize(profile).map_err(HistoryError::io(PROFILE_DIRECTORY))?;
+    let resolved = CanonicalPath::existing(&path).map_err(HistoryError::io(ROLLOUT_FILE))?;
+    let root = CanonicalPath::existing(profile).map_err(HistoryError::io(PROFILE_DIRECTORY))?;
     if !resolved.starts_with(root) {
         return Ok(refused(
             snapshot,
@@ -782,7 +783,7 @@ pub fn prepare(
     let file = File::open(&resolved).map_err(HistoryError::io(ROLLOUT_FILE))?;
     let info = file.metadata().map_err(HistoryError::io(ROLLOUT_FILE))?;
     if filesystem_identity(&before) != filesystem_identity(&info)
-        || fs::canonicalize(&path).map_err(HistoryError::io(ROLLOUT_FILE))? != resolved
+        || CanonicalPath::existing(&path).map_err(HistoryError::io(ROLLOUT_FILE))? != resolved
     {
         return Ok(refused(
             snapshot,

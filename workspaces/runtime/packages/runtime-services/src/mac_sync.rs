@@ -9,6 +9,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{Cursor, Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use studio_runtime_store::path_identity::CanonicalPath;
 
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use nix::fcntl::{Flock, FlockArg};
@@ -133,7 +134,7 @@ pub fn resolve(
             .as_str()
             .ok_or(MacSyncError::NoProject)?,
     );
-    let root = fs::canonicalize(root).map_err(MacSyncError::Io)?;
+    let root = CanonicalPath::existing(root).map_err(MacSyncError::Io)?;
     let directory = project.join("sync");
     fs::create_dir_all(&directory).map_err(MacSyncError::Io)?;
     let lock = OpenOptions::new()
@@ -507,7 +508,7 @@ fn contained_path(root: &Path, rel: &str) -> Result<PathBuf, MacSyncError> {
     while !ancestor.exists() {
         ancestor = ancestor.parent().ok_or(MacSyncError::Invalid)?;
     }
-    let resolved = fs::canonicalize(ancestor).map_err(MacSyncError::Io)?;
+    let resolved = CanonicalPath::existing(ancestor).map_err(MacSyncError::Io)?;
     if !resolved.starts_with(root) {
         return Err(MacSyncError::Invalid);
     }

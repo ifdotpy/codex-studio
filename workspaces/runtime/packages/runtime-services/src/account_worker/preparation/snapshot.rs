@@ -8,6 +8,7 @@ use serde_json::Map;
 use std::path::{Path, PathBuf};
 use std::{future::Future, pin::Pin};
 use studio_runtime_process::ProviderLaunchSpec;
+use studio_runtime_store::path_identity::CanonicalPath;
 use studio_runtime_store::{AgentRecord, Transaction};
 
 /// Skill files appended to the role guidance of a new layr (VM) session, in this order,
@@ -124,14 +125,13 @@ impl PreparationResources {
         account_home: String,
         model_catalog: ModelCatalogService,
     ) -> Result<Self, WorkerError> {
-        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../..")
-            .canonicalize()
-            .map_err(|_| invalid("repository root"))?;
+        let root =
+            CanonicalPath::existing(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../.."))
+                .map_err(|_| invalid("repository root"))?;
         Self::bundled_at(
             account_home,
             model_catalog,
-            root.clone(),
+            root.to_path_buf(),
             root.join("workspaces/runtime/apps/server/src"),
         )
     }
@@ -478,7 +478,10 @@ pub(in crate::account_worker) fn authorization_paths(
                 .and_then(Value::as_str)
                 .filter(|p| !p.is_empty())
             {
-                let resolved = crate::projects::resolve_nonstrict(Path::new(path))
+                let resolved =
+                    studio_runtime_store::path_identity::CanonicalPath::ancestor_nonstrict(
+                        Path::new(path),
+                    )
                     .map_err(|_| invalid(key))?;
                 resolved_paths.insert(path.into(), resolved.to_string_lossy().into_owned());
             }
@@ -519,7 +522,7 @@ impl FilesystemSnapshot {
         let resolved_paths = BTreeMap::new();
         let progress = store.root().join("progress").join(id);
         let progress_directory = (progress.is_dir()
-            && std::fs::canonicalize(&progress).ok().as_ref() == Some(&progress))
+            && CanonicalPath::existing(&progress).ok().as_deref() == Some(progress.as_path()))
         .then(|| progress.to_string_lossy().into_owned());
         Ok(Self {
             resolved_paths,
@@ -1633,7 +1636,7 @@ mod resource_tests {
         assert_eq!(server["command"], json!(node));
         assert_eq!(
             server["env"]["CODEX_HOME"],
-            json!(std::fs::canonicalize(&account).expect("account"))
+            json!(CanonicalPath::existing(&account).expect("account"))
         );
         assert!(server["env"].get("OPENAI_API_KEY").is_none());
         assert!(lead.thread_config.get("mcp_servers").is_none());

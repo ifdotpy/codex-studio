@@ -19,7 +19,7 @@ pub(super) fn authorization_records(
         if let Some(path) = actor["cwd"].as_str()
             && let Some(resolved) = studio_runtime_store::path_identity::lexical_text(path)
         {
-            paths.insert(path.into(), resolved);
+            paths.insert(path.into(), resolved.to_string_lossy().into_owned());
         }
     }
     let projects = records::all(tx, "runtime_projects")?;
@@ -27,7 +27,7 @@ pub(super) fn authorization_records(
         if let Some(path) = project["path"].as_str()
             && let Some(resolved) = studio_runtime_store::path_identity::lexical_text(path)
         {
-            paths.insert(path.into(), resolved);
+            paths.insert(path.into(), resolved.to_string_lossy().into_owned());
         }
     }
     Ok(AuthorizationRecords {

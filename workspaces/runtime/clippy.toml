@@ -3,6 +3,9 @@
 # Runtime::block_on is reserved for rare synchronous runtime entry points; banning it
 # would also flag every tokio::test expansion, so audit its production callers directly.
 disallowed-methods = [
+  { path = "std::fs::canonicalize", reason = "use studio_runtime_store::path_identity typed constructors; the sole host path identity owner" },
+  { path = "std::path::Path::canonicalize", reason = "use studio_runtime_store::path_identity typed constructors; the sole host path identity owner" },
+  { path = "tokio::fs::canonicalize", reason = "use studio_runtime_store::path_identity typed constructors; the sole host path identity owner" },
   { path = "tokio::task::spawn_blocking", reason = "use blocking_pool::spawn_blocking with a call-site label" },
   { path = "tokio::runtime::Handle::spawn_blocking", reason = "use blocking_pool::spawn_blocking with a call-site label" },
   { path = "std::thread::sleep", reason = "use tokio::time::sleep, or document the dedicated blocking thread" },

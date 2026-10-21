@@ -1,7 +1,8 @@
 //! Pure host workspace readiness. Observations are gathered by `workspace_ready_git`.
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use studio_runtime_store::path_identity::CanonicalPath;
 use studio_runtime_store::workspace_ready::{ProvisionIdentity, overlaps, workspace_generation};
 pub use studio_runtime_store::workspace_ready::{ReadyToken, Reservation};
 
@@ -64,12 +65,12 @@ pub fn requires_worktree(actor: &WorkspaceActor) -> bool {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct GitObservation {
     pub destination_exists: bool,
-    pub directory: Option<PathBuf>,
+    pub directory: Option<CanonicalPath>,
     pub registered: bool,
     pub branch_exists: bool,
     pub branch: Option<String>,
     pub head: Option<String>,
-    pub common_dir: Option<PathBuf>,
+    pub common_dir: Option<CanonicalPath>,
     pub clean: bool,
 }
 
@@ -157,7 +158,7 @@ pub fn recovery(
 pub fn decide_workspace(
     actor: &WorkspaceActor,
     record: &Value,
-    cwd: Option<&PathBuf>,
+    cwd: Option<&Path>,
     reservations: &[Reservation],
     plan: Option<&ProvisionIdentity>,
     journaled: bool,
@@ -210,7 +211,7 @@ pub fn decide_workspace(
     if !requires_worktree(actor) {
         return match cwd {
             Some(cwd) => WorkspaceDecision::Ready {
-                token: ReadyToken::new(record, cwd.clone()),
+                token: ReadyToken::new(record, cwd.to_path_buf()),
             },
             None => recovery(None, actor.cwd.clone(), "Workspace directory is missing"),
         };
@@ -226,7 +227,7 @@ pub fn decide_workspace(
                 .is_some_and(|root| cwd.starts_with(root))
         {
             return WorkspaceDecision::Ready {
-                token: ReadyToken::new(record, cwd.clone()),
+                token: ReadyToken::new(record, cwd.to_path_buf()),
             };
         }
         return recovery(
@@ -245,7 +246,7 @@ pub fn decide_workspace(
     if workspace_generation(record) != plan.source || plan.agent != actor.id {
         return recovery(
             Some(plan.id.clone()),
-            plan.destination.clone(),
+            plan.destination.to_path_buf(),
             "Provisioning actor changed",
         );
     }
@@ -253,7 +254,7 @@ pub fn decide_workspace(
         && observed.directory.is_none()
         && !observed.registered
         && !observed.branch_exists;
-    let complete = observed.directory.as_ref() == Some(&plan.destination)
+    let complete = observed.directory.as_deref() == Some(plan.destination.as_path())
         && observed.registered
         && observed.branch_exists
         && observed.branch.as_deref() == Some(&plan.branch)
@@ -267,7 +268,7 @@ pub fn decide_workspace(
     } else {
         return recovery(
             Some(plan.id.clone()),
-            plan.destination.clone(),
+            plan.destination.to_path_buf(),
             "Provisioning evidence is ambiguous",
         );
     };

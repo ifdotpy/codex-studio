@@ -29,6 +29,7 @@ use std::{
 use studio_runtime_providers::supervisor_v1::{
     Command, HANDLE_LIMIT, Handshake, Ownership, PROTOCOL, Request, StartMatch, WriteDecision,
 };
+use studio_runtime_store::path_identity::CanonicalPath;
 use studio_runtime_store::supervisor_journal::{
     JournalError, START_FAILED_REASON, StoredHandle, SupervisorJournal, launch_signature,
 };
@@ -1067,7 +1068,7 @@ pub fn serve(root: &Path, wait_for_lease: bool) -> Result<()> {
         ));
     }
     fs::create_dir_all(root)?;
-    let root = root.canonicalize()?;
+    let root = CanonicalPath::existing(root)?;
     fs::set_permissions(&root, fs::Permissions::from_mode(0o700))?;
     let mut lease = OpenOptions::new()
         .read(true)
@@ -1133,7 +1134,7 @@ pub fn serve(root: &Path, wait_for_lease: bool) -> Result<()> {
         fs::Permissions::from_mode(0o600),
     )?;
     let supervisor = Arc::new(Supervisor {
-        root: root.clone(),
+        root: root.to_path_buf(),
         journal,
         journal_id,
         children: Mutex::new(BTreeMap::new()),

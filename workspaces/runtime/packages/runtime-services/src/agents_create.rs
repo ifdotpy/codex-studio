@@ -61,19 +61,6 @@ pub type CreateError = MutationError;
 pub type RenameError = MutationError;
 pub type SettingsError = MutationError;
 
-pub(crate) fn canonical_project_directory(path: &std::path::Path) -> Result<String, &'static str> {
-    studio_runtime_store::debug_assert_outside_sql();
-    let path = path
-        .canonicalize()
-        .map_err(|_| "Select an existing project directory")?;
-    if !path.is_dir() {
-        return Err("Select an existing project directory");
-    }
-    path.to_str()
-        .map(str::to_owned)
-        .ok_or("Select an existing project directory")
-}
-
 fn new_id() -> Result<String, CreateError> {
     let mut bytes = [0_u8; 16];
     getrandom::fill(&mut bytes).map_err(|error| {

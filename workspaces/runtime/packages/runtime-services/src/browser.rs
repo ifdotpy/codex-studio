@@ -25,6 +25,7 @@ use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use studio_runtime_store::RuntimeStore;
+use studio_runtime_store::path_identity::CanonicalPath;
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::TcpListener as TokioTcpListener;
@@ -1348,14 +1349,6 @@ fn plugin_version(plugin: &std::path::Path) -> Option<String> {
         .map(str::to_owned)
 }
 
-fn canonical_paths_match(left: &std::path::Path, right: &std::path::Path) -> bool {
-    studio_runtime_store::debug_assert_outside_sql();
-    std::fs::canonicalize(left)
-        .ok()
-        .zip(std::fs::canonicalize(right).ok())
-        .is_some_and(|(left, right)| left == right)
-}
-
 #[derive(Clone, Default, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BrowserConfigAssets {
@@ -1440,7 +1433,9 @@ impl BrowserConfigSnapshot {
             let path = std::path::Path::new(path);
             let installed = std::path::Path::new(shared_home)
                 .join("plugins/cache/openai-bundled/chrome/latest/skills/control-chrome/SKILL.md");
-            if path.is_file() && canonical_paths_match(path, &installed) {
+            if path.is_file()
+                && studio_runtime_store::path_identity::same_existing(path, &installed)
+            {
                 return true;
             }
             let market = shared.pointer("/marketplaces/openai-bundled");
@@ -1459,7 +1454,7 @@ impl BrowserConfigSnapshot {
             let market_version = plugin_version(&plugin);
             let installed_version = plugin_version(&installed_plugin);
             path.is_file()
-                && canonical_paths_match(path, &expected)
+                && studio_runtime_store::path_identity::same_existing(path, &expected)
                 && client.is_file()
                 && market_version.is_some()
                 && market_version == installed_version
@@ -1650,14 +1645,11 @@ fn read_codex_config(home: &std::path::Path) -> Option<Value> {
 
 /// Python `codex_browser.skill_root`: the installed plugin's skills, else the
 /// local bundled marketplace copy of the same plugin version.
-fn control_chrome_root(
-    shared_home: &std::path::Path,
-    shared: &Value,
-) -> Option<std::path::PathBuf> {
+fn control_chrome_root(shared_home: &std::path::Path, shared: &Value) -> Option<CanonicalPath> {
     let installed = shared_home.join("plugins/cache/openai-bundled/chrome/latest");
     let root = installed.join("skills");
     if root.join("control-chrome/SKILL.md").is_file() {
-        return std::fs::canonicalize(root).ok();
+        return CanonicalPath::existing(root).ok();
     }
     let source = shared
         .pointer("/marketplaces/openai-bundled")
@@ -1674,7 +1666,7 @@ fn control_chrome_root(
     {
         return None;
     }
-    std::fs::canonicalize(root).ok()
+    CanonicalPath::existing(root).ok()
 }
 
 /// Decide the browser setup of a host Codex account.
@@ -1683,7 +1675,6 @@ fn control_chrome_root(
 /// browser off with a reason. Python failed the thread request instead; an
 /// optional browser must not block ordinary text work.
 pub fn account_browser(home: &std::path::Path, shared_home: &std::path::Path) -> AccountBrowser {
-    studio_runtime_store::debug_assert_outside_sql();
     let off = |reason: &str| AccountBrowser {
         overrides: Map::new(),
         developer_instructions: None,
@@ -1692,7 +1683,9 @@ pub fn account_browser(home: &std::path::Path, shared_home: &std::path::Path) ->
     };
     // Python resolves both homes; CODEX_HOME and the trusted paths use the result.
     let resolve = |path: &std::path::Path| {
-        crate::projects::resolve_nonstrict(path).unwrap_or_else(|_| path.to_path_buf())
+        studio_runtime_store::path_identity::CanonicalPath::ancestor_nonstrict(path)
+            .map(CanonicalPath::into_path_buf)
+            .unwrap_or_else(|_| path.to_path_buf())
     };
     let (home, shared_home) = (resolve(home), resolve(shared_home));
     let (Some(target), Some(shared)) = (read_codex_config(&home), read_codex_config(&shared_home))
@@ -1789,13 +1782,13 @@ pub(crate) fn browser_homes() -> BrowserHomes {
         "[mcp_servers.anarlog]\ncommand = \"anarlog\"\n",
     )
     .expect("account config");
-    let skills = std::fs::canonicalize(skills).expect("skills root");
+    let skills = CanonicalPath::existing(skills).expect("skills root");
     BrowserHomes {
         root,
         shared,
         account,
         node,
-        skills,
+        skills: skills.into_path_buf(),
     }
 }
 
@@ -2744,7 +2737,7 @@ mod tests {
             &records,
             "/acct",
             &shared.to_string_lossy(),
-            mk(std::fs::canonicalize(&skill)
+            mk(CanonicalPath::existing(&skill)
                 .expect("canonical skill")
                 .to_string_lossy()
                 .into_owned()),

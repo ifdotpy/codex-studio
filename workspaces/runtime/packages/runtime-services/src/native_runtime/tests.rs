@@ -319,7 +319,7 @@ fn discovery_resolves_npm_package_launcher_to_native_binary() {
     assert_eq!(found[0].status, CandidateStatus::Discovered);
     assert_eq!(
         found[0].path,
-        native.canonicalize().expect("canonical binary")
+        CanonicalPath::existing(&native).expect("canonical binary")
     );
 }
 
@@ -667,3 +667,5 @@ fn bundle_staging_write_fail_points_replay_the_same_approval() {
         );
     }
 }
+
+use studio_runtime_store::path_identity::CanonicalPath;

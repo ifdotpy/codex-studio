@@ -15,6 +15,7 @@ use std::path::Path;
 use std::time::Duration;
 use studio_runtime_schema;
 use studio_runtime_schema::agent_limits::{DEFAULT_MAX_TEAM_AGENTS, DEFAULT_SUBAGENT_CONCURRENCY};
+use studio_runtime_store::path_identity::CanonicalPath;
 use studio_runtime_store::{AgentId, AgentRecord, AgentStatus, ProjectsRepository, Transaction};
 
 const MAX_ACCOUNT_KEY_CHARS: usize = 255;
@@ -150,7 +151,10 @@ pub fn prepare(
     accounts: &[AccountIdentity; 2],
     catalog: &dyn CreationCatalog,
 ) -> Result<[AgentRecord; 2], CreateError> {
-    let path = canonical_directory(path)?;
+    let path = CanonicalPath::existing_utf8_directory(path)
+        .map_err(|_| CreateError::InvalidCreation("path"))?
+        .to_string_lossy()
+        .into_owned();
     let name = required_string_value(body, "name")?;
     if name.trim().is_empty() || name.chars().count() > 80 {
         return Err(CreateError::InvalidCreation("chat name is invalid"));
@@ -249,7 +253,10 @@ pub fn prepare_work_item(
     if worktree {
         validate_base(Some(base_ref), Some(base_commit))?;
     }
-    let path = canonical_directory(path)?;
+    let path = CanonicalPath::existing_utf8_directory(path)
+        .map_err(|_| CreateError::InvalidCreation("path"))?
+        .to_string_lossy()
+        .into_owned();
     let account_key = required_string_value(body, "account_key")?;
     let name = required_string_value(body, "name")?.trim();
     if name.is_empty() || name.chars().count() > 100 {
@@ -610,11 +617,6 @@ fn optional_string<'a>(
     }
 }
 
-fn canonical_directory(path: &Path) -> Result<String, CreateError> {
-    crate::agents_create::canonical_project_directory(path)
-        .map_err(|_| CreateError::InvalidCreation("path"))
-}
-
 fn validate_base(base_ref: Option<&str>, base_commit: Option<&str>) -> Result<(), CreateError> {
     match (base_ref, base_commit) {
         (None, None) => Ok(()),
@@ -710,7 +712,7 @@ mod tests {
         daybreak_enabled: bool,
     ) -> WorkerDraftFixture {
         let directory = tempdir().expect("temporary worker project");
-        let cwd = directory.path().canonicalize().expect("canonical project");
+        let cwd = CanonicalPath::existing(directory.path()).expect("canonical project");
         let cwd = cwd.to_str().expect("UTF-8 test path").to_owned();
         let parent_id = AgentId::from(IDS[0]);
         let child_id = AgentId::from(IDS[1]);
@@ -843,10 +845,8 @@ mod tests {
             .1;
         let body = json!({"account_key":"worker-account","name":"Review",
             "model":"model-one","prompt":"Inspect the change"});
-        let canonical_target = target
-            .path()
-            .canonicalize()
-            .expect("canonical review target directory");
+        let canonical_target =
+            CanonicalPath::existing(target.path()).expect("canonical review target directory");
         let draft = prepare_work_item(
             &body,
             target.path(),
@@ -887,9 +887,7 @@ mod tests {
     fn vm_worker_rechecks_guest_cwd_and_host_project_path_separately() {
         let mut fixture = worker_draft_fixture("Implement", "Inspect the project");
         let host_project = tempdir().expect("host project directory");
-        let host_path = host_project
-            .path()
-            .canonicalize()
+        let host_path = CanonicalPath::existing(host_project.path())
             .expect("canonical host project")
             .to_string_lossy()
             .into_owned();
@@ -1067,9 +1065,7 @@ mod tests {
             );
             assert_eq!(
                 field(draft, "cwd").and_then(Value::as_str),
-                directory
-                    .path()
-                    .canonicalize()
+                CanonicalPath::existing(directory.path())
                     .expect("canonical temporary directory")
                     .to_str()
             );

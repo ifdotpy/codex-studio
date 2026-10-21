@@ -34,6 +34,7 @@ use std::{
     sync::{Arc, atomic::AtomicUsize},
 };
 use studio_runtime_process::{EventCursor, ProviderLaunchSpec, provider_seam::*};
+use studio_runtime_store::path_identity::CanonicalPath;
 use studio_runtime_store::{AgentRecord, EventWriteRepository};
 use tokio::sync::oneshot;
 
@@ -917,9 +918,7 @@ impl Drop for State {
 #[tokio::test]
 async fn a_cwd_under_a_linked_folder_resumes_its_thread_and_starts_its_turn() {
     let directory = tempfile::tempdir().expect("temporary folder");
-    let target = directory
-        .path()
-        .canonicalize()
+    let target = CanonicalPath::existing(directory.path())
         .expect("canonical folder")
         .join("target");
     std::fs::create_dir(&target).expect("target folder");
@@ -936,7 +935,9 @@ async fn a_cwd_under_a_linked_folder_resumes_its_thread_and_starts_its_turn() {
     .expect("the resumed thread starts its turn");
     assert_eq!(
         start["params"]["cwd"].as_str().map(PathBuf::from),
-        state.root.canonicalize().ok(),
+        CanonicalPath::existing(&state.root)
+            .ok()
+            .map(CanonicalPath::into_path_buf),
         "the turn runs in the canonical folder"
     );
     peer.accepted(&start).await;
@@ -5710,10 +5711,9 @@ impl crate::linux_vm_guest::GuestRpc for TurnStartGuest {
 async fn cold_vm_lead_prepares_with_fake_guest_and_returns_guest_workspace_token() {
     let directory = tempfile::tempdir().unwrap();
     let store = Arc::new(RuntimeStore::open(Some(directory.path())).await.unwrap());
-    let source = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../../..")
-        .canonicalize()
-        .unwrap();
+    let source =
+        CanonicalPath::existing(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../.."))
+            .unwrap();
     let agent_id = "turn-start-vm-lead";
     let attempt_id = "turn-start-attempt";
     let record = AgentRecord::from_value(json!({

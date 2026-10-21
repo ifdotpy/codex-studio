@@ -5,6 +5,7 @@ use super::*;
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::{Mutex, OnceLock};
+use studio_runtime_store::path_identity::CanonicalPath;
 use studio_runtime_store::{AgentRecord, AgentRepository};
 
 /// The reservation snapshot through an independent test reader.
@@ -19,7 +20,9 @@ fn fixture_parent() -> PathBuf {
     std::fs::create_dir_all(&path).expect("isolated fixture parent");
     // Git and the workspace gate report resolved paths; the macOS temporary
     // folder is under the `/var` link.
-    path_identity::resolve(&path).expect("resolved fixture parent")
+    path_identity::resolve(&path)
+        .expect("resolved fixture parent")
+        .into_path_buf()
 }
 
 struct Fixture {
@@ -123,7 +126,7 @@ impl Fixture {
                 .into_iter()
                 .flatten()
                 .map(PathBuf::from)
-                .chain([plan.destination.clone()]),
+                .chain([plan.destination.to_path_buf()]),
         )
     }
     async fn reserve(&self, plan: &ProvisionIdentity) {
@@ -359,7 +362,7 @@ async fn image_readiness_refuses_with_python_message_without_workspace_writes() 
 #[tokio::test]
 async fn repository_root_cwd_is_stored_without_a_trailing_separator() {
     let fixture = Fixture::new().await;
-    let repository = fixture.repo.canonicalize().expect("canonical repository");
+    let repository = CanonicalPath::existing(&fixture.repo).expect("canonical repository");
     fixture.patch("cwd", json!(repository)).await;
     let result = prepare(std::sync::Arc::clone(&fixture.store), fixture.id.clone())
         .await

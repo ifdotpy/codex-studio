@@ -35,6 +35,7 @@ use std::{
 };
 use studio_runtime_providers::Method;
 use studio_runtime_store::RuntimeStore;
+use studio_runtime_store::path_identity::CanonicalPath;
 
 const READ_DEADLINE: Duration = Duration::from_secs(120);
 const MUTATION_DEADLINE: Duration = Duration::from_secs(60);
@@ -61,9 +62,9 @@ fn copy_native_history(
     target_home: &str,
     native_path: &str,
 ) -> Result<String, TransferError> {
-    let source_root = fs::canonicalize(source_home)
+    let source_root = CanonicalPath::existing(source_home)
         .map_err(|_| TransferError::Refused("Source native history is unavailable"))?;
-    let source = fs::canonicalize(native_path)
+    let source = CanonicalPath::existing(native_path)
         .map_err(|_| TransferError::Refused("Source native history is unavailable"))?;
     let relative = source.strip_prefix(&source_root).map_err(|_| {
         TransferError::Refused("Source native history path escaped its account home")
@@ -100,7 +101,7 @@ fn copy_native_history(
             "Source native history is not fully persisted",
         ));
     }
-    let target_root = fs::canonicalize(target_home)
+    let target_root = CanonicalPath::existing(target_home)
         .map_err(|_| TransferError::Refused("Destination account home is unavailable"))?;
     let lock = native_import_lock(&target_root)?;
     let _guard = lock
