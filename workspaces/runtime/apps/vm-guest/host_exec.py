@@ -5,6 +5,7 @@ import asyncio
 import json
 from pathlib import Path
 import socket
+import sys
 from typing import Any
 import uuid
 
@@ -27,6 +28,13 @@ def same_content(entry: Any, other: Any) -> bool:
 
 def request_key(operation: str, phase: str) -> str:
     return uuid.uuid5(uuid.NAMESPACE_URL, operation + ":" + phase).hex
+
+
+def slot_params(common: dict[str, Any], op: dict[str, Any]) -> dict[str, Any]:
+    """The broker parameters of the guest staging of one Mac slot lease. A Mac service from
+    before generation numbers sends no generationNumber."""
+    return {**common, "slotId": op["slotId"], "generation": op["generation"],
+            **({"generationNumber": op["generationNumber"]} if "generationNumber" in op else {})}
 
 
 class HostExec:
@@ -106,13 +114,30 @@ class HostExec:
             return
         try:
             # Each attempt is a new request: a repeat releases nothing twice and starts no command.
-            await self.call("recover", {"operationId": "guest-owner:" + self.owner, "owner": self.owner},
-                            "recover:" + uuid.uuid4().hex, 60)
+            report = await self.call("recover", {"operationId": "guest-owner:" + self.owner, "owner": self.owner},
+                                     "recover:" + uuid.uuid4().hex, 60)
         except HostExecError as exc:
             # An older Mac service has no recovery method.
             if exc.code != "invalid_params":
                 return
+            report = {}
         self.recovered = True
+        await self.forget_released(report.get("releasedSlots", []))
+
+    async def forget_released(self, released: Any) -> None:
+        """Forget the guest slot leases of the operations that the Mac released in recovery or by an
+        agent release. Their
+        staging is then free for the cleanup of older generations (docs/host-exec.md). A failure
+        keeps that staging; it never blocks a command."""
+        for op in released if isinstance(released, list) else []:
+            try:
+                common = {"operationId": op["operationId"], "agentId": op["agentId"]}
+                await self.broker("host.slot.forget", slot_params(common, op), "recover-forget")
+            except HostExecError as exc:
+                if exc.code != "lease_lost":
+                    print("host_exec kept a guest slot lease: " + str(exc)[:500], file=sys.stderr, flush=True)
+            except (KeyError, TypeError):
+                print("host_exec got an invalid released slot", file=sys.stderr, flush=True)
 
     async def handle(self, request_id: str, params: dict[str, Any], emit: Any) -> dict[str, Any]:
         await self.recover()
@@ -140,8 +165,7 @@ class HostExec:
             common = {"operationId": op["operationId"], "agentId": op["agentId"]}
             await self.call("release", {**common, "preRunError": exc.object()}, "sync-failed-release")
             try:
-                await self.broker("host.slot.forget", {**common, "slotId": op["slotId"], "generation": op["generation"]},
-                                  "sync-failed-forget")
+                await self.broker("host.slot.forget", slot_params(common, op), "sync-failed-forget")
             except HostExecError as cleanup_error:
                 raise HostExecError(exc.code, str(exc) + "; Mac slot released; old staging cleanup failed: "
                                     + str(cleanup_error)) from exc
@@ -159,7 +183,7 @@ class HostExec:
         if action == "cancel":
             cancelled = await self.call("cancel", common, "cancel:" + request_id)
             if cancelled["state"] == "leased":
-                slot = {**common, "slotId": cancelled["slotId"], "generation": cancelled["generation"]}
+                slot = slot_params(common, cancelled)
                 try:
                     await self.broker("host.slot.forget", slot, "cancel-forget:" + request_id)
                 except HostExecError as exc:
@@ -178,7 +202,10 @@ class HostExec:
             current = await self.call("status", common, "release-status:" + request_id)
             if current["state"] == "released":
                 return current
-            return await self.call("release", {**common, "abandon": True}, "release:" + request_id)
+            released = await self.call("release", {**common, "abandon": True}, "release:" + request_id)
+            # No guest request owns the staging of this operation any more.
+            await self.forget_released([released])
+            return released
         require(action == "execute", "Unknown host command action")
         require(not context.get("readOnly"), "A review line cannot accept host command changes", "forbidden")
         cwd = Path(params.get("cwd", context["cwd"]))
@@ -188,7 +215,7 @@ class HostExec:
         op = await self.call("acquire", {**common, "projectId": context["projectId"], "linePath": str(line),
                                          "owner": self.owner}, "acquire")
         steps["leased"] = op
-        slot = {**common, "slotId": op["slotId"], "generation": op["generation"]}
+        slot = slot_params(common, op)
         # Paths that the project settings keep on the Mac (docs/host-exec.md).
         mac_only = list(op.get("macOnly", []))
         prepared = await self.broker("host.slot.prepare", {**slot, "macOnly": mac_only}, "prepare")

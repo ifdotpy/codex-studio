@@ -38,6 +38,10 @@ SETTINGS = "host-exec.json"
 PROJECT_FOLDER = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,99}")
 # What this service accepts beyond the first protocol; the guest reads it from the lease.
 FEATURES = ["prime", "batch", "mode", "clone"]
+# The last slot generation number of a project folder (docs/host-exec.md, "Guest staging
+# cleanup"). Each new generation of any slot of the project gets the next number, so the
+# numbers of one slot only grow, also after a slot was removed and made again.
+GENERATION_COUNTER = ".generation-counter.json"
 CLONE_NOFOLLOW = 0x0001
 
 
@@ -175,9 +179,34 @@ class HostService:
             metadata = json.loads((slot / "slot.json").read_text())
             require(isinstance(metadata, dict) and isinstance(metadata.get("generation"), str),
                     f"The host slot metadata is invalid: {slot}", "slot_invalid")
+            number = metadata.get("generationNumber")
+            require(number is None or (type(number) is int and number >= 1),
+                    f"The host slot generation number is invalid: {slot}", "slot_invalid")
             return float(metadata.get("usedAt", 0))
         except (OSError, ValueError, TypeError) as exc:
             raise HostExecError("slot_invalid", f"The host slot metadata needs recovery: {slot}") from exc
+
+    @staticmethod
+    def new_generation(project: Path) -> dict[str, Any]:
+        """A new slot generation: a random ID and the next number of the project. A slot made
+        before generation numbers has none until its next new generation."""
+        counter = project / GENERATION_COUNTER
+        try:
+            last = json.loads(counter.read_text())["last"]
+        except FileNotFoundError:
+            last = 0
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            raise HostExecError("slot_invalid", f"The slot generation counter needs recovery: {counter}") from exc
+        require(type(last) is int and last >= 0, f"The slot generation counter is invalid: {counter}", "slot_invalid")
+        for slot in project.iterdir():
+            try:
+                number = json.loads((slot / "slot.json").read_text()).get("generationNumber")
+            except (OSError, ValueError, AttributeError):
+                continue
+            if type(number) is int:
+                last = max(last, number)
+        atomic(counter, {"last": last + 1})
+        return {"generation": os.urandom(16).hex(), "generationNumber": last + 1}
 
     @staticmethod
     def require_no_retirement(project: Path) -> None:
@@ -534,7 +563,7 @@ class HostService:
                         "All project slots are leased; host_exec action list shows your operations", "busy")
                 slot = next(project / str(index) for index in range(settings["slots"]) if not (project / str(index)).exists())
                 slot.mkdir(mode=0o700)
-                atomic(slot / "slot.json", {"generation": os.urandom(16).hex(), "usedAt": 0})
+                atomic(slot / "slot.json", {**self.new_generation(project), "usedAt": 0})
             for name in ("source", "DerivedData", "packages"):
                 (slot / name).mkdir(exist_ok=True, mode=0o700)
             directory = self.opdir(identity)
@@ -544,7 +573,9 @@ class HostService:
             (directory / "artifacts").symlink_to(artifact_dir, target_is_directory=True)
             meta = json.loads((slot / "slot.json").read_text())
             op = {"operationId": identity, **{field: params[field] for field in ("projectId", "agentId", "linePath")},
-                  "slotId": slot.name, "generation": meta["generation"], "state": "leased", "createdAt": time.time(),
+                  "slotId": slot.name, "generation": meta["generation"],
+                  **({"generationNumber": meta["generationNumber"]} if "generationNumber" in meta else {}),
+                  "state": "leased", "createdAt": time.time(),
                   "slotPath": str(slot / "source"), "derivedData": str(slot / "DerivedData"),
                   "packageCache": str(slot / "packages"), "artifactsPath": str(directory / "artifacts"),
                   "diskBudget": settings["diskBudget"], "macOnly": settings["macOnly"], "features": FEATURES,
@@ -737,8 +768,11 @@ class HostService:
         op.update(state="released", collected=collected, finishedAt=time.time())
         self.save(identity, op)
         # Failed guest staging can stay active after a lost broker response. Never reuse it.
-        generation = os.urandom(16).hex() if new_generation else op["generation"]
-        atomic(slot / "slot.json", {"generation": generation, "usedAt": time.time()})
+        if new_generation:
+            generation = self.new_generation(slot.parent)
+        else:
+            generation = {field: op[field] for field in ("generation", "generationNumber") if field in op}
+        atomic(slot / "slot.json", {**generation, "usedAt": time.time()})
         (slot / "lease.json").unlink()
         if collected:
             shutil.rmtree(self.opdir(identity) / "changes", ignore_errors=True)
@@ -807,7 +841,7 @@ class HostService:
         slots now. A running command keeps its slot until it exits. An unknown outcome of a lost host
         owner keeps its slot for inspection."""
         require(isinstance(owner, str) and 0 < len(owner) <= 128, "Invalid guest owner")
-        report: dict[str, list[str]] = {"released": [], "orphaned": [], "kept": []}
+        report: dict[str, list[Any]] = {"released": [], "orphaned": [], "kept": [], "releasedSlots": []}
         for identity, slot in self.leases():
             try:
                 op = self.load(identity)
@@ -820,6 +854,9 @@ class HostService:
             if op["state"] == "exited" or (op["state"] == "leased" and not (lock is not None and lock.locked())):
                 self.release_operation(identity, op, slot, collected=False, abandoned="guest_owner_lost")
                 report["released"].append(identity)
+                # The guest forgets the guest slot lease of the old staging (host_exec.py, recover).
+                report["releasedSlots"].append({field: op[field] for field in (
+                    "operationId", "agentId", "slotId", "generation", "generationNumber") if field in op})
             elif op["state"] in {"running", "leased"}:
                 # The command or its start finishes first; then the slot is free (command, refuse_orphan).
                 op["orphaned"] = True

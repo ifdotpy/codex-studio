@@ -165,6 +165,39 @@ Mac slot receives only content differences, including when a different line
 uses it. Output paths map from the source folder to the VM line. The map handles
 `/tmp` and `/private/tmp` aliases.
 
+### Guest staging cleanup
+
+Each guest slot folder is
+`/var/lib/codex-studio/host-slots/<project>/<agent>/<slot ID>/<generation folder>`. The
+Mac gives each new generation a random ID and a generation number. The number comes from
+a counter of the project folder (`.generation-counter.json`), so the numbers of one slot
+only grow, also after a slot was removed and made again. `acquire` returns both values,
+and the guest folder name is `<number>-<ID>`. A slot from before generation numbers keeps
+its old folder name, the ID only, until its next new generation.
+
+`host.slot.prepare` removes the staging of older generations of the same agent and slot.
+It does this after it writes the lease of the current generation and before the layr
+export. A folder is removed only when all of these are true:
+
+- The broker root resolves to `/var/lib/codex-studio/host-slots` (`GUEST_SLOTS_ROOT` in
+  `host_exec_slot.py`). The broker refuses an empty root, `/`, or a home folder.
+- The folder is a direct child of the slot folder, and its name is `<number>-<ID>`.
+- Its number is lower than the number of the current generation.
+- It is a real folder of the broker user. A symbolic link is skipped and never followed.
+- It has no guest lease (`lease.json`), and no broker request uses it now.
+- The platform has the file descriptor based `shutil.rmtree`, which does not follow a link
+  that the line owner puts into the staging.
+
+A folder with the ID-only name of an earlier version is never removed; the broker logs it.
+The broker logs each removed folder. A request for a folder under removal fails with
+`lease_lost`.
+
+When `recover` releases the slot of an earlier guest owner, its result lists the released
+slots. The new guest service then forgets the guest lease of each one
+(`host.slot.forget`). `action: release` forgets the guest lease in the same way. The next
+generation of that slot can then remove the old staging. A forget that fails keeps the
+staging and the lease.
+
 A name conflict stops the command. This includes case and Unicode normalization
 conflicts. The adapter checks the layr report because layr returns exit code zero
 when it skips conflicting names. A conflict after the command retains the lease

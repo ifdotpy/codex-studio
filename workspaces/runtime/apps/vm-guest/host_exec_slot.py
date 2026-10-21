@@ -14,6 +14,8 @@ import asyncio
 import json
 import os
 from pathlib import Path
+import re
+import shutil
 import signal
 import stat
 import sys
@@ -27,6 +29,17 @@ GIT_LAYER = ".git"
 GIT_OBJECTS = "objects"
 METHODS = {"host.slot.prepare", "host.slot.manifest", "host.slot.read", "host.slot.apply", "host.slot.collect", "host.slot.forget", "host.slot.artifact"}
 READ_METHODS = {"host.slot.manifest", "host.slot.read"}
+# The only folder whose staging the broker deletes: layr_admin.ROOT.parent / "host-slots"
+# (host-exec-contract.py checks the parity). See docs/host-exec.md, "Guest staging cleanup".
+GUEST_SLOTS_ROOT = Path("/var/lib/codex-studio/host-slots")
+# A guest staging folder of a numbered slot generation: "<generation number>-<generation ID>".
+NUMBERED_GENERATION = re.compile(r"([1-9][0-9]{0,17})-([0-9a-f]{32})")
+# A staging folder from before generation numbers. The broker never deletes it.
+LEGACY_GENERATION = re.compile(r"[0-9a-f]{32}")
+
+
+def log(message: str) -> None:
+    print("host slot: " + message, file=sys.stderr, flush=True)
 
 
 def traversable(path: Path) -> None:
@@ -46,6 +59,75 @@ class HostSlotHandlers:
         traversable(self.root)
         # Sorted manifests during paging, by manifest file.
         self.pages: dict[str, list] = {}
+        # Stale staging is deleted only below this folder (a test sets its own temporary root).
+        self.cleanup_root = GUEST_SLOTS_ROOT
+        # The file descriptor based rmtree of Linux never follows a link that the line owner puts
+        # into its staging, also not during the removal.
+        self.symlink_safe_removal = shutil.rmtree.avoids_symlink_attacks
+        # Generation folders of the requests that run now, with their count; and the folders
+        # that a cleanup deletes now. The broker is one process (layr_admin holds broker.lock).
+        self.in_use: dict[str, int] = {}
+        self.deleting: set[str] = set()
+
+    def cleanup_refusal(self, slot: Path) -> str | None:
+        """Why stale staging below `slot` (<root>/<project>/<agent>/<slot ID>) cannot be deleted."""
+        root = self.root.resolve()
+        if str(self.root) in {"", "."} or root == Path("/") or len(root.parts) < 3:
+            return "the slot root is empty or too short: " + str(self.root)
+        homes = {Path.home().resolve(), Path("/root"), Path("/home")}
+        if root in homes or root.parent == Path("/home"):
+            return "the slot root is a home folder: " + str(root)
+        if root != Path(self.cleanup_root).resolve():
+            return "the slot root is outside " + str(self.cleanup_root) + ": " + str(root)
+        if slot.resolve() != slot or slot.parent.parent.parent != self.root or not slot.is_relative_to(self.root):
+            return "the slot folder is not a direct slot folder of the root: " + str(slot)
+        if not self.symlink_safe_removal:
+            return "this platform has no symlink-safe tree removal"
+        return None
+
+    async def remove_stale_generations(self, slot: Path, current: Path, number: int) -> list[str]:
+        """Delete the staging of older numbered generations of one slot (docs/host-exec.md). A
+        candidate is a direct child of `slot`: a real broker-owned folder (never a link) with the
+        exact numbered name, a lower number than `number`, no guest lease, and no running
+        request. Legacy folders without a number are only logged. Returns the removed paths."""
+        refusal = self.cleanup_refusal(slot)
+        if refusal:
+            log("no stale staging cleanup: " + refusal)
+            return []
+        removed = []
+        for child in sorted(slot.iterdir()):
+            if child == current:
+                continue
+            name = child.name
+            match = NUMBERED_GENERATION.fullmatch(name)
+            if match is None:
+                if LEGACY_GENERATION.fullmatch(name):
+                    log("kept staging from before generation numbers: " + str(child))
+                continue
+            if int(match.group(1)) >= number:
+                continue
+            info = child.lstat()
+            if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid():
+                log("kept staging that is not a broker-owned folder: " + str(child))
+                continue
+            if os.path.lexists(child / "lease.json"):
+                log("kept staging with a guest lease: " + str(child))
+                continue
+            path = str(child)
+            if self.in_use.get(path) or path in self.deleting:
+                log("kept staging that a request uses: " + path)
+                continue
+            self.deleting.add(path)
+            try:
+                await asyncio.to_thread(shutil.rmtree, child)
+            except OSError as exc:
+                log("stale staging cleanup stopped: " + path + ": " + str(exc))
+            else:
+                log("removed stale staging: " + path)
+                removed.append(path)
+            finally:
+                self.deleting.discard(path)
+        return removed
 
     @staticmethod
     def slot_paths(parent: Path) -> dict[str, list[str]]:
@@ -140,10 +222,27 @@ class HostSlotHandlers:
         require(isinstance(params.get("slotId"), str) and params["slotId"].isdigit(), "Invalid host slot ID")
         require(isinstance(params.get("generation"), str) and len(params["generation"]) == 32
                 and all(char in "0123456789abcdef" for char in params["generation"]), "Invalid host slot generation")
-        parent = self.root
-        for part in (key(context["projectId"]), key(context["agentId"]), params["slotId"], params["generation"]):
-            parent /= part
-            traversable(parent)
+        number = params.get("generationNumber")
+        require(number is None or (type(number) is int and 1 <= number < 10**18), "Invalid host slot generation number")
+        # A slot from before generation numbers keeps its staging folder name.
+        folder = params["generation"] if number is None else str(number) + "-" + params["generation"]
+        slot = self.root / key(context["projectId"]) / key(context["agentId"]) / params["slotId"]
+        parent = slot / folder
+        require(str(parent) not in self.deleting, "The slot staging of this generation is being removed", "lease_lost")
+        self.in_use[str(parent)] = self.in_use.get(str(parent), 0) + 1
+        try:
+            return await self.dispatch_slot(method, params, context, slot, parent, number)
+        finally:
+            remaining = self.in_use.pop(str(parent)) - 1
+            if remaining:
+                self.in_use[str(parent)] = remaining
+
+    async def dispatch_slot(self, method: str, params: dict[str, Any], context: dict[str, Any], slot: Path,
+                            parent: Path, number: int | None) -> dict[str, Any]:
+        path = self.root
+        for part in parent.relative_to(self.root).parts:
+            path /= part
+            traversable(path)
         source = parent / "source"
         source.mkdir(exist_ok=True, mode=0o700)
         os.chown(source, context["uid"], context["gid"])
@@ -161,6 +260,10 @@ class HostSlotHandlers:
                 require(json.loads(lease.read_text())["operationId"] == operation,
                         "Another command retains the guest slot lease", "busy")
             atomic(lease, {"operationId": operation})
+            if number is not None:
+                # The safe point: this generation is current and leased, and the export that
+                # needs the space has not started.
+                await self.remove_stale_generations(slot, parent, number)
             await self.layr(context, ["save", "-q", "--force", "-m", "host_exec slot " + params["slotId"]])
             state = (await self.layr(context, ["rev-parse", "HEAD@{0}"])).strip()
             require(len(state) >= 7 and all(c in "0123456789abcdef" for c in state), "layr gave no state ID", "layr_failed")
