@@ -7,6 +7,7 @@ use studio_runtime_services::{
     monitor_receipts::{self, ResultReceipt},
     monitor_runtime,
 };
+use studio_runtime_store::path_identity::CanonicalPath;
 use studio_runtime_store::{MonitorsRepository, RuntimeStore};
 
 fn running(cases: &[Value]) -> Value {
@@ -750,7 +751,7 @@ fn a_cancelled_command_sends_no_stall_notice() {
 #[tokio::test]
 async fn output_accepts_a_log_named_through_a_link_to_the_state_folder() {
     let root = fixtures::tempdir();
-    let canonical = root.path().canonicalize().expect("canonical fixture root");
+    let canonical = CanonicalPath::existing(root.path()).expect("canonical fixture root");
     let target = canonical.join("state");
     std::fs::create_dir(&target).expect("state folder");
     let link = canonical.join("linked-state");

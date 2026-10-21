@@ -3,6 +3,7 @@
 use std::fs::{self, File};
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use studio_runtime_store::path_identity::CanonicalPath;
 
 use serde_json::Value;
 use studio_runtime_schema::shared_values::{
@@ -168,7 +169,9 @@ fn resolve_image_path(path: &str, root: &str) -> Result<PathBuf, WorkspaceFilesE
     } else {
         Path::new(root).join(supplied)
     };
-    Ok(candidate.canonicalize().unwrap_or(candidate))
+    Ok(CanonicalPath::existing(&candidate)
+        .map(CanonicalPath::into_path_buf)
+        .unwrap_or(candidate))
 }
 
 fn resolve_file(path: &str, root: Option<&str>) -> Result<PathBuf, WorkspaceFilesError> {
@@ -189,8 +192,8 @@ fn resolve_file(path: &str, root: Option<&str>) -> Result<PathBuf, WorkspaceFile
     };
     // Match Python's workspace_path: absolute paths and symlinks remain valid,
     // with no containment check against the workspace root.
-    candidate
-        .canonicalize()
+    CanonicalPath::existing(&candidate)
+        .map(CanonicalPath::into_path_buf)
         .map_err(|_| WorkspaceFilesError::MissingFile)
 }
 
@@ -276,8 +279,7 @@ mod tests {
         let info = file_info("link.md", Some(&context.cwd)).expect("metadata reads");
         assert_eq!(
             info.path,
-            target
-                .canonicalize()
+            studio_runtime_store::path_identity::CanonicalPath::existing(&target)
                 .expect("target resolves")
                 .to_string_lossy()
         );

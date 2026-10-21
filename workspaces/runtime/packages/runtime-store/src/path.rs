@@ -1,3 +1,4 @@
+use crate::path_identity::CanonicalPath;
 use std::env;
 use std::path::{Component, Path, PathBuf};
 
@@ -7,7 +8,7 @@ const STATE_DIRECTORY_NAME: &str = "codex-agents";
 #[cfg(windows)]
 const WINDOWS_STATE_DIRECTORY: &str = "CodexStudio/state";
 
-pub fn resolve_state_dir() -> StoreResult<PathBuf> {
+pub fn resolve_state_dir() -> StoreResult<CanonicalPath> {
     if let Some(configured) = env::var_os("CODEX_AGENTS_STATE_DIR") {
         return resolve_explicit_state_dir(Path::new(&configured));
     }
@@ -41,7 +42,7 @@ fn state_home() -> StoreResult<PathBuf> {
     Ok(home.join(".local").join("state"))
 }
 
-pub(crate) fn resolve_explicit_state_dir(path: &Path) -> StoreResult<PathBuf> {
+pub(crate) fn resolve_explicit_state_dir(path: &Path) -> StoreResult<CanonicalPath> {
     let expanded = expand_home(path)?;
     canonical_existing_dir(expanded)
 }
@@ -63,9 +64,8 @@ fn expand_home(path: &Path) -> StoreResult<PathBuf> {
     Ok(path.to_path_buf())
 }
 
-fn canonical_existing_dir(path: PathBuf) -> StoreResult<PathBuf> {
-    crate::debug_assert_outside_sql();
-    let resolved = path.canonicalize()?;
+fn canonical_existing_dir(path: PathBuf) -> StoreResult<CanonicalPath> {
+    let resolved = CanonicalPath::existing(&path)?;
     if resolved
         .components()
         .any(|part| matches!(part, Component::Normal(value) if value == ".claude"))

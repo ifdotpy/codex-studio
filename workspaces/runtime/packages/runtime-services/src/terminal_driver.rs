@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex, Weak};
 use std::time::{SystemTime, UNIX_EPOCH};
+use studio_runtime_store::path_identity::CanonicalPath;
 use tokio::sync::Mutex as AsyncMutex;
 
 use crate::event_write::request_signature as receipt_signature;
@@ -357,9 +358,7 @@ impl<S: TerminalSession> TerminalDriver<S> {
         let id = (self.id_factory)()?;
         let cwd_path = cwd.to_path_buf();
         let cwd = run_blocking(move || {
-            cwd_path
-                .canonicalize()
-                .map_err(|_| TerminalError::InvalidRequest)
+            CanonicalPath::existing(&cwd_path).map_err(|_| TerminalError::InvalidRequest)
         })
         .await?;
         let record = json!({

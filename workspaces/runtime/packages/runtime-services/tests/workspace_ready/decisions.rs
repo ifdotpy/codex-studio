@@ -1,6 +1,10 @@
 use super::*;
 use serde_json::json;
 
+fn stored_path<T: serde::de::DeserializeOwned>(path: &str) -> T {
+    serde_json::from_value(json!(path)).expect("stored path fixture")
+}
+
 fn input() -> (Value, WorkspaceActor, ProvisionIdentity) {
     let record = json!({"id":"worker","epoch":7,"cwd":"/repo/project","autoWake":true,"worktree":true,"worktreeReady":false});
     let actor = serde_json::from_value(record.clone()).expect("actor");
@@ -9,10 +13,10 @@ fn input() -> (Value, WorkspaceActor, ProvisionIdentity) {
         agent: "worker".into(),
         source: workspace_generation(&record),
         thread_id: serde_json::Value::Null,
-        repository: "/repo".into(),
-        common_dir: "/repo/.git".into(),
-        destination: "/repo/.worktrees/worker".into(),
-        cwd: "/repo/.worktrees/worker/project".into(),
+        repository: stored_path("/repo"),
+        common_dir: stored_path("/repo/.git"),
+        destination: stored_path("/repo/.worktrees/worker"),
+        cwd: stored_path("/repo/.worktrees/worker/project"),
         branch: "codex-agent/worker".into(),
         base_commit: "a".repeat(40),
     };
@@ -21,7 +25,9 @@ fn input() -> (Value, WorkspaceActor, ProvisionIdentity) {
 fn complete(plan: &ProvisionIdentity) -> GitObservation {
     GitObservation {
         destination_exists: true,
-        directory: Some(plan.destination.clone()),
+        directory: Some(
+            serde_json::from_value(json!(plan.destination)).expect("stored destination"),
+        ),
         registered: true,
         branch_exists: true,
         branch: Some(plan.branch.clone()),
@@ -71,7 +77,7 @@ fn journal_recovery_requires_absent_or_exact_complete_evidence() {
     ] {
         let mut observed = complete(&plan);
         match field {
-            "directory" => observed.directory = Some("/other".into()),
+            "directory" => observed.directory = Some(stored_path("/other")),
             "registration" => observed.registered = false,
             "missing_ref" => observed.branch_exists = false,
             "branch_exists" => {
@@ -80,7 +86,7 @@ fn journal_recovery_requires_absent_or_exact_complete_evidence() {
             }
             "branch" => observed.branch = Some("other".into()),
             "head" => observed.head = Some("b".repeat(40)),
-            "common" => observed.common_dir = Some("/other/.git".into()),
+            "common" => observed.common_dir = Some(stored_path("/other/.git")),
             "clean" => observed.clean = false,
             _ => unreachable!(),
         }
@@ -210,7 +216,7 @@ fn ready_boolean_requires_identity_but_preserves_dirty_advanced_worktree() {
             &observed
         ),
         WorkspaceDecision::Ready {
-            token: ReadyToken::new(&record, plan.cwd.clone())
+            token: ReadyToken::new(&record, plan.cwd.to_path_buf())
         }
     );
     // A worker may switch its own worktree to a branch it names.
@@ -226,7 +232,7 @@ fn ready_boolean_requires_identity_but_preserves_dirty_advanced_worktree() {
             &observed
         ),
         WorkspaceDecision::Ready {
-            token: ReadyToken::new(&record, plan.cwd.clone())
+            token: ReadyToken::new(&record, plan.cwd.to_path_buf())
         }
     );
     observed.registered = false;

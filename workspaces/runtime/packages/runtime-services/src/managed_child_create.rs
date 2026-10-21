@@ -10,6 +10,7 @@ use crate::event_write;
 use rusqlite::{OptionalExtension, Transaction};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
+use studio_runtime_store::path_identity::CanonicalPath;
 use studio_runtime_store::{AgentId, AgentRecord, AgentRepository, RuntimeStore, StoreError};
 use thiserror::Error;
 
@@ -243,7 +244,7 @@ fn spawn_directory(parent: &str, requested: Option<&Value>) -> Result<Option<Str
         Path::new(parent).join(expanded)
     };
     // `Path.resolve()` of an existing folder is its canonical path.
-    match std::fs::canonicalize(&path) {
+    match CanonicalPath::existing(&path) {
         Ok(path) if path.is_dir() => Ok(Some(path.to_string_lossy().into_owned())),
         _ => {
             Err(crate::managed_host_tools::Error::Invalid("cwd must be an existing folder").into())
@@ -259,19 +260,11 @@ fn vm_child_directory(parent: &str, requested: Option<&str>) -> Result<(String, 
     } else {
         root.join(raw)
     };
-    let mut normalized = PathBuf::new();
-    for component in joined.components() {
-        match component {
-            std::path::Component::CurDir => {}
-            std::path::Component::ParentDir => {
-                return Err(crate::managed_host_tools::Error::Invalid(
-                    "A worker directory must stay in its parent layr line",
-                )
-                .into());
-            }
-            value => normalized.push(value.as_os_str()),
-        }
-    }
+    let normalized = studio_runtime_store::path_identity::LexicalPath::new(&joined).ok_or(
+        crate::managed_host_tools::Error::Invalid(
+            "A worker directory must stay in its parent layr line",
+        ),
+    )?;
     let subpath = normalized.strip_prefix(root).map_err(|_| {
         Error::Managed(crate::managed_host_tools::Error::Invalid(
             "A worker directory must stay in its parent layr line",
@@ -1114,7 +1107,6 @@ async fn worker_base_for_directory(
 }
 
 fn canonical_or_expanded(path: &str) -> PathBuf {
-    studio_runtime_store::debug_assert_outside_sql();
     let expanded = if path == "~" {
         std::env::var_os("HOME")
             .map(PathBuf::from)
@@ -1126,7 +1118,9 @@ fn canonical_or_expanded(path: &str) -> PathBuf {
     } else {
         PathBuf::from(path)
     };
-    std::fs::canonicalize(&expanded).unwrap_or(expanded)
+    CanonicalPath::existing(&expanded)
+        .map(CanonicalPath::into_path_buf)
+        .unwrap_or(expanded)
 }
 
 fn recheck_actor(
@@ -1506,8 +1500,12 @@ pub(crate) async fn request_review(
     if !directory_path.is_absolute() {
         directory_path = Path::new(parent_cwd).join(directory_path);
     }
-    let directory = crate::agents_create::canonical_project_directory(&directory_path)
-        .map_err(crate::managed_host_tools::Error::Invalid)?;
+    let directory = CanonicalPath::existing_utf8_directory(&directory_path)
+        .map_err(|_| {
+            crate::managed_host_tools::Error::Invalid("Select an existing project directory")
+        })?
+        .to_string_lossy()
+        .into_owned();
     let plan = crate::native_review::ReviewPlan::from_records(
         parent_value.clone(),
         root_value.clone(),

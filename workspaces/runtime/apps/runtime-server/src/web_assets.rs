@@ -1,6 +1,7 @@
 use std::env;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
+use studio_runtime_store::path_identity::CanonicalPath;
 
 use axum::Router;
 use axum::body::Body;
@@ -35,9 +36,11 @@ impl WebAssets {
         // An explicit build directory wins; fixtures use it when the binary is built outside the checkout.
         if let Some(directory) = env::var_os(WEB_DIST_ENV).map(PathBuf::from)
             && directory.join("index.html").is_file()
-            && let Ok(root) = directory.canonicalize()
+            && let Ok(root) = CanonicalPath::existing(&directory)
         {
-            return Self { root: Some(root) };
+            return Self {
+                root: Some(root.to_path_buf()),
+            };
         }
         let root = env::current_exe()
             .ok()
@@ -105,9 +108,7 @@ async fn read_asset(assets: &WebAssets, relative: &str) -> Result<Vec<u8>, ReadA
         return Err(ReadAssetError::NotFound);
     }
     let candidate = root.join(requested);
-    let resolved = candidate
-        .canonicalize()
-        .map_err(|_| ReadAssetError::NotFound)?;
+    let resolved = CanonicalPath::existing(&candidate).map_err(|_| ReadAssetError::NotFound)?;
     if !resolved.starts_with(root) || !resolved.is_file() {
         return Err(ReadAssetError::NotFound);
     }
@@ -179,9 +180,9 @@ fn find_dist_directory(executable_directory: &Path) -> Option<PathBuf> {
         ] {
             let candidate = ancestor.join(relative);
             if candidate.join("index.html").is_file()
-                && let Ok(root) = candidate.canonicalize()
+                && let Ok(root) = CanonicalPath::existing(&candidate)
             {
-                return Some(root);
+                return Some(root.to_path_buf());
             }
         }
     }
@@ -213,13 +214,21 @@ mod tests {
         fs::write(legacy.join("index.html"), "legacy").expect("legacy renderer");
         assert_eq!(
             find_dist_directory(&executable_directory),
-            Some(legacy.canonicalize().expect("canonical legacy root"))
+            Some(
+                CanonicalPath::existing(&legacy)
+                    .expect("canonical legacy root")
+                    .into_path_buf()
+            )
         );
         fs::create_dir_all(&workspace).expect("workspace directory");
         fs::write(workspace.join("index.html"), "current").expect("current renderer");
         assert_eq!(
             find_dist_directory(&executable_directory),
-            Some(workspace.canonicalize().expect("canonical workspace root"))
+            Some(
+                CanonicalPath::existing(&workspace)
+                    .expect("canonical workspace root")
+                    .into_path_buf()
+            )
         );
         assert_eq!(
             fs::read_to_string(legacy.join("index.html")).expect("legacy renderer retained"),
@@ -236,7 +245,11 @@ mod tests {
         fs::write(root.join("assets/app-0123456789.js"), "console.log('ok');")
             .expect("hashed bundle");
         let assets = WebAssets {
-            root: Some(root.canonicalize().expect("canonical web root")),
+            root: Some(
+                CanonicalPath::existing(root)
+                    .expect("canonical web root")
+                    .to_path_buf(),
+            ),
         };
         (directory, assets)
     }

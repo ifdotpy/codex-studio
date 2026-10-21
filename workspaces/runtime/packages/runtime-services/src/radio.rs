@@ -1,8 +1,8 @@
 //! Checked radio-turn admission decisions for the account worker.
 //!
 //! The caller loads a consistent view of radio rooms, their participant agents,
-//! and the projects that own peer-team membership. This module has no store,
-//! clock, filesystem, or provider dependency. A permitted first-thread binding
+//! and the projects that own peer-team membership. This module makes no store,
+//! clock, filesystem, or provider calls. A permitted first-thread binding
 //! is returned as an intent for the caller to commit with its reservation.
 //! Queue construction, pass/stop commands, floor holding, answer routing, and
 //! completion/reconciliation remain in their stateful runtime owners; they need
@@ -11,6 +11,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
+use studio_runtime_store::path_identity::LexicalPath;
 use thiserror::Error;
 
 const RADIO_ROOM_PREFIX: &str = "radio:";
@@ -148,26 +149,15 @@ fn resolved_path(
     stored: Option<String>,
     paths: &BTreeMap<String, String>,
     location: &str,
-) -> Result<Option<String>, RadioSnapshotError> {
+) -> Result<Option<LexicalPath>, RadioSnapshotError> {
     let Some(stored) = stored.filter(|path| !path.trim().is_empty()) else {
         return Ok(None);
     };
     let resolved = paths
         .get(&stored)
-        .filter(|path| {
-            let path = std::path::Path::new(path);
-            path.is_absolute()
-                && path
-                    .components()
-                    .collect::<std::path::PathBuf>()
-                    .as_os_str()
-                    == path.as_os_str()
-                && !path
-                    .components()
-                    .any(|component| matches!(component, std::path::Component::ParentDir))
-        })
+        .and_then(|path| LexicalPath::exact(std::path::Path::new(path)))
         .ok_or_else(|| invalid(location))?;
-    Ok(Some(resolved.clone()))
+    Ok(Some(resolved))
 }
 
 #[derive(Clone, Debug)]
@@ -177,7 +167,7 @@ struct Agent {
     parent_id: Option<String>,
     is_lead: bool,
     deleted: bool,
-    cwd: Option<String>,
+    cwd: Option<LexicalPath>,
     shared_room_id: Option<String>,
     account_transfer: Option<String>,
     native_thread_blocked: bool,
@@ -233,7 +223,7 @@ struct PeerTeam {
 
 #[derive(Clone, Debug)]
 struct Project {
-    path: String,
+    path: LexicalPath,
     teams: Vec<PeerTeam>,
 }
 
@@ -394,7 +384,7 @@ impl RadioAuthorizationSnapshot {
                 &format!("{location}/path"),
             )?
             .ok_or_else(|| invalid(format!("{location}/path")))?;
-            if path != *key {
+            if path.to_str() != Some(key.as_str()) {
                 continue;
             }
             let mut teams = Vec::new();
@@ -412,9 +402,9 @@ impl RadioAuthorizationSnapshot {
                         let members = members
                             .into_iter()
                             .filter(|member| {
-                                agents
-                                    .get(member)
-                                    .is_some_and(|agent| agent.is_lead_for(&path))
+                                agents.get(member).is_some_and(|agent| {
+                                    path.to_str().is_some_and(|path| agent.is_lead_for(path))
+                                })
                             })
                             .collect::<BTreeSet<_>>();
                         if members.len() >= 2 {
@@ -499,7 +489,7 @@ impl RadioAuthorizationSnapshot {
             let team = self
                 .projects
                 .iter()
-                .filter(|project| project.path == room.project_path)
+                .filter(|project| project.path.to_str() == Some(room.project_path.as_str()))
                 .flat_map(|project| &project.teams)
                 .find(|team| team.id == room.team_id);
             if !team.is_some_and(|team| {
@@ -534,7 +524,7 @@ impl Agent {
             && !self.deleted
             && self.parent_id.is_none()
             && self.root_id.as_deref() == Some(&self.id)
-            && self.cwd.as_deref() == Some(path)
+            && self.cwd.as_deref().and_then(std::path::Path::to_str) == Some(path)
     }
 }
 

@@ -17,6 +17,8 @@ use std::{
     },
     thread,
 };
+#[cfg(test)]
+use studio_runtime_store::path_identity::CanonicalPath;
 
 pub const APP_SERVER_LOG: LogConfig = LogConfig {
     filename: "app-server.log",
@@ -281,10 +283,10 @@ mod tests {
     #[test]
     fn appends_to_python_written_current_and_backup_files_with_identical_bytes() {
         let directory = tempdir().expect("isolated test directory");
-        let python_source = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../apps/server/src")
-            .canonicalize()
-            .expect("Python source directory");
+        let python_source = CanonicalPath::existing(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
+        )
+        .expect("Python source directory");
         let seed = directory.path().join("seed");
         fs::create_dir_all(&seed).expect("seed directory");
         let python = |script: &str, root: &Path| {

@@ -3,6 +3,7 @@
 use std::fs::{self, File};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+use studio_runtime_store::path_identity::CanonicalPath;
 
 use axum::body::Body;
 use axum::extract::State;
@@ -226,7 +227,7 @@ fn open_log(
     id: &str,
     fallback: Vec<u8>,
 ) -> Result<(LogSource, u64), ApiError> {
-    let root = fs::canonicalize(state_dir)
+    let root = CanonicalPath::existing(state_dir)
         .map_err(|_| ApiError::internal())?
         .join("monitor-logs");
     let path = Path::new(stored);
@@ -253,7 +254,7 @@ fn open_log(
             let file = File::open(path).map_err(|_| ApiError::internal())?;
             let opened = file.metadata().map_err(|_| ApiError::internal())?;
             if !opened.is_file()
-                || fs::canonicalize(path)
+                || CanonicalPath::existing(path)
                     .ok()
                     .and_then(|path| path.parent().map(PathBuf::from))
                     != Some(root)

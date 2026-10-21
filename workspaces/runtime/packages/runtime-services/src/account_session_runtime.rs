@@ -19,6 +19,7 @@ use studio_runtime_schema::shared_values::{
     ACCOUNT_LIMITS_ERROR_RETRY_SECONDS, ACCOUNT_LIMITS_FULL_READ_FRESH_SECONDS,
     ACCOUNT_LIMITS_WINDOW_FRESH_SECONDS,
 };
+use studio_runtime_store::path_identity::CanonicalPath;
 use thiserror::Error;
 use tokio::sync::Notify;
 
@@ -965,8 +966,10 @@ impl AccountSessionRuntime {
             return Ok(());
         };
         let registered_under_root = home.file_name() == Some(std::ffi::OsStr::new(account))
-            && home.parent().and_then(|parent| parent.canonicalize().ok())
-                == self.accounts_root.canonicalize().ok();
+            && home
+                .parent()
+                .and_then(|parent| CanonicalPath::existing(parent).ok())
+                == CanonicalPath::existing(&self.accounts_root).ok();
         if !registered_under_root || std::fs::symlink_metadata(home).is_ok() {
             return Ok(());
         }
@@ -974,9 +977,7 @@ impl AccountSessionRuntime {
     }
 
     fn prepare_login_home(&self, request: &str) -> Result<PathBuf, AccountSessionError> {
-        let accounts_root = self
-            .accounts_root
-            .canonicalize()
+        let accounts_root = CanonicalPath::existing(&self.accounts_root)
             .map_err(|_| AccountSessionError::Persistence)?;
         // The accounts directory also contains the registry. Keep it private
         // before creating provider-owned login material beneath it.
@@ -1009,9 +1010,7 @@ impl AccountSessionRuntime {
             }
             Err(_) => return Err(AccountSessionError::Persistence),
         }
-        let home = home
-            .canonicalize()
-            .map_err(|_| AccountSessionError::Persistence)?;
+        let home = CanonicalPath::existing(&home).map_err(|_| AccountSessionError::Persistence)?;
         if home.parent() != Some(accounts_root.as_path())
             || home.file_name() != Some(std::ffi::OsStr::new(&format!("login-{request}")))
         {
@@ -1069,7 +1068,7 @@ impl AccountSessionRuntime {
                 }
             }
         }
-        Ok(home)
+        Ok(home.to_path_buf())
     }
 }
 impl AccountSessionPort for AccountSessionRuntime {
@@ -1798,7 +1797,7 @@ pub fn normalize_profile(
                         PathBuf::from(value)
                     };
                     let path = std::path::absolute(path).map_err(|_| invalid())?;
-                    crate::projects::resolve_nonstrict(&path)
+                    studio_runtime_store::path_identity::CanonicalPath::ancestor_nonstrict(&path)
                         .map_err(|_| invalid())?
                         .to_string_lossy()
                         .into_owned()

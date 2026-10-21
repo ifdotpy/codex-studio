@@ -9,6 +9,7 @@ use std::cmp::Ordering;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
+use studio_runtime_store::path_identity::CanonicalPath;
 
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -406,7 +407,7 @@ pub enum BinaryIdentityError {
 
 /// Canonicalize and snapshot a regular executable without opening or running it.
 pub fn binary_file_identity(path: &Path) -> Result<BinaryFileIdentity, BinaryIdentityError> {
-    let path = path.canonicalize().map_err(|_| BinaryIdentityError::Io)?;
+    let path = CanonicalPath::existing(path).map_err(|_| BinaryIdentityError::Io)?;
     let metadata = fs::metadata(&path).map_err(|_| BinaryIdentityError::Io)?;
     if !metadata.is_file() || !is_executable(&path, &metadata) {
         return Err(BinaryIdentityError::NotExecutable);
@@ -425,7 +426,7 @@ pub fn binary_file_identity(path: &Path) -> Result<BinaryFileIdentity, BinaryIde
     #[cfg(not(unix))]
     let (device, inode) = (None, None);
     Ok(BinaryFileIdentity {
-        path,
+        path: path.to_path_buf(),
         size: metadata.len(),
         modified_ns,
         device,

@@ -21,6 +21,7 @@ use std::{
 use studio_runtime_process::ProviderLaunchSpec;
 use studio_runtime_providers::Method;
 pub use studio_runtime_providers::ProviderKind;
+use studio_runtime_store::path_identity::CanonicalPath;
 
 /// Inputs for launching the retained provider session of one host account.
 pub struct HostLaunch<'a> {
@@ -562,7 +563,11 @@ fn executable(configured: &str, path: Option<&str>) -> Option<PathBuf> {
             .find(|path| is_executable(path))?
     };
     is_executable(&candidate)
-        .then(|| candidate.canonicalize().ok())
+        .then(|| {
+            CanonicalPath::existing(&candidate)
+                .ok()
+                .map(CanonicalPath::into_path_buf)
+        })
         .flatten()
 }
 

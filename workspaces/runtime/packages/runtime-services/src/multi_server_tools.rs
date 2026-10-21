@@ -9,6 +9,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use studio_runtime_store::path_identity::CanonicalPath;
 
 use base64::Engine;
 use futures_util::future::BoxFuture;
@@ -951,7 +952,8 @@ impl ServerTools {
         }
         let source = match &already {
             Some(_) => destination.clone(),
-            None => std::fs::canonicalize(&bundle)
+            None => CanonicalPath::existing(&bundle)
+                .map(CanonicalPath::into_path_buf)
                 .unwrap_or(bundle.clone())
                 .to_string_lossy()
                 .into_owned(),
@@ -1282,7 +1284,8 @@ fn resolve(path: &str) -> String {
             .map(|cwd| cwd.join(&expanded))
             .unwrap_or(expanded)
     };
-    crate::projects::resolve_nonstrict(&absolute)
+    studio_runtime_store::path_identity::CanonicalPath::ancestor_nonstrict(&absolute)
+        .map(CanonicalPath::into_path_buf)
         .unwrap_or(absolute)
         .to_string_lossy()
         .into_owned()

@@ -10,6 +10,7 @@ use std::sync::{
     Arc,
     atomic::{AtomicU64, Ordering},
 };
+use studio_runtime_store::path_identity::CanonicalPath;
 
 use rusqlite::OptionalExtension;
 use serde_json::{Value, json};
@@ -911,7 +912,7 @@ pub struct PreparedSubmissionFiles {
     owner: String,
     cwd: Value,
     files: Vec<String>,
-    resolved: Option<Vec<PathBuf>>,
+    resolved: Option<Vec<CanonicalPath>>,
 }
 
 /// Snapshot SQL ownership first, then resolve paths outside every SQL callback.
@@ -1705,7 +1706,7 @@ pub fn write_result_artifact(artifact: &ResultArtifact) -> Result<(), std::io::E
 fn write_result_artifact_at(artifact: &ResultArtifact) -> Result<(), std::io::Error> {
     use rustix::fs::{AtFlags, Mode, OFlags, linkat, mkdirat, openat};
 
-    let root = fs::canonicalize(&artifact.state_dir)?;
+    let root = CanonicalPath::existing(&artifact.state_dir)?;
     let relative = artifact
         .path
         .strip_prefix(&artifact.state_dir)
@@ -3044,8 +3045,10 @@ fn validate_submission_files(
     Ok(())
 }
 
-fn resolve_submission_files(agent: &AgentRecord, files: &[String]) -> Result<Vec<PathBuf>, Error> {
-    studio_runtime_store::debug_assert_outside_sql();
+fn resolve_submission_files(
+    agent: &AgentRecord,
+    files: &[String],
+) -> Result<Vec<CanonicalPath>, Error> {
     if files.len() > 50 || files.iter().any(|path| path.chars().count() > 4096) {
         return Err(Error::InvalidRequest("Supply up to 50 file paths"));
     }
@@ -3077,28 +3080,11 @@ fn resolve_submission_files(agent: &AgentRecord, files: &[String]) -> Result<Vec
             Path::new(cwd).join(expanded)
         };
         resolved.push(
-            weakly_canonicalize(&candidate)
+            CanonicalPath::weak_missing_tail(&candidate)
                 .map_err(|_| Error::InvalidRequest("Invalid request"))?,
         );
     }
     Ok(resolved)
-}
-
-fn weakly_canonicalize(path: &Path) -> std::io::Result<PathBuf> {
-    studio_runtime_store::debug_assert_outside_sql();
-    match path.canonicalize() {
-        Ok(path) => Ok(path),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            let Some(name) = path.file_name() else {
-                return Err(error);
-            };
-            let parent = path
-                .parent()
-                .ok_or_else(|| std::io::Error::other("missing parent"))?;
-            Ok(weakly_canonicalize(parent)?.join(name))
-        }
-        Err(error) => Err(error),
-    }
 }
 
 fn python_bounded_text(value: &str, maximum: usize) -> Result<String, Error> {

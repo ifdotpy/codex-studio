@@ -249,7 +249,13 @@ impl HistoryWatcher {
     ) -> Result<Vec<PathBuf>, HistoryError> {
         let accounts = accounts
             .into_iter()
-            .map(|(id, path)| (id, absolute_path(&path)))
+            .map(|(id, path)| {
+                (
+                    id,
+                    studio_runtime_store::path_identity::PathEvidence::existing_or_absolute(&path)
+                        .into_path_buf(),
+                )
+            })
             .collect::<BTreeMap<_, _>>();
         if accounts == self.accounts {
             return Ok(Vec::new());
@@ -314,20 +320,10 @@ impl HistoryWatcher {
     }
 }
 
-fn absolute_path(path: &Path) -> PathBuf {
-    std::fs::canonicalize(path).unwrap_or_else(|_| {
-        if path.is_absolute() {
-            path.to_owned()
-        } else {
-            std::env::current_dir()
-                .map(|cwd| cwd.join(path))
-                .unwrap_or_else(|_| path.to_owned())
-        }
-    })
-}
-
 fn nearest_existing_directory(path: &Path) -> Result<PathBuf, HistoryError> {
-    let mut candidate = absolute_path(path);
+    let mut candidate =
+        studio_runtime_store::path_identity::PathEvidence::existing_or_absolute(path)
+            .into_path_buf();
     loop {
         if candidate.is_dir() {
             return Ok(candidate);

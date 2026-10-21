@@ -4,6 +4,7 @@
 //! process restart turns an unfinished intent into `unknown`; callers must
 //! inspect the external workspace and must never resend that effect.
 use std::{path::PathBuf, sync::Arc, time::Duration};
+use studio_runtime_store::path_identity::CanonicalPath;
 
 use crate::linux_vm_guest::GuestRpc;
 use rusqlite::OptionalExtension;
@@ -433,8 +434,7 @@ fn worktree_identity(agent: &Value) -> Result<Value, WorkspaceCleanupError> {
         .get("cwd")
         .and_then(Value::as_str)
         .ok_or(WorkspaceCleanupError::InvalidRecord)?;
-    let cwd = std::path::Path::new(cwd)
-        .canonicalize()
+    let cwd = CanonicalPath::existing(std::path::Path::new(cwd))
         .map_err(|_| WorkspaceCleanupError::InvalidRecord)?;
     let root = cwd
         .ancestors()
@@ -508,7 +508,9 @@ fn registered_worktree_branch(
             if let Some(result) = finish_entry(path.as_ref(), &branch, detached) {
                 return Ok(result);
             }
-            path = PathBuf::from(value).canonicalize().ok();
+            path = CanonicalPath::existing(PathBuf::from(value))
+                .ok()
+                .map(CanonicalPath::into_path_buf);
             branch = None;
             detached = false;
         } else if field == "detached" {
@@ -975,10 +977,8 @@ fn check_worktree(identity: &Value) -> Result<(PathBuf, PathBuf, String, String)
     let repository_root =
         String::from_utf8(git_output(&repo, &["rev-parse", "--show-toplevel"], None)?)
             .map_err(|_| ())?;
-    if PathBuf::from(repository_root.trim())
-        .canonicalize()
-        .map_err(|_| ())?
-        != repo.canonicalize().map_err(|_| ())?
+    if CanonicalPath::existing(PathBuf::from(repository_root.trim())).map_err(|_| ())?
+        != CanonicalPath::existing(&repo).map_err(|_| ())?
     {
         return Err(());
     }
@@ -1008,14 +1008,11 @@ fn check_worktree(identity: &Value) -> Result<(PathBuf, PathBuf, String, String)
         None,
     )?)
     .map_err(|_| ())?;
-    if PathBuf::from(actual_gitdir.trim())
-        .canonicalize()
-        .map_err(|_| ())?
-        != linked_gitdir.canonicalize().map_err(|_| ())?
-        || !linked_gitdir
-            .canonicalize()
+    if CanonicalPath::existing(PathBuf::from(actual_gitdir.trim())).map_err(|_| ())?
+        != CanonicalPath::existing(&linked_gitdir).map_err(|_| ())?
+        || !CanonicalPath::existing(&linked_gitdir)
             .map_err(|_| ())?
-            .starts_with(repo.join(".git/worktrees").canonicalize().map_err(|_| ())?)
+            .starts_with(CanonicalPath::existing(repo.join(".git/worktrees")).map_err(|_| ())?)
     {
         return Err(());
     }
@@ -1034,7 +1031,8 @@ fn check_worktree(identity: &Value) -> Result<(PathBuf, PathBuf, String, String)
                     break;
                 }
                 entry.clear();
-                belongs = PathBuf::from(value).canonicalize().ok() == root.canonicalize().ok();
+                belongs = CanonicalPath::existing(PathBuf::from(value)).ok()
+                    == CanonicalPath::existing(&root).ok();
             }
             if belongs {
                 entry.insert(key, value);
@@ -1059,7 +1057,7 @@ fn check_worktree(identity: &Value) -> Result<(PathBuf, PathBuf, String, String)
         .filter(|field| field.starts_with("worktree "))
     {
         let registered_path = PathBuf::from(field.trim_start_matches("worktree "));
-        if let Ok(registered_path) = registered_path.canonicalize()
+        if let Ok(registered_path) = CanonicalPath::existing(&registered_path)
             && registered_path != root
             && registered_path.starts_with(&root)
         {

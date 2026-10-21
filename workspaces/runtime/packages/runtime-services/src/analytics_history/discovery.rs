@@ -4,12 +4,13 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
+use studio_runtime_store::path_identity::CanonicalPath;
 
 const MAX_PROFILE_DISCOVERY_ENTRIES: usize = 65_536;
 const MAX_ROUND_DISCOVERY_ENTRIES: usize = 65_536;
 pub struct DiscoveryRound {
-    profiles: BTreeMap<PathBuf, Option<Vec<PathBuf>>>,
-    limit_profiles: std::collections::BTreeSet<PathBuf>,
+    profiles: BTreeMap<CanonicalPath, Option<Vec<PathBuf>>>,
+    limit_profiles: std::collections::BTreeSet<CanonicalPath>,
     entries: usize,
     profile_entry_limit: usize,
     round_entry_limit: usize,
@@ -39,31 +40,33 @@ impl DiscoveryRound {
     /// Keep a previously discovered profile current without rescanning its
     /// directory tree for each rollout append.
     pub fn file_changed(&mut self, profile: &Path, path: &Path, removed: bool, structural: bool) {
-        let profile = canonical_or_absolute(profile);
+        let profile =
+            studio_runtime_store::path_identity::PathEvidence::resolved_or_absolute(profile);
         if structural {
             self.entries = 0;
-            self.limit_profiles.remove(&profile);
+            self.limit_profiles.remove(profile.as_path());
         }
-        let Some(paths) = self.profiles.get_mut(&profile) else {
+        let Some(paths) = self.profiles.get_mut(profile.as_path()) else {
             return;
         };
         let Some(paths) = paths else {
-            self.profiles.remove(&profile);
+            self.profiles.remove(profile.as_path());
             return;
         };
-        let path = canonical_or_absolute(path);
+        let path = studio_runtime_store::path_identity::PathEvidence::resolved_or_absolute(path);
         if removed {
             paths.retain(|candidate| candidate != &path);
         } else if !paths.iter().any(|candidate| candidate == &path) {
-            paths.push(path);
+            paths.push(path.into_path_buf());
         }
     }
 
     /// A directory event or watcher overflow invalidates only that profile.
     pub fn invalidate(&mut self, profile: &Path) {
-        let profile = canonical_or_absolute(profile);
-        self.profiles.remove(&profile);
-        self.limit_profiles.remove(&profile);
+        let profile =
+            studio_runtime_store::path_identity::PathEvidence::resolved_or_absolute(profile);
+        self.profiles.remove(profile.as_path());
+        self.limit_profiles.remove(profile.as_path());
         self.entries = 0;
     }
 
@@ -83,7 +86,7 @@ impl DiscoveryRound {
             return Err(HistoryError::Cancelled);
         }
         let profile =
-            fs::canonicalize(profile).map_err(HistoryError::io(super::PROFILE_DIRECTORY))?;
+            CanonicalPath::existing(profile).map_err(HistoryError::io(super::PROFILE_DIRECTORY))?;
         if self.limit_profiles.contains(&profile) {
             return Err(HistoryError::DiscoveryLimit);
         }
@@ -172,22 +175,6 @@ impl DiscoveryRound {
             }
         }
         Ok(Some(paths))
-    }
-}
-
-/// The resolved form of `path` ([`studio_runtime_store::path_identity::resolve`]), so that the
-/// event of a removed rollout names the same path as its discovery did.
-fn canonical_or_absolute(path: &Path) -> PathBuf {
-    studio_runtime_store::debug_assert_outside_sql();
-    if let Some(path) = studio_runtime_store::path_identity::resolve(path) {
-        return path;
-    }
-    if path.is_absolute() {
-        path.to_owned()
-    } else {
-        std::env::current_dir()
-            .map(|cwd| cwd.join(path))
-            .unwrap_or_else(|_| path.to_owned())
     }
 }
 

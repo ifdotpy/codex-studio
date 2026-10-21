@@ -13,6 +13,7 @@ use std::sync::Arc;
 #[cfg(unix)]
 use studio_runtime_services::terminal_driver::TerminalCreate;
 use studio_runtime_services::terminal_driver::{self, TerminalError};
+use studio_runtime_store::path_identity::CanonicalPath;
 use studio_runtime_store::{AgentId, AgentRepository};
 
 use crate::error::ApiError;
@@ -271,13 +272,12 @@ fn checked_agent_cwd(
         .and_then(Value::as_str)
         .ok_or(TerminalError::InvalidRequest)?
         .to_owned();
-    let canonical = Path::new(&agent_cwd)
-        .canonicalize()
+    let canonical = CanonicalPath::existing(Path::new(&agent_cwd))
         .map_err(|_| TerminalError::InvalidRequest)?;
     if !canonical.is_dir() {
         return Err(TerminalError::InvalidRequest);
     }
-    Ok((agent.id.0, agent_cwd, canonical))
+    Ok((agent.id.0, agent_cwd, canonical.into_path_buf()))
 }
 
 #[cfg(unix)]

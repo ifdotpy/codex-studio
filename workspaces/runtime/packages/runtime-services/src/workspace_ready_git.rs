@@ -23,6 +23,7 @@ use std::collections::BTreeMap;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use studio_runtime_store::path_identity::CanonicalPath;
 use studio_runtime_store::workspace_ready::WorkspacePaths;
 use studio_runtime_store::workspace_ready::{
     ProvisionIdentity, ReadyToken, WorkspaceReadyRepository, reservations, workspace_generation,
@@ -326,7 +327,10 @@ async fn prepare_attempt(
 /// subpath, as Python's `prepare_locked` builds it. A subpath that leaves the
 /// repository is an invalid record.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-fn image_turn_cwd(repo: &Path, subpath: Option<&str>) -> Result<PathBuf, WorkspaceError> {
+fn image_turn_cwd(
+    repo: &Path,
+    subpath: Option<&str>,
+) -> Result<path_identity::LexicalPath, WorkspaceError> {
     crate::image_workspace_agents::turn_cwd(repo, subpath).ok_or(WorkspaceError::InvalidRecord)
 }
 
@@ -347,7 +351,7 @@ async fn provision(
         .iter()
         .chain(&context.snapshot.operations)
         .filter_map(|row| row.record["cwd"].as_str().map(PathBuf::from))
-        .chain([plan.identity.destination.clone()])
+        .chain([plan.identity.destination.to_path_buf()])
         .collect();
     let paths = prepared_paths(&store, &plan.identity.agent, expected_paths).await?;
     let reserve_snapshot = context.snapshot.clone();
@@ -383,7 +387,7 @@ async fn provision(
             let decision = decide_workspace(
                 &effect_context.actor,
                 &effect_context.snapshot.agent.record,
-                effect_context.cwd.as_ref(),
+                effect_context.cwd.as_deref(),
                 &[],
                 Some(&effect_plan),
                 true,
@@ -413,7 +417,7 @@ async fn provision(
                 .await?;
             return Ok(recovery(
                 Some(identity.id.clone()),
-                identity.destination.clone(),
+                identity.destination.to_path_buf(),
                 "Provisioning did not establish a complete worktree",
             ));
         }
@@ -422,10 +426,13 @@ async fn provision(
 }
 
 fn confined(identity: &ProvisionIdentity) -> bool {
-    identity.destination.canonicalize().ok().is_some_and(|p| {
-        p == identity.destination
-            && p.starts_with(identity.repository.join(".worktrees/codex-agents"))
-    }) && identity.cwd.canonicalize().ok().as_ref() == Some(&identity.cwd)
+    CanonicalPath::existing(&identity.destination)
+        .ok()
+        .is_some_and(|p| {
+            p == identity.destination
+                && p.starts_with(identity.repository.join(".worktrees/codex-agents"))
+        })
+        && CanonicalPath::existing(&identity.cwd).ok().as_deref() == Some(identity.cwd.as_path())
 }
 
 /// Observe Git after checkpoint commands, outside the writer transaction. Only bounded
@@ -451,7 +458,9 @@ async fn publish_verified(
         move || {
             let git = Git { deadline };
             let cwd = stored_cwd.map(|cwd| {
-                let resolved = path_identity::resolve(&cwd).unwrap_or_else(|| cwd.clone());
+                let resolved = path_identity::resolve(&cwd)
+                    .map(CanonicalPath::into_path_buf)
+                    .unwrap_or_else(|| cwd.clone());
                 (cwd, resolved)
             });
             (
@@ -463,7 +472,12 @@ async fn publish_verified(
     )
     .await
     .map_err(|_| WorkspaceError::Worker)?;
-    let paths = prepared_paths(&store, &identity.agent, vec![identity.destination.clone()]).await?;
+    let paths = prepared_paths(
+        &store,
+        &identity.agent,
+        vec![identity.destination.to_path_buf()],
+    )
+    .await?;
     let transaction_identity = identity.clone();
     let token = store.transaction(move |tx| {
         let current = CheckpointsRepository::reservation_snapshot(tx, &transaction_identity.agent)?;
@@ -486,13 +500,13 @@ async fn publish_verified(
         let checkpoint = checkpoint.as_ref().map_err(String::as_str);
         if !WorkspaceReadyRepository::publish(tx, &transaction_identity, &paths, checkpoint, now())? { return Ok(None); }
         let record = CheckpointsRepository::agent(tx, &transaction_identity.agent)?.expect("published actor");
-        Ok(Some(ReadyToken::new(&record.record, transaction_identity.cwd.clone()).with_paths(paths)))
+        Ok(Some(ReadyToken::new(&record.record, transaction_identity.cwd.to_path_buf()).with_paths(paths)))
     }).await?;
     match token {
         Some(token) => Ok(WorkspaceDecision::Ready { token }),
         None => Ok(recovery(
             Some(identity.id.clone()),
-            identity.destination.clone(),
+            identity.destination.to_path_buf(),
             "Workspace changed; created worktree remains unattached",
         )),
     }
@@ -501,7 +515,7 @@ async fn publish_verified(
 struct Context {
     snapshot: WorkspaceSnapshot,
     actor: WorkspaceActor,
-    cwd: Option<PathBuf>,
+    cwd: Option<CanonicalPath>,
     reservations: Vec<Reservation>,
     plan: Option<ProvisionIdentity>,
     journaled: bool,
@@ -512,7 +526,7 @@ impl Context {
         decide_workspace(
             &self.actor,
             &self.snapshot.agent.record,
-            self.cwd.as_ref(),
+            self.cwd.as_deref(),
             &self.reservations,
             self.plan.as_ref(),
             self.journaled,
@@ -565,7 +579,9 @@ fn observe(
     git: &Git,
 ) -> Result<Context, WorkspaceError> {
     let actor = actor(&snapshot)?;
-    let cwd = actor.cwd.canonicalize().ok().filter(|path| path.is_dir());
+    let cwd = CanonicalPath::existing(&actor.cwd)
+        .ok()
+        .filter(|path| path.is_dir());
     let reservations = reservations(&snapshot);
     let mut context = Context {
         snapshot,
@@ -613,9 +629,12 @@ fn observe(
     let relative = cwd
         .strip_prefix(&repository)
         .map_err(|_| WorkspaceError::InvalidRecord)?;
-    let destination = repository
-        .join(".worktrees/codex-agents")
-        .join(&context.actor.id);
+    let destination = path_identity::LexicalPath::new(
+        &repository
+            .join(".worktrees/codex-agents")
+            .join(&context.actor.id),
+    )
+    .ok_or(WorkspaceError::InvalidRecord)?;
     let plan = if let Some(operation) = journal {
         context.journaled = true;
         serde_json::from_value(operation["plan"].clone())
@@ -668,7 +687,7 @@ fn observe(
         .take_while(|p| *p != repository)
     {
         if ancestor.symlink_metadata().is_ok()
-            && ancestor.canonicalize().ok().as_deref() != Some(ancestor)
+            && CanonicalPath::existing(ancestor).ok().as_deref() != Some(ancestor)
         {
             return Err(WorkspaceError::InvalidRecord);
         }
@@ -736,7 +755,7 @@ impl Git {
         String::from_utf8(output.stdout.bytes)
             .map_err(|_| WorkspaceError::Git(format!("{}: output is not UTF-8", step())))
     }
-    fn common(&self, root: &Path) -> Result<PathBuf, WorkspaceError> {
+    fn common(&self, root: &Path) -> Result<CanonicalPath, WorkspaceError> {
         canonical(
             self.run(
                 root,
@@ -784,7 +803,9 @@ impl Git {
                     )));
                 }
             },
-            directory: destination.canonicalize().ok().filter(|p| p.is_dir()),
+            directory: CanonicalPath::existing(destination)
+                .ok()
+                .filter(|p| p.is_dir()),
             branch_exists: !self
                 .run(
                     repository,
@@ -906,13 +927,14 @@ impl Git {
 /// The agent cwd inside a new worktree. `relative` is empty when the agent
 /// works at the repository root, and `Path::join` of an empty path adds a
 /// trailing separator, so the result takes its lexical form.
-fn provision_cwd(destination: &Path, relative: &Path) -> Result<PathBuf, WorkspaceError> {
+fn provision_cwd(
+    destination: &Path,
+    relative: &Path,
+) -> Result<studio_runtime_store::path_identity::LexicalPath, WorkspaceError> {
     path_identity::lexical(&destination.join(relative)).ok_or(WorkspaceError::InvalidRecord)
 }
-fn canonical(path: &str) -> Result<PathBuf, WorkspaceError> {
-    studio_runtime_store::debug_assert_outside_sql();
-    PathBuf::from(path)
-        .canonicalize()
+fn canonical(path: &str) -> Result<CanonicalPath, WorkspaceError> {
+    CanonicalPath::existing(PathBuf::from(path))
         .map_err(|error| WorkspaceError::Git(format!("{path}: {error}")))
 }
 fn path_string(path: &Path) -> Result<&str, WorkspaceError> {

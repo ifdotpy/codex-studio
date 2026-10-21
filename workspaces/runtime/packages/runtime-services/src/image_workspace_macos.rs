@@ -4,6 +4,7 @@ use super::*;
 use std::io::{Read, Seek, SeekFrom};
 use std::process::{Child, Command, Output, Stdio};
 use std::thread;
+use studio_runtime_store::path_identity::CanonicalPath;
 #[path = "image_workspace_macos/fsevents_ffi.rs"]
 mod fsevents_ffi;
 use fsevents_ffi::{FSEventError, ROOT_CHANGED_FLAG, read_events};
@@ -19,7 +20,7 @@ fn is_mount(path: &Path) -> Result<bool, ImageWorkspaceError> {
     if metadata.file_type().is_symlink() {
         return Ok(false);
     }
-    let absolute = fs::canonicalize(path)?;
+    let absolute = CanonicalPath::existing(path)?;
     let parent = fs::metadata(absolute.parent().unwrap_or(&absolute))?;
     Ok(metadata.dev() != parent.dev() || metadata.ino() == parent.ino())
 }

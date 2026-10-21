@@ -9,7 +9,7 @@ pub use crate::sync_views::{
 use rusqlite::{Connection, OptionalExtension, Transaction};
 use serde_json::{Map, Value, json};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::path::{Component, Path, PathBuf};
+use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 use studio_runtime_schema::SYNC_ENTITY_SCOPE;
 pub use studio_runtime_schema::shared_values::{SYNC_BATCH_LIMIT, SYNC_ENTITY_PAGE_LIMIT};
@@ -912,38 +912,6 @@ fn valid_stored_record(table: &str, id: &str, raw: &str) -> bool {
     })
 }
 
-pub(crate) fn normalized_project_path(value: &str) -> Option<String> {
-    if value.trim().is_empty() {
-        return None;
-    }
-    let expanded = if value == "~" {
-        PathBuf::from(std::env::var_os("HOME")?)
-    } else if let Some(rest) = value.strip_prefix("~/") {
-        PathBuf::from(std::env::var_os("HOME")?).join(rest)
-    } else {
-        PathBuf::from(value)
-    };
-    let absolute = if expanded.is_absolute() {
-        expanded
-    } else {
-        std::env::current_dir().ok()?.join(expanded)
-    };
-    if let Ok(canonical) = absolute.canonicalize() {
-        return Some(canonical.to_string_lossy().into_owned());
-    }
-    let mut normalized = PathBuf::new();
-    for component in absolute.components() {
-        match component {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                normalized.pop();
-            }
-            other => normalized.push(other.as_os_str()),
-        }
-    }
-    Some(normalized.to_string_lossy().into_owned())
-}
-
 fn retire_if_live(
     transaction: &Transaction<'_>,
     collection: &str,
@@ -1396,7 +1364,7 @@ fn maintain_peer_team_entities(
             .get("path")
             .and_then(Value::as_str)
             .filter(|path| !path.trim().is_empty())
-            .and_then(normalized_project_path)
+            .and_then(studio_runtime_store::path_identity::lexical_text)
         else {
             continue;
         };
@@ -1421,9 +1389,9 @@ fn maintain_peer_team_entities(
                     agent
                         .get("cwd")
                         .and_then(Value::as_str)
-                        .and_then(normalized_project_path)
+                        .and_then(studio_runtime_store::path_identity::lexical_text)
                         .as_deref()
-                        == Some(project_path.as_str())
+                        == Some(project_path.as_path())
                 }) && !selected.iter().any(|prior| prior == member)
                 {
                     selected.push(member.to_owned());
