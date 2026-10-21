@@ -15,6 +15,7 @@ import shutil
 from pathlib import Path
 from typing import Protocol, TYPE_CHECKING, overload, cast
 
+from codex_delivery import DeliveryMoment, normalize_delivery
 from codex_records import RecordStore
 
 if TYPE_CHECKING:
@@ -1670,8 +1671,8 @@ class WorkMixin:
                     metadata = json.loads(row.pop("metadata") or "{}")
                     row.update(  # type: ignore[call-arg]  # typed-update
                         assets=[self.asset_view(self.asset_record(v)) for v in metadata.get("assets", [])],
-                        delivery=metadata.get("delivery", "queue"),
-                        requestedDelivery=metadata.get("requestedDelivery", metadata.get("delivery", "queue")),
+                        delivery=normalize_delivery(metadata.get("delivery")),
+                        requestedDelivery=normalize_delivery(metadata.get("requestedDelivery", metadata.get("delivery"))),
                     )
                     if "acceptedAt" in metadata:
                         row["acceptedAt"] = metadata["acceptedAt"]
@@ -1771,7 +1772,9 @@ class WorkMixin:
                     db.execute("UPDATE runtime_events SET created=? WHERE id=?", (first - 0.001, row["id"]))
                     saved = db.execute("SELECT record FROM runtime_event_meta WHERE id=?", (row["id"],)).fetchone()
                     metadata = json.loads(saved[0]) if saved else {}
-                    metadata["delivery"] = "steer"
+                    if "requestedDelivery" not in metadata and not metadata.get("sendNow"):
+                        metadata["requestedDelivery"] = normalize_delivery(metadata.get("delivery"))
+                    metadata["delivery"] = DeliveryMoment.CURRENT_TURN
                     metadata["sendNow"] = True
                     db.execute("INSERT OR REPLACE INTO runtime_event_meta VALUES (?,?)",
                                (row["id"], json.dumps(metadata)))

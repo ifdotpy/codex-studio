@@ -250,7 +250,7 @@ async fn command(state: HttpState, body: Value) -> Result<Json<Value>, ApiError>
             ApiError::new(StatusCode::BAD_REQUEST, "Supply a command request identity")
         })?;
     let message = serde_json::from_value::<crate::generated::ManagedMessageBody>(json!({
-        "id":request_id,"room":id,"text":command,"delivery":"queue"
+        "id":request_id,"room":id,"text":command,"delivery":studio_runtime_schema::DeliveryMoment::CurrentTurn
     }))
     .map_err(|_| ApiError::validation(vec![json!("body")]))?;
     let receipt = super::messages::post_message(State(state), ApiJson(message)).await?;

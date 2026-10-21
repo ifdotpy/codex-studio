@@ -306,10 +306,13 @@ class CrossServer(unittest.TestCase):
         self.assertEqual(len(work['results']), 1)
     def test_remote_message_uses_home_chat(self):
         worker = self.spawn()['agents'][0]['id']
-        result = self.remote.chat_message(worker, 'parent', 'Check this result', 'message-one', 0)
+        result = self.remote.chat_message(worker, 'parent', 'Check this result', 'message-one', 0, delivery='next_turn')
         self.assertIn('id', result)
         with self.home.read_db() as db:
             rows = db.execute("SELECT text FROM runtime_events WHERE agent=? AND kind='agent_message'", (self.lead['id'],)).fetchall()
+            metadata = json.loads(db.execute("SELECT record FROM runtime_event_meta WHERE id=?",
+                ('chat:' + result['id'] + ':' + self.lead['id'],)).fetchone()[0])
+            self.assertEqual(metadata['delivery'], 'next_turn')
         self.assertEqual(len(rows), 1)
     def test_stop_never_restores_home_agent_from_late_state(self):
         worker = self.spawn()['agents'][0]['id']
@@ -1075,7 +1078,7 @@ class CrossServer(unittest.TestCase):
         with self.remote.read_db() as db:
             modes = [json.loads(row[0])['delivery'] for row in db.execute('SELECT record FROM runtime_event_meta WHERE id IN ('
                 'SELECT id FROM runtime_events WHERE agent=? AND text LIKE ?)', (worker, 'Task %'))]
-        self.assertCountEqual(modes, ['queue', 'steer', 'after_tool', 'after_turn'])
+        self.assertCountEqual(modes, ['current_turn', 'current_turn', 'current_turn', 'next_turn'])
 
     def test_review_resume_waits_for_delayed_stop_and_parent_update(self):
         worker = self.spawn()['agents'][0]['id']

@@ -27,7 +27,9 @@ pub use studio_runtime_schema::shared_values::{
 /// `native_actions::Action` in runtime-services serializes to these names.
 pub const NATIVE_ACTION_ATTEMPT_KINDS: [&str; 2] = ["compact", "review"];
 
-const MAX_EVENTS_PER_TURN: usize = 32;
+/// Kinds whose admission belongs to a dedicated policy, rather than the shared
+/// generic notification compiler. Timing is independently owned by DeliveryMoment.
+const DEDICATED_TURN_EVENT_KINDS: &[&str] = &["radio", "radio_turn", "chat_review"];
 const TABLES: &[TableRequirement] = &[
     TableRequirement {
         name: "runtime_agents",

@@ -8,7 +8,9 @@ provider transcript records pass through the API.
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Annotated, Literal
+
+from codex_delivery import DeliveryMoment
 
 from pydantic import ConfigDict, Field, StrictBool, StrictStr, model_validator
 
@@ -21,7 +23,6 @@ from studio_api.sync.models import (
     WorkResultDto,
 )
 
-DeliveryMode = Literal["queue", "steer", "after_tool", "after_turn"]
 DeliveryStatus = Literal[
     "pending", "reserved", "dispatching", "uncertain", "failed", "cancelled",
     "delivered", "stored_only", "queued", "accepted", "sent",
@@ -56,7 +57,8 @@ class TranscriptInput(ContractModel):
     assets: list[TranscriptAsset] = Field(default_factory=list)
     clientMessageId: StrictStr | None = None
     deliveryStatus: DeliveryStatus | None = None
-    requestedDelivery: DeliveryMode | None = None
+    # Enum references need an explicit property title to retain schema identity.
+    requestedDelivery: Annotated[DeliveryMoment, Field(strict=False)] | None = Field(default=None, title="Requesteddelivery")
     deliveryError: StrictStr | None = None
     materialized: StrictBool | None = None
     pending: StrictBool | None = None
@@ -89,7 +91,7 @@ class TranscriptRecord(ContractModel):
     materialized: StrictBool | None = None
     pending: StrictBool | None = None
     deliveryStatus: DeliveryStatus | None = None
-    requestedDelivery: DeliveryMode | None = None
+    requestedDelivery: Annotated[DeliveryMoment, Field(strict=False)] | None = Field(default=None, title="Requesteddelivery")
     deliveryError: StrictStr | None = None
     # A string, or the provider's turn error object (message, codexErrorInfo, additionalDetails,
     # misalignment) as stored.

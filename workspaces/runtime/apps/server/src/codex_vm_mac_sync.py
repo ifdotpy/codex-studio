@@ -8,6 +8,8 @@ content. Nothing is written over a Mac edit, and no conflict markers reach the M
 """
 from __future__ import annotations
 
+from codex_delivery import DeliveryMoment
+
 import base64
 from contextlib import contextmanager
 import fcntl
@@ -670,7 +672,7 @@ def resolve(runtime: Any, project_id: str, rel: str, choice: str) -> dict[str, A
         if lead is not None:
             runtime.send(lead, handoff_text(result, result['kind']),
                          'mac-conflict:' + result['stateId'] + ':' + hashlib.sha256(rel.encode()).hexdigest()[:16],
-                         manual=False, delivery='after_turn')
+                         manual=False, delivery=DeliveryMoment.NEXT_TURN)
     result['status'] = sync_status(client.state_dir, project_id)
     _refresh(runtime)
     return result

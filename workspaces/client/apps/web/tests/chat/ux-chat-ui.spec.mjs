@@ -379,7 +379,7 @@ test("Ux Chat Ui", async ({
     assert.equal(writes.length, 1);
     assert.equal(writes[0].path, "/api/fixture-send");
     assert.equal(writes[0].body.text, "Draft must remain unsent");
-    assert.equal(writes[0].body.delivery, "after_turn");
+    assert.equal(writes[0].body.delivery, "next_turn");
     await composer.fill("Send from button");
     const buttonSend = page.waitForResponse(
       (response) => new URL(response.url()).pathname === "/api/fixture-send",
@@ -392,7 +392,7 @@ test("Ux Chat Ui", async ({
       () => document.querySelector("#message").value === "",
     );
     assert.equal(writes.length, 2);
-    assert.equal(writes[1].body.delivery, "after_tool");
+    assert.equal(writes[1].body.delivery, "current_turn");
     assert.equal(writes[1].body.text, "Send from button");
     const longDraft = "L".repeat(12050);
     await composer.fill(longDraft);

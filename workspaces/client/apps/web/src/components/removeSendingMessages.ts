@@ -1,3 +1,4 @@
+import { DeliveryMoment } from "../generated/deliveryMoment";
 import { serverLocalStorage as localStorage } from "../servers/storage";
 import { get, syncPost, ApiError } from "../api";
 import type { Message, Snapshot } from "../types";
@@ -163,7 +164,10 @@ export function createSendingMessageRemoval(
             workspaceId: scope.workspaceId,
           });
           for (const row of queue.items) {
-            if ((row.requestedDelivery || row.delivery) === "after_turn")
+            if (
+              (row.delivery || row.requestedDelivery) ===
+              DeliveryMoment.NextTurn
+            )
               continue;
             include({
               chat: agent.id,

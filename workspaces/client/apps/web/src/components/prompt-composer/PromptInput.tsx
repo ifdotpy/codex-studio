@@ -228,7 +228,7 @@ export default function PromptInput(p: {
           p.mobile
             ? "Use the send button to send."
             : p.managed
-              ? "Enter sends after tool calls. Tab queues the message for after the turn. Shift + Enter adds a new line."
+              ? "Enter sends to the current turn. Tab queues the message for the next turn. Shift + Enter adds a new line."
               : "Enter to send. Shift + Enter for a new line."
         }
         placeholder={

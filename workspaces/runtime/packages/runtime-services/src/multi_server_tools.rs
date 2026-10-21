@@ -1194,6 +1194,8 @@ pub(crate) fn worker_message(
     ) {
         return Err("Unknown message importance");
     }
+    let delivery = studio_runtime_schema::DeliveryMoment::for_message(args)
+        .map_err(|_| "Invalid delivery moment")?;
     let progress_key = args.get("progress_key").filter(|value| !value.is_null());
     let progress_version = args
         .get("progress_version")
@@ -1223,6 +1225,7 @@ pub(crate) fn worker_message(
             "importance": importance,
             "progress_key": progress_key,
             "progress_version": progress_version,
+            "delivery": delivery,
         }),
     ))
 }

@@ -179,7 +179,7 @@ test("idle send queue ui", async ({ browser }) => {
     await composer.press("Enter");
     await wait(async () => sent.length === 1, "Idle Send reaches scheduler");
     assert.equal(sent.length, 1);
-    assert.equal(sent[0].delivery, "after_tool");
+    assert.equal(sent[0].delivery, "current_turn");
     // A message for after the current tool call is never queued. It stays in
     // the chat while it waits, also after a reload.
     await bubble("Normal idle send").waitFor();
@@ -187,7 +187,7 @@ test("idle send queue ui", async ({ browser }) => {
     await composer.fill("Tab queues this draft");
     await composer.press("Tab");
     await wait(async () => sent.length === 2, "Tab input reaches scheduler");
-    assert.equal(sent[1].delivery, "after_turn");
+    assert.equal(sent[1].delivery, "next_turn");
     assert.equal(await composer.inputValue(), "");
     await panel.getByText("Tab queues this draft", { exact: true }).waitFor();
     assert.equal(await bubble("Tab queues this draft").count(), 0);

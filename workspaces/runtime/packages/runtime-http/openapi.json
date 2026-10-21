@@ -23846,6 +23846,28 @@
         "title": "DeliveredModeRecordResponse",
         "type": "object"
       },
+      "DeliveryMoment": {
+        "description": "Delivery timing owned by runtime-schema/src/delivery.rs.",
+        "enum": [
+          "current_turn",
+          "next_turn"
+        ],
+        "title": "DeliveryMoment",
+        "type": "string"
+      },
+      "DeliveryMomentInput": {
+        "description": "Compatibility input; historical spellings normalize through runtime-schema/src/delivery.rs. New callers use current_turn or next_turn.",
+        "enum": [
+          "current_turn",
+          "next_turn",
+          "queue",
+          "steer",
+          "after_tool",
+          "after_turn"
+        ],
+        "title": "DeliveryMomentInput",
+        "type": "string"
+      },
       "DesktopResource": {
         "additionalProperties": false,
         "properties": {
@@ -30026,19 +30048,13 @@
             "items": {
               "type": "string"
             },
+            "maxItems": 8,
             "title": "Assets",
             "type": "array"
           },
           "delivery": {
-            "default": "queue",
-            "enum": [
-              "queue",
-              "steer",
-              "after_tool",
-              "after_turn"
-            ],
-            "title": "Delivery",
-            "type": "string"
+            "$ref": "#/components/schemas/DeliveryMomentInput",
+            "default": "current_turn"
           },
           "id": {
             "pattern": "^[a-f0-9-]{36}$",
@@ -41230,15 +41246,8 @@
             "title": "Created"
           },
           "delivery": {
-            "default": "queue",
-            "enum": [
-              "queue",
-              "steer",
-              "after_tool",
-              "after_turn"
-            ],
-            "title": "Delivery",
-            "type": "string"
+            "$ref": "#/components/schemas/DeliveryMoment",
+            "default": "current_turn"
           },
           "error": {
             "anyOf": [
@@ -41265,15 +41274,8 @@
             "type": "string"
           },
           "requestedDelivery": {
-            "default": "queue",
-            "enum": [
-              "queue",
-              "steer",
-              "after_tool",
-              "after_turn"
-            ],
-            "title": "Requesteddelivery",
-            "type": "string"
+            "$ref": "#/components/schemas/DeliveryMoment",
+            "default": "current_turn"
           },
           "status": {
             "const": "pending",
@@ -47765,13 +47767,7 @@
           "requestedDelivery": {
             "anyOf": [
               {
-                "enum": [
-                  "queue",
-                  "steer",
-                  "after_tool",
-                  "after_turn"
-                ],
-                "type": "string"
+                "$ref": "#/components/schemas/DeliveryMoment"
               },
               {
                 "type": "null"
@@ -54738,13 +54734,7 @@
           "requestedDelivery": {
             "anyOf": [
               {
-                "enum": [
-                  "queue",
-                  "steer",
-                  "after_tool",
-                  "after_turn"
-                ],
-                "type": "string"
+                "$ref": "#/components/schemas/DeliveryMoment"
               },
               {
                 "type": "null"
@@ -55123,13 +55113,7 @@
           "requestedDelivery": {
             "anyOf": [
               {
-                "enum": [
-                  "queue",
-                  "steer",
-                  "after_tool",
-                  "after_turn"
-                ],
-                "type": "string"
+                "$ref": "#/components/schemas/DeliveryMoment"
               },
               {
                 "type": "null"
@@ -55598,13 +55582,7 @@
           "requestedDelivery": {
             "anyOf": [
               {
-                "enum": [
-                  "queue",
-                  "steer",
-                  "after_tool",
-                  "after_turn"
-                ],
-                "type": "string"
+                "$ref": "#/components/schemas/DeliveryMoment"
               },
               {
                 "type": "null"

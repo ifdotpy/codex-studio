@@ -115,7 +115,7 @@ test("mobile-send-reliability-ui", async ({ browser }) => {
       })),
     );
     await page
-      .getByText("Attach at most eight files.", { exact: true })
+      .getByText("Attach at most 8 files.", { exact: true })
       .first()
       .waitFor();
     assert.equal(

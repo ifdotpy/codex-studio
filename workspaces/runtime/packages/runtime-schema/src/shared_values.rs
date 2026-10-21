@@ -30,6 +30,8 @@ pub const NATIVE_TERMINAL_MAX_PAGES: usize = 100;
 pub const MAX_SAFE_INTEGER: i64 = 9007199254740991;
 /// Largest user attachment, in bytes.
 pub const MAX_USER_ATTACHMENT_BYTES: usize = 20971520;
+/// Maximum attachment items admitted across one provider turn's input batch.
+pub const MAX_TURN_ATTACHMENTS: usize = 8;
 /// Largest managed user message, in Unicode code points (independent of UTF-8 bytes).
 pub const MAX_MANAGED_MESSAGE_CODEPOINTS: usize = 32000;
 /// Display label of `MAX_USER_ATTACHMENT_BYTES`.

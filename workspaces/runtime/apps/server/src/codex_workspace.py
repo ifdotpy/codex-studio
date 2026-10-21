@@ -1,6 +1,8 @@
 """Workspace files, checkpoints, conversation forks, and capability discovery."""
 from __future__ import annotations
 
+from codex_delivery import DeliveryMoment
+
 from collections.abc import Iterable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import AbstractContextManager
@@ -35,6 +37,7 @@ from codex_work import text_field
 from codex_entity_contracts import (ACTIVE_MONITOR_STATUSES, monitor_records, task_records)
 from codex_shared_values import (
     MAX_USER_ATTACHMENT_BYTES,
+    MAX_TURN_ATTACHMENTS,
     MAX_WORKSPACE_PREVIEW_BYTES,
     user_attachment_limit_label,
     workspace_preview_limit_label,
@@ -96,7 +99,7 @@ class WorkspaceRuntime(_WorkHost, Protocol):
     def new_thread_params(self, agent: AgentRecord) -> JsonObject: ...
     def search_is_indexed(self, db: sqlite3.Connection, key: str) -> bool: ...
     def send(self, key: str, text: str, message_id: str | None = None, manual: bool = True,
-             resume: bool = False, delivery: str = "queue", assets: list[JsonObject] | None = None,
+             resume: bool = False, delivery: str = DeliveryMoment.CURRENT_TURN, assets: list[JsonObject] | None = None,
              sender: str | None = None, sender_epoch: int | None = None,
              radio_question: JsonObject | None = None) -> JsonObject: ...
     def tool_definitions(self, agent: AgentRecord) -> list[JsonObject]: ...
@@ -656,8 +659,8 @@ class WorkspaceMixin:
 
     def message_inputs(self: "WorkspaceRuntime", agent_id: str, text: str, asset_ids: Sequence[str]) -> JsonObject:
         inputs = [{"type": "text", "text": text}]
-        if not isinstance(asset_ids, list) or len(asset_ids) > 8:
-            raise ValueError("Attach up to eight files")
+        if not isinstance(asset_ids, list) or len(asset_ids) > MAX_TURN_ATTACHMENTS:
+            raise ValueError(f"Attach up to {MAX_TURN_ATTACHMENTS} files")
         for key in asset_ids:
             asset = self.asset_record(key)
             # Explicit user attachments can be reused by a fork in the same project.

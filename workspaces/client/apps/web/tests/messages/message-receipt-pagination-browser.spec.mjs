@@ -86,7 +86,7 @@ async function runMessageReceiptScenario(
       text: itemText,
       at,
       deliveryStatus: status,
-      requestedDelivery: "after_tool",
+      requestedDelivery: "current_turn",
       pending,
       materialized,
     });
@@ -111,7 +111,7 @@ async function runMessageReceiptScenario(
           ).run(
             key,
             JSON.stringify({
-              requestedDelivery: "after_tool",
+              requestedDelivery: "current_turn",
               transcriptItemId: agent + ":" + key,
             }),
           );
@@ -376,7 +376,7 @@ async function runMessageReceiptScenario(
                 id: key,
                 room,
                 text: message,
-                delivery: "after_tool",
+                delivery: "current_turn",
                 assets: [],
               },
               status,

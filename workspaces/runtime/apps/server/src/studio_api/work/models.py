@@ -7,9 +7,11 @@ from types import UnionType
 from typing import Annotated, Any, Callable, Literal, Union, cast, get_args, get_origin, get_type_hints
 from typing_extensions import NotRequired, Required, TypedDict, TypeAliasType
 
-from pydantic import ConfigDict, Field, RootModel, StrictBool, StrictFloat, StrictStr, create_model, model_validator
+from pydantic import BeforeValidator, ConfigDict, Field, RootModel, StrictBool, StrictFloat, StrictStr, create_model, model_validator
 
-from codex_shared_values import MAX_MANAGED_MESSAGE_CODEPOINTS
+from codex_delivery import DeliveryMoment, parse_delivery
+from codex_delivery_moment import DeliveryMomentInput as DeliveryMomentInputValues
+from codex_shared_values import MAX_MANAGED_MESSAGE_CODEPOINTS, MAX_TURN_ATTACHMENTS
 from codex_records import (
     AgentRecord as AgentRecordContract,
     AmbiguousToolRequestResult,
@@ -235,10 +237,16 @@ class MessageBody(ContractModel):
     text: StrictStr
 
 
+# Preserve the committed OpenAPI component title for the generated input alias.
+DeliveryMomentInput = TypeAliasType(
+    "DeliveryMomentInput", Annotated[DeliveryMomentInputValues, Field(title="DeliveryMomentInput")],
+)
+
+
 class ManagedMessageBody(MessageBody):
     text: StrictStr = Field(max_length=MAX_MANAGED_MESSAGE_CODEPOINTS)
-    delivery: Literal["queue", "steer", "after_tool", "after_turn"] = "queue"
-    assets: list[StrictStr] = Field(default_factory=list)
+    delivery: Annotated[DeliveryMoment, BeforeValidator(parse_delivery, json_schema_input_type=DeliveryMomentInput)] = DeliveryMoment.CURRENT_TURN
+    assets: list[StrictStr] = Field(default_factory=list, max_length=MAX_TURN_ATTACHMENTS)
 
 
 class ChatCreateBody(ContractModel):
@@ -460,8 +468,8 @@ class QueueItem(ContractModel):
     status: Literal["pending"]
     created: SafeInt | StrictFloat
     assets: list[TranscriptAsset] = Field(default_factory=list)
-    delivery: Literal["queue", "steer", "after_tool", "after_turn"] = "queue"
-    requestedDelivery: Literal["queue", "steer", "after_tool", "after_turn"] = "queue"
+    delivery: Annotated[DeliveryMoment, Field(strict=False)] = DeliveryMoment.CURRENT_TURN
+    requestedDelivery: Annotated[DeliveryMoment, Field(strict=False)] = DeliveryMoment.CURRENT_TURN
     acceptedAt: SafeInt | StrictFloat | None = None
 
 

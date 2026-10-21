@@ -251,10 +251,12 @@ fn post(
                 .get("text")
                 .and_then(Value::as_str)
                 .unwrap_or(" hello "),
-            delivery: step
-                .get("delivery")
-                .and_then(Value::as_str)
-                .unwrap_or("queue"),
+            delivery: studio_runtime_schema::delivery::DeliveryMoment::for_event(
+                "user",
+                "",
+                Some(step),
+            )
+            .expect("fixture delivery"),
             assets: &assets,
         },
         prepared,
@@ -704,7 +706,7 @@ async fn injected_policy_denials_and_changed_workspace_snapshot_write_nothing(or
                         room: "agent",
                         id: "message",
                         text: "input",
-                        delivery: "queue",
+                        delivery: studio_runtime_schema::delivery::DeliveryMoment::CurrentTurn,
                         assets: &[],
                     },
                     &policy,
@@ -729,7 +731,7 @@ async fn injected_policy_denials_and_changed_workspace_snapshot_write_nothing(or
                     room: "agent",
                     id: "message",
                     text: "input",
-                    delivery: "queue",
+                    delivery: studio_runtime_schema::delivery::DeliveryMoment::CurrentTurn,
                     assets: &[],
                 },
                 &prepared,

@@ -672,7 +672,8 @@ async fn cold_and_expired_catalogs_hold_the_attempt_without_failing_it() {
                 };
                 assert!(matches!(
                     store::preparation_step(
-                        store.as_ref(),
+                        &store,
+                        &resources,
                         &intent,
                         preparation::admit(Arc::clone(&store), &resources, &intent)
                     )
@@ -768,6 +769,67 @@ async fn radio_authorized_preparation_uses_the_radio_receipt_gate() {
                 "radio-authorized turns must bypass the generic radio refusal"
             );
             Ok(())
+        })
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn bundled_delivery_tools_reach_current_actors_and_preserve_historical_catalogs() {
+    let state = State::new().await;
+    let resources = preparation::PreparationResources::bundled(
+        String::new(),
+        crate::model_catalog::ModelCatalogService::new(),
+    )
+    .unwrap();
+    let mut actor = state.record().await;
+    state
+        .bridge
+        .run(move |store| async move {
+            store
+                .transaction_with(move |tx| {
+                    for source in ["current", "legacy", "frozen"] {
+                        actor["nativeToolSource"] = json!(if source == "legacy" {
+                            "legacy"
+                        } else {
+                            "current"
+                        });
+                        if source == "frozen" {
+                            actor["frozenNativeParams"] =
+                                json!({"dynamicTools":resources.legacy_tools});
+                        }
+                        let definitions =
+                            preparation::actor_tool_definitions(tx, &resources, &actor)?.unwrap();
+                        for name in ["orchestration_message", "orchestration_send"] {
+                            let tool = definitions
+                                .as_array()
+                                .unwrap()
+                                .iter()
+                                .find(|tool| tool["name"] == name)
+                                .expect("delivery tool is exposed to actor");
+                            let moment = tool.pointer("/inputSchema/properties/delivery/enum");
+                            if source == "current" {
+                                assert_eq!(
+                                    moment,
+                                    Some(&json!([
+                                        studio_runtime_schema::DeliveryMoment::CurrentTurn.as_str(),
+                                        studio_runtime_schema::DeliveryMoment::NextTurn.as_str()
+                                    ]))
+                                );
+                            } else if name == "orchestration_message" {
+                                assert!(moment.is_none(), "historical catalog is immutable");
+                            } else {
+                                assert_eq!(
+                                    moment,
+                                    Some(&json!(["queue", "steer"])),
+                                    "historical catalog is immutable"
+                                );
+                            }
+                        }
+                    }
+                    Ok::<_, WorkerError>(())
+                })
+                .await
         })
         .await
         .unwrap();

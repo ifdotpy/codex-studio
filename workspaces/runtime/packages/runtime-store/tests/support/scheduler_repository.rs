@@ -418,12 +418,12 @@ fn child_results_share_a_turn_only_on_the_preparation_path() {
             .map(|event| event.id.0.clone())
             .collect::<Vec<_>>()
     };
-    assert_eq!(ids(true), ["w1", "user", "w2"]);
+    assert_eq!(ids(true), ["w1", "user", "w2", "monitor"]);
     assert!(ids(false).is_empty());
 }
 
 #[test]
-fn batch_selection_keeps_only_the_first_composer_input_boundary() {
+fn idle_batch_selection_combines_eligible_composer_inputs() {
     let events = vec![
         selected_event("ordinary", "user", "ordinary"),
         selected_event("after-turn", "user", "first composer input"),
@@ -438,7 +438,7 @@ fn batch_selection_keeps_only_the_first_composer_input_boundary() {
             .iter()
             .map(|event| event.id.0.as_str())
             .collect::<Vec<_>>(),
-        ["ordinary", "after-turn"]
+        ["ordinary", "after-turn", "send-now"]
     );
 }
 
@@ -513,4 +513,67 @@ fn selected_event(id: &str, kind: &str, text: &str) -> QueueEvent {
         turn_id: None,
         error: None,
     }
+}
+
+#[test]
+fn preparation_claims_one_thousand_small_mixed_events_and_replays_exact_batch() {
+    let mut connection = database();
+    connection
+        .execute("DELETE FROM runtime_events", [])
+        .expect("clear queue");
+    for i in 0..1000 {
+        connection
+            .execute(
+                "INSERT INTO runtime_events VALUES(?1,'agent',?2,'x','pending',?3,4,NULL,NULL)",
+                rusqlite::params![
+                    format!("e-{i:04}"),
+                    if i % 2 == 0 { "user" } else { "work_decision" },
+                    i as f64
+                ],
+            )
+            .expect("small input");
+    }
+    let tx = connection.transaction().expect("claim begins");
+    let claimed =
+        SchedulerRepository::claim_for_preparation(&tx, "agent", 4, "mixed", 1001.0, usize::MAX)
+            .expect("claim executes")
+            .expect("claim exists");
+    assert_eq!(claimed.events.len(), 1000);
+    let replay =
+        SchedulerRepository::claim_for_preparation(&tx, "agent", 4, "mixed", 1002.0, usize::MAX)
+            .expect("replay executes")
+            .expect("replay exists");
+    assert_eq!(claimed.events, replay.events);
+    assert_eq!(claimed.metadata, replay.metadata);
+    tx.commit().expect("claim commits");
+}
+
+#[test]
+fn mixed_batch_splits_only_at_the_owned_attachment_admission_budget() {
+    let events = vec![
+        selected_event("text", "user", "plain"),
+        selected_event("first", "user", "first attachments"),
+        selected_event("second", "user", "second attachments"),
+    ];
+    let assets = (0..(studio_runtime_schema::shared_values::MAX_TURN_ATTACHMENTS / 2 + 1))
+        .map(|i| format!("asset-{i}"))
+        .collect::<Vec<_>>();
+    let metadata = BTreeMap::from([
+        ("first".into(), json!({"assets":assets})),
+        ("second".into(), json!({"assets":assets})),
+    ]);
+    let selected = select_turn_batch(&events, &metadata, usize::MAX, true);
+    assert_eq!(
+        selected.iter().map(|e| e.id.0.as_str()).collect::<Vec<_>>(),
+        ["text", "first"]
+    );
+    let oversized = BTreeMap::from([(
+        "first".into(),
+        json!({"assets":vec!["asset";studio_runtime_schema::shared_values::MAX_TURN_ATTACHMENTS+1]}),
+    )]);
+    assert_eq!(
+        select_turn_batch(&events[1..], &oversized, usize::MAX, true).len(),
+        1,
+        "invalid single input reaches explicit compiler refusal rather than disappearing"
+    );
 }

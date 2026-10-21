@@ -3,6 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::{Value, json};
+use studio_runtime_schema::delivery::DeliveryMoment;
 use studio_runtime_store::{
     CoordinationRepository, QueueEventId, QueueEventRepository, QueueWriteRepository, StoreError,
     Transaction,
@@ -140,8 +141,27 @@ pub struct PostManagedMessage<'a> {
     pub room: &'a str,
     pub id: &'a str,
     pub text: &'a str,
-    pub delivery: &'a str,
+    pub delivery: DeliveryMoment,
     pub assets: &'a [Value],
+}
+
+/// Queue promotion changes effective delivery, never the accepted request identity.
+fn matches_requested_delivery(
+    metadata: &Value,
+    delivery: DeliveryMoment,
+) -> Result<bool, CoordinationError> {
+    if metadata.get("requestedDelivery").is_none()
+        && crate::event_write::truthy(metadata.get("sendNow"))
+    {
+        // Historical promoted events did not retain their original timing.
+        return Ok(true);
+    }
+    let requested = metadata
+        .get("requestedDelivery")
+        .or_else(|| metadata.get("delivery"));
+    let stored = DeliveryMoment::for_event("user", "", Some(&json!({"delivery":requested})))
+        .map_err(|_| CoordinationError::InvalidRequest("Invalid stored delivery moment"))?;
+    Ok(stored == delivery)
 }
 
 /// Return the saved receipt only when the stable message identity already
@@ -151,19 +171,25 @@ pub(crate) fn remote_message_receipt(
     room: &str,
     id: &str,
     text: &str,
+    delivery: DeliveryMoment,
 ) -> Result<Option<Value>, CoordinationError> {
     let text = crate::event_write::python_strip(text);
     let Some(event) = QueueEventRepository::get(connection, &QueueEventId::from(id))? else {
         return Ok(None);
     };
     let metadata = QueueWriteRepository::metadata(connection, id)?
-        .unwrap_or_else(|| json!({"assets": [], "delivery": "queue"}));
+        .unwrap_or_else(|| json!({"assets": [], "delivery": DeliveryMoment::CurrentTurn}));
     let assets = metadata
         .get("assets")
         .and_then(Value::as_array)
         .cloned()
         .ok_or_else(|| invalid_stored("runtime_event_meta", id))?;
-    if event.agent.0 != room || event.kind != "user" || event.text != text || !assets.is_empty() {
+    if event.agent.0 != room
+        || event.kind != "user"
+        || event.text != text
+        || !assets.is_empty()
+        || !matches_requested_delivery(&metadata, delivery)?
+    {
         return Ok(None);
     }
 
@@ -250,7 +276,7 @@ fn post_managed_message(
     }));
     if let Some(event) = QueueEventRepository::get(transaction, &QueueEventId::from(input.id))? {
         let metadata = QueueWriteRepository::metadata(transaction, input.id)?
-            .unwrap_or_else(|| json!({"assets": [], "delivery": "queue"}));
+            .unwrap_or_else(|| json!({"assets": [], "delivery": DeliveryMoment::CurrentTurn}));
         let old_assets = metadata
             .get("assets")
             .and_then(Value::as_array)
@@ -260,6 +286,7 @@ fn post_managed_message(
             || event.kind != "user"
             || event.text != text
             || old_assets != input.assets
+            || !matches_requested_delivery(&metadata, input.delivery)?
         {
             return Err(CoordinationError::Conflict(
                 "This message id has different content",
@@ -349,7 +376,7 @@ fn post_managed_message(
     QueueWriteRepository::put_metadata(
         transaction,
         input.id,
-        &json!({"assets": input.assets, "acceptedAt": created, "delivery": input.delivery}),
+        &json!({"assets": input.assets, "acceptedAt": created, "delivery": input.delivery, "requestedDelivery": input.delivery}),
     )?;
     let inserted = crate::event_write::enqueue_event(
         transaction,
@@ -395,7 +422,7 @@ pub struct AgentFollowup<'a> {
     pub recipient_id: &'a str,
     pub id: &'a str,
     pub text: &'a str,
-    pub delivery: &'a str,
+    pub delivery: DeliveryMoment,
     pub now: f64,
 }
 
@@ -424,7 +451,7 @@ pub struct SystemFollowup<'a> {
     pub recipient_id: &'a str,
     pub id: &'a str,
     pub text: &'a str,
-    pub delivery: &'a str,
+    pub delivery: DeliveryMoment,
     pub now: f64,
 }
 
@@ -463,7 +490,7 @@ struct FollowupInput<'a> {
     recipient_id: &'a str,
     id: &'a str,
     text: &'a str,
-    delivery: &'a str,
+    delivery: DeliveryMoment,
     now: f64,
     radio_answer_turn_id: Option<&'a str>,
 }
@@ -486,11 +513,6 @@ fn send_followup_inner(
     if text.is_empty() || !message_text_within_limit(text) {
         return Err(CoordinationError::InvalidRequest(
             "Message must have text or attachments, at most 32000 characters",
-        ));
-    }
-    if !matches!(delivery, "queue" | "steer" | "after_tool" | "after_turn") {
-        return Err(CoordinationError::InvalidRequest(
-            "Choose queue, steer, after_tool or after_turn",
         ));
     }
     let mut recipient =
@@ -532,7 +554,13 @@ fn send_followup_inner(
     admission.budget(transaction, &recipient, &root)?;
 
     if let Some(event) = QueueEventRepository::get(transaction, &QueueEventId::from(id))? {
-        if event.agent.0 != recipient_id || event.kind != "followup" || event.text != text {
+        let metadata =
+            QueueWriteRepository::metadata(transaction, id)?.unwrap_or_else(|| json!({}));
+        if event.agent.0 != recipient_id
+            || event.kind != "followup"
+            || event.text != text
+            || !matches_requested_delivery(&metadata, delivery)?
+        {
             return Err(CoordinationError::Conflict(
                 "This message id has different content",
             ));
@@ -556,7 +584,8 @@ fn send_followup_inner(
         let projection = serde_json::to_value(&recipient).map_err(StoreError::from)?;
         crate::agents_create::publish_agent(transaction, &projection)?;
     }
-    let mut metadata = json!({"assets":[],"acceptedAt":now,"delivery":delivery});
+    let mut metadata =
+        json!({"assets":[],"acceptedAt":now,"delivery":delivery,"requestedDelivery":delivery});
     if let Some(turn_id) = radio_answer_turn_id.filter(|value| !value.is_empty()) {
         metadata["radioAnswerTurnId"] = Value::String(turn_id.to_owned());
     }
@@ -1178,6 +1207,7 @@ pub(crate) fn event_write_error(error: crate::event_write::EventWriteError) -> C
 #[cfg(test)]
 mod tests {
     use serde_json::json;
+    use studio_runtime_schema::delivery::DeliveryMoment;
     use studio_runtime_store::Connection;
 
     use super::{
@@ -1330,7 +1360,7 @@ mod tests {
                 room: "lead",
                 id: "profile-message",
                 text: "hello",
-                delivery: "queue",
+                delivery: DeliveryMoment::CurrentTurn,
                 assets: &[],
             },
             &AllowAdmission,
@@ -1349,6 +1379,93 @@ mod tests {
         assert_eq!(
             saved.extra.get("profileInstructions"),
             Some(&json!("Use the project profile."))
+        );
+    }
+
+    #[test]
+    fn managed_message_retry_preserves_original_timing_after_promotion() {
+        let mut connection = database();
+        let transaction = connection.transaction().expect("transaction");
+        let send = |delivery| {
+            post_message_with_admission(
+                &transaction,
+                PostManagedMessage {
+                    room: "lead",
+                    id: "promoted-message",
+                    text: "hello",
+                    delivery,
+                    assets: &[],
+                },
+                &AllowAdmission,
+            )
+        };
+        assert!(
+            send(DeliveryMoment::NextTurn)
+                .expect("first send")
+                .event_inserted
+        );
+        let mut metadata =
+            studio_runtime_store::QueueWriteRepository::metadata(&transaction, "promoted-message")
+                .expect("metadata")
+                .expect("accepted metadata");
+        assert_eq!(
+            metadata["requestedDelivery"],
+            json!(DeliveryMoment::NextTurn)
+        );
+        // An old queued message has only the legacy effective timing.
+        metadata
+            .as_object_mut()
+            .expect("metadata object")
+            .remove("requestedDelivery");
+        metadata["delivery"] = json!("after_turn");
+        studio_runtime_store::QueueWriteRepository::put_metadata(
+            &transaction,
+            "promoted-message",
+            &metadata,
+        )
+        .expect("legacy metadata");
+        crate::queue_write::action(
+            &transaction,
+            "lead",
+            &json!({"action":"send_now", "message_id":"promoted-message", "request_id":"promote"}),
+            "promotion-fixture",
+            |tx, _| {
+                let event = studio_runtime_store::QueueEventRepository::get(
+                    tx,
+                    &studio_runtime_store::QueueEventId::from("promoted-message"),
+                )?
+                .expect("queued event");
+                assert_eq!(event.status, "pending");
+                Ok(crate::queue_write::QueueSnapshot {
+                    items: vec![json!({"id":event.id.0,"kind":event.kind,"text":event.text,"created":event.created})],
+                    revision: event.created.to_string(),
+                    capabilities: json!({}),
+                })
+            },
+        )
+        .expect("queue promotion");
+        let metadata =
+            studio_runtime_store::QueueWriteRepository::metadata(&transaction, "promoted-message")
+                .expect("promoted metadata")
+                .expect("metadata exists");
+        assert_eq!(
+            metadata["requestedDelivery"],
+            json!(DeliveryMoment::NextTurn)
+        );
+        assert_eq!(metadata["delivery"], json!(DeliveryMoment::CurrentTurn));
+        assert!(
+            !send(DeliveryMoment::NextTurn)
+                .expect("exact retry")
+                .event_inserted
+        );
+        assert!(matches!(
+            send(DeliveryMoment::CurrentTurn),
+            Err(CoordinationError::Conflict(_))
+        ));
+        assert_eq!(
+            studio_runtime_store::QueueWriteRepository::metadata(&transaction, "promoted-message")
+                .expect("metadata after retry"),
+            Some(metadata)
         );
     }
 
@@ -1397,7 +1514,7 @@ mod tests {
                     recipient_id: "lead",
                     id: "mac-conflict:state:abcd",
                     text,
-                    delivery: "after_turn",
+                    delivery: DeliveryMoment::NextTurn,
                     now: 123.5,
                 },
                 &AllowAdmission,
@@ -1443,7 +1560,7 @@ mod tests {
             .expect("event metadata exists");
         let metadata: serde_json::Value =
             serde_json::from_str(&metadata).expect("metadata is valid JSON");
-        assert_eq!(metadata["delivery"], "after_turn");
+        assert_eq!(metadata["delivery"], json!(DeliveryMoment::NextTurn));
         assert_eq!(metadata["assets"], json!([]));
         assert!(metadata.get("senderId").is_none());
         assert_eq!(count(&connection, "runtime_events"), 1);
@@ -1519,7 +1636,7 @@ mod tests {
                     recipient_id: "lead",
                     id: &identity,
                     text: &text,
-                    delivery: "after_turn",
+                    delivery: DeliveryMoment::NextTurn,
                     now: 123.0,
                 },
                 &AllowAdmission,
@@ -1546,7 +1663,7 @@ mod tests {
                     recipient_id: "lead",
                     id: &identity,
                     text: &text,
-                    delivery: "after_turn",
+                    delivery: DeliveryMoment::NextTurn,
                     now: 124.0,
                 },
                 &AllowAdmission,
@@ -1571,7 +1688,7 @@ mod tests {
                     recipient_id: "lead",
                     id: &identity,
                     text: &text,
-                    delivery: "after_turn",
+                    delivery: DeliveryMoment::NextTurn,
                     now: 125.0,
                 },
                 &AllowAdmission,

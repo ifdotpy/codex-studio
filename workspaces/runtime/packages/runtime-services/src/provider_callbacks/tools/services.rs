@@ -93,7 +93,14 @@ impl crate::managed_host_tools::SendPort for ProductionPorts {
                     recipient_id: target,
                     id: request_id,
                     text,
-                    delivery: args["delivery"].as_str().unwrap_or("queue"),
+                    delivery: studio_runtime_schema::delivery::DeliveryMoment::for_event(
+                        "followup",
+                        text,
+                        Some(args),
+                    )
+                    .map_err(|_| {
+                        crate::managed_host_tools::Error::Invalid("Invalid delivery moment")
+                    })?,
                     now,
                 },
                 &self.admission,
@@ -120,7 +127,7 @@ impl crate::managed_host_tools::SendPort for ProductionPorts {
         }
         // Runtime.dynamic routes non-descendants through chat_message, which
         // supplies its default importance and never accepts progress metadata.
-        let chat_args = json!({"target":target,"text":args["text"]});
+        let chat_args = json!({"target":target,"text":args["text"],"delivery":args["delivery"]});
         let value = messages::send(tx, &snapshot, &chat_args, request_id, now).map_err(
             |error| match error {
                 CallbackError::Store(error) => crate::managed_host_tools::Error::Store(error),

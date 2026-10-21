@@ -11665,6 +11665,24 @@ export interface components {
     } & {
       [key: string]: components["schemas"]["JsonValue"];
     };
+    /**
+     * DeliveryMoment
+     * @description Delivery timing owned by runtime-schema/src/delivery.rs.
+     * @enum {string}
+     */
+    DeliveryMoment: "current_turn" | "next_turn";
+    /**
+     * DeliveryMomentInput
+     * @description Compatibility input; historical spellings normalize through runtime-schema/src/delivery.rs. New callers use current_turn or next_turn.
+     * @enum {string}
+     */
+    DeliveryMomentInput:
+      | "current_turn"
+      | "next_turn"
+      | "queue"
+      | "steer"
+      | "after_tool"
+      | "after_turn";
     /** DesktopResource */
     DesktopResource: {
       /**
@@ -14065,12 +14083,8 @@ export interface components {
        * @default []
        */
       assets?: string[];
-      /**
-       * Delivery
-       * @default queue
-       * @enum {string}
-       */
-      delivery?: "queue" | "steer" | "after_tool" | "after_turn";
+      /** @default current_turn */
+      delivery?: components["schemas"]["DeliveryMomentInput"];
       /** Id */
       id: string;
       /** Room */
@@ -18588,12 +18602,8 @@ export interface components {
       assets?: components["schemas"]["TranscriptAsset"][];
       /** Created */
       created: number;
-      /**
-       * Delivery
-       * @default queue
-       * @enum {string}
-       */
-      delivery?: "queue" | "steer" | "after_tool" | "after_turn";
+      /** @default current_turn */
+      delivery?: components["schemas"]["DeliveryMoment"];
       /**
        * Error
        * @default null
@@ -18606,12 +18616,8 @@ export interface components {
        * @enum {string}
        */
       kind: "user" | "followup";
-      /**
-       * Requesteddelivery
-       * @default queue
-       * @enum {string}
-       */
-      requestedDelivery?: "queue" | "steer" | "after_tool" | "after_turn";
+      /** @default current_turn */
+      requestedDelivery?: components["schemas"]["DeliveryMoment"];
       /**
        * Status
        * @constant
@@ -21093,9 +21099,7 @@ export interface components {
        * Requesteddelivery
        * @default null
        */
-      requestedDelivery?:
-        | ("queue" | "steer" | "after_tool" | "after_turn")
-        | null;
+      requestedDelivery?: components["schemas"]["DeliveryMoment"] | null;
       /**
        * Responses
        * @default null
@@ -23955,9 +23959,7 @@ export interface components {
        * Requesteddelivery
        * @default null
        */
-      requestedDelivery?:
-        | ("queue" | "steer" | "after_tool" | "after_turn")
-        | null;
+      requestedDelivery?: components["schemas"]["DeliveryMoment"] | null;
       /** Text */
       text: string;
       /** Truncated */
@@ -24115,9 +24117,7 @@ export interface components {
        * Requesteddelivery
        * @default null
        */
-      requestedDelivery?:
-        | ("queue" | "steer" | "after_tool" | "after_turn")
-        | null;
+      requestedDelivery?: components["schemas"]["DeliveryMoment"] | null;
       /** Role */
       role: string;
       /**
@@ -24320,9 +24320,7 @@ export interface components {
        * Requesteddelivery
        * @default null
        */
-      requestedDelivery?:
-        | ("queue" | "steer" | "after_tool" | "after_turn")
-        | null;
+      requestedDelivery?: components["schemas"]["DeliveryMoment"] | null;
       /** Role */
       role: string;
       /**

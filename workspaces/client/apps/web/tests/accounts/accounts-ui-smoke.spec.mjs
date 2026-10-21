@@ -1458,7 +1458,7 @@ async function runAccountsUi(mode, { page: fixturePage }) {
         agentId: claude.id,
         text: "Change the Claude task",
         status: "queued",
-        requestedDelivery: "after_turn",
+        requestedDelivery: "next_turn",
         created: Date.now() / 1000,
       },
     ];

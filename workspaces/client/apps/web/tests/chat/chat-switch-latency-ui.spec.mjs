@@ -843,7 +843,7 @@ test(
           expectedCount,
           "The outbox submits each message once",
         );
-        assert.equal(sends.at(-1).delivery, "after_tool");
+        assert.equal(sends.at(-1).delivery, "current_turn");
         assert.equal(sends.at(-1).room, a.id);
       }
       assert.equal(sends.length, 2, "Each shortcut sends exactly one message");

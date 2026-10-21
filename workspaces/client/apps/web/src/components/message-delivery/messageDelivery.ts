@@ -1,3 +1,7 @@
+import {
+  DeliveryMoment,
+  normalizeDelivery,
+} from "../../generated/deliveryMoment";
 import type { Message } from "../../types";
 import type { OutgoingMessage } from "../../sync/send";
 
@@ -95,7 +99,12 @@ export function outgoingTranscript(
           ? { ...present, assets: entry.attachments }
           : present;
       if (!shown.requestedDelivery && entry.body.delivery)
-        shown = { ...shown, requestedDelivery: entry.body.delivery };
+        shown = {
+          ...shown,
+          requestedDelivery: normalizeDelivery(
+            entry.body.delivery ?? DeliveryMoment.CurrentTurn,
+          ),
+        };
       updates.set(present.id, shown);
       if (
         ["failed", "uncertain"].includes(entry.status) &&
@@ -142,7 +151,9 @@ export function outgoingTranscript(
           : entry.status,
       deliveryError: entry.error,
       localDelivery: true,
-      requestedDelivery: entry.body.delivery,
+      requestedDelivery: normalizeDelivery(
+        entry.body.delivery ?? DeliveryMoment.CurrentTurn,
+      ),
     });
   }
   return {

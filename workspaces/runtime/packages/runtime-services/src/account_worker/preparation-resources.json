@@ -65,7 +65,7 @@
     {
       "type": "function",
       "name": "orchestration_message",
-      "description": "Share a finding, question, or answer with other agents during work. target is user (lead only), a teammate, a user-grouped peer chat, parent, lead, or broadcast (your own agent tree). Broadcasts notify only active agents; other recipients can read them in chat history. Private chats are visible to their participants and the user. Direct messages wake idle recipients but never resume stopped agents. Use importance=progress only for routine updates; these batch briefly and keep the latest progress per sender, room and progress_key when progress_version increases. Use the task id as progress_key. Without these fields, every update is retained. Original messages remain in chat history. Questions and blockers deliver immediately. Send when you have new information or an answer for the recipient.",
+      "description": "Share a finding, question, or answer with other agents during work. target is user (lead only), a teammate, a user-grouped peer chat, parent, lead, or broadcast (your own agent tree). Broadcasts notify only active agents; other recipients can read them in chat history. Private chats are visible to their participants and the user. Direct messages wake idle recipients but never resume stopped agents. Use importance=progress only for routine updates; these batch briefly and keep the latest progress per sender, room and progress_key when progress_version increases. Use the task id as progress_key. Without these fields, every update is retained. Original messages remain in chat history. Delivery defaults to next_turn for progress and current_turn otherwise. Choose delivery explicitly to steer the current turn or wait for the next turn. Send when you have new information or an answer for the recipient.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -85,6 +85,10 @@
           "progress_version": {
             "type": "integer",
             "minimum": 0
+          },
+          "delivery": {
+            "type": "string",
+            "enum": ["current_turn", "next_turn"]
           }
         },
         "required": ["target", "text"],
@@ -222,7 +226,7 @@
     {
       "type": "function",
       "name": "orchestration_send",
-      "description": "Assign a new or revised instruction to an existing descendant, or explicitly resume its authorized work. Native delivery steers an active turn or starts a turn when idle. Completion returns to its parent automatically. Review corrections travel through orchestration_task action=reject. The delivery field is accepted and ignored for compatibility. Supply a stable request_id for an instruction. Reuse it only for the exact same target and text. Recover the receipt before retrying.",
+      "description": "Assign a new or revised instruction to an existing descendant, or explicitly resume its authorized work. Native delivery steers an active turn or starts a turn when idle. Completion returns to its parent automatically. Review corrections travel through orchestration_task action=reject. Delivery defaults to current_turn; choose next_turn to wait for the active turn to end. Supply a stable request_id for an instruction. Reuse it only for the exact same target and text. Recover the receipt before retrying.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -234,7 +238,7 @@
           },
           "delivery": {
             "type": "string",
-            "enum": ["queue", "steer"]
+            "enum": ["current_turn", "next_turn"]
           },
           "request_id": {
             "type": "string",

@@ -1724,7 +1724,7 @@ impl Worker {
                 self.wait_for_preparation(intent, &pending, since);
                 None
             }
-            store::PreparationStep::Settled => None,
+            store::PreparationStep::Settled | store::PreparationStep::Retry => None,
         }
     }
     async fn wake(&mut self, agent: String, epoch: i64) -> Result<(), WorkerError> {
@@ -1909,6 +1909,9 @@ impl Worker {
                 if let Some(thread) = intent.thread_id.as_deref() {
                     self.idle_thread_touched(thread);
                 }
+                if matches!(step, store::PreparationStep::Retry) {
+                    rewake = Some(intent.epoch);
+                }
                 if let Some(prepared) = self.preparation_ready(step, &intent, since) {
                     let method = prepared.method;
                     // A proof forgotten while this preparation ran (an unload or
@@ -1972,7 +1975,8 @@ impl Worker {
             turn_preparation::Outcome::Unclaimed(turn_preparation::Unclaimed::Steer(
                 intent,
                 turn,
-            )) => Box::pin(self.steer(*intent, turn)).await?,
+                prepared,
+            )) => Box::pin(self.steer(*intent, turn, *prepared)).await?,
             turn_preparation::Outcome::Unclaimed(turn_preparation::Unclaimed::DiskFull(epoch)) => {
                 self.wait_for_disk_space(agent_id.clone(), epoch);
             }
@@ -2062,6 +2066,7 @@ impl Worker {
     async fn committed(&mut self, committed: submission::Committed) -> Result<(), WorkerError> {
         let ready = match committed {
             submission::Committed::Nothing => return Ok(()),
+            submission::Committed::Retry(agent, epoch) => return self.wake(agent, epoch).await,
             submission::Committed::Ready(ready) => Some(ready),
             // Boxed: the VM path stays out of this future, which every
             // submission polls on the worker's stack.
@@ -2086,9 +2091,10 @@ impl Worker {
             Ok(session) => session,
             Err(WorkerError::PreparationRefused(reason)) if method != Method::TurnInterrupt => {
                 let blocked_intent = commit.context.intent.clone();
+                let resources = self.resources.clone();
                 let _settled = self
                     .db("vm-session-identity-blocked", move |store| async move {
-                        store::preparation_step(&store, &blocked_intent, async move {
+                        store::preparation_step(&store, &resources, &blocked_intent, async move {
                             Err::<(), WorkerError>(WorkerError::PreparationRefused(reason))
                         })
                         .await
@@ -2214,17 +2220,22 @@ impl Worker {
     /// Write one claimed busy-turn input batch to the running turn. The
     /// durable `submitted` boundary commits before the write; delivery waits
     /// for the bridge acknowledgement (see `steer`).
-    async fn steer(&mut self, intent: TurnIntent, turn: String) -> Result<(), WorkerError> {
+    async fn steer(
+        &mut self,
+        intent: TurnIntent,
+        turn: String,
+        compiled: preparation::PreparedSteer,
+    ) -> Result<(), WorkerError> {
         let operation = steer::operation(&self.account, &intent.attempt_id);
         let id = RequestId::String(operation.clone());
-        let params = steer::params(&intent, &turn);
+        let params = steer::params(&intent, &turn, &compiled.compiled);
         let thread_id = intent.thread_id.clone();
         if let Some(thread) = thread_id.as_deref() {
             self.idle_thread_touched(thread);
         }
         let context = Pending {
             thread: None,
-            compiled: None,
+            compiled: Some(compiled.compiled.clone()),
             intent,
             method: Method::TurnSteer.as_str().into(),
             operation: operation.clone(),
@@ -2249,12 +2260,14 @@ impl Worker {
         let authorized = self
             .db("steer_submitted", move |store| async move {
                 scheduler::lifecycle_transaction_with(&store, move |tx| {
-                    steer::submitted(tx, &save_context, &recovery)
+                    steer::submitted(tx, &save_context, &recovery, &compiled)
                 })
                 .await
             })
             .await?;
         if !authorized {
+            self.wake(context.intent.agent_id.clone(), context.intent.epoch)
+                .await?;
             return Ok(());
         }
         self.pending.insert(id.clone(), Arc::new(context));

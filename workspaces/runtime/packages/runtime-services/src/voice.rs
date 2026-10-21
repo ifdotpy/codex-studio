@@ -496,7 +496,7 @@ pub async fn submit(
                 room: &agent_id,
                 id: &message_id,
                 text: &text,
-                delivery: "queue",
+                delivery: studio_runtime_schema::delivery::DeliveryMoment::CurrentTurn,
                 assets: &[],
             },
             &admission,

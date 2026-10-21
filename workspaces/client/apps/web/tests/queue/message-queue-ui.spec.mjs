@@ -190,34 +190,36 @@ test("message-queue-ui", async ({ browser }) => {
       "First input reaches queue",
     );
     assert.equal(sent.length, 1);
-    assert.equal(sent[0].delivery, "after_turn", "Tab sends after-turn input");
+    assert.equal(sent[0].delivery, "next_turn", "Tab sends next-turn input");
     await panel.waitFor();
     await list.getByText("First input", { exact: true }).waitFor();
     for (const width of [1440, 390]) {
       await page.setViewportSize({ width, height: 960 });
       for (const colorScheme of ["dark", "light"]) {
         await page.emulateMedia({ colorScheme });
-        const size = await panel.evaluate((element) => {
-          const panelBox = element.getBoundingClientRect();
-          const contentBox = element
-            .querySelector("ol")
-            .getBoundingClientRect();
-          const preview = element.querySelector(".message-queue-preview");
-          return {
-            gap: panelBox.bottom - contentBox.bottom,
-            previewHeight: preview.getBoundingClientRect().height,
-            previewText: preview.textContent,
-          };
-        });
-        assert(
-          size.gap >= 0 && size.gap <= 2,
-          `Queue fits its content: ${JSON.stringify(size)}`,
-        );
-        assert(
-          size.previewHeight <= 37,
-          `Short text occupies one row: ${JSON.stringify(size)}`,
-        );
-        assert.equal(size.previewText, "First input");
+        await expect(async () => {
+          const size = await panel.evaluate((element) => {
+            const panelBox = element.getBoundingClientRect();
+            const contentBox = element
+              .querySelector("ol")
+              .getBoundingClientRect();
+            const preview = element.querySelector(".message-queue-preview");
+            return {
+              gap: panelBox.bottom - contentBox.bottom,
+              previewHeight: preview.getBoundingClientRect().height,
+              previewText: preview.textContent,
+            };
+          });
+          assert(
+            size.gap >= 0 && size.gap <= 2,
+            `Queue fits its content: ${JSON.stringify(size)}`,
+          );
+          assert(
+            size.previewHeight <= 37,
+            `Short text occupies one row: ${JSON.stringify(size)}`,
+          );
+          assert.equal(size.previewText, "First input");
+        }).toPass({ timeout: 5000 });
       }
     }
     await page.setViewportSize({ width: 1440, height: 960 });
@@ -236,7 +238,7 @@ test("message-queue-ui", async ({ browser }) => {
       "All inputs are durable",
     );
     assert.equal(sent.length, 3);
-    assert(sent.every((entry) => entry.delivery === "after_turn"));
+    assert(sent.every((entry) => entry.delivery === "next_turn"));
     await button("Edit queued message 1").click();
     await editor().fill("Revised first input");
     await button("Save queued message").click();
@@ -252,8 +254,25 @@ test("message-queue-ui", async ({ browser }) => {
       "Reorder persists",
     );
     await waitForQueueMutationToSettle("Reorder acknowledgement completes");
-    const grip = list.locator("li").nth(2).locator(".message-queue-grip");
-    await grip.dragTo(list.locator("li").nth(1));
+    const reorderedItems = (await queue()).items;
+    await expect
+      .poll(() =>
+        list
+          .locator("li")
+          .evaluateAll((rows) => rows.map((row) => row.dataset.messageId)),
+      )
+      .toEqual(reorderedItems.map((item) => item.id));
+    const sourceId = reorderedItems.find(
+      (item) => item.text === "Second input",
+    ).id;
+    const targetId = reorderedItems.find(
+      (item) => item.text === "Third input",
+    ).id;
+    const grip = list
+      .locator(`li[data-message-id="${sourceId}"]`)
+      .locator(".message-queue-grip");
+    await expect(grip).toHaveAttribute("draggable", "true");
+    await grip.dragTo(list.locator(`li[data-message-id="${targetId}"]`));
     await wait(
       async () => (await queue()).items[1].text === "Second input",
       "Pointer drag reorders the durable queue",
@@ -299,13 +318,16 @@ test("message-queue-ui", async ({ browser }) => {
     );
     assert.deepEqual(sendNowRequests[1], sendNowRequests[0]);
     await wait(
-      async () => (await queue()).items[0]?.delivery === "steer",
-      "Send now changes one queued input to steer",
+      async () => (await queue()).items[0]?.delivery === "current_turn",
+      "Send now promotes the queued input to the current turn",
     );
+    const promoted = (await queue()).items[0];
+    assert.equal(promoted.id, order[0]);
+    assert.equal(promoted.requestedDelivery, "next_turn");
     await page.unrouteAll({ behavior: "wait" });
     expect(errors).toEqual([]);
     console.log(
-      "PASS Tab after-turn queue, pending edit, asset, reorder and reload",
+      "PASS Tab next-turn queue, edit, asset, reorder, reload and send-now retry identity",
     );
   } catch (error) {
     console.error(error);

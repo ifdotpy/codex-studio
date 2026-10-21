@@ -943,7 +943,7 @@ class AgentMoves:
                     raise PermissionError('The event source is outside this execution route')
                 if payload['kind'] not in {'child_result', 'child_stopped', 'agent_message', 'work_review', 'followup', 'user'}:
                     raise ValueError('Unsupported move event kind')
-                self.runtime.enqueue_recovery_event(db, agent, payload['kind'], payload['text'], key)
+                self.runtime.enqueue_recovery_event(db, agent, payload['kind'], payload['text'], key, delivery=payload.get('delivery'))
                 return {'eventId': key}
         if action == 'move_route_status':
             with self.runtime.read_db() as db:

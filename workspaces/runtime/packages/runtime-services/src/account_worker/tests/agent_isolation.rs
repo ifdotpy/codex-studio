@@ -477,3 +477,59 @@ async fn held_agent_keeps_its_unsent_input_and_a_message_starts_it_once() {
     assert_running(&mut worker).await;
     worker.shutdown().await.unwrap();
 }
+
+#[tokio::test]
+async fn corrupt_notification_metadata_is_quarantined_and_other_agents_keep_working() {
+    let state = State::new().await;
+    let a = state.agent.clone();
+    second_agent(&state, "agent-b", "fake-thread-1", "b-input").await;
+    let mut peer = Peer::new();
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    let first = start_agent(&state, &mut peer, &worker, &a, "fake-thread-0").await;
+    peer.accepted(&first).await;
+    state.enqueue_for(&a, "safe-current").await;
+    let owner = a.clone();
+    let epoch = state.epoch;
+    state.bridge.run(move |store|async move {store.transaction_with(move |tx| {
+        for (index,meta) in [json!({"delivery":7}),json!([]),json!({"assets":7})].into_iter().enumerate() {
+            let id=format!("corrupt-meta-{index}");
+            tx.execute("INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) VALUES(?1,?2,'agent_message','{}','pending',0,?3)",rusqlite::params![id,owner,epoch])?;
+            tx.execute("INSERT INTO runtime_event_meta(id,record) VALUES(?1,?2)",rusqlite::params![id,meta.to_string()])?;
+        }
+        Ok::<_,WorkerError>(())
+    }).await}).await.unwrap();
+    state.wake(&worker).await;
+    let steer = peer.write("turn/steer").await;
+    assert!(
+        steer["params"]["input"]
+            .to_string()
+            .contains("safe-current")
+    );
+    assert!(
+        !steer["params"]["input"]
+            .to_string()
+            .contains("corrupt-meta")
+    );
+    state
+        .bridge
+        .run(|store| async move {
+            for index in 0..3 {
+                let row: (String, String) = store.read()?.query_row(
+                    "SELECT status,error FROM runtime_events WHERE id=?1",
+                    [format!("corrupt-meta-{index}")],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )?;
+                assert_eq!(row.0, "failed");
+                assert!(row.1.contains("runtime_event_meta"));
+            }
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let second = start_agent(&state, &mut peer, &worker, "agent-b", "fake-thread-1").await;
+    peer.reply(&second, json!({"turn":{"id":"turn-b"}})).await;
+    assert_eq!(state.event_status("b-input").await, "delivered");
+    assert_ne!(record_of(&state, &a).await["status"], "failed");
+    assert_running(&mut worker).await;
+    worker.shutdown().await.unwrap();
+}

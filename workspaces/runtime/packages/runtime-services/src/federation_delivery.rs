@@ -10,6 +10,7 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
+use studio_runtime_schema::delivery::DeliveryMoment;
 use studio_runtime_store::federation_messaging::{
     FederationMessagingRepository as Repo, FederationTable as Table,
 };
@@ -579,6 +580,7 @@ pub async fn send_message(
     room_id: &str,
     text: &str,
     key: &str,
+    delivery: DeliveryMoment,
     now: f64,
 ) -> Result<Value> {
     let store_for_read = Arc::clone(&store);
@@ -596,7 +598,7 @@ pub async fn send_message(
     store
         .transaction_with(move |tx| {
             effects::check_identity(tx, identity.as_ref())?;
-            send_message_in_transaction(tx, &sender, &room_id, &text, &key, now)
+            send_message_in_transaction(tx, &sender, &room_id, &text, &key, delivery, now)
         })
         .await
 }
@@ -607,6 +609,7 @@ pub async fn user_message(
     room_id: &str,
     text: &str,
     key: &str,
+    delivery: DeliveryMoment,
     now: f64,
 ) -> Result<Value> {
     let text = crate::event_write::python_strip(text);
@@ -641,7 +644,7 @@ pub async fn user_message(
     )
     .await
     .map_err(|_| Error::Unavailable("federation/room-read-worker"))??;
-    send_message(store, &sender, room_id, text, key, now).await
+    send_message(store, &sender, room_id, text, key, delivery, now).await
 }
 
 /// Queue a federation room message in the caller's owning transaction. This is
@@ -654,6 +657,7 @@ pub fn send_message_in_transaction(
     room_id: &str,
     text: &str,
     key: &str,
+    delivery: DeliveryMoment,
     now: f64,
 ) -> Result<Value> {
     let text = crate::event_write::python_strip(text);
@@ -689,6 +693,28 @@ pub fn send_message_in_transaction(
         return Err(Error::Forbidden("sender is not an approved room member"));
     }
     let sender_agent = crate::event_write::checked_agent(tx, sender)?;
+    let signature = crate::event_write::request_signature(&json!({
+        "sender":sender,"room":room_id,"text":text,"delivery":delivery,
+    }));
+    if let Some(saved) = crate::event_write::read_receipt(
+        tx,
+        Some(&message_id),
+        &signature,
+        "runtime_chat_messages",
+        &message_id,
+        |value| {
+            value["id"] == message_id
+                && value["room"] == room_id
+                && value["deliveries"].is_object()
+                && value["status"].is_string()
+        },
+    )
+    .map_err(|error| match error {
+        crate::event_write::EventWriteError::Conflict(message) => Error::Conflict(message),
+        other => Error::Event(other),
+    })? {
+        return Ok(saved);
+    }
     let existing: Option<(String, String, String, String)> = tx
         .query_row(
             "SELECT room,sender,text,deliveries FROM runtime_chat_messages WHERE id=?1",
@@ -698,6 +724,11 @@ pub fn send_message_in_transaction(
         .optional()
         .map_err(StoreError::from)?;
     if let Some((prior_room, prior_sender, prior_text, raw)) = existing {
+        if delivery != DeliveryMoment::CurrentTurn {
+            return Err(Error::Conflict(
+                "legacy message identity has different delivery timing",
+            ));
+        }
         if (
             prior_room.as_str(),
             prior_sender.as_str(),
@@ -743,8 +774,7 @@ pub fn send_message_in_transaction(
         .unwrap_or(0)
         .checked_add(1)
         .ok_or(Error::Invalid("room.sequence"))?;
-    let payload =
-        json!({"sender":sender,"senderName":name,"text":text,"created":now,"sequence":sequence});
+    let payload = json!({"sender":sender,"senderName":name,"text":text,"created":now,"sequence":sequence,"delivery":delivery});
     let item = json!({"id":message_id,"kind":"chat-message","room":room_id,"payload":payload,"created":now,"status":"queued","attempts":0,"nextAt":0,"error":null});
     let item = core::decide_queue(
         Repo::record(tx, Table::Outbox, &message_id, &peer)?.as_ref(),
@@ -765,10 +795,16 @@ pub fn send_message_in_transaction(
         let agent = AgentRepository::get(tx, &AgentId::from(member))?
             .ok_or(Error::Invalid("room.localMembers"))?;
         if !crate::event_write::truthy(agent.extra.get("deletedAt")) {
+            let event_id = format!("federation-local:{room_id}:{message_id}:{member}");
+            studio_runtime_store::QueueWriteRepository::put_metadata(
+                tx,
+                &event_id,
+                &json!({"delivery":delivery}),
+            )?;
             crate::event_write::enqueue_event(
                 tx,
                 &agent,
-                format!("federation-local:{room_id}:{message_id}:{member}"),
+                event_id,
                 "agent_message",
                 transport::canonical_json(&event)?,
                 now,
@@ -779,7 +815,9 @@ pub fn send_message_in_transaction(
     room["sequence"] = json!(sequence);
     room["updated"] = json!(now);
     effects::save_room(tx, &peer, &room)?;
-    Ok(json!({"id":message_id,"room":room_id,"deliveries":deliveries,"status":"queued"}))
+    let result = json!({"id":message_id,"room":room_id,"deliveries":deliveries,"status":"queued"});
+    crate::event_write::save_receipt(tx, Some(&message_id), &signature, &result)?;
+    Ok(result)
 }
 
 #[cfg(test)]

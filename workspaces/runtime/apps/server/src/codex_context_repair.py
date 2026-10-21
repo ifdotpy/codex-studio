@@ -13,6 +13,7 @@ from pathlib import Path
 import time
 import uuid
 
+from codex_delivery import DeliveryMoment, normalize_delivery
 from codex_efficiency import EfficiencyMixin
 
 ACTIVE = {'preparing', 'submitted', 'unknown', 'ready'}
@@ -108,7 +109,7 @@ def _settle_offline_steer(db, row):
     if row['status'] != 'uncertain' or row['error'] != 'Codex app-server is offline' or not row['metadata']:
         return False
     meta = json.loads(row['metadata'])
-    if meta.get('delivery') != 'steer' or not meta.get('native'):
+    if normalize_delivery(meta.get('delivery')) is not DeliveryMoment.CURRENT_TURN or not meta.get('native'):
         return False
     meta['notSubmitted'] = True
     db.execute("UPDATE runtime_event_meta SET record=? WHERE id=?", (json.dumps(meta), row['id']))

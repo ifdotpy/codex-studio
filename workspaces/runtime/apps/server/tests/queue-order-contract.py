@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from runtime_test_environment import make_runtime
+from codex_delivery import DeliveryMoment
 from server_test_waits import HANG_GUARD_SECONDS
 
 import base64
@@ -52,35 +53,30 @@ class QueueOrderContract(unittest.TestCase):
     def order(self, key):
         return [row["id"] for row in self.queue(key)["items"]]
 
-    def test_composer_messages_start_separate_turns_in_order_across_restart(self):
+    def test_composer_messages_drain_one_batch_in_order_across_restart(self):
         key = self.lead()["id"]
         for index in range(3):
-            self.runtime.send(key, f"Composer {index}", f"composer-{index}", delivery="after_turn")
-        for index in range(3):
-            self.runtime.dispatch()
-            f.eventually(lambda: self.runtime.agent(key).get("turnId") and
-                         self.runtime.delivery_receipt(f"composer-{index}")["status"] == "delivered")
-            starts = [params for method, params in self.runtime.server.calls if method == "turn/start"]
-            self.assertEqual(len(starts), 1 if index == 0 else index)
-            self.assertEqual(starts[-1]["clientUserMessageId"], f"composer-{index}")
-            self.assertNotIn(f"Composer {index + 1}", starts[-1]["input"][0]["text"])
-            turn = self.runtime.agent(key)["turnId"]
-            thread = self.runtime.agent(key)["threadId"]
-            self.runtime.server.complete(thread, turn)
-            f.eventually(lambda: not self.runtime.agent(key).get("inFlight"))
-            if index == 0:
-                self.runtime.close()
-                self.runtime = make_runtime(f.ControlledRuntime, self.state, f.WorkspaceServer)
-                # The fake native service loses its counter on restart. Native
-                # turn identities do not repeat across a real service restart.
-                self.runtime.connect().seq = 100
-        self.assertEqual([self.runtime.delivery_receipt(f"composer-{i}")["status"] for i in range(3)],
-                         ["delivered"] * 3)
+            self.runtime.send(key, f"Composer {index}", f"composer-{index}", delivery=DeliveryMoment.NEXT_TURN)
+        self.runtime.close()
+        self.runtime = make_runtime(f.ControlledRuntime, self.state, f.WorkspaceServer)
+        self.runtime.dispatch()
+        f.eventually(lambda: self.runtime.agent(key).get("turnId") and all(
+            self.runtime.delivery_receipt(f"composer-{index}")["status"] == "delivered" for index in range(3)))
+        starts = [params for method, params in self.runtime.server.calls if method == "turn/start"]
+        self.assertEqual(len(starts), 1)
+        self.assertEqual(starts[0]["clientUserMessageId"], "composer-0")
+        text = starts[0]["input"][0]["text"]
+        self.assertTrue(text.startswith("Composer 0\n\nComposer 1\n\nComposer 2"), text)
+        with self.runtime.read_db() as db:
+            stored = [json.loads(row[0]) for row in db.execute("SELECT record FROM runtime_items WHERE agent=?", (key,))]
+        inputs = [entry for item in stored for entry in item.get("inputs", []) if entry.get("id", "").startswith("composer-")]
+        self.assertEqual([entry["id"] for entry in inputs], [f"composer-{index}" for index in range(3)])
+        self.assertEqual(self.queue(key)["items"], [])
 
     def test_send_now_reuses_receipt_and_steers_one_message(self):
         lead = self.start(self.lead())
         key = lead["id"]
-        self.runtime.send(key, "Later", "send-now-id", delivery="after_turn")
+        self.runtime.send(key, "Later", "send-now-id", delivery=DeliveryMoment.NEXT_TURN)
         request = self.request(key, "send_now", message_id="send-now-id", expectedText="Later")
         receipt = self.runtime.queue_action(key, request)
         self.assertEqual(self.runtime.queue_action(key, request), receipt)
@@ -96,7 +92,7 @@ class QueueOrderContract(unittest.TestCase):
     def test_rejected_send_now_remains_queued_with_error(self):
         lead = self.start(self.lead())
         key = lead["id"]
-        self.runtime.send(key, "Later", "send-now-rejected", delivery="after_turn")
+        self.runtime.send(key, "Later", "send-now-rejected", delivery=DeliveryMoment.NEXT_TURN)
         request = self.request(key, "send_now", message_id="send-now-rejected")
         self.runtime.queue_action(key, request)
         original_call = self.runtime.server.call
@@ -236,14 +232,14 @@ class QueueOrderContract(unittest.TestCase):
     def test_assets_and_delivery_metadata_survive_reorder_and_text_removal(self):
         key = self.seed(1)
         asset = self.runtime.upload_asset({"agent": key, "name": "report.md", "base64": base64.b64encode(b"# Report").decode()})
-        self.runtime.send(key, "Report", "attachment", assets=[asset["id"]], delivery="after_tool")
+        self.runtime.send(key, "Report", "attachment", assets=[asset["id"]], delivery=DeliveryMoment.CURRENT_TURN)
         before = self.metadata("attachment")
         self.runtime.queue_action(key, self.request(key, ordered_ids=["attachment", "message-0"]))
         self.assertEqual(self.metadata("attachment"), before)
         row = self.queue(key)["items"][0]
-        # The requested mode is recorded for the queue view; delivery ignores it.
-        self.assertEqual(row["delivery"], "after_tool")
-        self.assertEqual(row["requestedDelivery"], "after_tool")
+        # Canonical timing and original requested timing survive queue mutations.
+        self.assertEqual(row["delivery"], DeliveryMoment.CURRENT_TURN)
+        self.assertEqual(row["requestedDelivery"], DeliveryMoment.CURRENT_TURN)
         self.assertEqual(row["assets"][0]["id"], asset["id"])
         self.assertNotIn("path", row["assets"][0])
         self.runtime.queue_action(key, self.request(key, "edit", message_id="attachment", text=""))

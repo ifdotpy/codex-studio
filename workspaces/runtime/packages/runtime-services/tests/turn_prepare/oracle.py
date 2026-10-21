@@ -24,6 +24,7 @@ from unittest.mock import patch
 from contextlib import nullcontext
 
 from codex_runtime import Runtime
+from codex_shared_values import MAX_TURN_ATTACHMENTS
 import codex_runtime
 from codex_efficiency import EfficiencyMixin, remember_context_manifest
 import codex_efficiency as efficiency
@@ -455,7 +456,7 @@ def run(case, root):
             return dict(snapshot=convert_tokens(s),events=rows,receipt=receipt,current=convert_tokens(current),before=convert_tokens(before),expected=normalize_output(expected,segments),prepared=convert_tokens({k:v for k,v in expected.items() if k not in ("delivery","stored","clock_segments","ok")}),tokens=TOKENS,segments=segments,clock_segments=clock_segments)
 
         except (ValueError,KeyError,OverflowError,OSError) as exc:
-            known={"Attach up to eight files":"TooManyAttachments","Unknown attachment":"UnknownAttachment","This agent was deleted":"UnknownAttachment","Attachment belongs to another conversation":"AttachmentOwnership"}
+            known={f"Attach up to {MAX_TURN_ATTACHMENTS} files":"TooManyAttachments","Unknown attachment":"UnknownAttachment","This agent was deleted":"UnknownAttachment","Attachment belongs to another conversation":"AttachmentOwnership"}
             error=known.get(str(exc))
             if error is None: raise
             return dict(snapshot=convert_tokens(s),events=rows,expected=dict(ok=False,error=error),tokens=TOKENS)

@@ -24,6 +24,15 @@ indentation; Oxfmt intentionally does not own this file. Run
 with their Rust owners in `runtime-schema`. TypeScript types are rendered from
 the full document so the generated client retains its titles and descriptions.
 
+Message delivery timing is owned by
+[`DeliveryMoment`](../runtime-schema/src/delivery.rs). The managed user-message
+request accepts canonical timing choices and historical spellings through
+`DeliveryMomentInput`; its handler normalizes those values before entering the
+service. `build.rs` binds that generated field directly to the shared enum with
+the owner's explicit serde compatibility codec, so malformed timing fails during
+deserialization and an omitted field keeps its default. Queue and transcript responses expose canonical timing. Persisted old
+events remain readable through boundary normalization without a migration.
+
 The server removes only OpenAPI documentation metadata, sorts the documented
 schema unions and map keys explicitly, then hashes compact JSON with SHA-256.
 This is the Rust implementation of Python's canonicalizer-v3 rules, so editing

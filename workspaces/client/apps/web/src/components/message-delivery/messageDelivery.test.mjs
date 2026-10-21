@@ -157,12 +157,41 @@ it("retires delivered local cards outside the page only with exact saved input p
   ]);
 });
 
+it("normalizes legacy next-turn rows without rewriting their retry payload", () => {
+  const legacy = {
+    ...receipt,
+    body: { ...receipt.body, delivery: "after_turn" },
+  };
+  const row = outgoingTranscript([], [legacy]).items[0];
+  assert.equal(row.requestedDelivery, "next_turn");
+  assert.equal(legacy.body.delivery, "after_turn");
+  assert.equal(
+    outgoingTranscript([], [receipt]).items[0].requestedDelivery,
+    "current_turn",
+  );
+  for (const delivery of ["later", 1, false]) {
+    assert.throws(
+      () =>
+        outgoingTranscript(
+          [],
+          [{ ...receipt, body: { ...receipt.body, delivery } }],
+        ),
+      /Invalid delivery moment/,
+    );
+  }
+});
+
 it("keeps explicit delivery modes queued until a message is dispatched", () => {
-  for (const delivery of ["after_tool", "steer"]) {
+  for (const delivery of ["after_tool", "steer", "current_turn"]) {
     const local = { ...receipt, body: { ...receipt.body, delivery } };
     for (const source of [[], [pending]]) {
       const message = outgoingTranscript(source, [local]).items[0];
-      assert.equal(message.requestedDelivery, delivery);
+      assert.equal(message.requestedDelivery, "current_turn");
+      assert.equal(
+        local.body.delivery,
+        delivery,
+        "Original retry payload remains unchanged",
+      );
       assert.equal(explicitQueue(message), true);
       assert.equal(deliveryLabel(message), "Queued");
       assert.equal(dispatchedMessage(message), false);
@@ -312,7 +341,7 @@ it("updates a matching receipt without replacing existing transcript content", (
     assets: [{ id: "server-asset" }],
     pending: false,
     materialized: true,
-    requestedDelivery: "after_turn",
+    requestedDelivery: "next_turn",
     deliveryStatus: "sent",
   };
   const entry = {
@@ -327,7 +356,7 @@ it("updates a matching receipt without replacing existing transcript content", (
   assert.equal(result.items.length, 1);
   assert.equal(result.items[0].text, "server text");
   assert.deepEqual(result.items[0].assets, [{ id: "server-asset" }]);
-  assert.equal(result.items[0].requestedDelivery, "after_turn");
+  assert.equal(result.items[0].requestedDelivery, "next_turn");
   assert.equal(result.items[0].deliveryStatus, "sent");
   assert.equal(result.items[0].deliveryError, undefined);
   assert.equal(result.items[0], durable);
@@ -366,18 +395,18 @@ it("restores attachments and requested delivery to a local transcript row", () =
     ],
   );
   assert.deepEqual(result.items[0].assets, [{ id: "asset-one" }]);
-  assert.equal(result.items[0].requestedDelivery, "after_tool");
+  assert.equal(result.items[0].requestedDelivery, "current_turn");
   assert.deepEqual(result.observed, []);
 
   const existingDelivery = {
     ...materializing,
-    requestedDelivery: "after_turn",
+    requestedDelivery: "next_turn",
   };
   const unchangedDelivery = outgoingTranscript(
     [existingDelivery],
     [{ ...receipt, body: { ...receipt.body, delivery: "after_tool" } }],
   );
-  assert.equal(unchangedDelivery.items[0].requestedDelivery, "after_turn");
+  assert.equal(unchangedDelivery.items[0].requestedDelivery, "next_turn");
   assert.equal(unchangedDelivery.items[0], existingDelivery);
 });
 
@@ -443,7 +472,7 @@ it("creates local receipt rows with display content and accepted queue status", 
   assert.equal(row.deliveryStatus, "accepted");
   assert.equal(row.deliveryError, "receipt unavailable");
   assert.equal(row.localDelivery, true);
-  assert.equal(row.requestedDelivery, "after_turn");
+  assert.equal(row.requestedDelivery, "next_turn");
 
   const queued = outgoingTranscript(
     [],

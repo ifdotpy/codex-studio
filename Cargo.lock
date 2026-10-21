@@ -5484,6 +5484,7 @@ version = "0.1.0"
 dependencies = [
  "data-encoding",
  "jsonschema",
+ "serde",
  "serde_json",
  "sha2 0.11.0",
 ]

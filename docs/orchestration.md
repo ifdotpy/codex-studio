@@ -56,6 +56,24 @@ Consecutive tool calls share one collapsed activity row. Running calls and failu
 Open the row to inspect compact tool entries. Open an entry for its command, arguments, and output.
 New calls and output updates do not reopen a group that the user closed.
 Enter sends a message. Shift + Enter inserts a new line.
+
+Message APIs and agent tools use the shared [DeliveryMoment contract](../workspaces/runtime/packages/runtime-schema/src/delivery.rs).
+`current_turn` joins the active turn at its next supported input boundary; when
+no turn is active it can start one. `next_turn` waits until the active turn ends.
+This is delivery timing, not permission to interrupt a command. `orchestration_message`
+and `orchestration_send` can specify `delivery`; generated system events also carry a
+moment. Routine progress defaults to next-turn delivery, while actionable input
+defaults to current-turn delivery. An explicit sender choice overrides the default.
+
+Both moments use the same durable event queue. Pending next-turn input does not
+block eligible current-turn events. Compatible events already available are
+prepared together, preserving their identities and source labels; notification
+count alone does not require separate model turns. Commands, attachments and
+shared-room replies retain their admission rules. A lost provider reply leaves
+an uncertain delivery for recovery, not permission to resend it. Historical
+spellings are read through the shared compatibility parser; new callers should
+use the canonical enum values.
+
 Workers appear on the right. Select a worker to read its conversation, then select **Lead** to return.
 On a narrow screen, **Team** opens the worker panel.
 Worker cards show the original assignment and the last report from a completed
@@ -285,9 +303,17 @@ The lead receives these additional tools:
 | `orchestration_cancel_monitor` | Cancel a command watch.                                                                                                      |
 | `orchestration_request`        | List, recover, or cancel your own durable tool requests.                                                                     |
 
+Current sender tool declarations in the Rust preparation bundle are checked against
+[`codex_runtime.TOOLS`](../workspaces/runtime/apps/server/src/codex_runtime.py).
+After changing those declarations, refresh the current bundle with
+`python3 workspaces/runtime/apps/server/src/codex_python.py --exec -B workspaces/runtime/apps/server/src/generate_delivery_tools.py --write`.
+The fast delivery contract checks this production bundle. Historical native tool
+snapshots remain frozen for existing sessions.
+
 After delegation, the lead can finish its turn. The runtime sends each child
 result into an active lead turn or starts a turn when idle, including after a final answer.
-Up to 32 pending events are combined in one input. Repeated completion notifications share an event id.
+Compatible eligible events drain in one input, subject to attachment and native-command boundaries.
+Repeated completion notifications share an event id.
 A worker with pending children or command watches stays in the waiting state.
 Its parent receives a result after that work settles. A reported result still needs review.
 
@@ -669,9 +695,10 @@ The underlying Codex configuration supplies model access, skills, tools, MCP ser
 context management and permissions. Agent transcripts include answers, tool results,
 plans and changes. Internal reasoning records are not displayed.
 
-Enter sends the composer draft. Native delivery starts an idle turn or steers an active turn.
+Enter sends the composer draft with current-turn delivery. Native delivery starts an idle turn or steers an active turn.
 Parallel tools must finish before the active turn consumes the input. Compaction can delay it.
-Tab and Shift+Tab move focus. The `/model` command uses Enter.
+Tab queues a nonempty draft for the next turn. Empty Tab and Shift+Tab move focus. The `/model` command uses Enter.
+Queued user messages drain together when eligible, preserving their original message identities.
 The queue appears once, above the composer. Its numbered rows support edit,
 delete, drag reorder, and up/down controls. Edits preserve attachments and the
 composer draft. Queue revisions reject stale changes. Durable operation receipts
@@ -799,7 +826,6 @@ See [voice lifecycle checks](../workspaces/runtime/apps/server/tests/native-voic
 The installed Codex 0.155.1 accepts `turn/start` into an active or idle turn.
 Repeating an active `turn/start` with the same `clientUserMessageId` adds duplicate model input.
 Studio reserves each batch once and never resubmits an uncertain batch.
-The `delivery` request field accepts legacy values and has no effect.
 The outbox holds input for a stopped agent, account move, context repair,
 native Review or Compact action, new turn slot wait, or active shared radio turn.
 Private input held during a radio turn enters the native delivery path after that turn ends.

@@ -393,7 +393,7 @@ test("message delivery ui", async ({ browser: _browser }) => {
           true,
           `${mode}: submit retains composer focus`,
         );
-        assert.equal(sent.body.delivery, "after_tool");
+        assert.equal(sent.body.delivery, "current_turn");
         return sent;
       };
       const accept = async (sent, status = "accepted", expectedDraft = "") => {
@@ -785,7 +785,7 @@ test("message delivery ui", async ({ browser: _browser }) => {
           kind: "user",
           text: materializedText,
           status: "pending",
-          delivery: "after_tool",
+          delivery: "current_turn",
         },
       ]);
       await accept(materialized, "queued");

@@ -52,7 +52,7 @@ async function setupSendingRemovePointer(page) {
       id: crypto.randomUUID(),
       room: lead.id,
       text: "Pointer overlap while sending",
-      delivery: "after_tool",
+      delivery: "current_turn",
     }),
   }).then(async (response) => {
     assert.equal(response.status, 200, await response.text());
@@ -170,10 +170,10 @@ test("remove-sending-browser", async ({ page: fixturePage }) => {
         request_id: crypto.randomUUID(),
       });
   for (const [room, text, delivery] of [
-    [lead.id, "Remove one", "after_tool"],
-    [lead.id, "Remove two", "after_tool"],
-    [other.id, "Remove in another chat", "after_tool"],
-    [lead.id, "Keep after turn", "after_turn"],
+    [lead.id, "Remove one", "current_turn"],
+    [lead.id, "Remove two", "current_turn"],
+    [other.id, "Remove in another chat", "current_turn"],
+    [lead.id, "Keep after turn", "next_turn"],
   ])
     await post("/api/messages", {
       id: crypto.randomUUID(),

@@ -1,3 +1,4 @@
+import { MAX_TURN_ATTACHMENTS } from "../generated/sharedValues";
 import { useServerApi } from "../servers/ServerServicesContext";
 import { useServerFileDialogs } from "../servers/ServerServicesContext";
 import { Button, Loader } from "@mantine/core";
@@ -71,7 +72,9 @@ export default function ComposerAttachments(p: {
         className="attach-button"
         label="Attach files"
         title="Attach files"
-        disabled={p.disabled || p.uploading || p.assets.length >= 8}
+        disabled={
+          p.disabled || p.uploading || p.assets.length >= MAX_TURN_ATTACHMENTS
+        }
         onClick={() => {
           if (!canPickFiles()) {
             input.current?.click();

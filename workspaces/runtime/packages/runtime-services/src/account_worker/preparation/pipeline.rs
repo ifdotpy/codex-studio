@@ -61,6 +61,367 @@ async fn compile_turn(
     .map_err(|_| WorkerError::TaskFailed)
 }
 
+/// Materialize compiler-requested result artifacts once, outside the writer.
+async fn compile_with_artifacts(
+    store: &RuntimeStore,
+    snapshot: turn::PreparationSnapshot,
+    events: Vec<turn::Event>,
+) -> Result<
+    (
+        turn::PreparationSnapshot,
+        Vec<turn::Event>,
+        turn::PreparedSubmission,
+    ),
+    WorkerError,
+> {
+    let (mut turn_snapshot, mut events, first_compile) = compile_turn(snapshot, events).await?;
+    let compiled = match first_compile {
+        Ok(compiled) => compiled,
+        Err(turn::PrepareError::ArtifactsRequired(artifacts)) => {
+            for artifact in artifacts {
+                let state_root = store.root().to_path_buf();
+                let relative_path = artifact.relative_path.clone();
+                let body = artifact.body.clone();
+                let path = studio_runtime_process::blocking_pool::spawn_blocking(
+                    "runtime-services/account_worker_ready_materialize_artifact",
+                    move || materialize(&state_root, &relative_path, &body),
+                )
+                .await
+                .map_err(|_| WorkerError::TaskFailed)??;
+                turn_snapshot.artifact_paths.insert(artifact.event_id, path);
+            }
+            let (snapshot, compiled_events, result) = compile_turn(turn_snapshot, events).await?;
+            turn_snapshot = snapshot;
+            events = compiled_events;
+            result.map_err(|e| refusal(e.to_string()))?
+        }
+        Err(e) => return Err(refusal(e.to_string())),
+    };
+    Ok((turn_snapshot, events, compiled))
+}
+
+/// Canonical transcript projection shared by turn starts and acknowledged steers.
+pub(crate) fn compiled_submission(
+    intent: &TurnIntent,
+    compiled: &turn::PreparedSubmission,
+) -> crate::notification_dispatch::PreparedSubmission {
+    crate::notification_dispatch::PreparedSubmission {
+        first_event_id: compiled.event_ids[0].clone(),
+        submitted_at: compiled.transcript.at,
+        created_at: intent.events[0].created,
+        text: compiled
+            .fulltext
+            .clone()
+            .unwrap_or_else(|| compiled.transcript.text.clone()),
+        inputs: intent
+            .events
+            .iter()
+            .zip(&compiled.transcript.inputs)
+            .map(|(e, t)| crate::notification_dispatch::SubmittedInput {
+                id: e.id.clone(),
+                at: e.created,
+                kind: e.kind.clone(),
+                text: e.text.clone(),
+                assets: json!(t.assets),
+            })
+            .collect(),
+        assets: json!(compiled.transcript.assets),
+        radio_authorized: intent.radio_authorized,
+    }
+}
+
+/// Busy input uses the same compiler and authorization as a turn start, while
+/// retaining the running turn's startAttempt and provider settings.
+pub(crate) struct PreparedSteer {
+    pub compiled: turn::PreparedSubmission,
+    snapshot: turn::PreparationSnapshot,
+    filesystem: FilesystemSnapshot,
+    resources: PreparationResources,
+    state_root: PathBuf,
+}
+
+pub(crate) async fn prepare_steer(
+    store: Arc<RuntimeStore>,
+    resources: &PreparationResources,
+    intent: &TurnIntent,
+    expected_turn: &str,
+) -> Result<PreparedSteer, WorkerError> {
+    let capture_store = Arc::clone(&store);
+    let capture_intent = intent.clone();
+    let filesystem = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/steer_authorization_snapshot",
+        move || FilesystemSnapshot::capture_for_authorization(&capture_store, &capture_intent),
+    )
+    .await
+    .map_err(|_| WorkerError::TaskFailed)??;
+    let snapshot_resources = resources.clone();
+    let snapshot_intent = intent.clone();
+    let snapshot_filesystem = filesystem.clone();
+    let state_root = store.root().to_path_buf();
+    let snapshot_root = state_root.clone();
+    let (mut snapshot, events) = scheduler::lifecycle_transaction_with(&store, move |tx| {
+        let record = steer_preconditions(tx, &snapshot_intent, &snapshot_filesystem)?;
+        submission_snapshot(
+            tx,
+            &snapshot_resources,
+            &record,
+            &snapshot_intent,
+            &snapshot_root,
+        )
+    })
+    .await?;
+    snapshot.operation_id = super::super::steer::operation(&intent.account_key, &intent.attempt_id);
+    let (snapshot, _, compiled) = compile_with_artifacts(&store, snapshot, events).await?;
+    let transport_intent = intent.clone();
+    let expected_turn = expected_turn.to_owned();
+    let compiled = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/steer_transport_admission",
+        move || {
+            super::super::steer::validate_transport(&transport_intent, &expected_turn, &compiled)?;
+            Ok::<_, WorkerError>(compiled)
+        },
+    )
+    .await
+    .map_err(|_| WorkerError::TaskFailed)??;
+    Ok(PreparedSteer {
+        compiled,
+        snapshot,
+        filesystem,
+        resources: resources.clone(),
+        state_root,
+    })
+}
+
+fn steer_preconditions(
+    tx: &Transaction<'_>,
+    intent: &TurnIntent,
+    filesystem: &FilesystemSnapshot,
+) -> Result<Value, WorkerError> {
+    let record = agent(tx, &intent.agent_id)?.value();
+    if record["epoch"] != intent.epoch
+        || record["status"] != "running"
+        || record["autoWake"] != true
+        || record["threadId"].as_str() != intent.thread_id.as_deref()
+        || record
+            .get("accountKey")
+            .and_then(Value::as_str)
+            .unwrap_or("default")
+            != intent.account_key
+        || record["nativeFailureHold"] == true
+        || native_thread_blocked(&record)
+        || context_repair_blocked(&record)
+    {
+        return Err(refusal("steer-preparation/ownership-changed".into()));
+    }
+    gates::budget_admission(record.get("tokenBudget")).map_err(|e| refusal(e.to_string()))?;
+    authorize(tx, intent, filesystem, None)?;
+    selected_inputs_current(tx, intent)?;
+    Ok(record)
+}
+
+pub(crate) fn commit_steer(
+    tx: &Transaction<'_>,
+    intent: &TurnIntent,
+    prepared: &PreparedSteer,
+) -> Result<(), WorkerError> {
+    let record = steer_preconditions(tx, intent, &prepared.filesystem)?;
+    let (mut snapshot, events) = submission_snapshot(
+        tx,
+        &prepared.resources,
+        &record,
+        intent,
+        &prepared.state_root,
+    )?;
+    snapshot.operation_id = prepared.snapshot.operation_id.clone();
+    snapshot.prepared_at = prepared.snapshot.prepared_at;
+    snapshot.artifact_paths = prepared.snapshot.artifact_paths.clone();
+    let current = turn::compile(&snapshot, &events).map_err(|e| refusal(e.to_string()))?;
+    if serde_json::to_value(current).map_err(|_| invalid("steer compilation"))?
+        != serde_json::to_value(&prepared.compiled).map_err(|_| invalid("steer compilation"))?
+    {
+        return Err(refusal("steer-preparation/snapshot-changed".into()));
+    }
+    Ok(())
+}
+
+/// Diagnose only event-local authorization/evidence failures; global ownership,
+/// budgets and context failures keep the whole batch pending with a visible error.
+fn rejected_notifications(
+    tx: &Transaction<'_>,
+    resources: &PreparationResources,
+    intent: &TurnIntent,
+    filesystem: Option<&FilesystemSnapshot>,
+    state_root: &Path,
+) -> Result<BTreeMap<String, String>, WorkerError> {
+    let mut rejected = BTreeMap::new();
+    if let Err(error) = selected_inputs_current(tx, intent) {
+        return match error {
+            WorkerError::PreparationRefused(_) => Ok(rejected),
+            error => Err(error),
+        };
+    }
+    let record = agent(tx, &intent.agent_id)?.value();
+    // Global ownership/budget/recipient failures must never be diagnosed as a
+    // bad notification merely because that notification shared the batch.
+    if record["epoch"] != intent.epoch
+        || record["autoWake"] != true
+        || record
+            .get("accountKey")
+            .and_then(Value::as_str)
+            .unwrap_or("default")
+            != intent.account_key
+        || gates::budget_admission(record.get("tokenBudget")).is_err()
+        || intent.radio_authorized
+        || record
+            .get("rootId")
+            .and_then(Value::as_str)
+            .is_none_or(str::is_empty)
+        || record.get("deletedAt").is_some_and(|v| !v.is_null())
+    {
+        return Ok(rejected);
+    }
+    if let Some(filesystem) = filesystem {
+        let mut single = intent.clone();
+        single.events.clear();
+        if authorize(tx, &single, filesystem, None).is_err() {
+            return Ok(rejected);
+        }
+        for event in intent.events.iter().filter(|e| e.kind != "user") {
+            single.events.push(event.clone());
+            match authorize(tx, &single, filesystem, None) {
+                Ok(()) => {}
+                Err(WorkerError::PreparationRefused(reason)) => {
+                    rejected.insert(event.id.clone(), reason);
+                }
+                Err(error) => return Err(error),
+            }
+            single.events.clear();
+        }
+    }
+    if let Ok((_, events)) = submission_snapshot(tx, resources, &record, intent, state_root) {
+        rejected.extend(turn::invalid_notification_evidence(&events));
+    }
+    Ok(rejected)
+}
+
+fn refuse_steer_in_transaction(
+    tx: &Transaction<'_>,
+    resources: &PreparationResources,
+    intent: &TurnIntent,
+    filesystem: Option<&FilesystemSnapshot>,
+    state_root: &Path,
+    reason: &str,
+) -> Result<bool, WorkerError> {
+    let rejected = rejected_notifications(tx, resources, intent, filesystem, state_root)?;
+    super::super::steer::preparation_refused(tx, intent, reason, &rejected)
+}
+
+fn refuse_idle_in_transaction(
+    tx: &Transaction<'_>,
+    resources: &PreparationResources,
+    intent: &TurnIntent,
+    filesystem: Option<&FilesystemSnapshot>,
+    state_root: &Path,
+    reason: &str,
+) -> Result<bool, WorkerError> {
+    let rejected = rejected_notifications(tx, resources, intent, filesystem, state_root)?;
+    if rejected.is_empty()
+        || !SchedulerRepository::requeue_unsubmitted_attempt(tx, &intent.identity())?
+    {
+        return Ok(false);
+    }
+    SchedulerRepository::quarantine_pending_events(
+        tx,
+        &intent.agent_id,
+        intent.epoch,
+        &rejected,
+        reason,
+    )?;
+    Ok(true)
+}
+
+pub(crate) async fn refuse_idle(
+    store: &Arc<RuntimeStore>,
+    resources: &PreparationResources,
+    intent: &TurnIntent,
+    reason: &str,
+) -> Result<bool, WorkerError> {
+    let capture_store = Arc::clone(store);
+    let capture_intent = intent.clone();
+    let filesystem = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/idle_refusal_snapshot",
+        move || FilesystemSnapshot::capture_for_authorization(&capture_store, &capture_intent),
+    )
+    .await
+    .map_err(|_| WorkerError::TaskFailed)?
+    .ok();
+    let resources = resources.clone();
+    let intent = intent.clone();
+    let reason = reason.to_owned();
+    let root = store.root().to_path_buf();
+    scheduler::lifecycle_transaction_with(store, move |tx| {
+        refuse_idle_in_transaction(tx, &resources, &intent, filesystem.as_ref(), &root, &reason)
+    })
+    .await
+}
+
+pub(crate) fn refuse_prepared_idle(
+    tx: &Transaction<'_>,
+    intent: &TurnIntent,
+    guard: &CommitGuard,
+    reason: &str,
+) -> Result<bool, WorkerError> {
+    refuse_idle_in_transaction(
+        tx,
+        &guard.resources,
+        intent,
+        Some(&guard.filesystem),
+        &guard.state_root,
+        reason,
+    )
+}
+
+pub(crate) async fn refuse_steer(
+    store: Arc<RuntimeStore>,
+    resources: &PreparationResources,
+    intent: &TurnIntent,
+    reason: &str,
+) -> Result<bool, WorkerError> {
+    let capture_store = Arc::clone(&store);
+    let capture_intent = intent.clone();
+    let filesystem = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/steer_refusal_snapshot",
+        move || FilesystemSnapshot::capture_for_authorization(&capture_store, &capture_intent),
+    )
+    .await
+    .map_err(|_| WorkerError::TaskFailed)?
+    .ok();
+    let resources = resources.clone();
+    let intent = intent.clone();
+    let reason = reason.to_owned();
+    let root = store.root().to_path_buf();
+    scheduler::lifecycle_transaction_with(&store, move |tx| {
+        refuse_steer_in_transaction(tx, &resources, &intent, filesystem.as_ref(), &root, &reason)
+    })
+    .await
+}
+
+pub(crate) fn refuse_prepared_steer(
+    tx: &Transaction<'_>,
+    intent: &TurnIntent,
+    prepared: &PreparedSteer,
+    reason: &str,
+) -> Result<bool, WorkerError> {
+    refuse_steer_in_transaction(
+        tx,
+        &prepared.resources,
+        intent,
+        Some(&prepared.filesystem),
+        &prepared.state_root,
+        reason,
+    )
+}
+
 fn catalog(
     resources: &PreparationResources,
     intent: &TurnIntent,
@@ -1619,30 +1980,8 @@ pub(crate) async fn prepare_ready(
         intent.attempt_id,
         method.as_str()
     );
-    let (mut turn_snapshot, mut events, first_compile) =
-        compile_turn(turn_snapshot, events).await?;
-    let compiled = match first_compile {
-        Ok(compiled) => compiled,
-        Err(turn::PrepareError::ArtifactsRequired(artifacts)) => {
-            for artifact in artifacts {
-                let state_root = store.root().to_path_buf();
-                let relative_path = artifact.relative_path.clone();
-                let body = artifact.body.clone();
-                let path = studio_runtime_process::blocking_pool::spawn_blocking(
-                    "runtime-services/account_worker_ready_materialize_artifact",
-                    move || materialize(&state_root, &relative_path, &body),
-                )
-                .await
-                .map_err(|_| WorkerError::TaskFailed)??;
-                turn_snapshot.artifact_paths.insert(artifact.event_id, path);
-            }
-            let (snapshot, compiled_events, result) = compile_turn(turn_snapshot, events).await?;
-            turn_snapshot = snapshot;
-            events = compiled_events;
-            result.map_err(|e| refusal(e.to_string()))?
-        }
-        Err(e) => return Err(refusal(e.to_string())),
-    };
+    let (turn_snapshot, events, compiled) =
+        compile_with_artifacts(&store, turn_snapshot, events).await?;
     guard.compiler_snapshot = Some(turn_snapshot.clone());
     let mut params = thread::turn_params(
         &snapshot,
@@ -1664,29 +2003,7 @@ pub(crate) async fn prepare_ready(
         "clientUserMessageId".into(),
         json!(compiled.event_ids.first()),
     );
-    let submission = crate::notification_dispatch::PreparedSubmission {
-        first_event_id: compiled.event_ids[0].clone(),
-        submitted_at: turn_snapshot.prepared_at,
-        created_at: prepared_intent.events[0].created,
-        text: compiled
-            .fulltext
-            .clone()
-            .unwrap_or_else(|| compiled.transcript.text.clone()),
-        inputs: prepared_intent
-            .events
-            .iter()
-            .zip(&compiled.transcript.inputs)
-            .map(|(e, t)| crate::notification_dispatch::SubmittedInput {
-                id: e.id.clone(),
-                at: e.created,
-                kind: e.kind.clone(),
-                text: e.text.clone(),
-                assets: json!(t.assets),
-            })
-            .collect(),
-        assets: json!(compiled.transcript.assets),
-        radio_authorized: intent.radio_authorized,
-    };
+    let submission = compiled_submission(&prepared_intent, &compiled);
     guard.native_params = Some(Value::Object(params.clone()));
     prepared_intent.thread_id = snapshot.actor.thread_id;
     Ok(RequestPreparation {

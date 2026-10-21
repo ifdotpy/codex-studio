@@ -1,3 +1,4 @@
+import { DeliveryMoment } from "./generated/deliveryMoment";
 import { useScreenEnvironment } from "./servers/ScreenContext";
 import {
   useServerApi,
@@ -1723,7 +1724,7 @@ export default function App({ active = true }: { active?: boolean }) {
     assets?: string[];
     attachments?: Attachment[];
     onPersist?: () => void | Promise<void>;
-    delivery?: "after_tool" | "after_turn";
+    delivery?: DeliveryMoment;
   }) => {
     if (schemaMismatch || isApiSchemaMismatch()) return;
     const draftKey = opened || "new",
@@ -1815,7 +1816,8 @@ export default function App({ active = true }: { active?: boolean }) {
           sends.current[id]?.text !== text ||
           JSON.stringify(sends.current[id]?.assets || []) !==
             JSON.stringify(options?.assets || []) ||
-          sends.current[id]?.delivery !== (options?.delivery || "after_tool")
+          sends.current[id]?.delivery !==
+            (options?.delivery || DeliveryMoment.CurrentTurn)
         )
           sends.current[id] = {
             id: crypto.randomUUID(),
@@ -1823,7 +1825,7 @@ export default function App({ active = true }: { active?: boolean }) {
             text,
             assets: options?.assets || [],
             // Enter delivers after the current tool call; Tab after the turn.
-            delivery: options?.delivery || "after_tool",
+            delivery: options?.delivery || DeliveryMoment.CurrentTurn,
           };
         // Retain the exact request until the durable outbox owns its retry.
         persistSends();

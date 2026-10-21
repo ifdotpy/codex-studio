@@ -197,11 +197,11 @@ fn retarget(connection: &Connection, turn: &str) {
 }
 
 const QUEUED: [&str; 4] = ["pending"; 4];
-const SENT: [&str; 4] = ["dispatching", "dispatching", "pending", "pending"];
-const UNCONFIRMED: [&str; 4] = ["failed", "failed", "pending", "pending"];
+const SENT: [&str; 4] = ["dispatching", "dispatching", "pending", "dispatching"];
+const UNCONFIRMED: [&str; 4] = ["failed", "failed", "pending", "failed"];
 
 #[test]
-fn claim_takes_the_ordered_steerable_prefix_once() {
+fn claim_takes_eligible_current_turn_input_in_order_once() {
     let mut connection = database();
     let claimed = claim(&mut connection, "s1").expect("running turn claims");
     assert_eq!(claimed.turn_id, TURN);
@@ -213,12 +213,12 @@ fn claim_takes_the_ordered_steerable_prefix_once() {
         .collect::<Vec<_>>();
     assert_eq!(
         ids,
-        ["u1", "u2"],
-        "after-turn input stops the batch in order"
+        ["u1", "u2", "u4"],
+        "deferred input stays queued while later current-turn input is eligible"
     );
     assert_eq!(
         statuses(&connection),
-        ["reserved", "reserved", "pending", "pending"]
+        ["reserved", "reserved", "pending", "reserved"]
     );
     assert!(
         claim(&mut connection, "s2").is_none(),
@@ -350,7 +350,7 @@ fn lost_response_keeps_input_dispatching_until_the_acknowledgement() {
         "unknown input is never resent"
     );
     let delivered = acknowledge(&mut connection).expect("ack matches");
-    assert_eq!(delivered.events.len(), 2);
+    assert_eq!(delivered.events.len(), 3);
     assert_eq!(
         status(&connection, "u1"),
         ("delivered".into(), Some(TURN.into()), None)
@@ -380,7 +380,7 @@ fn acknowledgement_before_the_response_is_final() {
     });
     assert_eq!(
         statuses(&connection),
-        ["delivered", "delivered", "pending", "pending"]
+        ["delivered", "delivered", "pending", "delivered"]
     );
     assert!(!agent(&connection).extra.contains_key("steerRejectedTurnId"));
 }
@@ -476,7 +476,7 @@ fn late_acknowledgement_keeps_a_user_change_to_unconfirmed_input() {
         )
         .expect("user change writes");
     let delivered = acknowledge(&mut connection).expect("late ack matches");
-    assert_eq!(delivered.events.len(), 1);
+    assert_eq!(delivered.events.len(), 2);
     assert_eq!(status(&connection, "u1").0, "delivered");
     assert_eq!(status(&connection, "u2").0, "cancelled");
 }
@@ -488,7 +488,7 @@ fn late_acknowledgement_of_withdrawn_input_changes_nothing() {
     terminal(&mut connection, &[]);
     connection
         .execute(
-            "UPDATE runtime_events SET status='cancelled' WHERE id IN ('u1','u2')",
+            "UPDATE runtime_events SET status='cancelled' WHERE id IN ('u1','u2','u4')",
             [],
         )
         .expect("user change writes");
@@ -585,9 +585,10 @@ fn wake_page_selects_running_turns_of_every_provider_with_queued_user_input() {
     connection
         .execute("UPDATE runtime_events SET kind='followup'", [])
         .expect("events change kind");
-    assert!(
-        page(&connection).is_empty(),
-        "only user input wakes a busy turn"
+    assert_eq!(
+        page(&connection)["acct"][0].0,
+        AGENT,
+        "followups wake a busy turn too"
     );
 }
 
@@ -685,4 +686,235 @@ fn claimable_check_matches_the_claim_without_writing() {
         .execute("UPDATE runtime_events SET status='cancelled'", [])
         .expect("queue empties");
     assert!(!ready(&connection, 4), "nothing pending");
+}
+
+#[test]
+fn current_user_behind_mixed_notifications_and_next_turn_keeps_exact_batch() {
+    let mut connection = database();
+    connection
+        .execute(
+            "UPDATE runtime_events SET kind='work_available' WHERE id='u1'",
+            [],
+        )
+        .expect("work event");
+    connection
+        .execute(
+            "UPDATE runtime_events SET kind='work_decision' WHERE id='u2'",
+            [],
+        )
+        .expect("decision event");
+    connection
+        .execute(
+            "UPDATE runtime_event_meta SET record='{\"delivery\":\"next_turn\"}' WHERE id='later'",
+            [],
+        )
+        .expect("deferred event");
+    let claimed = claim(&mut connection, "mixed").expect("mixed current turn claims");
+    assert_eq!(
+        claimed
+            .events
+            .iter()
+            .map(|e| (e.id.0.as_str(), e.kind.as_str()))
+            .collect::<Vec<_>>(),
+        [
+            ("u1", "work_available"),
+            ("u2", "work_decision"),
+            ("u4", "user")
+        ]
+    );
+    assert_eq!(
+        claimed.metadata["u2"]["delivery"], "steer",
+        "stored provenance is carried"
+    );
+    assert!(submitted(&mut connection, "mixed", 7));
+    settle(&mut connection, |tx| {
+        SchedulerRepository::steer_response(tx, AGENT, "mixed", "unknown")
+    });
+    assert!(claim(&mut connection, "duplicate").is_none());
+    let ack = acknowledge(&mut connection).expect("exact acknowledgement");
+    assert_eq!(ack.steer_id, "mixed");
+    assert_eq!(ack.events.len(), 3);
+    assert_eq!(status(&connection, "later").0, "pending");
+    assert!(acknowledge(&mut connection).is_none());
+}
+
+#[test]
+fn one_thousand_small_mixed_events_are_one_busy_batch() {
+    let mut connection = database();
+    connection
+        .execute("DELETE FROM runtime_events", [])
+        .expect("clear queue");
+    connection
+        .execute("DELETE FROM runtime_event_meta", [])
+        .expect("clear metadata");
+    for i in 0..1000 {
+        connection
+            .execute(
+                "INSERT INTO runtime_events VALUES(?1,'agent',?2,'x','pending',?3,4,NULL,NULL)",
+                params![
+                    format!("e-{i:04}"),
+                    if i % 2 == 0 { "user" } else { "work_decision" },
+                    i as f64
+                ],
+            )
+            .expect("small event");
+    }
+    let claimed = claim(&mut connection, "thousand").expect("one batch");
+    assert_eq!(claimed.events.len(), 1000);
+    assert_eq!(claimed.events.first().expect("first").id.0, "e-0000");
+    assert_eq!(claimed.events.last().expect("last").id.0, "e-0999");
+    assert!(submitted(&mut connection, "thousand", 7));
+    let delivered = with(&mut connection, |tx| {
+        SchedulerRepository::acknowledge_steer(tx, AGENT, "e-0000", "thread", TURN)
+    })
+    .expect("ack executes")
+    .expect("ack matches");
+    assert_eq!(delivered.events.len(), 1000);
+}
+
+#[test]
+fn native_commands_assets_and_radio_answers_wait_without_blocking_current_input() {
+    let mut connection = database();
+    connection
+        .execute(
+            "UPDATE runtime_events SET text='/compact' WHERE id='u1'",
+            [],
+        )
+        .expect("native command");
+    connection
+        .execute(
+            "UPDATE runtime_event_meta SET record='{\"assets\":[\"file\"]}' WHERE id='u2'",
+            [],
+        )
+        .expect("asset");
+    connection.execute("UPDATE runtime_event_meta SET record='{\"radioAnswerTurnId\":\"radio\"}' WHERE id='later'",[]).expect("radio answer");
+    assert!(
+        SchedulerRepository::steer_claimable(&connection, &agent(&connection), 4)
+            .expect("read eligibility")
+    );
+    let claimed = claim(&mut connection, "safe").expect("current input behind special handling");
+    assert_eq!(
+        claimed
+            .events
+            .iter()
+            .map(|e| e.id.0.as_str())
+            .collect::<Vec<_>>(),
+        ["u4"]
+    );
+}
+
+#[test]
+fn invalid_delivery_metadata_fails_closed_and_next_turn_only_is_read_only() {
+    let connection = database();
+    connection
+        .execute(
+            "UPDATE runtime_event_meta SET record='{\"delivery\":\"next_turn\"}'",
+            [],
+        )
+        .expect("deferred metadata");
+    connection
+        .execute(
+            "UPDATE runtime_events SET status='cancelled' WHERE id IN ('u1','u4')",
+            [],
+        )
+        .expect("only deferred remain");
+    let before = connection.total_changes();
+    assert!(
+        !SchedulerRepository::steer_claimable(&connection, &agent(&connection), 4)
+            .expect("eligibility reads")
+    );
+    assert_eq!(before, connection.total_changes());
+    connection
+        .execute(
+            "UPDATE runtime_event_meta SET record='{\"delivery\":\"invalid\"}' WHERE id='u2'",
+            [],
+        )
+        .expect("invalid delivery");
+    assert!(
+        matches!(SchedulerRepository::steer_claimable(&connection,&agent(&connection),4),Err(StoreError::InvalidSyncObject{scope,id}) if scope=="runtime_event_meta" && id=="u2")
+    );
+}
+
+#[test]
+fn frozen_projection_survives_response_loss_and_rejects_payload_changes() {
+    let mut connection = database();
+    submit(&mut connection, "frozen");
+    let projection = json!({"operation":"frozen","compiled":{"text":"bounded evidence"}});
+    for _ in 0..2 {
+        settle(&mut connection, |tx| {
+            SchedulerRepository::freeze_steer_submission(tx, AGENT, "frozen", &projection)
+        });
+    }
+    let changed = with(&mut connection, |tx| {
+        SchedulerRepository::freeze_steer_submission(
+            tx,
+            AGENT,
+            "frozen",
+            &json!({"compiled":"changed"}),
+        )
+    });
+    assert!(changed.is_err(), "a retry cannot rewrite frozen content");
+    settle(&mut connection, |tx| {
+        SchedulerRepository::steer_response(tx, AGENT, "frozen", "unknown")
+    });
+    terminal(&mut connection, &[]);
+    let ack = acknowledge(&mut connection).expect("late acknowledgement");
+    assert_eq!(ack.prepared_submission, Some(projection));
+    assert_eq!(ack.event_ids, ["u1", "u2", "u4"]);
+    assert_eq!(open_receipts(&connection), 0);
+}
+
+#[test]
+fn business_notification_resolved_during_busy_preparation_releases_the_exact_batch() {
+    let mut connection = database();
+    connection
+        .execute_batch("CREATE TABLE runtime_work(id TEXT PRIMARY KEY,record TEXT NOT NULL)")
+        .expect("work table");
+    connection
+        .execute(
+            "UPDATE runtime_events SET kind='work_review',text=?1 WHERE id='u1'",
+            [json!({"task":"work","result":{"id":"result","text":"ready"}}).to_string()],
+        )
+        .expect("review event");
+    connection
+        .execute(
+            "INSERT INTO runtime_work VALUES('work',?1)",
+            [
+                json!({"id":"work","rootId":AGENT,"results":[{"id":"result"}],"decisions":[]})
+                    .to_string(),
+            ],
+        )
+        .expect("undecided work");
+    for id in ["progress-one", "progress-two"] {
+        connection.execute("INSERT INTO runtime_events VALUES(?1,'agent','agent_message',?2,'pending',2.5,4,NULL,NULL)",params![id,json!({"sender":"child","room":"room","importance":"progress","progress_key":"work","progress_version":1,"text":id}).to_string()]).expect("progress fixture writes");
+        connection.execute("INSERT INTO runtime_event_meta VALUES(?1,?2)",params![id,json!({"delivery":"current_turn","requestedDelivery":"current_turn","acceptedAt":17,"source":"retained"}).to_string()]).expect("progress fixture writes");
+    }
+    claim(&mut connection, "obsolete").expect("claims review and user input");
+    let progress_metadata = |connection: &Connection| {
+        let mut statement = connection
+            .prepare("SELECT record FROM runtime_event_meta WHERE id LIKE 'progress-%' ORDER BY id")
+            .expect("progress metadata query");
+        statement
+            .query_map([], |row| row.get::<_, String>(0))
+            .expect("progress metadata reads")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("progress metadata decodes")
+    };
+    let before = progress_metadata(&connection);
+    connection.execute("UPDATE runtime_work SET record=json_set(record,'$.decisions',json('[{\"resultId\":\"result\"}]')) WHERE id='work'",[]).expect("review gets decided");
+    let current = with(&mut connection, |tx| {
+        SchedulerRepository::reconcile_obsolete_steer_before_submit(tx, AGENT, "obsolete")
+    })
+    .expect("reconcile");
+    assert!(!current);
+    let after = progress_metadata(&connection);
+    assert_eq!(
+        after, before,
+        "submission reconciliation preserves progress flags and original metadata byte-for-byte"
+    );
+    assert_eq!(status(&connection, "u1").0, "stored_only");
+    assert_eq!(status(&connection, "u2").0, "pending");
+    assert_eq!(status(&connection, "u4").0, "pending");
+    assert_eq!(open_receipts(&connection), 0);
+    assert!(!submitted(&mut connection, "obsolete", 7));
 }

@@ -19,6 +19,7 @@ import urllib.error
 import urllib.request
 import uuid
 
+from codex_delivery import DeliveryMoment, normalize_delivery
 from codex_remote import RemoteAccess
 from codex_executables import tailscale as resolve_tailscale, command as executable_command
 from codex_federation_limits import (
@@ -807,10 +808,11 @@ class FederationService:
         db.execute("INSERT INTO runtime_federation_outbox(id,peer_id,record) VALUES(?,?,?)",
                    (message_id, peer["stateId"], _json(value)))
         return message_id
-    def send_message(self, sender_id: str, room_id: str, text: str, key: str) -> JsonObject:
+    def send_message(self, sender_id: str, room_id: str, text: str, key: str, *, delivery: DeliveryMoment = DeliveryMoment.CURRENT_TURN) -> JsonObject:
         if not isinstance(text, str) or not 1 <= len(text.strip()) <= MAX_MESSAGE:
             raise ValueError(f"Message must have 1 to {MAX_MESSAGE} characters")
         text = text.strip()
+        delivery = normalize_delivery(delivery)
         with self.runtime.lock, self.runtime.db() as db:
             db.execute("BEGIN IMMEDIATE")
             room = _record(db.execute("SELECT record FROM runtime_federation_rooms WHERE id=?", (room_id,)).fetchone())
@@ -832,9 +834,15 @@ class FederationService:
             local = self.ensure_identity(db)
             message_id = str(uuid.uuid5(uuid.UUID(local["stateId"]), key))
             payload = {"sender": sender_id, "senderName": name, "text": text,
-                       "created": created, "sequence": room["sequence"]}
+                       "created": created, "sequence": room["sequence"], "delivery": delivery}
+            signature, saved = self.runtime.operation_receipt(db, message_id,
+                {"sender": sender_id, "room": room_id, "text": text, "delivery": delivery})
+            if saved is not None:
+                return saved
             existing = db.execute("SELECT * FROM runtime_chat_messages WHERE id=?", (message_id,)).fetchone()
             if existing:
+                if delivery is not DeliveryMoment.CURRENT_TURN:
+                    raise ValueError("This legacy message ID has different delivery timing")
                 if (existing["room"], existing["sender"], existing["text"]) != (room_id, sender_id, text):
                     raise ValueError("This message ID has different content")
                 deliveries = json.loads(existing["deliveries"])
@@ -856,13 +864,14 @@ class FederationService:
                 recipient = self.runtime.agent(member, db)
                 if not recipient.get("deletedAt"):
                     self.runtime.enqueue(db, recipient, "agent_message", event_text,
-                        "federation-local:" + room_id + ":" + message_id + ":" + member)
+                        "federation-local:" + room_id + ":" + message_id + ":" + member, delivery=delivery)
             self._queue_locked(db, peer, local, room, "chat-message", payload, key)
             room["updated"] = created
             db.execute("UPDATE runtime_federation_rooms SET record=? WHERE id=?", (_json(room), room_id))
+            result = self.runtime.save_receipt(db, message_id, signature, {"id": message_id, "room": room_id,
+                "deliveries": {"remote:" + room["peerId"]: "queued"}, "status": "queued"})
         self.start()
-        return {"id": message_id, "room": room_id,
-                "deliveries": {"remote:" + room["peerId"]: "queued"}, "status": "queued"}
+        return result
 
     def user_message(self, room_id: str, text: str, key: str) -> JsonObject:
         with self.runtime.lock, self.runtime.db() as db:
@@ -1025,6 +1034,7 @@ class FederationService:
         return True
 
     def _receive_chat_locked(self, db: sqlite3.Connection, peer: FederationPeerRecord, room_id: str, envelope: JsonObject, payload: JsonObject) -> None:
+        delivery = normalize_delivery(payload.get("delivery"))
         text = payload.get("text")
         sender = payload.get("sender")
         if not isinstance(text, str) or not 1 <= len(text) <= MAX_MESSAGE or not isinstance(sender, str):
@@ -1076,7 +1086,7 @@ class FederationService:
             if agent.get("deletedAt"):
                 continue
             self.runtime.enqueue(db, agent, "agent_message", event_text,
-                                 "federation:" + peer["stateId"] + ":" + envelope["id"] + ":" + member)
+                                 "federation:" + peer["stateId"] + ":" + envelope["id"] + ":" + member, delivery=delivery)
         return {"protocol": PROTOCOL, "messageId": envelope["id"], "accepted": True,
                 "room": room_id, "sequence": row.lastrowid}
 

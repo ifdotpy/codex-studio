@@ -872,7 +872,7 @@ fn claim_intent_selected(
         epoch,
         attempt_id,
         attempt_created,
-        32,
+        usize::MAX,
     )?;
     let Some(claimed) = claimed else {
         return Ok(None);

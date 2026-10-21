@@ -827,9 +827,19 @@ pub(super) async fn submitted(
             return Ok(false);
         }
         if let Some(guard) = guard.as_ref() {
-            stage("turn_submission.submitted.commit", || {
-                preparation::commit(tx, &context, guard)
+            let checked = agent_fault::in_savepoint(tx, "preparation_commit", || {
+                stage("turn_submission.submitted.commit", || {
+                    preparation::commit(tx, &context, guard)
+                })
             })?;
+            if let Err(error) = checked {
+                if let WorkerError::PreparationRefused(reason) = &error
+                    && preparation::refuse_prepared_idle(tx, i, guard, reason)?
+                {
+                    return Ok(false);
+                }
+                return Err(error);
+            }
         }
         let authorized = stage("turn_submission.submitted.authorize", || {
             Ok::<_, WorkerError>(match context.method()? {
@@ -3006,6 +3016,8 @@ pub(super) enum PreparationStep<T> {
     Pending(PendingWait),
     /// The start outcome was settled (refused); nothing further to do.
     Settled,
+    /// Event-local failures were quarantined; reclaim safe input under a new id.
+    Retry,
 }
 
 /// A pending preparation's reason and the agent rows whose change may clear it.
@@ -3021,12 +3033,14 @@ impl<T> PreparationStep<T> {
             Self::Ready(value) => Ok(value),
             Self::Pending(pending) => Err(PreparationStep::Pending(pending)),
             Self::Settled => Err(PreparationStep::Settled),
+            Self::Retry => Err(PreparationStep::Retry),
         }
     }
 }
 
 pub(super) async fn preparation_step<T: Send + 'static>(
-    store: &RuntimeStore,
+    store: &Arc<RuntimeStore>,
+    resources: &preparation::PreparationResources,
     intent: &TurnIntent,
     action: impl Future<Output = Result<T, WorkerError>> + Send,
 ) -> Result<PreparationStep<T>, WorkerError> {
@@ -3035,6 +3049,9 @@ pub(super) async fn preparation_step<T: Send + 'static>(
         Err(WorkerError::PreparationPending(reason)) => (reason, false),
         Err(WorkerError::PreparationAwaitsAgent(reason)) => (reason, true),
         Err(WorkerError::PreparationRefused(reason)) => {
+            if preparation::refuse_idle(store, resources, intent, &reason).await? {
+                return Ok(PreparationStep::Retry);
+            }
             scheduler::settle_start_outcome(store, intent, TurnStart::Blocked { reason }).await?;
             return Ok(PreparationStep::Settled);
         }

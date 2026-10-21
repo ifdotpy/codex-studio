@@ -185,7 +185,7 @@ void jsonValueAssertion;
 const localOutboxQueueRow: QueueItem = {
   id: "local-message",
   text: "unsent locally",
-  requestedDelivery: "after_turn",
+  requestedDelivery: "next_turn",
   localDelivery: true,
 };
 const serverQueueRow: QueueItem = {

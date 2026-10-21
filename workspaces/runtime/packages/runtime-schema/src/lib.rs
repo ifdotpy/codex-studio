@@ -4,9 +4,12 @@
 pub mod agent_limits;
 pub mod api_schema;
 pub mod contracts;
+pub mod delivery;
 pub mod federation_limits;
 pub mod multi_server_protocol;
 pub mod shared_values;
+
+pub use delivery::DeliveryMoment;
 
 use std::collections::BTreeMap;
 use std::sync::OnceLock;

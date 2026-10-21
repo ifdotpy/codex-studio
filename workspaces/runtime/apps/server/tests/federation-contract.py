@@ -34,6 +34,7 @@ sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 spec = importlib.util.spec_from_file_location("runtime_contract", SERVER_TESTS_ROOT / "runtime-contract.py")
 runtime_contract = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(runtime_contract)
+from codex_delivery import DeliveryMoment
 from codex_runtime import Runtime
 from codex_canvas import Canvas, make_server
 from codex_federation import FederationService, PROTOCOL, _request_bytes, _sign, _json
@@ -283,8 +284,12 @@ class FederationContract(unittest.TestCase):
         room = self._room()
         a, b = self.services
         peer = a.snapshot()["peers"][0]
-        a.send_message(self.leads[0]["id"], room, "one copy", "dedupe-1")
+        receipt = a.runtime.chat_message(self.leads[0]["id"], room, "one copy", "dedupe-1", delivery=DeliveryMoment.NEXT_TURN)
+        self.assertEqual(a.runtime.chat_message(self.leads[0]["id"], room, "one copy", "dedupe-1", delivery=DeliveryMoment.NEXT_TURN), receipt)
+        with self.assertRaisesRegex(ValueError, "different content"):
+            a.runtime.chat_message(self.leads[0]["id"], room, "one copy", "dedupe-1", delivery=DeliveryMoment.CURRENT_TURN)
         item = self._outbox_record(a, peer["stateId"])
+        self.assertEqual(item["payload"]["delivery"], DeliveryMoment.NEXT_TURN)
         envelope = a._outbound_envelope(item, a._local_identity())
         remote_peer = self._peer(b, a._local_identity()["stateId"])
         first = b.receive_envelope(remote_peer, envelope)
@@ -295,6 +300,9 @@ class FederationContract(unittest.TestCase):
             b.receive_envelope(remote_peer, envelope)
         with b.runtime.read_db() as db:
             count = db.execute("SELECT count(*) FROM runtime_chat_messages WHERE room=? AND text='one copy'", (room,)).fetchone()[0]
+            metadata = json.loads(db.execute("SELECT record FROM runtime_event_meta WHERE id=?",
+                ("federation:" + a._local_identity()["stateId"] + ":" + envelope["id"] + ":" + self.leads[1]["id"],)).fetchone()[0])
+            self.assertEqual(metadata["delivery"], DeliveryMoment.NEXT_TURN)
         self.assertEqual(count, 1)
 
     def test_request_body_signature_and_request_nonce_are_enforced(self):

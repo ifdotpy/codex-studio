@@ -506,7 +506,7 @@ fn cases() -> Vec<Case> {
             name: "remote-message",
             actor: "remote",
             tool: "orchestration_message",
-            args: json!({"target": "lead", "text": "  progress  ", "importance": "progress", "progress_key": "build", "progress_version": 2}),
+            args: json!({"target": "lead", "text": "  progress  ", "importance": "progress", "progress_key": "build", "progress_version": 2, "delivery": studio_runtime_schema::DeliveryMoment::CurrentTurn}),
             success: true,
             sent: &["message"],
             expect: json!({"stored": true, "target": "lead"}),
@@ -524,7 +524,7 @@ fn cases() -> Vec<Case> {
             name: "remote-send-parent",
             actor: "remote",
             tool: "orchestration_send",
-            args: json!({"agent_id": "parent", "text": "done"}),
+            args: json!({"agent_id": "parent", "text": "done", "delivery": studio_runtime_schema::DeliveryMoment::NextTurn}),
             success: true,
             sent: &["message"],
             expect: json!({"stored": true, "target": "parent"}),
@@ -722,6 +722,12 @@ async fn servers_tool_sends_envelopes_keeps_receipts_and_project_locations() {
             .map(|entry| entry["envelope"]["action"].as_str().unwrap())
             .collect();
         assert_eq!(actions, case.sent, "{name}: sent envelopes");
+        if matches!(name, "remote-message" | "remote-send-parent") {
+            assert_eq!(
+                sent[0]["envelope"]["payload"]["args"]["delivery"], args["delivery"],
+                "{name}: explicit timing survives tool forwarding"
+            );
+        }
         assert!(
             sent.iter().all(|entry| entry["server"] == PEER),
             "{name}: sent to the paired server"
@@ -1582,4 +1588,11 @@ async fn a_command_without_a_final_record_after_a_restart_stays_unknown() {
         "Command outcome unknown; inspect the target server. The command was not run again."
     );
     assert!(saved["finishedAt"].is_number());
+}
+
+#[test]
+fn forwarded_message_rejects_invalid_delivery_before_transport() {
+    for delivery in [json!("later"), json!(7), json!({})] {
+        assert!(worker_message("lead", &json!({"text":"hello", "delivery":delivery})).is_err());
+    }
 }

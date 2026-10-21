@@ -507,7 +507,7 @@ class HistoryRouteTests(unittest.TestCase):
         input_row = cast(list[TranscriptInput], page.items[0].inputs)[0]
         self.assertEqual(input_row.clientMessageId, "event-1")
         self.assertEqual(input_row.deliveryStatus, "delivered")
-        self.assertEqual(input_row.requestedDelivery, "after_turn")
+        self.assertEqual(input_row.requestedDelivery, "next_turn")
         self.assertTrue(input_row.materialized)
         self.assertFalse(input_row.pending)
         transcript_agent = cast(TranscriptAgent, page.agent)

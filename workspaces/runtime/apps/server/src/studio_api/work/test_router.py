@@ -548,7 +548,7 @@ class WorkRouterTests(unittest.TestCase):
         context.runtime.queue_action = Mock(return_value={
             "items": [{
                 "id": "message-1", "text": "", "kind": "user", "status": "pending",
-                "created": 2.0, "assets": [asset], "delivery": "queue", "requestedDelivery": "queue",
+                "created": 2.0, "assets": [asset], "delivery": "current_turn", "requestedDelivery": "current_turn",
             }],
             "revision": "revision-1", "capabilities": {"reorder": True, "receipts": True},
         })
@@ -768,7 +768,7 @@ class WorkRouterTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200, response.text)
         context.runtime.send.assert_called_once_with(
-            "agent-1", "  hello  ", message_id, delivery="queue", assets=[],
+            "agent-1", "  hello  ", message_id, delivery="current_turn", assets=[],
             mirror_user_message=True,
         )
         context.canvas.connect.assert_not_called()

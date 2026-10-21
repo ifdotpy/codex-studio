@@ -59,7 +59,7 @@ pub(super) struct Prepared {
 /// What a wake's claim found instead of a turn to prepare.
 pub(super) enum Unclaimed {
     /// Busy-turn input claimed for the running turn, and that turn's id.
-    Steer(Box<TurnIntent>, String),
+    Steer(Box<TurnIntent>, String, Box<preparation::PreparedSteer>),
     /// The disk is full: the input stays queued at this epoch until the recheck.
     DiskFull(i64),
     /// A queued native review child: its first turn is `review/start`.
@@ -160,6 +160,63 @@ async fn claim(wake: &Wake) -> Result<Result<TurnIntent, Unclaimed>, WorkerError
         ..
     } = wake;
     let epoch = *epoch;
+    let owner = agent_id.clone();
+    let owner_account = account.clone();
+    bridge
+        .worker_run("quarantine_pending_metadata", move |store| async move {
+            let read_owner = owner.clone();
+            let read_account = owner_account.clone();
+            let invalid = store
+                .read_async("runtime-services/pending_metadata", move |db| {
+                    let owned = AgentRepository::get(db, &AgentId::from(read_owner.as_str()))?
+                        .is_some_and(|agent| {
+                            agent.epoch == epoch
+                                && agent
+                                    .extra
+                                    .get("accountKey")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("default")
+                                    == read_account
+                        });
+                    if owned {
+                        SchedulerRepository::invalid_pending_metadata(db, &read_owner, epoch)
+                    } else {
+                        Ok(BTreeMap::new())
+                    }
+                })
+                .await?;
+            if !invalid.is_empty() {
+                scheduler::lifecycle_transaction_with(&store, move |tx| {
+                    if AgentRepository::get(tx, &AgentId::from(owner.as_str()))?.is_some_and(
+                        |agent| {
+                            agent.epoch == epoch
+                                && agent
+                                    .extra
+                                    .get("accountKey")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("default")
+                                    == owner_account
+                        },
+                    ) {
+                        let invalid =
+                            SchedulerRepository::invalid_pending_metadata(tx, &owner, epoch)?;
+                        if !invalid.is_empty() {
+                            SchedulerRepository::quarantine_pending_events(
+                                tx,
+                                &owner,
+                                epoch,
+                                &invalid,
+                                "Invalid stored event metadata",
+                            )?;
+                        }
+                    }
+                    Ok::<_, WorkerError>(())
+                })
+                .await?;
+            }
+            Ok(())
+        })
+        .await?;
     let (a, g) = (account.clone(), agent_id.clone());
     match bridge
         .worker_run("claim_steer", move |store| async move {
@@ -167,7 +224,34 @@ async fn claim(wake: &Wake) -> Result<Result<TurnIntent, Unclaimed>, WorkerError
         })
         .await?
     {
-        steer::WakeClaim::Steer(intent, turn) => return Ok(Err(Unclaimed::Steer(intent, turn))),
+        steer::WakeClaim::Steer(intent, turn) => {
+            let resources = wake.resources.clone();
+            let prepare_intent = intent.clone();
+            let expected_turn = turn.clone();
+            let prepared = bridge
+                .prepare_run("steer_preparation", move |store| async move {
+                    preparation::prepare_steer(store, &resources, &prepare_intent, &expected_turn)
+                        .await
+                })
+                .await;
+            match prepared {
+                Ok(prepared) => return Ok(Err(Unclaimed::Steer(intent, turn, Box::new(prepared)))),
+                Err(error) => {
+                    eprintln!("busy-turn input for {} deferred: {error}", intent.agent_id);
+                    let reason = error.to_string();
+                    let resources = wake.resources.clone();
+                    let retry = bridge
+                        .worker_run("steer_preparation_refused", move |store| async move {
+                            preparation::refuse_steer(store, &resources, &intent, &reason).await
+                        })
+                        .await?;
+                    if retry {
+                        return Box::pin(claim(wake)).await;
+                    }
+                    return Ok(Err(Unclaimed::Nothing));
+                }
+            }
+        }
         steer::WakeClaim::Busy => return Ok(Err(Unclaimed::Nothing)),
         steer::WakeClaim::Idle => {}
     }
@@ -285,7 +369,7 @@ async fn prepare(
             if may_start_turn {
                 before_start(&s, &r, &i).await?;
             }
-            store::preparation_step(&s, &i, preparation::admit(Arc::clone(&s), &r, &i)).await
+            store::preparation_step(&s, &r, &i, preparation::admit(Arc::clone(&s), &r, &i)).await
         }),
     )
     .await?
@@ -299,7 +383,8 @@ async fn prepare(
     let token = match stage(
         "turn_preparation.workspace",
         bridge.prepare_run("workspace", move |s| async move {
-            store::preparation_step(&s, &i, preparation::workspace(Arc::clone(&s), &r, &i)).await
+            store::preparation_step(&s, &r, &i, preparation::workspace(Arc::clone(&s), &r, &i))
+                .await
         }),
     )
     .await?
@@ -363,7 +448,10 @@ async fn settle(
     run: &Run,
     result: Result<preparation::RequestPreparation, WorkerError>,
 ) -> Result<store::PreparationStep<preparation::RequestPreparation>, WorkerError> {
-    store::preparation_step(&run.bridge.store, &run.intent, async { result }).await
+    store::preparation_step(&run.bridge.store, &run.resources, &run.intent, async {
+        result
+    })
+    .await
 }
 
 /// Pre-start account auth gate for every provider (see

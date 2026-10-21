@@ -216,7 +216,7 @@ fn real_python_vm_and_mac_functions_match_rust_for_each_resolution_choice() {
                     recipient_id: "lead",
                     id,
                     text,
-                    delivery: "after_turn",
+                    delivery: studio_runtime_schema::delivery::DeliveryMoment::NextTurn,
                     now: 123.0,
                 },
                 &AllowAdmission,

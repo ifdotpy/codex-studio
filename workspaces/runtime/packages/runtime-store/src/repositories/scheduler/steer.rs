@@ -20,6 +20,7 @@
 
 use super::*;
 use crate::CachedSql;
+use studio_runtime_schema::DeliveryMoment;
 
 /// Prefix of the durable per-steer receipt: `claude-steer:{agent}:{steer}`.
 /// The name predates Codex steering; it is kept so stored receipts stay readable.
@@ -36,12 +37,19 @@ pub struct ClaimedSteer {
     pub thread_id: String,
     pub turn_id: String,
     pub events: Vec<QueueEvent>,
+    pub metadata: BTreeMap<String, Value>,
 }
 
 /// Input proven delivered by the provider acknowledgement.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AcknowledgedSteer {
     pub agent_id: String,
+    pub steer_id: String,
+    /// Original batch identity, including input withdrawn after uncertainty.
+    pub event_ids: Vec<String>,
+    /// Opaque compiler-owned projection frozen before transport, retained until
+    /// acknowledgement even after the ordinary request reply is retired.
+    pub prepared_submission: Option<Value>,
     pub events: Vec<QueueEvent>,
     pub submitted_at: f64,
 }
@@ -130,21 +138,60 @@ fn steer_turn(agent: &AgentRecord) -> Option<(String, String)> {
     eligible.then(|| (turn.to_owned(), thread.to_owned()))
 }
 
-/// Plain user text that the running turn can read. Native commands, assets,
-/// radio answers and explicit after-turn input wait for the next turn.
-fn steerable(event: &QueueEvent, metadata: Option<&Value>) -> bool {
-    let text = event.text.trim_start();
-    let command = (text.starts_with('/') || text.starts_with('$')) && !event.text.contains('\n');
-    event.kind == "user"
-        && !command
+/// Delivery eligibility is separate from event order: deferred input stays in
+/// the same queue while later current-turn input can join the active turn.
+fn steerable(event: &QueueEvent, metadata: Option<&Value>) -> StoreResult<bool> {
+    let moment = DeliveryMoment::for_event(&event.kind, &event.text, metadata)
+        .map_err(|_| invalid_object("runtime_event_meta", &event.id.0))?;
+    Ok(moment == DeliveryMoment::CurrentTurn
+        && shares_turn(&event.kind, true)
+        && !native_input_command(event)
         && !event.text.trim().is_empty()
         && metadata.is_none_or(|meta| {
             meta.get("assets")
                 .and_then(Value::as_array)
                 .is_none_or(Vec::is_empty)
-                && meta.get("delivery").and_then(Value::as_str) != Some("after_turn")
                 && meta.get("radioAnswerTurnId").is_none_or(Value::is_null)
-        })
+        }))
+}
+
+/// Ordered pending input with its stored metadata. Callers select a delivery
+/// moment before coalescing progress, so a deferred update cannot retire an
+/// eligible current-turn update.
+fn pending_steer_events(
+    connection: &Connection,
+    agent_id: &str,
+    epoch: i64,
+) -> StoreResult<(Vec<QueueEvent>, BTreeMap<String, Value>)> {
+    let metadata_column = if table_exists(connection, "runtime_event_meta")? {
+        "(SELECT m.record FROM runtime_event_meta m WHERE m.id=e.id)"
+    } else {
+        "NULL"
+    };
+    let mut statement = connection.prepare_cached(&format!(
+        "SELECT e.id,e.agent,e.kind,e.text,e.status,e.created,e.epoch,e.turn_id,e.error,{metadata_column} \
+         FROM runtime_events e WHERE e.agent=?1 AND e.epoch=?2 AND e.status='pending' \
+         ORDER BY e.created,e.rowid"
+    ))?;
+    let rows = statement.query_map(params![agent_id, epoch], |row| {
+        Ok((
+            crate::QueueEventRepository::from_row(row)?,
+            row.get::<_, Option<String>>(9)?,
+        ))
+    })?;
+    let mut events = Vec::new();
+    let mut metadata = BTreeMap::new();
+    for row in rows {
+        let (event, raw) = row?;
+        let meta = pending_metadata(&event, raw.as_deref())?;
+        if steerable(&event, meta.as_ref())? {
+            if let Some(meta) = meta {
+                metadata.insert(event.id.0.clone(), meta);
+            }
+            events.push(event);
+        }
+    }
+    Ok((events, metadata))
 }
 
 /// Return unresolved input to the queue in its own epoch; stopped input is cancelled.
@@ -251,12 +298,14 @@ impl SchedulerRepository {
         agent: &AgentRecord,
         epoch: i64,
     ) -> StoreResult<bool> {
-        Ok(steer_target(connection, agent, epoch)?.is_some())
+        Ok(steer_target(connection, agent, epoch)?.is_some()
+            && !pending_steer_events(connection, &agent.id.0, epoch)?
+                .0
+                .is_empty())
     }
 
-    /// Reserve the oldest pending user input for the agent's running turn.
-    /// Input that must wait for the next turn stops the batch, so delivery order
-    /// is preserved. A previous steer must be resolved before the next one.
+    /// Reserve eligible current-turn input in durable queue order. Deferred
+    /// input does not block it. A previous steer must resolve before another.
     pub fn claim_steer(
         tx: &Transaction<'_>,
         agent_id: &str,
@@ -270,39 +319,14 @@ impl SchedulerRepository {
         let Some((turn_id, thread_id)) = steer_target(tx, &agent, epoch)? else {
             return Ok(None);
         };
-        let metadata_column = if table_exists(tx, "runtime_event_meta")? {
-            "(SELECT m.record FROM runtime_event_meta m WHERE m.id=e.id)"
-        } else {
-            "NULL"
-        };
-        let mut statement = tx.prepare_cached(&format!(
-            "SELECT e.id,e.agent,e.kind,e.text,e.status,e.created,e.epoch,e.turn_id,e.error,{metadata_column} \
-             FROM runtime_events e WHERE e.agent=?1 AND e.epoch=?2 AND e.status='pending' \
-             ORDER BY e.created,e.rowid LIMIT ?3"
-        ))?;
-        let rows = statement
-            .query_map(
-                params![agent_id, epoch, MAX_EVENTS_PER_TURN as i64],
-                |row| {
-                    Ok((
-                        crate::QueueEventRepository::from_row(row)?,
-                        row.get::<_, Option<String>>(9)?,
-                    ))
-                },
-            )?
-            .collect::<Result<Vec<_>, _>>()?;
-        drop(statement);
-        let mut events = Vec::new();
-        for (event, raw) in rows {
-            let metadata = raw
-                .map(|raw| serde_json::from_str::<Value>(&raw))
-                .transpose()
-                .map_err(|_| invalid_object("runtime_event_meta", &event.id.0))?;
-            if !steerable(&event, metadata.as_ref()) {
-                break;
-            }
-            events.push(event);
-        }
+        let (events, metadata) = pending_steer_events(tx, agent_id, epoch)?;
+        let (complaints, _work) = load_policy_records(tx, &agent, &events)?;
+        let obsolete_work = obsolete_work_review_ids(tx, &agent, &events)?;
+        let prepared =
+            prepare_pending_batch(&agent, events, metadata, &complaints, &obsolete_work)?;
+        apply_preparation(tx, &prepared)?;
+        let mut events = prepared.events;
+        let metadata = prepared.metadata;
         if events.is_empty() {
             return Ok(None);
         }
@@ -344,7 +368,56 @@ impl SchedulerRepository {
             thread_id,
             turn_id,
             events,
+            metadata,
         }))
+    }
+
+    /// Retire resolved business notifications using the ordinary queue policy.
+    /// A changed selection is released as a whole; it must be compiled again
+    /// under a new exact batch identity before anything reaches the provider.
+    pub fn reconcile_obsolete_steer_before_submit(
+        tx: &Transaction<'_>,
+        agent_id: &str,
+        steer_id: &str,
+    ) -> StoreResult<bool> {
+        let id = receipt_id(agent_id, steer_id);
+        let Some(receipt) = load(tx, &id)? else {
+            return Ok(false);
+        };
+        if receipt["stage"] != "reserved" {
+            return Ok(false);
+        }
+        let Some(agent) = load_agent(tx, agent_id)? else {
+            return Ok(false);
+        };
+        let ids = receipt_events(&id, &receipt)?;
+        let mut statement = tx.prepare_cached(
+            "SELECT id,agent,kind,text,status,created,epoch,turn_id,error FROM runtime_events \
+             WHERE agent=?1 AND id IN (SELECT value FROM json_each(?2)) ORDER BY created,rowid",
+        )?;
+        let rows = statement
+            .query_map(
+                params![agent_id, ids],
+                crate::QueueEventRepository::from_row,
+            )?
+            .collect::<Result<Vec<_>, _>>()?;
+        drop(statement);
+        let (complaints, _work) = load_policy_records(tx, &agent, &rows)?;
+        let obsolete_work = obsolete_work_review_ids(tx, &agent, &rows)?;
+        // Coalescing already ran at selection. Submission only retires resolved
+        // business input; it must preserve the exact remaining metadata.
+        let obsolete = obsolete_events(&agent, &rows, &complaints, &obsolete_work);
+        if obsolete.is_empty() {
+            return Ok(true);
+        }
+        release(tx, &id, &receipt)?;
+        for (event, reason) in obsolete {
+            tx.execute_cached(
+                "UPDATE runtime_events SET status='stored_only',error=?1 WHERE id=?2 AND agent=?3 AND epoch=?4 AND status='pending'",
+                params![reason,event,agent_id,agent.epoch],
+            )?;
+        }
+        Ok(false)
     }
 
     /// Persist the uncertainty boundary before the steer request is written.
@@ -392,6 +465,29 @@ impl SchedulerRepository {
         receipt["submittedAt"] = json!(timestamp());
         store(tx, &id, &receipt)?;
         Ok(true)
+    }
+
+    /// Freeze the compiler-owned projection with the durable steer receipt.
+    /// Ordinary request receipts may be retired as soon as their reply arrives;
+    /// this projection must survive until the independent input acknowledgement.
+    pub fn freeze_steer_submission(
+        tx: &Transaction<'_>,
+        agent_id: &str,
+        steer_id: &str,
+        submission: &Value,
+    ) -> StoreResult<()> {
+        let id = receipt_id(agent_id, steer_id);
+        let mut receipt = load(tx, &id)?.ok_or_else(|| invalid_receipt(&id))?;
+        if receipt["stage"] != "submitted"
+            || !submission.is_object()
+            || receipt
+                .get("preparedSubmission")
+                .is_some_and(|saved| saved != submission)
+        {
+            return Err(invalid_receipt(&id));
+        }
+        receipt["preparedSubmission"] = submission.clone();
+        store(tx, &id, &receipt)
     }
 
     /// The transport proves it never wrote the request. Returns whether the
@@ -506,6 +602,12 @@ impl SchedulerRepository {
         mark_timing(tx, &json!(ids).to_string(), "acceptedAt")?;
         Ok(Some(AcknowledgedSteer {
             agent_id: agent_id.into(),
+            steer_id: id
+                .strip_prefix(&receipt_id(agent_id, ""))
+                .ok_or_else(|| invalid_receipt(&id))?
+                .to_owned(),
+            event_ids: serde_json::from_str(&events).map_err(|_| invalid_receipt(&id))?,
+            prepared_submission: receipt.get("preparedSubmission").cloned(),
             events: delivered,
             submitted_at: receipt["submittedAt"]
                 .as_f64()

@@ -461,7 +461,7 @@ test("Skill autocomplete", async ({ browser: testBrowser }) => {
     assert.equal(sends.length, 2);
     assert.equal(
       sends[1].delivery,
-      "after_turn",
+      "next_turn",
       `unselected Tab keeps queue behavior: ${JSON.stringify(sends)}`,
     );
 
@@ -602,7 +602,7 @@ test("Skill autocomplete", async ({ browser: testBrowser }) => {
       "$keep-typing",
       "failed-list Tab preserves normal queue behavior",
     );
-    assert.equal(failureSends[1]?.delivery, "after_turn");
+    assert.equal(failureSends[1]?.delivery, "next_turn");
     assert.equal(failureReads, 1, "failed catalogs are not refetched per key");
     assert.equal(
       await failurePage.evaluate(
@@ -725,7 +725,7 @@ test("Skill autocomplete", async ({ browser: testBrowser }) => {
       "$queue-missing",
       "no-match Tab still queues normally",
     );
-    assert.equal(emptySends[1]?.delivery, "after_turn");
+    assert.equal(emptySends[1]?.delivery, "next_turn");
     await failurePage.close();
     await emptyPage.close();
     await mobilePage.close();

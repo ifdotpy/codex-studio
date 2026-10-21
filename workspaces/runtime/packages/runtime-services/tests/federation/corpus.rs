@@ -820,6 +820,7 @@ async fn federation_user_message_uses_the_local_lead_and_stable_idempotency_key(
         corpus.room(),
         "user message",
         "stable-user-message-key",
+        studio_runtime_schema::delivery::DeliveryMoment::NextTurn,
         corpus.now(),
     )
     .await
@@ -829,18 +830,40 @@ async fn federation_user_message_uses_the_local_lead_and_stable_idempotency_key(
         corpus.room(),
         "user message",
         "stable-user-message-key",
+        studio_runtime_schema::delivery::DeliveryMoment::NextTurn,
         corpus.now() + 1.0,
     )
     .await
     .expect("idempotent federated user message");
     assert_eq!(first, replay);
-    assert_eq!(rows(&store, "runtime_federation_outbox").len(), 1);
+    assert!(
+        matches!(
+            delivery::user_message(
+                std::sync::Arc::clone(&store),
+                corpus.room(),
+                "user message",
+                "stable-user-message-key",
+                studio_runtime_schema::delivery::DeliveryMoment::CurrentTurn,
+                corpus.now() + 2.0,
+            )
+            .await,
+            Err(crate::federation_messaging::FederationMessageError::Conflict(_))
+        ),
+        "changed timing must remain a caller-visible conflict"
+    );
+    let queued = rows(&store, "runtime_federation_outbox");
+    assert_eq!(queued.len(), 1);
+    assert_eq!(
+        queued[0]["payload"]["delivery"],
+        json!(studio_runtime_schema::delivery::DeliveryMoment::NextTurn)
+    );
     assert!(
         delivery::user_message(
             std::sync::Arc::clone(&store),
             corpus.room(),
             "changed text",
             "stable-user-message-key",
+            studio_runtime_schema::delivery::DeliveryMoment::NextTurn,
             corpus.now(),
         )
         .await
@@ -1135,7 +1158,15 @@ async fn lost_push_response(corpus: &Corpus) {
     let now = corpus.now();
     let result = sender
         .transaction_with(move |tx| {
-            delivery::send_message_in_transaction(tx, "lead", &room_id, "message to peer", key, now)
+            delivery::send_message_in_transaction(
+                tx,
+                "lead",
+                &room_id,
+                "message to peer",
+                key,
+                studio_runtime_schema::delivery::DeliveryMoment::CurrentTurn,
+                now,
+            )
         })
         .await
         .expect("fixture operation");
@@ -1147,6 +1178,7 @@ async fn lost_push_response(corpus: &Corpus) {
             corpus.room(),
             "message to peer",
             key,
+            studio_runtime_schema::delivery::DeliveryMoment::CurrentTurn,
             corpus.now() + 1.0
         )
         .await
@@ -1159,6 +1191,7 @@ async fn lost_push_response(corpus: &Corpus) {
             corpus.room(),
             "changed",
             key,
+            studio_runtime_schema::delivery::DeliveryMoment::CurrentTurn,
             corpus.now()
         )
         .await
@@ -1274,6 +1307,7 @@ async fn bad_federation_response_signature_stays_unknown_and_does_not_learn_rout
         corpus.room(),
         "message with an unverified response",
         "bad-response-signature-key",
+        studio_runtime_schema::delivery::DeliveryMoment::CurrentTurn,
         corpus.now(),
     )
     .await
@@ -1375,6 +1409,7 @@ async fn outbound_rollback(corpus: &Corpus) {
                     corpus.room(),
                     "message",
                     "key",
+                    studio_runtime_schema::delivery::DeliveryMoment::CurrentTurn,
                     corpus.now()
                 )
                 .await
@@ -1402,6 +1437,7 @@ async fn outbound_rollback(corpus: &Corpus) {
                 corpus.room(),
                 "message",
                 "key",
+                studio_runtime_schema::delivery::DeliveryMoment::CurrentTurn,
                 corpus.now(),
             )
             .await
@@ -1472,6 +1508,7 @@ async fn delivery_failures(corpus: &Corpus) {
                 corpus.room(),
                 "message",
                 key,
+                studio_runtime_schema::delivery::DeliveryMoment::CurrentTurn,
                 corpus.now(),
             )
             .await

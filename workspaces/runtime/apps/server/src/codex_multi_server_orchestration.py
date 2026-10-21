@@ -6,6 +6,8 @@ proxy and an explicit remote-parent link. SQLite owns queues and receipts.
 """
 from __future__ import annotations
 
+from codex_delivery import event_delivery, normalize_delivery
+
 import copy
 
 import base64
@@ -781,11 +783,12 @@ class MultiServerService:
             self.runtime.put(db, 'agents', proxy)
 
     def event(self, db: Any, agent: dict[str, Any], kind: str, text: str, key: str) -> str | None:
+        delivery = event_delivery(db, {'id': key, 'kind': kind, 'text': text})
         remote = agent.get('remoteWorker')
         if agent.get('movedTo') and agent.get('remoteOrigin'):
             origin = agent['remoteOrigin']
             return self.queue(db, origin['home'], 'move_home_event',
-                {'agent': agent['id'], 'link': origin['link'], 'kind': kind, 'text': text}, identity('move-home-event', key))
+                {'agent': agent['id'], 'link': origin['link'], 'kind': kind, 'text': text, 'delivery': delivery}, identity('move-home-event', key))
         if remote:
             metadata = db.execute('SELECT record FROM runtime_event_meta WHERE id=?', (key,)).fetchone()
             metadata = json.loads(metadata[0]) if metadata else {}
@@ -793,14 +796,14 @@ class MultiServerService:
                 raise ValueError('Remote worker input does not support attachments')
             link = self.link(db, remote['link'])
             return self.queue(db, remote['server'], 'input', {'link': remote['link'], 'worker': agent['id'],
-                'kind': kind, 'text': text, 'delivery': metadata.get('delivery', 'queue'),
+                'kind': kind, 'text': text, 'delivery': delivery,
                 'parentEpoch': link['parentEpoch'],
                 'epoch': agent.get('remoteEpoch', 0), 'controlEpoch': agent['epoch']}, identity('input', key))
         anchor = agent.get('remoteAnchor')
         if anchor:
             link = self.link(db, anchor['link'])
             return self.queue(db, anchor['home'], 'event', {'link': anchor['link'], 'kind': kind,
-                'parentEpoch': link['parentEpoch'], 'text': text}, identity('event', key))
+                'parentEpoch': link['parentEpoch'], 'text': text, 'delivery': delivery}, identity('event', key))
         return None
 
     def admission(self, db: Any, worker: dict[str, Any]) -> bool:
@@ -1186,7 +1189,7 @@ class MultiServerService:
                     proxy['lastAnswer'] = details.get('result', details.get('reason', ''))
                     proxy['lastCompletedTurn'] = key
                     self.runtime.put(db, 'agents', proxy)
-                self.runtime.enqueue_recovery_event(db, parent, p['kind'], p['text'], key)
+                self.runtime.enqueue_recovery_event(db, parent, p['kind'], p['text'], key, delivery=p.get('delivery'))
                 return {'eventId': key}
             if action in {'task', 'message', 'directory', 'complaint', 'chat_read', 'context', 'move_spawn', 'move_send', 'move_interrupt', 'move_manage', 'move_child'}:
                 parent = self.runtime.agent(link['parent'], db)
@@ -1207,18 +1210,18 @@ class MultiServerService:
                 if worker.get('moveImportPending') or worker.get('movedTo'):
                     # A queued input can arrive after the source becomes read-only.
                     # Route it through the canonical home without reopening native input here.
-                    self.runtime.enqueue_recovery_event(db, worker, p['kind'], p['text'], key)
+                    self.runtime.enqueue_recovery_event(db, worker, p['kind'], p['text'], key, delivery=p.get('delivery'))
                     return {'eventId': key}
                 if p['kind'] in {'user', 'followup'}:
                     # send handles explicit resumption and preserves native input
                     # receipts. Other events never reopen a stopped worker.
                     pass
                 else:
-                    self.runtime.enqueue_recovery_event(db, worker, p['kind'], p['text'], key)
+                    self.runtime.enqueue_recovery_event(db, worker, p['kind'], p['text'], key, delivery=p.get('delivery'))
                     return {'eventId': key}
         if action == 'input':
             return cast(dict[str, Any], self.runtime.send(worker['id'], p['text'], key, manual=p['kind']=='user',
-                resume=True, delivery=p.get('delivery', 'queue'), _expected_epoch=worker['epoch']))
+                resume=True, delivery=normalize_delivery(p.get('delivery')), _expected_epoch=worker['epoch']))
         if action == 'stop':
             value = self.runtime.stop(worker['id'], True, reason=p['reason'],
                 _remote_request={'id': key, 'controlEpoch': p['controlEpoch']})
@@ -1277,7 +1280,7 @@ class MultiServerService:
                 return cast(dict[str, Any], self.runtime.stop(target['id'], True,
                     reason='Stopped by agent ' + worker['name'], sender=worker['id'], sender_epoch=worker['epoch']))
             return cast(dict[str, Any], self.runtime.send(target['id'], p['args']['text'], key, manual=False,
-                resume=True, delivery=p['args'].get('delivery', 'queue'), sender=worker['id'], sender_epoch=worker['epoch']))
+                resume=True, delivery=normalize_delivery(p['args'].get('delivery')), sender=worker['id'], sender_epoch=worker['epoch']))
         if worker.get('movedTo') and worker.get('remoteOrigin') and action in {'task', 'message', 'directory', 'complaint', 'chat_read', 'context'}:
             return self.worker_call(worker, action, p['args'], key)
         if action == 'chat_read':
@@ -1297,7 +1300,7 @@ class MultiServerService:
         if action == 'message':
             return cast(dict[str, Any], self.runtime.chat_message(worker['id'], p['args']['target'], p['args']['text'], key, worker['epoch'],
                 importance=p['args'].get('importance', 'message'), progress_key=p['args'].get('progress_key'),
-                progress_version=p['args'].get('progress_version')))
+                progress_version=p['args'].get('progress_version'), delivery=p['args'].get('delivery')))
         raise ValueError('Unknown cross-server operation')
 
     def _remote_spawn(self, principal: str, p: dict[str, Any], key: str) -> dict[str, Any]:

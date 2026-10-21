@@ -3,6 +3,7 @@
 //! after an unknown reply; provider commands remain one-shot.
 use futures_util::future::BoxFuture;
 use std::sync::Arc;
+use studio_runtime_schema::delivery::DeliveryMoment;
 
 use rusqlite::{OptionalExtension, Transaction, params};
 use serde_json::{Value, json};
@@ -769,17 +770,7 @@ impl RuntimeOrchestrationEffects {
                             .ok_or_else(|| {
                                 refused(400, "invalid_request", "Invalid move-send request")
                             })?;
-                        let delivery = args
-                            .get("delivery")
-                            .and_then(Value::as_str)
-                            .unwrap_or("queue");
-                        if !matches!(delivery, "queue" | "steer" | "after_tool" | "after_turn") {
-                            return Err(refused(
-                                400,
-                                "invalid_request",
-                                "Invalid move-send delivery mode",
-                            ));
-                        }
+                        let delivery = delivery_moment(&args)?;
                         let target =
                             crate::event_write::checked_agent(tx, target_id).map_err(|_| {
                                 refused(
@@ -842,15 +833,11 @@ async fn receive_remote_anchor_input(
         .get("parentEpoch")
         .and_then(Value::as_i64)
         .ok_or_else(|| refused(400, "invalid_request", "Invalid remote anchor input"))?;
-    let delivery = payload
-        .get("delivery")
-        .and_then(Value::as_str)
-        .unwrap_or("queue");
+    let delivery = delivery_moment(payload)?;
     if key.is_empty()
         || link_id.is_empty()
         || !crate::coordination::message_text_within_limit(event_text)
         || kind != "user"
-        || !matches!(delivery, "queue" | "steer" | "after_tool" | "after_turn")
     {
         return Err(refused(
             400,
@@ -921,7 +908,6 @@ async fn receive_remote_anchor_input(
     let link_id = link_id.to_owned();
     let principal = principal.to_owned();
     let event_text = event_text.to_owned();
-    let delivery = delivery.to_owned();
     let receipt = store
         .transaction_with(move |tx| {
             let current_link: Option<String> = tx
@@ -966,7 +952,7 @@ async fn receive_remote_anchor_input(
                     room: &parent_id,
                     id: &key,
                     text: &event_text,
-                    delivery: &delivery,
+                    delivery,
                     assets: &[],
                 },
                 &admission,
@@ -994,10 +980,9 @@ fn durable_anchor_input_receipt(
     }
     let link_id = text(payload, "link");
     let event_text = text(payload, "text");
-    let delivery = payload
-        .get("delivery")
-        .and_then(Value::as_str)
-        .unwrap_or("queue");
+    let Ok(delivery) = delivery_moment(payload) else {
+        return Ok(None);
+    };
     let Some(parent_epoch) = payload.get("parentEpoch").and_then(Value::as_i64) else {
         return Ok(None);
     };
@@ -1005,7 +990,6 @@ fn durable_anchor_input_receipt(
         || link_id.is_empty()
         || text(payload, "kind") != "user"
         || !crate::coordination::message_text_within_limit(event_text)
-        || !matches!(delivery, "queue" | "steer" | "after_tool" | "after_turn")
     {
         return Ok(None);
     }
@@ -1031,14 +1015,20 @@ fn durable_anchor_input_receipt(
     let Some(parent_id) = link.get("parent").and_then(Value::as_str) else {
         return Ok(None);
     };
-    crate::coordination::remote_message_receipt(transaction, parent_id, &envelope.key, event_text)
-        .map_err(|_| {
-            refused(
-                503,
-                "invalid_record",
-                "Stored remote message receipt is invalid",
-            )
-        })
+    crate::coordination::remote_message_receipt(
+        transaction,
+        parent_id,
+        &envelope.key,
+        event_text,
+        delivery,
+    )
+    .map_err(|_| {
+        refused(
+            503,
+            "invalid_record",
+            "Stored remote message receipt is invalid",
+        )
+    })
 }
 
 async fn receive_remote_input(
@@ -1064,10 +1054,7 @@ async fn receive_remote_input(
         .get("epoch")
         .and_then(Value::as_i64)
         .ok_or_else(|| refused(400, "invalid_request", "Invalid remote input"))?;
-    let delivery = payload
-        .get("delivery")
-        .and_then(Value::as_str)
-        .unwrap_or("queue");
+    let delivery = delivery_moment(payload)?;
     if key.is_empty()
         || link_id.is_empty()
         || worker_id.is_empty()
@@ -1198,7 +1185,6 @@ async fn receive_remote_input(
     let worker_id = worker_id.to_owned();
     let kind = kind.to_owned();
     let event_text = event_text.to_owned();
-    let delivery = delivery.to_owned();
     let result = store
         .transaction_with(move |tx| {
             let current = studio_runtime_store::AgentRepository::get(
@@ -1222,6 +1208,18 @@ async fn receive_remote_input(
             {
                 return Err(refused(409, "worker_changed", "The remote worker changed"));
             }
+            if studio_runtime_store::QueueEventRepository::get(
+                tx,
+                &studio_runtime_store::QueueEventId::from(key.as_str()),
+            )?
+            .is_none()
+            {
+                studio_runtime_store::QueueWriteRepository::put_metadata(
+                    tx,
+                    &key,
+                    &json!({"delivery":delivery}),
+                )?;
+            }
             if studio_runtime_store::truthy(current.extra.get("moveImportPending"))
                 || studio_runtime_store::truthy(current.extra.get("movedTo"))
             {
@@ -1237,16 +1235,6 @@ async fn receive_remote_input(
                 return Ok::<Value, AccessError>(json!({"eventId":key}));
             }
             if matches!(kind.as_str(), "user" | "followup") {
-                if !matches!(
-                    delivery.as_str(),
-                    "queue" | "steer" | "after_tool" | "after_turn"
-                ) {
-                    return Err(refused(
-                        400,
-                        "invalid_request",
-                        "Invalid remote input delivery",
-                    ));
-                }
                 let admission = admission.as_ref().ok_or_else(|| {
                     refused(400, "input_rejected", "The remote input was not admitted")
                 })?;
@@ -1256,7 +1244,7 @@ async fn receive_remote_input(
                         room: &worker_id,
                         id: &key,
                         text: &event_text,
-                        delivery: &delivery,
+                        delivery,
                         assets: &[],
                     },
                     admission,
@@ -1645,6 +1633,7 @@ impl RuntimeOrchestrationEffects {
         let link_id = text(payload, "link");
         let kind = text(payload, "kind");
         let event_text = text(payload, "text");
+        let delivery = delivery_moment(payload)?;
         let parent_epoch = payload
             .get("parentEpoch")
             .and_then(Value::as_i64)
@@ -1803,6 +1792,11 @@ impl RuntimeOrchestrationEffects {
                         ));
                     }
                 } else {
+                    studio_runtime_store::QueueWriteRepository::put_metadata(
+                        tx,
+                        &key_for_write,
+                        &json!({"delivery":delivery}),
+                    )?;
                     crate::event_write::enqueue_recovery_event(
                         tx,
                         &typed,
@@ -3207,6 +3201,12 @@ fn outbox_next_due_at(
         .query_row(&sql, [], |row| row.get::<_, Option<f64>>(0))
         .map(|at| at.map(|at| at.ceil() as i64))
         .map_err(Into::into)
+}
+
+/// Normalize a paired peer's wire value once before service admission.
+fn delivery_moment(payload: &Value) -> Result<DeliveryMoment, AccessError> {
+    DeliveryMoment::for_event(text(payload, "kind"), text(payload, "text"), Some(payload))
+        .map_err(|_| refused(400, "invalid_request", "Invalid delivery moment"))
 }
 
 #[cfg(test)]

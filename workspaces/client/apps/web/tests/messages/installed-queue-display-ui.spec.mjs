@@ -98,7 +98,7 @@ test("installed queue display ui", async ({ browser: _browser }) => {
           id: crypto.randomUUID(),
           room: lead.id,
           text,
-          delivery: "after_turn",
+          delivery: "next_turn",
         }),
       });
       assert.equal(response.status, 200);

@@ -2,6 +2,8 @@
 
 import json
 
+from codex_delivery import event_delivery
+
 
 def complaint_records(db, agent, text):
     try:
@@ -61,7 +63,7 @@ def pending_batch(runtime, db, agent):
                 continue
             if not metadata_by_id[row['id']].get('preserveProgress'):
                 row.pop('preserveProgress', None)
-            key = tuple(value[k] for k in ('sender', 'room', 'progress_key'))
+            key = (*tuple(value[k] for k in ('sender', 'room', 'progress_key')), event_delivery(db, row))
             groups.setdefault(key, []).append((row, value))
         except (ValueError, TypeError, KeyError):
             continue

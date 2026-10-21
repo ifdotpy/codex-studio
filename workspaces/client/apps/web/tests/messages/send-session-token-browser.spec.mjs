@@ -123,7 +123,7 @@ test("Send session token browser", async ({
       room: `chat-${id}`,
       text: `Exact message ${id}`,
       assets: [],
-      delivery: "after_tool",
+      delivery: "current_turn",
     });
     await page.evaluate((body) => {
       window.resultA = window.start(body);

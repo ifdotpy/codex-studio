@@ -3,6 +3,7 @@ use crate::submit_gates::{
     AuthorizationRecords, AuthorizationSnapshot, StoredEvent, authorize_events,
 };
 use std::collections::BTreeMap;
+use studio_runtime_schema::delivery::DeliveryMoment;
 use studio_runtime_store::{AgentId, AgentRepository, SyncDocumentsRepository};
 
 pub(super) fn authorization_records(
@@ -160,6 +161,8 @@ fn send_as_actor(
     ) {
         return Err(CallbackError::Invalid("Unknown message importance"));
     }
+    let delivery = DeliveryMoment::for_message(args)
+        .map_err(|_| CallbackError::Invalid("Invalid delivery moment"))?;
     let progress_key = args.get("progress_key").filter(|value| !value.is_null());
     let progress_version = args
         .get("progress_version")
@@ -212,7 +215,7 @@ fn send_as_actor(
             target.to_owned()
         };
         return crate::federation_delivery::send_message_in_transaction(
-            tx, who, &room, message, id, now,
+            tx, who, &room, message, id, delivery, now,
         )
         .map_err(map_federation_error);
     }
@@ -304,10 +307,16 @@ fn send_as_actor(
                 payload["progress_key"] = key.clone();
                 payload["progress_version"] = version.clone();
             }
+            let event_id = format!("chat:{id}:{recipient_id}");
+            studio_runtime_store::QueueWriteRepository::put_metadata(
+                tx,
+                &event_id,
+                &json!({"delivery":delivery}),
+            )?;
             event_write::enqueue_event(
                 tx,
                 &typed,
-                format!("chat:{id}:{recipient_id}"),
+                event_id,
                 "agent_message",
                 payload.to_string(),
                 now,

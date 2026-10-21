@@ -6,6 +6,7 @@ use crate::repositories::sync_documents::SyncDocumentsRepository;
 use crate::schema::{ConditionalTableRequirement, SchemaRequirements, TableRequirement};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::{Value, json};
+use studio_runtime_schema::delivery::DeliveryMoment;
 use studio_runtime_schema::shared_values::TRANSCRIPT_MAX_TOMBSTONES;
 use thiserror::Error;
 
@@ -783,7 +784,7 @@ fn enrich_persisted_items(
                 if let Some(event) = event {
                     fields.insert(
                         "requestedDelivery".to_owned(),
-                        Value::String("queue".to_owned()),
+                        json!(DeliveryMoment::CurrentTurn),
                     );
                     represented
                         .entry(event)
@@ -798,7 +799,7 @@ fn enrich_persisted_items(
                 .and_then(|id| id.strip_prefix(&format!("{agent}:")))
                 .map(str::to_owned);
             if let Some(event) = event {
-                item["requestedDelivery"] = Value::String("queue".to_owned());
+                item["requestedDelivery"] = json!(DeliveryMoment::CurrentTurn);
                 represented
                     .entry(event)
                     .or_default()
@@ -853,11 +854,10 @@ fn enrich_persisted_items(
                 })
                 .transpose()?
                 .unwrap_or(Value::Null);
-            let delivery = metadata
-                .get("requestedDelivery")
-                .or_else(|| metadata.get("delivery"))
-                .and_then(Value::as_str)
-                .unwrap_or("queue");
+            let delivery_metadata = json!({"delivery": metadata.get("requestedDelivery")
+                .or_else(|| metadata.get("delivery"))});
+            let delivery = DeliveryMoment::for_event("user", "", Some(&delivery_metadata))
+                .map_err(|_| invalid_record("runtime_event_meta", &event))?;
             for (item_index, input_index) in &represented[&event] {
                 let target = match input_index {
                     Some(input) => &mut items[*item_index]["inputs"][*input],
@@ -866,10 +866,7 @@ fn enrich_persisted_items(
                 if let Some(object) = target.as_object_mut() {
                     object.insert("clientMessageId".to_owned(), Value::String(event.clone()));
                     object.insert("deliveryStatus".to_owned(), Value::String(status.clone()));
-                    object.insert(
-                        "requestedDelivery".to_owned(),
-                        Value::String(delivery.to_owned()),
-                    );
+                    object.insert("requestedDelivery".to_owned(), json!(delivery));
                     object.insert("materialized".to_owned(), Value::Bool(true));
                     object.insert(
                         "deliveryError".to_owned(),
@@ -1356,7 +1353,7 @@ mod tests {
                     ('e2','agent','user','pending','retry'),
                     ('e3','agent','user','sent',NULL);
                  INSERT INTO runtime_event_meta VALUES
-                    ('e1','{\"requestedDelivery\":\"notify\"}');",
+                    ('e1','{\"requestedDelivery\":\"after_turn\"}');",
             )
             .expect("event fixtures insert");
         TRACED_SQL.with_borrow_mut(Vec::clear);
@@ -1370,8 +1367,8 @@ mod tests {
         enrich_persisted_items(&connection, "agent", &json!({"status":"idle"}), &mut items)
             .expect("items are enriched");
 
-        assert_eq!(items[0]["requestedDelivery"], "notify");
-        assert_eq!(items[1]["requestedDelivery"], "queue");
+        assert_eq!(items[0]["requestedDelivery"], "next_turn");
+        assert_eq!(items[1]["requestedDelivery"], "current_turn");
         assert_eq!(items[2]["deliveryStatus"], "sent");
         TRACED_SQL.with_borrow(|statements| {
             assert_eq!(

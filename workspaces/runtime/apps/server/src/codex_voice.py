@@ -1,4 +1,6 @@
 """Selected-chat native voice and saved transcripts."""
+from codex_delivery import DeliveryMoment
+
 import base64
 import hashlib
 import json
@@ -156,7 +158,7 @@ class VoiceStore(NativeVoice):
                 if len(text) > 32000:
                     raise ValueError("The transcript exceeds 32000 characters. Send a smaller selection; no text was truncated")
                 db.execute("INSERT INTO voice_deliveries(id,agent,records,text,edited_text) VALUES(?,?,?,?,?)", (message_id,agent,encoded,text,edited_text))
-        result = self.runtime.send(agent,text,message_id=message_id,delivery="queue")
+        result = self.runtime.send(agent,text,message_id=message_id,delivery=DeliveryMoment.CURRENT_TURN)
         self._publish_voice(agent)
         return result
 

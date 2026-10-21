@@ -1,3 +1,5 @@
+import { MAX_TURN_ATTACHMENTS } from "../generated/sharedValues";
+import { DeliveryMoment } from "../generated/deliveryMoment";
 import { useSendingMessageRemoval } from "./useSendingMessageRemoval";
 import {
   useServerApi,
@@ -273,7 +275,7 @@ export default function Conversation(p: {
     assets?: string[];
     attachments?: Attachment[];
     onPersist?: () => void | Promise<void>;
-    delivery?: "after_tool" | "after_turn";
+    delivery?: DeliveryMoment;
   }) => Promise<void>;
   outgoing?: OutgoingMessage[];
   onObserved?: (ids: string[]) => void;
@@ -772,16 +774,16 @@ export default function Conversation(p: {
       ),
     [messageQueue.items, items, p.id],
   );
-  // The queue holds only after_turn messages (Tab). Other input is
+  // The queue holds only next-turn messages (Tab). Other input is
   // delivered at once and stays in the chat while it is sent.
   const { queue, sending } = useMemo(() => {
     const shown: typeof queued = [];
     const held: typeof queued = [];
     for (const entry of queued) {
       const mode =
-        entry.requestedDelivery ||
-        ("delivery" in entry ? entry.delivery : undefined);
-      (mode === "after_turn" ? shown : held).push(entry);
+        ("delivery" in entry ? entry.delivery : undefined) ||
+        entry.requestedDelivery;
+      (mode === DeliveryMoment.NextTurn ? shown : held).push(entry);
     }
     return { queue: shown, sending: held };
   }, [queued]);
@@ -791,8 +793,11 @@ export default function Conversation(p: {
     if (uploadLock.current)
       throw new Error("Wait for the selected files to be saved, then retry.");
     if (!files.length) throw new Error("Select at least one file.");
-    if (files.length + assets.length + pendingFiles.length > 8)
-      throw new Error("Attach at most eight files.");
+    if (
+      files.length + assets.length + pendingFiles.length >
+      MAX_TURN_ATTACHMENTS
+    )
+      throw new Error(`Attach at most ${MAX_TURN_ATTACHMENTS} files.`);
     const id = p.id;
     uploadLock.current = true;
     setUploading(true);
@@ -807,7 +812,7 @@ export default function Conversation(p: {
     }
   };
   const submit = async (
-    delivery: "after_tool" | "after_turn" = "after_tool",
+    delivery: DeliveryMoment = DeliveryMoment.CurrentTurn,
   ) => {
     const draft = p.getDraft(p.id || "new");
     const draftTooLong = draft.length > 12000;
@@ -891,7 +896,7 @@ export default function Conversation(p: {
       threadBlock ||
       p.sending ||
       uploadLock.current ||
-      assets.length >= 8
+      assets.length >= MAX_TURN_ATTACHMENTS
     )
       return;
     const id = p.id;
@@ -1843,7 +1848,7 @@ export default function Conversation(p: {
                       )
                     }
                     onSend={() => void submit()}
-                    onQueue={() => void submit("after_turn")}
+                    onQueue={() => void submit(DeliveryMoment.NextTurn)}
                     onRecallKeyDown={promptRecall.onKeyDown}
                     skillCatalog={{
                       enabled:
@@ -1885,7 +1890,7 @@ export default function Conversation(p: {
                             !canSend ||
                             p.sending ||
                             uploading ||
-                            assets.length >= 8
+                            assets.length >= MAX_TURN_ATTACHMENTS
                           }
                           onClick={() => void attachDraft()}
                         >
@@ -2047,15 +2052,15 @@ export default function Conversation(p: {
                     <div className="composer-submit-actions">
                       {managed && (
                         <span className="composer-timing">
-                          Send after tools · Queue after turn
+                          Send to current turn · Queue for next turn
                         </span>
                       )}
                       {managed && (
                         <ActionIcon
                           type="button"
                           variant="subtle"
-                          aria-label="Queue after turn"
-                          title="Queue after the current turn (Tab)"
+                          aria-label="Queue for next turn"
+                          title="Queue for the next turn (Tab)"
                           aria-keyshortcuts="Tab"
                           disabled={
                             !canSend ||
@@ -2064,7 +2069,7 @@ export default function Conversation(p: {
                             draftTooLong ||
                             (!draft.trim() && !assets.length)
                           }
-                          onClick={() => void submit("after_turn")}
+                          onClick={() => void submit(DeliveryMoment.NextTurn)}
                         >
                           <ListEnd size={18} />
                         </ActionIcon>

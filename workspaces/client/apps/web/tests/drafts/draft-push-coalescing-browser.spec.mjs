@@ -199,7 +199,7 @@ test("draft pushes coalesce at the production replication boundary", async ({
         id: "draft-coalescing-message",
         room: "lead",
         text,
-        delivery: "after_tool",
+        delivery: "current_turn",
       };
       const result = await durableSend(body, [], () =>
         window.draft.setDrafts((old) => ({ ...old, lead: "" })),

@@ -8,6 +8,7 @@ pub(crate) use studio_runtime_process::clock::monotonic_ns;
 
 use rusqlite::OptionalExtension;
 use serde_json::{Value, json};
+use studio_runtime_schema::delivery::DeliveryMoment;
 use studio_runtime_store::{
     AgentId, AgentRecord, AgentRepository, AgentStatus, EventWriteRepository, QueueEvent,
     QueueEventId, QueueWriteRepository, Transaction,
@@ -279,6 +280,19 @@ fn enqueue(
     created: f64,
     recovery: bool,
 ) -> Result<bool, EventWriteError> {
+    let mut metadata =
+        QueueWriteRepository::metadata(transaction, &id)?.unwrap_or_else(|| json!({}));
+    let delivery = DeliveryMoment::for_event(kind, &text, Some(&metadata))
+        .map_err(|_| EventWriteError::InvalidRequest("Invalid delivery moment"))?;
+    if studio_runtime_store::QueueEventRepository::get(
+        transaction,
+        &QueueEventId::from(id.as_str()),
+    )?
+    .is_none()
+    {
+        metadata["delivery"] = json!(delivery);
+        QueueWriteRepository::put_metadata(transaction, &id, &metadata)?;
+    }
     let auto_wake = agent_auto_wake(agent)?;
     let recovery_pending = recovery && recovery_pending(agent);
     let event = QueueEvent {
@@ -329,8 +343,6 @@ fn enqueue(
             {
                 return Err(EventWriteError::Conflict("Remote event link is invalid"));
             }
-            let metadata = QueueWriteRepository::metadata(transaction, &id)?
-                .unwrap_or_else(|| json!({"assets":[],"delivery":"queue"}));
             if metadata
                 .get("assets")
                 .and_then(Value::as_array)
@@ -355,7 +367,7 @@ fn enqueue(
                 "worker":agent.id.0,
                 "kind":kind,
                 "text":event.text,
-                "delivery":metadata.get("delivery").and_then(Value::as_str).unwrap_or("queue"),
+                "delivery":delivery,
                 "parentEpoch":parent_epoch,
                 "epoch":remote_epoch,
                 "controlEpoch":agent.epoch,
@@ -396,8 +408,6 @@ fn enqueue(
             if is_anchor && kind != "user" {
                 return Err(EventWriteError::RemoteEventsUnavailable);
             }
-            let metadata = QueueWriteRepository::metadata(transaction, &id)?
-                .unwrap_or_else(|| json!({"assets": [], "delivery": "queue"}));
             if metadata
                 .get("assets")
                 .and_then(Value::as_array)
@@ -416,7 +426,7 @@ fn enqueue(
                 "parentEpoch": parent_epoch,
                 "kind": event.kind,
                 "text": event.text,
-                "delivery": metadata.get("delivery").and_then(Value::as_str).unwrap_or("queue"),
+                "delivery": delivery,
             });
             payload[crate::multi_server_orchestration::REMOTE_ANCHOR_INPUT_FIELD] =
                 Value::Bool(true);
@@ -441,6 +451,7 @@ fn enqueue(
             "parentEpoch": parent_epoch,
             "kind": event.kind,
             "text": event.text,
+            "delivery": delivery,
         });
         crate::multi_server_orchestration::enqueue_in_transaction(
             transaction,
@@ -677,6 +688,7 @@ mod tests {
     };
     use serde_json::{Value, json};
     use std::collections::BTreeMap;
+    use studio_runtime_schema::delivery::DeliveryMoment;
     use studio_runtime_store::{
         AgentId, AgentRecord, AgentRepository, AgentStatus, Connection, QueueWriteRepository,
         Transaction,
@@ -715,6 +727,102 @@ mod tests {
         };
         AgentRepository::put(&connection, &agent).expect("agent writes");
         connection
+    }
+
+    #[test]
+    fn event_delivery_defaults_are_canonical_and_explicit_timing_wins() {
+        let mut connection = database();
+        with_transaction(&mut connection, |tx| {
+            let agent = AgentRepository::get(tx, &AgentId::from("a"))?.expect("seeded agent");
+            for (id, text, explicit, expected) in [
+                (
+                    "progress",
+                    r#"{"importance":"progress"}"#,
+                    None,
+                    DeliveryMoment::NextTurn,
+                ),
+                (
+                    "result",
+                    r#"{"importance":"result"}"#,
+                    None,
+                    DeliveryMoment::CurrentTurn,
+                ),
+                (
+                    "urgent-progress",
+                    r#"{"importance":"progress"}"#,
+                    Some("after_tool"),
+                    DeliveryMoment::CurrentTurn,
+                ),
+                (
+                    "later-result",
+                    r#"{"importance":"result"}"#,
+                    Some("next_turn"),
+                    DeliveryMoment::NextTurn,
+                ),
+            ] {
+                if let Some(moment) = explicit {
+                    QueueWriteRepository::put_metadata(tx, id, &json!({"delivery":moment}))?;
+                }
+                assert!(enqueue_event(
+                    tx,
+                    &agent,
+                    id.into(),
+                    "agent_message",
+                    text.into(),
+                    1.0
+                )?);
+                let metadata = QueueWriteRepository::metadata(tx, id)?.expect("delivery persisted");
+                assert_eq!(metadata["delivery"], json!(expected));
+                assert!(!enqueue_event(
+                    tx,
+                    &agent,
+                    id.into(),
+                    "agent_message",
+                    text.into(),
+                    2.0
+                )?);
+                assert_eq!(QueueWriteRepository::metadata(tx, id)?, Some(metadata));
+            }
+            Ok(())
+        })
+        .expect("events admitted");
+    }
+
+    #[test]
+    fn invalid_event_delivery_does_not_enqueue() {
+        let mut connection = database();
+        with_transaction(&mut connection, |tx| {
+            let agent = AgentRepository::get(tx, &AgentId::from("a"))?.expect("seeded agent");
+            // Simulate corrupt persisted metadata, bypassing the write validator.
+            tx.execute(
+                "INSERT INTO runtime_event_meta(id,record) VALUES(?1,?2)",
+                rusqlite::params![
+                    "invalid-moment",
+                    json!({"delivery":"later-ish"}).to_string()
+                ],
+            )
+            .expect("corrupt metadata fixture");
+            assert!(
+                enqueue_event(
+                    tx,
+                    &agent,
+                    "invalid-moment".into(),
+                    "agent_message",
+                    "{}".into(),
+                    1.0
+                )
+                .is_err()
+            );
+            assert!(
+                studio_runtime_store::QueueEventRepository::get(
+                    tx,
+                    &studio_runtime_store::QueueEventId::from("invalid-moment")
+                )?
+                .is_none()
+            );
+            Ok(())
+        })
+        .expect("invalid moment refused");
     }
 
     fn plan_input(version: i64, text: &str, signature: &str) -> PlanWrite {
@@ -786,7 +894,7 @@ mod tests {
                 row.get(0)
             })
             .expect("event metadata count reads");
-        assert_eq!(metadata_count, 0);
+        assert_eq!(metadata_count, 1);
         let persisted_agent = AgentRepository::get(&connection, &AgentId::from("a"))
             .expect("agent reads")
             .expect("agent exists");
@@ -1046,7 +1154,10 @@ mod tests {
         assert_eq!(server, "remote");
         assert_eq!(body["action"], "input");
         assert_eq!(body["payload"]["worker"], "a");
-        assert_eq!(body["payload"]["delivery"], "steer");
+        assert_eq!(
+            body["payload"]["delivery"],
+            json!(DeliveryMoment::CurrentTurn)
+        );
         assert_eq!(body["payload"]["parentEpoch"], 4);
         assert_eq!(body["payload"]["epoch"], 3);
         assert_eq!(body["payload"]["text"], unicode_text);

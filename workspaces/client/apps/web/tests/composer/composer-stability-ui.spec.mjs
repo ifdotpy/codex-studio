@@ -430,7 +430,7 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
           );
       assert.equal(
         pendingSend.request().postDataJSON().delivery,
-        "after_tool",
+        "current_turn",
         "An ordinary Send action keeps the current after-tool delivery mode",
       );
       await pendingSend.fulfill({
@@ -454,7 +454,7 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
         {
           id: "queued-fixture",
           text: "Later instruction",
-          delivery: "after_turn",
+          delivery: "next_turn",
           status: "queued",
         },
       ];

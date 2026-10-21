@@ -454,10 +454,7 @@ pub(super) async fn dispatch(
         None
     };
     let route = match remote_send {
-        Some(target) => Some(crate::multi_server_tools::worker_message(
-            &target,
-            &json!({"text": args.get("text")}),
-        )),
+        Some(target) => Some(crate::multi_server_tools::worker_message(&target, args)),
         None => crate::multi_server_tools::worker_route(tool, args, actor.record()),
     };
     if let Some(route) = route {

@@ -4,14 +4,15 @@ use serde_json::{Value, json};
 use studio_runtime_store::{NotificationDispatchRepository, SchedulerRepository, Transaction};
 
 use super::{
-    ITEM_PREVIEW_CHARS, NotificationDispatchError, PreparedSubmission, stored,
-    validate_agent_write_fields,
+    ITEM_PREVIEW_CHARS, NotificationDispatchError, PreparedSubmission, SubmissionAuthorization,
+    stored, validate_agent_write_fields,
 };
 
 pub(super) fn validate_submission(
     transaction: &Transaction<'_>,
     agent_id: &str,
     submission: &PreparedSubmission,
+    authorization: SubmissionAuthorization,
 ) -> Result<(), NotificationDispatchError> {
     if submission.first_event_id.is_empty()
         || submission.inputs.is_empty()
@@ -76,15 +77,17 @@ pub(super) fn validate_submission(
         {
             return Err(stored("runtime_event_meta", &input.id));
         }
-        validate_submission_policy(
-            transaction,
-            &agent,
-            &input.id,
-            &input.kind,
-            &input.text,
-            meta.as_ref(),
-            submission.radio_authorized,
-        )?;
+        if matches!(authorization, SubmissionAuthorization::Current) {
+            validate_submission_policy(
+                transaction,
+                &agent,
+                &input.id,
+                &input.kind,
+                &input.text,
+                meta.as_ref(),
+                submission.radio_authorized,
+            )?;
+        }
     }
     let mut expected_asset_ids = Vec::new();
     for input in &submission.inputs {

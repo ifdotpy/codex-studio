@@ -149,11 +149,64 @@ impl From<StoreError> for NotificationDispatchError {
     }
 }
 
-/// Persist Python's submitted batch before the provider turn begins.
+#[derive(Clone, Copy)]
+enum SubmissionAuthorization {
+    Current,
+    /// The exact batch was authorized and frozen before the provider write.
+    AcknowledgedSteer,
+}
+
+/// Persist the submitted batch before the provider turn begins.
 pub fn record_user_submission(
     transaction: &Transaction<'_>,
     agent_id: &str,
     submission: &PreparedSubmission,
+) -> Result<DispatchOutcome, NotificationDispatchError> {
+    record_submission(
+        transaction,
+        agent_id,
+        submission,
+        SubmissionAuthorization::Current,
+    )
+}
+
+/// Record the frozen input after its exact durable steer acknowledgement.
+/// Changing room membership after a provider write must not erase authenticated
+/// delivery history; current authorization is checked at the submitted boundary.
+pub(crate) fn record_acknowledged_steer_submission(
+    transaction: &Transaction<'_>,
+    agent_id: &str,
+    submission: &PreparedSubmission,
+    acknowledgement: &studio_runtime_store::AcknowledgedSteer,
+) -> Result<DispatchOutcome, NotificationDispatchError> {
+    if acknowledgement.agent_id != agent_id
+        || acknowledgement.prepared_submission.is_none()
+        || acknowledgement
+            .event_ids
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+            != submission
+                .inputs
+                .iter()
+                .map(|input| input.id.as_str())
+                .collect::<Vec<_>>()
+    {
+        return Err(NotificationDispatchError::UnauthorizedSubmission);
+    }
+    record_submission(
+        transaction,
+        agent_id,
+        submission,
+        SubmissionAuthorization::AcknowledgedSteer,
+    )
+}
+
+fn record_submission(
+    transaction: &Transaction<'_>,
+    agent_id: &str,
+    submission: &PreparedSubmission,
+    authorization: SubmissionAuthorization,
 ) -> Result<DispatchOutcome, NotificationDispatchError> {
     in_savepoint(transaction, || {
         let id = format!("{agent_id}:{}", submission.first_event_id);
@@ -179,7 +232,7 @@ pub fn record_user_submission(
             }
             return decode_outcome(&receipt.result, &receipt_id);
         }
-        validate_submission(transaction, agent_id, submission)?;
+        validate_submission(transaction, agent_id, submission, authorization)?;
         if let Some((existing, created)) =
             NotificationDispatchRepository::transcript_item(transaction, agent_id, &id)?
         {

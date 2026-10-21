@@ -275,7 +275,7 @@ pub fn answer_async_question<V: Fn(&Value) -> bool>(
                 recipient_id: agent_id,
                 id: &format!("{id}:answer"),
                 text,
-                delivery: "queue",
+                delivery: studio_runtime_schema::delivery::DeliveryMoment::CurrentTurn,
                 now,
             },
             turn_id,

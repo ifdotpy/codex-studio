@@ -12,7 +12,7 @@ use super::{
 };
 use crate::{error::ApiError, generated, router::HttpState};
 
-/// Narrow adapter for Python's `runtime.send(..., manual=false, delivery="after_turn")`.
+/// Narrow adapter for a non-manual follow-up delivered in the next turn.
 /// `send_system_followup` persists the actorless non-manual follow-up event.
 trait HandoffPort {
     fn send_after_turn(
@@ -50,7 +50,7 @@ impl HandoffPort for CoordinationHandoffPort {
                 recipient_id: recipient,
                 id: request_id,
                 text,
-                delivery: "after_turn",
+                delivery: studio_runtime_schema::DeliveryMoment::NextTurn,
                 now,
             },
             admission,

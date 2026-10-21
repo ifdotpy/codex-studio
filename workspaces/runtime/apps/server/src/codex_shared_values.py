@@ -2,6 +2,8 @@
 
 from typing import Final
 
+from codex_turn_limits import MAX_TURN_ATTACHMENTS as MAX_TURN_ATTACHMENTS
+
 PROCESS_SUPERVISOR_PROTOCOL_VERSION = 1
 OPERATIONS_PYTHON_PROTOCOL_VERSION: Final = 4
 

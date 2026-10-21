@@ -617,7 +617,7 @@ impl studio_runtime_services::native_actions::CommandAdmission for NativeCommand
                 room: self.room,
                 id: key,
                 text: instruction,
-                delivery: "queue",
+                delivery: studio_runtime_schema::DeliveryMoment::CurrentTurn,
                 assets: &[],
             },
             self.admission,

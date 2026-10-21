@@ -32,6 +32,8 @@ pub(super) struct Commit {
 pub(super) enum Committed {
     /// Already submitted, or the durable boundary refused it: nothing to write.
     Nothing,
+    /// A never-submitted batch was isolated and released for a fresh claim.
+    Retry(String, i64),
     /// The agent may run in a VM: the worker resolves its session, then
     /// finishes the commit inline. Carries the launch lookup's result.
     Vm(
@@ -142,7 +144,27 @@ impl Commit {
         )
         .await?;
         if !authorized {
-            return Ok(Committed::Nothing);
+            let intent = context.intent.clone();
+            let retry = bridge
+                .worker_run("retry_isolated_input", move |store| async move {
+                    store
+                        .read_async("runtime-services/retry_isolated_input", move |db| {
+                            Ok::<_, WorkerError>(
+                                AgentRepository::get(db, &AgentId::from(intent.agent_id.as_str()))?
+                                    .filter(|row| {
+                                        row.epoch == intent.epoch
+                                            && row.status
+                                                == studio_runtime_store::AgentStatus::Queued
+                                            && !row.extra.contains_key("startAttempt")
+                                    }),
+                            )
+                        })
+                        .await
+                })
+                .await?;
+            return Ok(retry.map_or(Committed::Nothing, |row| {
+                Committed::Retry(row.id.0, row.epoch)
+            }));
         }
         Ok(Committed::Ready(Box::new(Ready {
             id,

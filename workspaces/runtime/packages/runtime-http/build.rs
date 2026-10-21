@@ -3,6 +3,7 @@ use std::error::Error;
 use std::fs;
 use std::path::PathBuf;
 
+use openapi_to_rust::analysis::SchemaType;
 use openapi_to_rust::{CodeGenerator, GeneratorConfig, SchemaAnalyzer};
 fn main() -> Result<(), Box<dyn Error>> {
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR")?);
@@ -14,6 +15,23 @@ fn main() -> Result<(), Box<dyn Error>> {
     let document: serde_json::Value = serde_json::from_slice(&fs::read(&spec_path)?)?;
     let mut analyzer = SchemaAnalyzer::new(document)?;
     let mut analysis = analyzer.analyze()?;
+    // Keep the wire schema shared, and deserialize ingress timing directly
+    // into its runtime owner through the explicit compatibility codec.
+    let SchemaType::Object { properties, .. } = &mut analysis
+        .schemas
+        .get_mut("ManagedMessageBody")
+        .ok_or("missing managed message schema")?
+        .schema_type
+    else {
+        return Err("managed message schema must be an object".into());
+    };
+    properties
+        .get_mut("delivery")
+        .ok_or("missing managed message delivery")?
+        .schema_type = SchemaType::Primitive {
+        rust_type: "studio_runtime_schema::DeliveryMoment".to_owned(),
+        serde_with: Some("studio_runtime_schema::delivery::compatibility".to_owned()),
+    };
     let config = GeneratorConfig {
         spec_path: spec_path.clone(),
         output_dir: output_dir.clone(),

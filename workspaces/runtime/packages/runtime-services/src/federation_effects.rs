@@ -438,10 +438,22 @@ fn receive_locked(tx: &Transaction<'_>, peer: &str, envelope: &Value, now: f64) 
             if crate::event_write::truthy(agent.extra.get("deletedAt")) {
                 continue;
             }
+            let event_id = format!("{}{member}", chat.event_prefix);
+            let delivery = studio_runtime_schema::delivery::DeliveryMoment::for_event(
+                "agent_message",
+                &chat.event.to_string(),
+                Some(&message.payload),
+            )
+            .map_err(|_| Error::Invalid("payload.delivery"))?;
+            studio_runtime_store::QueueWriteRepository::put_metadata(
+                tx,
+                &event_id,
+                &json!({"delivery":delivery}),
+            )?;
             crate::event_write::enqueue_event(
                 tx,
                 &agent,
-                format!("{}{member}", chat.event_prefix),
+                event_id,
                 "agent_message",
                 transport::canonical_json(&chat.event)?,
                 now,

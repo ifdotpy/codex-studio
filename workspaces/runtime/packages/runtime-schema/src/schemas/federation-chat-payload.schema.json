@@ -11,6 +11,16 @@
       "title": "Created",
       "type": "number"
     },
+    "delivery": {
+      "anyOf": [
+        {
+          "$ref": "https://codex-studio.invalid/openapi.json#/components/schemas/DeliveryMomentInput"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "sender": {
       "maxLength": 128,
       "title": "Sender",

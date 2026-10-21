@@ -4,6 +4,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::path::Path;
+use studio_runtime_schema::DeliveryMoment;
 use studio_runtime_store::python_json_utf8 as python_json;
 use studio_runtime_store::{
     AnalyticsRepository, RuntimeStore, TranscriptRepository, system_reads as records,
@@ -400,7 +401,7 @@ fn receipts(
             Some(j) => &mut items[i]["inputs"][j],
             None => &mut items[i],
         };
-        entry["requestedDelivery"] = json!("queue");
+        entry["requestedDelivery"] = json!(DeliveryMoment::CurrentTurn);
         let event = connection
             .query_row(
                 "SELECT status,error FROM runtime_events WHERE id=?1 AND agent=?2 AND kind='user'",
@@ -410,12 +411,15 @@ fn receipts(
             .optional()?;
         if let Some((status, error)) = event {
             let meta = records::get(connection, "runtime_event_meta", &id)?.unwrap_or(json!({}));
-            let delivery = meta
+            let requested = meta
                 .get("requestedDelivery")
-                .or_else(|| meta.get("delivery"))
-                .and_then(Value::as_str)
-                .filter(|s| !s.is_empty())
-                .unwrap_or("queue");
+                .or_else(|| meta.get("delivery"));
+            let delivery =
+                DeliveryMoment::for_event("user", "", Some(&json!({"delivery":requested})))
+                    .map_err(|_| TranscriptError::InvalidStoredObject {
+                        table: "runtime_event_meta",
+                        id: id.clone(),
+                    })?;
             entry["clientMessageId"] = json!(id);
             entry["deliveryStatus"] = json!(status);
             entry["requestedDelivery"] = json!(delivery);
@@ -697,4 +701,55 @@ pub(crate) fn observed_at() -> Result<f64, TranscriptError> {
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|_| TranscriptError::Store)?
         .as_secs_f64())
+}
+
+#[cfg(test)]
+mod delivery_tests {
+    use super::*;
+
+    #[test]
+    fn transcript_receipts_normalize_legacy_and_keep_original_timing() {
+        let db = Connection::open_in_memory().expect("fixture database");
+        db.execute_batch(
+            "CREATE TABLE runtime_events(id TEXT,agent TEXT,kind TEXT,status TEXT,error TEXT);
+             CREATE TABLE runtime_event_meta(id TEXT PRIMARY KEY,record TEXT NOT NULL);",
+        )
+        .expect("fixture schema");
+        for (id, metadata) in [
+            ("legacy", json!({"delivery":"after_turn"})),
+            (
+                "promoted",
+                json!({"delivery":"current_turn","requestedDelivery":"next_turn","sendNow":true}),
+            ),
+        ] {
+            db.execute(
+                "INSERT INTO runtime_events VALUES(?1,'agent','user','delivered',NULL)",
+                [id],
+            )
+            .expect("fixture event");
+            db.execute(
+                "INSERT INTO runtime_event_meta VALUES(?1,?2)",
+                params![id, metadata.to_string()],
+            )
+            .expect("fixture metadata");
+        }
+        let mut items = vec![
+            json!({"id":"agent:legacy","role":"user"}),
+            json!({"id":"agent:promoted","role":"user"}),
+            json!({"id":"agent:historical","role":"user"}),
+        ];
+        receipts(&db, "agent", &mut items, false).expect("receipt projection");
+        assert_eq!(
+            items[0]["requestedDelivery"],
+            json!(DeliveryMoment::NextTurn)
+        );
+        assert_eq!(
+            items[1]["requestedDelivery"],
+            json!(DeliveryMoment::NextTurn)
+        );
+        assert_eq!(
+            items[2]["requestedDelivery"],
+            json!(DeliveryMoment::CurrentTurn)
+        );
+    }
 }

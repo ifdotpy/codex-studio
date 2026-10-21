@@ -115,12 +115,7 @@ pub(super) async fn post_message(
         .into_iter()
         .map(|asset| serde_json::to_value(asset).map_err(|_| ApiError::internal()))
         .collect::<Result<Vec<_>, _>>()?;
-    let delivery = body
-        .delivery
-        .as_ref()
-        .map(crate::generated::ManagedMessageBodyDelivery::as_str)
-        .unwrap_or("queue")
-        .to_owned();
+    let delivery = body.delivery.unwrap_or_default();
     let admission_store = Arc::clone(&store);
     let admission_room = body.room.clone();
     let admission_override = message_admission.clone();
@@ -189,6 +184,7 @@ pub(super) async fn post_message(
             &body.room,
             &body.text,
             &body.id,
+            delivery,
             now,
         )
         .await
@@ -209,7 +205,7 @@ pub(super) async fn post_message(
                     room: &body.room,
                     id: &body.id,
                     text: &body.text,
-                    delivery: &delivery,
+                    delivery,
                     assets: &assets,
                 },
                 admission.as_ref(),
@@ -368,3 +364,49 @@ inventory::submit! {
 #[cfg(test)]
 #[path = "../../../runtime-services/tests/wave7_p03_gate_tests/http.rs"]
 mod ingress_tests;
+
+#[cfg(test)]
+mod delivery_tests {
+    use crate::generated::ManagedMessageBody;
+    use serde_json::json;
+    use studio_runtime_schema::{DeliveryMoment, delivery::LEGACY_DELIVERY_MOMENTS};
+
+    #[test]
+    fn managed_message_serde_uses_the_owner_at_ingress() {
+        let body =
+            json!({"id":"00000000-0000-4000-8000-000000000001", "room":"agent", "text":"hello"});
+        let missing: ManagedMessageBody =
+            serde_json::from_value(body.clone()).expect("missing timing");
+        assert_eq!(
+            missing.delivery.unwrap_or_default(),
+            DeliveryMoment::CurrentTurn
+        );
+        for (value, expected) in DeliveryMoment::ALL
+            .map(|moment| (moment.as_str(), moment))
+            .into_iter()
+            .chain(LEGACY_DELIVERY_MOMENTS)
+        {
+            let mut input = body.clone();
+            input["delivery"] = json!(value);
+            let parsed: ManagedMessageBody =
+                serde_json::from_value(input).expect("supported input");
+            assert_eq!(parsed.delivery, Some(expected));
+            assert_eq!(
+                serde_json::to_value(parsed).expect("canonical output")["delivery"],
+                json!(expected)
+            );
+        }
+        for value in [
+            json!("unknown"),
+            json!(null),
+            json!(7),
+            json!({}),
+            json!([]),
+            json!(true),
+        ] {
+            let mut input = body.clone();
+            input["delivery"] = value;
+            assert!(serde_json::from_value::<ManagedMessageBody>(input).is_err());
+        }
+    }
+}

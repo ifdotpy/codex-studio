@@ -73,7 +73,11 @@ pub(super) fn claim(
                 created: event.created,
                 epoch: event.epoch,
                 error: event.error.clone(),
-                metadata: json!({}),
+                metadata: claimed
+                    .metadata
+                    .get(&event.id.0)
+                    .cloned()
+                    .unwrap_or_else(|| json!({})),
             })
             .collect(),
         radio_authorized: false,
@@ -87,13 +91,64 @@ fn text<'a>(texts: impl Iterator<Item = &'a str>) -> String {
 
 /// Provider `turn/steer` parameters. `expectedTurnId` makes a finished turn a
 /// definite rejection instead of a new turn.
-pub(super) fn params(intent: &TurnIntent, turn: &str) -> Value {
+pub(super) fn params(
+    intent: &TurnIntent,
+    turn: &str,
+    compiled: &crate::turn_prepare::PreparedSubmission,
+) -> Value {
     json!({
         "threadId": intent.thread_id,
         "expectedTurnId": turn,
-        "clientUserMessageId": intent.events.first().map(|event| &event.id),
-        "input": [{"type": "text", "text": text(intent.events.iter().map(|e| e.text.as_str()))}],
+        "clientUserMessageId": compiled.event_ids.first(),
+        "input": compiled.provider_inputs,
     })
+}
+
+/// Use the actual provider codec's named byte ceiling, including the request
+/// envelope. Oversized input stays intact in the queue with an explicit error.
+pub(super) fn validate_transport(
+    intent: &TurnIntent,
+    turn: &str,
+    compiled: &crate::turn_prepare::PreparedSubmission,
+) -> Result<(), WorkerError> {
+    let frame = Frame::Request(studio_runtime_providers::RequestFrame {
+        id: RequestId::String(operation(&intent.account_key, &intent.attempt_id)),
+        method: Method::TurnSteer,
+        params: Some(params(intent, turn, compiled)),
+        fields: serde_json::Map::new(),
+    });
+    studio_runtime_providers::encode_line(&frame).map(|_| ()).map_err(|error| {
+        WorkerError::PreparationRefused(format!("Busy-turn input cannot fit the provider transport: {error}. Full input remains queued."))
+    })
+}
+
+/// Preparation refusal keeps the input durable for the next turn and prevents
+/// repeated failed busy-turn compilation. The active turn continues normally.
+pub(super) fn preparation_refused(
+    tx: &studio_runtime_store::Transaction<'_>,
+    intent: &TurnIntent,
+    reason: &str,
+    rejected: &BTreeMap<String, String>,
+) -> Result<bool, WorkerError> {
+    let retry = !rejected.is_empty();
+    if retry {
+        SchedulerRepository::steer_not_sent(tx, &intent.agent_id, &intent.attempt_id)?;
+    } else {
+        SchedulerRepository::steer_rejected(tx, &intent.agent_id, &intent.attempt_id)?;
+    }
+    if !retry {
+        for event in &intent.events {
+            tx.execute_cached("UPDATE runtime_events SET error=?1 WHERE id=?2 AND agent=?3 AND epoch=?4 AND status='pending'", rusqlite::params![reason,event.id,intent.agent_id,intent.epoch])?;
+        }
+    }
+    SchedulerRepository::quarantine_pending_events(
+        tx,
+        &intent.agent_id,
+        intent.epoch,
+        rejected,
+        reason,
+    )?;
+    Ok(retry)
 }
 
 /// Durable boundary before the steer request is written.
@@ -101,19 +156,42 @@ pub(super) fn submitted(
     tx: &studio_runtime_store::Transaction<'_>,
     context: &Pending,
     request: &RecoveredRequest,
+    prepared: &preparation::PreparedSteer,
 ) -> Result<bool, WorkerError> {
     let intent = &context.intent;
-    if store::receipt(tx, &context.operation, "submitted")?.is_some()
-        || !SchedulerRepository::steer_submitted(
-            tx,
-            &intent.agent_id,
-            &intent.attempt_id,
-            &store::id_string(&request.ticket.id),
-            request.ticket.generation,
-        )?
-    {
+    if store::receipt(tx, &context.operation, "submitted")?.is_some() {
         return Ok(false);
     }
+    if !SchedulerRepository::reconcile_obsolete_steer_before_submit(
+        tx,
+        &intent.agent_id,
+        &intent.attempt_id,
+    )? {
+        return Ok(false);
+    }
+    if let Err(error) = preparation::commit_steer(tx, intent, prepared) {
+        if let WorkerError::PreparationRefused(reason) = error {
+            preparation::refuse_prepared_steer(tx, intent, prepared, &reason)?;
+            return Ok(false);
+        }
+        return Err(error);
+    }
+    if !SchedulerRepository::steer_submitted(
+        tx,
+        &intent.agent_id,
+        &intent.attempt_id,
+        &store::id_string(&request.ticket.id),
+        request.ticket.generation,
+    )? {
+        return Ok(false);
+    }
+    preparation::persist_compilation(tx, &prepared.compiled)?;
+    SchedulerRepository::freeze_steer_submission(
+        tx,
+        &intent.agent_id,
+        &intent.attempt_id,
+        &json!(context),
+    )?;
     store::save(
         tx,
         &context.operation,
@@ -205,29 +283,56 @@ pub(super) fn acknowledge(
         }
         .into());
     };
-    record_user_submission(
-        tx,
-        agent_id,
-        &PreparedSubmission {
-            first_event_id: first_event.id.0.clone(),
-            submitted_at: ack.submitted_at,
-            created_at: first_event.created,
-            text: text(ack.events.iter().map(|e| e.text.as_str())),
-            inputs: ack
+    let operation = operation(account, &ack.steer_id);
+    let submission = if let Some(saved) = &ack.prepared_submission {
+        let context: Pending = serde_json::from_value(saved.clone())
+            .map_err(|_| StoreError::RecordContract("steer submission context"))?;
+        if let Some(compiled) = &context.compiled {
+            let ids = ack
                 .events
                 .iter()
-                .map(|event| SubmittedInput {
-                    id: event.id.0.clone(),
-                    at: event.created,
-                    kind: event.kind.clone(),
-                    text: event.text.clone(),
-                    assets: json!([]),
-                })
-                .collect(),
-            assets: json!([]),
-            radio_authorized: false,
-        },
-    )?;
+                .map(|e| e.id.0.clone())
+                .collect::<Vec<_>>();
+            if compiled.event_ids != ack.event_ids
+                || compiled.operation_id != operation
+                || compiled.actor_id != *agent_id
+                || context.intent.agent_id != *agent_id
+                || context.intent.thread_id.as_deref() != Some(thread)
+                || context.operation != operation
+                || context.method != Method::TurnSteer.as_str()
+                || context
+                    .intent
+                    .events
+                    .iter()
+                    .map(|e| e.id.as_str())
+                    .collect::<Vec<_>>()
+                    != ack.event_ids.iter().map(String::as_str).collect::<Vec<_>>()
+            {
+                return Err(StoreError::RecordContract("steer acknowledged batch").into());
+            }
+            preparation::remember_delivered_manifests(tx, agent_id, &ids)?;
+            preparation::compiled_submission(&context.intent, compiled)
+        } else {
+            return Err(StoreError::RecordContract("steer compiled projection").into());
+        }
+    } else {
+        // Compatibility for already-submitted user-only steers created before
+        // compiled projections were persisted. New steers always carry one.
+        if ack.events.iter().any(|event| event.kind != "user") {
+            return Err(StoreError::RecordContract("missing mixed steer projection").into());
+        }
+        legacy_submission(&ack, first_event)
+    };
+    if ack.prepared_submission.is_some() {
+        crate::notification_dispatch::record_acknowledged_steer_submission(
+            tx,
+            agent_id,
+            &submission,
+            &ack,
+        )?;
+    } else {
+        record_user_submission(tx, agent_id, &submission)?;
+    }
     let epoch = tx
         .query_row_cached(
             "SELECT json_extract(record,'$.epoch') FROM runtime_agents WHERE id=?1",
@@ -236,6 +341,31 @@ pub(super) fn acknowledge(
         )
         .optional()?;
     Ok(epoch.map(|epoch| (agent_id.clone(), epoch)))
+}
+
+fn legacy_submission(
+    ack: &studio_runtime_store::AcknowledgedSteer,
+    first_event: &studio_runtime_store::QueueEvent,
+) -> PreparedSubmission {
+    PreparedSubmission {
+        first_event_id: first_event.id.0.clone(),
+        submitted_at: ack.submitted_at,
+        created_at: first_event.created,
+        text: text(ack.events.iter().map(|e| e.text.as_str())),
+        inputs: ack
+            .events
+            .iter()
+            .map(|event| SubmittedInput {
+                id: event.id.0.clone(),
+                at: event.created,
+                kind: event.kind.clone(),
+                text: event.text.clone(),
+                assets: json!([]),
+            })
+            .collect(),
+        assets: json!([]),
+        radio_authorized: false,
+    }
 }
 
 /// What a wake found for one agent.

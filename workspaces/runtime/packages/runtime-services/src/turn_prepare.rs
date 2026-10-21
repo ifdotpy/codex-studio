@@ -20,8 +20,11 @@ const TRANSCRIPT_CHARS: usize = 20_000;
 const RESULT_BYTES: usize = 20_000;
 const EVENT_BYTES: usize = 22_000;
 const BATCH_BYTES: usize = 24_000;
-const ATTACHMENTS: usize = 8;
+use studio_runtime_schema::shared_values::MAX_TURN_ATTACHMENTS;
 const RESULT_EXCERPT: usize = 600;
+/// File names retained in a bounded review excerpt; independent of the number
+/// of attached files admitted to a provider turn.
+const REVIEW_FILE_EXCERPT_COUNT: usize = 8;
 const CHECKS_CHARS: usize = 800;
 const FILES_BYTES: usize = 1_000;
 const FILE_NAME_CHARS: usize = 160;
@@ -242,7 +245,7 @@ pub enum PrepareError {
     EmptyBatch,
     #[error("The submission batch repeats an event identity")]
     DuplicateEvent,
-    #[error("Attach up to eight files")]
+    #[error("Attach up to {MAX_TURN_ATTACHMENTS} files")]
     TooManyAttachments,
     #[error("Unknown attachment")]
     UnknownAttachment,
@@ -620,7 +623,7 @@ fn truncate_review(result: &mut Value) {
     {
         let names: Vec<_> = files
             .iter()
-            .take(ATTACHMENTS)
+            .take(REVIEW_FILE_EXCERPT_COUNT)
             .map(|v| chars(v.as_str().unwrap_or(""), FILE_NAME_CHARS))
             .collect();
         result["files"] = json!(names);
@@ -820,6 +823,21 @@ fn validate_evidence(row: &Event, value: Option<&Value>) -> Result<(), PrepareEr
     }
     Ok(())
 }
+/// Locate invalid notification evidence with the same parser and validator used
+/// by compilation. A bad notification can be held visibly without withholding
+/// unrelated user input. User text is never classified as structured evidence.
+pub(crate) fn invalid_notification_evidence(rows: &[Event]) -> BTreeMap<String, String> {
+    rows.iter()
+        .enumerate()
+        .filter_map(|(index, row)| {
+            event_json(row, index)
+                .and_then(|value| validate_evidence(row, value.as_ref()))
+                .err()
+                .map(|error| (row.id.clone(), error.to_string()))
+        })
+        .collect()
+}
+
 fn scalar_text(value: &Value) -> String {
     match value {
         Value::String(v) => v.clone(),
@@ -1032,7 +1050,7 @@ pub fn compile(
     if rows.iter().map(|r| &r.id).collect::<BTreeSet<_>>().len() != rows.len() {
         return Err(PrepareError::DuplicateEvent);
     }
-    if rows.iter().map(|r| r.metadata.assets.len()).sum::<usize>() > ATTACHMENTS {
+    if rows.iter().map(|r| r.metadata.assets.len()).sum::<usize>() > MAX_TURN_ATTACHMENTS {
         return Err(PrepareError::TooManyAttachments);
     }
     let mut provider_assets = Vec::new();

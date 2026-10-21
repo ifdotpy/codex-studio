@@ -199,7 +199,7 @@ fn apply(
                 &studio_runtime_store::QueueEventId::from(id.as_str()),
             )?;
             hooks.fault.at(Boundary::AfterEffectRead)?;
-            if prior.is_some_and(|e| {
+            if prior.as_ref().is_some_and(|e| {
                 e.agent.0 != snapshot.agent_id()
                     || e.epoch != snapshot.agent["epoch"].as_i64().unwrap_or(-1)
                     || e.kind != "followup"
@@ -210,6 +210,13 @@ fn apply(
 
             let agent = serde_json::from_value(snapshot.agent.clone())
                 .map_err(|_| ContinuationError::Invalid("/agent".into()))?;
+            if prior.is_none() {
+                studio_runtime_store::QueueWriteRepository::put_metadata(
+                    tx,
+                    id,
+                    &serde_json::json!({"delivery":studio_runtime_schema::delivery::DeliveryMoment::NextTurn}),
+                )?;
+            }
             crate::event_write::enqueue_event(
                 tx,
                 &agent,

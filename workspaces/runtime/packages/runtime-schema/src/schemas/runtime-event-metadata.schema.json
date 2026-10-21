@@ -14,6 +14,26 @@
       "title": "Assets",
       "type": "array"
     },
+    "delivery": {
+      "anyOf": [
+        {
+          "$ref": "https://codex-studio.invalid/openapi.json#/components/schemas/DeliveryMomentInput"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "requestedDelivery": {
+      "anyOf": [
+        {
+          "$ref": "https://codex-studio.invalid/openapi.json#/components/schemas/DeliveryMomentInput"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "timing": {
       "anyOf": [
         {

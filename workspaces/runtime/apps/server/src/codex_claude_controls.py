@@ -1,4 +1,6 @@
 """Native Claude controls with durable workspace reservations and receipts."""
+from codex_delivery import DeliveryMoment
+
 import hashlib
 import json
 from pathlib import Path
@@ -70,7 +72,7 @@ def action(rt, body):
         request = body.get('request_id')
         if not isinstance(request, str) or not request:
             raise ValueError('Supply a command request identity')
-        return rt.send(key, command.strip(), message_id=request, delivery='queue')
+        return rt.send(key, command.strip(), message_id=request, delivery=DeliveryMoment.CURRENT_TURN)
     if agent.get('accountTransferId'):
         raise ValueError('Finish the account transfer before changing the Claude session')
     if kind == 'stop_task':

@@ -44,11 +44,14 @@ from codex_panel import PanelMixin
 from codex_tool_requests import RequestMixin, request_tools
 from codex_turn_recovery import TurnRecoveryMixin
 from codex_agent_message_limits import MAX_AGENT_MESSAGE_CODEPOINTS
+from codex_delivery import DeliveryMoment, event_delivery, normalize_delivery, stamp_delivery
+
 from codex_shared_values import (
     ACCOUNT_LIMITS_ERROR_RETRY_SECONDS,
     ACCOUNT_LIMITS_FULL_READ_FRESH_SECONDS,
     ACCOUNT_LIMITS_WINDOW_FRESH_SECONDS,
     MAX_MANAGED_MESSAGE_CODEPOINTS,
+    MAX_TURN_ATTACHMENTS,
 )
 from codex_capacity_retry import CapacityRetryMixin
 from codex_agent_modes import (DEFAULT_MAX_TEAM_AGENTS, DEFAULT_SUBAGENT_CONCURRENCY,
@@ -234,8 +237,8 @@ TOOLS = [
          "target is user (lead only), a teammate, a user-grouped peer chat, parent, lead, or broadcast (your own agent tree). "
          "Broadcasts notify only active agents; other recipients can read them in chat history. "
          "Private chats are visible to their participants and the user. Direct messages wake idle "
-         "recipients but never resume stopped agents. Use importance=progress only for routine updates; these batch briefly and keep the latest progress per sender, room and progress_key when progress_version increases. Use the task id as progress_key. Without these fields, every update is retained. Original messages remain in chat history. Questions and blockers deliver immediately. Send when you have new information or an answer for the recipient.",
-         {"target": TEXT, "text": TEXT, "importance": {"type": "string", "enum": ["message", "progress", "question", "blocker", "result"]}, "progress_key": TEXT, "progress_version": {"type": "integer", "minimum": 0}}, ["target", "text"]),
+         "recipients but never resume stopped agents. Use importance=progress only for routine updates; these batch briefly and keep the latest progress per sender, room and progress_key when progress_version increases. Use the task id as progress_key. Without these fields, every update is retained. Original messages remain in chat history. Delivery defaults to next_turn for progress and current_turn otherwise. Choose delivery explicitly to steer the current turn or wait for the next turn. Send when you have new information or an answer for the recipient.",
+         {"target": TEXT, "text": TEXT, "importance": {"type": "string", "enum": ["message", "progress", "question", "blocker", "result"]}, "progress_key": TEXT, "progress_version": {"type": "integer", "minimum": 0}, "delivery": {"type": "string", "enum": list(DeliveryMoment)}}, ["target", "text"]),
     tool("orchestration_chat_read", "Read messages in your team rooms, a user-grouped peer private room. "
          "Use before for older messages; use the returned nextBefore cursor. Do not poll.",
          {"room_id": TEXT, "before": {"type": "integer", "minimum": 1}}, ["room_id"]),
@@ -311,11 +314,11 @@ for definition in TOOLS:
     if definition["name"] == "orchestration_send":
         definition["inputSchema"]["properties"]["delivery"] = {
             "type": "string",
-            "enum": ["queue", "steer"],
+            "enum": list(DeliveryMoment),
         }
         definition[
             "description"
-        ] += " The delivery field is accepted and ignored for compatibility."
+        ] += " Delivery defaults to current_turn; choose next_turn to wait for the active turn to end."
         definition["inputSchema"]["properties"]["request_id"] = {"type": "string", "maxLength": 200}
         definition["description"] += " Supply a stable request_id for an instruction. Reuse it only for the exact same target and text. Recover the receipt before retrying."
     if definition["name"] == "orchestration_monitor":
@@ -4604,8 +4607,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             observe_item(self, db, agent, key, role, text, metadata)
         self.touch_ui(agent, db)
 
-    def enqueue(self, db, a, kind, text, key=None):
+    def enqueue(self, db, a, kind, text, key=None, *, delivery=None):
         key = key or uid()
+        stamp_delivery(db, key, kind, text, delivery)
         service = self.__dict__.get('_cross_server_service')
         if service and (a.get('remoteWorker') or a.get('remoteAnchor')):
             service.event(db, a, kind, text, key)
@@ -5685,7 +5689,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         message_id=None,
         manual=True,
         resume=False,
-        delivery="queue",
+        delivery=DeliveryMoment.CURRENT_TURN,
         assets=None,
         sender=None,
         sender_epoch=None,
@@ -5694,6 +5698,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         _expected_epoch=None,
     ):
         assets = assets or []
+        if not isinstance(assets, list) or len(assets) > MAX_TURN_ATTACHMENTS:
+            raise ValueError(f"Attach up to {MAX_TURN_ATTACHMENTS} files")
         if (
             not isinstance(text, str)
             or len(text) > MAX_MANAGED_MESSAGE_CODEPOINTS
@@ -5702,8 +5708,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             raise ValueError(
                 f"Message must have text or attachments, at most {MAX_MANAGED_MESSAGE_CODEPOINTS} characters"
             )
-        if delivery not in {"queue", "steer", "after_tool", "after_turn"}:
-            raise ValueError("Choose queue, steer, after_tool or after_turn")
+        delivery = normalize_delivery(delivery)
         message_id = message_id or uid()
         with self.lock, self.db() as db:
             a = self.checked_actor(db, key)
@@ -5727,12 +5732,14 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     "SELECT record FROM runtime_event_meta WHERE id=?", (message_id,)
                 ).fetchone()
                 previous = (
-                    json.loads(meta[0]) if meta else {"assets": [], "delivery": "queue"}
+                    json.loads(meta[0]) if meta else {"assets": [], "delivery": DeliveryMoment.CURRENT_TURN}
                 )
                 if (
                     old["agent"] != key
                     or old["text"] != text.strip()
                     or previous.get("assets", []) != assets
+                    or (("requestedDelivery" in previous or not previous.get("sendNow"))
+                        and normalize_delivery(previous.get("requestedDelivery", previous.get("delivery"))) != delivery)
                 ):
                     raise ValueError("This message id has different content")
                 if mirror_user_message:
@@ -5763,8 +5770,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 "INSERT INTO runtime_event_meta VALUES (?,?)",
                 (message_id, json.dumps({"assets": assets,
                     "acceptedAt": time.time(),
-                    # after_turn waits for the turn to end; other modes deliver at once.
-                    "delivery": delivery,
+                    "delivery": delivery, "requestedDelivery": delivery,
                     **({"radioAnswerTurnId": radio_question["turnId"]}
                        if isinstance(radio_question, dict) and radio_question.get("turnId") else {}),
                     **({"senderId": sender} if sender else {})})),
@@ -6217,8 +6223,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 handoff = agent.get("imageWorkspaceHandoffText")
             if handoff:
                 self.send(agent_id, handoff, "image-workspace-handoff:" + agent_id,
-                          manual=False, delivery="steer")
-            self.send(agent_id, text, message_id, manual=False, delivery="after_turn")
+                          manual=False, delivery=DeliveryMoment.CURRENT_TURN)
+            self.send(agent_id, text, message_id, manual=False, delivery=DeliveryMoment.NEXT_TURN)
             with self.lock, self.db() as db:
                 agent = self.agent(agent_id, db)
                 agent["imageWorkspaceNoticeSent"] = message_id
@@ -7235,12 +7241,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 from codex_radio import select_pending  # type: ignore[call-arg]  # typed-update
                 pending = select_pending(self, db, a, pending)
                 if busy and pending:
-                    # after_turn input waits in the queue until the active turn ends.
-                    held = {row[0] for row in db.execute(
-                        "SELECT id FROM runtime_event_meta WHERE id IN (" + ",".join("?" for _ in pending) + ") "
-                        "AND json_extract(record,'$.delivery')='after_turn'", [e["id"] for e in pending])}
-                    pending = [e for e in pending if e["id"] not in held]
-                rows = pending[:32]
+                    pending = [event for event in pending
+                               if event_delivery(db, event) is DeliveryMoment.CURRENT_TURN]
+                rows = pending
                 if fast_dispatch:
                     fast_marks["fastBatchLoadedAt"] = time.monotonic_ns()
                 if not rows:
@@ -7248,13 +7251,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                         a["status"] = "waiting"
                         self.put(db, "agents", a)
                     continue
-                if self.progress_only(rows):
-                    # An urgent event beyond this page must not wait behind progress.
-                    urgent = next((event for event in pending if not self.progress_only([event])), None)
-                    if urgent is not None:
-                        rows = [urgent] + rows[:31]
-                    elif not self.progress_batch_ready(rows):
-                        continue
+                if self.progress_only(rows) and not self.progress_batch_ready(rows):
+                    continue
                 selected = []
                 asset_count = 0
                 for event in rows:
@@ -7263,25 +7261,11 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                         (event["id"],),
                     ).fetchone()
                     count = len(json.loads(meta[0]).get("assets", [])) if meta else 0
-                    if asset_count + count > 8:
+                    if asset_count + count > MAX_TURN_ATTACHMENTS:
                         break
                     selected.append(event)
                     asset_count += count
                 rows = selected
-                # Composer after-turn inputs each own a turn. Keep other event
-                # batching, including notifications that precede the next input.
-                composer_input = False
-                one_turn = []
-                for event in rows:
-                    meta = db.execute("SELECT record FROM runtime_event_meta WHERE id=?", (event["id"],)).fetchone()
-                    delivery = json.loads(meta[0]).get("delivery") if meta else None
-                    is_composer = event["kind"] == "user" and (delivery == "after_turn" or
-                        bool(meta and json.loads(meta[0]).get("sendNow")))
-                    if is_composer and composer_input:
-                        break
-                    one_turn.append(event)
-                    composer_input |= is_composer
-                rows = one_turn
                 if a.get("provider") == "claude":
                     # Native slash commands must reach the CLI as a separate input.
                     command_index = next((i for i, event in enumerate(rows)
@@ -9542,7 +9526,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 elif name in {"orchestration_status", "orchestration_peers"}:
                     value = self.model_directory(a["id"], name, args)
                 elif name == "orchestration_message":
-                    value = self.chat_message(a["id"], args["target"], args["text"], key, a["epoch"], importance=args.get("importance", "message"), progress_key=args.get("progress_key"), progress_version=args.get("progress_version"))
+                    value = self.chat_message(a["id"], args["target"], args["text"], key, a["epoch"], importance=args.get("importance", "message"), progress_key=args.get("progress_key"), progress_version=args.get("progress_version"), delivery=args.get("delivery"))
                 elif name == "orchestration_chat_read" and a.get('remoteOrigin') and not args.get('room_id', '').startswith(('remote:', 'federated:')):
                     value = self.multi_server().worker_call(a, 'chat_read', args, key)
                 elif name == "orchestration_chat_read":
@@ -9574,13 +9558,13 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                             key,
                             manual=False,
                             resume=True,
-                            delivery=args.get("delivery", "queue"),
+                            delivery=args.get("delivery", DeliveryMoment.CURRENT_TURN),
                             sender=a["id"],
                             sender_epoch=a["epoch"],
                         )
                     else:
                         value = self.chat_message(
-                            a["id"], target_id, args["text"], key, a["epoch"]
+                            a["id"], target_id, args["text"], key, a["epoch"], delivery=args.get("delivery")
                         )
                 elif name == "orchestration_monitor":
                     value = self.monitor(a["id"], args, key, approved=self.monitor_auto_approved(a),
@@ -10345,9 +10329,11 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     "nextAfter": (messages[-1]["seq"] if messages and after is not None and more else
                                   messages[-1]["seq"] if messages and before is not None else None)}
 
-    def chat_message(self, sender_id, target, text, key, epoch=None, *, importance="message", progress_key=None, progress_version=None):
+    def chat_message(self, sender_id, target, text, key, epoch=None, *, importance="message", progress_key=None, progress_version=None, delivery=None):
         if importance not in {"message", "progress", "question", "blocker", "result"}:
             raise ValueError("Unknown message importance")
+        delivery = normalize_delivery(delivery, default=(DeliveryMoment.NEXT_TURN
+            if importance == "progress" else DeliveryMoment.CURRENT_TURN))
         if progress_key is not None or progress_version is not None:
             if (importance != "progress" or not isinstance(progress_key, str) or not 1 <= len(progress_key) <= 200
                     or type(progress_version) is not int or progress_version < 0):
@@ -10359,7 +10345,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         if actor.get('remoteOrigin') and not target.startswith(('federated:', 'remote:')) and target != 'user':
             return self.multi_server().worker_call(actor, 'message', {
                 'target': target, 'text': text, 'importance': importance,
-                'progress_key': progress_key, 'progress_version': progress_version}, key)
+                'progress_key': progress_key, 'progress_version': progress_version, 'delivery': delivery}, key)
         if target == "user":
             from codex_user_messages import send_to_user
             return send_to_user(self, sender_id, text, key, epoch)
@@ -10373,13 +10359,13 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 if sender.get("deletedAt") or not sender.get("autoWake") or sender.get("epoch") != epoch:
                     raise ValueError("Sender was stopped")
         if federation and federation.has_room(target):
-            return federation.send_message(sender_id, target, text, key)
+            return federation.send_message(sender_id, target, text, key, delivery=delivery)
         if federation and target.startswith("remote:"):
             state_id = target.removeprefix("remote:")
             rooms = federation.rooms_for_peer(sender_id, state_id)
             if len(rooms) != 1:
                 raise ValueError("Select an explicit remote room; this peer has zero or multiple approved rooms")
-            return federation.send_message(sender_id, rooms[0]["id"], text, key)
+            return federation.send_message(sender_id, rooms[0]["id"], text, key, delivery=delivery)
         with self.lock, self.db() as db:
             sender = self.agent(sender_id, db)
             if sender.get("deletedAt") or not sender["autoWake"] or (epoch is not None and sender["epoch"] != epoch):
@@ -10404,14 +10390,16 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 room = {"id": "private:" + ":".join(ids), "kind": "private", "members": ids}
                 recipients = [recipient]
             request = {"sender": sender_id, "room": room["id"], "text": text, "importance": importance,
-                       "progress_key": progress_key, "progress_version": progress_version}
+                       "progress_key": progress_key, "progress_version": progress_version,
+                       **({"delivery": delivery} if delivery != (DeliveryMoment.NEXT_TURN
+                           if importance == "progress" else DeliveryMoment.CURRENT_TURN) else {})}
             signature, saved = self.operation_receipt(db, key, request)
             if saved is not None:
                 return saved
             previous = db.execute("SELECT * FROM runtime_chat_messages WHERE id=?", (key,)).fetchone()
             if previous:
-                if importance != "message":
-                    raise ValueError("This legacy message id cannot change importance")
+                if importance != "message" or delivery is not DeliveryMoment.CURRENT_TURN:
+                    raise ValueError("This legacy message id cannot change importance or delivery")
                 if (previous["room"], previous["sender"], previous["text"]) != (room["id"], sender_id, text):
                     raise ValueError("This message id has different content")
                 return {"id": key, "room": room["id"], "deliveries": json.loads(previous["deliveries"])}
@@ -10443,7 +10431,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     payload.update(progress_key=progress_key, progress_version=progress_version)
                 event = json.dumps(payload, ensure_ascii=False)
                 event_id = "chat:" + key + ":" + recipient["id"]
-                self.enqueue(db, recipient, "agent_message", event, event_id)
+                self.enqueue(db, recipient, "agent_message", event, event_id, delivery=delivery)
                 deliveries[recipient["id"]] = "queued"
             db.execute("INSERT INTO runtime_chat_messages(id,room,sender,text,created,deliveries) VALUES (?,?,?,?,?,?)",
                        (key, room["id"], sender_id, text, room["updated"], json.dumps(deliveries)))
@@ -11342,14 +11330,15 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     (("epoch", "epoch"), ("accountKey", "accountKey"), ("threadId", "threadId"))))
         return pending_recovery
 
-    def enqueue_recovery_event(self, db, a, kind, text, key):
+    def enqueue_recovery_event(self, db, a, kind, text, key, *, delivery=None):
         service = self.__dict__.get('_cross_server_service')
         if service and (a.get('remoteWorker') or a.get('remoteAnchor')):
-            return self.enqueue(db, a, kind, text, key)
+            return self.enqueue(db, a, kind, text, key, delivery=delivery)
         pending_recovery = self._recovery_event_pending(a) or bool(a.get('moveImportPending'))
         if not pending_recovery:
-            return self.enqueue(db, a, kind, text, key)
+            return self.enqueue(db, a, kind, text, key, delivery=delivery)
         # Save the event now; only native reconciliation can reopen dispatch.
+        stamp_delivery(db, key, kind, text, delivery)
         db.execute("INSERT OR IGNORE INTO runtime_events VALUES (?,?,?,?,?,?,?,?,?)",
             (key, a["id"], kind, text, "pending", time.time(), a["epoch"], None, None))
         self.changed.set()
@@ -12107,7 +12096,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 represented[event["id"]] = item
             if represented:
                 for entry in represented.values():
-                    entry['requestedDelivery'] = 'queue'
+                    entry['requestedDelivery'] = DeliveryMoment.CURRENT_TURN
                 events = db.execute(
                     "SELECT e.id,e.status,e.error,m.record AS metadata FROM runtime_events e "
                     "LEFT JOIN runtime_event_meta m ON m.id=e.id WHERE e.agent=? AND e.kind='user' "
@@ -12118,7 +12107,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     meta = json.loads(event['metadata']) if event['metadata'] else {}
                     represented[event["id"]].update(
                         clientMessageId=event["id"], deliveryStatus=event["status"],
-                        requestedDelivery=meta.get('requestedDelivery', meta.get('delivery', 'queue')) or 'queue',
+                        requestedDelivery=normalize_delivery(meta.get('requestedDelivery', meta.get('delivery'))),
                         materialized=represented[event["id"]].get("materialized", True),
                         deliveryError=event["error"], pending=event["status"] == "pending")
             live = a["status"] in {"running", "starting", "approval"} and a.get("autoWake")

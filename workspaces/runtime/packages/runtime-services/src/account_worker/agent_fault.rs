@@ -104,7 +104,7 @@ pub(super) fn data_fault(error: &WorkerError) -> Option<(String, String)> {
 
 /// Run `apply` in a savepoint. The outer error is a savepoint failure; the
 /// inner one is `apply`'s error after its writes were rolled back.
-fn in_savepoint<T>(
+pub(super) fn in_savepoint<T>(
     tx: &studio_runtime_store::Transaction<'_>,
     name: &str,
     apply: impl FnOnce() -> Result<T, WorkerError>,
@@ -205,6 +205,15 @@ fn record_agent(
             )
             .optional()?
             .flatten());
+    }
+    if matches!(scope, "runtime_events" | "runtime_event_meta") {
+        return Ok(tx
+            .query_row_cached(
+                "SELECT agent FROM runtime_events WHERE id=?1",
+                [id],
+                |row| row.get(0),
+            )
+            .optional()?);
     }
     // `runtime_agents/<id>`, and the worker's own `invalid(<agent id>)`.
     if matches!(scope, "runtime_agents" | "account_worker") {

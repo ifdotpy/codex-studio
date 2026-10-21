@@ -130,11 +130,16 @@ fn account_wake_native_review(record: &str) -> String {
 }
 
 fn account_wake_pending(record: &str, held_after: &str) -> String {
+    let dedicated_kinds = DEDICATED_TURN_EVENT_KINDS
+        .iter()
+        .map(|kind| format!("'{kind}'"))
+        .collect::<Vec<_>>()
+        .join(",");
     format!(
         "(({} AND {}) \
          OR ({} AND EXISTS(SELECT 1 FROM runtime_events e WHERE e.agent=a.id \
              AND e.epoch=json_extract({record},'$.epoch') AND e.status='pending' \
-             AND e.kind='user')) \
+             AND e.kind NOT IN ({dedicated_kinds}))) \
          OR {} OR {})",
         account_wake_queued_candidate(record),
         deliverable_pending(
@@ -709,7 +714,7 @@ impl SchedulerRepository {
             )));
         }
 
-        let prefix = limit.min(MAX_EVENTS_PER_TURN);
+        let prefix = limit;
         let has_metadata = table_exists(transaction, "runtime_event_meta")?;
         if has_metadata {
             let radio = transaction
@@ -768,12 +773,15 @@ impl SchedulerRepository {
                 .collect::<Result<Vec<_>, _>>()?
         } else {
             statement
-                .query_map(params![agent_id, epoch, prefix as i64], |row| {
-                    Ok((
-                        crate::QueueEventRepository::from_row(row)?,
-                        row.get::<_, Option<String>>(9)?,
-                    ))
-                })?
+                .query_map(
+                    params![agent_id, epoch, i64::try_from(prefix).unwrap_or(i64::MAX)],
+                    |row| {
+                        Ok((
+                            crate::QueueEventRepository::from_row(row)?,
+                            row.get::<_, Option<String>>(9)?,
+                        ))
+                    },
+                )?
                 .collect::<Result<Vec<_>, _>>()?
         };
         drop(statement);
@@ -783,17 +791,7 @@ impl SchedulerRepository {
         let mut events = Vec::with_capacity(joined.len());
         let mut metadata = BTreeMap::new();
         for (event, raw) in joined {
-            if let Some(raw) = raw {
-                let value: Value = serde_json::from_str(&raw)
-                    .map_err(|_| invalid_object("runtime_event_meta", &event.id.0))?;
-                let valid = value.is_object()
-                    && value.get("assets").is_none_or(Value::is_array)
-                    && value
-                        .get("radioAnswerTurnId")
-                        .is_none_or(|turn| turn.is_null() || turn.is_string());
-                if !valid {
-                    return Err(invalid_object("runtime_event_meta", &event.id.0));
-                }
+            if let Some(value) = pending_metadata(&event, raw.as_deref())? {
                 metadata.insert(event.id.0.clone(), value);
             }
             events.push(event);
@@ -1184,11 +1182,11 @@ pub(super) fn replay_claim(
 }
 
 pub(super) struct PreparedBatch {
-    events: Vec<QueueEvent>,
-    metadata: BTreeMap<String, Value>,
+    pub(super) events: Vec<QueueEvent>,
+    pub(super) metadata: BTreeMap<String, Value>,
     metadata_updates: BTreeMap<String, Value>,
-    retired: BTreeMap<String, String>,
-    cancelled: BTreeMap<String, String>,
+    pub(super) retired: BTreeMap<String, String>,
+    pub(super) cancelled: BTreeMap<String, String>,
 }
 
 pub(super) fn refused(agent: &AgentRecord, reason: String) -> ClaimedEvents {
@@ -1200,6 +1198,92 @@ pub(super) fn refused(agent: &AgentRecord, reason: String) -> ClaimedEvents {
     }
 }
 
+/// The single parser for pending-event metadata in idle and busy selection.
+pub(super) fn pending_metadata(
+    event: &QueueEvent,
+    raw: Option<&str>,
+) -> StoreResult<Option<Value>> {
+    let value = raw
+        .map(serde_json::from_str::<Value>)
+        .transpose()
+        .map_err(|_| invalid_object("runtime_event_meta", &event.id.0))?;
+    if value.as_ref().is_some_and(|value| {
+        !value.is_object()
+            || !value.get("assets").is_none_or(Value::is_array)
+            || !value
+                .get("radioAnswerTurnId")
+                .is_none_or(|v| v.is_null() || v.is_string())
+    }) || studio_runtime_schema::DeliveryMoment::for_event(
+        &event.kind,
+        &event.text,
+        value.as_ref(),
+    )
+    .is_err()
+    {
+        return Err(invalid_object("runtime_event_meta", &event.id.0));
+    }
+    Ok(value)
+}
+
+impl SchedulerRepository {
+    /// Detect event-local corruption before either selection path reserves a batch.
+    pub fn invalid_pending_metadata(
+        connection: &Connection,
+        agent: &str,
+        epoch: i64,
+    ) -> StoreResult<BTreeMap<String, String>> {
+        if !table_exists(connection, "runtime_event_meta")? {
+            return Ok(BTreeMap::new());
+        }
+        let mut statement = connection.prepare_cached("SELECT e.id,e.agent,e.kind,e.text,e.status,e.created,e.epoch,e.turn_id,e.error,m.record FROM runtime_events e JOIN runtime_event_meta m ON m.id=e.id WHERE e.agent=?1 AND e.epoch=?2 AND e.status='pending' ORDER BY e.created,e.rowid")?;
+        let rows = statement.query_map(params![agent, epoch], |row| {
+            Ok((
+                crate::QueueEventRepository::from_row(row)?,
+                row.get::<_, String>(9)?,
+            ))
+        })?;
+        let mut invalid = BTreeMap::new();
+        for row in rows {
+            let (event, raw) = row?;
+            if let Err(error) = pending_metadata(&event, Some(&raw)) {
+                invalid.insert(event.id.0, error.to_string());
+            }
+        }
+        Ok(invalid)
+    }
+
+    /// Quarantine only pending rows of this exact owner/epoch. The original text
+    /// and corrupt metadata stay durable for diagnosis and an explicit user retry.
+    pub fn quarantine_pending_events(
+        tx: &Transaction<'_>,
+        agent: &str,
+        epoch: i64,
+        rejected: &BTreeMap<String, String>,
+        reason: &str,
+    ) -> StoreResult<()> {
+        for (id, error) in rejected {
+            tx.execute_cached("UPDATE runtime_events SET status='failed',error=?1 WHERE id=?2 AND agent=?3 AND epoch=?4 AND status='pending'",params![error,id,agent,epoch])?;
+        }
+        if let Some(mut record) = load_agent(tx, agent)?
+            && record.epoch == epoch
+        {
+            record.extra.insert(
+                "error".into(),
+                json!(format!("Queued input could not be delivered: {reason}")),
+            );
+            publish_agent(tx, &record)?;
+            EventWriteRepository::set_agent_sync_lifecycle(
+                tx,
+                agent,
+                record.status.as_str(),
+                record.extra.get("inFlight") == Some(&json!(true)),
+                record.extra.get("turnId").and_then(Value::as_str),
+            )?;
+        }
+        Ok(())
+    }
+}
+
 pub(super) fn invalid_object(table: &str, id: &str) -> StoreError {
     StoreError::InvalidSyncObject {
         scope: table.to_owned(),
@@ -1207,7 +1291,7 @@ pub(super) fn invalid_object(table: &str, id: &str) -> StoreError {
     }
 }
 
-pub(super) fn table_exists(transaction: &Transaction<'_>, table: &str) -> StoreResult<bool> {
+pub(super) fn table_exists(transaction: &Connection, table: &str) -> StoreResult<bool> {
     Ok(transaction.query_row_cached(
         "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
         [table],
@@ -1352,7 +1436,7 @@ pub(super) fn progress_update(text: &str) -> Option<((String, String, String), u
     ))
 }
 
-fn obsolete_events(
+pub(super) fn obsolete_events(
     agent: &AgentRecord,
     events: &[QueueEvent],
     complaints: &BTreeMap<String, Value>,
@@ -1611,38 +1695,57 @@ pub(super) fn set_waiting(
     EventWriteRepository::set_agent_sync_lifecycle(transaction, agent_id, "waiting", false, None)
 }
 
-/// Event kinds that share one turn with neighboring input. Child results
-/// batch only on the preparation path, the one that renders them, so a lead
-/// receives results that arrive together in a single turn.
-fn shares_turn(kind: &str, child_results: bool) -> bool {
-    matches!(kind, "user" | "complaint") || (child_results && kind == "child_result")
+/// Native slash and skill commands require their existing turn-start handling.
+pub(super) fn native_input_command(event: &QueueEvent) -> bool {
+    event.kind == "user"
+        && event.text.trim_start().starts_with(['/', '$'])
+        && !event.text.contains('\n')
+}
+
+/// Mixed notifications share a turn only through the preparation compiler,
+/// which preserves their provenance, authorization and bounded projections.
+pub(super) fn shares_turn(kind: &str, preparation: bool) -> bool {
+    if preparation {
+        !DEDICATED_TURN_EVENT_KINDS.contains(&kind)
+    } else {
+        matches!(kind, "user" | "complaint")
+    }
 }
 
 pub(super) fn select_turn_batch(
     events: &[QueueEvent],
     metadata: &BTreeMap<String, Value>,
     limit: usize,
-    child_results: bool,
+    preparation: bool,
 ) -> Vec<QueueEvent> {
     let mut selected = Vec::new();
-    let mut has_composer_input = false;
-    for event in events.iter().take(limit.min(MAX_EVENTS_PER_TURN)) {
-        if !shares_turn(&event.kind, child_results) {
+    let mut attachment_count = 0usize;
+    for event in events.iter().take(limit) {
+        if !shares_turn(&event.kind, preparation) {
             break;
         }
-        let meta = metadata.get(&event.id.0);
-        let composer = event.kind == "user"
-            && (meta
-                .and_then(|value| value.get("delivery"))
-                .and_then(Value::as_str)
-                == Some("after_turn")
-                || meta
-                    .and_then(|value| value.get("sendNow"))
-                    .is_some_and(truthy));
-        if composer && has_composer_input {
+        if native_input_command(event) {
+            if selected.is_empty() {
+                selected.push(event.clone());
+            }
             break;
         }
-        has_composer_input |= composer;
+        let event_attachments = metadata
+            .get(&event.id.0)
+            .and_then(|value| value.get("assets"))
+            .and_then(Value::as_array)
+            .map_or(0, Vec::len);
+        let fits = attachment_count
+            .checked_add(event_attachments)
+            .is_some_and(|count| {
+                count <= studio_runtime_schema::shared_values::MAX_TURN_ATTACHMENTS
+            });
+        if preparation && !fits && !selected.is_empty() {
+            break;
+        }
+        // A single invalid oversized message still reaches the compiler's
+        // explicit admission error; never return an empty batch and hide it.
+        attachment_count = attachment_count.saturating_add(event_attachments);
         selected.push(event.clone());
     }
     selected

@@ -353,14 +353,14 @@ test("Chat controls", async ({ page }) => {
       response.json(),
     );
   const queueAfterTurn = page.getByRole("button", {
-    name: "Queue after turn",
+    name: "Queue for next turn",
     exact: true,
   });
   assert.equal(await queueAfterTurn.isVisible(), true);
   assert.equal(
     await queueAfterTurn.isDisabled(),
     true,
-    "Queue after turn is unavailable while the composer is empty",
+    "Queue for next turn is unavailable while the composer is empty",
   );
   await page.locator("#message").fill("Immediate instruction");
   await page.locator("#message").press("Enter");
@@ -460,7 +460,7 @@ test("Chat controls", async ({ page }) => {
   await page.locator("#message").press("Enter");
   assert.equal(
     (await entered).postDataJSON().delivery,
-    "after_tool",
+    "current_turn",
     "Enter sends after-tool input",
   );
   await page

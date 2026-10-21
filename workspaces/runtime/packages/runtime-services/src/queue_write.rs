@@ -163,7 +163,24 @@ pub fn action(
                 QueueWriteRepository::update_created(transaction, target_id, first - 0.001)?;
                 if action == "send_now" {
                     let mut metadata = read_metadata(transaction, target_id)?;
-                    metadata["delivery"] = json!("steer");
+                    if metadata.get("requestedDelivery").is_none()
+                        && !event_write::truthy(metadata.get("sendNow"))
+                    {
+                        let original = studio_runtime_schema::DeliveryMoment::for_event(
+                            "user",
+                            "",
+                            Some(&metadata),
+                        )
+                        .map_err(|_| {
+                            QueueWriteError::InvalidStoredObject {
+                                object: "runtime_event_meta",
+                                id: target_id.to_owned(),
+                            }
+                        })?;
+                        metadata["requestedDelivery"] = json!(original);
+                    }
+                    metadata["delivery"] =
+                        json!(studio_runtime_schema::delivery::DeliveryMoment::CurrentTurn);
                     metadata["sendNow"] = json!(true);
                     QueueWriteRepository::put_metadata(transaction, target_id, &metadata)?;
                 }
