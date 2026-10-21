@@ -66,7 +66,7 @@ pub struct NativeProcessSource {
 #[derive(Clone, Default)]
 pub struct PublicationContext {
     server_id: Option<String>,
-    native_source: Option<NativeProcessSource>,
+    pub(crate) native_source: Option<NativeProcessSource>,
 }
 impl PublicationContext {
     pub fn with_native_source(mut self, source: Option<NativeProcessSource>) -> Self {

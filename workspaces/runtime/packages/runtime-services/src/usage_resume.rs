@@ -61,6 +61,11 @@ impl LimitsObservation {
             && number(&self.raw, "at")
                 .is_some_and(|at| if strict { at > after } else { at >= after })
     }
+    /// A resume may reuse only recent telemetry newer than the wait's last observation.
+    pub fn fresh_after(&self, after: f64, now: f64) -> bool {
+        self.fresh_for(&self.account_key, after, true)
+            && self.fresh_for(&self.account_key, now - FRESH_SECONDS, false)
+    }
     pub fn reset_at(&self, agent: &Value) -> Option<f64> {
         reset_at(&self.raw["data"], agent)
     }
@@ -322,11 +327,30 @@ pub fn tick(s: &Snapshot, limits: &LimitsObservation, now: f64) -> Result<Decisi
     Ok(d)
 }
 
-/// Returns quiet cancellations/no-ops before a timer caller has to capture limits.
+/// Preserve identity checks and reschedule when no current observation is available.
 pub fn tick_without_observation(s: &Snapshot, now: f64) -> Result<Decision> {
-    tick_before_observation(s, now)?.ok_or(ContinuationError::Unavailable(
-        "usage-policy/limits-snapshot",
-    ))
+    if let Some(decision) = tick_before_observation(s, now)? {
+        return Ok(decision);
+    }
+    let mut record = s
+        .record
+        .clone()
+        .ok_or_else(|| ContinuationError::Invalid("/record".into()))?;
+    let auth = text(&record, "cause") == "auth";
+    let due = if auth {
+        now + auth_backoff(&record)
+    } else {
+        next_check(number(&record, "resetAt"), now)
+    };
+    patch(
+        &mut record,
+        json!({
+            "dueAt":due,
+            "waitingForAuth":auth,
+            "reason":"Waiting for a current account limits result."
+        }),
+    );
+    Ok(Decision::save(s, record, "usageResume", now))
 }
 
 fn tick_before_observation(s: &Snapshot, now: f64) -> Result<Option<Decision>> {

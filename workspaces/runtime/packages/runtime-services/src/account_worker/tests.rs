@@ -11,6 +11,7 @@ mod exited_generation_callback;
 mod idle_unload;
 mod input_origin;
 mod journal_cost;
+mod limits_updates;
 mod late_thread_reply;
 mod login_completion;
 #[cfg(unix)]

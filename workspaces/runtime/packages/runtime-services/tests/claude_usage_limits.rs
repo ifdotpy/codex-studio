@@ -203,3 +203,16 @@ async fn account_limits_change_updates_each_wait_by_its_model() {
         assert_eq!(due, expected, "{model}");
     }
 }
+
+#[test]
+fn missing_observation_reschedules_without_followup() {
+    let decision = usage_resume::tick_without_observation(&snapshot("sonnet"), 1000.0)
+        .expect("reschedule without telemetry");
+    let record = decision.record.expect("wait remains durable");
+    assert_eq!(record["status"], "scheduled");
+    assert_eq!(
+        record["dueAt"],
+        1000.0 + studio_runtime_services::continuation::POLL_SECONDS
+    );
+    assert!(decision.effects.is_empty());
+}
