@@ -47,7 +47,10 @@ class PreAdmission(fixture.Bridge):
     def setUp(self):
         self.preparation_timeout_ms = 1000
         if self._testMethodName == 'test_cold_initialization_can_exceed_control_budget_and_admit_once':
-            self.initialization_timeout_ms = 2000
+            # The slow account (1.2 s) exceeds the control budget and fits this one.
+            # The wide gap to the control budget keeps the blocked-control check
+            # below independent of timer delay on a busy machine.
+            self.initialization_timeout_ms = 4000
         original = fixture.SDK
         fixture.SDK = SDK
         try:
@@ -57,6 +60,17 @@ class PreAdmission(fixture.Bridge):
 
     def history(self):
         return self.call('thread/turns/list', {'threadId': self.thread})['data']
+
+    def call_error(self, method, params):
+        """Send one request that must fail and return its JSON-RPC error object."""
+        self.sequence += 1; request = self.sequence
+        self.write({'id': request, 'method': method, 'params': params})
+        while True:
+            row = self.read()
+            if row.get('id') == request:
+                self.assertIn('error', row, row.get('result'))
+                return row['error']
+            self.notified(row)
 
     def admissions(self):
         path = self.root / '.admitted-inputs'
@@ -112,10 +126,14 @@ class PreAdmission(fixture.Bridge):
         self.assertEqual(len(self.admissions()), 1)
         (self.root / '.slow-account').unlink()
         (self.root / '.hang-preparation').touch()
-        started = time.monotonic()
-        with self.assertRaisesRegex(ValueError, 'before input was submitted'):
-            self.turn('second input', 'blocked-control')
-        self.assertLess(time.monotonic() - started, 1.8)
+        error = self.call_error('turn/start', {
+            'threadId': self.thread, 'clientUserMessageId': 'blocked-control',
+            'input': [{'type': 'text', 'text': 'second input'}]})
+        self.assertIn('before input was submitted', error['message'])
+        # The bridge measures its own preparation time. A retained control that used
+        # the initialization budget would take all of it.
+        self.assertLess(error['data']['claudePreparationElapsedMs'],
+                        self.initialization_timeout_ms - 100)
         self.assertEqual(len(self.admissions()), 1)
 
     def test_preparation_late_account_result_cannot_admit_rejected_input(self):

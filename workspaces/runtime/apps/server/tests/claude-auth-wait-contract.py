@@ -159,23 +159,30 @@ class AuthWait(f.ClaudeProvider):
         def probe(_profile=None, force=False):
             calls.append(force)
             entered.set()
-            if not release.wait(5):
+            if not release.wait(HANG_GUARD_SECONDS):
                 raise AssertionError('The fixture did not release the probe')
             return f.AUTH.copy()
         with patch('codex_claude.auth_metadata', side_effect=probe):
+            began_at = time.time()
             began = time.monotonic()
             auth_wait.tick(self.runtime)
-            self.assertLess(time.monotonic() - began, .5)
+            # The probe stays blocked for the hang guard, so a tick that waits for
+            # it cannot return inside half of that time.
+            self.assertLess(time.monotonic() - began, HANG_GUARD_SECONDS / 2)
             self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
             with self.runtime.lock, self.runtime.db() as db:
                 db.execute('CREATE TABLE fixture_unrelated_writer (id INTEGER)')
                 db.execute('INSERT INTO fixture_unrelated_writer VALUES (1)')
-            self.assertTrue(self.runtime.accounts.lock.acquire(timeout=.5))
+            # The probe stays blocked until release, so a lock kept through it fails;
+            # the wait only absorbs load.
+            self.assertTrue(self.runtime.accounts.lock.acquire(timeout=HANG_GUARD_SECONDS / 2))
             self.runtime.accounts.lock.release()
             for _ in range(20):
                 auth_wait.tick(self.runtime)
             self.assertEqual(calls, [True])
-            self.assertGreater(self.receipt()['dueAt'], time.time() + 178)
+            # Compare with the time before the tick, so a slow machine cannot
+            # shorten the 180 s probe interval that this check sees.
+            self.assertGreaterEqual(self.receipt()['dueAt'], began_at + 179)
             release.set()
             f.f.f.eventually(lambda: self.receipt()['status'] == 'completed')
 
@@ -345,11 +352,13 @@ class AuthWait(f.ClaudeProvider):
                       {'status': 'signedOut', 'accountId': None}):
             with self.subTest(proof=proof):
                 self.due()
+                began_at = time.time()
                 with patch('codex_claude.auth_metadata', return_value=proof):
                     auth_wait.tick(self.runtime)
                     f.f.f.eventually(lambda: not self.runtime.__dict__.get('_claude_auth_wait_jobs'))
                 self.assertEqual(self.receipt()['status'], 'auth_probe_wait')
-                self.assertGreater(self.receipt()['dueAt'], time.time() + 178)
+                # Measured from before the tick, so load cannot shorten the interval.
+                self.assertGreaterEqual(self.receipt()['dueAt'], began_at + 179)
                 self.assertEqual(self.runtime.agent(self.agent['id']), before)
                 self.assertEqual([self.runtime.delivery_receipt(key)['status'] for key in self.ids], ['pending', 'pending'])
         self.assertEqual(self.starts(), [])

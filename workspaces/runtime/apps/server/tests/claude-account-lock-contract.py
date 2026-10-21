@@ -93,7 +93,9 @@ class LockContract(unittest.TestCase):
         return entered, release, auth
 
     def assert_registry_available(self):
-        acquired = self.store.lock.acquire(timeout=.1)
+        # Auth stays blocked until the test releases it, so a lock kept through it
+        # fails; the wait only absorbs load.
+        acquired = self.store.lock.acquire(timeout=HANG_GUARD_SECONDS / 2)
         if acquired:
             self.store.lock.release()
         self.assertTrue(acquired, "Claude auth holds the shared account lock")
@@ -393,7 +395,8 @@ class LockContract(unittest.TestCase):
             done = self.start("receipt", self.store.login_receipts)
             self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
             try:
-                acquired = self.store.lock.acquire(timeout=.1)
+                # Auth stays blocked until release; the wait only absorbs load.
+                acquired = self.store.lock.acquire(timeout=HANG_GUARD_SECONDS / 2)
                 self.assertTrue(acquired)
                 try:
                     self.store.data["logins"][request]["status"] = "cancelled"
