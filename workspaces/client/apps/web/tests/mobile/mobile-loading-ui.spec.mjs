@@ -1,4 +1,4 @@
-import { spawnFixture as spawn, test } from "../playwright.mjs";
+import { spawnFixture as spawn, test, rustUiFixture } from "../playwright.mjs";
 // Real production renderer, service worker, browser cache and isolated backend.
 import assert from "node:assert/strict";
 import { createServer, request as httpRequest } from "node:http";
@@ -74,17 +74,9 @@ test("mobile loading ui", async ({ browser: _browser }) => {
   );
   assert.ok(!config.allowed.some((path) => path.startsWith("/api/")));
 
-  const proc = spawn(
-    process.env.PYTHON || "python3",
-    [
-      "-B",
-      join(repo, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
-      join(dir, "state"),
-    ],
-    {
-      stdio: ["ignore", "pipe", "pipe"],
-    },
-  );
+  const proc = spawn(process.execPath, [rustUiFixture, join(dir, "state")], {
+    stdio: ["ignore", "pipe", "pipe"],
+  });
   let log = "",
     browser,
     server;

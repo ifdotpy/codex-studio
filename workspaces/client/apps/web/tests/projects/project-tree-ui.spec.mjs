@@ -4,6 +4,7 @@ import {
   expect,
   spawnFixture as spawn,
   readTestState,
+  rustUiFixture,
 } from "../playwright.mjs";
 // Production client with an isolated runtime. No model service or user state.
 import assert from "node:assert/strict";
@@ -59,22 +60,14 @@ test("project pointer and keyboard order persist, and a click collapses the proj
             },
           ],
   }));
-  const proc = spawn(
-    "python3",
-    [
-      "-B",
-      join(skill, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
-      root,
-    ],
-    {
-      stdio: ["pipe", "pipe", "pipe"],
-      env: {
-        ...process.env,
-        EXECUTION_SETTINGS_CATALOG: JSON.stringify(models),
-        PROJECT_TREE_UI_FIXTURE: "1",
-      },
+  const proc = spawn(process.execPath, [rustUiFixture, root], {
+    stdio: ["pipe", "pipe", "pipe"],
+    env: {
+      ...process.env,
+      EXECUTION_SETTINGS_CATALOG: JSON.stringify(models),
+      PROJECT_TREE_UI_FIXTURE: "1",
     },
-  );
+  });
   let browser,
     log = "";
   proc.stderr.on("data", (d) => (log += d));

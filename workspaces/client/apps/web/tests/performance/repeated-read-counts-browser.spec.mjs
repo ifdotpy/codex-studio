@@ -3,11 +3,11 @@ import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import {
   test,
   installApiSchemaFixtureHeaders,
   spawnFixture as spawn,
+  rustUiFixture,
 } from "../playwright.mjs";
 
 const measured = new Set([
@@ -22,27 +22,18 @@ async function repeatedReadCountsScenario(
   browser,
   { modelOnly = false, accountsOnly = false } = {},
 ) {
-  const repo = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const state = await mkdtemp(join(tmpdir(), "repeated-read-counts-"));
-  const fixture = spawn(
-    "python3",
-    [
-      "-B",
-      join(repo, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
-      state,
-    ],
-    {
-      stdio: ["pipe", "pipe", "pipe"],
-      env: {
-        ...process.env,
-        XDG_STATE_HOME: join(state, "xdg-state"),
-        XDG_CACHE_HOME: join(state, "xdg-cache"),
-        CODEX_HOME: join(state, "codex-home"),
-        CODEX_AGENTS_STATE_DIR: join(state, "codex-state"),
-        RESOURCE_FRESHNESS_UI_FIXTURE: "1",
-      },
+  const fixture = spawn(process.execPath, [rustUiFixture, state], {
+    stdio: ["pipe", "pipe", "pipe"],
+    env: {
+      ...process.env,
+      XDG_STATE_HOME: join(state, "xdg-state"),
+      XDG_CACHE_HOME: join(state, "xdg-cache"),
+      CODEX_HOME: join(state, "codex-home"),
+      CODEX_AGENTS_STATE_DIR: join(state, "codex-state"),
+      RESOURCE_FRESHNESS_UI_FIXTURE: "1",
     },
-  );
+  });
   let log = "";
   const fixtureResponses = new Map();
   const fixtureWaiters = new Map();

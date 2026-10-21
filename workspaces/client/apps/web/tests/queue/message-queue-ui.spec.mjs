@@ -3,6 +3,7 @@ import {
   test,
   expect,
   spawnFixture as spawn,
+  rustUiFixture,
 } from "../playwright.mjs";
 // Production renderer and isolated durable queue. No model service or user state.
 import assert from "node:assert/strict";
@@ -13,11 +14,11 @@ import { join } from "node:path";
 
 test("message-queue-ui", async ({ browser }) => {
   test.setTimeout(45_000);
-  const repo = join(import.meta.dirname, "../../../../../../");
   const root = await mkdtemp(join(tmpdir(), "studio-message-queue-ui-"));
   const models = ["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-luna"].map(
     (model) => ({
       model,
+      isDefault: model === "gpt-5.6-sol",
       defaultReasoningEffort: "medium",
       supportedReasoningEfforts: (model === "gpt-5.6-luna"
         ? ["low", "medium", "high", "max"]
@@ -26,22 +27,14 @@ test("message-queue-ui", async ({ browser }) => {
       serviceTiers: [{ id: "priority" }],
     }),
   );
-  const proc = spawn(
-    process.env.PYTHON || "python3",
-    [
-      "-B",
-      join(repo, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
-      root,
-    ],
-    {
-      stdio: ["pipe", "pipe", "pipe"],
-      env: {
-        ...process.env,
-        CODEX_BOARD_STATE_DIR: join(root, "board"),
-        EXECUTION_SETTINGS_CATALOG: JSON.stringify(models),
-      },
+  const proc = spawn(process.execPath, [rustUiFixture, root], {
+    stdio: ["pipe", "pipe", "pipe"],
+    env: {
+      ...process.env,
+      CODEX_BOARD_STATE_DIR: join(root, "board"),
+      EXECUTION_SETTINGS_CATALOG: JSON.stringify(models),
     },
-  );
+  });
   let context,
     page,
     log = "";

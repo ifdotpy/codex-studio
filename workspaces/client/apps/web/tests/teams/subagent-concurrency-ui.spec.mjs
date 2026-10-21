@@ -1,4 +1,9 @@
-import { readTestState, spawnFixture as spawn, test } from "../playwright.mjs";
+import {
+  readTestState,
+  spawnFixture as spawn,
+  test,
+  rustUiFixture,
+} from "../playwright.mjs";
 import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -20,35 +25,28 @@ test.afterEach(async ({ browser }, testInfo) => {
 
 test("subagent concurrency ui", async ({ browser: _browser }) => {
   test.setTimeout(120_000);
-  const repo = join(import.meta.dirname, "../../../../../../");
   const root = await mkdtemp(join(tmpdir(), "studio-subagent-limit-"));
-  const server = spawn(
-    process.env.PYTHON || "python3",
-    [
-      "-B",
-      join(repo, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
-      root,
-    ],
-    {
-      env: {
-        ...process.env,
-        EXECUTION_SETTINGS_CATALOG: JSON.stringify(
-          ["gpt-6-astra", "gpt-6-luna", "gpt-5.6-sol", "gpt-5.6-luna"].map(
-            (model) => ({
-              model,
-              defaultReasoningEffort: "low",
-              supportedReasoningEfforts: [
-                { reasoningEffort: "low" },
-                { reasoningEffort: "high" },
-                { reasoningEffort: "max" },
-              ],
-            }),
-          ),
+  const server = spawn(process.execPath, [rustUiFixture, root], {
+    env: {
+      ...process.env,
+      FIXTURE_HOLD: "workers",
+      EXECUTION_SETTINGS_CATALOG: JSON.stringify(
+        ["gpt-6-astra", "gpt-6-luna", "gpt-5.6-sol", "gpt-5.6-luna"].map(
+          (model) => ({
+            model,
+            isDefault: model === "gpt-5.6-sol",
+            defaultReasoningEffort: "low",
+            supportedReasoningEfforts: [
+              { reasoningEffort: "low" },
+              { reasoningEffort: "high" },
+              { reasoningEffort: "max" },
+            ],
+          }),
         ),
-      },
-      stdio: ["pipe", "pipe", "pipe"],
+      ),
     },
-  );
+    stdio: ["pipe", "pipe", "pipe"],
+  });
   let log = "",
     browser;
   server.stderr.on("data", (chunk) => {

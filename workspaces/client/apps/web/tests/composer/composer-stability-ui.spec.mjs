@@ -3,27 +3,20 @@ import {
   test,
   expect,
   spawnFixture as spawn,
+  rustUiFixture,
 } from "../playwright.mjs";
 // Real production React, isolated HTTP fixture, controlled status and delivery timing.
 import assert from "node:assert/strict";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 
 test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
   test.setTimeout(120_000);
-  const repo = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const evidence = await mkdtemp(join(tmpdir(), "studio-composer-stability-"));
-  const fixture = spawn(
-    "python3",
-    [
-      "-B",
-      join(repo, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
-      evidence,
-    ],
-    { stdio: ["pipe", "pipe", "pipe"] },
-  );
+  const fixture = spawn(process.execPath, [rustUiFixture, evidence], {
+    stdio: ["pipe", "pipe", "pipe"],
+  });
   let browser,
     pages = new Set(),
     log = "";

@@ -4,9 +4,9 @@ import {
   test,
   expect,
   spawnFixture as spawn,
+  rustUiFixture,
 } from "../playwright.mjs";
 import assert from "node:assert/strict";
-import { fileURLToPath } from "node:url";
 import { mkdtemp, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -15,21 +15,11 @@ test.use({ apiSchemaFixtureHeaders: false });
 
 test("Chat controls", async ({ page }) => {
   test.setTimeout(45_000);
-  const testRepo = fileURLToPath(
-    new URL("../../../../../../", import.meta.url),
-  );
   // Exercise production components against isolated HTTP and SQLite, with one transport failure.
-  const skill = testRepo;
   const root = await mkdtemp(join(tmpdir(), "codex-chat-controls-ui-"));
-  const fixture = spawn(
-    "python3",
-    [
-      "-B",
-      join(skill, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
-      root,
-    ],
-    { stdio: ["ignore", "pipe", "pipe"] },
-  );
+  const fixture = spawn(process.execPath, [rustUiFixture, root], {
+    stdio: ["ignore", "pipe", "pipe"],
+  });
   let log = "";
   fixture.stderr.on("data", (data) => (log += data));
   const poll = async (fn, label) => {

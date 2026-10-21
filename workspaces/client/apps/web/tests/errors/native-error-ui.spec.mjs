@@ -5,15 +5,14 @@ import {
   expect,
   spawnFixture as spawn,
   readTestState,
+  rustUiFixture,
 } from "../playwright.mjs";
 // Real app-server notification handlers, SQLite, event stream, and browser. No inference.
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 test("native error ui", async ({ page: runnerPage }) => {
-  const skill = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const root = await mkdtemp(join(tmpdir(), "codex-stream-ui-"));
   const codexHome = join(root, "codex-home");
   const browserService = join(codexHome, "browser-service.mjs");
@@ -44,21 +43,13 @@ test("native error ui", async ({ page: runnerPage }) => {
       "",
     ].join("\n"),
   );
-  const proc = spawn(
-    "python3",
-    [
-      "-B",
-      join(skill, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
-      root,
-    ],
-    {
-      stdio: ["pipe", "pipe", "pipe"],
-      env: {
-        CODEX_HOME: codexHome,
-        NATIVE_ERROR_HOLD_CAPACITY_RETRY: "1",
-      },
+  const proc = spawn(process.execPath, [rustUiFixture, root], {
+    stdio: ["pipe", "pipe", "pipe"],
+    env: {
+      CODEX_HOME: codexHome,
+      NATIVE_ERROR_HOLD_CAPACITY_RETRY: "1",
     },
-  );
+  });
   let log = "",
     page,
     backendExit = null;

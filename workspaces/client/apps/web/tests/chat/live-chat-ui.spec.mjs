@@ -1,27 +1,33 @@
-import { readTestState, test, spawnFixture as spawn } from "../playwright.mjs";
+import {
+  readTestState,
+  test,
+  spawnFixture as spawn,
+  rustUiFixture,
+} from "../playwright.mjs";
 // Real app-server notification handlers, SQLite sync stream, and browser. No inference.
 import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 test("Live chat ui", async ({
   browser: testBrowser,
   page: runnerPage,
   context: runnerContext,
 }) => {
   test.setTimeout(300_000);
-  const skill = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const root = await mkdtemp(join(tmpdir(), "codex-stream-ui-"));
-  const proc = spawn(
-    "python3",
-    [
-      "-B",
-      join(skill, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
-      root,
-    ],
-    { stdio: ["pipe", "pipe", "pipe"] },
-  );
+  // The provider keeps both turns in flight; the test streams their events.
+  const proc = spawn(process.execPath, [rustUiFixture, root], {
+    stdio: ["pipe", "pipe", "pipe"],
+    env: {
+      ...process.env,
+      FIXTURE_SCRIPT: JSON.stringify(
+        ["Exercise the live stream", "Stop an incomplete paragraph"].map(
+          (prompt) => ({ prompt, steps: [{ hold: true }] }),
+        ),
+      ),
+    },
+  });
   let log = "",
     page;
   proc.stderr.on("data", (d) => (log += d));

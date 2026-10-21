@@ -3,10 +3,11 @@ import {
   test,
   expect,
   spawnFixture as spawn,
+  rustUiFixture,
+  queryFixtureDatabase,
 } from "../playwright.mjs";
 // Lose a real committed HTTP response, reload, and retry the same stored intention.
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -17,15 +18,9 @@ test("message retry http browser", async ({ page: runnerPage }) => {
     new URL("../../node_modules/vite/dist/node/index.js", import.meta.url)
   );
   const state = await mkdtemp(join(tmpdir(), "studio-retry-http-"));
-  const fixture = spawn(
-    "python3",
-    [
-      "-B",
-      join(root, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
-      state,
-    ],
-    { stdio: ["pipe", "pipe", "pipe"] },
-  );
+  const fixture = spawn(process.execPath, [rustUiFixture, state], {
+    stdio: ["pipe", "pipe", "pipe"],
+  });
   let server,
     release = () => {},
     log = "";
@@ -150,18 +145,18 @@ test("message retry http browser", async ({ page: runnerPage }) => {
       ),
       "Every attempt keeps its original identity and content",
     );
-    const counts = JSON.parse(
-      execFileSync(
-        "python3",
-        [
-          "-c",
-          'import json,sqlite3,sys; db=sqlite3.connect(sys.argv[1]); print(json.dumps([db.execute("SELECT COUNT(*) FROM runtime_events WHERE id=?",(sys.argv[2],)).fetchone()[0],db.execute("SELECT COUNT(*) FROM messages WHERE id=?",(sys.argv[2],)).fetchone()[0]]))',
-          join(state, "canvas.sqlite3"),
-          id,
-        ],
-        { encoding: "utf8" },
-      ),
-    );
+    const counts = [
+      queryFixtureDatabase(
+        state,
+        "SELECT COUNT(*) AS n FROM runtime_events WHERE id=?",
+        id,
+      )[0].n,
+      queryFixtureDatabase(
+        state,
+        "SELECT COUNT(*) AS n FROM messages WHERE id=?",
+        id,
+      )[0].n,
+    ];
     assert.deepEqual(
       counts,
       [1, 1],

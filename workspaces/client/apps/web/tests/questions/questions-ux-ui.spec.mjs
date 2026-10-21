@@ -4,8 +4,12 @@
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
-import { test, expect, spawnFixture as spawn } from "../playwright.mjs";
+import {
+  test,
+  expect,
+  spawnFixture as spawn,
+  rustUiFixture,
+} from "../playwright.mjs";
 
 test("Questions Ux Ui", async ({
   browser: _testBrowser,
@@ -29,27 +33,15 @@ test("Questions Ux Ui", async ({
     },
   };
 
-  const project = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const root = await mkdtemp(join(tmpdir(), "codex-questions-ui-"));
-  const proc = spawn(
-    "python3",
-    [
-      "-B",
-      join(
-        project,
-        "workspaces/runtime/apps/server/tests/simple-ui-fixture.py",
-      ),
-      root,
-    ],
-    {
-      stdio: ["pipe", "pipe", "pipe"],
-      env: {
-        ...process.env,
-        CODEX_BOARD_STATE_DIR: join(root, "board"),
-        QUESTIONS_UX_UI_FIXTURE: "1",
-      },
+  const proc = spawn(process.execPath, [rustUiFixture, root], {
+    stdio: ["pipe", "pipe", "pipe"],
+    env: {
+      ...process.env,
+      CODEX_BOARD_STATE_DIR: join(root, "board"),
+      QUESTIONS_UX_UI_FIXTURE: "1",
     },
-  );
+  });
   let log = "",
     page,
     releaseResponse;

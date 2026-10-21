@@ -2,27 +2,17 @@ import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
-import { spawnFixture, test } from "../playwright.mjs";
+import { spawnFixture, test, rustUiFixture } from "../playwright.mjs";
 
 test("mutation projections propagate between pages sharing one browser context @sync", async ({
   browser,
 }) => {
   test.setTimeout(90_000);
-  const repo = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const state = await mkdtemp(join(tmpdir(), "entity-same-context-"));
-  const fixture = spawnFixture(
-    "python3",
-    [
-      "-B",
-      join(repo, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
-      state,
-    ],
-    {
-      stdio: ["pipe", "pipe", "pipe"],
-      env: { ...process.env, RESOURCE_FRESHNESS_UI_FIXTURE: "1" },
-    },
-  );
+  const fixture = spawnFixture(process.execPath, [rustUiFixture, state], {
+    stdio: ["pipe", "pipe", "pipe"],
+    env: { ...process.env, RESOURCE_FRESHNESS_UI_FIXTURE: "1" },
+  });
   let log = "";
   let output = "";
   fixture.stdout.on("data", (chunk) => {

@@ -5,6 +5,7 @@ import {
   spawnFixture as spawn,
   apiSchemaHandshakeSse,
   readTestState,
+  rustUiFixture,
 } from "../playwright.mjs";
 // Production App and real RxDB. Only the isolated fixture receives requests.
 import assert from "node:assert/strict";
@@ -16,22 +17,14 @@ test("chat prefetch ui @performance", async ({ browser }) => {
   const repo = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const legacySync = process.env.LEGACY_SYNC === "1";
   const dir = await mkdtemp(join(tmpdir(), "studio-chat-prefetch-"));
-  const fixture = spawn(
-    process.env.PYTHON_BIN || "python3",
-    [
-      "-B",
-      join(repo, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
-      dir,
-    ],
-    {
-      stdio: ["ignore", "pipe", "pipe"],
-      env: {
-        ...process.env,
-        CODEX_BOARD_STATE_DIR: join(dir, "board"),
-        TOKEN_RATE_WORKER_COUNT: "1",
-      },
+  const fixture = spawn(process.execPath, [rustUiFixture, dir], {
+    stdio: ["ignore", "pipe", "pipe"],
+    env: {
+      ...process.env,
+      CODEX_BOARD_STATE_DIR: join(dir, "board"),
+      FIXTURE_WORKER_COUNT: "1",
     },
-  );
+  });
   let log = "",
     context,
     page,

@@ -4,30 +4,23 @@ import {
   readFixtureSyncContract,
   test,
   spawnFixture as spawn,
+  rustUiFixture,
 } from "../playwright.mjs";
 // Production bundle, isolated backend, no model calls.
 import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 test("Team panel ui", async ({
   browser: testBrowser,
   page: runnerPage,
   context: runnerContext,
 }) => {
   test.setTimeout(180_000);
-  const repo = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const evidence = await mkdtemp(join(tmpdir(), "studio-team-panel-"));
-  const fixture = spawn(
-    "python3",
-    [
-      "-B",
-      join(repo, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
-      evidence,
-    ],
-    { stdio: ["ignore", "pipe", "pipe"] },
-  );
+  const fixture = spawn(process.execPath, [rustUiFixture, evidence], {
+    stdio: ["ignore", "pipe", "pipe"],
+  });
   let log = "";
   fixture.stderr.on("data", (chunk) => {
     log += chunk;

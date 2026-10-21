@@ -1,12 +1,16 @@
 #!/usr/bin/env node
 // Test viewport geometry in a headless browser with isolated server state.
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
-import { expect, test, spawnFixture as spawn } from "../playwright.mjs";
+import {
+  expect,
+  test,
+  spawnFixture as spawn,
+  rustUiFixture,
+  queryFixtureDatabase,
+} from "../playwright.mjs";
 
 const mobileBrowsers = [
   [
@@ -24,17 +28,10 @@ for (const [platform, userAgent] of mobileBrowsers) {
     browser: runnerBrowser,
     browserName,
   }) => {
-    const root = fileURLToPath(new URL("../../../../../../", import.meta.url));
     const state = await mkdtemp(join(tmpdir(), "codex-mobile-keyboard-"));
-    const fixture = spawn(
-      "python3",
-      [
-        "-B",
-        join(root, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
-        state,
-      ],
-      { stdio: ["pipe", "pipe", "pipe"] },
-    );
+    const fixture = spawn(process.execPath, [rustUiFixture, state], {
+      stdio: ["pipe", "pipe", "pipe"],
+    });
     let context,
       log = "";
     fixture.stderr.on("data", (chunk) => {
@@ -47,15 +44,10 @@ for (const [platform, userAgent] of mobileBrowsers) {
         );
         fixture.once("exit", () => reject(new Error(log)));
       });
-      const leadId = execFileSync(
-        "python3",
-        [
-          "-c",
-          "import json,sqlite3,sys; db=sqlite3.connect(sys.argv[1]); rows=db.execute('SELECT record FROM runtime_agents').fetchall(); print(next(json.loads(row[0])['id'] for row in rows if json.loads(row[0]).get('name') == 'Release lead'))",
-          join(state, "canvas.sqlite3"),
-        ],
-        { encoding: "utf8" },
-      ).trim();
+      const leadId = queryFixtureDatabase(
+        state,
+        "SELECT json_extract(record, '$.id') AS id FROM runtime_agents WHERE json_extract(record, '$.name') = 'Release lead'",
+      )[0]?.id;
       assert.ok(leadId, "The fixture must provide the Release lead chat ID");
       context = await runnerBrowser.newContext({
         viewport: { width: 390, height: 844 },
@@ -603,21 +595,12 @@ test("default mobile chat is stable across ten fresh iPhone starts", async ({
   browser,
 }) => {
   test.setTimeout(180_000);
-  const root = fileURLToPath(new URL("../../../../../../", import.meta.url));
   for (let run = 1; run <= 10; run++) {
     const state = await mkdtemp(join(tmpdir(), "codex-mobile-default-"));
-    const fixture = spawn(
-      "python3",
-      [
-        "-B",
-        join(root, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
-        state,
-      ],
-      {
-        stdio: ["ignore", "pipe", "pipe"],
-        env: { ...process.env, TOKEN_RATE_WORKER_COUNT: "1" },
-      },
-    );
+    const fixture = spawn(process.execPath, [rustUiFixture, state], {
+      stdio: ["ignore", "pipe", "pipe"],
+      env: { ...process.env, FIXTURE_WORKER_COUNT: "1" },
+    });
     let log = "";
     fixture.stderr.on("data", (chunk) => {
       log += chunk;

@@ -3,28 +3,19 @@ import {
   test,
   expect,
   spawnFixture as spawn,
+  rustUiFixture,
 } from "../playwright.mjs";
 import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 
 async function setupSendingRemovePointer(page) {
-  const repo = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const evidence = await mkdtemp(join(tmpdir(), "studio-remove-hit-test-"));
-  const fixture = spawn(
-    process.env.PYTHON_BIN || "python3",
-    [
-      "-B",
-      join(repo, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
-      evidence,
-    ],
-    {
-      stdio: ["ignore", "pipe", "pipe"],
-      env: { ...process.env, TOKEN_RATE_WORKER_COUNT: "1" },
-    },
-  );
+  const fixture = spawn(process.execPath, [rustUiFixture, evidence], {
+    stdio: ["ignore", "pipe", "pipe"],
+    env: { ...process.env, FIXTURE_WORKER_COUNT: "1" },
+  });
   let log = "";
   fixture.stderr.on("data", (chunk) => (log += chunk));
   let startupTimeout;
@@ -122,20 +113,11 @@ test("remove-sending pointer hit target", async ({ page }) => {
 
 test("remove-sending-browser", async ({ page: fixturePage }) => {
   test.setTimeout(120_000);
-  const repo = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const evidence = await mkdtemp(join(tmpdir(), "studio-remove-sending-"));
-  const fixture = spawn(
-    process.env.PYTHON_BIN || "python3",
-    [
-      "-B",
-      join(repo, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
-      evidence,
-    ],
-    {
-      stdio: ["ignore", "pipe", "pipe"],
-      env: { ...process.env, TOKEN_RATE_WORKER_COUNT: "1" },
-    },
-  );
+  const fixture = spawn(process.execPath, [rustUiFixture, evidence], {
+    stdio: ["ignore", "pipe", "pipe"],
+    env: { ...process.env, FIXTURE_WORKER_COUNT: "1" },
+  });
   let log = "";
   fixture.stderr.on("data", (data) => (log += data));
   const port = await new Promise((resolve, reject) => {

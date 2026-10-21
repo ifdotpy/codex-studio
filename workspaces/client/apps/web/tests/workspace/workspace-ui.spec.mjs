@@ -3,6 +3,7 @@ import {
   readTestState,
   spawnFixture as spawn,
   test,
+  rustUiFixture,
 } from "../playwright.mjs";
 // Exercise workspace actions through the real runtime and HTTP server.
 import assert from "node:assert/strict";
@@ -11,11 +12,9 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 
 test("workspace ui", async ({ page: testPage }) => {
   test.setTimeout(120_000);
-  const skill = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const root = await mkdtemp(join(tmpdir(), "codex-workspace-ui-"));
   await writeFile(
     join(root, ".gitignore"),
@@ -41,17 +40,9 @@ test("workspace ui", async ({ page: testPage }) => {
     join(root, "report.md"),
     "# Release evidence\nVerified report for orchestration.\n++ b/other-chat.txt\n",
   );
-  const proc = spawn(
-    "python3",
-    [
-      "-B",
-      join(skill, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
-      root,
-    ],
-    {
-      stdio: ["pipe", "pipe", "pipe"],
-    },
-  );
+  const proc = spawn(process.execPath, [rustUiFixture, root], {
+    stdio: ["pipe", "pipe", "pipe"],
+  });
   let log = "",
     page;
   proc.stderr.on("data", (d) => (log += d));

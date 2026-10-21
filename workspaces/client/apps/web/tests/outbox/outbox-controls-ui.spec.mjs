@@ -11,6 +11,7 @@ import {
   test,
   expect,
   spawnFixture as spawn,
+  rustUiFixture,
 } from "../playwright.mjs";
 
 test("outbox-controls-ui", async ({ browser: fixtureBrowser }) => {
@@ -20,19 +21,11 @@ test("outbox-controls-ui", async ({ browser: fixtureBrowser }) => {
   const { createFixtureViteServer: createServer } =
     await import("../playwright.mjs");
   const evidence = await mkdtemp(join(tmpdir(), "studio-outbox-controls-"));
-  const fixture = spawn(
-    process.env.PYTHON_BIN || "python3.14",
-    [
-      "-B",
-      join(repo, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
-      evidence,
-    ],
-    {
-      stdio: ["ignore", "pipe", "pipe"],
-      // Selects SettingsRuntime, which publishes changes without starting the waiting turn.
-      env: { ...process.env, TOKEN_RATE_WORKER_COUNT: "1" },
-    },
-  );
+  const fixture = spawn(process.execPath, [rustUiFixture, evidence], {
+    stdio: ["ignore", "pipe", "pipe"],
+    // Selects SettingsRuntime, which publishes changes without starting the waiting turn.
+    env: { ...process.env, FIXTURE_WORKER_COUNT: "1" },
+  });
   let browser,
     context,
     server,
