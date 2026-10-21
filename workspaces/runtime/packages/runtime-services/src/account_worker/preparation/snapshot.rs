@@ -1043,6 +1043,20 @@ pub(super) fn thread_snapshot(
     })
 }
 
+/// Give a receipt-time snapshot the cwd text of its attempt when the stored
+/// cwd names the same folder. Preparation sends the canonical cwd of the
+/// validated workspace, and the stored cwd can name that folder through a link
+/// (macOS `/var` and `/tmp`). The pure receipt reducer compares text, so
+/// without this step a valid receipt is stale. A cwd that names another
+/// folder stays as stored, and the reducer refuses it.
+pub(super) fn align_receipt_cwd(current: &mut thread::Snapshot, attempt: &thread::Snapshot) {
+    if current.actor.cwd != attempt.actor.cwd
+        && studio_runtime_store::path_identity::same_text(&current.actor.cwd, &attempt.actor.cwd)
+    {
+        current.actor.cwd.clone_from(&attempt.actor.cwd);
+    }
+}
+
 pub(super) fn submission_snapshot(
     tx: &Transaction<'_>,
     resources: &PreparationResources,

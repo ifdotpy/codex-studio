@@ -26,7 +26,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use studio_runtime_store::workspace_ready::{
     ProvisionIdentity, ReadyToken, WorkspaceReadyRepository, reservations, workspace_generation,
 };
-use studio_runtime_store::{CheckpointsRepository, RuntimeStore, StoreError, WorkspaceSnapshot};
+use studio_runtime_store::{
+    CheckpointsRepository, RuntimeStore, StoreError, WorkspaceSnapshot, path_identity,
+};
 
 const GIT_TIMEOUT: Duration = Duration::from_secs(30);
 const GIT_OUTPUT_LIMIT: usize = 4 * 1024 * 1024;
@@ -397,8 +399,10 @@ async fn publish_verified(
         let valid = current.as_ref().is_some_and(|current| {
             let Ok(actor) = actor(current) else { return false };
             let Some(observed) = &observed else { return false };
+            // `decide_workspace` compares resolved paths, as `observe` gives them.
+            let cwd = path_identity::resolve(&actor.cwd).unwrap_or_else(|| actor.cwd.clone());
             let decision = decide_workspace(&actor, &current.agent.record,
-                Some(&actor.cwd), &reservations(current), Some(&transaction_identity), true, observed);
+                Some(&cwd), &reservations(current), Some(&transaction_identity), true, observed);
             confined && matches!(decision, WorkspaceDecision::Provision(ref p) if p.effect == ProvisionEffect::Publish)
         });
         if !valid {

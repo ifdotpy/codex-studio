@@ -32,7 +32,7 @@ pub(crate) fn accept_thread(
         _ => None,
     };
     let filesystem = ThreadFilesystemInputs { progress_directory };
-    let current = thread_snapshot(
+    let mut current = thread_snapshot(
         tx,
         resources,
         &record,
@@ -41,6 +41,7 @@ pub(crate) fn accept_thread(
         &filesystem,
         None,
     )?;
+    align_receipt_cwd(&mut current, &attempt.snapshot);
     let receipt = thread::ProviderReceipt {
         identity: thread::ReceiptIdentity {
             operation_id: format!(
