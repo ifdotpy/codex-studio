@@ -27,6 +27,8 @@ pub(crate) struct Assignment {
 #[derive(Deserialize)]
 struct MonitorSource {
     id: String,
+    agent: String,
+    status: MonitorStatus,
     #[serde(default)]
     command: String,
     #[serde(default)]
@@ -53,19 +55,35 @@ pub(crate) fn derive(
     let agent: AgentSource = serde_json::from_value(record.clone())?;
     let mut commands = Vec::new();
     if crate::sync_policy::table_exists(connection, "runtime_monitors")? {
-        // The owner/status expression index bounds this lookup to live commands.
+        // Guard before JSON extraction: one malformed sibling must not refuse
+        // an owner's projection (including startup recovery). Parse bad rows to
+        // report their ids while bounding valid rows to this owner.
         let mut statement = connection.prepare_cached(
-            "SELECT record FROM runtime_monitors WHERE json_extract(record,'$.agent')=?1 \
-             AND json_extract(record,'$.status') IN (?2,?3) ORDER BY rowid",
+            "SELECT id,record FROM runtime_monitors WHERE CASE WHEN json_valid(record) \
+             THEN json_extract(record,'$.agent')=?1 ELSE 1 END ORDER BY rowid",
         )?;
-        let starting = serde_json::to_value(MonitorStatus::Starting)?;
-        let running = serde_json::to_value(MonitorStatus::Running)?;
-        let rows = statement.query_map(
-            rusqlite::params![agent.id, starting.as_str(), running.as_str()],
-            |row| row.get::<_, String>(0),
-        )?;
-        for raw in rows {
-            let monitor: MonitorSource = serde_json::from_str(&raw?)?;
+        let rows = statement.query_map([&agent.id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        for row in rows {
+            let (id, raw) = row?;
+            let monitor: MonitorSource = match serde_json::from_str(&raw) {
+                Ok(monitor) => monitor,
+                Err(error) => {
+                    eprintln!(
+                        "Skipping invalid monitor {id} in agent progress projection: {error}"
+                    );
+                    continue;
+                }
+            };
+            if monitor.agent != agent.id
+                || !matches!(
+                    monitor.status,
+                    MonitorStatus::Starting | MonitorStatus::Running
+                )
+            {
+                continue;
+            }
             commands.push(AgentCommandProgress {
                 monitor_id: monitor.id,
                 stage: monitor
@@ -248,6 +266,31 @@ mod tests {
             )
             .unwrap()
         );
+    }
+
+    #[test]
+    fn invalid_monitor_rows_do_not_hide_live_owner_progress() {
+        let connection = Connection::open_in_memory().unwrap();
+        // Match the recovery corruption fixture: no expression index can be
+        // maintained over the malformed JSON row.
+        connection
+            .execute_batch(
+                "CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY,record TEXT NOT NULL)",
+            )
+            .unwrap();
+        for (id, raw) in [
+            ("malformed", "{".to_owned()),
+            ("invalid-owner-row", json!({"id":"invalid-owner-row","agent":"worker","status":"running","command":42}).to_string()),
+            ("other-owner", json!({"id":"other-owner","agent":"other","status":"running","command":"other gate"}).to_string()),
+            ("live", json!({"id":"live","agent":"worker","status":"running","command":"owner gate","tail":"still running"}).to_string()),
+        ] {
+            connection.execute("INSERT INTO runtime_monitors VALUES(?1,?2)", [id,&raw]).unwrap();
+        }
+        let progress = derive(&connection, &json!({"id":"worker","status":"idle"}), &[]).unwrap();
+        assert_eq!(progress.commands.len(), 1);
+        assert_eq!(progress.commands[0].monitor_id, "live");
+        assert_eq!(progress.commands[0].last_output_line, "still running");
+        assert!(progress.stall.is_none());
     }
 
     #[tokio::test]
