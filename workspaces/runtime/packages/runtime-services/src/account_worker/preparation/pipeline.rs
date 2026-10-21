@@ -2779,7 +2779,9 @@ mod team_progress_delivery_tests {
                 let prepared = turn::compile(&snapshot, &events)
                     .map_err(|error| StoreError::SchemaMismatch(format!("{error:?}")))?;
                 match &prepared.provider_inputs[0] {
-                    turn::ProviderInput::Text { text } => Ok::<String, StoreError>(text.clone()),
+                    turn::ProviderInput::Text { text, .. } => {
+                        Ok::<String, StoreError>(text.clone())
+                    }
                     turn::ProviderInput::LocalImage { .. } => panic!("text input expected"),
                 }
             })

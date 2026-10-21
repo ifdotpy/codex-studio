@@ -565,6 +565,14 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
     let web = |name: &str| format!("{WEB_GENERATED}/{name}");
     let mut rendered = vec![
         Rendered {
+            path: "workspaces/providers/apps/claude-bridge/input-origin.generated.mjs".into(),
+            text: format!(
+                "// {HEADER}\nexport const HUMAN_INPUT = {};\nexport const STUDIO_EVENT_INPUT = {};\n",
+                json_string(crate::provider_input::ProviderInputOrigin::Human.as_str()),
+                json_string(crate::provider_input::ProviderInputOrigin::StudioEvent.as_str()),
+            ),
+        },
+        Rendered {
             path: "workspaces/runtime/apps/server/src/studio_api/sync/agent_progress_generated.py"
                 .into(),
             text: agent_progress_py()?,

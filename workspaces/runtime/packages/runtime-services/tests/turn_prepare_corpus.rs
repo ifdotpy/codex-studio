@@ -304,7 +304,7 @@ fn reference_floor_is_soft_but_transcript_ceiling_is_hard() {
     let snapshot = serde_json::from_value(fixture["snapshot"].clone()).expect("snapshot");
     let rows: Vec<Event> = serde_json::from_value(fixture["events"].clone()).expect("events");
     let prepared = compile(&snapshot, &rows).expect("prepared");
-    let studio_runtime_services::turn_prepare::ProviderInput::Text { text } =
+    let studio_runtime_services::turn_prepare::ProviderInput::Text { text, .. } =
         &prepared.provider_inputs[0]
     else {
         panic!("text first")
