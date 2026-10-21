@@ -856,6 +856,36 @@ function fastTierCommands(root) {
       },
     },
     {
+      item: { name: "project preparation", ecosystem: "cargo" },
+      label: "project preparation conflict witnesses",
+      commands: [
+        [
+          "cargo",
+          [
+            "nextest",
+            "run",
+            "--locked",
+            "--no-tests",
+            "fail",
+            "--message-format",
+            "libtest-json-plus",
+            "-p",
+            "studio-runtime-services",
+            "-p",
+            "studio-runtime-http",
+            "--test",
+            "project_preparation",
+          ],
+        ],
+      ],
+      options: {
+        selector:
+          "project preparation structural conflicts and idle async answer",
+        reason:
+          "Check project writes across agent execution changes and real structural conflicts.",
+      },
+    },
+    {
       item: web,
       label: "web focused type check",
       options: { script: "typecheck:fast", allowZeroTests: true },

@@ -92,6 +92,14 @@ The comprehensive server tier covers watcher readiness, path collection, full-re
 and scoped scanning with a deterministic helper. A native delivery timeout is
 reported as a failed manual check; it is not converted into a skip or a retry.
 
+Project preparation witnesses in the [short-tier selection](../workspaces/tooling/apps/repository-checks/facade.mjs)
+exercise agent execution changes between preparation and a project write, refuse
+structural conflicts, and answer an async question while its lead is idle. The
+[preparation owner](../workspaces/runtime/packages/runtime-services/src/host_project_runtime.rs)
+fences project rows and agent membership/path/liveness facts; operation-specific
+execution preconditions are checked against current rows inside the writer.
+Filesystem path rechecks remain outside the transaction.
+
 The Rust runtime differential corpora use one isolated Python JSON-lines oracle
 per test process and Python-written SQLite seed backups. Suites that use the
 shared `disposable_state_dir` test helper keep SQLite state and oracle scratch
