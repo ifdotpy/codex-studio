@@ -58,6 +58,8 @@ class FakeServer:
         self.closed = False
         self.fail_start = False
         self.finish_before_reply = False
+        # Threads that finish before their reply; None means every thread.
+        self.finish_before_reply_threads = None
         # Called with (thread_id, turn_id) after an early completion and before the turn/start reply.
         self.before_reply = None
         self.start_gate = None
@@ -101,7 +103,7 @@ class FakeServer:
                 turn = {'id': f'turn-{self.seq}', 'status': 'inProgress'}
                 self.active_turns[params['threadId']] = turn
                 self.notify({'method': 'turn/started', 'params': {'threadId': params['threadId'], 'turn': turn}})
-            if self.finish_before_reply:
+            if self.finish_before_reply and self.finish_before_reply_threads in (None, params['threadId']):
                 self.complete(params['threadId'], turn['id'])
                 if self.before_reply is not None:
                     self.before_reply(params['threadId'], turn['id'])
@@ -1634,7 +1636,9 @@ class RuntimeContract(unittest.TestCase):
 
     def test_follow_up_completed_before_its_start_reply_reports_to_the_parent(self):
         lead = self.lead()
-        child = self.runtime.create({'name': 'Child', 'prompt': 'Review', 'role': 'reviewer'}, lead['id'])
+        # A reviewer is archived in the background once its result is delivered; that
+        # would change its status and write into the state directory during teardown.
+        child = self.runtime.create({'name': 'Child', 'prompt': 'Review', 'role': 'implementer'}, lead['id'])
         eventually(lambda: self.runtime.agent(child['id'])['status'] == 'running')
         self.complete(self.runtime.agent(child['id']))
         eventually(lambda: self.runtime.agent(child['id'])['status'] == 'completed')
@@ -1658,6 +1662,10 @@ class RuntimeContract(unittest.TestCase):
         server = self.runtime.connect()
         server.before_reply = completion_saved
         server.finish_before_reply = True
+        # Only the child finishes early. The lead's start would otherwise wait in
+        # completion_saved for a child completion that never comes (the full hang
+        # guard, 60 s) and outlive the test.
+        server.finish_before_reply_threads = self.runtime.agent(child['id'])['threadId']
         self.runtime.send(child['id'], 'Check one more file')
         eventually(lambda: child_results() == 2)
         # The follow-up input is delivered by the turn that already completed.
