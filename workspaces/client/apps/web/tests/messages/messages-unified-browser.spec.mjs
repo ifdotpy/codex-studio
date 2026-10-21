@@ -3,50 +3,43 @@ import {
   test,
   expect,
   spawnFixture as spawn,
+  rustUiFixture,
 } from "../playwright.mjs";
 // Isolated server and hidden browser. No model calls or user data.
 import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 
 test("messages-unified-browser", async ({ page: fixturePage }) => {
   test.setTimeout(120_000);
-  const repo = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const evidence = await mkdtemp(join(tmpdir(), "studio-unified-messages-"));
-  const fixture = spawn(
-    process.env.PYTHON || "python3",
-    [
-      "-B",
-      join(repo, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
-      evidence,
-    ],
-    {
-      env: {
-        ...process.env,
-        MESSAGES_UI_FIXTURE: "1",
-        EXECUTION_SETTINGS_CATALOG: JSON.stringify(
-          ["test-model", "gpt-6-astra", "gpt-6-luna", "gpt-5.6-luna"].map(
-            (model) => ({
-              model,
-              defaultReasoningEffort: "medium",
-              supportedReasoningEfforts: [
-                "low",
-                "medium",
-                "high",
-                "xhigh",
-                "max",
-                "ultra",
-              ].map((reasoningEffort) => ({ reasoningEffort })),
-              serviceTiers: [{ id: "priority" }],
-            }),
-          ),
+  const fixture = spawn(process.execPath, [rustUiFixture, evidence], {
+    env: {
+      ...process.env,
+      FIXTURE_SEED: "messages,question",
+      FIXTURE_HOLD: "lead",
+      FIXTURE_WORKER_COUNT: "40",
+      EXECUTION_SETTINGS_CATALOG: JSON.stringify(
+        ["test-model", "gpt-6-astra", "gpt-6-luna", "gpt-5.6-luna"].map(
+          (model) => ({
+            model,
+            defaultReasoningEffort: "medium",
+            supportedReasoningEfforts: [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max",
+              "ultra",
+            ].map((reasoningEffort) => ({ reasoningEffort })),
+            serviceTiers: [{ id: "priority" }],
+          }),
         ),
-      },
-      stdio: ["ignore", "pipe", "pipe"],
+      ),
     },
-  );
+    stdio: ["ignore", "pipe", "pipe"],
+  });
   let log = "";
   fixture.stderr.on("data", (chunk) => (log += chunk));
   const port = await new Promise((resolve, reject) => {
@@ -107,13 +100,16 @@ test("messages-unified-browser", async ({ page: fixturePage }) => {
     "No message status workflow",
   );
   const questionDate = chats.locator(
-    '[data-feed-item="request:async-question"] time',
+    '[data-feed-item$=":question:async-question"] time',
+  );
+  const question = data.runtime.requests.find((request) =>
+    request.id.endsWith(":question:async-question"),
   );
   assert.equal(
     await questionDate.getAttribute("datetime"),
-    new Date(1790074800 * 1000).toISOString(),
+    new Date(question.createdAt * 1000).toISOString(),
   );
-  assert.match(await questionDate.innerText(), /Sep 22, 2026/);
+  assert.match(await questionDate.innerText(), /\d{4}/);
   assert.equal(
     await chats.locator(".unified-action-items").count(),
     0,

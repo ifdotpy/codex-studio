@@ -6,13 +6,13 @@ import {
   spawnFixture as spawn,
   waitForFixturePort,
   test,
+  rustUiFixture,
 } from "../playwright.mjs";
 // Production renderer, isolated fixture, and controlled delivery acknowledgements.
 import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 
 const browserContextsByTest = new WeakMap();
 test.beforeEach(async ({ browser }, testInfo) => {
@@ -29,17 +29,10 @@ test.afterEach(async ({ browser }, testInfo) => {
 });
 
 async function setupUncertainRemovePointer(page) {
-  const repo = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const evidence = await mkdtemp(join(tmpdir(), "studio-message-hit-test-"));
-  const fixture = spawn(
-    process.env.PYTHON_BIN || "python3",
-    [
-      "-B",
-      join(repo, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
-      evidence,
-    ],
-    { stdio: ["ignore", "pipe", "pipe"] },
-  );
+  const fixture = spawn(process.execPath, [rustUiFixture, evidence], {
+    stdio: ["ignore", "pipe", "pipe"],
+  });
   let log = "";
   fixture.stderr.on("data", (chunk) => (log += chunk));
   const port = await waitForFixturePort(fixture, {
@@ -129,19 +122,10 @@ test("remove message button remains reachable by pointer", async ({ page }) => {
 
 test("message delivery ui", async ({ browser: _browser }) => {
   test.setTimeout(120_000);
-  const repo = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const evidence = await mkdtemp(join(tmpdir(), "studio-message-delivery-"));
-  const fixture = spawn(
-    "python3",
-    [
-      "-B",
-      join(repo, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
-      evidence,
-    ],
-    {
-      stdio: ["ignore", "pipe", "pipe"],
-    },
-  );
+  const fixture = spawn(process.execPath, [rustUiFixture, evidence], {
+    stdio: ["ignore", "pipe", "pipe"],
+  });
   let log = "",
     browser;
   fixture.stderr.on("data", (chunk) => {

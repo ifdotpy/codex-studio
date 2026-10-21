@@ -4,30 +4,21 @@ import {
   test,
   expect,
   spawnFixture,
+  rustUiFixture,
 } from "../playwright.mjs";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 
 test("snapshot updates isolate the conversation and unchanged rows", async ({
   browser,
 }) => {
   test.setTimeout(120_000);
-  const root = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const evidence = await mkdtemp(join(tmpdir(), "studio-snapshot-renders-"));
-  const fixture = spawnFixture(
-    process.env.CODEX_AGENTS_PYTHON || "python3",
-    [
-      "-B",
-      join(root, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
-      evidence,
-    ],
-    {
-      env: { ...process.env, TOKEN_RATE_WORKER_COUNT: "3" },
-      stdio: ["pipe", "pipe", "pipe"],
-    },
-  );
+  const fixture = spawnFixture(process.execPath, [rustUiFixture, evidence], {
+    env: { ...process.env, FIXTURE_WORKER_COUNT: "3" },
+    stdio: ["pipe", "pipe", "pipe"],
+  });
   let log = "";
   fixture.stderr.on("data", (data) => (log += data));
   const port = await new Promise((resolve, reject) => {

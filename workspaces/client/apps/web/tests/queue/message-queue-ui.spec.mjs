@@ -3,6 +3,8 @@ import {
   test,
   expect,
   spawnFixture as spawn,
+  rustUiFixture,
+  queryFixtureDatabase,
 } from "../playwright.mjs";
 // Production renderer and isolated durable queue. No model service or user state.
 import assert from "node:assert/strict";
@@ -13,11 +15,11 @@ import { join } from "node:path";
 
 test("message-queue-ui", async ({ browser }) => {
   test.setTimeout(45_000);
-  const repo = join(import.meta.dirname, "../../../../../../");
   const root = await mkdtemp(join(tmpdir(), "studio-message-queue-ui-"));
   const models = ["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-luna"].map(
     (model) => ({
       model,
+      isDefault: model === "gpt-5.6-sol",
       defaultReasoningEffort: "medium",
       supportedReasoningEfforts: (model === "gpt-5.6-luna"
         ? ["low", "medium", "high", "max"]
@@ -26,22 +28,15 @@ test("message-queue-ui", async ({ browser }) => {
       serviceTiers: [{ id: "priority" }],
     }),
   );
-  const proc = spawn(
-    process.env.PYTHON || "python3",
-    [
-      "-B",
-      join(repo, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
-      root,
-    ],
-    {
-      stdio: ["pipe", "pipe", "pipe"],
-      env: {
-        ...process.env,
-        CODEX_BOARD_STATE_DIR: join(root, "board"),
-        EXECUTION_SETTINGS_CATALOG: JSON.stringify(models),
-      },
+  const proc = spawn(process.execPath, [rustUiFixture, root], {
+    stdio: ["pipe", "pipe", "pipe"],
+    env: {
+      ...process.env,
+      CODEX_BOARD_STATE_DIR: join(root, "board"),
+      EXECUTION_SETTINGS_CATALOG: JSON.stringify(models),
+      FIXTURE_HOLD: "lead",
     },
-  );
+  });
   let context,
     page,
     log = "";
@@ -317,13 +312,25 @@ test("message-queue-ui", async ({ browser }) => {
       "Retry uses the saved send-now request",
     );
     assert.deepEqual(sendNowRequests[1], sendNowRequests[0]);
+    // A promoted current-turn input may leave the queue after native admission.
+    // Its durable metadata must retain both the effective and original moment.
+    const promoted = () =>
+      queryFixtureDatabase(
+        root,
+        "SELECT e.id,m.record FROM runtime_events e JOIN runtime_event_meta m ON m.id=e.id WHERE e.id=?",
+        order[0],
+      );
     await wait(
-      async () => (await queue()).items[0]?.delivery === "current_turn",
-      "Send now promotes the queued input to the current turn",
+      async () =>
+        JSON.parse(String(promoted()[0].record)).delivery === "current_turn",
+      "Send now durably promotes the original input to the current turn",
     );
-    const promoted = (await queue()).items[0];
-    assert.equal(promoted.id, order[0]);
-    assert.equal(promoted.requestedDelivery, "next_turn");
+    assert.equal(promoted().length, 1);
+    assert.equal(promoted()[0].id, sendNowRequests[0].id);
+    assert.equal(
+      JSON.parse(String(promoted()[0].record)).requestedDelivery,
+      "next_turn",
+    );
     await page.unrouteAll({ behavior: "wait" });
     expect(errors).toEqual([]);
     console.log(

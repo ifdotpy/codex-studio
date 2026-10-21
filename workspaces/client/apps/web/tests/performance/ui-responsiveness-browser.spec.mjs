@@ -5,6 +5,7 @@ import {
   stubEntityState,
   test,
   spawnFixture as spawn,
+  rustUiFixture,
 } from "../playwright.mjs";
 // Production App at 4x CPU. Timings are evidence, correctness is asserted.
 import assert from "node:assert/strict";
@@ -40,18 +41,10 @@ test(
       indexSha256: createHash("sha256").update(index).digest("hex"),
       cpuSlowdown: 4,
     };
-    const fixture = spawn(
-      "python3",
-      [
-        "-B",
-        join(repo, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
-        dir,
-      ],
-      {
-        stdio: ["ignore", "pipe", "pipe"],
-        env: { ...process.env, CODEX_BOARD_STATE_DIR: join(dir, "board") },
-      },
-    );
+    const fixture = spawn(process.execPath, [rustUiFixture, dir], {
+      stdio: ["ignore", "pipe", "pipe"],
+      env: { ...process.env, CODEX_BOARD_STATE_DIR: join(dir, "board") },
+    });
     let fixtureLog = "";
     fixture.stderr.on("data", (chunk) => {
       fixtureLog += chunk;

@@ -1,8 +1,12 @@
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
-import { test, expect, spawnFixture as spawn } from "../playwright.mjs";
+import {
+  test,
+  expect,
+  spawnFixture as spawn,
+  rustUiFixture,
+} from "../playwright.mjs";
 
 test("Snapshot Network Recovery Browser", async ({
   browser: _testBrowser,
@@ -26,24 +30,15 @@ test("Snapshot Network Recovery Browser", async ({
     },
   };
 
-  const repo = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const evidence = await mkdtemp(join(tmpdir(), "studio-snapshot-network-"));
-  const fixture = spawn(
-    process.env.PYTHON_BIN || "python3",
-    [
-      "-B",
-      join(repo, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
-      evidence,
-    ],
-    {
-      stdio: ["ignore", "pipe", "pipe"],
-      env: {
-        ...process.env,
-        TOKEN_RATE_WORKER_COUNT: "1",
-        CODEX_BOARD_STATE_DIR: join(evidence, "board"),
-      },
+  const fixture = spawn(process.execPath, [rustUiFixture, evidence], {
+    stdio: ["ignore", "pipe", "pipe"],
+    env: {
+      ...process.env,
+      FIXTURE_WORKER_COUNT: "1",
+      CODEX_BOARD_STATE_DIR: join(evidence, "board"),
     },
-  );
+  });
   let log = "";
   fixture.stderr.on("data", (data) => (log += data));
   try {

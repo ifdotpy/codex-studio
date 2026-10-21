@@ -8,12 +8,12 @@ import {
   expect,
   spawnFixture as spawn,
   readTestState,
+  rustUiFixture,
 } from "../playwright.mjs";
 // Confirmed creation opens before the full chat projection arrives. No model calls.
 import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 test("Chat Create Latency Ui @performance", async ({
   browser: _testBrowser,
   context: _testContext,
@@ -36,17 +36,10 @@ test("Chat Create Latency Ui @performance", async ({
     },
   };
 
-  const repo = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const evidence = await mkdtemp(join(tmpdir(), "studio-chat-create-"));
-  const fixture = spawn(
-    "python3",
-    [
-      "-B",
-      join(repo, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
-      evidence,
-    ],
-    { stdio: ["ignore", "pipe", "pipe"] },
-  );
+  const fixture = spawn(process.execPath, [rustUiFixture, evidence], {
+    stdio: ["ignore", "pipe", "pipe"],
+  });
   let page,
     log = "";
   fixture.stderr.on("data", (data) => {

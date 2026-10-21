@@ -4,13 +4,13 @@ import {
   expect,
   spawnFixture as spawn,
   readTestState,
+  rustUiFixture,
+  queryFixtureDatabase,
 } from "../playwright.mjs";
 // Real runtime records, lost HTTP response, and responsive message navigation.
-import { execFileSync } from "node:child_process";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 test("Messages Ui", async ({
   browser: _testBrowser,
   context: _testContext,
@@ -33,20 +33,11 @@ test("Messages Ui", async ({
     },
   };
 
-  const repo = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const root = await mkdtemp(join(tmpdir(), "studio-messages-ui-"));
-  const fixture = spawn(
-    "python3",
-    [
-      "-B",
-      join(repo, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
-      root,
-    ],
-    {
-      stdio: ["pipe", "pipe", "pipe"],
-      env: { ...process.env, MESSAGES_UI_FIXTURE: "1" },
-    },
-  );
+  const fixture = spawn(process.execPath, [rustUiFixture, root], {
+    stdio: ["pipe", "pipe", "pipe"],
+    env: { ...process.env, FIXTURE_SEED: "messages", FIXTURE_HOLD: "lead" },
+  });
   let page,
     log = "";
   fixture.stderr.on("data", (data) => {
@@ -159,18 +150,9 @@ test("Messages Ui", async ({
     assert.equal(saved.responses.length, 1);
     assert.equal(saved.responses[0].id, `user:${attempts[0].id}`);
     assert.equal(saved.responses[0].author, "user");
-    const delivery = JSON.parse(
-      execFileSync(
-        "python3",
-        [
-          "-c",
-          `import sqlite3,json,sys
-c=sqlite3.connect(sys.argv[1]); c.row_factory=sqlite3.Row
-print(json.dumps([dict(r) for r in c.execute("select * from runtime_events where kind='complaint_response'")]))`,
-          join(root, "canvas.sqlite3"),
-        ],
-        { encoding: "utf8" },
-      ),
+    const delivery = queryFixtureDatabase(
+      root,
+      "select * from runtime_events where kind='complaint_response'",
     );
     assert.equal(delivery.length, 1);
     assert.equal(

@@ -4,7 +4,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value, json};
 use studio_runtime_store::{
-    AgentId, AgentRecord, AgentRepository, QuestionsWriteRepository, RuntimeStore, Transaction,
+    AgentId, AgentRecord, AgentRepository, QuestionsWriteRepository, RuntimeStore,
+    SyncDocumentsRepository, Transaction,
 };
 use thiserror::Error;
 use uuid::Uuid;
@@ -707,6 +708,16 @@ fn put_request(
         return Err(invalid_stored("runtime_requests", id));
     }
     QuestionsWriteRepository::put_request(transaction, id, &event_write::python_json(record))?;
+    // The renderer reads requests as entities: publish the stored change with it.
+    let view = crate::sync_views::project_persisted_record("request", record)
+        .ok_or_else(|| invalid_stored("runtime_requests", id))?;
+    SyncDocumentsRepository::put_entity(
+        transaction,
+        "request",
+        id,
+        view,
+        record["status"] != PENDING,
+    )?;
     Ok(())
 }
 

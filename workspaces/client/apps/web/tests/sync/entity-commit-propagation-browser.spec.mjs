@@ -4,9 +4,13 @@ import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { performance } from "node:perf_hooks";
-import { readTestState, spawnFixture, test } from "../playwright.mjs";
+import {
+  readTestState,
+  spawnFixture,
+  test,
+  rustUiFixture,
+} from "../playwright.mjs";
 
 const timestamp = () => performance.timeOrigin + performance.now();
 
@@ -14,20 +18,11 @@ test("committed entities propagate between renderer tabs @sync", async ({
   browser,
 }) => {
   test.setTimeout(120_000);
-  const repo = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const state = await mkdtemp(join(tmpdir(), "entity-commit-propagation-"));
-  const fixture = spawnFixture(
-    "python3",
-    [
-      "-B",
-      join(repo, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
-      state,
-    ],
-    {
-      stdio: ["pipe", "pipe", "pipe"],
-      env: { ...process.env, RESOURCE_FRESHNESS_UI_FIXTURE: "1" },
-    },
-  );
+  const fixture = spawnFixture(process.execPath, [rustUiFixture, state], {
+    stdio: ["pipe", "pipe", "pipe"],
+    env: { ...process.env, RESOURCE_FRESHNESS_UI_FIXTURE: "1" },
+  });
   let log = "";
   let output = "";
   const fixtureReplies = new Map();

@@ -7,37 +7,26 @@ import {
   apiSchemaHeaders,
   test,
   spawnFixture as spawn,
+  rustUiFixture,
 } from "../playwright.mjs";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { fileURLToPath } from "node:url";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 test("Messages loading", async ({ browser }) => {
   test.setTimeout(45_000);
-  const testRepo = fileURLToPath(
-    new URL("../../../../../../", import.meta.url),
-  );
   // Production UI with isolated HTTP reads. No model or user task writes.
-  const repo = testRepo;
   const root = await mkdtemp(join(tmpdir(), "studio-messages-loading-"));
-  const fixture = spawn(
-    process.env.PYTHON || "python3",
-    [
-      "-B",
-      join(repo, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
-      root,
-    ],
-    {
-      stdio: ["pipe", "pipe", "pipe"],
-      env: {
-        ...process.env,
-        MESSAGES_UI_FIXTURE: "1",
-        CODEX_BOARD_STATE_DIR: join(root, "board"),
-      },
+  const fixture = spawn(process.execPath, [rustUiFixture, root], {
+    stdio: ["pipe", "pipe", "pipe"],
+    env: {
+      ...process.env,
+      FIXTURE_SEED: "messages",
+      FIXTURE_HOLD: "lead",
+      CODEX_BOARD_STATE_DIR: join(root, "board"),
     },
-  );
+  });
   let page,
     log = "";
   fixture.stderr.on("data", (value) => {

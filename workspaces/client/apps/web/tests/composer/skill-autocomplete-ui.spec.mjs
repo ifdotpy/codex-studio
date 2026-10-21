@@ -3,39 +3,20 @@ import {
   installApiSchemaFixtureHeaders,
   test,
   spawnFixture as spawn,
+  rustUiFixture,
 } from "../playwright.mjs";
 import assert from "node:assert/strict";
-import { fileURLToPath } from "node:url";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 test("Skill autocomplete", async ({ browser: testBrowser }) => {
   test.setTimeout(75_000);
-  const testRepo = fileURLToPath(
-    new URL("../../../../../../", import.meta.url),
-  );
   // Production composer against an isolated runtime and delayed skill endpoint.
 
-  const repo = testRepo;
   const evidence = await mkdtemp(join(tmpdir(), "studio-skill-autocomplete-"));
-  const codexHome = join(evidence, "codex-home");
-  await mkdir(codexHome, { recursive: true });
-  await writeFile(
-    join(codexHome, "config.toml"),
-    '[plugins."chrome@openai-bundled"]\nenabled = false\n',
-  );
-  const fixture = spawn(
-    "python3",
-    [
-      "-B",
-      join(repo, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
-      evidence,
-    ],
-    {
-      stdio: ["ignore", "pipe", "pipe"],
-      env: { ...process.env, CODEX_HOME: codexHome },
-    },
-  );
+  const fixture = spawn(process.execPath, [rustUiFixture, evidence], {
+    stdio: ["ignore", "pipe", "pipe"],
+  });
   const contexts = [];
   const newPage = async (options) => {
     const context = await testBrowser.newContext(options);
@@ -757,17 +738,10 @@ test("Skill autocomplete", async ({ browser: testBrowser }) => {
 
 test("500-entry local skill filter latency @performance", async ({ page }) => {
   test.setTimeout(75_000);
-  const repo = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const evidence = await mkdtemp(join(tmpdir(), "studio-skill-filter-perf-"));
-  const fixture = spawn(
-    "python3",
-    [
-      "-B",
-      join(repo, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
-      evidence,
-    ],
-    { stdio: ["ignore", "pipe", "pipe"] },
-  );
+  const fixture = spawn(process.execPath, [rustUiFixture, evidence], {
+    stdio: ["ignore", "pipe", "pipe"],
+  });
   let log = "";
   fixture.stderr.on("data", (data) => (log += data));
 

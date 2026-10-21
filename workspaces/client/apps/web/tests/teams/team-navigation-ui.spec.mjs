@@ -3,32 +3,27 @@ import {
   test,
   expect,
   spawnFixture as spawn,
+  rustUiFixture,
 } from "../playwright.mjs";
 // Production client and an isolated fixture. No model calls or user state.
 import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 
 test.use({ apiSchemaFixtureHeaders: false });
 
 test("team-navigation-ui", async ({ page: fixturePage }) => {
   test.setTimeout(60_000);
-  const repo = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const root = await mkdtemp(join(tmpdir(), "codex-team-navigation-"));
-  const proc = spawn(
-    "python3",
-    [
-      "-B",
-      join(repo, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
-      root,
-    ],
-    {
-      stdio: ["pipe", "pipe", "pipe"],
-      env: { ...process.env, CODEX_BOARD_STATE_DIR: join(root, "board") },
+  const proc = spawn(process.execPath, [rustUiFixture, root], {
+    stdio: ["pipe", "pipe", "pipe"],
+    env: {
+      ...process.env,
+      CODEX_BOARD_STATE_DIR: join(root, "board"),
+      FIXTURE_WORKER_COUNT: "40",
     },
-  );
+  });
   let page,
     log = "";
   proc.stderr.on("data", (data) => (log += data));
@@ -72,13 +67,14 @@ test("team-navigation-ui", async ({ page: fixturePage }) => {
       if (data.reset || !data.documents?.length)
         return route.fulfill({ response, json: data });
       let sequence = data.maxSeq || data.checkpoint?.seq || 0;
-      const desiredStatus = new Map([
-        [worker(3).id, "failed"],
-        [worker(4).id, "paused"],
-        [worker(25).id, "queued"],
-        [worker(38).id, "completed"],
-        [worker(39).id, "completed"],
-      ]);
+      // The server seeds idle workers; the roster's mix of states is scripted here.
+      const desiredStatus = new Map(
+        workers.map((agent, index) => [
+          worker(index).id,
+          { 3: "failed", 4: "paused", 7: "failed" }[index] ??
+            (index < 8 ? "running" : index < 26 ? "queued" : "completed"),
+        ]),
+      );
       let answerRequestPresent = false;
       for (const document of data.documents) {
         if (document._deleted) continue;
@@ -94,7 +90,7 @@ test("team-navigation-ui", async ({ page: fixturePage }) => {
           desiredStatus.has(payload.id)
         ) {
           payload.value.status = desiredStatus.get(payload.id);
-          payload.value.inFlight = false;
+          payload.value.inFlight = payload.value.status === "running";
           document.payload = JSON.stringify(payload);
           document.seq = ++sequence;
         } else if (

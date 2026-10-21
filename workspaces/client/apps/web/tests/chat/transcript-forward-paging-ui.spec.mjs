@@ -6,30 +6,21 @@ import {
   readTestState,
   test,
   spawnFixture,
+  rustUiFixture,
 } from "../playwright.mjs";
 import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { fileURLToPath } from "node:url";
 
 test("transcript paging returns from the oldest row to the newest", async ({
   page,
 }) => {
   test.setTimeout(120_000);
-  const repo = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const root = await mkdtemp(join(tmpdir(), "studio-transcript-forward-"));
-  const fixture = spawnFixture(
-    "python3",
-    [
-      join(repo, "workspaces/runtime/apps/server/src/codex_python.py"),
-      "--exec",
-      "-B",
-      join(repo, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
-      root,
-    ],
-    { stdio: ["ignore", "pipe", "pipe"] },
-  );
+  const fixture = spawnFixture(process.execPath, [rustUiFixture, root], {
+    stdio: ["ignore", "pipe", "pipe"],
+  });
   let log = "";
   fixture.stderr.on("data", (data) => (log += data));
   try {

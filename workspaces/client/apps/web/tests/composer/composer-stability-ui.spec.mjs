@@ -3,27 +3,22 @@ import {
   test,
   expect,
   spawnFixture as spawn,
+  rustUiFixture,
+  readFixtureSyncContract,
+  stubEntityState,
 } from "../playwright.mjs";
 // Real production React, isolated HTTP fixture, controlled status and delivery timing.
 import assert from "node:assert/strict";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 
 test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
   test.setTimeout(120_000);
-  const repo = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const evidence = await mkdtemp(join(tmpdir(), "studio-composer-stability-"));
-  const fixture = spawn(
-    "python3",
-    [
-      "-B",
-      join(repo, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
-      evidence,
-    ],
-    { stdio: ["pipe", "pipe", "pipe"] },
-  );
+  const fixture = spawn(process.execPath, [rustUiFixture, evidence], {
+    stdio: ["pipe", "pipe", "pipe"],
+  });
   let browser,
     pages = new Set(),
     log = "";
@@ -41,7 +36,7 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
       (agent) => agent.name === "Other project",
     );
     const emptyWorker = initial.threads.find(
-      (agent) => agent.name === "Standalone reviewer",
+      (agent) => agent.role === "reviewer",
     );
     assert.ok(lead, "fixture provides an empty managed lead chat");
     assert.ok(emptyWorker, "fixture provides an empty managed reviewer chat");
@@ -52,12 +47,31 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
       const originalTranscript = await (
         await fetch(`${origin}/api/transcript?id=${openedChat.id}`)
       ).json();
-      const transcript = structuredClone(originalTranscript);
+      const state = structuredClone(initial);
+      const controlledAgent = state.runtime.agents.find(
+        (agent) => agent.id === openedChat.id,
+      );
+      Object.assign(controlledAgent, {
+        empty: true,
+        status: "completed",
+        inFlight: false,
+        turnId: null,
+      });
+      const transcript = {
+        ...structuredClone(originalTranscript),
+        agent: controlledAgent,
+        items: [],
+      };
       const page = await browser.newPage({
         viewport: { width: 1440, height: 960 },
       });
       pages.add(page);
       page.setDefaultTimeout(12000);
+      const { update: updateEntityState } = await stubEntityState(
+        page,
+        state,
+        await readFixtureSyncContract(origin),
+      );
       await page.addInitScript(
         ({ stateDir, chatId }) => {
           localStorage.setItem(
@@ -125,11 +139,7 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
         const value = localStorage.getItem(key);
         return value ? JSON.parse(value) : null;
       }, chatStorageKey);
-      const openedTranscript = openedChatId
-        ? await (
-            await fetch(`${origin}/api/transcript?id=${openedChatId}`)
-          ).json()
-        : { items: [] };
+      const openedTranscript = transcript;
       console.log(
         "Composer stability fixture:",
         JSON.stringify({
@@ -276,12 +286,13 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
           );
       };
       const updatePhase = async (next) => {
-        fixture.stdin.write(
-          JSON.stringify({
-            method: "fixture/agent-status",
-            params: { agent: openedChat.id, status: next },
-          }) + "\n",
-        );
+        const active = ["starting", "running", "approval"].includes(next);
+        Object.assign(controlledAgent, {
+          status: next,
+          inFlight: active,
+          turnId: active ? "fixture-turn" : null,
+        });
+        await updateEntityState(state, { origin, token: initial.token });
         await page.evaluate(() => window.dispatchEvent(new Event("online")));
         await page.waitForFunction(
           (idle) =>

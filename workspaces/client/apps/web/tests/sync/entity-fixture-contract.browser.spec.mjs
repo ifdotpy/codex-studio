@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { createServer } from "node:http";
 import {
   handleEntitySyncFixtureRequest,
@@ -16,6 +15,7 @@ import {
   syncIdentityFixture,
   syncProtocolFixture,
   test,
+  rustUiFixture,
 } from "../playwright.mjs";
 
 test("transcript fixture applies its sequence before the request cursor", async () => {
@@ -59,20 +59,11 @@ test("transcript fixture applies its sequence before the request cursor", async 
 });
 
 test("entity fixture contract matches the real sync backend", async () => {
-  const root = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const stateDir = await mkdtemp(join(tmpdir(), "studio-sync-contract-"));
-  const child = spawnFixture(
-    "python3",
-    [
-      "-B",
-      join(root, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
-      stateDir,
-    ],
-    {
-      stdio: ["ignore", "pipe", "pipe"],
-      env: { TOKEN_RATE_WORKER_COUNT: "1" },
-    },
-  );
+  const child = spawnFixture(process.execPath, [rustUiFixture, stateDir], {
+    stdio: ["ignore", "pipe", "pipe"],
+    env: { FIXTURE_WORKER_COUNT: "1" },
+  });
   let stderr = "";
   child.stderr.on("data", (chunk) => (stderr += chunk));
   const port = await new Promise((resolve, reject) => {
@@ -429,20 +420,11 @@ test("shared entity stub converges on one matching stream", async ({
   page,
 }) => {
   test.setTimeout(90000);
-  const root = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const stateDir = await mkdtemp(join(tmpdir(), "studio-sync-stub-live-"));
-  const child = spawnFixture(
-    "python3",
-    [
-      "-B",
-      join(root, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
-      stateDir,
-    ],
-    {
-      stdio: ["ignore", "pipe", "pipe"],
-      env: { TOKEN_RATE_WORKER_COUNT: "1" },
-    },
-  );
+  const child = spawnFixture(process.execPath, [rustUiFixture, stateDir], {
+    stdio: ["ignore", "pipe", "pipe"],
+    env: { FIXTURE_WORKER_COUNT: "1" },
+  });
   let stderr = "";
   child.stderr.on("data", (chunk) => (stderr += chunk));
   const port = await new Promise((resolve, reject) => {

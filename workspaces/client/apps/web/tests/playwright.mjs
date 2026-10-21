@@ -17,6 +17,8 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
+import { DatabaseSync } from "node:sqlite";
+import { fixtureStateDirectory as rustFixtureStateDirectory } from "./fixtures/rust-ui-fixture.mjs";
 import { choosePlaywrightScratchRoot } from "./scratch-root.mjs";
 import { browserExecutablePath } from "./browser-executable.mjs";
 import { waitForFixturePort } from "./fixture-readiness.mjs";
@@ -2009,6 +2011,31 @@ export async function stubEntityState(page, snapshot, contract) {
     );
   };
   return { update };
+}
+
+export { rustFixtureStateDirectory };
+
+/**
+ * Read-only rows of the fixture server's canvas database, for assertions on
+ * persisted state. `root` is the directory passed to the fixture.
+ * @param {string} root
+ * @param {string} sql
+ * @param {...import("node:sqlite").SQLInputValue} parameters
+ * @returns {Record<string, unknown>[]}
+ */
+export function queryFixtureDatabase(root, sql, ...parameters) {
+  const database = new DatabaseSync(
+    join(rustFixtureStateDirectory(root), "canvas.sqlite3"),
+    { readOnly: true },
+  );
+  try {
+    database.exec("PRAGMA busy_timeout=5000");
+    return /** @type {Record<string, unknown>[]} */ (
+      database.prepare(sql).all(...parameters)
+    );
+  } finally {
+    database.close();
+  }
 }
 
 /** Browser fixture: the real Rust server with a scripted provider; spawn it with `process.execPath`. */

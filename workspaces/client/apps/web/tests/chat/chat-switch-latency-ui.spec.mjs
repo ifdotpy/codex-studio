@@ -6,13 +6,13 @@ import {
   entityPullFixture,
   test,
   spawnFixture as spawn,
+  rustUiFixture,
 } from "../playwright.mjs";
 // Real renderer and isolated server. Delayed streams must not delay navigation.
 import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 test(
   "Chat switch latency ui",
   { tag: "@performance" },
@@ -22,17 +22,10 @@ test(
     context: runnerContext,
   }) => {
     test.setTimeout(300_000);
-    const repo = fileURLToPath(new URL("../../../../../../", import.meta.url));
     const dir = await mkdtemp(join(tmpdir(), "studio-chat-switch-"));
-    const proc = spawn(
-      "python3",
-      [
-        "-B",
-        join(repo, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
-        dir,
-      ],
-      { stdio: ["ignore", "pipe", "pipe"] },
-    );
+    const proc = spawn(process.execPath, [rustUiFixture, dir], {
+      stdio: ["ignore", "pipe", "pipe"],
+    });
     let log = "",
       page;
     proc.stderr.on("data", (d) => (log += d));

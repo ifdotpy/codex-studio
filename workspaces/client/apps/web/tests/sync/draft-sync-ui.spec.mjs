@@ -1,10 +1,14 @@
-import { readTestState, test, spawnFixture as spawn } from "../playwright.mjs";
+import {
+  readTestState,
+  test,
+  spawnFixture as spawn,
+  rustUiFixture,
+} from "../playwright.mjs";
 // Two browser profiles, real SQLite/RxDB replication, no live model calls.
 import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { DRAFT_SYNC_TIMING_MS } from "../..//src/sync/draftSyncTiming.mjs";
 
 test("Draft sync ui", async ({
@@ -13,20 +17,11 @@ test("Draft sync ui", async ({
   context: runnerContext,
 }) => {
   test.setTimeout(180_000);
-  const root = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const state = await mkdtemp(join(tmpdir(), "studio-draft-sync-"));
-  const fixture = spawn(
-    process.env.PYTHON_BIN || "python3",
-    [
-      "-B",
-      join(root, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
-      state,
-    ],
-    {
-      stdio: ["pipe", "pipe", "pipe"],
-      env: { ...process.env, TOKEN_RATE_WORKER_COUNT: "1" },
-    },
-  );
+  const fixture = spawn(process.execPath, [rustUiFixture, state], {
+    stdio: ["pipe", "pipe", "pipe"],
+    env: { ...process.env, FIXTURE_WORKER_COUNT: "1" },
+  });
   let log = "";
   fixture.stderr.on("data", (chunk) => {
     log += chunk;
@@ -848,20 +843,11 @@ test("Draft sync ui", async ({
 
 test("Draft sync resume preserves a pending conflict", async ({ page }) => {
   test.setTimeout(90_000);
-  const root = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const state = await mkdtemp(join(tmpdir(), "studio-draft-conflict-"));
-  const fixture = spawn(
-    process.env.PYTHON_BIN || "python3",
-    [
-      "-B",
-      join(root, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
-      state,
-    ],
-    {
-      stdio: ["pipe", "pipe", "pipe"],
-      env: { ...process.env, TOKEN_RATE_WORKER_COUNT: "1" },
-    },
-  );
+  const fixture = spawn(process.execPath, [rustUiFixture, state], {
+    stdio: ["pipe", "pipe", "pipe"],
+    env: { ...process.env, FIXTURE_WORKER_COUNT: "1" },
+  });
   let log = "";
   fixture.stderr.on("data", (chunk) => {
     log += chunk;

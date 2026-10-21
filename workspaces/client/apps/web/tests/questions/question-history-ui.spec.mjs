@@ -1,32 +1,26 @@
-import { readTestState, test, spawnFixture as spawn } from "../playwright.mjs";
+import {
+  readTestState,
+  test,
+  spawnFixture as spawn,
+  rustUiFixture,
+} from "../playwright.mjs";
 import assert from "node:assert/strict";
-import { fileURLToPath } from "node:url";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 test("Question history", async ({ context }) => {
   test.setTimeout(180_000);
-  const testRepo = fileURLToPath(
-    new URL("../../../../../../", import.meta.url),
-  );
   // Real isolated HTTP runtime, no model or user state.
-  const project = testRepo;
   const root = await mkdtemp(join(tmpdir(), "studio-question-history-"));
-  const proc = spawn(
-    "python3",
-    [
-      "-B",
-      join(
-        project,
-        "workspaces/runtime/apps/server/tests/simple-ui-fixture.py",
-      ),
-      root,
-    ],
-    {
-      stdio: ["pipe", "pipe", "pipe"],
-      env: { ...process.env, CODEX_BOARD_STATE_DIR: join(root, "board") },
+  const proc = spawn(process.execPath, [rustUiFixture, root], {
+    stdio: ["pipe", "pipe", "pipe"],
+    env: {
+      ...process.env,
+      CODEX_BOARD_STATE_DIR: join(root, "board"),
+      FIXTURE_SEED: "report,question",
+      FIXTURE_HOLD: "lead",
     },
-  );
+  });
   let log = "",
     page;
   proc.stderr.on("data", (data) => {
@@ -103,7 +97,7 @@ test("Question history", async ({ context }) => {
           document.querySelector(".message.assistant .copy-message"),
         ).opacity === "1",
     );
-    const card = page.locator('[data-request="async-question"]');
+    const card = page.locator('[data-request$=":question:async-question"]');
     assert.equal(
       await card
         .getByRole("button", { name: "Defer", exact: true })

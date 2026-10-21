@@ -4,33 +4,24 @@ import {
   expect,
   spawnFixture as spawn,
   installApiSchemaFixtureHeaders,
+  rustUiFixture,
 } from "../playwright.mjs";
 // Production UI and isolated HTTP fixture. Requests deliberately finish out of order.
 import assert from "node:assert/strict";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 
 async function runSnapshotOrderUi(
   fixturePage,
   { checkRequestAnchor = false } = {},
 ) {
   test.setTimeout(45_000);
-  const repo = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const evidence = await mkdtemp(join(tmpdir(), "studio-snapshot-order-"));
-  const fixture = spawn(
-    "python3",
-    [
-      "-B",
-      join(repo, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
-      evidence,
-    ],
-    {
-      stdio: ["pipe", "pipe", "pipe"],
-      env: { ...process.env, CODEX_BOARD_STATE_DIR: join(evidence, "board") },
-    },
-  );
+  const fixture = spawn(process.execPath, [rustUiFixture, evidence], {
+    stdio: ["pipe", "pipe", "pipe"],
+    env: { ...process.env, CODEX_BOARD_STATE_DIR: join(evidence, "board") },
+  });
   let log = "";
   let output = "";
   const fixtureReplies = new Map();
