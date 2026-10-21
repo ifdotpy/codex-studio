@@ -78,7 +78,6 @@ pub enum AuthStatus {
     Ready,
     SignedOut,
     Error,
-    Unchanged,
 }
 
 #[derive(Clone, Eq, PartialEq)]
@@ -120,15 +119,6 @@ impl AuthMetadata {
             ..Self::error(None)
         }
     }
-
-    #[cfg(target_os = "macos")]
-    fn unchanged(reason: &'static str) -> Self {
-        Self {
-            status: AuthStatus::Unchanged,
-            error_kind: Some(reason),
-            ..Self::signed_out()
-        }
-    }
 }
 
 #[derive(Clone, Eq, PartialEq)]
@@ -140,15 +130,6 @@ pub struct AuthProfile {
 
 pub trait ProviderAuthReader: Send + Sync {
     fn read(&self, profile: &AuthProfile) -> AuthMetadata;
-
-    /// A second, active read for a profile whose stored status is not ready
-    /// when [`ProviderAuthReader::read`] left it unchanged. `None` keeps the
-    /// stored status. macOS Claude uses the native `claude auth status`, as
-    /// Python does after its passive Keychain reader; without it a stale error
-    /// (for example one torn read) would block every later turn.
-    fn recheck(&self, _profile: &AuthProfile) -> Option<AuthMetadata> {
-        None
-    }
 
     /// Forget any cached status of `profile`; the next read probes once.
     fn invalidate(&self, _profile: &AuthProfile) {}
@@ -164,13 +145,6 @@ pub struct SystemProviderAuthReader;
 impl ProviderAuthReader for SystemProviderAuthReader {
     fn read(&self, profile: &AuthProfile) -> AuthMetadata {
         crate::provider_adapter::adapter(profile.provider).read_auth(profile)
-    }
-
-    fn recheck(&self, profile: &AuthProfile) -> Option<AuthMetadata> {
-        // Other hosts already probe in `read`; Codex reads `auth.json` there.
-        (cfg!(target_os = "macos")
-            && profile.provider == studio_runtime_providers::ProviderKind::Claude)
-            .then(|| ClaudeCliAuthReader::read_native(profile))
     }
 
     fn invalidate(&self, profile: &AuthProfile) {
@@ -424,15 +398,7 @@ impl ProviderAuthReader for ClaudeCliAuthReader {
     }
 
     fn read(&self, profile: &AuthProfile) -> AuthMetadata {
-        #[cfg(target_os = "macos")]
-        {
-            let _ = profile;
-            return AuthMetadata::unchanged("macos-passive-auth-unavailable");
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            Self::read_native(profile)
-        }
+        Self::read_native(profile)
     }
 }
 
@@ -1909,7 +1875,7 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
         account: &str,
         include_inactive: bool,
     ) -> Result<AccountStatus, AccountDriverError> {
-        let (profile, stored_ready) = {
+        let profile = {
             let row = registry_account(value, account)?;
             if !include_inactive
                 && (row.get("deleted") == Some(&Value::Bool(true))
@@ -1920,24 +1886,14 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
             if row.get("duplicateOf").is_some_and(truthy_value) {
                 return Ok(status_from_value(row.get("status")));
             }
-            (
-                auth_profile(row)?,
-                row.get("status").and_then(Value::as_str) == Some("ready"),
-            )
+            auth_profile(row)?
         };
-        let mut metadata =
+        // Python reads the status again on every refresh, so a stored error
+        // never outlives a valid login.
+        let metadata =
             crate::diagnostics::measure_runtime_stage("account_driver.auth_metadata", || {
                 self.reader.read(&profile)
             });
-        // Python reads the status again on every refresh, so a stored error
-        // never outlives a valid login. A read that left a non-ready status
-        // unchanged gets one active read instead.
-        if metadata.status == AuthStatus::Unchanged
-            && !stored_ready
-            && let Some(rechecked) = self.reader.recheck(&profile)
-        {
-            metadata = rechecked;
-        }
         let row = registry_account_mut(value, account)?
             .as_object_mut()
             .ok_or(AccountDriverError::InvalidRegistry)?;
@@ -2531,9 +2487,6 @@ fn python_object(entries: &[(&str, String)]) -> String {
 }
 
 fn apply_metadata(row: &mut serde_json::Map<String, Value>, metadata: &AuthMetadata) {
-    if metadata.status == AuthStatus::Unchanged {
-        return;
-    }
     let expected_account = row
         .get("accountId")
         .and_then(nonempty_str)
@@ -2635,7 +2588,6 @@ fn apply_metadata(row: &mut serde_json::Map<String, Value>, metadata: &AuthMetad
                 AuthStatus::Ready => "ready",
                 AuthStatus::SignedOut => "signedOut",
                 AuthStatus::Error => "error",
-                AuthStatus::Unchanged => return,
             }
             .into(),
         ),
@@ -3116,26 +3068,12 @@ exit 0
         );
     }
 
-    /// macOS shape: the passive read leaves the status unchanged, and the
-    /// active recheck answers with the native `claude auth status`.
-    struct RecheckReader {
-        recheck: AuthMetadata,
-        rechecks: std::sync::atomic::AtomicUsize,
-    }
+    /// A reader that answers every read with `metadata`.
+    struct FixedReader(AuthMetadata);
 
-    impl ProviderAuthReader for RecheckReader {
+    impl ProviderAuthReader for FixedReader {
         fn read(&self, _profile: &AuthProfile) -> AuthMetadata {
-            AuthMetadata {
-                status: AuthStatus::Unchanged,
-                error_kind: Some("macos-passive-auth-unavailable"),
-                ..AuthMetadata::signed_out()
-            }
-        }
-
-        fn recheck(&self, _profile: &AuthProfile) -> Option<AuthMetadata> {
-            self.rechecks
-                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            Some(self.recheck.clone())
+            self.0.clone()
         }
     }
 
@@ -3184,14 +3122,8 @@ exit 0
         // every turn with "Sign in with claude auth login first".
         let fixture = TestDir::new();
         let path = claude_registry(&fixture, "error", Some("parser"));
-        let driver = AccountDriver::open_with_reader(
-            &path,
-            RecheckReader {
-                recheck: ready_claude(),
-                rechecks: Default::default(),
-            },
-        )
-        .expect("open fixture");
+        let driver = AccountDriver::open_with_reader(&path, FixedReader(ready_claude()))
+            .expect("open fixture");
         assert_eq!(driver.get("default").expect("status"), AccountStatus::Ready);
         let saved: Value =
             serde_json::from_slice(&fs::read(&path).expect("read registry")).expect("registry");
@@ -3201,37 +3133,14 @@ exit 0
         assert!(row.get("_authErrorKind").is_none());
     }
 
+    /// A stored ready status does not outlive a sign-out on any host.
     #[test]
-    fn a_ready_claude_account_is_not_rechecked() {
+    fn a_signed_out_read_blocks_a_ready_claude_account() {
         let fixture = TestDir::new();
         let path = claude_registry(&fixture, "ready", None);
-        let reader = RecheckReader {
-            recheck: AuthMetadata::error(Some("parser")),
-            rechecks: Default::default(),
-        };
-        let driver = AccountDriver::open_with_reader(&path, reader).expect("open fixture");
-        assert_eq!(driver.get("default").expect("status"), AccountStatus::Ready);
-        assert_eq!(
-            driver
-                .reader
-                .rechecks
-                .load(std::sync::atomic::Ordering::SeqCst),
-            0
-        );
-    }
-
-    #[test]
-    fn a_signed_out_recheck_keeps_the_claude_account_blocked() {
-        let fixture = TestDir::new();
-        let path = claude_registry(&fixture, "error", Some("parser"));
-        let driver = AccountDriver::open_with_reader(
-            &path,
-            RecheckReader {
-                recheck: AuthMetadata::signed_out(),
-                rechecks: Default::default(),
-            },
-        )
-        .expect("open fixture");
+        let driver =
+            AccountDriver::open_with_reader(&path, FixedReader(AuthMetadata::signed_out()))
+                .expect("open fixture");
         assert_ne!(driver.get("default").expect("status"), AccountStatus::Ready);
     }
 
