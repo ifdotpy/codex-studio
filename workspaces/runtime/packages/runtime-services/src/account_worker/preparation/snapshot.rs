@@ -1850,11 +1850,15 @@ mod workspace_fence_tests {
                     "workspaceMode":mode,"worktree":mode == "worktree","worktreeReady":ready,
                     "imageWorkspace":mode == "image","imageWorkspaceReady":ready,
                     "yoloMode":true,"claudeOptions":{"permissionMode":"bypassPermissions"}});
-                let snapshot = thread_snapshot(tx, &resources, &record, "connection", Path::new("/state"),
-                    &ThreadFilesystemInputs { progress_directory: None }, None)?;
                 for resumed in [false, true] {
-                    let mut snapshot = snapshot.clone();
-                    snapshot.actor.thread_id = resumed.then(|| "existing-thread".into());
+                    let mut record = record.clone();
+                    if resumed {
+                        // A current thread retains the catalog selected at start.
+                        record["threadId"] = json!("existing-thread");
+                        record["nativeToolSource"] = json!("current");
+                    }
+                    let snapshot = thread_snapshot(tx, &resources, &record, "connection", Path::new("/state"),
+                        &ThreadFilesystemInputs { progress_directory: None }, None)?;
                     let attempt = match thread::plan(&snapshot, "attempt", "ticket") {
                         thread::Outcome::Start(attempt) | thread::Outcome::Resume(attempt) => attempt,
                         other => panic!("expected thread launch, got {other:?}"),
