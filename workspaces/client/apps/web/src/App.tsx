@@ -9,6 +9,7 @@ import {
   useServerAccountLimits,
   useServerOutbox,
   useServerActivityScope,
+  useServerSidebarServices,
 } from "./servers/ServerServicesContext";
 import { useServerFileDialogs } from "./servers/ServerServicesContext";
 import { onDesktopNavigate } from "./native/notifications";
@@ -265,6 +266,7 @@ export default function App({ active = true }: { active?: boolean }) {
   const { canRevealPath, revealPath } = useServerFileDialogs();
   const { watchResourceChanges } = useServerResources();
   const watchResourceReads = useServerResourceReads();
+  const sidebarServices = useServerSidebarServices();
   const {
     configureLimitsCache,
     cachedLimitsByAccount,
@@ -2645,6 +2647,7 @@ export default function App({ active = true }: { active?: boolean }) {
     <>
       {(!isServerView || isClassicServerView) && (
         <Sidebar
+          services={sidebarServices}
           data={data}
           opened={opened}
           lead={lead}

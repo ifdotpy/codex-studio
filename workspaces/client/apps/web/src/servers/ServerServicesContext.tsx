@@ -14,7 +14,18 @@ import * as defaultAccountLimits from "../usage/accountUsage";
 import * as defaultActivity from "./activity";
 import { useSyncedDrafts } from "../sync/drafts";
 import * as defaultOutbox from "../sync/send";
-import { createContext, useContext, Fragment, type ReactNode } from "react";
+import {
+  createContext,
+  useContext,
+  useMemo,
+  Fragment,
+  type ReactNode,
+} from "react";
+import {
+  createSidebarServices,
+  localSidebarServices,
+} from "../components/sidebar/services";
+import { serverSidebarBackend } from "./serverSidebarBackend";
 import * as defaultApi from "../api";
 import * as defaultSync from "../sync/client";
 import * as defaultResources from "../sync/resourceEvents";
@@ -48,6 +59,15 @@ export function ServerServicesProvider({
 }
 export const useServerServices = () => useContext(Context);
 export const useServerApi = () => useServerServices()?.api ?? defaultApi;
+export function useServerSidebarServices() {
+  const services = useServerServices();
+  return useMemo(() => {
+    if (!services) return localSidebarServices;
+    // Keep sidebar writes on the same authenticated owner as this screen.
+    const backend = serverSidebarBackend(services, () => true);
+    return createSidebarServices(backend, [backend], () => backend.ownerId);
+  }, [services]);
+}
 export const useServerSync = () => useServerServices()?.sync ?? defaultSync;
 export const useServerResources = () =>
   useServerServices()?.resources ?? defaultResources;
