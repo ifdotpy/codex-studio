@@ -332,7 +332,12 @@ class RustUpgradeContract(unittest.TestCase):
             install_root = Path(install)
             installed_binary = install_root / binary.name
             shutil.copy2(binary, installed_binary)
-            (install_root / "workspaces").symlink_to(ROOT / "workspaces", target_is_directory=True)
+            # The server reads role guidance, skills and bridge files from the
+            # whole source layout, so link every top-level entry except build
+            # output and Git metadata.
+            for entry in ROOT.iterdir():
+                if entry.name not in {".git", "target", "node_modules"}:
+                    (install_root / entry.name).symlink_to(entry, target_is_directory=entry.is_dir())
             self.check_rust_backend(installed_binary)
         print(f"Rust historical-state HTTP test: {time.perf_counter() - started:.3f}s")
 
