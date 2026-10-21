@@ -1130,6 +1130,8 @@ class ConnectionRecovery:
                 tick(self.runtime, agents)
                 from codex_tool_response_recovery import tick as tool_response_tick
                 tool_response_tick(self.runtime, agents)
+                from codex_host_exec import resume_tick
+                resume_tick(self.runtime)
             except Exception as error:
                 self.runtime._connection_recovery_error = {'at': time.time(), 'error': str(error)[:300]}
             finally:
