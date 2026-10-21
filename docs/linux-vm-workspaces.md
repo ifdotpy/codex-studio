@@ -1,7 +1,8 @@
 # Layr VM chats
 
 Chat creation accepts `workspaceMode`: `layr`, `image`, or `worktree`.
-On macOS, `layr` is the default. Linux servers support `worktree` only.
+A new lead chat on a Mac server defaults to `layr`. A top-level task agent from
+`POST /api/agents` defaults to `worktree`. Linux servers support `worktree` only.
 
 | Mode       | Lead         | Workers        | Reviewers                 |
 | ---------- | ------------ | -------------- | ------------------------- |

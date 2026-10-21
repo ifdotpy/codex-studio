@@ -13,13 +13,23 @@ import time
 from typing import Any, Mapping
 
 
+# Owner of the workspace mode of a new top-level chat whose request has no workspaceMode.
+# The Rust runtime (runtime-services agents_create/operations.rs, default_workspace_mode)
+# is checked against these two lines by its test default_workspace_mode_matches_python_owner.
+# A lead chat (POST /api/leads) on macOS starts in a layr workspace in the Linux VM.
+MACOS_LEAD_WORKSPACE_MODE = "layr"
+# Every other new chat starts in a worktree on the host: a task agent (POST /api/agents),
+# which must not need a VM that its request did not select, and every chat on another system.
+DEFAULT_WORKSPACE_MODE = "worktree"
+
+
 def workspace_mode(data: Mapping[str, Any], root: Mapping[str, Any] | None = None,
-                   *, creation: bool = False) -> str:
+                   *, lead: bool = False) -> str:
     if root is not None:
         if "workspaceMode" in data:
             raise ValueError("Only chat creation selects the workspace mode")
-        return str(data.get("_workspaceMode") or root.get("workspaceMode") or "worktree")
-    default = "layr" if creation and platform.system() == "Darwin" else "worktree"
+        return str(data.get("_workspaceMode") or root.get("workspaceMode") or DEFAULT_WORKSPACE_MODE)
+    default = MACOS_LEAD_WORKSPACE_MODE if lead and platform.system() == "Darwin" else DEFAULT_WORKSPACE_MODE
     mode = data.get("workspaceMode", default)
     if mode not in {"layr", "image", "worktree"}:
         raise ValueError('workspaceMode must be "layr", "image", or "worktree"')

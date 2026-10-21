@@ -583,7 +583,8 @@ maximum 64. Lead turns have priority when a slot becomes free.
 Lowering a limit does not interrupt existing turns.
 
 Chat creation selects `workspaceMode`: `layr`, `image`, or `worktree`.
-Mac servers default to `layr`. Linux servers support `worktree` only.
+A new lead chat on a Mac server defaults to `layr`. A top-level task agent from
+`POST /api/agents` defaults to `worktree`. Linux servers support `worktree` only.
 
 | Chat mode  | Environment                         | Worker workspace         |
 | ---------- | ----------------------------------- | ------------------------ |
