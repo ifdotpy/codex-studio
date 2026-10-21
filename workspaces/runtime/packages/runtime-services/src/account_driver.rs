@@ -1579,7 +1579,13 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
             {
                 value["logins"][request]["nativeCompleted"] = Value::Bool(true);
             }
-            if self.refresh_value(&mut value, &account, true)? == AccountStatus::Ready {
+            // Credentials of another account than the pinned one read as
+            // Changed; a completed "sign in again" request then ends in error.
+            let status = self.refresh_value(&mut value, &account, true)?;
+            if status == AccountStatus::Ready
+                || (status == AccountStatus::Changed
+                    && value["logins"][request]["nativeCompleted"] == true)
+            {
                 reconcile_local_login(&mut value, &state.order, request, &account)?;
             }
             if login_terminal(&value["logins"][request])

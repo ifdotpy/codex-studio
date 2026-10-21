@@ -91,8 +91,9 @@ async fn retained_session_login_completion_finishes_the_reauth_receipt() {
     peer.acknowledged(cursor).await;
     assert_eq!(stored(&registry)["status"], "pending");
 
-    // The provider wrote the new credentials, then reported the completion.
-    credentials(&state.root.join("codex-home"), EXPECTED);
+    // The provider has written the credentials and reports the completion.
+    // The fixture writes no file here: a credential write wakes every auth
+    // watcher of this test process.
     let cursor = peer
         .frame(json!({"method":"account/login/completed",
             "params":{"loginId":NATIVE_LOGIN,"success":true,"error":null}}))
