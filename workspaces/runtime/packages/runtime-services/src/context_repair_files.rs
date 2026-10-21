@@ -11,6 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Component, Path, PathBuf};
+use studio_runtime_store::path_identity::CanonicalPath;
 
 use serde::de::{MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer};
@@ -29,7 +30,7 @@ const REQUIRED_FREE_SPACE_OVERHEAD: u64 = 64 * 1024 * 1024;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct HistorySegment {
-    pub path: PathBuf,
+    pub path: CanonicalPath,
     pub thread_id: String,
     pub end_byte_offset: u64,
     pub end_ordinal_exclusive: Option<u64>,
@@ -47,7 +48,7 @@ pub struct HistoryTerminal {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct HistoryRewriteReceipt {
-    pub source_path: PathBuf,
+    pub source_path: CanonicalPath,
     pub source_sha256: String,
     pub source_bytes: u64,
     pub source_file_identity: [u128; 4],
@@ -181,9 +182,10 @@ struct HistoryRecord {
 pub fn locate_codex_history(
     provider_home: &Path,
     thread_id: &str,
-) -> Result<PathBuf, HistoryFileError> {
+) -> Result<CanonicalPath, HistoryFileError> {
     validate_thread_id(thread_id)?;
-    let home = canonical_directory(provider_home)?;
+    let home = CanonicalPath::existing_directory(provider_home)
+        .map_err(|_| HistoryFileError::Unavailable)?;
     let mut matches = Vec::new();
     let mut visited = 0;
     for root in history_roots(&home) {
@@ -214,7 +216,8 @@ pub fn verify_history_ancestry(
     thread_id: &str,
 ) -> Result<Vec<HistorySegment>, HistoryFileError> {
     validate_thread_id(thread_id)?;
-    let home = canonical_directory(provider_home)?;
+    let home = CanonicalPath::existing_directory(provider_home)
+        .map_err(|_| HistoryFileError::Unavailable)?;
     let mut path = validate_source_path(&home, source)?;
     let mut thread = thread_id.to_owned();
     let mut end_byte_offset = file_len(&path)?;
@@ -354,7 +357,8 @@ fn rewrite_with_hook(
     summaries: &impl RepairEventSummary,
     mut hook: impl FnMut(WritePoint) -> io::Result<()>,
 ) -> Result<HistoryRewriteReceipt, HistoryFileError> {
-    let home = canonical_directory(provider_home)?;
+    let home = CanonicalPath::existing_directory(provider_home)
+        .map_err(|_| HistoryFileError::Unavailable)?;
     let source = validate_source_path(&home, source)?;
     let source_identity = file_identity(&source)?;
     let ancestry = verify_history_ancestry(&home, &source, thread_id)?;
@@ -496,7 +500,7 @@ fn rewrite_with_hook(
         .and_then(|total| total.checked_mul(3))
         .and_then(|total| total.checked_add(REQUIRED_FREE_SPACE_OVERHEAD))
         .ok_or(HistoryFileError::Ancestry)?;
-    let disk = rustix::fs::statvfs(&home).map_err(|_| HistoryFileError::Unavailable)?;
+    let disk = rustix::fs::statvfs(home.as_path()).map_err(|_| HistoryFileError::Unavailable)?;
     let available = disk.f_bavail.saturating_mul(disk.f_frsize);
     if available < copy_budget {
         return Err(HistoryFileError::InsufficientSpace);
@@ -622,7 +626,8 @@ pub fn cleanup_rewrite_copy(
     let Some(copy_path) = receipt.copy_path.as_deref() else {
         return Ok(());
     };
-    let home = canonical_directory(provider_home)?;
+    let home = CanonicalPath::existing_directory(provider_home)
+        .map_err(|_| HistoryFileError::Unavailable)?;
     let path = validate_copy_path(&home, copy_path)?;
     fs::remove_file(&path).map_err(|_| HistoryFileError::Write)?;
     if let Some(parent) = path.parent() {
@@ -1019,7 +1024,11 @@ fn saved_item_event_bytes(
     Ok(saved)
 }
 
-fn find_ancestor(home: &Path, thread_id: &str, end: u64) -> Result<PathBuf, HistoryFileError> {
+fn find_ancestor(
+    home: &Path,
+    thread_id: &str,
+    end: u64,
+) -> Result<CanonicalPath, HistoryFileError> {
     let mut visited = 0;
     let mut candidates = Vec::new();
     for root in history_roots(home) {
@@ -1292,17 +1301,8 @@ fn history_roots(home: &Path) -> [PathBuf; 2] {
     [home.join("sessions"), home.join("archived_sessions")]
 }
 
-fn canonical_directory(path: &Path) -> Result<PathBuf, HistoryFileError> {
-    studio_runtime_store::debug_assert_outside_sql();
-    let home = fs::canonicalize(path).map_err(|_| HistoryFileError::Unavailable)?;
-    if !home.is_dir() {
-        return Err(HistoryFileError::Unavailable);
-    }
-    Ok(home)
-}
-
-fn validate_source_path(home: &Path, path: &Path) -> Result<PathBuf, HistoryFileError> {
-    let canonical = fs::canonicalize(path).map_err(|_| HistoryFileError::Unavailable)?;
+fn validate_source_path(home: &Path, path: &Path) -> Result<CanonicalPath, HistoryFileError> {
+    let canonical = CanonicalPath::existing(path).map_err(|_| HistoryFileError::Unavailable)?;
     if !canonical.starts_with(home)
         || canonical.extension().and_then(|ext| ext.to_str()) != Some("jsonl")
     {
@@ -1323,10 +1323,11 @@ fn validate_source_path(home: &Path, path: &Path) -> Result<PathBuf, HistoryFile
     Ok(canonical)
 }
 
-fn validate_copy_path(home: &Path, path: &Path) -> Result<PathBuf, HistoryFileError> {
-    let canonical_parent = fs::canonicalize(path.parent().ok_or(HistoryFileError::OutsideHome)?)
-        .map_err(|_| HistoryFileError::Unavailable)?;
-    let copy_root = fs::canonicalize(home.join("sessions").join(COPY_DIRECTORY))
+fn validate_copy_path(home: &Path, path: &Path) -> Result<CanonicalPath, HistoryFileError> {
+    let canonical_parent =
+        CanonicalPath::existing(path.parent().ok_or(HistoryFileError::OutsideHome)?)
+            .map_err(|_| HistoryFileError::Unavailable)?;
+    let copy_root = CanonicalPath::existing(home.join("sessions").join(COPY_DIRECTORY))
         .map_err(|_| HistoryFileError::Unavailable)?;
     if !canonical_parent.starts_with(&copy_root) {
         return Err(HistoryFileError::OutsideHome);
@@ -1335,14 +1336,14 @@ fn validate_copy_path(home: &Path, path: &Path) -> Result<PathBuf, HistoryFileEr
     if metadata.file_type().is_symlink() || !metadata.is_file() {
         return Err(HistoryFileError::OutsideHome);
     }
-    let canonical = fs::canonicalize(path).map_err(|_| HistoryFileError::Unavailable)?;
+    let canonical = CanonicalPath::existing(path).map_err(|_| HistoryFileError::Unavailable)?;
     if !canonical.starts_with(&copy_root) {
         return Err(HistoryFileError::OutsideHome);
     }
     Ok(canonical)
 }
 
-fn history_copy_root(home: &Path) -> Result<PathBuf, HistoryFileError> {
+fn history_copy_root(home: &Path) -> Result<CanonicalPath, HistoryFileError> {
     let sessions = home.join("sessions");
     let created_sessions = match fs::symlink_metadata(&sessions) {
         Ok(metadata) => {
@@ -1376,7 +1377,7 @@ fn history_copy_root(home: &Path) -> Result<PathBuf, HistoryFileError> {
             return Err(error);
         }
     }
-    let sessions = fs::canonicalize(sessions).map_err(|_| HistoryFileError::Write)?;
+    let sessions = CanonicalPath::existing(sessions).map_err(|_| HistoryFileError::Write)?;
     if !sessions.starts_with(home) {
         return Err(HistoryFileError::OutsideHome);
     }
@@ -1404,7 +1405,7 @@ fn history_copy_root(home: &Path) -> Result<PathBuf, HistoryFileError> {
         drop(sync_directory(&sessions));
         return Err(error);
     }
-    let canonical = fs::canonicalize(root).map_err(|_| HistoryFileError::Write)?;
+    let canonical = CanonicalPath::existing(root).map_err(|_| HistoryFileError::Write)?;
     if !canonical.starts_with(home) {
         return Err(HistoryFileError::OutsideHome);
     }

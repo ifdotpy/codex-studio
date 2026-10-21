@@ -1,7 +1,8 @@
 //! Local filesystem reads used by the system routes.
 
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
+use studio_runtime_store::path_identity::CanonicalPath;
 
 use crate::event_write::truthy;
 use serde_json::{Value, json};
@@ -124,54 +125,11 @@ fn named_home(_user: &str) -> Result<Option<PathBuf>, SystemReadError> {
     Ok(None)
 }
 
-pub(crate) fn resolve_path(path: &str) -> Result<PathBuf, SystemReadError> {
+pub(crate) fn resolve_path(path: &str) -> Result<CanonicalPath, SystemReadError> {
+    // Home expansion may consult NSS before entering the identity constructor.
+    // Keep the guard for that lookup, independently of path resolution.
     studio_runtime_store::debug_assert_outside_sql();
-    resolve_links(&expand_home(path)?, &mut 0)
-}
-
-fn resolve_links(path: &Path, links: &mut usize) -> Result<PathBuf, SystemReadError> {
-    let absolute = if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        std::env::current_dir()
-            .map_err(directory_io_error)?
-            .join(path)
-    };
-    let mut resolved = PathBuf::new();
-    for component in absolute.components() {
-        match component {
-            std::path::Component::Prefix(prefix) => resolved.push(prefix.as_os_str()),
-            std::path::Component::RootDir => resolved.push(component.as_os_str()),
-            std::path::Component::CurDir => {}
-            std::path::Component::ParentDir => {
-                resolved.pop();
-            }
-            std::path::Component::Normal(name) => {
-                let candidate = resolved.join(name);
-                match fs::symlink_metadata(&candidate) {
-                    Ok(metadata) if metadata.file_type().is_symlink() => {
-                        *links += 1;
-                        if *links > 40 {
-                            return Err(SystemReadError::UnavailableDirectory);
-                        }
-                        let target = fs::read_link(candidate).map_err(directory_io_error)?;
-                        let target = if target.is_absolute() {
-                            target
-                        } else {
-                            resolved.join(target)
-                        };
-                        resolved = resolve_links(&target, links)?;
-                    }
-                    Ok(_) => resolved.push(name),
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                        resolved.push(name);
-                    }
-                    Err(error) => return Err(directory_io_error(error)),
-                }
-            }
-        }
-    }
-    Ok(resolved)
+    CanonicalPath::nonstrict(&expand_home(path)?).map_err(directory_io_error)
 }
 
 fn directory_io_error(error: std::io::Error) -> SystemReadError {

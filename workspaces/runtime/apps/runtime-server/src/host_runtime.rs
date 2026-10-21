@@ -35,6 +35,7 @@ use studio_runtime_services::{
     thread_prepare::{CatalogSnapshot, CatalogSource},
 };
 use studio_runtime_store::RuntimeStore;
+use studio_runtime_store::path_identity::CanonicalPath;
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
 
@@ -107,9 +108,9 @@ fn resolve_install_root_from_executable(
     #[cfg(debug_assertions)]
     {
         let source_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../..");
-        let source_root = source_root.canonicalize().map_err(|_| located())?;
+        let source_root = CanonicalPath::existing(&source_root).map_err(|_| located())?;
         if is_root(&source_root) {
-            return Ok(InstallRoot(source_root));
+            return Ok(InstallRoot(source_root.to_path_buf()));
         }
     }
     Err(located())
@@ -1201,7 +1202,10 @@ async fn refresh_vm_codex_token(
 /// Mirror Python `claude_access` (codex_linux_vm_auth.py:168-185): refresh
 /// inside the CLI's existing helper, then verify account identity and expiry
 /// before the access-only document reaches the durable guest-copy operation.
-#[allow(clippy::disallowed_methods, reason = "runs on blocking_pool through read_vm_claude_credentials")]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "runs on blocking_pool through read_vm_claude_credentials"
+)]
 fn read_vm_claude_credentials(
     accounts: &AccountDriver,
     request: ClaudeCredentialRequest<'_>,
@@ -1413,7 +1417,10 @@ fn read_vm_claude_oauth(
 #[cfg(target_os = "macos")]
 /// Read the same per-config Keychain service as
 /// `codex_linux_vm_credentials.py:13-19` and `codex_linux_vm_auth.py:96-120`.
-#[allow(clippy::disallowed_methods, reason = "runs on blocking_pool through read_vm_claude_credentials")]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "runs on blocking_pool through read_vm_claude_credentials"
+)]
 fn read_vm_claude_keychain(
     path: &Path,
     explicit_config_dir: bool,
@@ -1635,7 +1642,10 @@ fn find_vm_node() -> Option<PathBuf> {
 /// `codex_linux_vm_auth.py:122-156`. It emits one bounded readiness line; the
 /// caller releases its held query only after the on-disk access token is
 /// outside the native refresh window. Child output never includes secrets.
-#[allow(clippy::disallowed_methods, reason = "runs on blocking_pool through read_vm_claude_credentials")]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "runs on blocking_pool through read_vm_claude_credentials"
+)]
 fn run_vm_claude_refresh_helper(
     node: &Path,
     helper: &Path,
@@ -1813,7 +1823,10 @@ fn run_vm_claude_refresh_helper(
     }
 }
 
-#[allow(clippy::disallowed_methods, reason = "runs on blocking_pool through read_vm_claude_credentials")]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "runs on blocking_pool through read_vm_claude_credentials"
+)]
 fn stop_vm_claude_refresh_child(child: &mut dyn ChildWrapper) -> Result<(), WorkerError> {
     if child
         .inner_mut()
@@ -2005,12 +2018,12 @@ mod install_root_tests {
 
     #[test]
     fn bridge_and_server_source_match_install_layout_in_both_modes() {
-        let source_checkout = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../..")
-            .canonicalize()
-            .unwrap();
+        let source_checkout = studio_runtime_store::path_identity::CanonicalPath::existing(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../.."),
+        )
+        .unwrap();
         let python_source = source_checkout.join("workspaces/runtime/apps/server/src");
-        let source_layout = InstallRoot(source_checkout.clone());
+        let source_layout = InstallRoot(source_checkout.clone().to_path_buf());
         assert_eq!(source_layout.server_source(), python_source);
         assert_eq!(
             source_layout.claude_bridge_dir(),
@@ -2051,10 +2064,10 @@ mod install_root_tests {
         #[cfg(debug_assertions)]
         assert_eq!(
             resolved.unwrap().workspace_root(),
-            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("../../../..")
-                .canonicalize()
-                .unwrap()
+            studio_runtime_store::path_identity::CanonicalPath::existing(
+                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../..")
+            )
+            .unwrap()
         );
         #[cfg(not(debug_assertions))]
         assert!(matches!(

@@ -6,6 +6,7 @@ use snapshot::*;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 use studio_runtime_store::Transaction;
+use studio_runtime_store::path_identity::CanonicalPath;
 
 pub(crate) struct CommitGuard {
     native_params: Option<Value>,
@@ -987,7 +988,8 @@ async fn workspace_with_vm_action(
                                     ));
                                 }
                             }
-                            if std::fs::canonicalize(&path).ok().as_ref() != Some(&path)
+                            if CanonicalPath::existing(&path).ok().as_deref()
+                                != Some(path.as_path())
                                 || !path.is_dir()
                             {
                                 return Err(refusal(
@@ -1498,14 +1500,11 @@ fn ensure_image_workspace_temp(
     store: &RuntimeStore,
     agent_id: &str,
 ) -> Result<String, WorkerError> {
-    use std::fs;
-    let root = store
-        .root()
-        .canonicalize()
+    let root = CanonicalPath::existing(store.root())
         .map_err(|_| refusal("monitor-preparation/image-temp-root".into()))?;
     let temp_root = root.join("image-workspace-temp");
     ensure_private_directory(&temp_root)?;
-    if fs::canonicalize(&temp_root)
+    if CanonicalPath::existing(&temp_root)
         .ok()
         .and_then(|path| path.parent().map(PathBuf::from))
         .as_deref()
@@ -1516,9 +1515,9 @@ fn ensure_image_workspace_temp(
     let name = uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_URL, agent_id.as_bytes()).to_string();
     let temp = temp_root.join(name);
     ensure_private_directory(&temp)?;
-    let resolved_root = fs::canonicalize(&temp_root)
+    let resolved_root = CanonicalPath::existing(&temp_root)
         .map_err(|_| refusal("monitor-preparation/image-temp-root".into()))?;
-    let resolved = fs::canonicalize(&temp)
+    let resolved = CanonicalPath::existing(&temp)
         .map_err(|_| refusal("monitor-preparation/image-temp-directory".into()))?;
     if resolved.parent() != Some(resolved_root.as_path()) {
         return Err(refusal("monitor-preparation/image-temp-escape".into()));
@@ -1607,7 +1606,7 @@ async fn prepare_native_snapshot(
                 "runtime-services/account_worker_native_snapshot_cwd",
                 move || {
                     // Send the canonical form, as a workspace token does.
-                    match std::fs::canonicalize(&cwd) {
+                    match CanonicalPath::existing(&cwd) {
                         Ok(resolved) if resolved.is_dir() => Ok::<_, WorkerError>(resolved),
                         _ => Err(refusal("workspace-readiness/cwd-unavailable".into())),
                     }
@@ -1656,6 +1655,7 @@ async fn prepare_native_snapshot(
                 .as_ref()
                 .cloned()
                 .ok_or_else(|| refusal("workspace-readiness/cwd-required".into()))?
+                .to_path_buf()
         };
         let mut frozen = frozen;
         frozen["cwd"] = json!(cwd);

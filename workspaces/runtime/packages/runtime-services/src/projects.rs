@@ -7,6 +7,7 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
+use studio_runtime_store::path_identity::CanonicalPath;
 use studio_runtime_store::{
     ProjectsRepository, RuntimeStore, StoreError, SyncDocumentsRepository, sha256_hex,
 };
@@ -166,8 +167,7 @@ fn location_from_rows(
             .and_then(Value::as_str)
             .filter(|p| !p.is_empty())
         {
-            let cwd = expand_home(cwd)
-                .canonicalize()
+            let cwd = CanonicalPath::existing(expand_home(cwd))
                 .map_err(|_| ProjectsError::BadRequest("This directory is unavailable"))?;
             if !cwd.is_dir() {
                 return Err(ProjectsError::BadRequest("This directory is unavailable"));
@@ -189,7 +189,7 @@ fn location_from_rows(
             });
             children.truncate(50);
             if cwd.join(".git").exists() {
-                children.insert(0, cwd.clone());
+                children.insert(0, cwd.to_path_buf());
             }
             for path in children {
                 let text = path.to_string_lossy().into_owned();
@@ -233,8 +233,7 @@ fn location_from_rows(
     if path.chars().count() > 4096 {
         return Err(ProjectsError::BadRequest("a folder path is invalid"));
     }
-    let directory = std::path::Path::new(path)
-        .canonicalize()
+    let directory = CanonicalPath::existing(std::path::Path::new(path))
         .map_err(|_| ProjectsError::BadRequest("This directory is unavailable"))?;
     if !directory.is_dir() {
         return Err(ProjectsError::BadRequest("This directory is unavailable"));
@@ -314,8 +313,7 @@ pub fn peer_location_info(path: &str) -> Result<Value, ProjectsError> {
     if path.is_empty() || path.chars().count() > 4096 {
         return Err(ProjectsError::BadRequest("a folder path is invalid"));
     }
-    let directory = expand_home(path)
-        .canonicalize()
+    let directory = CanonicalPath::existing(expand_home(path))
         .map_err(|_| ProjectsError::BadRequest("This directory is unavailable"))?;
     if !directory.is_dir() {
         return Err(ProjectsError::BadRequest("This directory is unavailable"));
@@ -369,8 +367,7 @@ fn peer_matches_from_rows(
         }
     }
     if let Some(cwd) = cwd.filter(|path| !path.is_empty()) {
-        let directory = expand_home(cwd)
-            .canonicalize()
+        let directory = CanonicalPath::existing(expand_home(cwd))
             .map_err(|_| ProjectsError::BadRequest("This directory is unavailable"))?;
         if !directory.is_dir() {
             return Err(ProjectsError::BadRequest("This directory is unavailable"));
@@ -392,7 +389,7 @@ fn peer_matches_from_rows(
         });
         children.truncate(50);
         if directory.join(".git").exists() {
-            children.insert(0, directory.clone());
+            children.insert(0, directory.to_path_buf());
         }
         for path in children {
             let path_text = path.to_string_lossy().into_owned();
@@ -1083,63 +1080,14 @@ pub(crate) fn project_key(
             .map_err(|_| ProjectsError::Invalid("project path is invalid"))?
             .join(expanded)
     };
-    let canonical = resolve_nonstrict(&absolute)?;
+    let canonical = CanonicalPath::ancestor_nonstrict(&absolute)
+        .map_err(|_| ProjectsError::Invalid("project path is invalid"))?;
     if require_directory && !canonical.is_dir() {
         return Err(ProjectsError::Invalid(
             "select an existing project directory",
         ));
     }
     Ok(canonical.to_string_lossy().into_owned())
-}
-
-fn normalize_path(path: &Path) -> PathBuf {
-    let mut result = PathBuf::new();
-    for component in path.components() {
-        use std::path::Component;
-        match component {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                result.pop();
-            }
-            other => result.push(other.as_os_str()),
-        }
-    }
-    result
-}
-
-pub(crate) fn resolve_nonstrict(path: &Path) -> Result<PathBuf, ProjectsError> {
-    studio_runtime_store::debug_assert_outside_sql();
-    let mut ancestor = path.to_path_buf();
-    let mut suffix = Vec::new();
-    loop {
-        match ancestor.canonicalize() {
-            Ok(mut resolved) => {
-                for part in suffix.into_iter().rev() {
-                    resolved.push(part);
-                }
-                return Ok(normalize_path(&resolved));
-            }
-            Err(_) => {
-                if ancestor
-                    .components()
-                    .next_back()
-                    .is_some_and(|component| component == std::path::Component::ParentDir)
-                {
-                    suffix.push(std::ffi::OsString::from(".."));
-                    ancestor.pop();
-                    continue;
-                }
-                let part = ancestor
-                    .file_name()
-                    .ok_or(ProjectsError::Invalid("project path is invalid"))?
-                    .to_os_string();
-                suffix.push(part);
-                if !ancestor.pop() {
-                    return Err(ProjectsError::Invalid("project path is invalid"));
-                }
-            }
-        }
-    }
 }
 
 pub(crate) fn now_seconds() -> f64 {
@@ -1163,7 +1111,8 @@ mod compatibility_tests {
         let resolved_home = studio_runtime_store::path_identity::resolve(home.path())
             .expect("resolved temporary home");
         assert_eq!(
-            super::resolve_nonstrict(&requested).expect("normalized profile"),
+            studio_runtime_store::path_identity::CanonicalPath::ancestor_nonstrict(&requested)
+                .expect("normalized profile"),
             resolved_home.join("profile")
         );
     }

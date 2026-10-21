@@ -2912,7 +2912,9 @@ pub(crate) fn project_directory(value: &str) -> Result<String, OperationError> {
     } else {
         PathBuf::from(value)
     };
-    super::canonical_project_directory(&path).map_err(OperationError::Invalid)
+    studio_runtime_store::path_identity::CanonicalPath::existing_utf8_directory(&path)
+        .map_err(|_| OperationError::Invalid("Select an existing project directory"))
+        .map(|path| path.to_string_lossy().into_owned())
 }
 
 fn lead_signature(body: &Value, workspace_mode: &str, cwd: Option<&str>) -> String {

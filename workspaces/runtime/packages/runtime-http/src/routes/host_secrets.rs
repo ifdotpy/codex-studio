@@ -1091,11 +1091,19 @@ async fn refresh_mac_views(
         .get("program")
         .and_then(Value::as_str)
         .map(std::path::PathBuf::from);
-    let canonical_program = tokio::fs::canonicalize(&program)
-        .await
-        .unwrap_or(program.clone());
+    let canonical_program =
+        studio_runtime_store::path_identity::CanonicalPath::existing_async(program.clone())
+            .await
+            .map(studio_runtime_store::path_identity::CanonicalPath::into_path_buf)
+            .unwrap_or(program.clone());
     let program_matches = match current_program {
-        Some(path) => tokio::fs::canonicalize(&path).await.unwrap_or(path) == canonical_program,
+        Some(path) => {
+            studio_runtime_store::path_identity::CanonicalPath::existing_async(path.clone())
+                .await
+                .map(studio_runtime_store::path_identity::CanonicalPath::into_path_buf)
+                .unwrap_or(path)
+                == canonical_program
+        }
         None => false,
     };
     let current = service.get("installed").and_then(Value::as_bool) == Some(true)

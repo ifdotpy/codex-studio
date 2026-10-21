@@ -1,5 +1,6 @@
 //! Closure regressions exercise the worker, including fresh store ownership.
 use super::*;
+use studio_runtime_store::path_identity::CanonicalPath;
 
 const FLUSH_OPERATION_PROGRESS_GUARD: std::time::Duration = std::time::Duration::from_secs(10);
 
@@ -711,7 +712,12 @@ async fn a_rejected_thread_reply_names_the_failed_check() {
 async fn canonical_state() -> State {
     let base = test_root();
     std::fs::create_dir_all(&base).expect("test root");
-    State::new_at(base.canonicalize().expect("canonical test root")).await
+    State::new_at(
+        CanonicalPath::existing(&base)
+            .expect("canonical test root")
+            .into_path_buf(),
+    )
+    .await
 }
 
 /// Set the stored cwd of the fixture agent.

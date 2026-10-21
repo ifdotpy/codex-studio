@@ -3,8 +3,8 @@
 //! transaction; they must not perform filesystem or provider work there.
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
 use std::sync::Arc;
+use studio_runtime_store::path_identity::PathEvidence;
 
 use serde_json::{Value, json};
 use studio_runtime_store::{
@@ -37,7 +37,7 @@ pub trait MessageAdmission: Send + Sync {
 /// determined from this snapshot. Budget history needs the host's P09 port.
 #[derive(Clone, Default)]
 pub struct PreparedAdmission {
-    paths: BTreeMap<String, PathBuf>,
+    paths: BTreeMap<String, PathEvidence>,
 }
 
 impl PreparedAdmission {
@@ -61,12 +61,11 @@ pub struct AdmissionPaths(Vec<String>);
 
 impl AdmissionPaths {
     fn resolve(self) -> Result<PreparedAdmission, CoordinationError> {
-        studio_runtime_store::debug_assert_outside_sql();
         let mut paths = BTreeMap::new();
         for cwd in self.0 {
             paths
                 .entry(cwd.clone())
-                .or_insert_with(|| resolve_path(&cwd));
+                .or_insert_with(|| PathEvidence::component_fallback(std::path::Path::new(&cwd)));
         }
         Ok(PreparedAdmission { paths })
     }
@@ -312,36 +311,6 @@ fn cwd(agent: &AgentRecord) -> Result<&str, CoordinationError> {
             object: "runtime_agents",
             id: agent.id.0.clone(),
         })
-}
-
-fn resolve_path(path: &str) -> PathBuf {
-    studio_runtime_store::debug_assert_outside_sql();
-    use std::path::Component;
-
-    let path = PathBuf::from(path);
-    let absolute = if path.is_absolute() {
-        path
-    } else {
-        std::env::current_dir()
-            .unwrap_or_else(|_| PathBuf::from("."))
-            .join(path)
-    };
-    let mut resolved = PathBuf::new();
-    for component in absolute.components() {
-        match component {
-            Component::Prefix(prefix) => resolved.push(prefix.as_os_str()),
-            Component::RootDir => resolved.push(component.as_os_str()),
-            Component::CurDir => {}
-            Component::ParentDir => {
-                resolved.pop();
-            }
-            Component::Normal(name) => {
-                let candidate = resolved.join(name);
-                resolved = std::fs::canonicalize(&candidate).unwrap_or(candidate);
-            }
-        }
-    }
-    resolved
 }
 
 /// Runtime.send stores accepted attachment ID strings verbatim for exact

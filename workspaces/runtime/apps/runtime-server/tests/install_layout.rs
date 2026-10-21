@@ -11,6 +11,7 @@ use std::{
     process::{Command as StdCommand, Stdio},
     time::Duration,
 };
+use studio_runtime_store::path_identity::CanonicalPath;
 use tempfile::tempdir;
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
@@ -228,7 +229,7 @@ async fn installed_binary_uses_python_from_prefix_without_a_source_tree() {
     // Exercise the source-checkout fallback too: Python's layout module points
     // at the providers bridge in a checkout, while installed packages use the
     // scripts/claude_bridge copy above.
-    let source = source.canonicalize().unwrap();
+    let source = CanonicalPath::existing(&source).unwrap();
     let source_workspace = source
         .ancestors()
         .nth(5)

@@ -4,6 +4,7 @@ use std::fs::{File, FileTimes, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use studio_runtime_store::path_identity::CanonicalPath;
 
 use crate::bounded_child::{self, ChildError};
 use crate::event_write::truthy;
@@ -674,8 +675,7 @@ pub fn ensure_workspace_idle(
     reservation_id: Option<&str>,
 ) -> Result<(), CheckpointsError> {
     let cwd = agent_string(snapshot, "cwd")?;
-    let target = Path::new(cwd)
-        .canonicalize()
+    let target = CanonicalPath::existing(Path::new(cwd))
         .map_err(|_| CheckpointsError::WorkspaceUnavailable)?;
     let agents = snapshot
         .agents
@@ -748,10 +748,7 @@ pub fn ensure_workspace_idle(
                     object: "monitors",
                     id: monitor.id.clone(),
                 })?;
-            if Path::new(path)
-                .canonicalize()
-                .is_ok_and(|path| path == target)
-            {
+            if CanonicalPath::existing(Path::new(path)).is_ok_and(|path| path == target) {
                 return Err(CheckpointsError::MonitorBusy);
             }
         }
@@ -808,16 +805,15 @@ fn validate_internal_record(
     Ok(())
 }
 
-fn canonical_cwd(record: &serde_json::Map<String, Value>) -> Result<PathBuf, CheckpointsError> {
-    studio_runtime_store::debug_assert_outside_sql();
+fn canonical_cwd(
+    record: &serde_json::Map<String, Value>,
+) -> Result<CanonicalPath, CheckpointsError> {
     let path = record
         .get("cwd")
         .and_then(Value::as_str)
         .filter(|path| !path.is_empty())
         .ok_or(CheckpointsError::WorkspaceUnavailable)?;
-    Path::new(path)
-        .canonicalize()
-        .map_err(|_| CheckpointsError::WorkspaceUnavailable)
+    CanonicalPath::existing(Path::new(path)).map_err(|_| CheckpointsError::WorkspaceUnavailable)
 }
 
 pub fn snapshot_tree(store: &RuntimeStore, cwd: &str) -> Result<String, CheckpointsError> {

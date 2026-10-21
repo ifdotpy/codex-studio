@@ -302,7 +302,7 @@ fn peer_pair_allowed(
     let Some(path) = left
         .get("cwd")
         .and_then(Value::as_str)
-        .and_then(crate::sync_policy::normalized_project_path)
+        .and_then(studio_runtime_store::path_identity::lexical_text)
     else {
         return Ok(false);
     };
@@ -318,12 +318,13 @@ fn peer_pair_allowed(
         || right
             .get("cwd")
             .and_then(Value::as_str)
-            .and_then(crate::sync_policy::normalized_project_path)
+            .and_then(studio_runtime_store::path_identity::lexical_text)
             .as_deref()
-            != Some(path.as_str())
+            != Some(path.as_path())
     {
         return Ok(false);
     }
+    let path = path.to_string_lossy();
     let Some(project) =
         NotificationDispatchRepository::related_record(transaction, "runtime_projects", &path)?
     else {

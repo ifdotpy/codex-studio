@@ -345,20 +345,13 @@ pub fn settle_failed(
 
 /// `<repo>/<subpath>`; `None` when the subpath leaves the repository.
 #[must_use]
-pub fn turn_cwd(repo: &Path, subpath: Option<&str>) -> Option<PathBuf> {
-    use std::path::Component;
-    let subpath = Path::new(subpath.unwrap_or("."));
-    if subpath
-        .components()
-        .any(|part| !matches!(part, Component::Normal(_) | Component::CurDir))
-    {
-        return None;
-    }
-    Some(
-        subpath
-            .components()
-            .filter(|part| matches!(part, Component::Normal(_)))
-            .fold(repo.to_path_buf(), |path, part| path.join(part)),
+pub fn turn_cwd(
+    repo: &Path,
+    subpath: Option<&str>,
+) -> Option<studio_runtime_store::path_identity::LexicalPath> {
+    studio_runtime_store::path_identity::LexicalPath::within(
+        repo,
+        Path::new(subpath.unwrap_or(".")),
     )
 }
 

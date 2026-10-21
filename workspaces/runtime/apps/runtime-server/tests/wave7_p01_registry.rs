@@ -30,6 +30,7 @@ use studio_runtime_services::{
     model_catalog::ModelCatalogService,
     provider_session_task::SessionTaskConfig,
 };
+use studio_runtime_store::path_identity::CanonicalPath;
 use studio_runtime_store::{RuntimeStore, StoreError};
 use tokio::sync::{Notify, OnceCell, mpsc, watch};
 
@@ -2903,10 +2904,11 @@ async fn rust_direct_claude_launch_runs_the_scripted_bridge_turn() {
         let exporter = "import pathlib,runpy,sys; sys.path.insert(0,str(pathlib.Path(sys.argv[1]).parent)); ns=runpy.run_path(sys.argv[1]); sdk=ns['SDK'].replace(\"text==='split-stream'\",\"text.startsWith('split-stream')\").replace(\"text==='wait'\",\"text.startsWith('wait')\"); open(sys.argv[2],'w').write(sdk)";
         let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../server/src");
         let python = prepared_python::prepared_python(&source);
-        let bridge_node_modules = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../providers/apps/claude-bridge/node_modules")
-            .canonicalize()
-            .unwrap();
+        let bridge_node_modules = CanonicalPath::existing(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../providers/apps/claude-bridge/node_modules"),
+        )
+        .unwrap();
         std::os::unix::fs::symlink(bridge_node_modules, temp.path().join("node_modules")).unwrap();
         let output = std::process::Command::new(&python)
             .args(["-c", exporter, "../server/tests/claude-bridge-contract.py"])

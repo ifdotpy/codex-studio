@@ -16,6 +16,7 @@ use std::sync::Condvar;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use studio_runtime_store::path_identity::CanonicalPath;
 
 pub const PLATFORM_REFUSAL: &str =
     "Image workspaces require macOS ASIF. Use a Git worktree on this server";
@@ -1150,13 +1151,13 @@ fn safe_id(value: &str) -> Result<&str, ImageWorkspaceError> {
     Ok(value)
 }
 fn root_path(path: &Path) -> Result<PathBuf, ImageWorkspaceError> {
-    let root = path.canonicalize()?;
+    let root = CanonicalPath::existing(path)?;
     if !root.is_dir() {
         return Err(ImageWorkspaceError::Backend(
             "Repository folder does not exist".into(),
         ));
     }
-    Ok(root)
+    Ok(root.to_path_buf())
 }
 fn repo_key(root: &Path) -> String {
     data_encoding::HEXLOWER.encode(&Sha256::digest(
@@ -1289,7 +1290,8 @@ fn git_capture(root: &Path) -> Result<Vec<Value>, ImageWorkspaceError> {
         let git = directory.join(".git");
         if (git.is_dir() || git.is_file())
             && let Ok(top) = git_output(&directory, &["rev-parse", "--show-toplevel"])
-            && PathBuf::from(top.trim()).canonicalize().ok() == directory.canonicalize().ok()
+            && CanonicalPath::existing(PathBuf::from(top.trim())).ok()
+                == CanonicalPath::existing(&directory).ok()
         {
             let head = git_output(&directory, &["rev-parse", "HEAD"]).ok();
             let dirty = git_output_bytes(
@@ -1398,7 +1400,7 @@ fn repair_git_indexes(
             } else {
                 source_repo.join(source_git_dir)
             };
-            let source_git_dir = source_git_dir.canonicalize()?;
+            let source_git_dir = CanonicalPath::existing(&source_git_dir)?;
             let git_relative = source_git_dir
                 .strip_prefix(source_root)
                 .map_err(|_| ImageWorkspaceError::InvalidState)?;
@@ -1418,7 +1420,7 @@ fn repair_git_indexes(
         } else {
             source_repo.join(source_index)
         };
-        let source_index = source_index.canonicalize()?;
+        let source_index = CanonicalPath::existing(&source_index)?;
         let index_relative = source_index
             .strip_prefix(source_root)
             .map_err(|_| ImageWorkspaceError::InvalidState)?;
@@ -1456,16 +1458,16 @@ fn git_metadata_fingerprint(repo: &Path) -> Result<String, ImageWorkspaceError> 
         repo,
         &["for-each-ref", "--format=%(refname)%00%(objectname)"],
     )?;
-    let git_dir = PathBuf::from(git_output(repo, &["rev-parse", "--absolute-git-dir"])?.trim())
-        .canonicalize()?;
+    let git_dir = CanonicalPath::existing(PathBuf::from(
+        git_output(repo, &["rev-parse", "--absolute-git-dir"])?.trim(),
+    ))?;
     let common_text = git_output(repo, &["rev-parse", "--git-common-dir"])?;
     let common = PathBuf::from(common_text.trim());
-    let common = if common.is_absolute() {
+    let common = CanonicalPath::existing(&if common.is_absolute() {
         common
     } else {
         repo.join(common)
-    }
-    .canonicalize()?;
+    })?;
     let mut state = Vec::new();
     for path in BTreeSet::from([git_dir, common]) {
         metadata_tree_fingerprint(&path, &mut state)?;
@@ -1957,7 +1959,7 @@ mod tests {
             error,
             ImageWorkspaceError::FreeSpace { free: 0, .. }
         ));
-        let key = repo_key(&fixture.path().canonicalize().expect("canonical project"));
+        let key = repo_key(&CanonicalPath::existing(fixture.path()).expect("canonical project"));
         assert!(
             !manager.base_state(&key).exists(),
             "no pending build may be published"
@@ -2073,7 +2075,7 @@ mod tests {
                 ..FakeBackend::default()
             },
         );
-        let key = repo_key(&project.canonicalize().expect("canonical project"));
+        let key = repo_key(&CanonicalPath::existing(&project).expect("canonical project"));
         write_json(
             &manager.base_state(&key),
             &json!({"schema":STATE_SCHEMA,"state":"building","repoRoot":project,
