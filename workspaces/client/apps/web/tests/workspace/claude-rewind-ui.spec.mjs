@@ -15,7 +15,7 @@ test("Claude checkpoints show the reason and send one combined restore identity"
     configFile: false,
     root,
     cacheDir,
-    server: { host: "127.0.0.1", port: 0 },
+    server: { host: "127.0.0.1", port: 0, watch: null, hmr: false },
     plugins: [
       {
         name: "rewind-fixture",
