@@ -182,15 +182,23 @@ export async function rollbackSession(session, request, deps) {
 
 // The Runtime workspace operation owns submission identity and unknown outcomes.
 export async function forkAtTurn(source, params, deps) {
-  if (source.turns.some((turn) => turn.status === "inProgress"))
-    throw new Error("Pause Claude before branching");
+  // Native reads can wait while the source receives more output. Keep the
+  // branch descriptor and its boundary independent of those later changes.
+  source = structuredClone(source);
   const selected =
     params.lastTurnId == null
       ? source.turns.length - 1
       : source.turns.findIndex((turn) => turn.id === params.lastTurnId);
   if (params.lastTurnId != null && selected < 0)
     throw new Error("The selected Claude turn does not exist");
-  const retained = structuredClone(source.turns.slice(0, selected + 1));
+  const retained = source.turns.slice(0, selected + 1);
+  if (
+    retained.some((turn) =>
+      ["inProgress", "uncertain"].includes(turn.status),
+    ) ||
+    (selected >= 0 && source.turns[selected].status !== "completed")
+  )
+    throw new Error("Select a completed Claude turn before branching");
   let targetNativeId;
   if (!source.started && !source.turns.length) {
     targetNativeId = (deps.randomUUID || randomUUID)();
