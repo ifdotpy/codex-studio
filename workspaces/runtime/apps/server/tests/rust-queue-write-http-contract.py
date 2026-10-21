@@ -23,6 +23,7 @@ from pathlib import Path
 isolate_supervisor_environment()
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from runtime_test_environment import make_runtime
+from codex_delivery import DeliveryMoment
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / "src"))
@@ -57,7 +58,7 @@ def seed_queue(backend: object) -> tuple[str, list[str]]:
         queue_ids = [f"queue-{uuid.uuid4().hex[:8]}-{index}" for index in range(3)]
         with runtime.db() as database:
             for index in range(3):
-                runtime.enqueue(database, agent, "user", f"Message {index}", queue_ids[index])
+                runtime.enqueue(database, agent, "user", f"Message {index}", queue_ids[index], delivery=DeliveryMoment.NEXT_TURN)
             metadata = json.loads(database.execute(
                 "SELECT record FROM runtime_event_meta WHERE id=?", (queue_ids[0],)
             ).fetchone()[0])
@@ -575,20 +576,25 @@ class QueueWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
 
         current = after_first
         send_now_id = current["items"][-1]["id"]
+        requested_delivery = current["items"][-1]["requestedDelivery"]
+        self.assertEqual(requested_delivery, DeliveryMoment.NEXT_TURN)
         send_now_body = {
             "agent": self.agent_id, "action": "send_now", "request_id": "send-now-1",
             "expected_revision": current["revision"], "message_id": send_now_id,
         }
         send_now = self.request(send_now_body)
         self.assertEqual(send_now.status, 200, send_now.body[:1000])
+        before_replay = no_write_snapshot(self.backend.state)
         replay = self.request(send_now_body)
         self.assertEqual(replay.status, 200, replay.body[:1000])
+        self.assertEqual(no_write_snapshot(self.backend.state), before_replay)
         self.assertEqual(replay.json()["status"], send_now.json()["status"])
         self.assertEqual(replay.json()["revision"], send_now.json()["revision"])
         self.assertEqual(replay.json()["capabilities"], send_now.json()["capabilities"])
         queued = self.get_queue().json()["items"]
         self.assertEqual(queued[0]["id"], send_now_id)
-        self.assertEqual(queued[0]["delivery"], "steer")
+        self.assertEqual(queued[0]["delivery"], DeliveryMoment.CURRENT_TURN)
+        self.assertEqual(queued[0]["requestedDelivery"], requested_delivery)
 
 
 if __name__ == "__main__":

@@ -566,7 +566,7 @@ class SchemaContractTests(unittest.TestCase):
             {(item["pointer"], item["constraint"]) for item in loosenings},
             self._reviewed_schema_additions(),
             "only reviewed diagnostics, execution-effect statuses, and the "
-            "MultiServerResource, disk space, image cleanup retry and process-control additions may loosen the schema",
+            "MultiServerResource, disk space, image cleanup retry, process-control and delivery enum changes may loosen the schema",
         )
 
 
@@ -583,6 +583,24 @@ class SchemaContractTests(unittest.TestCase):
 
         def add(pointer: str, *constraints: str) -> None:
             allowed.update((pointer, constraint) for constraint in constraints)
+
+        # Delivery inputs retain all historical aliases while adding the two
+        # Rust-owned moments. Queue/transcript responses emit only canonical
+        # moments; the manifest records the exact old and new sets at each use.
+        for pointer in (
+            "/components/schemas/ManagedMessageBody/properties/delivery",
+            "/paths/~1api~1messages/post/requestBody/content/application~1json/schema/properties/delivery",
+            "/components/schemas/QueueItem/properties/delivery",
+            "/components/schemas/QueueItem/properties/requestedDelivery",
+            "/components/schemas/QueueView/properties/items/items/properties/delivery",
+            "/components/schemas/QueueView/properties/items/items/properties/requestedDelivery",
+            "/components/schemas/SearchItemResponse/properties/requestedDelivery",
+            "/components/schemas/TranscriptInput/properties/requestedDelivery",
+            "/components/schemas/TranscriptItemResponse/properties/requestedDelivery",
+            "/components/schemas/TranscriptMessageRecord/properties/requestedDelivery",
+            "/components/schemas/TranscriptPageResponse/properties/items/items/properties/requestedDelivery",
+        ):
+            add(pointer, "enum")
 
         blocking_fields = ("closureP95Ms", "closureP99Ms", "queueWaitP95Ms", "queueWaitP99Ms")
         for prefix in (

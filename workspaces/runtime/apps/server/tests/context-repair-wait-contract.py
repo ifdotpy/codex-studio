@@ -23,6 +23,7 @@ spec = importlib.util.spec_from_file_location('actions', Path(__file__).with_nam
 f = importlib.util.module_from_spec(spec); spec.loader.exec_module(f)
 repair, eventually = f.f.repair, f.f.f.eventually
 from codex_account_transfer import transfer_store
+from codex_delivery import DeliveryMoment
 from entity_test_support import context_repair_wait
 
 
@@ -1027,28 +1028,85 @@ class ContextWait(f.NativeActionRepair):
         self.assertNotIn('Preserve unknown receipt',json.dumps(starts))
         self.assertEqual(a['startAttempt']['events'],['new-after-offline'])
 
-    def test_current_or_identified_uncertain_input_still_blocks(self):
+    def assert_uncertain_input_still_blocks(self, mutation):
         rows = self.legacy_uncertain()
         a = self.agent_update(self.a,startAttempt={'id':'safe-attempt','submitted':False,'events':[]})
-        for mutation in ('metadata','current','other-error','known-turn','reserved','dispatching'):
-            with self.subTest(mutation=mutation):
-                with self.runtime.db() as db:
-                    db.execute('DELETE FROM runtime_event_meta WHERE id=?',(rows[0][0],))
-                    db.execute("UPDATE runtime_events SET error=?,turn_id=NULL,status='uncertain' WHERE id=?",('Codex app-server is offline',rows[0][0]))
-                    if mutation=='metadata':
-                        db.execute('INSERT INTO runtime_event_meta VALUES (?,?)',(rows[0][0],json.dumps({'native':{
-                            'connectionId':self.runtime.connection_ids['default'],'threadId':self.tid}})))
-                    elif mutation=='other-error':
-                        db.execute('UPDATE runtime_events SET error=? WHERE id=?',('Native response timed out; outcome unknown',rows[0][0]))
-                    elif mutation=='known-turn':
-                        db.execute('UPDATE runtime_events SET turn_id=? WHERE id=?',('turn',rows[0][0]))
-                    elif mutation in {'reserved','dispatching'}:
-                        db.execute('UPDATE runtime_events SET status=? WHERE id=?',(mutation,rows[0][0]))
-                a=self.agent_update(a,startAttempt={'id':'safe-attempt','submitted':False,
-                    'events':[rows[0][0]] if mutation=='current' else []})
-                with self.assertRaisesRegex(ValueError,'confirmed input receipt'):
-                    repair.repair_idle(self.runtime,a['id'])
-                self.assertEqual(self.forks(),[])
+        delivery_metadata = {'metadata': None, 'null-delivery': None, 'unknown-delivery': 'unknown',
+                             'number-delivery': 1, 'object-delivery': {}, 'next-delivery': DeliveryMoment.NEXT_TURN,
+                             'legacy-queue': 'queue', 'legacy-after-tool': 'after_tool'}
+        with self.runtime.db() as db:
+            if mutation in delivery_metadata:
+                metadata = {'native':{'connectionId':self.runtime.connection_ids['default'],'threadId':self.tid}}
+                if mutation != 'metadata':
+                    metadata['delivery'] = delivery_metadata[mutation]
+                db.execute('INSERT INTO runtime_event_meta VALUES (?,?)',(rows[0][0],json.dumps(metadata)))
+            elif mutation=='other-error':
+                db.execute('UPDATE runtime_events SET error=? WHERE id=?',('Native response timed out; outcome unknown',rows[0][0]))
+            elif mutation=='known-turn':
+                db.execute('UPDATE runtime_events SET turn_id=? WHERE id=?',('turn',rows[0][0]))
+            elif mutation in {'reserved','dispatching'}:
+                db.execute('UPDATE runtime_events SET status=? WHERE id=?',(mutation,rows[0][0]))
+        a=self.agent_update(a,startAttempt={'id':'safe-attempt','submitted':False,
+            'events':[rows[0][0]] if mutation=='current' else []})
+        with self.assertRaisesRegex(ValueError,'confirmed input receipt'):
+            repair.repair_idle(self.runtime,a['id'])
+        self.assertEqual(self.forks(),[])
+        with self.runtime.db() as db:
+            status = db.execute('SELECT status FROM runtime_events WHERE id=?',(rows[0][0],)).fetchone()[0]
+            self.assertEqual(status, mutation if mutation in {'reserved','dispatching'} else 'uncertain')
+
+    def test_current_or_identified_uncertain_input_still_blocks(self):
+        self.assert_uncertain_input_still_blocks('metadata')
+
+    def test_null_delivery_cannot_prove_offline_input_was_not_submitted(self):
+        self.assert_uncertain_input_still_blocks('null-delivery')
+
+    def test_unknown_delivery_cannot_prove_offline_input_was_not_submitted(self):
+        self.assert_uncertain_input_still_blocks('unknown-delivery')
+
+    def test_numeric_delivery_cannot_prove_offline_input_was_not_submitted(self):
+        self.assert_uncertain_input_still_blocks('number-delivery')
+
+    def test_object_delivery_cannot_prove_offline_input_was_not_submitted(self):
+        self.assert_uncertain_input_still_blocks('object-delivery')
+
+    def test_next_delivery_cannot_prove_offline_input_was_not_submitted(self):
+        self.assert_uncertain_input_still_blocks('next-delivery')
+
+    def test_legacy_queue_cannot_prove_offline_input_was_not_submitted(self):
+        self.assert_uncertain_input_still_blocks('legacy-queue')
+
+    def test_legacy_after_tool_cannot_prove_offline_input_was_not_submitted(self):
+        self.assert_uncertain_input_still_blocks('legacy-after-tool')
+
+    def test_current_attempt_uncertain_input_still_blocks(self):
+        self.assert_uncertain_input_still_blocks('current')
+
+    def test_unknown_submission_error_still_blocks(self):
+        self.assert_uncertain_input_still_blocks('other-error')
+
+    def test_known_native_turn_uncertain_input_still_blocks(self):
+        self.assert_uncertain_input_still_blocks('known-turn')
+
+    def test_reserved_input_still_blocks(self):
+        self.assert_uncertain_input_still_blocks('reserved')
+
+    def test_dispatching_input_still_blocks(self):
+        self.assert_uncertain_input_still_blocks('dispatching')
+
+    def test_explicit_offline_steer_timing_retains_not_submitted_proof(self):
+        rows = self.legacy_uncertain()
+        for delivery in (DeliveryMoment.CURRENT_TURN, 'steer'):
+            with self.subTest(delivery=delivery), self.runtime.db() as db:
+                metadata = {'delivery':delivery,'native':{'connectionId':self.runtime.connection_ids['default'],
+                            'threadId':self.tid}}
+                db.execute("UPDATE runtime_events SET status='uncertain' WHERE id=?",(rows[0][0],))
+                db.execute('INSERT OR REPLACE INTO runtime_event_meta VALUES (?,?)',(rows[0][0],json.dumps(metadata)))
+                row = db.execute('SELECT e.*,m.record AS metadata FROM runtime_events e JOIN runtime_event_meta m ON m.id=e.id WHERE e.id=?',(rows[0][0],)).fetchone()
+                self.assertTrue(repair._settle_offline_steer(db,row))
+                self.assertEqual(db.execute('SELECT status FROM runtime_events WHERE id=?',(rows[0][0],)).fetchone()[0],'failed')
+                saved = json.loads(db.execute('SELECT record FROM runtime_event_meta WHERE id=?',(rows[0][0],)).fetchone()[0])
+                self.assertTrue(saved['notSubmitted'])
 
     def test_historical_receipts_need_later_saved_and_observed_terminal_without_events(self):
         rows = self.legacy_uncertain()

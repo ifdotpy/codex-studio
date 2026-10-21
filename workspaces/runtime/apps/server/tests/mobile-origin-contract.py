@@ -13,23 +13,27 @@ from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
 import json
+import os
 from pathlib import Path
 import sys
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 import urllib.error
 import urllib.request
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 from codex_canvas import Canvas, make_server
-from codex_remote import validate_origin
+from codex_remote import PUBLIC_ORIGIN_ENVIRONMENT, validate_origin
 from studio_api.testing import read_session_token
 
 
 class MobileOriginContract(unittest.TestCase):
     def setUp(self):
+        # Exercise the fixture's state file independently of the operator override.
+        self.enterContext(patch.dict(os.environ, {PUBLIC_ORIGIN_ENVIRONMENT: ""}))
         self.temp = tempfile.TemporaryDirectory(prefix="studio-mobile-origin-")
         self.canvas = Canvas(Path(self.temp.name))
         self.server = make_server(self.canvas)

@@ -23,6 +23,7 @@ from unittest.mock import patch
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 from codex_runtime import Runtime
+from codex_delivery import DeliveryMoment
 from codex_rules import RulesMixin
 
 spec = importlib.util.spec_from_file_location('rule_due_fixture',
@@ -88,6 +89,8 @@ class DueWorkContract(unittest.TestCase):
         self.assertEqual(self.rt.load('rules', 'stall')['stallWakeGeneration'], 1)
         with self.rt.read_db() as db:
             self.assertEqual([row[0] for row in db.execute('SELECT id FROM runtime_events')], ['rule-stall:stall:1'])
+            self.assertEqual(json.loads(db.execute('SELECT record FROM runtime_event_meta WHERE id=?',
+                             ('rule-stall:stall:1',)).fetchone()[0])['delivery'], DeliveryMoment.CURRENT_TURN)
 
     def monitor(self, key, **fields):
         m = dict(id=key, agent='owner', epoch=1, status='running', created=time.time(),
@@ -117,6 +120,8 @@ class DueWorkContract(unittest.TestCase):
         self.assertEqual(decoded, ['due'])
         with self.rt.read_db() as db:
             self.assertEqual([row[0] for row in db.execute('SELECT id FROM runtime_events')], ['monitor-stall:due:0'])
+            self.assertEqual(json.loads(db.execute('SELECT record FROM runtime_event_meta WHERE id=?',
+                             ('monitor-stall:due:0',)).fetchone()[0])['delivery'], DeliveryMoment.CURRENT_TURN)
         with self.rt.db() as db:
             m = self.rt.load('monitors', 'probe')
             m['stallProbeStarted'] = now - 100

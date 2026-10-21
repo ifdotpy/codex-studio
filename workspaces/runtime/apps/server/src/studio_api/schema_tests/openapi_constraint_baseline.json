@@ -869,6 +869,12 @@
       "candidate": "accepted property"
     },
     {
+      "pointer": "/components/schemas/ManagedMessageBody/properties/delivery",
+      "constraint": "enum",
+      "baseline": "['after_tool', 'after_turn', 'queue', 'steer']",
+      "candidate": "['after_tool', 'after_turn', 'current_turn', 'next_turn', 'queue', 'steer']"
+    },
+    {
       "pointer": "/components/schemas/ManagedProcessRecord/properties/_syncEntities",
       "constraint": "@nullable",
       "baseline": "None",
@@ -1511,6 +1517,30 @@
       "candidate": "['{}']"
     },
     {
+      "pointer": "/components/schemas/QueueItem/properties/delivery",
+      "constraint": "enum",
+      "baseline": "['after_tool', 'after_turn', 'queue', 'steer']",
+      "candidate": "['current_turn', 'next_turn']"
+    },
+    {
+      "pointer": "/components/schemas/QueueItem/properties/requestedDelivery",
+      "constraint": "enum",
+      "baseline": "['after_tool', 'after_turn', 'queue', 'steer']",
+      "candidate": "['current_turn', 'next_turn']"
+    },
+    {
+      "pointer": "/components/schemas/QueueView/properties/items/items/properties/delivery",
+      "constraint": "enum",
+      "baseline": "['after_tool', 'after_turn', 'queue', 'steer']",
+      "candidate": "['current_turn', 'next_turn']"
+    },
+    {
+      "pointer": "/components/schemas/QueueView/properties/items/items/properties/requestedDelivery",
+      "constraint": "enum",
+      "baseline": "['after_tool', 'after_turn', 'queue', 'steer']",
+      "candidate": "['current_turn', 'next_turn']"
+    },
+    {
       "pointer": "/components/schemas/ResourceChangeEvent/properties/resources/items",
       "constraint": "@oneOf",
       "baseline": "['{\"additionalProperties\":false,\"description\":\"Legacy collection-wide transcript subscription retained for clients.\",\"properties\":{\"kind\":{\"const\":\"transcripts\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\"],\"title\":\"TranscriptsResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"accountKey\":{\"minLength\":1,\"title\":\"Accountkey\",\"type\":\"string\"},\"kind\":{\"const\":\"limits\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\",\"accountKey\"],\"title\":\"LimitsResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"agentId\":{\"minLength\":1,\"title\":\"Agentid\",\"type\":\"string\"},\"kind\":{\"const\":\"panel\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\",\"agentId\"],\"title\":\"PanelResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"agentId\":{\"minLength\":1,\"title\":\"Agentid\",\"type\":\"string\"},\"kind\":{\"const\":\"queue\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\",\"agentId\"],\"title\":\"QueueResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"agentId\":{\"minLength\":1,\"title\":\"Agentid\",\"type\":\"string\"},\"kind\":{\"const\":\"receipts\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\",\"agentId\"],\"title\":\"ReceiptsResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"agentId\":{\"minLength\":1,\"title\":\"Agentid\",\"type\":\"string\"},\"kind\":{\"const\":\"session-cost\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\",\"agentId\"],\"title\":\"SessionCostResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"agentId\":{\"minLength\":1,\"title\":\"Agentid\",\"type\":\"string\"},\"kind\":{\"const\":\"tasks\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\",\"agentId\"],\"title\":\"TasksResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"agentId\":{\"minLength\":1,\"title\":\"Agentid\",\"type\":\"string\"},\"kind\":{\"const\":\"transcript\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\",\"agentId\"],\"title\":\"TranscriptResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"agentId\":{\"minLength\":1,\"title\":\"Agentid\",\"type\":\"string\"},\"kind\":{\"const\":\"voice\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\",\"agentId\"],\"title\":\"VoiceResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"agentId\":{\"minLength\":1,\"title\":\"Agentid\",\"type\":\"string\"},\"kind\":{\"const\":\"workspace\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\",\"agentId\"],\"title\":\"WorkspaceResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"kind\":{\"const\":\"accounts\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\"],\"title\":\"AccountsResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"kind\":{\"const\":\"costs\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\"],\"title\":\"CostsResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"kind\":{\"const\":\"desktop\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\"],\"title\":\"DesktopResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"kind\":{\"const\":\"drafts\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\"],\"title\":\"DraftsResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"kind\":{\"const\":\"models\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\"],\"title\":\"ModelsResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"kind\":{\"const\":\"room\",\"title\":\"Kind\",\"type\":\"string\"},\"roomId\":{\"minLength\":1,\"title\":\"Roomid\",\"type\":\"string\"}},\"required\":[\"kind\",\"roomId\"],\"title\":\"RoomResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"kind\":{\"const\":\"state\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\"],\"title\":\"StateResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"kind\":{\"const\":\"task\",\"title\":\"Kind\",\"type\":\"string\"},\"taskId\":{\"minLength\":1,\"title\":\"Taskid\",\"type\":\"string\"}},\"required\":[\"kind\",\"taskId\"],\"title\":\"TaskResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"kind\":{\"const\":\"terminal\",\"title\":\"Kind\",\"type\":\"string\"},\"terminalId\":{\"minLength\":1,\"title\":\"Terminalid\",\"type\":\"string\"}},\"required\":[\"kind\",\"terminalId\"],\"title\":\"TerminalResource\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"kind\":{\"const\":\"terminals\",\"title\":\"Kind\",\"type\":\"string\"}},\"required\":[\"kind\"],\"title\":\"TerminalsResource\",\"type\":\"object\"}']",
@@ -1551,6 +1581,12 @@
       "constraint": "property",
       "baseline": "absent from closed object",
       "candidate": "accepted property"
+    },
+    {
+      "pointer": "/components/schemas/SearchItemResponse/properties/requestedDelivery",
+      "constraint": "enum",
+      "baseline": "['after_tool', 'after_turn', 'queue', 'steer']",
+      "candidate": "['current_turn', 'next_turn']"
     },
     {
       "pointer": "/components/schemas/SearchItemResponse/properties/turnError",
@@ -1985,16 +2021,40 @@
       "candidate": "['{}']"
     },
     {
+      "pointer": "/components/schemas/TranscriptInput/properties/requestedDelivery",
+      "constraint": "enum",
+      "baseline": "['after_tool', 'after_turn', 'queue', 'steer']",
+      "candidate": "['current_turn', 'next_turn']"
+    },
+    {
+      "pointer": "/components/schemas/TranscriptItemResponse/properties/requestedDelivery",
+      "constraint": "enum",
+      "baseline": "['after_tool', 'after_turn', 'queue', 'steer']",
+      "candidate": "['current_turn', 'next_turn']"
+    },
+    {
       "pointer": "/components/schemas/TranscriptItemResponse/properties/turnError",
       "constraint": "type",
       "baseline": "'string'",
       "candidate": "None"
     },
     {
+      "pointer": "/components/schemas/TranscriptMessageRecord/properties/requestedDelivery",
+      "constraint": "enum",
+      "baseline": "['after_tool', 'after_turn', 'queue', 'steer']",
+      "candidate": "['current_turn', 'next_turn']"
+    },
+    {
       "pointer": "/components/schemas/TranscriptMessageRecord/properties/turnError",
       "constraint": "type",
       "baseline": "'string'",
       "candidate": "None"
+    },
+    {
+      "pointer": "/components/schemas/TranscriptPageResponse/properties/items/items/properties/requestedDelivery",
+      "constraint": "enum",
+      "baseline": "['after_tool', 'after_turn', 'queue', 'steer']",
+      "candidate": "['current_turn', 'next_turn']"
     },
     {
       "pointer": "/components/schemas/TranscriptPageResponse/properties/items/items/properties/turnError",
@@ -2109,6 +2169,12 @@
       "constraint": "@nullableBranch",
       "baseline": "None",
       "candidate": "['{}']"
+    },
+    {
+      "pointer": "/paths/~1api~1messages/post/requestBody/content/application~1json/schema/properties/delivery",
+      "constraint": "enum",
+      "baseline": "['after_tool', 'after_turn', 'queue', 'steer']",
+      "candidate": "['after_tool', 'after_turn', 'current_turn', 'next_turn', 'queue', 'steer']"
     },
     {
       "pointer": "/paths/~1api~1multi-server/post/requestBody/content/application~1json/schema",

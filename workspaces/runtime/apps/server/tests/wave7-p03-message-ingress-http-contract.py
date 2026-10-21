@@ -23,6 +23,7 @@ _spec = importlib.util.spec_from_file_location("p03_message_fixture", Path(__fil
 _fixture = importlib.util.module_from_spec(_spec)
 assert _spec.loader is not None
 _spec.loader.exec_module(_fixture)
+from codex_shared_values import MAX_TURN_ATTACHMENTS
 
 
 class MessageIngressHTTP(TimedHTTPContractTest, unittest.TestCase):
@@ -90,7 +91,8 @@ class MessageIngressHTTP(TimedHTTPContractTest, unittest.TestCase):
             register_functions(db)
             db.execute("UPDATE runtime_events SET status='uncertain',error='Outcome unknown' WHERE id=?", (body["id"],))
         before = no_write_snapshot(self.backend.state)
-        replay = self.request("POST", "/api/messages", {**body, "delivery": "after_turn"})
+        replay = self.request("POST", "/api/messages", body)
+        self.assertEqual(replay.status, 200, replay.body)
         self.assertEqual({key: value for key, value in replay.json().items() if key != "_syncEntities"},
                          {"id": body["id"], "status": "uncertain", "error": "Outcome unknown"})
         self.assertEqual(no_write_snapshot(self.backend.state), before)
@@ -98,13 +100,13 @@ class MessageIngressHTTP(TimedHTTPContractTest, unittest.TestCase):
         self.assertEqual(receipts.status, 200, receipts.body)
         self.assertEqual(receipts.json()["items"], [{"id": body["id"], "status": "uncertain", "error": "Outcome unknown", "materialized": False}])
         self.assertEqual(no_write_snapshot(self.backend.state), before)
-        for change in ({"text": "changed"}, {"assets": ["changed"]}):
+        for change in ({"text": "changed"}, {"assets": ["changed"]}, {"delivery": "next_turn"}):
             refused = self.request("POST", "/api/messages", {**body, **change})
             self.assertEqual(refused.status, 400, refused.body)
             self.assertEqual(no_write_snapshot(self.backend.state), before)
 
-    def test_attachment_ids_are_accepted_before_preparation_validation(self):
-        for index, assets in enumerate((["unknown-upload"], [str(n) for n in range(9)])):
+    def test_bounded_attachment_ids_are_accepted_before_preparation_validation(self):
+        for index, assets in enumerate((["unknown-upload"], [str(n) for n in range(MAX_TURN_ATTACHMENTS)])):
             body = {"id": f"04040404-0404-0404-0404-{index:012d}", "room": self.agent, "text": "", "assets": assets}
             response = self.request("POST", "/api/messages", body)
             self.assertEqual(response.status, 200, response.body)
@@ -115,6 +117,14 @@ class MessageIngressHTTP(TimedHTTPContractTest, unittest.TestCase):
             replay = self.request("POST", "/api/messages", body)
             self.assertEqual(replay.status, 200, replay.body)
             self.assertEqual(no_write_snapshot(self.backend.state), before)
+
+    def test_attachment_count_over_limit_is_refused_without_writes(self):
+        before = no_write_snapshot(self.backend.state)
+        body = {"id": "04040404-0404-0404-0404-999999999999", "room": self.agent, "text": "",
+                "assets": [str(n) for n in range(MAX_TURN_ATTACHMENTS + 1)]}
+        refused = self.request("POST", "/api/messages", body)
+        self.assertEqual(refused.status, 400, refused.body)
+        self.assertEqual(no_write_snapshot(self.backend.state), before)
 
     def test_uploaded_attachment_replay_and_foreign_owner_keep_python_timing(self):
         for index, owner in enumerate((self.agent, self.foreign)):

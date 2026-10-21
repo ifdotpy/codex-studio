@@ -571,7 +571,7 @@ def _cloud_config(guest_dir: Path, codex_version: str, claude_version: str, *,
     scripts = runtime_source
     for name in ['codex_process_supervisor.py',
                  'codex_open_file_limit.py', 'codex_records.py', 'codex_file_lock.py',
-                 'codex_private_paths.py', 'codex_shared_values.py']:
+                 'codex_private_paths.py', 'codex_shared_values.py', 'codex_turn_limits.py']:
         source = scripts / name
         if not source.is_file():
             raise LinuxVMError(f'The Linux VM runtime payload is unavailable: {name}.')

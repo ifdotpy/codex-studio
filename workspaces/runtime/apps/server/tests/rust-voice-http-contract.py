@@ -293,7 +293,8 @@ class VoiceHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             event_text, None,
         ))
         self.assertEqual(metadata.get("assets"), [])
-        self.assertEqual(metadata.get("delivery"), "queue")
+        self.assertEqual(metadata.get("delivery"), "current_turn")
+        self.assertEqual(metadata.get("requestedDelivery"), "current_turn")
         self.assertIsInstance(metadata.get("acceptedAt"), (int, float))
         self.assertEqual(event[:4], ("voice-message", self.lead_id, "user", event_text))
         self.assertIn(event[4], {

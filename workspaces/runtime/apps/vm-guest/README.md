@@ -45,6 +45,7 @@ The host sources are `workspaces/runtime/apps/vm-guest` and
 - `codex_file_lock.py`
 - `codex_private_paths.py`
 - `codex_shared_values.py`
+- `codex_turn_limits.py`
 
 Provisioning also stages the Claude bridge workspace and the pinned pnpm
 workspace metadata under `/opt/codex-studio`. The guest installs the same

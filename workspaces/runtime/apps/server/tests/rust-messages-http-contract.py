@@ -21,6 +21,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from runtime_test_environment import make_runtime
 from codex_session_names import identity as native_name_identity
+from codex_delivery import DeliveryMoment, normalize_delivery
 from entity_test_support import capacity_retry
 
 HERE = Path(__file__).resolve().parent
@@ -435,12 +436,14 @@ class MessagesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
 
     def test_managed_send_matches_python_rows_for_every_delivery_and_replay(self):
         agent_id = self.delivery_matrix_agent_id
-        modes = ("queue", "steer", "after_tool", "after_turn")
+        modes = (*DeliveryMoment, "queue", "steer", "after_tool", "after_turn")
         ids = (
             "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
             "bcbcbcbc-bcbc-bcbc-bcbc-bcbcbcbcbcbc",
             "cdcdcdcd-cdcd-cdcd-cdcd-cdcdcdcdcdcd",
             "dededede-dede-dede-dede-dededededede",
+            "cececece-cece-cece-cece-cececececece",
+            "dfdfdfdf-dfdf-dfdf-dfdf-dfdfdfdfdfdf",
         )
         for delivery, message_id in zip(modes, ids, strict=True):
             body = {
@@ -514,11 +517,16 @@ class MessagesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             else:
                 for table in ("event", "metadata", "receipt", "message", "capacity_retry"):
                     self.assertEqual(after_replay[table], before[table], table)
-            changed_delivery = self.backend.request("POST", "/api/messages", body={
-                **body, "delivery": modes[(modes.index(delivery) + 1) % len(modes)],
+            equivalent_delivery = self.backend.request("POST", "/api/messages", body={
+                **body, "delivery": normalize_delivery(delivery),
             }, headers=self.headers())
-            self.assertEqual(changed_delivery.status, 200, changed_delivery.body[:1000])
-            self.assertEqual(changed_delivery.json().get("id"), message_id)
+            self.assertEqual(equivalent_delivery.status, 200, equivalent_delivery.body[:1000])
+            self.assertEqual(equivalent_delivery.json().get("id"), message_id)
+            changed_delivery = self.backend.request("POST", "/api/messages", body={
+                **body, "delivery": (DeliveryMoment.NEXT_TURN if normalize_delivery(delivery) == DeliveryMoment.CURRENT_TURN
+                                     else DeliveryMoment.CURRENT_TURN),
+            }, headers=self.headers())
+            self.assertEqual(changed_delivery.status, 400, changed_delivery.body[:1000])
             changed_text = self.backend.request("POST", "/api/messages", body={
                 **body, "text": "Changed",
             }, headers=self.headers())

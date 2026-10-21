@@ -65,7 +65,7 @@ class OperationsNativeContract(unittest.TestCase):
             stale = root / "stale"
             for folder in (scripts, binary, stale):
                 folder.mkdir()
-            for name in ("codex_operations_adapter.py", "codex_shared_values.py"):
+            for name in ("codex_operations_adapter.py", "codex_shared_values.py", "codex_turn_limits.py"):
                 shutil.copy2(SERVER_SOURCE_ROOT / name, scripts / name)
             extension = binary / ("studio_operations_native.pyd" if sys.platform == "win32"
                                   else "studio_operations_native.abi3.so")

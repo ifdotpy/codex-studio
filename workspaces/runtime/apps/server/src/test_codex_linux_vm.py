@@ -366,7 +366,7 @@ class ClientTests(unittest.TestCase):
         (cache / 'bad.pyc').write_text('cache')
         scripts = self.directory / 'runtime-src'
         scripts.mkdir()
-        for name in ['codex_process_supervisor.py', 'codex_open_file_limit.py', 'codex_records.py', 'codex_file_lock.py', 'codex_private_paths.py', 'codex_shared_values.py']:
+        for name in ['codex_process_supervisor.py', 'codex_open_file_limit.py', 'codex_records.py', 'codex_file_lock.py', 'codex_private_paths.py', 'codex_shared_values.py', 'codex_turn_limits.py']:
             (scripts / name).write_text('# runtime')
         bridge = self.directory / 'bridge'
         bridge.mkdir()
@@ -403,7 +403,7 @@ class ClientTests(unittest.TestCase):
         self.assertFalse(any(path.endswith('/unlisted.rs') for path in paths))
         self.assertFalse(any('/claude-bridge/node_modules/' in path for path in paths))
         skills = [path for path in paths if '/.agents/skills/' in path]
-        self.assertEqual(len(paths) - len(skills), 20)
+        self.assertEqual(len(paths) - len(skills), 21)
         self.assertNotIn('credentials', json.dumps(config))
         unit = next(row['content'] for row in config['write_files'] if row['path'].endswith('/codex-studio-provision.service'))
         ready = next(line.split('=!',1)[1] for line in unit.splitlines() if line.startswith('ConditionPathExists='))
@@ -650,6 +650,7 @@ class ProvisionTests(unittest.TestCase):
         result = subprocess.run([__import__('sys').executable,'-I','-c',code],capture_output=True,text=True,timeout=10)
         self.assertEqual(result.returncode,0,result.stderr)
         self.assertTrue((payload / 'codex_shared_values.py').is_file())
+        self.assertTrue((payload / 'codex_turn_limits.py').is_file())
         self.assertFalse((payload / 'codex_workspace_linux.py').exists())
         self.assertFalse((payload / 'codex_workspace_images.py').exists())
 

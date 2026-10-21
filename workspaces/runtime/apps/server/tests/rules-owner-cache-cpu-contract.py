@@ -71,6 +71,7 @@ class RuleFixture(RulesMixin):
                 CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY,record TEXT NOT NULL);
                 CREATE TABLE runtime_events(id TEXT PRIMARY KEY,agent TEXT,kind TEXT,text TEXT,
                     status TEXT,created REAL,epoch INTEGER,error TEXT,delivered REAL);
+                CREATE TABLE runtime_event_meta(id TEXT PRIMARY KEY,record TEXT NOT NULL);
             """)
 
     @contextmanager

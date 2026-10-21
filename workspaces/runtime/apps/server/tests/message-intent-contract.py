@@ -11,6 +11,7 @@ import unittest
 spec = importlib.util.spec_from_file_location('intent_fixture', Path(__file__).with_name('workspace-contract.py'))
 f = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(f)
+from codex_delivery import DeliveryMoment
 
 
 class MessageIntentContract(unittest.TestCase):
@@ -32,15 +33,15 @@ class MessageIntentContract(unittest.TestCase):
 
     def test_idle_send_stays_send_in_every_delivery_phase_without_database_writes(self):
         agent = self.lead()['id']
-        self.runtime.send(agent, 'Send now', 'send', delivery='after_tool')
-        self.runtime.send(agent, 'Queue later', 'queue', delivery='queue')
+        self.runtime.send(agent, 'Send now', 'send', delivery=DeliveryMoment.CURRENT_TURN)
+        self.runtime.send(agent, 'Queue later', 'queue', delivery=DeliveryMoment.NEXT_TURN)
         for status in ['pending', 'reserved', 'dispatching', 'uncertain', 'failed']:
             with self.runtime.db() as db:
                 db.execute('UPDATE runtime_events SET status=? WHERE agent=?', (status, agent))
             before = self.database()
             receipts = self.receipts(agent)
-            self.assertEqual(receipts['send']['requestedDelivery'], 'after_tool', status)
-            self.assertEqual(receipts['queue']['requestedDelivery'], 'queue', status)
+            self.assertEqual(receipts['send']['requestedDelivery'], DeliveryMoment.CURRENT_TURN, status)
+            self.assertEqual(receipts['queue']['requestedDelivery'], DeliveryMoment.NEXT_TURN, status)
             self.assertEqual(receipts['send']['deliveryStatus'], status)
             self.assertEqual(receipts['queue']['deliveryStatus'], status)
             self.assertEqual(receipts['send']['pending'], status == 'pending')
@@ -48,8 +49,8 @@ class MessageIntentContract(unittest.TestCase):
 
     def test_real_dispatch_preserves_intent_for_each_input_in_one_native_batch(self):
         agent = self.lead()['id']
-        self.runtime.send(agent, 'Send first', 'send', delivery='after_tool')
-        self.runtime.send(agent, 'Queued second', 'queue', delivery='queue')
+        self.runtime.send(agent, 'Send first', 'send', delivery=DeliveryMoment.CURRENT_TURN)
+        self.runtime.send(agent, 'Queued second', 'queue', delivery=DeliveryMoment.NEXT_TURN)
         self.runtime.dispatch()
         # A turn/started notification can publish turnId before the turn/start
         # response binds and commits the submitted event batch. Wait for the
@@ -63,13 +64,13 @@ class MessageIntentContract(unittest.TestCase):
         before = self.database()
         receipts = self.receipts(agent)
         self.assertEqual(list(receipts), ['send', 'queue'])
-        self.assertEqual(receipts['send']['requestedDelivery'], 'after_tool')
-        self.assertEqual(receipts['queue']['requestedDelivery'], 'queue')
+        self.assertEqual(receipts['send']['requestedDelivery'], DeliveryMoment.CURRENT_TURN)
+        self.assertEqual(receipts['queue']['requestedDelivery'], DeliveryMoment.NEXT_TURN)
         self.assertTrue(all(entry['materialized'] for entry in receipts.values()))
         self.assertEqual(self.database(), before)
         self.runtime.server.complete(active['threadId'], active['turnId'])
         f.eventually(lambda: not self.runtime.agent(agent).get('inFlight'))
-        self.assertEqual(self.receipts(agent)['send']['requestedDelivery'], 'after_tool')
+        self.assertEqual(self.receipts(agent)['send']['requestedDelivery'], DeliveryMoment.CURRENT_TURN)
 
     def test_legacy_metadata_and_missing_event_have_conservative_fallback(self):
         agent = self.lead()['id']
@@ -83,10 +84,10 @@ class MessageIntentContract(unittest.TestCase):
             self.runtime.item(db, agent, 'imported', 'user', 'Imported without a local event', requestedDelivery='after_tool')
         before = self.database()
         receipts = self.receipts(agent)
-        self.assertEqual(receipts['legacy']['requestedDelivery'], 'steer')
-        self.assertEqual(receipts['absent']['requestedDelivery'], 'queue')
-        self.assertEqual(receipts['explicit']['requestedDelivery'], 'after_tool')
-        self.assertEqual(receipts[agent + ':imported']['requestedDelivery'], 'queue')
+        self.assertEqual(receipts['legacy']['requestedDelivery'], DeliveryMoment.CURRENT_TURN)
+        self.assertEqual(receipts['absent']['requestedDelivery'], DeliveryMoment.CURRENT_TURN)
+        self.assertEqual(receipts['explicit']['requestedDelivery'], DeliveryMoment.CURRENT_TURN)
+        self.assertEqual(receipts[agent + ':imported']['requestedDelivery'], DeliveryMoment.CURRENT_TURN)
         self.assertEqual(self.database(), before)
 
     def test_materialized_standalone_receipts_keep_intent_and_pagination(self):
@@ -97,7 +98,7 @@ class MessageIntentContract(unittest.TestCase):
                 db.execute('INSERT INTO runtime_events VALUES (?,?,?,?,?,?,?,?,?)',
                            (event, agent, 'user', event, 'delivered', index + 1, 0, 'turn', None))
                 db.execute('INSERT INTO runtime_event_meta VALUES (?,?)',
-                           (event, json.dumps({'requestedDelivery': 'after_tool', 'delivery': 'queue'})))
+                           (event, json.dumps({'requestedDelivery': 'after_turn', 'delivery': 'queue'})))
                 self.runtime.item(db, agent, event, 'user', event)
                 db.execute('UPDATE runtime_items SET created=? WHERE id=?', (index + 1, agent + ':' + event))
         self.runtime.send(agent, 'Still pending', 'outstanding', delivery='after_tool')
@@ -106,7 +107,7 @@ class MessageIntentContract(unittest.TestCase):
         self.assertEqual(page['nextCursor'], agent + ':item-2')
         older = self.receipts(agent, before=page['nextCursor'], limit=2)
         self.assertEqual(set(older), {'item-0', 'item-1'})
-        self.assertTrue(all(entry['requestedDelivery'] == 'after_tool' for entry in older.values()))
+        self.assertTrue(all(entry['requestedDelivery'] == DeliveryMoment.NEXT_TURN for entry in older.values()))
         self.assertNotIn('outstanding', older)
         self.assertEqual(self.database(), before)
 
