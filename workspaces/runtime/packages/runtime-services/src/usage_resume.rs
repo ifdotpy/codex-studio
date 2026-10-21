@@ -61,11 +61,11 @@ impl LimitsObservation {
             && number(&self.raw, "at")
                 .is_some_and(|at| if strict { at > after } else { at >= after })
     }
-    pub fn reset_at(&self) -> Option<f64> {
-        reset_at(&self.raw["data"])
+    pub fn reset_at(&self, agent: &Value) -> Option<f64> {
+        reset_at(&self.raw["data"], agent)
     }
-    pub fn allowed(&self, now: f64) -> bool {
-        allowed(&self.raw["data"], now)
+    pub fn allowed(&self, agent: &Value, now: f64) -> bool {
+        allowed(&self.raw["data"], agent, now)
     }
 }
 pub fn next_check(reset: Option<f64>, now: f64) -> f64 {
@@ -80,17 +80,90 @@ fn auth_backoff(record: &Value) -> f64 {
         .unwrap_or(0)
         .min(2)) as usize]
 }
-fn buckets(data: &Value) -> impl Iterator<Item = &Value> {
-    std::iter::once(&data["rateLimits"]).chain(
-        data.get("rateLimitsByLimitId")
-            .and_then(Value::as_object)
-            .into_iter()
-            .flat_map(|m| m.values()),
-    )
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ClaudeUsagePolicy {
+    model_buckets: std::collections::BTreeMap<String, String>,
+    allowed_overage_statuses: Vec<String>,
 }
-fn reset_at(data: &Value) -> Option<f64> {
-    buckets(data)
-        .flat_map(|b| {
+fn claude_policy() -> &'static ClaudeUsagePolicy {
+    static POLICY: std::sync::OnceLock<ClaudeUsagePolicy> = std::sync::OnceLock::new();
+    POLICY.get_or_init(|| {
+        // The JavaScript module exports a JSON string so both runtimes consume
+        // one contract, and the existing bridge source hash includes it.
+        let source = include_str!("../../../../providers/apps/claude-bridge/usage-policy.mjs");
+        let (_, json) = source
+            .split_once("export default `")
+            .expect("usage policy export");
+        let json = json.trim().strip_suffix("`;").expect("usage policy string");
+        serde_json::from_str(json).expect("shared Claude usage policy")
+    })
+}
+fn model_family(agent: &Value) -> Option<&'static str> {
+    if text(agent, "provider") != "claude" {
+        return None;
+    }
+    let model = text(agent, "model");
+    claude_policy()
+        .model_buckets
+        .keys()
+        .find(|family| {
+            model == family.as_str()
+                || model == format!("claude-{family}")
+                || model.starts_with(&format!("claude-{family}-"))
+        })
+        .map(String::as_str)
+}
+fn relevant_bucket(id: &str, agent: &Value) -> bool {
+    let Some(family) = model_family(agent) else {
+        return true;
+    };
+    // Only a known different model family can exclude a bucket. Unknown scopes
+    // still participate in the gate and the latest reset.
+    claude_policy()
+        .model_buckets
+        .iter()
+        .all(|(name, bucket)| bucket != id || name == family)
+}
+fn buckets<'a>(data: &'a Value, agent: &'a Value) -> impl Iterator<Item = (&'a str, &'a Value)> {
+    std::iter::once((text(&data["rateLimits"], "limitId"), &data["rateLimits"]))
+        .chain(
+            data.get("rateLimitsByLimitId")
+                .and_then(Value::as_object)
+                .into_iter()
+                .flat_map(|m| m.iter().map(|(id, value)| (id.as_str(), value))),
+        )
+        .filter(|(id, _)| relevant_bucket(id, agent))
+}
+fn overage_allowed(data: &Value, agent: &Value, id: &str) -> bool {
+    if text(agent, "provider") != "claude" {
+        return false;
+    }
+    let info = &data["claudeRateLimit"];
+    if text(info, "overageStatus") == "rejected" {
+        return false;
+    }
+    let family = model_family(agent);
+    let known_bucket = (id == "claude" || id == "claude-overage")
+        || family.is_some_and(|family| claude_policy().model_buckets[family] == id);
+    let known_scope = matches!(
+        text(info, "rateLimitType"),
+        "five_hour" | "seven_day" | "overage"
+    ) || family
+        .is_some_and(|family| text(info, "rateLimitType") == format!("seven_day_{family}"));
+    known_bucket
+        && known_scope
+        && (claude_policy()
+            .allowed_overage_statuses
+            .iter()
+            .any(|status| status == text(info, "overageStatus"))
+            || flag(info, "isUsingOverage")
+            || flag(info, "overageInUse"))
+}
+fn reset_at(data: &Value, agent: &Value) -> Option<f64> {
+    buckets(data, agent)
+        .filter(|(id, _)| !overage_allowed(data, agent, id))
+        .flat_map(|(_, b)| {
             let windows: Vec<&Value> = ["primary", "secondary"]
                 .iter()
                 .filter_map(|n| b.get(*n))
@@ -99,20 +172,28 @@ fn reset_at(data: &Value) -> Option<f64> {
             let full = windows
                 .iter()
                 .any(|w| number(w, "usedPercent").is_some_and(|p| p >= 100.0));
+            let event = &b["claudeRateLimit"];
+            let blocked = text(event, "status") == "rejected";
             windows
                 .into_iter()
                 .filter(move |w| {
                     if full {
                         number(w, "usedPercent").is_some_and(|p| p >= 100.0)
                     } else {
-                        b.get("rateLimitReachedType").is_some_and(|v| !v.is_null())
+                        blocked || b.get("rateLimitReachedType").is_some_and(|v| !v.is_null())
                     }
                 })
                 .filter_map(|w| number(w, "resetsAt"))
+                .chain(blocked.then(|| number(event, "resetsAt")).flatten())
+                .chain(
+                    (text(event, "overageStatus") == "rejected")
+                        .then(|| number(event, "overageResetsAt"))
+                        .flatten(),
+                )
         })
         .reduce(f64::max)
 }
-fn allowed(data: &Value, now: f64) -> bool {
+fn allowed(data: &Value, agent: &Value, now: f64) -> bool {
     if !present(data, "rateLimits")
         || data
             .get("ordinaryUsageAllowed")
@@ -121,13 +202,21 @@ fn allowed(data: &Value, now: f64) -> bool {
         return false;
     }
     let mut measured = false;
-    for bucket in buckets(data) {
+    for (id, bucket) in buckets(data, agent) {
         if !bucket.is_object()
-            || bucket
-                .get("rateLimitReachedType")
-                .is_some_and(|v| !v.is_null())
             || present(bucket, "spendControlReached")
             || number(&bucket["individualLimit"], "remainingPercent").is_some_and(|p| p <= 0.0)
+        {
+            return false;
+        }
+        if overage_allowed(data, agent, id) {
+            measured = true;
+            continue;
+        }
+        if bucket
+            .get("rateLimitReachedType")
+            .is_some_and(|v| !v.is_null())
+            || text(&bucket["claudeRateLimit"], "status") == "rejected"
         {
             return false;
         }
@@ -195,11 +284,11 @@ pub fn tick(s: &Snapshot, limits: &LimitsObservation, now: f64) -> Result<Decisi
                         .is_some_and(|old| old != marker)
                 }))
     } else {
-        fresh && limits.allowed(now)
+        fresh && limits.allowed(&s.agent, now)
     };
     let mut r = r.clone();
     if !recovered {
-        let reset = limits.reset_at();
+        let reset = limits.reset_at(&s.agent);
         let due = if auth {
             now + auth_backoff(&r)
         } else {
@@ -307,13 +396,13 @@ pub fn limits_changed(s: &Snapshot, limits: &LimitsObservation, now: f64) -> Res
             "usage-policy/limits-account-mismatch",
         ));
     }
-    let reset = limits.reset_at();
+    let reset = limits.reset_at(&s.agent);
     let mut r = r.clone();
     patch(
         &mut r,
         json!({"resetAt":reset,"plannedAt":reset.filter(|t|*t>now)}),
     );
-    if limits.allowed(now) {
+    if limits.allowed(&s.agent, now) {
         r["dueAt"] = json!(now.max(number(&r, "failedAt").unwrap_or(now) + RESUME_MIN));
     } else if reset.is_some_and(|t| t > now) {
         r["dueAt"] = json!(next_check(reset, now));
@@ -417,7 +506,7 @@ pub fn record_failure(s: &Snapshot, failure: FailureObservation<'_>, now: f64) -
     } else {
         failure
             .limits
-            .reset_at()
+            .reset_at(&s.agent)
             .into_iter()
             .chain(failure.error_reset)
             .reduce(f64::max)

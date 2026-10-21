@@ -15,6 +15,10 @@ import {
   limitEvent,
   nativeItem,
   usageTokens,
+  overageAllowed,
+  claudeErrorInfo,
+  providerNotice,
+  limitApplies,
 } from "./features.mjs";
 import {
   commandCatalog,
@@ -940,20 +944,6 @@ async function proofOptions(s, proof) {
 // Codex continues a thread on turn/start without input; Claude needs text.
 const CONTINUE_TEXT =
   "Continue the previous turn from where it stopped. Check the current state first and do not repeat completed work.";
-// Claude API error types that Studio can retry, in Codex error names.
-function claudeErrorInfo(error, text) {
-  if (error === "overloaded") return "serverOverloaded";
-  if (error === "server_error") return "internalServerError";
-  if (error === "authentication_failed") return "unauthorized";
-  if (
-    error === "unknown" &&
-    /can't reach the api server|ENOTFOUND|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|connection error|socket hang up|fetch failed/i.test(
-      text || "",
-    )
-  )
-    return "httpConnectionFailed";
-  return null;
-}
 async function content(input) {
   if (Array.isArray(input) && !input.length)
     return [{ type: "text", text: CONTINUE_TEXT }];
@@ -1079,17 +1069,18 @@ async function finishTurn(s, active, result, error) {
     : error || result?.is_error || result?.subtype !== "success"
       ? "failed"
       : "completed";
+  const errorMessage =
+    error?.message ||
+    result?.errors?.join("\n") ||
+    result?.result ||
+    "Claude turn failed";
+  const errorInfo =
+    turn.apiErrorInfo || claudeErrorInfo(error?.error, errorMessage);
   if (turn.stallError) turn.error = turn.stallError;
   else if (error || turn.status === "failed")
     turn.error = {
-      message:
-        error?.message ||
-        result?.errors?.join("\n") ||
-        result?.result ||
-        "Claude turn failed",
-      ...(turn.apiErrorInfo && !turn.limitError
-        ? { codexErrorInfo: turn.apiErrorInfo }
-        : {}),
+      message: errorMessage,
+      ...(errorInfo && !turn.limitError ? { codexErrorInfo: errorInfo } : {}),
       ...(turn.startOutcome === "not_applied" &&
       (error?.preparationTimedOut === true ||
         error?.claudeAccountValidationFailed === true) &&
@@ -1648,9 +1639,8 @@ async function startSession(s, active, p) {
         if (
           turn &&
           info.status === "rejected" &&
-          !info.isUsingOverage &&
-          !info.overageInUse &&
-          !["allowed", "allowed_warning"].includes(info.overageStatus)
+          limitApplies(info, active.lastModel || s.model) &&
+          !overageAllowed(info)
         ) {
           turn.limitError = {
             codexErrorInfo: "rateLimitExceeded",
@@ -1754,6 +1744,9 @@ async function startSession(s, active, p) {
             }
           }
           persistLater(s, active);
+        } else if (turn && providerNotice(m)) {
+          notice(s, turn, providerNotice(m), m.uuid);
+          persistLater(s, active);
         } else if (
           turn &&
           ((m.subtype === "notification" &&
@@ -1766,13 +1759,6 @@ async function startSession(s, active, p) {
             (m.subtype === "informational" && m.level === "warning"))
         )
           notice(s, turn, m.text || m.content || m.error || m.subtype, m.uuid);
-        else if (m.subtype === "api_retry" && turn)
-          emit("item/agentMessage/delta", {
-            threadId: s.id,
-            turnId: turn.id,
-            itemId: "retry:" + turn.id,
-            delta: "",
-          });
         continue;
       }
       if (!turn) continue;
