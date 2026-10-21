@@ -1339,6 +1339,14 @@ impl AccountSessionPort for AccountSessionRuntime {
                     request.login_id = uuid::Uuid::parse_str(&request.login_id)
                         .map_err(|_| AccountSessionError::Refused("Supply a UUID request_id"))?
                         .to_string();
+                    // Settle receipts whose provider completion was lost, and
+                    // expire receipts past their deadline, before this request
+                    // replays its receipt or reserves a new one.
+                    let driver = Arc::clone(&runtime.driver);
+                    let now = timestamp()?;
+                    spawn_account_driver(move || driver.reconcile_codex_logins(now))
+                        .await?
+                        .map_err(mutation_error)?;
                     let driver = Arc::clone(&runtime.driver);
                     let request_for_receipt = request.clone();
                     if let Some(receipt) = spawn_account_driver(move || {

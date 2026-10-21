@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import stat
 import sys
+import time
 import unittest
 import uuid
 from unittest.mock import patch
@@ -123,8 +124,10 @@ class AccountLoginHTTPContract(unittest.TestCase):
                 "email": None, "plan": None, "status": "pending",
             }
             cls.accounts.data["logins"][cls.live_login_id] = {
+                # Open receipts carry a current time: the Rust backend expires
+                # an open receipt after its deadline.
                 "requestId": cls.live_login_id, "accountKey": cls.live_login_key, "status": "pending",
-                "createdAt": 1.0, "loginId": "fixture-live-login",
+                "createdAt": time.time(), "loginId": "fixture-live-login",
             }
             cls.completed_login_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, "completed-local-login"))
             cls.completed_login_key = f"login-{cls.completed_login_id}"
@@ -136,7 +139,7 @@ class AccountLoginHTTPContract(unittest.TestCase):
             }
             cls.accounts.data["logins"][cls.completed_login_id] = {
                 "requestId": cls.completed_login_id, "accountKey": cls.completed_login_key,
-                "status": "pending", "createdAt": 1.0, "loginId": "fixture-completed-login",
+                "status": "pending", "createdAt": time.time(), "loginId": "fixture-completed-login",
             }
             cls.terminal_logins = {
                 request_id: receipt
