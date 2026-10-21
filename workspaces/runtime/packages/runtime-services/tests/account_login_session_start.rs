@@ -217,3 +217,26 @@ async fn session_start_failure_is_not_sent_and_names_its_cause() {
     let stored = fixture.driver.snapshot().expect("registry");
     assert_eq!(stored.logins[0]["error"], receipt["error"]);
 }
+
+#[tokio::test]
+async fn re_sign_in_recreates_a_missing_sign_in_home() {
+    let fixture = Fixture::new();
+    let key = "login-0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d";
+    let home = fixture.root.path().join("accounts").join(key);
+    let registry = fixture.root.path().join("accounts/registry.json");
+    let mut value: Value =
+        serde_json::from_slice(&std::fs::read(&registry).expect("registry")).expect("JSON");
+    value["accounts"][key] = json!({"id":key,"home":home,"source":"Codex Agents","label":"Saved","accountId":"fixture-saved","email":"fixture@example.invalid","plan":"pro","status":"signedOut"});
+    std::fs::write(&registry, value.to_string()).expect("registry");
+    let driver = Arc::new(AccountDriver::open(&registry).expect("reopen"));
+    let fixture = Fixture { driver, ..fixture };
+    assert!(!home.exists());
+    let session = BrokerSession::new(true);
+    let receipt = fixture.login(Arc::clone(&session), Some(key)).await;
+    assert_eq!(receipt["status"], "pending", "{receipt}");
+    assert!(home.is_dir());
+    assert_eq!(
+        *session.ensured.lock().expect("ensured"),
+        vec![key.to_owned()]
+    );
+}

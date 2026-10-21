@@ -947,6 +947,32 @@ impl AccountSessionRuntime {
         }
         self.accounts()
     }
+    /// Recreate the missing home of a Studio sign-in account before it signs
+    /// in again. Such a home is `<accounts root>/login-<request UUID>` and
+    /// holds no credentials until the provider writes them; an existing home
+    /// and every other account are left unchanged.
+    fn restore_login_home(&self, account: &str) -> Result<(), AccountSessionError> {
+        let Some(request) = account
+            .strip_prefix("login-")
+            .filter(|request| uuid::Uuid::parse_str(request).is_ok())
+        else {
+            return Ok(());
+        };
+        let Ok(record) = self.driver.internal_record(account) else {
+            return Ok(());
+        };
+        let Some(home) = record.get("home").and_then(Value::as_str).map(Path::new) else {
+            return Ok(());
+        };
+        let registered_under_root = home.file_name() == Some(std::ffi::OsStr::new(account))
+            && home.parent().and_then(|parent| parent.canonicalize().ok())
+                == self.accounts_root.canonicalize().ok();
+        if !registered_under_root || std::fs::symlink_metadata(home).is_ok() {
+            return Ok(());
+        }
+        self.prepare_login_home(request).map(|_| ())
+    }
+
     fn prepare_login_home(&self, request: &str) -> Result<PathBuf, AccountSessionError> {
         let accounts_root = self
             .accounts_root
@@ -1342,6 +1368,10 @@ impl AccountSessionPort for AccountSessionRuntime {
                         spawn_account_driver(move || runtime.prepare_login_home(&request_id))
                             .await??
                     } else {
+                        let restorer = runtime.clone();
+                        let account = request.account_key.clone().unwrap_or_default();
+                        spawn_account_driver(move || restorer.restore_login_home(&account))
+                            .await??;
                         runtime.base_home.clone()
                     };
                     let driver = Arc::clone(&runtime.driver);
