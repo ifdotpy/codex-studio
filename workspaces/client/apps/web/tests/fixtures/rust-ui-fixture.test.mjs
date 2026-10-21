@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import test from "node:test";
 import { startRustBackend } from "./rust-ui-fixture.mjs";
 
@@ -48,5 +48,42 @@ test(
         );
       },
     );
+  },
+);
+
+test(
+  "the scripted provider finds node when the host's codex shares its folder",
+  { timeout: 5000, skip: process.platform === "win32" },
+  async () => {
+    // Homebrew installs `node` and `codex` in one folder; the fixture hides
+    // that folder from the server, and the provider starts through `env node`.
+    const host = await mkdtemp(join(tmpdir(), "rust-fixture-host-bin-"));
+    const previous = process.env.PATH;
+    try {
+      await mkdir(host, { recursive: true });
+      await writeFile(join(host, "codex"), "#!/bin/sh\nexit 0\n", {
+        mode: 0o700,
+      });
+      await symlink(process.execPath, join(host, "node"));
+      process.env.PATH = [host, "/usr/bin", "/bin"].join(delimiter);
+      // Exit 0 only when node starts through env and no PATH folder has codex.
+      await withBackendScript(
+        `const { existsSync } = require("node:fs");
+const { join } = require("node:path");
+const entries = process.env.PATH.split(${JSON.stringify(delimiter)});
+const hidden = entries.every((entry) => !existsSync(join(entry, "codex")));
+const node = require("node:child_process").spawnSync("/usr/bin/env", ["node", "-e", ""]);
+process.exit(hidden && node.status === 0 ? 0 : 9);`,
+        async (state) => {
+          await assert.rejects(
+            startRustBackend(state),
+            /studio-runtime-server exited 0/,
+          );
+        },
+      );
+    } finally {
+      process.env.PATH = previous;
+      await rm(host, { recursive: true, force: true });
+    }
   },
 );

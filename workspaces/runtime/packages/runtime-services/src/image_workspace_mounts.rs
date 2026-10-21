@@ -214,6 +214,28 @@ fn inside(path: &Path, root: &Path) -> bool {
 }
 
 impl<B: WorkspaceBackend + 'static> WorkspaceLifecycle<B> {
+    /// Whether an attached Studio volume is this state's concern: its image or
+    /// a mount point lies in this store, or it belongs to an agent of this
+    /// store (for example after a move of the state folder). A volume of
+    /// another state folder elsewhere is that state's concern.
+    fn owns_attachment(
+        &self,
+        attachment: &WorkspaceAttachment,
+        owners: &[(&str, Option<&Path>, Option<(u64, u64)>)],
+    ) -> bool {
+        attachment
+            .image
+            .as_deref()
+            .is_some_and(|image| inside(image, &self.store))
+            || attachment
+                .mounts
+                .iter()
+                .any(|mount| inside(mount, &self.store))
+            || owners.iter().any(|(agent_id, image, identity)| {
+                attachment_belongs(attachment, agent_id, *image, *identity)
+            })
+    }
+
     fn agent_mount(&self, agent_id: &str, state: &Value) -> PathBuf {
         state
             .get("mount")
@@ -487,8 +509,8 @@ impl<B: WorkspaceBackend + 'static> WorkspaceLifecycle<B> {
         ))
     }
 
-    /// Report every agent mount point and every Studio volume attached outside
-    /// its place. The check changes nothing.
+    /// Report every agent mount point and every volume of this store attached
+    /// outside its place. The check changes nothing.
     pub fn check_mounts(&self) -> Result<Value, ImageWorkspaceError> {
         let attachments = self.backend.attachments()?;
         let mut paths = Vec::new();
@@ -528,9 +550,19 @@ impl<B: WorkspaceBackend + 'static> WorkspaceLifecycle<B> {
             })
             .map(|(probe, _)| probe.mount.clone())
             .collect::<Vec<_>>();
+        let owners = agents
+            .iter()
+            .map(|(probe, _)| {
+                let identity = file_identity(probe.image.as_deref());
+                (probe.agent_id.as_str(), probe.image.as_deref(), identity)
+            })
+            .collect::<Vec<_>>();
         let mut stray = Vec::new();
         for attachment in &attachments {
-            if !studio_attachment(attachment) || base_staging_attachment(attachment, &self.store) {
+            if !studio_attachment(attachment)
+                || base_staging_attachment(attachment, &self.store)
+                || !self.owns_attachment(attachment, &owners)
+            {
                 continue;
             }
             if !attachment.mounts.is_empty()

@@ -239,6 +239,34 @@ class MountIdentityContract(unittest.TestCase):
         self.assertEqual(summary['strayAttachments'], 1)
         self.assertNotIn('moved', json.dumps(summary))
 
+    def test_volume_of_another_state_at_its_own_mount_point_is_not_stray(self):
+        self.ready('agent-1')
+        # A second Studio state folder (the live one, while a fixture runs) has its
+        # own agent volume attached at its own mount point.
+        live = self.root / 'live' / 'workspaces'
+        image = live / 'agents' / 'agent-9' / 'workspace.asif'
+        image.parent.mkdir(parents=True)
+        image.write_text('live image')
+        self.attach_marked(live / 'mnt' / 'agent-9', image, 'agent-9')
+        report = images.check_mounts()
+        self.assertEqual(report['strayAttachments'], [])
+        self.assertTrue(report['ok'], report)
+
+    def test_volume_of_this_state_outside_its_mount_point_is_stray(self):
+        self.ready('agent-1')
+        # An image of this state without an agent row, attached elsewhere.
+        image = self.image('agent-9')
+        image.parent.mkdir(parents=True)
+        image.write_text('own image')
+        self.attach_marked(self.root / 'elsewhere' / 'mnt' / 'agent-9', image, 'agent-9')
+        # A volume of another image attached under this state's mount folder.
+        self.attach_marked(self.mount('agent-8'),
+                           self.root / 'other' / 'agents' / 'agent-8' / 'workspace.asif', 'agent-8')
+        report = images.check_mounts()
+        self.assertFalse(report['ok'])
+        self.assertEqual({item['agentId'] for item in report['strayAttachments']},
+                         {'agent-8', 'agent-9'})
+
     def test_moved_unmarked_volume_is_matched_by_its_image_path(self):
         self.ready('agent-1')
         images.archive_workspace('agent-1')

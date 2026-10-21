@@ -33,6 +33,7 @@ import {
   mkdtempSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -206,10 +207,17 @@ export async function startRustBackend(
   const port = await freePort();
   const origin = `http://127.0.0.1:${port}`;
   // The server approves any `codex` on PATH ahead of CODEX_BIN; hide the host's.
-  const path = (process.env.PATH ?? "")
-    .split(delimiter)
-    .filter((entry) => !existsSync(join(entry, "codex")))
-    .join(delimiter);
+  // That folder can also hold `node` (Homebrew puts both in /opt/homebrew/bin),
+  // and the scripted provider starts through `env node`, so a private folder
+  // that links only this Node comes first.
+  const nodeBin = mkdtempSync(join(tmpdir(), "studio-fixture-node-"));
+  symlinkSync(process.execPath, join(nodeBin, "node"));
+  const path = [
+    nodeBin,
+    ...(process.env.PATH ?? "")
+      .split(delimiter)
+      .filter((entry) => !existsSync(join(entry, "codex"))),
+  ].join(delimiter);
   const child = spawn(serverBinary(), ["--port", String(port)], {
     stdio: ["ignore", 2, 2],
     env: {
@@ -223,6 +231,9 @@ export async function startRustBackend(
       ...(modelsFile ? { FAKE_CODEX_MODELS: modelsFile } : {}),
     },
   });
+  const removeNodeBin = () => rmSync(nodeBin, { recursive: true, force: true });
+  child.once("exit", removeNodeBin);
+  child.once("error", removeNodeBin);
   const exited = new Promise((_, reject) => {
     child.once("error", reject);
     child.once("exit", (code, signal) =>
