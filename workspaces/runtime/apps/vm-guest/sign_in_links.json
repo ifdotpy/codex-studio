@@ -1,0 +1,150 @@
+[
+  {
+    "name": "authorization request in prose, the period is not part of the link",
+    "text": "Open https://id.acme.dev/authorize?client_id=k&response_type=code&redirect_uri=http%3A%2F%2Flocalhost%3A8000%2F&state=abc to sign in.",
+    "links": [
+      "https://id.acme.dev/authorize?client_id=k&response_type=code&redirect_uri=http%3A%2F%2Flocalhost%3A8000%2F&state=abc"
+    ]
+  },
+  {
+    "name": "device verification link with its code",
+    "text": "Go to https://device.sso.us-east-1.amazonaws.com/?user_code=ABCD-EFGH and confirm.",
+    "links": ["https://device.sso.us-east-1.amazonaws.com/?user_code=ABCD-EFGH"]
+  },
+  {
+    "name": "a device page without the code stays an ordinary link",
+    "text": "To sign in, open the page https://microsoft.com/devicelogin and enter the code F7XK2LMQP.",
+    "links": []
+  },
+  {
+    "name": "ordinary links stay ordinary",
+    "text": "See https://github.com/example/repo/pull/12?diff=split and https://docs.acme.dev/oauth?topic=client_id.",
+    "links": []
+  },
+  {
+    "name": "markdown link",
+    "text": "[Sign in](https://login.acme.dev/oauth2/authorize?client_id=a&response_type=code&redirect_uri=http%3A%2F%2F127.0.0.1%3A8400%2Fcb&state=s)",
+    "links": [
+      "https://login.acme.dev/oauth2/authorize?client_id=a&response_type=code&redirect_uri=http%3A%2F%2F127.0.0.1%3A8400%2Fcb&state=s"
+    ]
+  },
+  {
+    "name": "SAML request",
+    "text": "https://idp.acme.dev/sso?SAMLRequest=fVJNj9owEP0rke9JjEm2xCJIFFQVi&RelayState=x",
+    "links": [
+      "https://idp.acme.dev/sso?SAMLRequest=fVJNj9owEP0rke9JjEm2xCJIFFQVi&RelayState=x"
+    ]
+  },
+  {
+    "name": "a client_id alone is not a sign-in request",
+    "text": "https://app.acme.dev/settings?client_id=abc",
+    "links": []
+  },
+  {
+    "name": "markers without values",
+    "text": "https://x.acme.dev/?client_id=&response_type=",
+    "links": []
+  },
+  {
+    "name": "a repeated link counts once",
+    "text": "First https://a.acme.dev/device?user_code=QQQQ then again https://a.acme.dev/device?user_code=QQQQ, and https://b.acme.dev/saml?SAMLRequest=x",
+    "links": [
+      "https://a.acme.dev/device?user_code=QQQQ",
+      "https://b.acme.dev/saml?SAMLRequest=x"
+    ]
+  },
+  {
+    "name": "code span",
+    "text": "Run the sign-in at `https://a.acme.dev/authorize?client_id=x&response_type=code`",
+    "links": ["https://a.acme.dev/authorize?client_id=x&response_type=code"]
+  },
+  {
+    "name": "upper case scheme",
+    "text": "HTTPS://A.ACME.DEV/AUTH?client_id=x&redirect_uri=y",
+    "links": ["HTTPS://A.ACME.DEV/AUTH?client_id=x&redirect_uri=y"]
+  },
+  {
+    "name": "an unencoded redirect inside the link stays part of it",
+    "text": "https://id.acme.dev/auth?client_id=k&redirect_uri=http://localhost:8000/cb&response_type=code",
+    "links": [
+      "https://id.acme.dev/auth?client_id=k&redirect_uri=http://localhost:8000/cb&response_type=code"
+    ]
+  },
+  {
+    "name": "markers in the fragment do not count",
+    "text": "https://a.acme.dev/cb#client_id=x&response_type=token",
+    "links": []
+  },
+  {
+    "name": "at most four links",
+    "text": "https://a.acme.dev/?user_code=1 https://a.acme.dev/?user_code=2 https://a.acme.dev/?user_code=3 https://a.acme.dev/?user_code=4 https://a.acme.dev/?user_code=5",
+    "links": [
+      "https://a.acme.dev/?user_code=1",
+      "https://a.acme.dev/?user_code=2",
+      "https://a.acme.dev/?user_code=3",
+      "https://a.acme.dev/?user_code=4"
+    ]
+  },
+  {
+    "name": "pushed authorization request",
+    "text": "https://as.acme.dev/authorize?client_id=c&request_uri=urn%3Aietf%3Aparams%3Aoauth%3Arequest_uri%3Abwc4JK",
+    "links": [
+      "https://as.acme.dev/authorize?client_id=c&request_uri=urn%3Aietf%3Aparams%3Aoauth%3Arequest_uri%3Abwc4JK"
+    ]
+  },
+  {
+    "name": "angle brackets",
+    "text": "<https://a.acme.dev/x?user_code=Q>",
+    "links": ["https://a.acme.dev/x?user_code=Q"]
+  },
+  {
+    "name": "a character that is not ASCII ends the link",
+    "text": "https://a.acme.dev/auth?client_id=x&response_type=code→next",
+    "links": ["https://a.acme.dev/auth?client_id=x&response_type=code"]
+  },
+  {
+    "name": "a loopback page without markers stays ordinary",
+    "text": "The server runs at http://localhost:8000/ now.",
+    "links": []
+  },
+  {
+    "name": "bold markdown",
+    "text": "**https://a.acme.dev/device?user_code=WXYZ**",
+    "links": ["https://a.acme.dev/device?user_code=WXYZ"]
+  },
+  {
+    "name": "balanced parentheses stay",
+    "text": "https://a.acme.dev/a_(b)?user_code=X",
+    "links": ["https://a.acme.dev/a_(b)?user_code=X"]
+  },
+  {
+    "name": "encoded names",
+    "text": "https://a.acme.dev/?client%5Fid=x&response%5Ftype=code",
+    "links": ["https://a.acme.dev/?client%5Fid=x&response%5Ftype=code"]
+  },
+  {
+    "name": "http provider link",
+    "text": "http://127.0.0.1:5556/dex/auth?client_id=studio&response_type=code&redirect_uri=http%3A%2F%2F127.0.0.1%3A8000%2Fcallback",
+    "links": [
+      "http://127.0.0.1:5556/dex/auth?client_id=studio&response_type=code&redirect_uri=http%3A%2F%2F127.0.0.1%3A8000%2Fcallback"
+    ]
+  },
+  {
+    "name": "documentation names are examples, not sign-ins",
+    "text": "For example https://id.example.com/authorize?client_id=k&response_type=code, https://login.example/?user_code=X, https://EXAMPLE.ORG./device?user_code=1, https://user@example.net:443/?SAMLRequest=x and https://a.b.invalid/?user_code=2.",
+    "links": []
+  },
+  {
+    "name": "a documentation name inside another host does not count",
+    "text": "https://example.com.acme.dev/?user_code=X https://notexample.com/?user_code=Y",
+    "links": [
+      "https://example.com.acme.dev/?user_code=X",
+      "https://notexample.com/?user_code=Y"
+    ]
+  },
+  {
+    "name": "a scheme without a host",
+    "text": "Type https:// and then nothing ?client_id=x&response_type=code",
+    "links": []
+  }
+]

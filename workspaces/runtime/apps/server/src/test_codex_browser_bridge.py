@@ -292,7 +292,11 @@ class Flow(FlowBase):
         self.bridge.after = 0
         self.bridge.poll(0)
         self.assertEqual(len(self.runtime.cards()), 1)
-        self.launch(tool)  # The new link of the chat replaces the first one.
+        self.launch(tool)  # The same link of the chat keeps its request and card.
+        self.bridge.poll(0)
+        self.assertEqual(len(self.runtime.cards()), 1)
+        tool.open_url += "&try=2"
+        self.launch(tool)  # A new link of the chat replaces the first one.
         self.bridge.poll(0)
         cards = sorted(self.runtime.cards(), key=lambda card: float(card["createdAt"]))
         self.assertEqual([card["status"] for card in cards], ["expired", "pending"])

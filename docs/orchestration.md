@@ -284,6 +284,7 @@ The lead receives these additional tools:
 | `orchestration_monitor`        | Start or observe a command watch. Optional literal output patterns wake the owner.                                           |
 | `orchestration_cancel_monitor` | Cancel a command watch.                                                                                                      |
 | `orchestration_request`        | List, recover, or cancel your own durable tool requests.                                                                     |
+| `orchestration_sign_in`        | Show the person a sign-in card for a link to open. Every agent has it. See docs/vm-browser-bridge.md, section 7.             |
 
 After delegation, the lead can finish its turn. The runtime sends each child
 result into an active lead turn or starts a turn when idle, including after a final answer.

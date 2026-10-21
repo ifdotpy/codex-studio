@@ -66,6 +66,8 @@ const HEAD_LIMIT: usize = 64 * 1024;
 const MAX_WAIT_SECONDS: f64 = 20.0;
 const SENT_HEADERS: [&str; 3] = ["user-agent", "accept", "accept-language"];
 const OPEN_STATES: [&str; 2] = ["pending", "approved"];
+/// States after which the same link of a chat can queue again (`REOPEN_STATES`).
+const REOPEN_STATES: [&str; 3] = ["stale", "expired", "replaced"];
 const IPV4_REACH: [&str; 4] = ["127.0.0.1", "0.0.0.0", "::ffff:127.0.0.1", "::"];
 const IPV6_REACH: [&str; 2] = ["::1", "::"];
 
@@ -617,12 +619,69 @@ impl HostBridge {
                 "LAYR_SESSION names a chat of another Linux user",
             );
         }
+        self.queue_link(uid, url, agent, context).await
+    }
+
+    /// `browser.submit`: the server queues a link for a chat, from the agent's
+    /// `orchestration_sign_in` call or from a sign-in link in its message (section 7). The chat's
+    /// own user owns the request, so the listener checks stay those of a link that its command
+    /// opened itself (`BrowserBridge.submit`).
+    async fn submit(&self, params: &Value) -> Result<Value, BridgeError> {
+        let agent = canonical_session(params.get("agentId").unwrap_or(&Value::Null))?;
+        let context = self.chats.chat(&agent).await.ok_or_else(|| BridgeError {
+            code: "unknown_agent",
+            message: "Studio does not know this chat".into(),
+        })?;
+        self.queue_link(
+            context.uid,
+            params.get("url").unwrap_or(&Value::Null),
+            agent,
+            context,
+        )
+        .await
+    }
+
+    /// The request of this chat for the same link while it can still answer
+    /// (`BrowserBridge._existing`): a link that a command opens and that the agent also gives
+    /// in a message or a tool call gets one card.
+    fn existing(queue: &Queue, agent: &str, url: &Value, now: f64) -> Option<Value> {
+        let url = url.as_str()?;
+        queue
+            .items
+            .values()
+            .find(|item| {
+                item.get("agentId").and_then(Value::as_str) == Some(agent)
+                    && (item.get("url").and_then(Value::as_str) == Some(url)
+                        || item.get("startUrl").and_then(Value::as_str) == Some(url))
+                    && !REOPEN_STATES.contains(
+                        &item
+                            .get("state")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default(),
+                    )
+                    && item.get("createdAt").and_then(Value::as_f64).unwrap_or(0.0)
+                        > now - TTL_SECONDS
+            })
+            .cloned()
+    }
+
+    async fn queue_link(
+        &self,
+        uid: u32,
+        url: &Value,
+        agent: String,
+        context: ChatContext,
+    ) -> Result<Value, BridgeError> {
         let agent = if context.agent_id.is_empty() {
             agent
         } else {
             context.agent_id.clone()
         };
         let now = (self.clock)();
+        let original = url.clone();
+        if let Some(item) = Self::existing(&self.lock(), &agent, &original, now) {
+            return Ok(item);
+        }
         {
             let queue = self.lock();
             let recent = queue
@@ -721,6 +780,9 @@ impl HostBridge {
             connect_address(uid, redirect.port, &rows)?;
         }
         let mut queue = self.lock();
+        if let Some(item) = Self::existing(&queue, &agent, &original, now) {
+            return Ok(item);
+        }
         // The latest link of a chat replaces its earlier pending link.
         let replaced: Vec<String> = queue
             .items
@@ -757,6 +819,7 @@ impl HostBridge {
     pub async fn call(&self, method: &str, params: &Value) -> Result<Value, BridgeError> {
         match method {
             "browser.wait" => self.wait(params).await,
+            "browser.submit" => self.submit(params).await,
             "browser.answer" => self.answer(params).await,
             "browser.close" => {
                 let mut queue = self.lock();

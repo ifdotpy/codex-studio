@@ -965,6 +965,17 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
             ))
         })
         .collect();
+    // Links that agents give for a sign-in (docs/vm-browser-bridge.md, section 7): the
+    // `orchestration_sign_in` tool and sign-in links in completed messages reach the same
+    // bridges and cards.
+    let sign_in_sources =
+        studio_runtime_services::sign_in::SignInSources::new(state.browser_card_sources());
+    managed_tool_runtime.attach_sign_in(sign_in_sources.clone());
+    let sign_in_task = tokio::spawn(studio_runtime_services::sign_in::run_messages(
+        Arc::clone(&store),
+        sign_in_sources,
+        monitor_shutdown.subscribe(),
+    ));
     let retention_task = tokio::spawn(studio_runtime_services::storage_retention::run(
         Arc::clone(&store),
         monitor_shutdown.subscribe(),
@@ -1264,6 +1275,7 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
     for task in browser_card_tasks {
         shutdown_join("browser card poll", task).await??;
     }
+    shutdown_join("sign-in message links", sign_in_task).await??;
     #[cfg(unix)]
     if let Some(service) = browser_host {
         shutdown_join("browser host bridge", service.stop()).await?;

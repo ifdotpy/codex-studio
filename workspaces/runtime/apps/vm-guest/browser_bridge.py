@@ -40,6 +40,8 @@ BODY_LIMIT = 256 * 1024
 HEAD_LIMIT = 64 * 1024
 SENT_HEADERS = ("user-agent", "accept", "accept-language")
 OPEN_STATES = frozenset({"pending", "approved"})
+# States after which the same link of a chat can queue again.
+REOPEN_STATES = frozenset({"stale", "expired", "replaced"})
 # The listener addresses that a connection to 127.0.0.1 or ::1 can reach.
 IPV4_REACH = frozenset({"127.0.0.1", "0.0.0.0", "::ffff:127.0.0.1", "::"})
 IPV6_REACH = frozenset({"::1", "::"})
@@ -259,9 +261,44 @@ class BrowserBridge:
             raise BridgeError("unknown_agent", "Studio does not know the chat in LAYR_SESSION") from None
         if context.get("uid") != uid:
             raise BridgeError("unknown_agent", "LAYR_SESSION names a chat of another Linux user")
+        return await self.queue(uid, url, agent, context)
+
+    async def submit(self, params: dict[str, Any]) -> dict[str, Any]:
+        """`browser.submit`: the Studio server queues a link for a chat, from the agent's
+        `orchestration_sign_in` call or from a sign-in link in its message
+        (docs/vm-browser-bridge.md, section 7). The chat's own Linux user owns the request, so the
+        listener checks stay those of a link that the chat's command opened itself."""
+        agent = _session(params.get("agentId"))
+        try:
+            context = await self.context(agent)
+        except Exception:
+            raise BridgeError("unknown_agent", "Studio does not know this chat") from None
+        uid = context.get("uid")
+        if type(uid) is not int:
+            raise BridgeError("unknown_agent", "Studio does not know the Linux user of this chat")
+        try:
+            return dict(await self.queue(uid, params.get("url"), agent, context))
+        except PolicyError as error:
+            raise BridgeError("invalid_url", str(error)) from None
+
+    def _existing(self, agent: str, url: object, now: float) -> dict[str, Any] | None:
+        """The request of this chat for the same link, while it can still answer. A link that a
+        command opens and that the agent also gives in a message or a tool call gets one card."""
+        if not isinstance(url, str):
+            return None
+        for item in self.items.values():
+            if item["agentId"] == agent and url in (item["url"], item.get("startUrl")) \
+                    and item["state"] not in REOPEN_STATES and item["createdAt"] > now - TTL_SECONDS:
+                return item
+        return None
+
+    async def queue(self, uid: int, url: object, agent: str, context: dict[str, Any]) -> dict[str, Any]:
         # A native chat names itself by its session; the context gives its Studio chat.
         agent = str(context.get("agentId") or agent)
         now = self.clock()
+        existing = self._existing(agent, url, now)
+        if existing is not None:
+            return existing
         recent = [item for item in self.items.values()
                   if item["uid"] == uid and item["createdAt"] > now - LIMIT_WINDOW_SECONDS]
         if len(recent) >= LIMIT_COUNT:
@@ -286,6 +323,9 @@ class BrowserBridge:
         if final.redirect is not None:
             connect_address(uid, final.redirect.port, self.listeners())
         async with self.changed:
+            existing = self._existing(agent, url, now)
+            if existing is not None:
+                return existing
             # The latest link of a chat replaces its earlier pending link.
             for item in self.items.values():
                 if item["agentId"] == agent and item["state"] == "pending":
@@ -325,6 +365,8 @@ class BrowserBridge:
     async def call(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         if method == "browser.wait":
             return await self.wait(params)
+        if method == "browser.submit":
+            return await self.submit(params)
         async with self.changed:
             if method == "browser.answer":
                 return self.answer(params)

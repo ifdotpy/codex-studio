@@ -44,10 +44,10 @@ READ_METHODS |= UPDATE_READ_METHODS
 METHODS |= UPDATE_METHODS
 METHODS |= {"host.exec", "host.configure"}
 # The VM browser bridge (browser_bridge.py, docs/vm-browser-bridge.md). The long poll keeps no
-# receipt; the answer, the callback relay and the close keep one, so a retry with the same
-# request ID replays the saved result and never delivers a sign-in code twice.
+# receipt; the submit, the answer, the callback relay and the close keep one, so a retry with
+# the same request ID replays the saved result and never delivers a sign-in code twice.
 READ_METHODS |= {"browser.wait"}
-METHODS |= READ_METHODS | {"browser.answer", "browser.callback", "browser.close"}
+METHODS |= READ_METHODS | {"browser.submit", "browser.answer", "browser.callback", "browser.close"}
 CLIENT_IDLE_SECONDS = 60
 
 
