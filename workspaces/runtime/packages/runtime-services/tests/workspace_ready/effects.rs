@@ -318,6 +318,28 @@ async fn image_readiness_refuses_with_python_message_without_workspace_writes() 
     assert!(!fixture.repo.join(".worktrees").exists());
 }
 
+/// An agent at the repository root gets the worktree root as its cwd. The
+/// stored text has no trailing separator, because the room gate and other
+/// readers compare the stored text as a path identity.
+#[tokio::test]
+async fn repository_root_cwd_is_stored_without_a_trailing_separator() {
+    let fixture = Fixture::new().await;
+    let repository = fixture.repo.canonicalize().expect("canonical repository");
+    fixture.patch("cwd", json!(repository)).await;
+    let result = prepare(std::sync::Arc::clone(&fixture.store), fixture.id.clone())
+        .await
+        .expect("prepare");
+    let cwd = admitted(&fixture, result).await;
+    let expected = repository
+        .join(".worktrees/codex-agents")
+        .join(&fixture.id)
+        .to_str()
+        .expect("UTF-8 path")
+        .to_owned();
+    assert_eq!(fixture.actor()["cwd"], json!(expected));
+    assert_eq!(cwd.to_str(), Some(expected.as_str()));
+}
+
 #[tokio::test]
 async fn creates_subproject_checkpoint_and_preserves_queued_input_and_source_index() {
     let fixture = Fixture::new().await;

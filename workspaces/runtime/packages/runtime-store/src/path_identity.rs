@@ -69,6 +69,25 @@ pub fn same_text(left: &str, right: &str) -> bool {
     same(Path::new(left), Path::new(right))
 }
 
+/// The one string form of an absolute path, without a filesystem read:
+/// no trailing separator, no `.` component and no repeated separator. Use it
+/// where a stored path must be compared as text and no read is allowed, such
+/// as inside a gate. It does not resolve links, so it is not [`resolve`]. A
+/// relative path or a path with `..` gives `None`, because the meaning of
+/// `..` depends on the filesystem.
+#[must_use]
+pub fn lexical(path: &Path) -> Option<PathBuf> {
+    (path.is_absolute() && !path.components().any(|c| c == Component::ParentDir))
+        .then(|| path.components().collect())
+}
+
+/// [`lexical`] for paths stored as text; `None` also for a result that is not
+/// UTF-8.
+#[must_use]
+pub fn lexical_text(path: &str) -> Option<String> {
+    lexical(Path::new(path)).and_then(|path| path.to_str().map(str::to_owned))
+}
+
 #[cfg(all(test, unix))]
 mod tests {
     use super::{resolve, same, same_text};
@@ -124,5 +143,21 @@ mod tests {
         let written = directory.path().to_str().expect("UTF-8 temporary folder");
         assert!(same_text(written, canonical.to_str().expect("UTF-8")));
         assert!(same(&directory.path().join("new"), &canonical.join("new")));
+    }
+
+    /// 2026-10-21: a worktree cwd was stored with a trailing slash.
+    #[test]
+    fn lexical_gives_one_form_without_a_read() {
+        use super::lexical_text;
+        for spelling in ["/a/b", "/a/b/", "/a//b", "/a/./b/", "//a/b"] {
+            assert_eq!(
+                lexical_text(spelling).as_deref(),
+                Some("/a/b"),
+                "{spelling}"
+            );
+        }
+        assert_eq!(lexical_text("/").as_deref(), Some("/"));
+        assert_eq!(lexical_text("a/b"), None);
+        assert_eq!(lexical_text("/a/../b"), None);
     }
 }

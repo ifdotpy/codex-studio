@@ -50,6 +50,20 @@ async fn try_send(
     RuntimeStore,
     Result<Value, crate::managed_host_tools::Error>,
 ) {
+    try_send_with(sender_index, target, id, Vec::new()).await
+}
+
+/// `try_send` with `extra_agents` saved before the call.
+async fn try_send_with(
+    sender_index: usize,
+    target: &str,
+    id: &str,
+    extra_agents: Vec<Value>,
+) -> (
+    tempfile::TempDir,
+    RuntimeStore,
+    Result<Value, crate::managed_host_tools::Error>,
+) {
     let oracle = template();
     let directory = tempfile::tempdir().unwrap();
     for name in ["canvas.sqlite3", "analytics.sqlite3"] {
@@ -60,6 +74,18 @@ async fn try_send(
         .unwrap();
     }
     let store = RuntimeStore::open(Some(directory.path())).await.unwrap();
+    store
+        .transaction(move |tx| {
+            for record in extra_agents {
+                studio_runtime_store::AgentRepository::put(
+                    tx,
+                    &studio_runtime_store::AgentRecord::from_value(record)?,
+                )?;
+            }
+            Ok(())
+        })
+        .await
+        .unwrap();
     let actor = oracle["agents"][sender_index].clone();
     let context = CallbackContext {
         agent: actor["id"].as_str().unwrap().into(),
@@ -502,6 +528,74 @@ async fn send_resolves_a_unique_visible_prefix_and_names_a_refused_id() {
             ))
         ),
         "{refused:?}"
+    );
+}
+
+/// 2026-10-21: three agents of another team got a cwd with a trailing slash,
+/// and every `orchestration_send` got "Message ingress refused this request".
+/// The visibility scan checked each agent of another root, and one refused
+/// record failed the whole call. A trailing slash is the same path identity.
+/// A record that the gate cannot check (here a relative cwd) stays hidden and
+/// does not refuse sends to other agents.
+#[tokio::test]
+async fn an_unusual_record_of_another_team_does_not_refuse_sends() {
+    let oracle = template();
+    let lead = &oracle["agents"][0];
+    let child = oracle["agents"][1]["id"].as_str().unwrap();
+    let foreign = |id: &str, cwd: &str| {
+        let mut record = lead.clone();
+        record["id"] = json!(id);
+        record["rootId"] = json!("99999999-root-of-another-team");
+        record["parentId"] = json!("99999999-root-of-another-team");
+        record["isLead"] = json!(false);
+        record["threadId"] = json!(format!("thread-{id}"));
+        record["cwd"] = json!(cwd);
+        record
+    };
+    let trailing = format!("{}/", lead["cwd"].as_str().unwrap());
+    let others = || {
+        vec![
+            foreign("aaaaaaaa-trailing-slash", &trailing),
+            foreign("bbbbbbbb-relative-cwd", "relative/cwd"),
+        ]
+    };
+    for (target, id) in [
+        (child, "send-child-full"),
+        (&child[..8], "send-child-prefix"),
+    ] {
+        let (_root, _store, sent) = try_send_with(0, target, id, others()).await;
+        assert_eq!(sent.unwrap()["status"], "queued", "{target}");
+    }
+    let (_root, store, refused) =
+        try_send_with(0, "bbbbbbbb-relative-cwd", "send-hidden", others()).await;
+    let mut rows = store
+        .transaction(|tx| Ok(messages::authorization_records(tx).unwrap()))
+        .await
+        .unwrap();
+    assert_eq!(
+        rows.resolved_paths[&trailing],
+        lead["cwd"].as_str().unwrap()
+    );
+    rows.recipient_id = "aaaaaaaa-trailing-slash".into();
+    crate::submit_gates::AuthorizationSnapshot::from_records(&rows)
+        .expect("a trailing slash is the same path identity");
+    assert!(
+        matches!(
+            refused,
+            Err(crate::managed_host_tools::Error::Invalid(
+                "Unknown agent ID in this caller's scope"
+            ))
+        ),
+        "{refused:?}"
+    );
+}
+
+/// A stored-record refusal names its location instead of a generic text.
+#[test]
+fn a_stored_refusal_names_its_location() {
+    assert_eq!(
+        callback_refusal(CallbackError::Stored("agents/a/cwd".into())).to_string(),
+        "Invalid stored record at agents/a/cwd"
     );
 }
 
