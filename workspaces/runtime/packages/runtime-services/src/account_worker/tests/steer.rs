@@ -178,7 +178,11 @@ async fn acknowledged_steer_is_delivered_to_the_running_turn_once(provider: &'st
     assert_eq!(request["params"]["clientUserMessageId"], INPUT);
     assert_eq!(
         request["params"]["input"],
-        json!([{"type":"text","text":TEXT}])
+        if provider == "claude" {
+            json!([{"type":"text","text":TEXT,"inputOrigin":"human"}])
+        } else {
+            json!([{"type":"text","text":TEXT}])
+        }
     );
     peer.reply(&request, json!({"turnId":"turn"})).await;
     assert_eq!(
@@ -408,7 +412,31 @@ async fn mixed_batch_is_compiled_acknowledged_once_and_deferred_input_waits(
     let request = steer(&state, &mut peer, &worker).await;
     assert_eq!(request["params"]["clientUserMessageId"], "available");
     assert_eq!(request["params"]["expectedTurnId"], "turn");
-    let text = request["params"]["input"][0]["text"].as_str().unwrap();
+    let inputs = request["params"]["input"].as_array().unwrap();
+    if provider == "claude" {
+        for item in inputs {
+            let text = item["text"].as_str().unwrap();
+            // This fixture stamps senderId on its followup. It retains task
+            // authority, as do work decisions and the actual user message.
+            let expected_origin = if text == TEXT
+                || text.starts_with("[Orchestration event: followup]\n")
+                || text.starts_with("[Orchestration event: work_decision]\n")
+            {
+                "human"
+            } else {
+                "studio_event"
+            };
+            assert_eq!(item["inputOrigin"], expected_origin, "{item}");
+        }
+    } else {
+        assert_eq!(inputs.len(), 1, "Codex keeps one combined text item");
+        assert!(inputs[0].get("inputOrigin").is_none());
+    }
+    let text = inputs
+        .iter()
+        .map(|item| item["text"].as_str().unwrap())
+        .collect::<Vec<_>>()
+        .join("\n\n");
     for kind in [
         "work_available",
         "work_review",
@@ -1054,7 +1082,11 @@ async fn a_team_followup_reaches_the_running_turn(provider: &'static str) {
     assert_eq!(request["params"]["clientUserMessageId"], FOLLOWUP);
     assert_eq!(
         request["params"]["input"],
-        json!([{"type":"text","text":format!("[Orchestration event: followup]\n{FOLLOWUP_TEXT}")}])
+        if provider == "claude" {
+            json!([{"type":"text","text":format!("[Orchestration event: followup]\n{FOLLOWUP_TEXT}"),"inputOrigin":"human"}])
+        } else {
+            json!([{"type":"text","text":format!("[Orchestration event: followup]\n{FOLLOWUP_TEXT}")}])
+        }
     );
     assert_eq!(followup_status(&state).await.0, "dispatching");
     peer.reply(&request, json!({"turnId":"turn"})).await;
