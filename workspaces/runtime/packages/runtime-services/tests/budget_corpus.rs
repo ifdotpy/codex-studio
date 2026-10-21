@@ -1009,6 +1009,176 @@ fn incomplete_collected_tail_cannot_authorize_admission() {
 }
 
 #[test]
+fn claude_budget_admission_uses_recorded_response_usage() {
+    for provider in ["claude", "codex"] {
+        for spent in [100, 1000, 1001, 0] {
+            for history in [None, Some(json!({"status":"liveOnly"}))] {
+                let (mut case, _) = fixture();
+                case["agents"][0]["provider"] = json!(provider);
+                case["agents"][0]["tokenBudget"] = json!(1000);
+                case["agents"][0]["lastCompletedTurn"] = json!("completed-turn");
+                case["seed_captures"] = json!([{"params":{
+                    "responseId":"response", "usageSource":"claudeResponse",
+                    "requestUsage":{"totalTokens":spent}
+                }}]);
+                let initial = records(&case);
+                let mut connection = db(&initial, &case);
+                let observation = HistoryObservation::from_records(
+                    &initial["agents"]["a"],
+                    history.as_ref(),
+                    None,
+                )
+                .expect("history observation");
+                let tx = connection.transaction().expect("transaction");
+                let decision = budget_service::admission(
+                    &tx,
+                    "a",
+                    &BTreeMap::from([("a".into(), observation)]),
+                    102.,
+                )
+                .expect("admission");
+                assert_eq!(decision.status.tokens_used, Some(spent));
+                assert_eq!(
+                    decision.denial.is_none(),
+                    provider == "claude" && spent < 1000,
+                    "{provider}, spent={spent}, history={history:?}: {decision:?}"
+                );
+                assert_eq!(decision.status.incomplete.is_empty(), provider == "claude");
+                assert_eq!(decision.status.reached, spent >= 1000);
+            }
+        }
+    }
+}
+
+#[test]
+fn claude_budget_admission_refuses_unknown_live_coverage() {
+    for defect in [
+        "missingRows",
+        "partialRows",
+        "missingLedger",
+        "ledgerMismatch",
+        "partial",
+        "counterGap",
+    ] {
+        let (mut case, _) = fixture();
+        case["agents"][0]["provider"] = json!("claude");
+        case["agents"][0]["tokenBudget"] = json!(1000);
+        case["agents"][0]["lastCompletedTurn"] = json!("completed-turn");
+        case["seed_captures"] = json!([{"params":{
+            "responseId":"response", "usageSource":"claudeResponse",
+            "requestUsage":{"totalTokens":100}
+        }}]);
+        if defect == "partialRows" {
+            case["seed_captures"]
+                .as_array_mut()
+                .expect("captures")
+                .push(json!({
+                    "params":{"responseId":"second-response", "usageSource":"claudeResponse",
+                        "requestUsage":{"totalTokens":50}}
+                }));
+        } else if defect == "counterGap" {
+            case["seed_captures"]
+                .as_array_mut()
+                .expect("captures")
+                .push(json!({
+                    "params":{"tokenUsage":{"total":{"totalTokens":200},"last":{"totalTokens":200}}}
+                }));
+        }
+        let mut initial = records(&case);
+        if defect == "missingRows" {
+            initial["usage"] = json!([]);
+        } else if defect == "partialRows" {
+            initial["usage"].as_array_mut().expect("usage").pop();
+        } else if defect == "missingLedger" {
+            initial["states"] = json!({});
+        } else if defect == "ledgerMismatch" {
+            initial["states"]["a"]["spent"] = json!(50);
+            initial["agents"]["a"]["tokensUsed"] = json!(50);
+        }
+        let history = if defect == "partial" {
+            json!({"status":"liveOnly", "coverage":"partial"})
+        } else {
+            json!({"status":"liveOnly"})
+        };
+        let observation =
+            HistoryObservation::from_records(&initial["agents"]["a"], Some(&history), None)
+                .expect("history observation");
+        let mut connection = db(&initial, &case);
+        let tx = connection.transaction().expect("transaction");
+        let decision =
+            budget_service::admission(&tx, "a", &BTreeMap::from([("a".into(), observation)]), 102.)
+                .expect("admission");
+        assert!(decision.denial.is_some(), "{defect}: {decision:?}");
+        assert!(!decision.status.incomplete.is_empty(), "{defect}");
+        assert!(!decision.status.reached, "{defect}");
+    }
+}
+
+#[test]
+fn claude_budget_admission_accepts_failure_before_any_response() {
+    let (mut case, _) = fixture();
+    case["agents"][0]["provider"] = json!("claude");
+    case["agents"][0]["tokenBudget"] = json!(1000);
+    case["agents"][0]["inFlight"] = json!(false);
+    case["agents"][0]["turnId"] = json!("failed-turn");
+    case["agents"][0]["lastCompletedTurn"] = json!("failed-turn");
+    case["agents"][0]["lastCompletedTurnStatus"] = json!("failed");
+    case["agents"][0]["lastCompletedTurnError"] = json!({"message":"Rate limit exceeded"});
+    let initial = records(&case);
+    assert!(initial["usage"].as_array().expect("usage").is_empty());
+    let observation = HistoryObservation::from_records(
+        &initial["agents"]["a"],
+        Some(&json!({"status":"liveOnly"})),
+        None,
+    )
+    .expect("history observation");
+    let mut connection = db(&initial, &case);
+    let tx = connection.transaction().expect("transaction");
+    let decision =
+        budget_service::admission(&tx, "a", &BTreeMap::from([("a".into(), observation)]), 102.)
+            .expect("admission");
+    assert_eq!(decision.status.tokens_used, Some(0));
+    assert!(decision.status.incomplete.is_empty());
+    assert!(decision.denial.is_none(), "{decision:?}");
+}
+
+#[test]
+fn mixed_team_budget_includes_claude_live_usage() {
+    for spent in [100, 1000] {
+        let (mut case, _) = fixture();
+        case["agents"][0]["tokenBudget"] = json!(1000);
+        let mut worker = case["agents"][0].clone();
+        worker["id"] = json!("worker");
+        worker["provider"] = json!("claude");
+        worker["lastCompletedTurn"] = json!("completed-turn");
+        case["agents"].as_array_mut().expect("agents").push(worker);
+        case["seed_captures"] = json!([{"agent":"worker", "params":{
+            "responseId":"response", "usageSource":"claudeResponse",
+            "requestUsage":{"totalTokens":spent}
+        }}]);
+        let initial = records(&case);
+        let observation = HistoryObservation::from_records(
+            &initial["agents"]["worker"],
+            Some(&json!({"status":"liveOnly"})),
+            None,
+        )
+        .expect("history observation");
+        let mut connection = db(&initial, &case);
+        let tx = connection.transaction().expect("transaction");
+        let decision = budget_service::admission(
+            &tx,
+            "a",
+            &BTreeMap::from([("worker".into(), observation)]),
+            102.,
+        )
+        .expect("admission");
+        assert_eq!(decision.status.tokens_used, Some(spent));
+        assert_eq!(decision.denial.is_none(), spent < 1000, "{decision:?}");
+        assert!(decision.status.incomplete.is_empty());
+    }
+}
+
+#[test]
 fn budget_corpus_suite() {
     let cases: &[(&str, fn())] = &[
         (
