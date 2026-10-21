@@ -140,6 +140,17 @@ pub(crate) async fn pull(
         >(response)?))
         .into_response());
     }
+    let generation_before_vault_read = store.committed_change_generation();
+    let vault_snapshot = if scope == "drafts" {
+        sync_policy::ProjectVaultSnapshot::default()
+    } else {
+        sync_policy::ProjectVaultSnapshot::capture_for_sync(
+            &store,
+            std::path::Path::new(&state_dir),
+        )
+        .await
+        .map_err(map_sync_store_error)?
+    };
     let read_store = store.clone();
     let read_validators = validators.clone();
     let read_state_dir = state_dir.clone();
@@ -193,12 +204,12 @@ pub(crate) async fn pull(
                         response,
                     )));
                 }
-                let generation_before_vault_read = store.committed_change_generation();
-                let vault_snapshot = sync_policy::ProjectVaultSnapshot::capture_for_sync(
-                    std::path::Path::new(&read_state_dir),
-                    connection,
-                )
-                .map_err(map_sync_store_error)?;
+                if !vault_snapshot
+                    .matches_sources(connection)
+                    .map_err(map_sync_store_error)?
+                {
+                    return Ok(EntityPullResult::NeedsMaintenance(generation));
+                }
                 let vault_signature = vault_snapshot.signature();
                 if generation_before_vault_read != store.committed_change_generation()
                     || store
@@ -320,15 +331,22 @@ async fn pull_with_maintenance(
         let prepare_validators = validators.clone();
         let prepare_priority_id = priority_id.clone();
         let generation_before_vault_read = store.committed_change_generation();
+        let vault_snapshot = sync_policy::ProjectVaultSnapshot::capture_for_sync(
+            &store,
+            std::path::Path::new(&state_dir),
+        )
+        .await
+        .map_err(map_sync_store_error)?;
         let preparation = store
             .read_async(
                 "runtime-http/routes/sync_documents/entity-maintenance-preparation",
                 move |transaction| -> Result<EntityMaintenancePreparation, ApiError> {
-                    let vault_snapshot = sync_policy::ProjectVaultSnapshot::capture_for_sync(
-                        std::path::Path::new(&prepare_state_dir),
-                        transaction,
-                    )
-                    .map_err(map_sync_store_error)?;
+                    if !vault_snapshot
+                        .matches_sources(transaction)
+                        .map_err(map_sync_store_error)?
+                    {
+                        return Ok(EntityMaintenancePreparation::PrepareFilesystem);
+                    }
                     let vault_signature = vault_snapshot.signature();
                     let observed_generation = prepare_store.committed_change_generation();
                     let needs_maintenance = generation_before_vault_read != observed_generation
@@ -1570,12 +1588,13 @@ mod vault_maintenance_tests {
         assert_eq!(store.committed_change_generation(), seeded_generation);
         let reader = store.test_reader().expect("store reader");
         assert!(sync_policy::has_complete_entity_seed(&reader).expect("seed marker reads"));
-        let vault_snapshot = sync_policy::ProjectVaultSnapshot::capture_for_sync(
-            std::path::Path::new(&state_dir),
-            &reader,
-        )
-        .expect("vault snapshot");
         drop(reader);
+        let vault_snapshot = sync_policy::ProjectVaultSnapshot::capture_for_sync(
+            &store,
+            std::path::Path::new(&state_dir),
+        )
+        .await
+        .expect("vault snapshot");
         assert!(
             !store
                 .entity_projections_need_maintenance(&vault_snapshot.signature())

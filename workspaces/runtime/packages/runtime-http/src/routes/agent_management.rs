@@ -321,27 +321,29 @@ async fn native_action(
         .read_async("runtime-http/routes/agent_management", move |tx| {
             let agent = AgentRepository::get(tx, &AgentId::from(read_agent.as_str()))?
                 .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "Agent not found"))?;
-            let prepared: Box<dyn MessageAdmission> = if use_prepared {
-                Box::new(
-                    studio_runtime_services::message_admission::PreparedAdmission::load(
-                        tx,
-                        &read_agent,
+            let prepared: studio_runtime_services::message_admission::AdmissionSnapshot =
+                if use_prepared {
+                    studio_runtime_services::message_admission::AdmissionSnapshot::Workspace(
+                        studio_runtime_services::message_admission::PreparedAdmission::read(
+                            tx,
+                            &read_agent,
+                        )
+                        .map_err(|_| ApiError::internal())?,
                     )
-                    .map_err(|_| ApiError::internal())?,
-                )
-            } else {
-                Box::new(
-                    studio_runtime_services::message_admission::MessageIngressAdmission::load(
-                        read_store,
-                        tx,
-                        &read_agent,
+                } else {
+                    studio_runtime_services::message_admission::AdmissionSnapshot::Ingress(
+                        studio_runtime_services::message_admission::MessageIngressAdmission::read(
+                            read_store,
+                            tx,
+                            &read_agent,
+                        )
+                        .map_err(|_| ApiError::internal())?,
                     )
-                    .map_err(|_| ApiError::internal())?,
-                )
-            };
+                };
             Ok::<_, ApiError>((agent, prepared))
         })
         .await?;
+    let prepared = prepared.prepare().await.map_err(|_| ApiError::internal())?;
     let (provider, guest) = native_action_provider(&store, &agent, host_port, guest)?;
     let admission: Arc<dyn MessageAdmission> =
         admission_override.unwrap_or_else(|| Arc::from(prepared));

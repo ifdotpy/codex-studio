@@ -649,7 +649,7 @@ impl RuntimeOrchestrationEffects {
                     .read_async(
                         "runtime-services/multi_server_orchestration",
                         move |connection| {
-                            crate::message_admission::MessageIngressAdmission::load(
+                            crate::message_admission::MessageIngressAdmission::read(
                                 Arc::clone(&store),
                                 connection,
                                 &target_id,
@@ -659,7 +659,12 @@ impl RuntimeOrchestrationEffects {
                             })
                         },
                     )
-                    .await?,
+                    .await?
+                    .prepare()
+                    .await
+                    .map_err(|_| {
+                        refused(503, "send_admission", "The message could not be admitted")
+                    })?,
             )
         } else {
             None
@@ -891,7 +896,7 @@ async fn receive_remote_anchor_input(
                 if parent.epoch != parent_epoch {
                     return Err(refused(409, "parent_changed", "The home agent changed"));
                 }
-                let admission = crate::message_admission::MessageIngressAdmission::load(
+                let admission = crate::message_admission::MessageIngressAdmission::read(
                     Arc::clone(&store_for_read),
                     connection,
                     parent_id,
@@ -902,6 +907,10 @@ async fn receive_remote_anchor_input(
         )
         .await?;
 
+    let admission = admission
+        .prepare()
+        .await
+        .map_err(|_| refused(400, "input_rejected", "The remote input was not admitted"))?;
     let key = key.to_owned();
     let link_id = link_id.to_owned();
     let principal = principal.to_owned();
@@ -1154,7 +1163,7 @@ async fn receive_remote_input(
                 }
                 let admission = if matches!(kind_for_read.as_str(), "user" | "followup") {
                     Some(
-                        crate::message_admission::MessageIngressAdmission::load(
+                        crate::message_admission::MessageIngressAdmission::read(
                             Arc::clone(&store_for_read),
                             connection,
                             worker_id_for_read.as_str(),
@@ -1171,6 +1180,13 @@ async fn receive_remote_input(
         )
         .await?;
     let (worker, admission, early_result) = preflight;
+    let admission =
+        match admission {
+            Some(snapshot) => Some(snapshot.prepare().await.map_err(|_| {
+                refused(400, "input_rejected", "The remote input was not admitted")
+            })?),
+            None => None,
+        };
     if let Some(result) = early_result {
         return Ok(result);
     }

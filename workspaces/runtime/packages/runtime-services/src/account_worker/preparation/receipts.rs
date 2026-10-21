@@ -75,7 +75,7 @@ pub(crate) fn accept_thread(
         &filesystem,
         None,
     )?;
-    align_receipt_cwd(&mut current, &attempt.snapshot);
+    align_receipt_cwd(&mut current, &attempt.snapshot, resources);
     let receipt = thread::ProviderReceipt {
         identity: thread::ReceiptIdentity {
             operation_id: format!(

@@ -1293,6 +1293,7 @@ fn history_roots(home: &Path) -> [PathBuf; 2] {
 }
 
 fn canonical_directory(path: &Path) -> Result<PathBuf, HistoryFileError> {
+    studio_runtime_store::debug_assert_outside_sql();
     let home = fs::canonicalize(path).map_err(|_| HistoryFileError::Unavailable)?;
     if !home.is_dir() {
         return Err(HistoryFileError::Unavailable);

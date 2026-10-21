@@ -2460,6 +2460,7 @@ mod voice_composition_tests {
             model_catalog: ModelCatalogService::new(),
             account_home: String::new(),
             shared_home: String::new(),
+            filesystem_inputs: None,
             server_source_root: directory.to_path_buf(),
             claude_account_pin: serde_json::Value::Null,
             account_driver: None,

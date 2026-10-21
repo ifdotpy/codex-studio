@@ -64,6 +64,7 @@ fn expand_home(path: &Path) -> StoreResult<PathBuf> {
 }
 
 fn canonical_existing_dir(path: PathBuf) -> StoreResult<PathBuf> {
+    crate::debug_assert_outside_sql();
     let resolved = path.canonicalize()?;
     if resolved
         .components()

@@ -41,22 +41,43 @@ pub struct PreparedAdmission {
 }
 
 impl PreparedAdmission {
-    pub fn load(connection: &Connection, recipient: &str) -> Result<Self, CoordinationError> {
+    /// Capture only SQL inputs; resolve paths after the read returns.
+    pub fn read(
+        connection: &Connection,
+        recipient: &str,
+    ) -> Result<AdmissionPaths, CoordinationError> {
         let Some(recipient) = AgentRepository::get(connection, &AgentId::from(recipient))? else {
-            return Ok(Self::default());
+            return Ok(AdmissionPaths(Vec::new()));
         };
-        // The recipient's directory, the directories of live agents (they may
-        // start an operation before admission) and of operation holders.
-        let mut paths = BTreeMap::new();
-        for cwd in std::iter::once(Some(cwd(&recipient)?.to_owned()))
+        let paths = std::iter::once(Some(cwd(&recipient)?.to_owned()))
             .chain(AgentIndexedReads::admission_cwds(connection)?)
             .flatten()
-        {
+            .collect();
+        Ok(AdmissionPaths(paths))
+    }
+}
+
+pub struct AdmissionPaths(Vec<String>);
+
+impl AdmissionPaths {
+    fn resolve(self) -> Result<PreparedAdmission, CoordinationError> {
+        studio_runtime_store::debug_assert_outside_sql();
+        let mut paths = BTreeMap::new();
+        for cwd in self.0 {
             paths
                 .entry(cwd.clone())
                 .or_insert_with(|| resolve_path(&cwd));
         }
-        Ok(Self { paths })
+        Ok(PreparedAdmission { paths })
+    }
+
+    pub async fn prepare(self) -> Result<PreparedAdmission, CoordinationError> {
+        studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-services/message-admission/paths",
+            move || self.resolve(),
+        )
+        .await
+        .map_err(|_| StoreError::ReadTaskFailed)?
     }
 }
 
@@ -164,43 +185,83 @@ pub struct MessageIngressAdmission {
 }
 
 impl MessageIngressAdmission {
-    pub fn load(
+    /// Capture SQL inputs only. Call `prepare` after the read returns.
+    pub fn read(
         store: Arc<RuntimeStore>,
         connection: &Connection,
         recipient: &str,
-    ) -> Result<Self, CoordinationError> {
-        let workspace = PreparedAdmission::load(connection, recipient)?;
-        let histories = match AgentRepository::get(connection, &AgentId::from(recipient))? {
+    ) -> Result<MessageIngressSnapshot, CoordinationError> {
+        let workspace = PreparedAdmission::read(connection, recipient)?;
+        let members = match AgentRepository::get(connection, &AgentId::from(recipient))? {
             Some(agent) => {
                 let root = AgentRepository::get(connection, &agent.root_id)?;
                 if root.as_ref().is_some_and(|root| {
-                    root.extra.get("tokenBudget").and_then(Value::as_u64) == Some(0)
-                }) {
-                    // A zero budget is already reached from the durable zero
-                    // lifetime floor; provider history cannot change the denial.
-                    BTreeMap::new()
-                } else if root.as_ref().is_some_and(|root| {
                     root.extra
                         .get("tokenBudget")
                         .is_some_and(|budget| !budget.is_null())
+                        && root.extra.get("tokenBudget").and_then(Value::as_u64) != Some(0)
                 }) {
-                    crate::budget_runtime::read_histories_from_connection(
-                        &store,
+                    Some(crate::budget_runtime::team_members(
                         connection,
                         &agent.root_id.0,
-                    )?
+                    )?)
                 } else {
-                    BTreeMap::new()
+                    None
                 }
             }
-            None => BTreeMap::new(),
+            None => None,
         };
-        Ok(Self {
+        Ok(MessageIngressSnapshot {
             workspace,
             store,
-            histories,
-            now: unix_time(),
+            members,
         })
+    }
+}
+
+pub struct MessageIngressSnapshot {
+    workspace: AdmissionPaths,
+    store: Arc<RuntimeStore>,
+    members: Option<Vec<crate::budget_runtime::TeamMember>>,
+}
+
+impl MessageIngressSnapshot {
+    pub async fn prepare(self) -> Result<MessageIngressAdmission, CoordinationError> {
+        studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-services/message-admission/history",
+            move || {
+                let workspace = self.workspace.resolve()?;
+                let histories = match self.members {
+                    Some(members) => {
+                        crate::budget_runtime::observe_histories(self.store.root(), members)?
+                    }
+                    None => BTreeMap::new(),
+                };
+                Ok(MessageIngressAdmission {
+                    workspace,
+                    store: self.store,
+                    histories,
+                    now: unix_time(),
+                })
+            },
+        )
+        .await
+        .map_err(|_| StoreError::ReadTaskFailed)?
+    }
+}
+
+/// SQL-only preparation for callers selecting an admission policy dynamically.
+pub enum AdmissionSnapshot {
+    Workspace(AdmissionPaths),
+    Ingress(MessageIngressSnapshot),
+}
+
+impl AdmissionSnapshot {
+    pub async fn prepare(self) -> Result<Box<dyn MessageAdmission>, CoordinationError> {
+        match self {
+            Self::Workspace(snapshot) => Ok(Box::new(snapshot.prepare().await?)),
+            Self::Ingress(snapshot) => Ok(Box::new(snapshot.prepare().await?)),
+        }
     }
 }
 
@@ -254,6 +315,7 @@ fn cwd(agent: &AgentRecord) -> Result<&str, CoordinationError> {
 }
 
 fn resolve_path(path: &str) -> PathBuf {
+    studio_runtime_store::debug_assert_outside_sql();
     use std::path::Component;
 
     let path = PathBuf::from(path);
@@ -333,7 +395,7 @@ mod tests {
     use serde_json::json;
 
     #[tokio::test]
-    async fn positive_budget_admission_reuses_the_caller_reader_for_history_snapshot() {
+    async fn positive_budget_admission_releases_sql_snapshot_before_history_read() {
         let directory = tempfile::tempdir().expect("temporary state directory");
         let project_directory = tempfile::tempdir().expect("temporary project directory");
         let project = project_directory.path().to_path_buf();
@@ -357,11 +419,17 @@ mod tests {
             .await
             .expect("persist lead record");
 
-        let connection = store
-            .test_reader()
-            .expect("hold message admission snapshot");
-        let admission = MessageIngressAdmission::load(Arc::clone(&store), &connection, "lead")
-            .expect("positive token budget history loads without nested read");
+        let read_store = Arc::clone(&store);
+        let snapshot = store
+            .read_async("tests/message-admission", move |connection| {
+                MessageIngressAdmission::read(read_store, connection, "lead")
+            })
+            .await
+            .expect("SQL inputs");
+        let admission = snapshot
+            .prepare()
+            .await
+            .expect("positive token budget history loads after the SQL callback");
         assert!(admission.histories.contains_key("lead"));
     }
 }

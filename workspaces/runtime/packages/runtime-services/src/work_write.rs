@@ -899,9 +899,64 @@ pub struct SubmitWork {
     pub checks: String,
     pub revision: String,
     pub files: Vec<String>,
+    pub prepared_files: Option<PreparedSubmissionFiles>,
     pub state_dir: PathBuf,
     pub vm_evidence: Option<Value>,
     pub vm_evidence_request_id: Option<String>,
+}
+
+/// File validation bound to the exact stored owner/cwd and submitted list.
+#[derive(Clone)]
+pub struct PreparedSubmissionFiles {
+    owner: String,
+    cwd: Value,
+    files: Vec<String>,
+    resolved: Option<Vec<PathBuf>>,
+}
+
+/// Snapshot SQL ownership first, then resolve paths outside every SQL callback.
+/// Validation failures stay in the evidence until after the writer's replay check.
+pub async fn prepare_submission_files(
+    store: &RuntimeStore,
+    agent_id: &str,
+    input: &SubmitWork,
+) -> Result<Option<PreparedSubmissionFiles>, WorkWriteError> {
+    if input.files.is_empty() {
+        return Ok(None);
+    }
+    let agent_id = agent_id.to_owned();
+    let task_id = input.task_id.clone();
+    let owner = store
+        .read_async("runtime-services/work-files/sql", move |connection| {
+            let Some(agent) = AgentRepository::get(connection, &AgentId::from(agent_id.as_str()))?
+            else {
+                return Ok::<_, WorkWriteError>(None);
+            };
+            let work = WorkItemsRepository::work_record(connection, &task_id)?;
+            let owner = work
+                .as_ref()
+                .and_then(|work| work["owner"].as_str())
+                .unwrap_or(&agent.id.0);
+            Ok(AgentRepository::get(connection, &AgentId::from(owner))?)
+        })
+        .await?;
+    let files = input.files.clone();
+    studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/work-files/filesystem",
+        move || {
+            owner.map(|owner| {
+                let resolved = resolve_submission_files(&owner, &files).ok();
+                PreparedSubmissionFiles {
+                    owner: owner.id.0,
+                    cwd: owner.extra.get("cwd").cloned().unwrap_or(Value::Null),
+                    files,
+                    resolved,
+                }
+            })
+        },
+    )
+    .await
+    .map_err(|_| WorkWriteError::PreparationWorker)
 }
 
 pub struct VmSubmissionCall {
@@ -966,8 +1021,20 @@ pub async fn prepare_vm_submission(
     agent_id: &str,
     request_id: Option<&str>,
     signature: &str,
-    input: &SubmitWork,
+    input: &mut SubmitWork,
 ) -> Result<VmSubmissionPreparation, WorkWriteError> {
+    if read_work_receipt(
+        store,
+        agent_id.to_owned(),
+        request_id.map(str::to_owned),
+        signature.to_owned(),
+    )
+    .await?
+    .is_some()
+    {
+        return Ok(VmSubmissionPreparation::Replay);
+    }
+    input.prepared_files = prepare_submission_files(store, agent_id, input).await?;
     let agent_id = agent_id.to_owned();
     let request_id = request_id.map(str::to_owned);
     let signature = signature.to_owned();
@@ -1006,7 +1073,7 @@ pub async fn prepare_vm_submission(
         }
         let owner_id = work["owner"].as_str().unwrap_or(&agent.id.0);
         let owner = event_write::checked_agent(tx, owner_id)?;
-        validate_submission_files(&owner, &input.files)?;
+        validate_submission_files(&owner, &input.files, input.prepared_files.as_ref())?;
         if owner.extra.get("executionMode").and_then(Value::as_str) != Some("vm") {
             return Ok(VmSubmissionPreparation::NotVm);
         }
@@ -2486,7 +2553,7 @@ fn submit(
     if submitter.root_id != agent.root_id {
         return Err(invalid("runtime_agents", submitter_id).into());
     }
-    validate_submission_files(&submitter, &input.files)?;
+    validate_submission_files(&submitter, &input.files, input.prepared_files.as_ref())?;
     if submitter.extra.get("executionMode").and_then(Value::as_str) == Some("vm") {
         let Some(request_id) = input.vm_evidence_request_id.as_deref() else {
             return Err(Error::Conflict(
@@ -2941,7 +3008,11 @@ fn text(value: &str, empty: bool) -> Result<String, Error> {
     Ok(value.to_owned())
 }
 
-fn validate_submission_files(agent: &AgentRecord, files: &[String]) -> Result<(), Error> {
+fn validate_submission_files(
+    agent: &AgentRecord,
+    files: &[String],
+    prepared: Option<&PreparedSubmissionFiles>,
+) -> Result<(), Error> {
     if files.len() > 50 || files.iter().any(|path| path.chars().count() > 4096) {
         return Err(Error::InvalidRequest("Supply up to 50 file paths"));
     }
@@ -2951,9 +3022,43 @@ fn validate_submission_files(agent: &AgentRecord, files: &[String]) -> Result<()
     let cwd = agent
         .extra
         .get("cwd")
+        .filter(|cwd| cwd.as_str().is_some_and(|cwd| !cwd.is_empty()))
+        .ok_or_else(|| invalid("runtime_agents", &agent.id.0))?;
+    let Some(prepared) = prepared else {
+        return Err(Error::Conflict(
+            "Submission file evidence must be prepared before saving the result",
+        ));
+    };
+    if prepared.owner != agent.id.0 || prepared.cwd != *cwd || prepared.files != files {
+        return Err(Error::Conflict(
+            "Submission file ownership changed before saving the result",
+        ));
+    }
+    if prepared
+        .resolved
+        .as_ref()
+        .is_none_or(|resolved| resolved.len() != files.len())
+    {
+        return Err(Error::InvalidRequest("Invalid request"));
+    }
+    Ok(())
+}
+
+fn resolve_submission_files(agent: &AgentRecord, files: &[String]) -> Result<Vec<PathBuf>, Error> {
+    studio_runtime_store::debug_assert_outside_sql();
+    if files.len() > 50 || files.iter().any(|path| path.chars().count() > 4096) {
+        return Err(Error::InvalidRequest("Supply up to 50 file paths"));
+    }
+    if files.is_empty() {
+        return Ok(Vec::new());
+    }
+    let cwd = agent
+        .extra
+        .get("cwd")
         .and_then(Value::as_str)
         .filter(|cwd| !cwd.is_empty())
         .ok_or_else(|| invalid("runtime_agents", &agent.id.0))?;
+    let mut resolved = Vec::with_capacity(files.len());
     for raw_path in files {
         let path = python_bounded_text(raw_path, 4096)?;
         let expanded = if path == "~" || path.starts_with("~/") {
@@ -2971,12 +3076,16 @@ fn validate_submission_files(agent: &AgentRecord, files: &[String]) -> Result<()
         } else {
             Path::new(cwd).join(expanded)
         };
-        weakly_canonicalize(&candidate).map_err(|_| Error::InvalidRequest("Invalid request"))?;
+        resolved.push(
+            weakly_canonicalize(&candidate)
+                .map_err(|_| Error::InvalidRequest("Invalid request"))?,
+        );
     }
-    Ok(())
+    Ok(resolved)
 }
 
 fn weakly_canonicalize(path: &Path) -> std::io::Result<PathBuf> {
+    studio_runtime_store::debug_assert_outside_sql();
     match path.canonicalize() {
         Ok(path) => Ok(path),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -3176,6 +3285,7 @@ mod actor_tests {
                 checks: "checks".to_owned(),
                 revision: "abc1234".to_owned(),
                 files: vec![],
+                prepared_files: None,
                 state_dir: std::env::temp_dir(),
                 vm_evidence: None,
                 vm_evidence_request_id: None,
@@ -3786,6 +3896,7 @@ mod actor_tests {
                 checks: "checks".to_owned(),
                 revision: "state-1".to_owned(),
                 files: vec![],
+                prepared_files: None,
                 state_dir: std::env::temp_dir(),
                 vm_evidence: Some(intent["evidence"].clone()),
                 vm_evidence_request_id: Some(request_id.to_owned()),
@@ -4132,6 +4243,101 @@ mod actor_tests {
         tx.commit().expect("transaction commits");
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn nonempty_file_submission_rechecks_cwd_and_replays_without_filesystem_work() {
+        let state = tempfile::tempdir().expect("state directory");
+        let project = tempfile::tempdir().expect("project directory");
+        let changed = tempfile::tempdir().expect("changed project directory");
+        let store = RuntimeStore::open(Some(state.path())).await.expect("store");
+        let cwd = project.path().to_string_lossy().into_owned();
+        let record = json!({"id":"lead","rootId":"lead","epoch":1,"status":"running",
+            "autoWake":true,"cwd":cwd});
+        let item = work("file-submission", Some("lead"), "running", json!([]));
+        store
+            .transaction(move |tx| {
+                AgentRepository::put(tx, &AgentRecord::from_value(record)?)?;
+                WorkItemsRepository::put_work(tx, "file-submission", &item)?;
+                Ok(())
+            })
+            .await
+            .expect("seed");
+        let mut input = super::SubmitWork {
+            task_id: "file-submission".into(),
+            version: Some(2),
+            result: "done".into(),
+            checks: "checked".into(),
+            revision: "abc1234".into(),
+            files: vec!["src/new.rs".into()],
+            prepared_files: None,
+            state_dir: state.path().into(),
+            vm_evidence: None,
+            vm_evidence_request_id: None,
+        };
+        input.prepared_files = super::prepare_submission_files(&store, "lead", &input)
+            .await
+            .expect("path observation");
+        let new_cwd = changed.path().to_string_lossy().into_owned();
+        store
+            .transaction(move |tx| {
+                let mut agent = AgentRepository::get(tx, &AgentId::from("lead"))?.expect("lead");
+                agent.extra.insert("cwd".into(), json!(new_cwd));
+                AgentRepository::put(tx, &agent)?;
+                Ok(())
+            })
+            .await
+            .expect("cwd changes after preparation");
+        let stale = input.clone();
+        let refused = store
+            .transaction_with(move |tx| {
+                super::write(
+                    tx,
+                    "lead",
+                    Some("file-submit"),
+                    "signature",
+                    WorkWrite::Submit(stale),
+                )
+            })
+            .await
+            .map(|_| ())
+            .expect_err("stale cwd must be refused");
+        assert!(matches!(
+            refused,
+            WorkWriteError::Event(crate::event_write::EventWriteError::Conflict(_))
+        ));
+        input.prepared_files = super::prepare_submission_files(&store, "lead", &input)
+            .await
+            .expect("new path observation");
+        let first = input.clone();
+        let result = store
+            .transaction_with(move |tx| {
+                super::write(
+                    tx,
+                    "lead",
+                    Some("file-submit"),
+                    "signature",
+                    WorkWrite::Submit(first),
+                )
+            })
+            .await
+            .expect("nonempty non-VM submission");
+        assert_eq!(result.record["results"][0]["files"], json!(["src/new.rs"]));
+        input.prepared_files = None;
+        let replay = store
+            .transaction_with(move |tx| {
+                super::write(
+                    tx,
+                    "lead",
+                    Some("file-submit"),
+                    "signature",
+                    WorkWrite::Submit(input),
+                )
+            })
+            .await
+            .expect("exact replay needs no filesystem observation");
+        assert_eq!(result.record, replay.record);
+    }
+
     #[test]
     fn actor_submit_records_worker_and_notifies_the_lead() {
         let mut connection = database();
@@ -4153,6 +4359,7 @@ mod actor_tests {
                 checks: "checked".to_owned(),
                 revision: "abc1234".to_owned(),
                 files: vec![],
+                prepared_files: None,
                 state_dir: std::env::temp_dir(),
                 vm_evidence: None,
                 vm_evidence_request_id: None,
@@ -4197,6 +4404,7 @@ mod actor_tests {
                 checks: "checked".to_owned(),
                 revision: "abc1234".to_owned(),
                 files: vec![],
+                prepared_files: None,
                 state_dir: std::env::temp_dir(),
                 vm_evidence: None,
                 vm_evidence_request_id: None,

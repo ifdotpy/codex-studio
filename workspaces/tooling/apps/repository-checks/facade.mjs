@@ -829,7 +829,7 @@ function fastTierCommands(root) {
     },
     {
       item: { name: "studio-runtime-store", ecosystem: "cargo" },
-      label: "Rust state migration witness",
+      label: "Rust state migration and SQL callback witnesses",
       commands: [
         [
           "cargo",
@@ -844,7 +844,10 @@ function fastTierCommands(root) {
             "-p",
             "studio-runtime-store",
             "--lib",
-            "agent_columns::tests::migration_2026_10_20_columns_round_trips_an_old_state_once",
+            "--test",
+            "sql_callback_guard",
+            "-E",
+            "test(agent_columns::tests::migration_2026_10_20_columns_round_trips_an_old_state_once) | binary(sql_callback_guard) | test(sql_guard_tests::)",
           ],
         ],
       ],
@@ -853,6 +856,35 @@ function fastTierCommands(root) {
           "runtime-store agent_columns::tests::migration_2026_10_20_columns_round_trips_an_old_state_once",
         reason:
           "Check that a pre-2026-10-20 state migrates to the agent columns once.",
+      },
+    },
+    {
+      item: { name: "studio-runtime-services", ecosystem: "cargo" },
+      label: "Rust SQL filesystem boundary witnesses",
+      commands: [
+        [
+          "cargo",
+          [
+            "nextest",
+            "run",
+            "--locked",
+            "--no-tests",
+            "fail",
+            "--message-format",
+            "libtest-json-plus",
+            "-p",
+            "studio-runtime-services",
+            "--lib",
+            "-E",
+            "test(nonempty_file_submission_rechecks_cwd_and_replays_without_filesystem_work) | test(unrelated_reservation_started_after_path_capture_does_not_refuse_ready_token) | test(room_membership_uses_symlink_paths_resolved_by_the_creation_owner)",
+          ],
+        ],
+      ],
+      options: {
+        selector:
+          "nonempty work submission and unrelated reservation boundary witnesses",
+        reason:
+          "Keep filesystem work outside SQLite without rejecting unrelated reservation changes.",
       },
     },
     {

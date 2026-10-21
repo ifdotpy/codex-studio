@@ -72,21 +72,10 @@ pub async fn read_histories(
     .map_err(|_| BudgetRuntimeError::Store(StoreError::ReadTaskFailed))?
 }
 
-/// Prepare history evidence using a caller's held canvas reader. Admission
-/// callers already hold a snapshot lease, so taking another pool connection
-/// here would be a nested checkout rather than a newer consistent snapshot.
-pub(crate) fn read_histories_from_connection(
-    store: &RuntimeStore,
-    connection: &Connection,
-    root_id: &str,
-) -> Result<BTreeMap<String, HistoryObservation>, BudgetRuntimeError> {
-    observe_histories(store.root(), team_members(connection, root_id)?)
-}
-
 /// A team member's agent row with its budget row, if any.
-type TeamMember = (Value, Option<Value>);
+pub(crate) type TeamMember = (Value, Option<Value>);
 
-fn team_members(
+pub(crate) fn team_members(
     connection: &Connection,
     root_id: &str,
 ) -> Result<Vec<TeamMember>, BudgetRuntimeError> {
@@ -106,10 +95,11 @@ fn team_members(
     Ok(snapshots)
 }
 
-fn observe_histories(
+pub(crate) fn observe_histories(
     state_dir: &Path,
     members: Vec<TeamMember>,
 ) -> Result<BTreeMap<String, HistoryObservation>, BudgetRuntimeError> {
+    studio_runtime_store::debug_assert_outside_sql();
     let repository = AnalyticsRepository::new(state_dir);
     let db = repository.open_read_only()?;
     let has_history = db.query_row(

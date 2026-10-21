@@ -312,6 +312,7 @@ fn bundled_desk_program() -> Option<PathBuf> {
 
 /// Read the cached writer report without contacting the VM.
 pub fn view(state_dir: &Path, project_id: &str) -> Result<Option<Value>, VaultError> {
+    studio_runtime_store::debug_assert_outside_sql();
     let folder = project_folder(state_dir, project_id)?;
     let status = match load_view_object(&folder.join("vault.json")) {
         Ok(status) => status,
@@ -419,6 +420,7 @@ fn unreadable_view(project_id: &str) -> Value {
 }
 
 fn load_view_object(path: &Path) -> Result<Map<String, Value>, ()> {
+    studio_runtime_store::debug_assert_outside_sql();
     let bytes = match fs::read(path) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Map::new()),
@@ -699,6 +701,7 @@ fn project_folder(state_dir: &Path, project_id: &str) -> Result<PathBuf, VaultEr
 }
 
 fn load_object(path: &Path, object: &'static str) -> Result<Map<String, Value>, VaultError> {
+    studio_runtime_store::debug_assert_outside_sql();
     match fs::read(path) {
         Ok(bytes) => serde_json::from_slice::<Value>(&bytes)
             .ok()
@@ -713,6 +716,7 @@ fn load_optional_object(
     path: &Path,
     object: &'static str,
 ) -> Result<Map<String, Value>, VaultError> {
+    studio_runtime_store::debug_assert_outside_sql();
     match fs::read(path) {
         Ok(bytes) => serde_json::from_slice::<Value>(&bytes)
             .ok()

@@ -201,7 +201,10 @@ async fn send(
     step: &Value,
 ) -> Result<coordination::PostMessageResult, coordination::CoordinationError> {
     let room = step.get("room").and_then(Value::as_str).unwrap_or("agent");
-    let prepared = PreparedAdmission::load(&store.test_reader().expect("read"), room)?;
+    let prepared = PreparedAdmission::read(&store.test_reader().expect("read"), room)
+        .expect("SQL admission inputs")
+        .prepare()
+        .await?;
     if let Some(operation) = step
         .get("startOperation")
         .and_then(Value::as_str)
@@ -491,8 +494,11 @@ async fn ingress_crash_child() {
         send(&store, &json!({})).await.expect("send before crash");
         panic!("statement boundary was not reached");
     }
-    let prepared =
-        PreparedAdmission::load(&store.test_reader().expect("read"), "agent").expect("prepare");
+    let prepared = PreparedAdmission::read(&store.test_reader().expect("read"), "agent")
+        .expect("SQL admission inputs")
+        .prepare()
+        .await
+        .expect("prepare");
     let before_commit = point == "before_commit";
     let posted = store
         .transaction_with_error(move |tx| {
@@ -539,7 +545,10 @@ async fn each_write_occurrence_and_commit_wake_crash_recovers_exactly_once(oracl
             let store = RuntimeStore::open(Some(&root)).await.expect("count store");
             oracle.call(json!({"configure":root,"case":capacity}));
             let count = arm_statement(&store, table, operation, point, usize::MAX).await;
-            let prepared = PreparedAdmission::load(&store.test_reader().expect("read"), "agent")
+            let prepared = PreparedAdmission::read(&store.test_reader().expect("read"), "agent")
+                .expect("SQL admission inputs")
+                .prepare()
+                .await
                 .expect("prepare");
             let before = snapshot(&store);
             let prepared = prepared.clone();
@@ -652,7 +661,10 @@ async fn event_projection_failure_returns_error_and_rolls_back_message_admission
         .await
         .expect("arm projection failure");
     let before = snapshot(&store);
-    let prepared = PreparedAdmission::load(&store.test_reader().expect("read"), "agent")
+    let prepared = PreparedAdmission::read(&store.test_reader().expect("read"), "agent")
+        .expect("SQL admission inputs")
+        .prepare()
+        .await
         .expect("prepare admission");
     let prepared = prepared.clone();
     let result = store
@@ -735,8 +747,11 @@ async fn injected_policy_denials_and_changed_workspace_snapshot_write_nothing(or
         assert!(matches!(result, Err(CoordinationError::InvalidRequest(_))));
         assert_eq!(snapshot(&store), before);
     }
-    let prepared =
-        PreparedAdmission::load(&store.test_reader().expect("read"), "agent").expect("prepare");
+    let prepared = PreparedAdmission::read(&store.test_reader().expect("read"), "agent")
+        .expect("SQL admission inputs")
+        .prepare()
+        .await
+        .expect("prepare");
     store.transaction(|tx| {
         tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.cwd','/unprepared/path','$.workspaceOperation','capture') WHERE id='agent'",[])?;
         Ok(())
@@ -896,8 +911,11 @@ async fn late_operation_paths_use_the_prepared_canonical_relation(oracle: &mut O
                 .await
                 .expect("idle other");
         }
-        let prepared =
-            PreparedAdmission::load(&store.test_reader().expect("read"), "agent").expect("prepare");
+        let prepared = PreparedAdmission::read(&store.test_reader().expect("read"), "agent")
+            .expect("SQL admission inputs")
+            .prepare()
+            .await
+            .expect("prepare");
         other
             .extra
             .insert("workspaceOperation".into(), json!("capture"));

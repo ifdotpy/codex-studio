@@ -1005,6 +1005,66 @@ impl ReadConnectionPool {
     }
 }
 
+/// Assert that a runtime filesystem or process owner is outside a SQL callback.
+/// The thread-local state and check are compiled out of release builds.
+#[inline]
+pub fn debug_assert_outside_sql() {
+    #[cfg(debug_assertions)]
+    SQL_CALLBACK_ACTIVE.with(|active| {
+        debug_assert!(
+            !active.get(),
+            "filesystem/process work inside a SQL closure"
+        );
+    });
+}
+
+#[cfg(debug_assertions)]
+thread_local! {
+    static SQL_CALLBACK_ACTIVE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+struct SqlCallbackGuard {
+    #[cfg(debug_assertions)]
+    previous: bool,
+}
+
+impl SqlCallbackGuard {
+    fn enter() -> Self {
+        Self {
+            #[cfg(debug_assertions)]
+            previous: SQL_CALLBACK_ACTIVE.with(|active| active.replace(true)),
+        }
+    }
+}
+
+impl Drop for SqlCallbackGuard {
+    fn drop(&mut self) {
+        #[cfg(debug_assertions)]
+        SQL_CALLBACK_ACTIVE.with(|active| active.set(self.previous));
+    }
+}
+
+fn sql_callback<T>(operation: impl FnOnce() -> T) -> T {
+    let _guard = SqlCallbackGuard::enter();
+    operation()
+}
+
+#[cfg(all(test, debug_assertions))]
+mod sql_guard_tests {
+    #[test]
+    fn guard_restores_nested_and_panicking_callbacks() {
+        super::debug_assert_outside_sql();
+        let panic = std::panic::catch_unwind(|| {
+            super::sql_callback(|| {
+                super::sql_callback(|| ());
+                super::debug_assert_outside_sql();
+            });
+        });
+        assert!(panic.is_err(), "nested callbacks retain their outer guard");
+        super::debug_assert_outside_sql();
+    }
+}
+
 fn snapshot_on<T, E>(
     mut connection: ReadConnection,
     operation: impl FnOnce(&Transaction<'_>) -> Result<T, E>,
@@ -1017,7 +1077,7 @@ where
         .as_mut()
         .expect("checked-out read connection");
     let transaction = connection.transaction().map_err(StoreError::from)?;
-    let value = operation(&transaction)?;
+    let value = sql_callback(|| operation(&transaction))?;
     transaction
         .commit()
         .map_err(StoreError::from)
@@ -1676,7 +1736,7 @@ impl RuntimeStore {
                     .transaction_with_behavior(TransactionBehavior::Immediate)
                     .map_err(StoreError::from)?;
                 let initial_changes = transaction.total_changes();
-                match operation(&transaction) {
+                match sql_callback(|| operation(&transaction)) {
                     Ok(value) => {
                         let final_changes = transaction.total_changes();
                         let changed = final_changes != initial_changes;
@@ -1896,7 +1956,7 @@ impl RuntimeStore {
     ) -> StoreResult<T> {
         let mut connection = self.test_reader()?;
         let transaction = connection.transaction()?;
-        let value = operation(&transaction)?;
+        let value = sql_callback(|| operation(&transaction))?;
         transaction.commit()?;
         Ok(value)
     }
@@ -1909,6 +1969,8 @@ impl RuntimeStore {
     /// so a read burst never parks more threads than there are readers and a
     /// permit holder never waits for a thread held by a permit waiter. Keep
     /// `operation` to SQL; do file, process and network work after it returns.
+    /// Runtime filesystem and process owners call [`debug_assert_outside_sql`]
+    /// to enforce this boundary in debug builds.
     /// `label` names the call site in the blocking-pool diagnostics.
     pub async fn read_async<T, E>(
         &self,

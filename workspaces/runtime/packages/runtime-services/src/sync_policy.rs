@@ -113,13 +113,28 @@ pub struct ProjectVaultSnapshot {
 }
 
 impl ProjectVaultSnapshot {
-    /// Capture filesystem views for valid stored projects while ignoring
-    /// malformed rows, matching Python's sync projection reader.
-    pub fn capture_for_sync(state_dir: &Path, connection: &Connection) -> StoreResult<Self> {
-        Ok(Self::capture(
-            state_dir,
-            &Self::stored_projects(connection)?,
-        ))
+    /// Read SQL inputs, release the snapshot, then read vault files on the blocking pool.
+    pub async fn capture_for_sync(store: &RuntimeStore, state_dir: &Path) -> StoreResult<Self> {
+        let projects = store
+            .read_async("runtime-services/sync-policy/projects", |connection| {
+                Self::stored_projects(connection)
+            })
+            .await?;
+        let state_dir = state_dir.to_path_buf();
+        studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-services/sync-policy/vault",
+            move || Self::capture(&state_dir, &projects),
+        )
+        .await
+        .map_err(|_| StoreError::ReadTaskFailed)
+    }
+
+    /// Whether the SQL inputs still match the filesystem snapshot.
+    pub fn matches_sources(&self, connection: &Connection) -> StoreResult<bool> {
+        Ok(Self::stored_projects(connection)?
+            .into_iter()
+            .collect::<BTreeMap<_, _>>()
+            == self.projects)
     }
 
     /// Valid stored projects for [`Self::capture`], read in a short snapshot so
@@ -140,10 +155,10 @@ impl ProjectVaultSnapshot {
         Ok(projects)
     }
 
-    /// Read each project's cached vault record. Lifecycle conflict recovery may
-    /// call this under writer admission so the read-only projection and commit
-    /// share one stable database snapshot.
+    /// Read cached vault files outside SQL callbacks. Projection writers recheck
+    /// the captured project records before committing.
     pub fn capture(state_dir: &Path, projects: &[(String, Value)]) -> Self {
+        studio_runtime_store::debug_assert_outside_sql();
         let vm_state_dir = crate::vault::linux_vm_state_dir(state_dir);
         let mut snapshot = Self::default();
         for (id, project) in projects {
@@ -2895,8 +2910,10 @@ mod tests {
             )
             .expect("insert malformed project row");
 
-        let snapshot = ProjectVaultSnapshot::capture_for_sync(Path::new("/unused"), &connection)
-            .expect("sync snapshot ignores malformed stored project");
+        let snapshot = ProjectVaultSnapshot::capture(
+            Path::new("/unused"),
+            &ProjectVaultSnapshot::stored_projects(&connection).expect("project rows"),
+        );
         let mut connection = connection;
         let transaction = connection.transaction().expect("begin sync transaction");
         snapshot

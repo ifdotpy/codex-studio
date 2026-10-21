@@ -62,6 +62,7 @@ pub type RenameError = MutationError;
 pub type SettingsError = MutationError;
 
 pub(crate) fn canonical_project_directory(path: &std::path::Path) -> Result<String, &'static str> {
+    studio_runtime_store::debug_assert_outside_sql();
     let path = path
         .canonicalize()
         .map_err(|_| "Select an existing project directory")?;

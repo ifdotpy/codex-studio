@@ -154,6 +154,7 @@ pub fn image_file_content(path: &str, root: &str) -> Result<FileContent, Workspa
 }
 
 fn resolve_image_path(path: &str, root: &str) -> Result<PathBuf, WorkspaceFilesError> {
+    studio_runtime_store::debug_assert_outside_sql();
     if path.is_empty() {
         return Err(WorkspaceFilesError::MissingPath);
     }
@@ -171,6 +172,7 @@ fn resolve_image_path(path: &str, root: &str) -> Result<PathBuf, WorkspaceFilesE
 }
 
 fn resolve_file(path: &str, root: Option<&str>) -> Result<PathBuf, WorkspaceFilesError> {
+    studio_runtime_store::debug_assert_outside_sql();
     if path.is_empty() {
         return Err(WorkspaceFilesError::MissingPath);
     }

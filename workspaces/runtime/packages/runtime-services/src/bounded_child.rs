@@ -69,6 +69,7 @@ pub(crate) fn run_without_git_environment(request: Request<'_>) -> Result<Output
 }
 
 fn run_with_environment(request: Request<'_>, remove_git: bool) -> Result<Output, ChildError> {
+    studio_runtime_store::debug_assert_outside_sql();
     let Request {
         program,
         cwd,

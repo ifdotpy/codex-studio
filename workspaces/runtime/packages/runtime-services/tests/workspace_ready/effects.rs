@@ -97,12 +97,44 @@ impl Fixture {
             other => panic!("expected plan: {other:?}"),
         }
     }
+    fn paths(
+        &self,
+        plan: &ProvisionIdentity,
+    ) -> studio_runtime_store::workspace_ready::WorkspacePaths {
+        let connection = self.store.test_reader().expect("reader");
+        let snapshot = CheckpointsRepository::reservation_snapshot(&connection, &self.id)
+            .expect("snapshot")
+            .unwrap_or_else(|| WorkspaceSnapshot {
+                agent: studio_runtime_store::StoredCheckpointObject {
+                    id: self.id.clone(),
+                    record: plan.source.clone(),
+                },
+                parent_checkpoint: None,
+                agents: Vec::new(),
+                operations: Vec::new(),
+                monitors: Vec::new(),
+                tasks: Vec::new(),
+            });
+        let paths =
+            studio_runtime_store::AgentIndexedReads::admission_cwds(&connection).expect("paths");
+        studio_runtime_store::workspace_ready::WorkspacePaths::capture(
+            &snapshot,
+            paths
+                .into_iter()
+                .flatten()
+                .map(PathBuf::from)
+                .chain([plan.destination.clone()]),
+        )
+    }
     async fn reserve(&self, plan: &ProvisionIdentity) {
         let store = std::sync::Arc::clone(&self.store);
         let snapshot = snapshot(&self.store, &self.id).expect("snapshot");
+        let paths = self.paths(plan);
         let plan = plan.clone();
         store
-            .transaction(move |tx| WorkspaceReadyRepository::reserve(tx, &snapshot, &plan, now()))
+            .transaction(move |tx| {
+                WorkspaceReadyRepository::reserve(tx, &snapshot, &plan, &paths, now())
+            })
             .await
             .expect("reserve");
     }
@@ -384,14 +416,10 @@ async fn creates_subproject_checkpoint_and_preserves_queued_input_and_source_ind
     );
     // Lost successful response is an ordinary readiness check, preserving user dirt and new HEAD.
     std::fs::write(cwd.join("file"), "user edits\n").expect("dirty file");
-    assert_eq!(
-        prepare(std::sync::Arc::clone(&fixture.store), fixture.id.clone())
-            .await
-            .expect("replay"),
-        WorkspaceDecision::Ready {
-            token: ReadyToken::new(&fixture.actor(), cwd.clone())
-        }
-    );
+    let replay = prepare(std::sync::Arc::clone(&fixture.store), fixture.id.clone())
+        .await
+        .expect("replay");
+    assert_eq!(admitted(&fixture, replay).await, cwd);
     assert_eq!(
         std::fs::read_to_string(cwd.join("file")).expect("file"),
         "user edits\n"
@@ -510,12 +538,18 @@ async fn late_completion_never_attaches_to_deleted_stopped_replaced_or_new_epoch
         assert!(
             !fixture
                 .store
-                .transaction(move |tx| WorkspaceReadyRepository::publish(
-                    tx,
-                    &identity,
-                    Err("fixture"),
-                    now()
-                ))
+                .transaction({
+                    let paths = fixture.paths(&identity);
+                    move |tx| {
+                        WorkspaceReadyRepository::publish(
+                            tx,
+                            &identity,
+                            &paths,
+                            Err("fixture"),
+                            now(),
+                        )
+                    }
+                })
                 .await
                 .expect("stale completion")
         );
@@ -566,12 +600,18 @@ async fn deadline_after_durable_reservation_retains_evidence_and_checkpoint_fail
     assert!(
         fixture
             .store
-            .transaction(move |tx| WorkspaceReadyRepository::publish(
-                tx,
-                &identity,
-                Err("Checkpoint skipped: fixture failure"),
-                now()
-            ))
+            .transaction({
+                let paths = fixture.paths(&identity);
+                move |tx| {
+                    WorkspaceReadyRepository::publish(
+                        tx,
+                        &identity,
+                        &paths,
+                        Err("Checkpoint skipped: fixture failure"),
+                        now(),
+                    )
+                }
+            })
             .await
             .expect("publish without checkpoint")
     );
@@ -805,12 +845,18 @@ async fn physical_actor_deletion_and_changed_journal_payload_cannot_publish() {
     assert!(
         !fixture
             .store
-            .transaction(move |tx| WorkspaceReadyRepository::reserve(
-                tx,
-                &different_snapshot,
-                &different,
-                now()
-            ))
+            .transaction({
+                let paths = fixture.paths(&different);
+                move |tx| {
+                    WorkspaceReadyRepository::reserve(
+                        tx,
+                        &different_snapshot,
+                        &different,
+                        &paths,
+                        now(),
+                    )
+                }
+            })
             .await
             .expect("changed payload conflict")
     );
@@ -828,12 +874,12 @@ async fn physical_actor_deletion_and_changed_journal_payload_cannot_publish() {
     assert!(
         !fixture
             .store
-            .transaction(move |tx| WorkspaceReadyRepository::publish(
-                tx,
-                &identity,
-                Err("fixture"),
-                now()
-            ))
+            .transaction({
+                let paths = fixture.paths(&identity);
+                move |tx| {
+                    WorkspaceReadyRepository::publish(tx, &identity, &paths, Err("fixture"), now())
+                }
+            })
             .await
             .expect("orphan completion")
     );
@@ -2102,4 +2148,44 @@ async fn reservation_snapshot_yields_the_reservations_of_the_full_snapshot() {
         };
         assert_eq!(sorted(&full), sorted(&light), "{id}");
     }
+}
+
+#[tokio::test]
+async fn unrelated_reservation_started_after_path_capture_does_not_refuse_ready_token() {
+    let fixture = Fixture::new().await;
+    let other = tempfile::tempdir().expect("unrelated workspace");
+    let other_cwd = other.path().to_string_lossy().into_owned();
+    fixture.store.transaction(move |tx| {
+        studio_runtime_store::AgentRepository::put(tx, &studio_runtime_store::AgentRecord::from_value(json!({
+            "id":"unrelated","rootId":"unrelated","epoch":1,"status":"idle","autoWake":true,"cwd":other_cwd
+        }))?)?;
+        Ok(())
+    }).await.expect("idle unrelated agent");
+    let WorkspaceDecision::Ready { token } =
+        prepare(std::sync::Arc::clone(&fixture.store), fixture.id.clone())
+            .await
+            .expect("ready workspace")
+    else {
+        panic!("workspace must become ready");
+    };
+    fixture
+        .store
+        .transaction(move |tx| {
+            let mut agent = studio_runtime_store::AgentRepository::get(
+                tx,
+                &studio_runtime_store::AgentId::from("unrelated"),
+            )?
+            .expect("unrelated agent");
+            agent
+                .extra
+                .insert("workspaceOperation".into(), json!("checkpoint"));
+            studio_runtime_store::AgentRepository::put(tx, &agent)?;
+            assert!(
+                token.validate(tx)?.is_ok(),
+                "an idle agent's path was included before it reserved"
+            );
+            Ok(())
+        })
+        .await
+        .expect("unrelated reservation permits the ready workspace");
 }

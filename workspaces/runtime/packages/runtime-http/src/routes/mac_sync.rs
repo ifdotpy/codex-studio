@@ -196,7 +196,7 @@ async fn send_handoff(
                 .ok_or_else(ApiError::internal)?;
             let ingress_admission = if admission_override.is_none() {
                 Some(
-                    studio_runtime_services::message_admission::MessageIngressAdmission::load(
+                    studio_runtime_services::message_admission::MessageIngressAdmission::read(
                         preparation_store,
                         connection,
                         &lead_for_read,
@@ -207,7 +207,7 @@ async fn send_handoff(
                 None
             };
             let default_admission =
-                studio_runtime_services::message_admission::PreparedAdmission::load(
+                studio_runtime_services::message_admission::PreparedAdmission::read(
                     connection,
                     &lead_for_read,
                 )
@@ -215,6 +215,11 @@ async fn send_handoff(
             Ok::<_, ApiError>((default_admission, ingress_admission))
         })
         .await?;
+    let prepared = prepared.prepare().await.map_err(|_| ApiError::internal())?;
+    let ingress_admission = match ingress_admission {
+        Some(snapshot) => Some(snapshot.prepare().await.map_err(|_| ApiError::internal())?),
+        None => None,
+    };
     let admission: Arc<dyn studio_runtime_services::message_admission::MessageAdmission> =
         custom_admission
             .or_else(|| ingress_admission.map(|value| Arc::new(value) as _))

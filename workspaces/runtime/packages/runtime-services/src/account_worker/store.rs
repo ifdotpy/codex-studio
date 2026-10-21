@@ -950,6 +950,18 @@ pub(super) async fn outcome(
         }
         return Ok((SettledOutcome::default(), None));
     };
+    let resources = Arc::new(
+        resources
+            .for_receipt(
+                &store,
+                &context.intent.agent_id,
+                context
+                    .thread
+                    .as_ref()
+                    .map(|attempt| attempt.snapshot.actor.cwd.as_str()),
+            )
+            .await?,
+    );
     let state_root = store.root().to_path_buf();
     let server_id = store.local_server_id()?;
     let step = OutcomeStep {
@@ -1380,6 +1392,24 @@ pub(super) async fn journal_batch(
             ..JournalBatch::default()
         });
     }
+    let outcome = match outcome {
+        Some(mut step) => {
+            step.resources = Arc::new(
+                step.resources
+                    .for_receipt(
+                        &store,
+                        &step.context.intent.agent_id,
+                        step.context
+                            .thread
+                            .as_ref()
+                            .map(|attempt| attempt.snapshot.actor.cwd.as_str()),
+                    )
+                    .await?,
+            );
+            Some(step)
+        }
+        None => None,
+    };
     let needs_limits = entries.iter().any(|entry| {
         matches!(
             &entry.payload,

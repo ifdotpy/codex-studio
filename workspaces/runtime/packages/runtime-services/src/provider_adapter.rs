@@ -183,6 +183,7 @@ const CODEX_THREAD_UNLOAD_DELAY: [&str; 2] = ["-c", "thread_unload_delay_secs=0"
 /// be switched off by name (`enabled = false`), never by an empty table.
 #[must_use]
 pub fn codex_user_mcp_servers(home: &str) -> Vec<String> {
+    studio_runtime_store::debug_assert_outside_sql();
     std::fs::read_to_string(Path::new(home).join("config.toml"))
         .ok()
         .and_then(|text| text.parse::<toml::Table>().ok())

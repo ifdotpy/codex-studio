@@ -1349,6 +1349,7 @@ fn plugin_version(plugin: &std::path::Path) -> Option<String> {
 }
 
 fn canonical_paths_match(left: &std::path::Path, right: &std::path::Path) -> bool {
+    studio_runtime_store::debug_assert_outside_sql();
     std::fs::canonicalize(left)
         .ok()
         .zip(std::fs::canonicalize(right).ok())
@@ -1682,6 +1683,7 @@ fn control_chrome_root(
 /// browser off with a reason. Python failed the thread request instead; an
 /// optional browser must not block ordinary text work.
 pub fn account_browser(home: &std::path::Path, shared_home: &std::path::Path) -> AccountBrowser {
+    studio_runtime_store::debug_assert_outside_sql();
     let off = |reason: &str| AccountBrowser {
         overrides: Map::new(),
         developer_instructions: None,

@@ -178,6 +178,7 @@ impl DiscoveryRound {
 /// The resolved form of `path` ([`studio_runtime_store::path_identity::resolve`]), so that the
 /// event of a removed rollout names the same path as its discovery did.
 fn canonical_or_absolute(path: &Path) -> PathBuf {
+    studio_runtime_store::debug_assert_outside_sql();
     if let Some(path) = studio_runtime_store::path_identity::resolve(path) {
         return path;
     }
