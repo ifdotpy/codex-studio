@@ -1,4 +1,11 @@
-"""Real Runtime constructor oracle for startup request and monitor recovery."""
+"""Real constructor oracle with the approved #373 monitor-startup expectations.
+
+The legacy Python constructor publishes provisional loss. The test adapter changes
+only that approved delta: preserve each active record, stage its per-monitor
+reconciliation marker at NOW, and publish no terminal event before a decision.
+Requests, agents, unrelated events, and their projections still use the real
+constructor and are compared in full.
+"""
 from __future__ import annotations
 
 import json
@@ -23,6 +30,9 @@ sys.path.insert(0, str(server_root / "tests"))
 sys.path.insert(0, str(server_root / "src"))
 fixture = runpy.run_path(str(server_root / "tests" / "runtime-contract.py"))
 Runtime = fixture["Runtime"]
+from agent_progress_contract import install_projection_contract
+
+install_projection_contract(Runtime)
 FakeServer = fixture["FakeServer"]
 make_runtime = __import__("runtime_test_environment").make_runtime
 STATE = Path(sys.argv[2]).resolve()
@@ -31,6 +41,33 @@ WAIT_SECONDS = 30
 
 
 class QuietRuntime(Runtime):
+    def put(self, db, table, record, **kwargs):
+        if (table == "monitors" and record.get("status") == "lost"
+                and record.get("error") == "Server restarted. Command outcome unknown; not rerun."):
+            previous = json.loads(db.execute(
+                "SELECT record FROM runtime_monitors WHERE id=?", (record["id"],)
+            ).fetchone()[0])
+            # #373: startup is unresolved, not a terminal outcome. Preserve the
+            # complete prior row, including approval/starting and optional fields.
+            assert previous["status"] in {"running", "starting", "approval"}
+            assert record["reattachRecovery"]["status"] == previous["status"]
+            owner = self.agent(previous["agent"], db)
+            record.clear()
+            record.update(previous)
+            record["reattachRecovery"] = {
+                "accountKey": owner.get("accountKey", "default"),
+                "epoch": owner["epoch"], "status": "running", "startedAt": NOW,
+            }
+        return super().put(db, table, record, **kwargs)
+
+    def _monitor_exit_event(self, db, owner, monitor, *, wake=True):
+        if (monitor.get("reattachRecovery", {}).get("status") == "running"
+                and monitor["status"] in {"running", "starting", "approval"}):
+            # #373: no provisional monitor_exit or event projection. Exact exits
+            # and decided loss are independently witnessed by monitor_wake_guarantees.
+            return
+        return super()._monitor_exit_event(db, owner, monitor, wake=wake)
+
     def schedule(self):
         pass
 
