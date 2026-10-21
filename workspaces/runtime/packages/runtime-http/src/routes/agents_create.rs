@@ -2033,6 +2033,25 @@ fn review_settings_catalog_account(
 }
 
 #[cfg(test)]
+mod stale_revision_tests {
+    use super::operation_error;
+    use axum::{body::to_bytes, http::StatusCode, response::IntoResponse};
+    use studio_runtime_services::agents_create::{MutationError, OperationError};
+
+    #[tokio::test]
+    async fn a_stale_revision_is_a_confirmed_rejection() {
+        let response =
+            operation_error(OperationError::Create(MutationError::Stale)).into_response();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = to_bytes(response.into_body(), 4096)
+            .await
+            .expect("response body");
+        let value: serde_json::Value = serde_json::from_slice(&body).expect("JSON body");
+        assert_eq!(value["outcome"], "not_applied");
+    }
+}
+
+#[cfg(test)]
 mod conversation_catalog_admission_tests {
     use super::{
         catalog_cwd_for_conversation, conversation_needs_catalog,
@@ -2232,6 +2251,11 @@ async fn rename(
 }
 fn operation_error(error: OperationError) -> ApiError {
     use agents_create::MutationError;
+    // A stale revision is rejected before any write, so the client may drop the
+    // request and refresh from the canonical value.
+    if matches!(error, OperationError::Create(MutationError::Stale)) {
+        return ApiError::not_applied(error.to_string());
+    }
     if matches!(
         error,
         OperationError::Create(MutationError::RequestIdRequired)
