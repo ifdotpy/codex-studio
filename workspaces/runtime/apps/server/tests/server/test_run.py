@@ -931,47 +931,6 @@ class ServerSuiteRunner(unittest.TestCase):
             self.assertIn(saved["maxSuiteRssBytes"], {100, 300})
             self.assertEqual(list(Path(directory).glob(".runner-profile.json.*.tmp")), [])
 
-    def test_runner_waits_then_replans_after_lock_release(self):
-        with tempfile.TemporaryDirectory(prefix="server-runner-wait-") as temp:
-            lock_path = Path(temp) / "runner-live.lock"
-            entered = threading.Event()
-            release = threading.Event()
-            acquired = threading.Event()
-            output = io.StringIO()
-            def first():
-                with RUNNER._runner_live_lock():
-                    entered.set()
-                    # The test releases the lock; the waits only guard against a hang.
-                    release.wait(timeout=HANG_GUARD_SECONDS)
-            def second():
-                with contextlib.redirect_stdout(output):
-                    with RUNNER._runner_live_lock():
-                        acquired.set()
-                        # Planning happens in run_suites after the lock is acquired.
-                        RUNNER.worker_plan([("one.py", "safe")], {}, override=1)
-            with mock.patch.object(RUNNER, "RUNNER_LOCK_PATH", lock_path):
-                a = threading.Thread(target=first); a.start()
-                self.assertTrue(entered.wait(timeout=HANG_GUARD_SECONDS))
-                b = threading.Thread(target=second); b.start()
-                wait_for_condition(
-                    lambda: "waiting for another test run to finish" in output.getvalue(),
-                    "runner lock contention announcement",
-                )
-                self.assertFalse(acquired.is_set())
-                release.set(); a.join(timeout=HANG_GUARD_SECONDS); b.join(timeout=HANG_GUARD_SECONDS)
-            self.assertTrue(acquired.is_set())
-            self.assertIn("waiting for another test run to finish", output.getvalue())
-
-    def test_runner_lock_released_after_abnormal_exit(self):
-        with tempfile.TemporaryDirectory(prefix="server-runner-abnormal-") as temp:
-            lock_path = Path(temp) / "runner-live.lock"
-            with mock.patch.object(RUNNER, "RUNNER_LOCK_PATH", lock_path):
-                with self.assertRaisesRegex(RuntimeError, "fixture failure"):
-                    with RUNNER._runner_live_lock():
-                        raise RuntimeError("fixture failure")
-                with RUNNER._runner_live_lock():
-                    self.assertTrue(lock_path.exists())
-
     def test_focused_run_completes_while_whole_run_lock_is_held(self):
         try:
             context = multiprocessing.get_context("fork")

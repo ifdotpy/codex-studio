@@ -462,9 +462,12 @@ Known product issues and reproductions are in
 [`workspaces/runtime/apps/server/tests/KNOWN-FAILURES.md`](../workspaces/runtime/apps/server/tests/KNOWN-FAILURES.md), while expectation edits
 are tracked in [`workspaces/runtime/apps/server/tests/TEST-STATUS-CHANGES.md`](../workspaces/runtime/apps/server/tests/TEST-STATUS-CHANGES.md).
 Use `python3 workspaces/runtime/apps/server/tests/server/compare_runs.py LOG1 LOG2 ...` to compare failure sets.
-Full server runs serialize on one per-user lock held for the whole run. A waiting
-full runner prints `waiting for another test run to finish`, then samples load and
-plans workers after the lock is released. A selection resolving to one runnable
+Full server runs sharing a checkout serialize on a per-user, checkout-keyed lock
+held for the whole run; independent worktrees do not wait for each other. Suite
+scratch directories are unique, profile writes have their own atomic merge lock,
+and tmpfs cleanup uses owner locks. A waiting full runner prints
+`waiting for another test run to finish`, then samples load and plans workers
+after the lock is released. A selection resolving to one runnable
 suite uses a bounded per-user focused slot instead, so it can overlap a full run
 or another focused run. Focused slots are capped at four and by allowed CPUs; their
 combined measured peak RSS is limited by the full planner's available-memory budget

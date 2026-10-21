@@ -89,8 +89,8 @@ SUPERVISOR_EXIT_HANG_GUARD_SECONDS = 60.0
 TEST_TMP_ROOT = Path(os.environ.get(
     "CODEX_SERVER_TEST_TMP_ROOT", Path.home() / ".cache" / "cs" / "st",
 )).expanduser()
-RUNNER_LOCK_PATH = Path.home() / ".cache" / "cs" / "st" / "runner-live.lock"
 REPOSITORY_KEY = hashlib.sha256(str(ROOT.resolve()).encode("utf-8")).hexdigest()[:12]
+RUNNER_LOCK_PATH = Path.home() / ".cache" / "cs" / "st" / f"runner-live-{REPOSITORY_KEY}.lock"
 PROFILE_PATH = RUNNER_LOCK_PATH.parent / f"runner-profile-{REPOSITORY_KEY}.json"
 MEMORY_RESERVE_BYTES = 4 * 1024**3
 FOCUSED_SUITE_LIMIT = 1
@@ -219,6 +219,7 @@ AUTOMATED_SUITES = {
     f"{TESTS_REL}/swarm-retry-contract.mjs": "automated",
 }
 FAST_SUITES = (
+    f"{TESTS_REL}/server/test_runner_lock.py",
     f"{TESTS_REL}/server/test_delivery_contract.py",
     f"{TESTS_REL}/question-history-contract.py",
     f"{TESTS_REL}/queued-active-turn-recovery-contract.py",
@@ -1307,7 +1308,7 @@ def _remove_owned_scratch_root(directory):
 
 @contextmanager
 def _runner_live_lock():
-    """Hold one per-user lock for the whole run; the kernel releases it on exit."""
+    """Serialize runs sharing a checkout; the kernel releases the lock on exit."""
     RUNNER_LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
     with RUNNER_LOCK_PATH.open("a+b") as lock_file:
         import fcntl
