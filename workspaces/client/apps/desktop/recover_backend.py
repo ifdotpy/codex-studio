@@ -290,7 +290,10 @@ def tick(config, state, child=None, supervisor_fallback=False):
             raise RuntimeError("The installed backend or web assets are unavailable.")
         command = [config["python"], "-B", str(script), "--port", str(config["port"])]
     env = launch_environment(config, state, supervisor_fallback=supervisor_fallback)
-    with (state / "canvas.log").open("ab", buffering=0) as log:
+    # A fresh Rust state accepts only a private canvas.log (accepted_private_file in
+    # runtime-store fresh_state.rs); launchd starts this agent with umask 022.
+    log_fd = os.open(state / "canvas.log", os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+    with os.fdopen(log_fd, "ab", buffering=0) as log:
         child = subprocess.Popen(command,
                                  cwd=Path.home(), env=env, stdin=subprocess.DEVNULL,
                                  stdout=log, stderr=log, start_new_session=True)
