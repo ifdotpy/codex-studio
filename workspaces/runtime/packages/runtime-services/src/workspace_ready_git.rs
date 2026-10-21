@@ -257,7 +257,7 @@ async fn prepare_attempt(
                 })?
                 .unwrap_or_else(|| initial.agent.record.clone());
             return Ok(WorkspaceDecision::Ready {
-                token: ReadyToken::new(&record, path),
+                token: ReadyToken::new(&record, path.into_path_buf()),
             });
         }
     }
