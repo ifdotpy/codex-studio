@@ -56,6 +56,17 @@ test("short and comprehensive recipes preserve their owned test boundaries", () 
   assert.match(comprehensive.command, /--workspace/);
   assert.match(comprehensive.command, /vitest\.unit\.config\.ts/);
   assert.match(comprehensive.command, /test:browser:smoke/);
+  const fixture = comprehensive.command.search(
+    /'--release' '-p' 'studio-runtime-server'/,
+  );
+  assert.ok(
+    fixture >= 0,
+    "the comprehensive tier builds its Rust HTTP fixture",
+  );
+  assert.ok(
+    fixture < comprehensive.command.indexOf("test-server.py"),
+    "the Rust HTTP fixture is built before the server suites",
+  );
   assert.doesNotMatch(
     comprehensive.command,
     /test-server-load|runtime_load|mutations/,

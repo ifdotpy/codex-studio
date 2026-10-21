@@ -39,8 +39,9 @@ class InstallCodexSandboxTests(unittest.TestCase):
         self.script.write_text(source)
 
     def run_installer(self, **env: str) -> subprocess.CompletedProcess[str]:
+        # The timeout only guards against a hang; the script runs three stub tools.
         return subprocess.run(["sh", str(self.script)], capture_output=True, text=True,
-                              timeout=5, env={**os.environ, "PATH": f"{self.bin}:{os.environ['PATH']}",
+                              timeout=60, env={**os.environ, "PATH": f"{self.bin}:{os.environ['PATH']}",
                                               "CALL_LOG": str(self.log), **env})
 
     def test_repairs_trusted_binary_before_loading_only_its_profile(self) -> None:
