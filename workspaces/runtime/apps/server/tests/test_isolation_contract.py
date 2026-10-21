@@ -21,6 +21,60 @@ import unittest
 
 
 class TestStartupIsolation(unittest.TestCase):
+    def test_oracle_guard_reuses_installed_home_guard_roots_without_probing_them(self):
+        code = r'''
+import json, os, pwd, sys
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
+import runtime_home_guard
+from runtime_home_guard import HomeAccessGuard
+import oracle_guard
+
+root = Path(sys.argv[1]).resolve()
+home = root / "physical-home"
+home.mkdir()
+alias = root / "home-alias"
+alias.symlink_to(home, target_is_directory=True)
+guard = HomeAccessGuard(home_resolver=lambda: str(alias)).install()
+runtime_home_guard._guard = guard
+with patch.object(pwd, "getpwuid", return_value=SimpleNamespace(pw_dir=str(alias))):
+    oracle = oracle_guard.install_guard(block_processes=True, allow_loopback=True)
+assert guard.counters["blocked"] == 0, guard.counters
+assert oracle.forbidden == {Path(path) for path in guard.roots}
+for base in (home, alias):
+    for name in (".codex", ".claude"):
+        assert base / name in oracle.forbidden
+        try:
+            oracle.reject_lexical(base / name / "synthetic-file")
+        except oracle_guard.IsolationViolation:
+            pass
+        else:
+            raise AssertionError("provider-home alias was permitted")
+oracle.self_test()
+try:
+    oracle.audit("subprocess.Popen", ())
+except oracle_guard.IsolationViolation:
+    pass
+else:
+    raise AssertionError("process launch was permitted")
+ordinary = root / "ordinary-file"
+ordinary.write_text("safe")
+assert ordinary.read_text() == "safe"
+assert guard.counters["blocked"] == 0, guard.counters
+print(json.dumps({"blocked": guard.counters["blocked"], "aliases": len(oracle.forbidden)}))
+'''
+        oracle_path = REPOSITORY_ROOT / "workspaces/runtime/packages/runtime-services/tests/turn_lifecycle"
+        with tempfile.TemporaryDirectory(prefix="oracle-guard-roots-") as directory:
+            result = subprocess.run(
+                [sys.executable, "-B", "-c", code, directory],
+                env={**os.environ, "PATH": os.defpath,
+                     "PYTHONPATH": os.pathsep.join((str(Path(__file__).parent), str(oracle_path)))},
+                capture_output=True, text=True, timeout=15,
+            )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout.splitlines()[-1]), {"blocked": 0, "aliases": 4})
+
     def test_shared_fixture_replaces_inherited_workspace_store(self):
         env = os.environ.copy()
         env["CODEX_WORKSPACE_STORE"] = "/default/workspace/store"

@@ -6,7 +6,10 @@ isolate_supervisor_environment()
 import importlib.util
 import json
 from pathlib import Path
+import sys
 import unittest
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 spec = importlib.util.spec_from_file_location('intent_fixture', Path(__file__).with_name('workspace-contract.py'))
 f = importlib.util.module_from_spec(spec)

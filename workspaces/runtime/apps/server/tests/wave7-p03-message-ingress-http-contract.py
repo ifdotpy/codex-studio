@@ -9,10 +9,13 @@ import json
 import os
 from pathlib import Path
 import sqlite3
+import sys
 import unittest
 from urllib.parse import urlencode
 
 isolate_supervisor_environment()
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from http_backend_harness import (
     TimedHTTPContractTest, assert_stored_data_unavailable, no_write_snapshot,

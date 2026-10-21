@@ -7,7 +7,6 @@ synthetic forbidden directory beneath the caller's disposable temporary root.
 import ipaddress
 import os
 from pathlib import Path
-import pwd
 import socket
 import shutil
 import sys
@@ -41,8 +40,9 @@ def _forms(root):
 
 class OracleGuard:
     def __init__(self, *, block_processes=False, allow_loopback=False):
-        real_home = Path(pwd.getpwuid(os.getuid()).pw_dir)
-        self.forbidden = set().union(*(_forms(real_home / name) for name in (".codex", ".claude")))
+        # Reuse both lexical and physical roots without resolving protected
+        # paths through an already-installed home guard's metadata wrappers.
+        self.forbidden = {Path(root) for root in install_home_guard().roots}
         self.block_processes = block_processes
         self.allow_loopback = allow_loopback
         self.stat, self.lstat = os.stat, os.lstat
@@ -175,13 +175,12 @@ def install_guard(*, block_processes=False, allow_loopback=False):
     # Retain the TemporaryDirectory for the full lifetime of this oracle.
     global _ISOLATED_ORACLE_ENV
     _ISOLATED_ORACLE_ENV = isolated
-    # Resolve both guards' physical forbidden roots before either guard rejects
-    # metadata resolution beneath those roots. Later imports reuse the home guard.
+    # The home guard owns canonical roots; OracleGuard reuses them even when
+    # a suite entry point installed it before importing this oracle.
     guard = OracleGuard(
         block_processes=block_processes,
         allow_loopback=allow_loopback,
     )
-    install_home_guard()
     # Executable discovery must not probe provider homes in the inherited PATH.
     os.environ["PATH"] = os.pathsep.join(
         entry for entry in os.environ.get("PATH", "").split(os.pathsep)
