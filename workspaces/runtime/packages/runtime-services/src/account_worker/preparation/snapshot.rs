@@ -162,6 +162,10 @@ impl PreparationResources {
             "legacy tools",
         )?;
         for tool in data.tools.iter_mut().chain(legacy_tools.iter_mut()) {
+            studio_runtime_schema::task_results::apply_tool_contract(
+                &tool.name,
+                &mut tool.input_schema,
+            );
             if tool.name == "orchestration_spawn" {
                 let properties = tool
                     .input_schema
@@ -1846,6 +1850,32 @@ mod resource_tests {
 #[cfg(test)]
 mod workspace_fence_tests {
     use super::*;
+
+    #[test]
+    fn task_result_schema_native_and_legacy_catalogs_use_the_owner() {
+        let resources = PreparationResources::bundled(String::new(), ModelCatalogService::new())
+            .expect("resources");
+        for tools in [&resources.tools, &resources.legacy_tools] {
+            let task = tools
+                .iter()
+                .find(|tool| tool.name == "orchestration_task")
+                .expect("task");
+            assert_eq!(
+                task.input_schema["properties"]["result_schema"],
+                studio_runtime_schema::task_results::schema_input()
+            );
+            assert!(
+                task.input_schema["properties"]["result"]
+                    .get("type")
+                    .is_none()
+            );
+            let spawn = tools
+                .iter()
+                .find(|tool| tool.name == "orchestration_spawn")
+                .expect("spawn");
+            assert!(spawn.input_schema["properties"]["agents"]["items"]["properties"]["task_id"]["description"].as_str().expect("description").contains("result_schema"));
+        }
+    }
 
     #[test]
     fn claude_child_spawn_catalog_exposes_valid_permission_modes() {

@@ -54,6 +54,9 @@ pub(super) fn execute(
         if action == "get" {
             let mut result = brief(&work_policy::work_item_view(work, &statuses));
             result["description"] = work["description"].clone();
+            if let Some(schema) = work.get("resultSchema") {
+                result["resultSchema"] = schema.clone();
+            }
             result["dependencies"] = work["dependencies"].clone();
             result["latestResult"] = work["results"]
                 .as_array()
@@ -108,6 +111,7 @@ pub(super) fn execute(
     };
     let command = match action {
         "create" => WorkWrite::Create(CreateWork {
+            result_schema: args.get("result_schema").cloned(),
             actor_id: who.clone(),
             title: text(args, "title")?.into(),
             description: optional("description")?.unwrap_or_default(),
@@ -116,6 +120,7 @@ pub(super) fn execute(
             dependencies: deps()?,
         }),
         "update" => WorkWrite::Mutate(WorkMutation::Update {
+            result_schema: args.get("result_schema").cloned(),
             task_id: text(args, "task_id")?.into(),
             version: args["version"].as_i64(),
             title: optional("title")?,

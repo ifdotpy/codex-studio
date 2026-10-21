@@ -90,8 +90,9 @@ impl studio_runtime_services::provider_callbacks::WorkActionPort for ManagedWork
             object.insert("id".to_owned(), Value::String(request_id.to_owned()));
             match perform(self.state.clone(), self.runtime.clone(), body).await {
                 Ok(record) => WorkActionOutcome::Written(record),
-                // A client error is a refusal before the commit; anything else
-                // may follow it, so the model must not repeat the action blindly.
+                // Client errors mean no task mutation. Schema refusal receipts and
+                // counters may already be committed; replay uses the same request id.
+                // Other errors may follow a task commit and remain uncertain.
                 Err(error) if error.status().is_client_error() => {
                     WorkActionOutcome::Refused(error.message().to_owned())
                 }
@@ -133,6 +134,7 @@ pub(crate) async fn perform(
     let signature = work_items::work_request_signature(&agent, &body)?;
     let mut command = match action {
         "create" => WorkWrite::Create(CreateWork {
+            result_schema: body.get("result_schema").cloned(),
             actor_id: agent.clone(),
             title: required_text(&body, "title")?,
             description: optional_text(&body, "description")?.unwrap_or_default(),
@@ -141,6 +143,7 @@ pub(crate) async fn perform(
             dependencies: string_list(&body, "dependencies")?,
         }),
         "update" => WorkWrite::Mutate(WorkMutation::Update {
+            result_schema: body.get("result_schema").cloned(),
             task_id: required_text(&body, "task_id")?,
             version: version(&body)?,
             title: optional_text(&body, "title")?,
@@ -176,7 +179,12 @@ pub(crate) async fn perform(
         "submit" => WorkWrite::Submit(SubmitWork {
             task_id: required_text(&body, "task_id")?,
             version: version(&body)?,
-            result: required_text(&body, "result")?,
+            result: body.get("result").cloned().ok_or_else(|| {
+                ApiError::new(
+                    StatusCode::BAD_REQUEST,
+                    "Supply result for this task action",
+                )
+            })?,
             checks: required_text(&body, "checks")?,
             revision: required_text(&body, "revision")?,
             files: string_list(&body, "files")?,
@@ -445,7 +453,10 @@ async fn commit(
                     work_write::write(tx, &agent, request_id.as_deref(), &signature, command)?;
                 let mut checks = Vec::new();
                 let mut rule_now = 0.0;
-                if is_submit && result.event_inserted {
+                if is_submit
+                    && result.event_inserted
+                    && result.record.get("submissionRefusal").is_none()
+                {
                     let submission = result.record["results"]
                         .as_array()
                         .and_then(|results| results.last())
@@ -490,6 +501,9 @@ async fn commit(
         )
         .await
         .map_err(commit_error)?;
+    if let Some(refusal) = result.record.get("submissionRefusal") {
+        return Err(ApiError::new(StatusCode::BAD_REQUEST, refusal.to_string()));
+    }
     if !checks.is_empty() {
         let Some(runtime) = runtime else {
             return Err(ApiError::internal());
@@ -1015,6 +1029,220 @@ mod managed_work_port_tests {
             WorkActionOutcome::Written(record) => record,
             other => panic!("expected a written task, got {other:?}"),
         }
+    }
+
+    fn schema() -> Value {
+        json!({"type":"object","properties":{"count":{"type":"integer"}},"required":["count"],"additionalProperties":false})
+    }
+
+    fn refused(outcome: WorkActionOutcome) -> String {
+        match outcome {
+            WorkActionOutcome::Refused(message) => message,
+            other => panic!("expected refusal, got {other:?}"),
+        }
+    }
+
+    async fn task_tool_reply(store: Arc<RuntimeStore>, action: &str, args: Value) -> Value {
+        use studio_runtime_providers::{Frame, Method, RequestFrame, RequestId, ResponseBody};
+        use studio_runtime_services::provider_callbacks::{
+            CallbackContext, CallbackDecision, dispatch,
+        };
+        store
+            .transaction(|tx| {
+                let mut agent = AgentRepository::get(tx, &"lead".into())?.expect("lead");
+                agent.extra.insert("threadId".into(), json!("thread"));
+                agent.extra.insert("turnId".into(), json!("turn"));
+                AgentRepository::put(tx, &agent)?;
+                Ok(())
+            })
+            .await
+            .expect("callback identity");
+        let context = CallbackContext {
+            agent: "lead".into(),
+            account: "default".into(),
+            connection: "connection".into(),
+            generation: 1,
+            epoch: 1,
+            thread: "thread".into(),
+            turn: "turn".into(),
+        };
+        let frame = Frame::Request(RequestFrame {
+            id: RequestId::String(format!("rpc-{action}")),
+            method: Method::ItemToolCall,
+            params: Some(
+                json!({"threadId":"thread","turnId":"turn","callId":format!("read-{action}"),
+                "tool":"orchestration_task","arguments":args}),
+            ),
+            fields: Default::default(),
+        });
+        let CallbackDecision::Answer(reply) = dispatch(store, &context, &frame, 100.0)
+            .await
+            .expect("read callback")
+        else {
+            panic!("answer");
+        };
+        let ResponseBody::Result(body) = reply.body else {
+            panic!("result");
+        };
+        body
+    }
+
+    async fn read_task_tool(store: Arc<RuntimeStore>, task: &str, action: &str) -> Value {
+        let body = task_tool_reply(store, action, json!({"action":action,"task_id":task})).await;
+        assert_eq!(body["success"], true, "{body}");
+        serde_json::from_str(body["contentItems"][0]["text"].as_str().expect("text"))
+            .expect("JSON tool output")
+    }
+
+    #[tokio::test]
+    async fn task_result_schema_create_update_reject_invalid_without_writes() {
+        let (state, store, _dir) = state().await;
+        let port = managed_work_port(state, None);
+        let body = task_tool_reply(Arc::clone(&store), "create-invalid", json!({"action":"create","title":"invalid tool contract","result_schema":{"type":"wrong"}})).await;
+        assert_eq!(body["success"], false, "{body}");
+        assert!(
+            body["contentItems"][0]["text"]
+                .as_str()
+                .expect("refusal text")
+                .contains("result_schema")
+        );
+        for (index, contract) in [json!({"type":"wrong"}), json!({"required":true}), json!({"description":"x".repeat(studio_runtime_schema::task_results::MAX_RESULT_SCHEMA_BYTES)})].into_iter().enumerate() {
+            let message = refused(port.act("lead", &json!({"action":"create","title":"invalid","result_schema":contract}), &format!("invalid-{index}")).await);
+            assert!(message.contains("result_schema"), "{message}");
+        }
+        let count = store
+            .read_async("test", |db| {
+                db.query_row("SELECT count(*) FROM runtime_work", [], |r| {
+                    r.get::<_, i64>(0)
+                })
+                .map_err(studio_runtime_store::StoreError::from)
+            })
+            .await
+            .expect("count");
+        assert_eq!(count, 0);
+        let created = written(
+            port.act(
+                "lead",
+                &json!({"action":"create","title":"valid","result_schema":schema()}),
+                "create",
+            )
+            .await,
+        );
+        assert_eq!(created["resultSchema"], schema());
+        let task = created["id"].as_str().expect("id");
+        refused(
+            port.act(
+                "lead",
+                &json!({"action":"update","task_id":task,"result_schema":{"properties":false}}),
+                "invalid-update",
+            )
+            .await,
+        );
+        let stored = read_task_tool(store, task, "get").await;
+        assert_eq!(stored["version"], created["version"]);
+        assert_eq!(stored["resultSchema"], schema());
+    }
+
+    #[tokio::test]
+    async fn task_result_schema_submit_errors_retry_and_json_get_history() {
+        let (state, store, _dir) = state().await;
+        let port = managed_work_port(state, None);
+        let created = written(port.act("lead", &json!({"action":"create","title":"results","owner":"worker","result_schema":schema()}), "create").await);
+        let task = created["id"].as_str().expect("id");
+        let before = created.clone();
+        let args = json!({"action":"submit","task_id":task,"result":{"count":"bad"},"checks":"checked","revision":"abc","files":[]});
+        let message = refused(port.act("worker", &args, "invalid-submit").await);
+        let error: Value = serde_json::from_str(&message).expect("structured refusal");
+        assert_eq!(error["errors"][0]["path"], "/count");
+        assert_eq!(error["failedSubmits"], 1);
+        assert_eq!(
+            refused(port.act("worker", &args, "invalid-submit").await),
+            message
+        );
+        let task_id = task.to_owned();
+        let saved = store
+            .read_async("test", move |db| {
+                studio_runtime_store::WorkItemsRepository::work_record(db, &task_id)
+            })
+            .await
+            .expect("read")
+            .expect("task");
+        assert_eq!(saved["version"], before["version"]);
+        assert_eq!(saved["status"], before["status"]);
+        assert_eq!(saved["results"], before["results"]);
+        assert!(saved.get("submissionRefusal").is_none());
+        let mut valid = args;
+        valid["result"] = json!({"count":7});
+        let submitted = written(port.act("worker", &valid, "valid-submit").await);
+        assert_eq!(submitted["status"], "review");
+        assert_eq!(
+            written(port.act("worker", &valid, "valid-submit").await),
+            submitted
+        );
+        let got = read_task_tool(Arc::clone(&store), task, "get").await;
+        assert_eq!(got["latestResult"]["result"], json!({"count":7}));
+        let history = read_task_tool(store, task, "history").await;
+        assert_eq!(
+            history["items"][0]["result"],
+            json!({"count":7}),
+            "{history}"
+        );
+    }
+
+    #[tokio::test]
+    async fn task_result_schema_retry_cap_emits_one_event_and_lead_update_resets() {
+        use studio_runtime_schema::task_results::MAX_FAILED_RESULT_SUBMITS_PER_ATTEMPT;
+        let (state, store, _dir) = state().await;
+        let port = managed_work_port(state, None);
+        let created = written(
+            port.act(
+                "lead",
+                &json!({"action":"create","title":"cap","owner":"worker","result_schema":schema()}),
+                "create",
+            )
+            .await,
+        );
+        let task = created["id"].as_str().expect("id");
+        let mut args = json!({"action":"submit","task_id":task,"result":"not JSON","checks":"checked","revision":"abc"});
+        for index in 0..MAX_FAILED_RESULT_SUBMITS_PER_ATTEMPT {
+            let message = refused(port.act("worker", &args, &format!("invalid-{index}")).await);
+            let refusal: Value = serde_json::from_str(&message).expect("refusal");
+            assert_eq!(refusal["failedSubmits"], index + 1);
+        }
+        args["result"] = json!({"count":2});
+        assert!(refused(port.act("worker", &args, "over-cap").await).contains("limit reached"));
+        let events = store.read_async("test", |db| db.query_row("SELECT count(*) FROM runtime_events WHERE kind='work_result_invalid' AND agent='lead' AND status='pending'", [], |r| r.get::<_,i64>(0)).map_err(studio_runtime_store::StoreError::from)).await.expect("events");
+        assert_eq!(events, 1);
+        written(
+            port.act(
+                "lead",
+                &json!({"action":"update","task_id":task,"result_schema":schema()}),
+                "reset",
+            )
+            .await,
+        );
+        assert_eq!(
+            written(port.act("worker", &args, "new-attempt").await)["status"],
+            "review"
+        );
+    }
+
+    #[tokio::test]
+    async fn task_result_schema_legacy_text_behavior_is_unchanged() {
+        let (state, _store, _dir) = state().await;
+        let port = managed_work_port(state, None);
+        let created = written(
+            port.act(
+                "lead",
+                &json!({"action":"create","title":"legacy","owner":"worker"}),
+                "create",
+            )
+            .await,
+        );
+        let args = json!({"action":"submit","task_id":created["id"],"result":"plain text","checks":"checked","revision":"abc"});
+        let result = written(port.act("worker", &args, "submit").await);
+        assert_eq!(result["results"][0]["text"], "plain text");
+        assert!(result["results"][0].get("result").is_none());
     }
 
     #[tokio::test]

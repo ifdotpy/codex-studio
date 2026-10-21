@@ -289,6 +289,7 @@ fn callback_clock() -> Result<f64, studio_runtime_services::provider_callbacks::
 fn callback_error(error: studio_runtime_services::provider_callbacks::CallbackError) -> ApiError {
     use studio_runtime_services::provider_callbacks::CallbackError as E;
     match error {
+        E::InvalidResultSchema(message) => ApiError::new(StatusCode::BAD_REQUEST, message),
         E::Dependency(name) => ApiError::dependency(name),
         E::Store(error) => ApiError::stored(error),
         E::Stored(location) => ApiError::invalid_stored("provider_callbacks", &location),

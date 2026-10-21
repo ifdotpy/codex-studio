@@ -1265,6 +1265,12 @@ async fn create_child(
     let result = mutate(context, move |tx| {
         let validate = |schema: &str, value: &Value| validate(schema, value);
         crate::host_worker_create::recheck_worker(tx, &draft, epoch, &identity)?;
+        let mut prompt = prompt;
+        if let Some(task_id) = &task_id {
+            let work = studio_runtime_store::WorkItemsRepository::work_record(tx, task_id)?
+                .ok_or(OperationError::Invalid("Unknown task_id"))?;
+            prompt.push_str(&studio_runtime_schema::task_results::assignment_text(&work));
+        }
         let result = super::create_agent_with_identity(
             tx,
             &id_for_write,

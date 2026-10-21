@@ -60010,17 +60010,8 @@
             "title": "Reason"
           },
           "result": {
-            "anyOf": [
-              {
-                "maxLength": 12000,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Result"
+            "$ref": "#/components/schemas/JsonValue",
+            "maxLength": 12000
           },
           "revision": {
             "anyOf": [
@@ -60089,6 +60080,14 @@
             ],
             "default": null,
             "title": "Version"
+          },
+          "result_schema": {
+            "type": [
+              "object",
+              "boolean"
+            ],
+            "description": "Optional draft 2020-12 result contract for create/update (maximum 32768 UTF-8 bytes). Supports types, properties, required, additionalProperties, arrays, bounds, enum/const and combinators. References, regex and unknown keywords are refused. A new task version resets the submit cap.",
+            "additionalProperties": true
           }
         },
         "required": [
@@ -60781,6 +60780,9 @@
           "text": {
             "title": "Text",
             "type": "string"
+          },
+          "result": {
+            "$ref": "#/components/schemas/JsonValue"
           }
         },
         "required": [
@@ -60861,6 +60863,9 @@
           "text": {
             "title": "Text",
             "type": "string"
+          },
+          "result": {
+            "$ref": "#/components/schemas/JsonValue"
           }
         },
         "required": [
@@ -60976,6 +60981,9 @@
           "text": {
             "title": "Text",
             "type": "string"
+          },
+          "result": {
+            "$ref": "#/components/schemas/JsonValue"
           }
         },
         "required": [

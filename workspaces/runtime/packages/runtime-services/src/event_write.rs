@@ -37,6 +37,8 @@ pub enum EventWriteError {
     #[error("invalid request: {0}")]
     InvalidRequest(&'static str),
     #[error("{0}")]
+    InvalidResultSchema(String),
+    #[error("{0}")]
     Conflict(&'static str),
     #[error("Not implemented: requires cross-server/remote-events")]
     RemoteEventsUnavailable,

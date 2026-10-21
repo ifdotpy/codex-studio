@@ -1185,6 +1185,9 @@ pub(crate) fn event_write_error(error: crate::event_write::EventWriteError) -> C
         EventWriteError::InvalidRequest(message) | EventWriteError::Conflict(message) => {
             CoordinationError::InvalidRequest(message)
         }
+        EventWriteError::InvalidResultSchema(_) => {
+            CoordinationError::InvalidRequest("Invalid result_schema")
+        }
         EventWriteError::RemoteEventsUnavailable => {
             CoordinationError::RequiresDependency("event-driver/remote-events")
         }

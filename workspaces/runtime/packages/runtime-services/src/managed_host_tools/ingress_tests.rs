@@ -2318,6 +2318,49 @@ fn run_git_output(directory: &std::path::Path, arguments: &[&str]) -> String {
 }
 
 #[tokio::test]
+async fn task_result_schema_spawn_assignment_contains_contract() {
+    let (_root, store, context) = fixture().await;
+    let contract = json!({"type":"object","properties":{"findings":{"type":"array","items":{"type":"string"}}},"required":["findings"]});
+    let actor_value = {
+        let read = store.test_reader().unwrap();
+        studio_runtime_store::AgentRepository::get(&read, &context.agent.as_str().into())
+            .unwrap()
+            .unwrap()
+            .value()
+    };
+    let actor = Actor::from_record(&actor_value, &context.agent, context.epoch).unwrap();
+    let work = json!({"id":"schema-task","rootId":context.agent,"title":"Schema task","description":"Return findings",
+        "owner":null,"status":"ready","version":1,"created":10,"updated":10,"dependencies":[],"results":[],"decisions":[],"resultSchema":contract});
+    store
+        .transaction(move |tx| {
+            studio_runtime_store::WorkItemsRepository::put_work(tx, "schema-task", &work)?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let spawned = crate::managed_child_create::spawn_agents(&store, &actor,
+        &json!({"agents":[{"name":"Schema worker","prompt":"Read the task","workspace":"shared","task_id":"schema-task"}]}),
+        "schema-spawn", 20.0, &CreationEnvironment).await.unwrap();
+    let child = spawned.value["agents"][0]["id"].as_str().unwrap();
+    let read = store.test_reader().unwrap();
+    let text: String = read
+        .query_row(
+            "SELECT text FROM runtime_events WHERE agent=?1 AND kind='user'",
+            [child],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(text.contains(&contract.to_string()), "{text}");
+    assert!(text.contains("[Task result contract]"));
+    assert_eq!(
+        studio_runtime_store::WorkItemsRepository::work_record(&read, "schema-task")
+            .unwrap()
+            .unwrap()["owner"],
+        child
+    );
+}
+
+#[tokio::test]
 async fn dispatcher_service_bundle_calls_spawn_and_review_entry_points() {
     let (_root, store, context) = fixture().await;
     let project_path = CanonicalPath::existing(

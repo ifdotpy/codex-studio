@@ -322,7 +322,7 @@ pub(crate) trait MonitorCancelPort: Send + Sync {
 pub enum WorkActionOutcome {
     /// The action committed; the full task record.
     Written(Value),
-    /// The action was refused before any write; the message for the model.
+    /// No task mutation was applied. Refusal accounting may already be durable.
     Refused(String),
     /// The action may have committed; the message for the model.
     Unknown(String),
