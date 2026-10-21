@@ -3,9 +3,9 @@
 //! The Rust port of `vm-guest/browser_bridge.py` as `codex_browser_host.py` runs it in the
 //! Python server: the same sockets, the same queue file, the same JSON-RPC methods. Agents run
 //! the launcher `<state>/browser-host/studio-browser URL` (it is also `BROWSER`, and
-//! `xdg-open` in `<state>/browser-host/bin`). The launcher sends the link on `open.sock`; this
-//! bridge checks it with the URL rules (`browser_policy`), finds the chat by its session hint
-//! and queues a request. The server reads the queue on `control.sock` with `browser.wait` and
+//! `xdg-open`, and `open` on macOS, in `<state>/browser-host/bin`). The launcher sends the
+//! link on `open.sock`; this bridge checks it with the URL rules (`browser_policy`), finds the
+//! chat by its session hint and queues a request. The server reads the queue on `control.sock` with `browser.wait` and
 //! shows the person a card (`browser_cards`). After an approval the one sign-in redirect is
 //! relayed to the tool's loopback listener with `browser.callback`. Every connection to a
 //! listener first checks that the listener belongs to this server's user.
@@ -40,6 +40,14 @@ pub const SHIM_ARGUMENT: &str = "--studio-browser";
 /// The guest's launcher socket when `STUDIO_BROWSER_SOCKET` is unset.
 const GUEST_SOCKET: &str = "/run/codex-studio-browser/open.sock";
 const PATH_NAMES: [&str; 3] = ["xdg-open", "x-www-browser", "www-browser"];
+/// Studio's `open` in the `PATH` folder of a macOS host, for tools that run `open URL` and
+/// ignore `BROWSER`. It sends one http or https URL to the launcher and passes every other use
+/// to `/usr/bin/open` unchanged. Python `codex_browser_host.OPEN_SHIM` holds a copy;
+/// `test_codex_browser_host_env.py` checks that the copy equals this file.
+pub const OPEN_SHIM: &str = include_str!("browser_open.sh");
+/// The name of `OPEN_SHIM` in the `PATH` folder. Only a macOS host gets it: on Linux `open`
+/// is a different program (openvt), and tools there run `xdg-open`.
+pub const OPEN_NAME: &str = "open";
 
 /// A request lives this long, in seconds (`TTL_SECONDS`).
 const TTL_SECONDS: f64 = 600.0;
@@ -1287,9 +1295,10 @@ fn shell_quote(text: &str) -> String {
     format!("'{}'", text.replace('\'', "'\"'\"'"))
 }
 
-/// Write the launcher `<folder>/studio-browser` and its `PATH` links. The launcher runs this
-/// server's binary as the shim, so it needs no Python. Tools split `BROWSER` into words, so
-/// the launcher path is the value and the binary path stays inside the script.
+/// Write the launcher `<folder>/studio-browser`, its `PATH` links and, on macOS, the `open`
+/// shim (`OPEN_SHIM`). The launcher runs this server's binary as the shim, so it needs no
+/// Python. Tools split `BROWSER` into words, so the launcher path is the value and the binary
+/// path stays inside the script.
 pub fn write_launcher(folder: &Path, executable: &Path) -> std::io::Result<PathBuf> {
     let launcher = folder.join(LAUNCHER);
     let script = format!(
@@ -1308,6 +1317,9 @@ pub fn write_launcher(folder: &Path, executable: &Path) -> std::io::Result<PathB
             std::os::unix::fs::symlink(&target, &temporary)?;
             std::fs::rename(&temporary, &link)?;
         }
+    }
+    if cfg!(target_os = "macos") {
+        write_atomic(&bin.join(OPEN_NAME), OPEN_SHIM.as_bytes(), 0o755)?;
     }
     Ok(launcher)
 }

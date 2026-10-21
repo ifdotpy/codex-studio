@@ -15,9 +15,10 @@ pub const BROWSER_OPEN_SOCKET: &str = "open.sock";
 /// Per-thread Codex config overrides for a host Codex agent. Codex applies
 /// `shell_environment_policy.set` to the thread's commands, so the app-server
 /// launch does not change. PATH is not set: a Codex `set.PATH` replaces the
-/// whole PATH of the command (measured with codex-cli 0.160.1). Nothing is set
-/// before the launcher exists, so a server without the host bridge keeps the
-/// tool's own browser behaviour.
+/// whole PATH of the command, also the entries that the person's shell startup
+/// files add (measured with codex-cli 0.160.1, docs/vm-browser-bridge.md
+/// section 6.4). Nothing is set before the launcher exists, so a server without
+/// the host bridge keeps the tool's own browser behaviour.
 pub fn thread_environment(state_root: &Path, agent_id: &str) -> Map<String, Value> {
     let folder = state_root.join(BROWSER_HOST_FOLDER);
     let launcher = folder.join(BROWSER_LAUNCHER);

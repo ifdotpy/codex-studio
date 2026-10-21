@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, test } from "vitest";
-import { browserEnvironment } from "./browser-environment.mjs";
+import { PATH_SCRIPT, browserEnvironment } from "./browser-environment.mjs";
 
 const roots = [];
 afterEach(() => {
@@ -35,8 +36,49 @@ test("a session gets the launcher, its socket, its own session and the links fir
       STUDIO_BROWSER_SOCKET: "/state/browser-host/open.sock",
       STUDIO_BROWSER_SESSION: "session-1",
       PATH: "/state/browser-host/bin:/usr/bin:/bin",
+      CLAUDE_ENV_FILE: path.join(folder, PATH_SCRIPT),
     },
   );
+});
+
+test("the Bash command script puts the link folder first after the shell startup", () => {
+  const links = "/state/it's here/bin";
+  const folder = root(
+    JSON.stringify({
+      BROWSER: "/b",
+      STUDIO_BROWSER_SOCKET: "/s",
+      STUDIO_BROWSER_PATH: links,
+    }),
+  );
+  const script = browserEnvironment(folder, "s", {
+    PATH: "/usr/bin",
+  }).CLAUDE_ENV_FILE;
+  const before = readFileSync(script, "utf8");
+  // A second session keeps the same script.
+  browserEnvironment(folder, "t", { PATH: "/usr/bin" });
+  assert.equal(readFileSync(script, "utf8"), before);
+  const value = execFileSync(
+    "/bin/sh",
+    ["-c", '. "$1"; printf %s "$PATH"', "sh", script],
+    { env: { PATH: "/usr/bin:/bin" }, encoding: "utf8" },
+  );
+  assert.equal(value, `${links}:/usr/bin:/bin`);
+});
+
+test("a person's own CLAUDE_ENV_FILE stays in place", () => {
+  const folder = root(
+    JSON.stringify({
+      BROWSER: "/b",
+      STUDIO_BROWSER_SOCKET: "/s",
+      STUDIO_BROWSER_PATH: "/state/bin",
+    }),
+  );
+  const result = browserEnvironment(folder, "s", {
+    PATH: "/usr/bin",
+    CLAUDE_ENV_FILE: "/home/person/env.sh",
+  });
+  assert.equal(result.CLAUDE_ENV_FILE, undefined);
+  assert.equal(result.PATH, "/state/bin:/usr/bin");
 });
 
 test("an older server file without the link folder keeps PATH unchanged", () => {
