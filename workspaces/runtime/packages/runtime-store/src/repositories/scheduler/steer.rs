@@ -1,7 +1,8 @@
 //! Busy-turn input for Codex and Claude agents.
 //!
-//! A running turn receives pending user input through `turn/steer`; both
-//! providers speak the same request and acknowledge it the same way.
+//! A running turn receives pending input of the [`BUSY_TURN_EVENT_KINDS`]
+//! through `turn/steer`; both providers speak the same request and
+//! acknowledge it the same way.
 //! The running turn keeps its `startAttempt`, which still routes the turn's
 //! notifications and terminal outcome. Each steer owns one durable receipt in
 //! `runtime_operation_receipts`; its event rows move through these states:
@@ -130,12 +131,30 @@ fn steer_turn(agent: &AgentRecord) -> Option<(String, String)> {
     eligible.then(|| (turn.to_owned(), thread.to_owned()))
 }
 
-/// Plain user text that the running turn can read. Native commands, assets,
-/// radio answers and explicit after-turn input wait for the next turn.
+/// Event kinds a running turn may receive by `turn/steer`: user text and the
+/// self-contained team messages, as in Python, which steered every queued
+/// input into a busy turn. Without the team messages a worker in a long turn
+/// read a lead's follow-up only after the turn ended (Lumina trackwork-parity,
+/// 20 October 2026: median 810 s from send to delivery). Child results
+/// (result files), complaints (presentation state), work reviews, radio and
+/// monitor input still wait for the next turn. The account worker checks the
+/// team-isolation gate of each team message before it is claimed.
+pub const BUSY_TURN_EVENT_KINDS: [&str; 5] = [
+    "user",
+    "followup",
+    "agent_message",
+    "complaint_response",
+    "rule",
+];
+
+/// Text that the running turn can read. Native commands, assets, radio
+/// answers and explicit after-turn input wait for the next turn.
 fn steerable(event: &QueueEvent, metadata: Option<&Value>) -> bool {
     let text = event.text.trim_start();
-    let command = (text.starts_with('/') || text.starts_with('$')) && !event.text.contains('\n');
-    event.kind == "user"
+    let command = event.kind == "user"
+        && (text.starts_with('/') || text.starts_with('$'))
+        && !event.text.contains('\n');
+    BUSY_TURN_EVENT_KINDS.contains(&event.kind.as_str())
         && !command
         && !event.text.trim().is_empty()
         && metadata.is_none_or(|meta| {
@@ -254,7 +273,7 @@ impl SchedulerRepository {
         Ok(steer_target(connection, agent, epoch)?.is_some())
     }
 
-    /// Reserve the oldest pending user input for the agent's running turn.
+    /// Reserve the oldest pending input for the agent's running turn.
     /// Input that must wait for the next turn stops the batch, so delivery order
     /// is preserved. A previous steer must be resolved before the next one.
     pub fn claim_steer(
@@ -263,6 +282,21 @@ impl SchedulerRepository {
         epoch: i64,
         steer_id: &str,
         created: f64,
+    ) -> StoreResult<Option<ClaimedSteer>> {
+        Self::claim_steer_admitted(tx, agent_id, epoch, steer_id, created, |_| Ok(true))
+    }
+
+    /// [`Self::claim_steer`] where `admit` decides, in queue order, whether
+    /// each steerable event may reach the running turn now. The first event
+    /// it refuses stops the batch and waits, with every later event, for the
+    /// next turn, whose preparation applies the full submit gates.
+    pub fn claim_steer_admitted(
+        tx: &Transaction<'_>,
+        agent_id: &str,
+        epoch: i64,
+        steer_id: &str,
+        created: f64,
+        mut admit: impl FnMut(&QueueEvent) -> StoreResult<bool>,
     ) -> StoreResult<Option<ClaimedSteer>> {
         let Some(agent) = load_agent(tx, agent_id)? else {
             return Ok(None);
@@ -298,7 +332,7 @@ impl SchedulerRepository {
                 .map(|raw| serde_json::from_str::<Value>(&raw))
                 .transpose()
                 .map_err(|_| invalid_object("runtime_event_meta", &event.id.0))?;
-            if !steerable(&event, metadata.as_ref()) {
+            if !steerable(&event, metadata.as_ref()) || !admit(&event)? {
                 break;
             }
             events.push(event);
@@ -504,6 +538,13 @@ impl SchedulerRepository {
             .map(|event| &event.id.0)
             .collect::<Vec<_>>();
         mark_timing(tx, &json!(ids).to_string(), "acceptedAt")?;
+        // A steered agent message is delivered to its chat recipient, as at
+        // turn acceptance.
+        let delivered_ids = delivered
+            .iter()
+            .map(|event| event.id.0.clone())
+            .collect::<Vec<_>>();
+        Self::project_delivered_chat_events(tx, agent_id, epoch, turn_id, &delivered_ids)?;
         Ok(Some(AcknowledgedSteer {
             agent_id: agent_id.into(),
             events: delivered,

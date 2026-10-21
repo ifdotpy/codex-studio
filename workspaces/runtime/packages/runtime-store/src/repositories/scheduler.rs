@@ -109,7 +109,7 @@ mod selection;
 mod steer;
 use lifecycle::*;
 use selection::*;
-pub use steer::{AcknowledgedSteer, ClaimedSteer, STEER_UNCONFIRMED_ERROR};
+pub use steer::{AcknowledgedSteer, BUSY_TURN_EVENT_KINDS, ClaimedSteer, STEER_UNCONFIRMED_ERROR};
 
 #[cfg(test)]
 mod tests {

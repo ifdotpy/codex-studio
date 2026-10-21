@@ -1,5 +1,5 @@
-//! Busy-turn input: queued user input reaches a running Codex or Claude turn
-//! through `turn/steer`. `SchedulerRepository::claim_steer` owns the durable states and
+//! Busy-turn input: queued user input and team messages reach a running Codex
+//! or Claude turn through `turn/steer`. `SchedulerRepository::claim_steer` owns the durable states and
 //! their fail-point matrix; this module adapts them to the account worker.
 //!
 //! Exactly-once rules:
@@ -26,7 +26,10 @@ pub(super) fn operation(account: &str, steer_id: &str) -> String {
     )
 }
 
-/// Claim queued user input for the agent's running turn.
+/// Claim queued input for the agent's running turn. A team message is
+/// claimed only when the team-isolation gate admits it now, against the
+/// stored rows of this transaction and the paths `resolved` before it; a
+/// refused message stops the batch and waits for the next turn's full gates.
 pub(super) fn claim(
     tx: &studio_runtime_store::Transaction<'_>,
     account: &str,
@@ -34,6 +37,7 @@ pub(super) fn claim(
     epoch: i64,
     steer_id: &str,
     created: f64,
+    resolved: &std::collections::BTreeMap<String, String>,
 ) -> Result<Option<(TurnIntent, String)>, WorkerError> {
     let owned = AgentRepository::get(tx, &AgentId::from(agent_id))?.is_some_and(|agent| {
         agent
@@ -46,7 +50,11 @@ pub(super) fn claim(
     if !owned {
         return Ok(None);
     }
-    let Some(claimed) = SchedulerRepository::claim_steer(tx, agent_id, epoch, steer_id, created)?
+    let admit = |event: &studio_runtime_store::QueueEvent| {
+        Ok(event.kind == "user" || team_message_admitted(tx, agent_id, event, resolved))
+    };
+    let Some(claimed) =
+        SchedulerRepository::claim_steer_admitted(tx, agent_id, epoch, steer_id, created, admit)?
     else {
         return Ok(None);
     };
@@ -81,8 +89,73 @@ pub(super) fn claim(
     Ok(Some((intent, claimed.turn_id)))
 }
 
-fn text<'a>(texts: impl Iterator<Item = &'a str>) -> String {
-    texts.collect::<Vec<_>>().join("\n\n")
+/// Whether the team-isolation gate admits `event` for `agent_id` now. Any
+/// unreadable row or path refuses it, so it waits for the next turn.
+fn team_message_admitted(
+    tx: &studio_runtime_store::Transaction<'_>,
+    agent_id: &str,
+    event: &studio_runtime_store::QueueEvent,
+    resolved: &std::collections::BTreeMap<String, String>,
+) -> bool {
+    let events = vec![crate::submit_gates::StoredEvent {
+        id: event.id.0.clone(),
+        kind: event.kind.clone(),
+        text: event.text.clone(),
+    }];
+    let Ok(mut rows) = preparation::event_authorization_records(tx, agent_id, events) else {
+        return false;
+    };
+    rows.resolved_paths = resolved.clone();
+    crate::submit_gates::AuthorizationSnapshot::from_records(&rows)
+        .is_ok_and(|snapshot| crate::submit_gates::authorize_events(&snapshot).is_ok())
+}
+
+/// The stored rows the gate of the agent's pending team messages reads, or
+/// `None` without such a message. Their paths are resolved outside SQL.
+fn team_message_records(
+    db: &rusqlite::Connection,
+    agent_id: &str,
+    epoch: i64,
+) -> Result<Option<crate::submit_gates::AuthorizationRecords>, WorkerError> {
+    let mut statement = db.prepare_cached(
+        "SELECT id,kind,text FROM runtime_events WHERE agent=?1 AND epoch=?2 \
+         AND status='pending' ORDER BY created,rowid LIMIT ?3",
+    )?;
+    let events = statement
+        .query_map(
+            rusqlite::params![
+                agent_id,
+                epoch,
+                studio_runtime_store::MAX_EVENTS_PER_TURN as i64
+            ],
+            |row| {
+                Ok(crate::submit_gates::StoredEvent {
+                    id: row.get(0)?,
+                    kind: row.get(1)?,
+                    text: row.get(2)?,
+                })
+            },
+        )?
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .filter(|event| {
+            event.kind != "user"
+                && studio_runtime_store::BUSY_TURN_EVENT_KINDS.contains(&event.kind.as_str())
+        })
+        .collect::<Vec<_>>();
+    drop(statement);
+    if events.is_empty() {
+        return Ok(None);
+    }
+    preparation::event_authorization_records(db, agent_id, events).map(Some)
+}
+
+/// The one text a steer carries: its events' model texts in queue order.
+fn text<'a>(events: impl Iterator<Item = (&'a str, &'a str, &'a str)>) -> String {
+    events
+        .map(|(id, kind, text)| crate::turn_prepare::busy_turn_event_text(id, kind, text))
+        .collect::<Vec<_>>()
+        .join("\n\n")
 }
 
 /// Provider `turn/steer` parameters. `expectedTurnId` makes a finished turn a
@@ -92,7 +165,7 @@ pub(super) fn params(intent: &TurnIntent, turn: &str) -> Value {
         "threadId": intent.thread_id,
         "expectedTurnId": turn,
         "clientUserMessageId": intent.events.first().map(|event| &event.id),
-        "input": [{"type": "text", "text": text(intent.events.iter().map(|e| e.text.as_str()))}],
+        "input": [{"type": "text", "text": text(intent.events.iter().map(|e| (e.id.as_str(), e.kind.as_str(), e.text.as_str())))}],
     })
 }
 
@@ -212,7 +285,11 @@ pub(super) fn acknowledge(
             first_event_id: first_event.id.0.clone(),
             submitted_at: ack.submitted_at,
             created_at: first_event.created,
-            text: text(ack.events.iter().map(|e| e.text.as_str())),
+            text: text(
+                ack.events
+                    .iter()
+                    .map(|e| (e.id.0.as_str(), e.kind.as_str(), e.text.as_str())),
+            ),
             inputs: ack
                 .events
                 .iter()
@@ -280,23 +357,34 @@ pub(super) async fn claim_for_wake(
             else {
                 return Ok(None);
             };
-            Ok::<_, WorkerError>(Some(SchedulerRepository::steer_claimable(
-                connection, &record, epoch,
-            )?))
+            if !SchedulerRepository::steer_claimable(connection, &record, epoch)? {
+                return Ok::<_, WorkerError>(Some(None));
+            }
+            // An unreadable team message row only keeps team messages
+            // out of this steer: the claim's gate then refuses them.
+            let records = team_message_records(connection, &read_agent, epoch)
+                .ok()
+                .flatten();
+            Ok(Some(Some(records)))
         })
         .await?;
-    match found {
+    let records = match found {
         None => return Ok(WakeClaim::Idle),
         // A blocked or empty queue needs no write transaction.
-        Some(false) => return Ok(WakeClaim::Busy),
-        Some(true) => {}
-    }
+        Some(None) => return Ok(WakeClaim::Busy),
+        Some(Some(records)) => records,
+    };
+    // Path resolution is filesystem work: it runs here, before the claim
+    // transaction, as a turn preparation's does.
+    let resolved = records
+        .and_then(|records| preparation::authorization_paths(&records).ok())
+        .unwrap_or_default();
     let mut bytes = [0u8; 16];
     getrandom::fill(&mut bytes).map_err(|_| WorkerError::TaskFailed)?;
     let steer_id = format!("steer-{}", studio_runtime_store::sha256_hex(&bytes));
     let (account, agent) = (account.to_owned(), agent.to_owned());
     let claimed = scheduler::lifecycle_transaction_with(&store, move |tx| {
-        claim(tx, &account, &agent, epoch, &steer_id, now())
+        claim(tx, &account, &agent, epoch, &steer_id, now(), &resolved)
     })
     .await?;
     Ok(claimed.map_or(WakeClaim::Busy, |(intent, turn)| {

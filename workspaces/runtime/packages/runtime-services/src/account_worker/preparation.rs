@@ -16,6 +16,7 @@ pub use snapshot::{
     VmProviderLaunchRequest, VmProviderLaunchResolver, VmProviderRefreshFuture,
 };
 pub(crate) use snapshot::{actor_tool_definitions, progress_context};
+pub(super) use snapshot::{authorization_paths, event_authorization_records};
 
 fn refusal(reason: String) -> WorkerError {
     WorkerError::PreparationRefused(reason)
