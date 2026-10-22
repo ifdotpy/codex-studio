@@ -387,7 +387,7 @@ export function sidebarUnavailableReason(
     return `Server ${aliases[owner] || owner} is offline.`;
   return (
     `The project's home server ${owner} is not connected. ` +
-    "If that server lost its identity, run replace_server on the server that still names it."
+    "If that server lost its identity, references to its previous identity remain unavailable."
   );
 }
 

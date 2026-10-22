@@ -221,8 +221,7 @@ fn table_exists(tx: &rusqlite::Transaction<'_>, table: &str) -> Result<bool, Sto
 }
 
 /// Identity changes that leave live references to a lost server. They are derived on each
-/// read and never stored. The rules are those of `identity_alerts` in codex_multi_server.py
-/// (docs/multi-server.md, "Replace a lost server identity").
+/// read and never stored. See docs/multi-server.md, "Lost server identities".
 fn identity_alerts(
     tx: &rusqlite::Transaction<'_>,
     identity: &Value,
@@ -272,7 +271,7 @@ fn identity_alerts(
                     "newServerId": new,
                     "origin": origin,
                     "detail": format!(
-                        "{origin} now presents server {new}. Run replace_server with oldServerId {old} after the old identity is gone."
+                        "{origin} now presents server {new}. References to server {old} remain unavailable."
                     ),
                 }));
             }
@@ -286,7 +285,7 @@ fn identity_alerts(
             "newServerId": local,
             "origin": identity["origin"],
             "detail": format!(
-                "Local state still names this server {old}. Run replace_server here, and on each paired server that names {old}, with newServerId {local}."
+                "Local state still names this server {old}, but its current identity is {local}. References to the previous identity remain unavailable."
             ),
         }));
     }

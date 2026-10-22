@@ -1478,3 +1478,9 @@ change with both options. Cross-machine Claude cache reuse remains unverified.
 2. After a confirmed connection refusal, the client starts `studio-runtime-server` and verifies its executable build identity.
 3. Recovery owns the independent Rust process supervisor; quitting the client leaves runtime work active.
 4. A timeout or incompatible owner fails visibly without starting a replacement.
+
+## Lost server identity warnings
+
+1. The access snapshot identifies references to a previous server identity.
+2. Server settings display these warnings without a replacement action.
+3. References keep their original identity; historical replacement records remain readable.

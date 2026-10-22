@@ -1308,6 +1308,19 @@ function fastTierCommands(root) {
           "Check startup without Python, binary build identity, existing-owner attachment, and uncertain connection refusals.",
       },
     },
+    {
+      item: tooling,
+      label: "retired server action witness",
+      commands: [
+        [
+          "node",
+          [
+            "--test",
+            "workspaces/tooling/apps/repository-checks/tests/retired-server-action.test.mjs",
+          ],
+        ],
+      ],
+    },
     { item: tooling, label: "tooling tests" },
   ];
 }

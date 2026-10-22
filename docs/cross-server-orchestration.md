@@ -107,10 +107,10 @@ A stop marker does not prove a native stop. The stop receipt stays unknown until
 the worker has no active native turn or input.
 
 A server that lost its identity file gets a new server ID. Links, workers, and
-project aliases on its peers keep the old ID until the owner runs
-`replace_server` (see the multi-server contract). That operation moves the live
-routes to the new ID and closes queued requests to the old ID as `unknown`.
-It never resends them.
+project aliases on its peers keep the old ID and remain unavailable. The access
+snapshot reports identity warnings (see [lost server identities](multi-server.md#lost-server-identities)).
+The server does not offer an identity replacement action or resend requests to
+another identity.
 
 ## Checks
 
