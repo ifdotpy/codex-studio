@@ -419,9 +419,6 @@
       },
       "sync_documents": [],
       "sync_versions": [],
-      "runtime_search": [],
-      "runtime_search_rows": [],
-      "runtime_search_indexed": [],
       "runtime_search_next_meta": [],
       "runtime_search_rollout": [
         {
@@ -706,7 +703,6 @@
       {
         "$ref": 66
       },
-      "INSERT INTO \"runtime_search_rows_rollout\"(\"id\",\"cursor\") VALUES (1,0);",
       "INSERT INTO \"runtime_server_sequence\"(\"id\",\"value\") VALUES (1,0);",
       {
         "$ref": 67
@@ -1501,7 +1497,6 @@
       {
         "$ref": 66
       },
-      "INSERT INTO \"runtime_search_rows_rollout\"(\"id\",\"cursor\") VALUES (1,0);",
       "INSERT INTO \"runtime_server_sequence\"(\"id\",\"value\") VALUES (1,0);",
       {
         "$ref": 67
@@ -1880,7 +1875,6 @@
       {
         "$ref": 66
       },
-      "INSERT INTO \"runtime_search_rows_rollout\"(\"id\",\"cursor\") VALUES (1,0);",
       "INSERT INTO \"runtime_server_sequence\"(\"id\",\"value\") VALUES (1,0);",
       {
         "$ref": 67
@@ -2379,20 +2373,6 @@
         "sync_entities": {
           "$ref": 235
         },
-        "runtime_search": {
-          "$ref": 237
-        },
-        "runtime_search_rows": [
-          {
-            "id": "agent:native-notice:error:turn",
-            "search_rowid": 1
-          }
-        ],
-        "runtime_search_indexed": [
-          {
-            "id": "agent:native-notice:error:turn"
-          }
-        ],
         "runtime_search_next_meta": {
           "$ref": 239
         },
@@ -2572,9 +2552,6 @@
         "sync_entities": {
           "$ref": 257
         },
-        "runtime_search": {
-          "$ref": 259
-        },
         "runtime_search_next_postings": {
           "$ref": 260
         }
@@ -2738,9 +2715,6 @@
         },
         "sync_entities": {
           "$ref": 276
-        },
-        "runtime_search": {
-          "$ref": 278
         },
         "runtime_search_next_postings": {
           "$ref": 279
@@ -3072,9 +3046,6 @@
         "sync_entities": {
           "$ref": 300
         },
-        "runtime_search": {
-          "$ref": 302
-        },
         "runtime_search_next_postings": [
           ["error", 1, "body", 1],
           ["original", 1, "body", 0]
@@ -3131,7 +3102,6 @@
       {
         "$ref": 66
       },
-      "INSERT INTO \"runtime_search_rows_rollout\"(\"id\",\"cursor\") VALUES (1,0);",
       "INSERT INTO \"runtime_server_sequence\"(\"id\",\"value\") VALUES (1,0);",
       {
         "$ref": 67
@@ -3352,7 +3322,6 @@
       {
         "$ref": 66
       },
-      "INSERT INTO \"runtime_search_rows_rollout\"(\"id\",\"cursor\") VALUES (1,0);",
       "INSERT INTO \"runtime_server_sequence\"(\"id\",\"value\") VALUES (1,0);",
       {
         "$ref": 67
@@ -3571,7 +3540,6 @@
       {
         "$ref": 66
       },
-      "INSERT INTO \"runtime_search_rows_rollout\"(\"id\",\"cursor\") VALUES (1,0);",
       "INSERT INTO \"runtime_server_sequence\"(\"id\",\"value\") VALUES (1,0);",
       {
         "$ref": 67
@@ -3719,7 +3687,6 @@
               {
                 "$ref": 66
               },
-              "INSERT INTO \"runtime_search_rows_rollout\"(\"id\",\"cursor\") VALUES (1,0);",
               "INSERT INTO \"runtime_server_sequence\"(\"id\",\"value\") VALUES (1,0);",
               {
                 "$ref": 67
@@ -4164,7 +4131,6 @@
       {
         "$ref": 66
       },
-      "INSERT INTO \"runtime_search_rows_rollout\"(\"id\",\"cursor\") VALUES (1,0);",
       "INSERT INTO \"runtime_server_sequence\"(\"id\",\"value\") VALUES (1,0);",
       {
         "$ref": 67
@@ -4503,7 +4469,6 @@
       {
         "$ref": 66
       },
-      "INSERT INTO \"runtime_search_rows_rollout\"(\"id\",\"cursor\") VALUES (1,0);",
       "INSERT INTO \"runtime_server_sequence\"(\"id\",\"value\") VALUES (1,0);",
       {
         "$ref": 67
@@ -4792,30 +4757,348 @@
       }
     },
     {
-      "$base": 417,
-      "set": {
-        "runtime_agents": [
-          {
+      "runtime_agents": [
+        {
+          "id": "agent",
+          "record": {
+            "accountKey": "default",
+            "agentMode": "multi",
+            "agentModeRevision": 0,
+            "agentModeSupported": true,
+            "autoWake": false,
+            "compactions": 0,
+            "compactionsObservedOnly": false,
+            "concurrency": 32,
+            "contextUsage": null,
+            "created": "<time>",
+            "cwd": "/fixture",
+            "cyberAccessProgram": "standard",
+            "daybreakEnabled": false,
+            "disconnectRecovery": {
+              "accountKey": "default",
+              "at": "<time>",
+              "autoWake": true,
+              "epoch": 0,
+              "source": "restart",
+              "threadId": "thread",
+              "turnId": null
+            },
+            "effort": "medium",
+            "environment": "host",
+            "epoch": 0,
+            "error": "Server restarted during a turn. Review history, then send a new instruction.",
+            "events": 0,
+            "executionMode": "native",
+            "executionSettingsAccountKey": "default",
+            "fastMode": false,
+            "hostProjectPath": "${ROOT}/accepted/python",
             "id": "agent",
-            "record": {
-              "$ref": 438
+            "imageWorkspace": false,
+            "imageWorkspaceBaseRef": null,
+            "imageWorkspaceCreatedAt": null,
+            "imageWorkspaceError": null,
+            "imageWorkspaceHasGit": false,
+            "imageWorkspacePhase": null,
+            "imageWorkspaceReady": false,
+            "imageWorkspaceRepo": null,
+            "imageWorkspaceSubpath": ".",
+            "inFlight": false,
+            "isLead": true,
+            "layrReady": false,
+            "maxAgents": 64,
+            "maxAgentsExplicit": false,
+            "model": "fixture-model",
+            "name": "lifecycle fixture",
+            "needsTitle": false,
+            "parentId": null,
+            "profileId": null,
+            "profileInstructions": "",
+            "prompt": "seed",
+            "provider": "codex",
+            "restartRecovery": {
+              "accountKey": "default",
+              "at": "<time>",
+              "autoWake": true,
+              "epoch": 0,
+              "stage": "held",
+              "startAttempt": null,
+              "threadId": "thread",
+              "turnId": null,
+              "reason": "Native input submission has no confirmed turn identity."
+            },
+            "reviewDefaults": {
+              "effort": null,
+              "model": null
+            },
+            "role": "orchestrator",
+            "rootId": "agent",
+            "status": "interrupted",
+            "subagentConcurrencyVersion": 2,
+            "supervisorRestore": {
+              "accountKey": "default",
+              "at": "<time>",
+              "reason": "supervisor_mode_disabled",
+              "status": "not_restored"
+            },
+            "tail": "",
+            "threadId": "thread",
+            "tokenBudget": null,
+            "tokensUsed": 0,
+            "turnEpoch": 0,
+            "turnId": "native-turn",
+            "usageResumeEnabled": true,
+            "workerBaseBehindMain": null,
+            "workerBaseCommit": null,
+            "workerBaseMainRef": null,
+            "workerBaseRef": null,
+            "workerDefaults": {
+              "daybreakEnabled": false,
+              "delegationDepth": 1,
+              "effort": "high",
+              "fastMode": false,
+              "model": "gpt-6-luna"
+            },
+            "workspaceBackend": null,
+            "workspaceInGit": false,
+            "workspaceMode": "worktree",
+            "workspaceModeExplicit": false,
+            "worktree": false,
+            "worktreeReady": false,
+            "worktreeWarning": null,
+            "yoloMode": true
+          }
+        }
+      ],
+      "runtime_events": [
+        {
+          "agent": "agent",
+          "created": "<time>",
+          "epoch": 0,
+          "error": "Server restarted before delivery acknowledgement",
+          "id": "event",
+          "kind": "user",
+          "status": "uncertain",
+          "text": "input",
+          "turn_id": null
+        }
+      ],
+      "runtime_execution_runs": [
+        {
+          "account": "default",
+          "agent": "agent",
+          "created": "<time>",
+          "epoch": 0,
+          "id": "run:attempt",
+          "record": {
+            "accountKey": "default",
+            "agent": "agent",
+            "created": "<time>",
+            "disconnectRecovery": {
+              "accountKey": "default",
+              "at": "<time>",
+              "autoWake": true,
+              "epoch": 0,
+              "source": "restart",
+              "threadId": "thread",
+              "turnId": null
+            },
+            "epoch": 0,
+            "firstAttemptId": "attempt",
+            "id": "run:attempt",
+            "latestAttemptId": "attempt",
+            "restartRecovery": {
+              "accountKey": "default",
+              "at": "<time>",
+              "autoWake": true,
+              "epoch": 0,
+              "stage": "held",
+              "startAttempt": null,
+              "threadId": "thread",
+              "turnId": null,
+              "reason": "Native input submission has no confirmed turn identity."
+            },
+            "rootAttemptId": null,
+            "status": "unknown",
+            "threadId": "thread",
+            "turnId": "native-turn"
+          },
+          "thread": "thread",
+          "turn": "native-turn"
+        }
+      ],
+      "runtime_execution_attempts": [
+        {
+          "id": "attempt",
+          "record": {
+            "accountKey": "default",
+            "activeAtReservation": false,
+            "connectionGeneration": 1,
+            "connectionId": null,
+            "created": "<time>",
+            "epoch": 0,
+            "events": ["event"],
+            "id": "attempt",
+            "nativeOperationId": "turn:agent:event:attempt:attempt",
+            "prepareAttemptId": null,
+            "requestTicket": "ticket",
+            "resultRunId": null,
+            "runId": "run:attempt",
+            "submission": "unknown",
+            "submitted": true,
+            "supervisorIdentity": null,
+            "threadId": "thread",
+            "turnStatus": null
+          },
+          "run": "run:attempt"
+        }
+      ],
+      "runtime_execution_inputs": [
+        {
+          "event": "event",
+          "run": "run:attempt"
+        }
+      ],
+      "runtime_execution_effects": [],
+      "runtime_execution_nodes": [],
+      "runtime_completed_turns": [],
+      "runtime_event_meta": [
+        {
+          "id": "event",
+          "record": {
+            "delivery": "current_turn",
+            "timing": {
+              "enqueuedAt": "<time>",
+              "fastSkipReason": "scheduleOverride"
             }
           }
-        ],
-        "runtime_execution_runs": [
-          {
-            "$ref": 440
-          }
-        ],
-        "sync_entities": [
-          {
-            "$ref": 443
+        }
+      ],
+      "runtime_items": [],
+      "runtime_item_fulltext": [],
+      "runtime_context_manifests": [],
+      "runtime_context_reminders": [],
+      "runtime_budget": [],
+      "runtime_budget_usage": [],
+      "runtime_requests": [],
+      "runtime_tasks": [],
+      "runtime_complaints": [],
+      "runtime_operation_receipts": [],
+      "sync_entities": [
+        {
+          "collection": "agent",
+          "deleted": 0,
+          "hash": "e492d54affc521c2760af3e11dcebcfbf0e755c4612ca5e4c79bfa5c2ee4c6bf",
+          "id": "agent",
+          "payload": {
+            "collection": "agent",
+            "id": "agent",
+            "value": {
+              "accountKey": "default",
+              "agentMode": "multi",
+              "agentModeRevision": 0,
+              "agentModeSupported": true,
+              "autoWake": false,
+              "canSend": true,
+              "commandProgress": [],
+              "compactions": 0,
+              "concurrency": 32,
+              "contextUsage": null,
+              "created": "<time>",
+              "cwd": "/fixture",
+              "cyberAccessProgram": "standard",
+              "daybreakEnabled": false,
+              "effort": "medium",
+              "empty": false,
+              "environment": "host",
+              "epoch": 0,
+              "error": "Server restarted during a turn. Review history, then send a new instruction.",
+              "executionMode": "native",
+              "fastMode": false,
+              "hostProjectPath": "${ROOT}/accepted/python",
+              "id": "agent",
+              "imageWorkspace": false,
+              "imageWorkspaceBaseRef": null,
+              "imageWorkspaceCreatedAt": null,
+              "imageWorkspaceError": null,
+              "imageWorkspaceHasGit": false,
+              "imageWorkspacePhase": null,
+              "imageWorkspaceReady": false,
+              "imageWorkspaceRepo": null,
+              "imageWorkspaceSubpath": ".",
+              "inFlight": false,
+              "isLead": true,
+              "kind": "agent",
+              "launcherAlive": true,
+              "layrReady": false,
+              "model": "fixture-model",
+              "name": "lifecycle fixture",
+              "nextTurnSettingsSupported": true,
+              "parentId": null,
+              "provider": "codex",
+              "readStateSupported": true,
+              "reviewDefaults": {
+                "effort": null,
+                "model": null
+              },
+              "role": "orchestrator",
+              "rootId": "agent",
+              "serverId": "410a7765593a4e568b491334278c0b5d",
+              "source": "managed",
+              "stall": null,
+              "startWait": null,
+              "status": "interrupted",
+              "subagentConcurrencyVersion": 2,
+              "tail": "",
+              "threadId": "thread",
+              "tokensUsed": 0,
+              "turnId": "native-turn",
+              "workerDefaults": {
+                "daybreakEnabled": false,
+                "delegationDepth": 1,
+                "effort": "high",
+                "fastMode": false,
+                "model": "gpt-6-luna"
+              },
+              "workspaceBackend": null,
+              "workspaceMode": "worktree",
+              "worktree": false,
+              "yoloMode": true
+            }
           },
-          {
-            "$ref": 393
-          }
-        ]
-      }
+          "seq": "<revision>"
+        },
+        {
+          "collection": "event",
+          "deleted": 0,
+          "hash": "13f53cf1ac91a9372d77568957a95a1bf970595e8a0d37ef204f1c703c0ebef0",
+          "id": "event",
+          "payload": {
+            "collection": "event",
+            "id": "event",
+            "value": {
+              "agent": "agent",
+              "created": "<time>",
+              "error": "Server restarted before delivery acknowledgement",
+              "id": "event",
+              "kind": "user",
+              "status": "uncertain"
+            }
+          },
+          "seq": "<revision>"
+        }
+      ],
+      "sync_documents": [],
+      "sync_versions": [],
+      "runtime_search_next_meta": [],
+      "runtime_search_rollout": [
+        {
+          "cursor": 0,
+          "id": 1,
+          "phase": "building",
+          "updated": "<time>"
+        }
+      ],
+      "runtime_search_next_postings": []
     },
     {
       "$base": 54,
@@ -4860,7 +5143,6 @@
               {
                 "$ref": 66
               },
-              "INSERT INTO \"runtime_search_rows_rollout\"(\"id\",\"cursor\") VALUES (1,0);",
               "INSERT INTO \"runtime_server_sequence\"(\"id\",\"value\") VALUES (1,0);",
               {
                 "$ref": 67
@@ -5577,7 +5859,6 @@
       {
         "$ref": 66
       },
-      "INSERT INTO \"runtime_search_rows_rollout\"(\"id\",\"cursor\") VALUES (1,0);",
       "INSERT INTO \"runtime_server_sequence\"(\"id\",\"value\") VALUES (1,0);",
       {
         "$ref": 67
@@ -5971,7 +6252,6 @@
       {
         "$ref": 66
       },
-      "INSERT INTO \"runtime_search_rows_rollout\"(\"id\",\"cursor\") VALUES (1,0);",
       "INSERT INTO \"runtime_server_sequence\"(\"id\",\"value\") VALUES (1,0);",
       {
         "$ref": 67
@@ -6424,22 +6704,6 @@
         "sync_entities": {
           "$ref": 551
         },
-        "runtime_search": [
-          {
-            "$ref": 552
-          }
-        ],
-        "runtime_search_rows": [
-          {
-            "id": "agent:event",
-            "search_rowid": 1
-          }
-        ],
-        "runtime_search_indexed": [
-          {
-            "id": "agent:event"
-          }
-        ],
         "runtime_search_next_meta": [
           {
             "$ref": 553
@@ -6529,7 +6793,6 @@
       {
         "$ref": 66
       },
-      "INSERT INTO \"runtime_search_rows_rollout\"(\"id\",\"cursor\") VALUES (1,0);",
       "INSERT INTO \"runtime_server_sequence\"(\"id\",\"value\") VALUES (1,0);",
       {
         "$ref": 67
@@ -7456,7 +7719,6 @@
       {
         "$ref": 66
       },
-      "INSERT INTO \"runtime_search_rows_rollout\"(\"id\",\"cursor\") VALUES (1,0);",
       "INSERT INTO \"runtime_server_sequence\"(\"id\",\"value\") VALUES (1,0);",
       {
         "$ref": 67
@@ -7673,7 +7935,6 @@
       {
         "$ref": 66
       },
-      "INSERT INTO \"runtime_search_rows_rollout\"(\"id\",\"cursor\") VALUES (1,0);",
       "INSERT INTO \"runtime_server_sequence\"(\"id\",\"value\") VALUES (1,0);",
       {
         "$ref": 67
@@ -8026,7 +8287,6 @@
       {
         "$ref": 66
       },
-      "INSERT INTO \"runtime_search_rows_rollout\"(\"id\",\"cursor\") VALUES (1,0);",
       "INSERT INTO \"runtime_server_sequence\"(\"id\",\"value\") VALUES (1,0);",
       {
         "$ref": 67
@@ -8379,7 +8639,6 @@
       {
         "$ref": 66
       },
-      "INSERT INTO \"runtime_search_rows_rollout\"(\"id\",\"cursor\") VALUES (1,0);",
       "INSERT INTO \"runtime_server_sequence\"(\"id\",\"value\") VALUES (1,0);",
       {
         "$ref": 67
@@ -8742,7 +9001,6 @@
       {
         "$ref": 66
       },
-      "INSERT INTO \"runtime_search_rows_rollout\"(\"id\",\"cursor\") VALUES (1,0);",
       "INSERT INTO \"runtime_server_sequence\"(\"id\",\"value\") VALUES (1,0);",
       {
         "$ref": 67
@@ -9588,7 +9846,6 @@
               {
                 "$ref": 66
               },
-              "INSERT INTO \"runtime_search_rows_rollout\"(\"id\",\"cursor\") VALUES (1,0);",
               "INSERT INTO \"runtime_server_sequence\"(\"id\",\"value\") VALUES (1,0);",
               {
                 "$ref": 67
@@ -9739,7 +9996,6 @@
               {
                 "$ref": 66
               },
-              "INSERT INTO \"runtime_search_rows_rollout\"(\"id\",\"cursor\") VALUES (1,0);",
               "INSERT INTO \"runtime_server_sequence\"(\"id\",\"value\") VALUES (1,0);",
               {
                 "$ref": 67
@@ -9890,7 +10146,6 @@
               {
                 "$ref": 66
               },
-              "INSERT INTO \"runtime_search_rows_rollout\"(\"id\",\"cursor\") VALUES (1,0);",
               "INSERT INTO \"runtime_server_sequence\"(\"id\",\"value\") VALUES (1,0);",
               {
                 "$ref": 67
@@ -10041,7 +10296,6 @@
               {
                 "$ref": 66
               },
-              "INSERT INTO \"runtime_search_rows_rollout\"(\"id\",\"cursor\") VALUES (1,0);",
               "INSERT INTO \"runtime_server_sequence\"(\"id\",\"value\") VALUES (1,0);",
               {
                 "$ref": 67
@@ -10192,7 +10446,6 @@
               {
                 "$ref": 66
               },
-              "INSERT INTO \"runtime_search_rows_rollout\"(\"id\",\"cursor\") VALUES (1,0);",
               "INSERT INTO \"runtime_server_sequence\"(\"id\",\"value\") VALUES (1,0);",
               {
                 "$ref": 67
@@ -11113,7 +11366,6 @@
       {
         "$ref": 66
       },
-      "INSERT INTO \"runtime_search_rows_rollout\"(\"id\",\"cursor\") VALUES (1,0);",
       "INSERT INTO \"runtime_server_sequence\"(\"id\",\"value\") VALUES (1,0);",
       {
         "$ref": 67
@@ -11262,7 +11514,6 @@
       {
         "$ref": 66
       },
-      "INSERT INTO \"runtime_search_rows_rollout\"(\"id\",\"cursor\") VALUES (1,0);",
       "INSERT INTO \"runtime_server_sequence\"(\"id\",\"value\") VALUES (1,0);",
       {
         "$ref": 67
@@ -11560,7 +11811,6 @@
       {
         "$ref": 66
       },
-      "INSERT INTO \"runtime_search_rows_rollout\"(\"id\",\"cursor\") VALUES (1,0);",
       "INSERT INTO \"runtime_server_sequence\"(\"id\",\"value\") VALUES (1,0);",
       {
         "$ref": 67
@@ -11858,7 +12108,6 @@
       {
         "$ref": 66
       },
-      "INSERT INTO \"runtime_search_rows_rollout\"(\"id\",\"cursor\") VALUES (1,0);",
       "INSERT INTO \"runtime_server_sequence\"(\"id\",\"value\") VALUES (1,0);",
       {
         "$ref": 67
@@ -12166,7 +12415,6 @@
       {
         "$ref": 66
       },
-      "INSERT INTO \"runtime_search_rows_rollout\"(\"id\",\"cursor\") VALUES (1,0);",
       "INSERT INTO \"runtime_server_sequence\"(\"id\",\"value\") VALUES (1,0);",
       {
         "$ref": 67
@@ -14305,7 +14553,6 @@
       {
         "$ref": 66
       },
-      "INSERT INTO \"runtime_search_rows_rollout\"(\"id\",\"cursor\") VALUES (1,0);",
       "INSERT INTO \"runtime_server_sequence\"(\"id\",\"value\") VALUES (1,0);",
       {
         "$ref": 67
@@ -14704,7 +14951,6 @@
               {
                 "$ref": 66
               },
-              "INSERT INTO \"runtime_search_rows_rollout\"(\"id\",\"cursor\") VALUES (1,0);",
               "INSERT INTO \"runtime_server_sequence\"(\"id\",\"value\") VALUES (1,0);",
               {
                 "$ref": 67
@@ -15243,7 +15489,6 @@
               {
                 "$ref": 66
               },
-              "INSERT INTO \"runtime_search_rows_rollout\"(\"id\",\"cursor\") VALUES (1,0);",
               "INSERT INTO \"runtime_server_sequence\"(\"id\",\"value\") VALUES (1,0);",
               {
                 "$ref": 67
@@ -15505,7 +15750,6 @@
               {
                 "$ref": 66
               },
-              "INSERT INTO \"runtime_search_rows_rollout\"(\"id\",\"cursor\") VALUES (1,0);",
               "INSERT INTO \"runtime_server_sequence\"(\"id\",\"value\") VALUES (1,0);",
               {
                 "$ref": 67
@@ -15777,7 +16021,6 @@
               {
                 "$ref": 66
               },
-              "INSERT INTO \"runtime_search_rows_rollout\"(\"id\",\"cursor\") VALUES (1,0);",
               "INSERT INTO \"runtime_server_sequence\"(\"id\",\"value\") VALUES (1,0);",
               {
                 "$ref": 67
@@ -15977,7 +16220,6 @@
               {
                 "$ref": 66
               },
-              "INSERT INTO \"runtime_search_rows_rollout\"(\"id\",\"cursor\") VALUES (1,0);",
               "INSERT INTO \"runtime_server_sequence\"(\"id\",\"value\") VALUES (1,0);",
               {
                 "$ref": 67
@@ -16146,7 +16388,6 @@
               {
                 "$ref": 66
               },
-              "INSERT INTO \"runtime_search_rows_rollout\"(\"id\",\"cursor\") VALUES (1,0);",
               "INSERT INTO \"runtime_server_sequence\"(\"id\",\"value\") VALUES (1,0);",
               {
                 "$ref": 67
@@ -16515,7 +16756,6 @@
               {
                 "$ref": 66
               },
-              "INSERT INTO \"runtime_search_rows_rollout\"(\"id\",\"cursor\") VALUES (1,0);",
               "INSERT INTO \"runtime_server_sequence\"(\"id\",\"value\") VALUES (1,0);",
               {
                 "$ref": 67
@@ -16740,7 +16980,6 @@
       {
         "$ref": 66
       },
-      "INSERT INTO \"runtime_search_rows_rollout\"(\"id\",\"cursor\") VALUES (1,0);",
       "INSERT INTO \"runtime_server_sequence\"(\"id\",\"value\") VALUES (1,0);",
       {
         "$ref": 67
@@ -17166,7 +17405,6 @@
               {
                 "$ref": 66
               },
-              "INSERT INTO \"runtime_search_rows_rollout\"(\"id\",\"cursor\") VALUES (1,0);",
               "INSERT INTO \"runtime_server_sequence\"(\"id\",\"value\") VALUES (1,0);",
               {
                 "$ref": 67
@@ -17264,7 +17502,6 @@
               {
                 "$ref": 66
               },
-              "INSERT INTO \"runtime_search_rows_rollout\"(\"id\",\"cursor\") VALUES (1,0);",
               "INSERT INTO \"runtime_server_sequence\"(\"id\",\"value\") VALUES (1,0);",
               {
                 "$ref": 67
@@ -17496,7 +17733,6 @@
               {
                 "$ref": 66
               },
-              "INSERT INTO \"runtime_search_rows_rollout\"(\"id\",\"cursor\") VALUES (1,0);",
               "INSERT INTO \"runtime_server_sequence\"(\"id\",\"value\") VALUES (1,0);",
               {
                 "$ref": 67
@@ -17615,7 +17851,6 @@
       {
         "$ref": 66
       },
-      "INSERT INTO \"runtime_search_rows_rollout\"(\"id\",\"cursor\") VALUES (1,0);",
       "INSERT INTO \"runtime_server_sequence\"(\"id\",\"value\") VALUES (1,0);",
       {
         "$ref": 67
@@ -17847,7 +18082,6 @@
       {
         "$ref": 66
       },
-      "INSERT INTO \"runtime_search_rows_rollout\"(\"id\",\"cursor\") VALUES (1,0);",
       "INSERT INTO \"runtime_server_sequence\"(\"id\",\"value\") VALUES (1,0);",
       {
         "$ref": 67
@@ -18135,7 +18369,6 @@
       {
         "$ref": 66
       },
-      "INSERT INTO \"runtime_search_rows_rollout\"(\"id\",\"cursor\") VALUES (1,0);",
       "INSERT INTO \"runtime_server_sequence\"(\"id\",\"value\") VALUES (1,0);",
       {
         "$ref": 67
@@ -18423,7 +18656,6 @@
       {
         "$ref": 66
       },
-      "INSERT INTO \"runtime_search_rows_rollout\"(\"id\",\"cursor\") VALUES (1,0);",
       "INSERT INTO \"runtime_server_sequence\"(\"id\",\"value\") VALUES (1,0);",
       {
         "$ref": 67
@@ -18716,7 +18948,6 @@
       {
         "$ref": 66
       },
-      "INSERT INTO \"runtime_search_rows_rollout\"(\"id\",\"cursor\") VALUES (1,0);",
       "INSERT INTO \"runtime_server_sequence\"(\"id\",\"value\") VALUES (1,0);",
       {
         "$ref": 67
@@ -18963,7 +19194,6 @@
       {
         "$ref": 66
       },
-      "INSERT INTO \"runtime_search_rows_rollout\"(\"id\",\"cursor\") VALUES (1,0);",
       "INSERT INTO \"runtime_server_sequence\"(\"id\",\"value\") VALUES (1,0);",
       {
         "$ref": 67
@@ -19105,7 +19335,6 @@
               {
                 "$ref": 66
               },
-              "INSERT INTO \"runtime_search_rows_rollout\"(\"id\",\"cursor\") VALUES (1,0);",
               "INSERT INTO \"runtime_server_sequence\"(\"id\",\"value\") VALUES (1,0);",
               {
                 "$ref": 67
@@ -19567,7 +19796,6 @@
       {
         "$ref": 66
       },
-      "INSERT INTO \"runtime_search_rows_rollout\"(\"id\",\"cursor\") VALUES (1,0);",
       "INSERT INTO \"runtime_server_sequence\"(\"id\",\"value\") VALUES (1,0);",
       {
         "$ref": 67
@@ -19738,7 +19966,6 @@
               {
                 "$ref": 66
               },
-              "INSERT INTO \"runtime_search_rows_rollout\"(\"id\",\"cursor\") VALUES (1,0);",
               "INSERT INTO \"runtime_server_sequence\"(\"id\",\"value\") VALUES (1,0);",
               {
                 "$ref": 67
@@ -19861,7 +20088,6 @@
               {
                 "$ref": 66
               },
-              "INSERT INTO \"runtime_search_rows_rollout\"(\"id\",\"cursor\") VALUES (1,0);",
               "INSERT INTO \"runtime_server_sequence\"(\"id\",\"value\") VALUES (1,0);",
               {
                 "$ref": 67
@@ -19970,7 +20196,6 @@
       {
         "$ref": 66
       },
-      "INSERT INTO \"runtime_search_rows_rollout\"(\"id\",\"cursor\") VALUES (1,0);",
       "INSERT INTO \"runtime_server_sequence\"(\"id\",\"value\") VALUES (1,0);",
       {
         "$ref": 67
@@ -20239,7 +20464,6 @@
               {
                 "$ref": 66
               },
-              "INSERT INTO \"runtime_search_rows_rollout\"(\"id\",\"cursor\") VALUES (1,0);",
               "INSERT INTO \"runtime_server_sequence\"(\"id\",\"value\") VALUES (1,0);",
               {
                 "$ref": 67
@@ -20382,7 +20606,6 @@
       {
         "$ref": 66
       },
-      "INSERT INTO \"runtime_search_rows_rollout\"(\"id\",\"cursor\") VALUES (1,0);",
       "INSERT INTO \"runtime_server_sequence\"(\"id\",\"value\") VALUES (1,0);",
       {
         "$ref": 67
@@ -20498,7 +20721,6 @@
       {
         "$ref": 66
       },
-      "INSERT INTO \"runtime_search_rows_rollout\"(\"id\",\"cursor\") VALUES (1,0);",
       "INSERT INTO \"runtime_server_sequence\"(\"id\",\"value\") VALUES (1,0);",
       {
         "$ref": 67
@@ -20566,7 +20788,6 @@
               {
                 "$ref": 66
               },
-              "INSERT INTO \"runtime_search_rows_rollout\"(\"id\",\"cursor\") VALUES (1,0);",
               "INSERT INTO \"runtime_server_sequence\"(\"id\",\"value\") VALUES (1,0);",
               {
                 "$ref": 67
@@ -20623,7 +20844,6 @@
               {
                 "$ref": 66
               },
-              "INSERT INTO \"runtime_search_rows_rollout\"(\"id\",\"cursor\") VALUES (1,0);",
               "INSERT INTO \"runtime_server_sequence\"(\"id\",\"value\") VALUES (1,0);",
               {
                 "$ref": 67
@@ -20774,7 +20994,6 @@
       {
         "$ref": 66
       },
-      "INSERT INTO \"runtime_search_rows_rollout\"(\"id\",\"cursor\") VALUES (1,0);",
       "INSERT INTO \"runtime_server_sequence\"(\"id\",\"value\") VALUES (1,0);",
       {
         "$ref": 67
@@ -21147,7 +21366,6 @@
               {
                 "$ref": 66
               },
-              "INSERT INTO \"runtime_search_rows_rollout\"(\"id\",\"cursor\") VALUES (1,0);",
               "INSERT INTO \"runtime_server_sequence\"(\"id\",\"value\") VALUES (1,0);",
               {
                 "$ref": 67
@@ -21501,7 +21719,6 @@
       {
         "$ref": 66
       },
-      "INSERT INTO \"runtime_search_rows_rollout\"(\"id\",\"cursor\") VALUES (1,0);",
       "INSERT INTO \"runtime_server_sequence\"(\"id\",\"value\") VALUES (1,0);",
       {
         "$ref": 67
@@ -21805,7 +22022,6 @@
               {
                 "$ref": 66
               },
-              "INSERT INTO \"runtime_search_rows_rollout\"(\"id\",\"cursor\") VALUES (1,0);",
               "INSERT INTO \"runtime_server_sequence\"(\"id\",\"value\") VALUES (1,0);",
               {
                 "$ref": 67
@@ -22129,7 +22345,6 @@
               {
                 "$ref": 66
               },
-              "INSERT INTO \"runtime_search_rows_rollout\"(\"id\",\"cursor\") VALUES (1,0);",
               "INSERT INTO \"runtime_server_sequence\"(\"id\",\"value\") VALUES (1,0);",
               {
                 "$ref": 67
@@ -22292,7 +22507,6 @@
               {
                 "$ref": 66
               },
-              "INSERT INTO \"runtime_search_rows_rollout\"(\"id\",\"cursor\") VALUES (1,0);",
               "INSERT INTO \"runtime_server_sequence\"(\"id\",\"value\") VALUES (1,0);",
               {
                 "$ref": 67
@@ -22376,7 +22590,6 @@
               {
                 "$ref": 66
               },
-              "INSERT INTO \"runtime_search_rows_rollout\"(\"id\",\"cursor\") VALUES (1,0);",
               "INSERT INTO \"runtime_server_sequence\"(\"id\",\"value\") VALUES (1,0);",
               {
                 "$ref": 67
@@ -22704,7 +22917,6 @@
               {
                 "$ref": 66
               },
-              "INSERT INTO \"runtime_search_rows_rollout\"(\"id\",\"cursor\") VALUES (1,0);",
               "INSERT INTO \"runtime_server_sequence\"(\"id\",\"value\") VALUES (1,0);",
               {
                 "$ref": 67
@@ -22884,7 +23096,6 @@
               {
                 "$ref": 66
               },
-              "INSERT INTO \"runtime_search_rows_rollout\"(\"id\",\"cursor\") VALUES (1,0);",
               "INSERT INTO \"runtime_server_sequence\"(\"id\",\"value\") VALUES (1,0);",
               {
                 "$ref": 67
@@ -23130,7 +23341,6 @@
               {
                 "$ref": 66
               },
-              "INSERT INTO \"runtime_search_rows_rollout\"(\"id\",\"cursor\") VALUES (1,0);",
               "INSERT INTO \"runtime_server_sequence\"(\"id\",\"value\") VALUES (1,0);",
               {
                 "$ref": 67
@@ -23280,7 +23490,6 @@
               {
                 "$ref": 66
               },
-              "INSERT INTO \"runtime_search_rows_rollout\"(\"id\",\"cursor\") VALUES (1,0);",
               "INSERT INTO \"runtime_server_sequence\"(\"id\",\"value\") VALUES (1,0);",
               {
                 "$ref": 67
@@ -23427,11 +23636,6 @@
             "$ref": 51
           }
         ],
-        "runtime_search": [
-          {
-            "$ref": 1798
-          }
-        ],
         "runtime_search_next_postings": [
           ["codex", 1, "body", 0],
           ["its", 1, "body", 5],
@@ -23573,11 +23777,6 @@
           },
           {
             "$ref": 51
-          }
-        ],
-        "runtime_search": [
-          {
-            "$ref": 1811
           }
         ],
         "runtime_search_next_postings": [
@@ -23881,7 +24080,6 @@
               {
                 "$ref": 66
               },
-              "INSERT INTO \"runtime_search_rows_rollout\"(\"id\",\"cursor\") VALUES (1,0);",
               "INSERT INTO \"runtime_server_sequence\"(\"id\",\"value\") VALUES (1,0);",
               {
                 "$ref": 67
@@ -23992,7 +24190,6 @@
               {
                 "$ref": 66
               },
-              "INSERT INTO \"runtime_search_rows_rollout\"(\"id\",\"cursor\") VALUES (1,0);",
               "INSERT INTO \"runtime_server_sequence\"(\"id\",\"value\") VALUES (1,0);",
               {
                 "$ref": 67
@@ -24132,11 +24329,6 @@
             "$ref": 1837
           }
         ],
-        "runtime_search": [
-          {
-            "$ref": 1838
-          }
-        ],
         "runtime_search_next_postings": [
           ["complaint", 1, "body", 2],
           ["complaint", 1, "body", 4],
@@ -24217,7 +24409,6 @@
               {
                 "$ref": 66
               },
-              "INSERT INTO \"runtime_search_rows_rollout\"(\"id\",\"cursor\") VALUES (1,0);",
               "INSERT INTO \"runtime_server_sequence\"(\"id\",\"value\") VALUES (1,0);",
               {
                 "$ref": 67
@@ -24358,13 +24549,9 @@
         "CREATE TABLE runtime_rules (id TEXT PRIMARY KEY, record TEXT NOT NULL)",
         "CREATE TABLE runtime_scheduler_agent_change_state (id INTEGER PRIMARY KEY CHECK(id=1),floor INTEGER NOT NULL,generation INTEGER NOT NULL,entries INTEGER NOT NULL,total INTEGER NOT NULL)",
         "CREATE TABLE runtime_scheduler_agent_changes (id TEXT PRIMARY KEY,generation INTEGER NOT NULL CHECK(typeof(generation)='integer' AND generation>=0))",
-        "CREATE VIRTUAL TABLE runtime_search USING fts5(id UNINDEXED,agent UNINDEXED,kind UNINDEXED,body,tokenize='unicode61')",
-        "CREATE TABLE runtime_search_indexed (id TEXT PRIMARY KEY)",
         "CREATE VIRTUAL TABLE runtime_search_next USING fts5(body,content='',contentless_delete=1,tokenize='unicode61')",
         "CREATE TABLE runtime_search_next_meta (\n                id TEXT PRIMARY KEY, agent TEXT NOT NULL, kind TEXT NOT NULL,\n                search_rowid INTEGER NOT NULL UNIQUE)",
         "CREATE TABLE runtime_search_rollout (\n                id INTEGER PRIMARY KEY CHECK(id=1), phase TEXT NOT NULL,\n                cursor INTEGER NOT NULL DEFAULT 0, updated REAL NOT NULL)",
-        "CREATE TABLE runtime_search_rows (id TEXT PRIMARY KEY, search_rowid INTEGER NOT NULL UNIQUE)",
-        "CREATE TABLE runtime_search_rows_rollout (id INTEGER PRIMARY KEY CHECK(id=1),cursor INTEGER NOT NULL DEFAULT 0)",
         "CREATE TABLE runtime_server_fetch (\n                    id TEXT PRIMARY KEY, server TEXT NOT NULL, signature TEXT NOT NULL,\n                    state TEXT NOT NULL, result TEXT)",
         {
           "$concat": [

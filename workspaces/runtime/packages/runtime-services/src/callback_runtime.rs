@@ -346,6 +346,21 @@ mod tests {
             "params":{"questions":[{"id":"value","question":"Value?"}],
                       "threadId":"thread","turnId":"turn"},
         });
+        let identity = crate::provider_callbacks::ReplyIdentity {
+            context: crate::provider_callbacks::CallbackContext {
+                agent: "delete-agent".into(),
+                account: "default".into(),
+                connection: "connection".into(),
+                generation: 1,
+                epoch: 0,
+                thread: "thread".into(),
+                turn: "turn".into(),
+            },
+            rpc_id: studio_runtime_providers::RequestId::String("rpc-question".into()),
+            attempt: String::new(),
+        };
+        let admission_key = format!("{}card", identity.operation_id());
+        let admission = json!({"identity":identity,"card":"native-question","journalCursor":1});
         store
             .transaction_with::<_, CallbackError>(move |tx| {
                 tx.execute(
@@ -356,6 +371,7 @@ mod tests {
                     "INSERT INTO runtime_requests(id,record) VALUES(?1,?2)",
                     rusqlite::params!["native-question", card.to_string()],
                 )?;
+                tx.execute("INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,'provider-callback',?2)",rusqlite::params![admission_key,admission.to_string()])?;
                 Ok(())
             })
             .await
@@ -424,7 +440,7 @@ mod tests {
                 .test_reader()
                 .unwrap()
                 .query_row(
-                    "SELECT count(*) FROM runtime_operation_receipts WHERE signature='provider-callback'",
+                    "SELECT count(*) FROM runtime_operation_receipts WHERE signature='provider-callback' AND json_extract(result,'$.delivery') IS NOT NULL",
                     [],
                     |row| row.get(0),
                 )

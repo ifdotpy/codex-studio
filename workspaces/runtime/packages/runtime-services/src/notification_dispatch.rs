@@ -2248,9 +2248,10 @@ mod tests {
                  CREATE TABLE sync_versions(seq INTEGER,scope TEXT,hash TEXT,deleted INTEGER,updated REAL);
                  CREATE TABLE runtime_work(id TEXT PRIMARY KEY,record TEXT NOT NULL);
                  CREATE TABLE sync_entity_meta(key TEXT PRIMARY KEY,value TEXT);
-                 CREATE VIRTUAL TABLE runtime_search USING fts5(id UNINDEXED,agent UNINDEXED,kind UNINDEXED,body,tokenize='unicode61');
-                 CREATE TABLE runtime_search_rows(id TEXT PRIMARY KEY,search_rowid INTEGER NOT NULL UNIQUE);
-                 CREATE TABLE runtime_search_indexed(id TEXT PRIMARY KEY);
+                 CREATE VIRTUAL TABLE runtime_search_next USING fts5(body,content='',contentless_delete=1,tokenize='unicode61');
+                 CREATE TABLE runtime_search_next_meta(id TEXT PRIMARY KEY,agent TEXT NOT NULL,kind TEXT NOT NULL,search_rowid INTEGER NOT NULL UNIQUE);
+                 CREATE TABLE runtime_search_rollout(id INTEGER PRIMARY KEY,phase TEXT,cursor INTEGER,updated REAL);
+                 INSERT INTO runtime_search_rollout VALUES(1,'complete',0,0);
                  INSERT INTO runtime_agents VALUES('agent','{\"id\":\"agent\",\"rootId\":\"agent\",\"epoch\":1,\"status\":\"running\",\"threadId\":\"thread\",\"accountKey\":\"default\",\"turnId\":\"turn\",\"inFlight\":true,\"events\":0,\"activeTools\":[],\"autoWake\":false}');
                  INSERT INTO sync_entities VALUES('agent','agent',1,'old','{\"collection\":\"agent\",\"id\":\"agent\",\"value\":{\"id\":\"agent\",\"status\":\"running\",\"threadId\":\"thread\",\"accountKey\":\"default\",\"turnId\":\"turn\",\"inFlight\":true,\"events\":0}}',0);"),
             )
@@ -3609,7 +3610,7 @@ mod tests {
             .expect("base rows")
         };
         let search = |tx: &rusqlite::Transaction<'_>, id: &str| -> Option<String> {
-            tx.query_row("SELECT body FROM runtime_search WHERE id=?1", [id], |r| {
+            tx.query_row("SELECT coalesce(f.body,json_extract(i.record,'$.text')) FROM runtime_search_next_meta m JOIN runtime_items i ON i.id=m.id LEFT JOIN runtime_item_fulltext f ON f.id=m.id JOIN runtime_search_next s ON s.rowid=m.search_rowid WHERE m.id=?1", [id], |r| {
                 r.get(0)
             })
             .optional()
