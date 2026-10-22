@@ -90,6 +90,7 @@ class DeferredServer(fixture.FakeServer):
 class TurnStartContract(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
         self.runtime = make_runtime(Runtime, Path(self.temp.name), DeferredServer)
         self.server = self.runtime.connect()
 

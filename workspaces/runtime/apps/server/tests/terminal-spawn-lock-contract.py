@@ -88,6 +88,7 @@ class Native:
 class SpawnLockContract(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="terminal-spawn-lock-")
+        self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         self.runtime = Runtime(self.root)
         self.manager = TerminalManager(self.root)

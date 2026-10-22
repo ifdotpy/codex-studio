@@ -8,9 +8,10 @@ use studio_runtime_store::{RuntimeStore, StoreError};
 
 #[tokio::test]
 async fn open_recreates_the_task_indexes_rust_readers_rely_on() {
-    let state = temporary_state("task-index");
+    let state_directory = temporary_state("task-index");
+    let state = state_directory.path();
     drop(
-        RuntimeStore::open(Some(&state))
+        RuntimeStore::open(Some(state))
             .await
             .expect("Rust creates an empty state"),
     );
@@ -32,60 +33,60 @@ async fn open_recreates_the_task_indexes_rust_readers_rely_on() {
         .expect("index drops");
     assert!(!index_exists());
     drop(
-        RuntimeStore::open(Some(&state))
+        RuntimeStore::open(Some(state))
             .await
             .expect("Rust reopens the state"),
     );
     assert!(index_exists(), "open recreates the index");
-    cleanup(state);
 }
 
 #[tokio::test]
 async fn partial_database_set_is_refused_without_changing_existing_files() {
-    let state = temporary_state("partial");
+    let state_directory = temporary_state("partial");
+    let state = state_directory.path();
     let canvas = state.join("canvas.sqlite3");
     fs::write(&canvas, b"partial database sentinel").expect("sentinel writes");
-    let before = filesystem_snapshot(&state);
+    let before = filesystem_snapshot(state);
 
-    let error = match RuntimeStore::open(Some(&state)).await {
+    let error = match RuntimeStore::open(Some(state)).await {
         Ok(_) => panic!("partial state must be refused"),
         Err(error) => error,
     };
     assert!(
         matches!(error, StoreError::SchemaMismatch(message) if message.contains("partial state database") && message.contains("canvas.sqlite3"))
     );
-    assert_eq!(filesystem_snapshot(&state), before);
+    assert_eq!(filesystem_snapshot(state), before);
     assert!(!state.join("runtime.lock").exists());
     assert!(!state.join("analytics.sqlite3").exists());
-    cleanup(state);
 }
 
 #[tokio::test]
 async fn foreign_files_are_refused_without_creating_any_state_files() {
-    let state = temporary_state("foreign");
+    let state_directory = temporary_state("foreign");
+    let state = state_directory.path();
     let foreign = state.join("notes.txt");
-    fs::write(&foreign, b"keep this file byte-for-byte").expect("foreign sentinel writes");
-    let before = filesystem_snapshot(&state);
+    fs::write(foreign, b"keep this file byte-for-byte").expect("foreign sentinel writes");
+    let before = filesystem_snapshot(state);
 
-    let error = match RuntimeStore::open(Some(&state)).await {
+    let error = match RuntimeStore::open(Some(state)).await {
         Ok(_) => panic!("foreign state-directory entries must be refused"),
         Err(error) => error,
     };
     assert!(matches!(error, StoreError::SchemaMismatch(message)
         if message.contains("unrecognized entry") && message.contains("notes.txt")));
-    assert_eq!(filesystem_snapshot(&state), before);
+    assert_eq!(filesystem_snapshot(state), before);
     assert!(!state.join("runtime.lock").exists());
-    cleanup(state);
 }
 
 #[tokio::test]
 async fn serving_open_claims_the_state_and_a_foreign_owner_is_refused_before_writes() {
     use studio_runtime_store::state_owner::{STATE_OWNER_FILE, StateOwnerClaim};
-    let state = temporary_state("serving-owner");
+    let state_directory = temporary_state("serving-owner");
+    let state = state_directory.path();
     let first = StateOwnerClaim {
         backend_build: "a".repeat(64),
     };
-    let store = RuntimeStore::open_claiming(Some(&state), &first)
+    let store = RuntimeStore::open_claiming(Some(state), &first)
         .await
         .expect("a serving Rust open claims a fresh state");
     drop(store);
@@ -100,19 +101,20 @@ async fn serving_open_claims_the_state_and_a_foreign_owner_is_refused_before_wri
         backend_build: "b".repeat(64),
     };
     drop(
-        RuntimeStore::open_claiming(Some(&state), &update)
+        RuntimeStore::open_claiming(Some(state), &update)
             .await
             .expect("a later Rust build with the same state format opens its state"),
     );
 
-    let foreign = temporary_state("foreign-owner");
+    let foreign_directory = temporary_state("foreign-owner");
+    let foreign = foreign_directory.path();
     let prior = json!({"runtime":"rust","formatVersion":2,"backendBuild":"c".repeat(64)});
     fs::write(foreign.join(STATE_OWNER_FILE), prior.to_string()).expect("foreign marker");
-    let before = filesystem_snapshot(&foreign);
-    let refused = RuntimeStore::open_claiming(Some(&foreign), &first).await;
+    let before = filesystem_snapshot(foreign);
+    let refused = RuntimeStore::open_claiming(Some(foreign), &first).await;
     assert!(matches!(refused, Err(StoreError::SchemaMismatch(message))
         if message.contains(STATE_OWNER_FILE)));
-    let after: BTreeMap<_, _> = filesystem_snapshot(&foreign)
+    let after: BTreeMap<_, _> = filesystem_snapshot(foreign)
         .into_iter()
         .filter(|(path, _)| !path.ends_with("runtime.lock"))
         .collect();
@@ -121,13 +123,12 @@ async fn serving_open_claims_the_state_and_a_foreign_owner_is_refused_before_wri
         .filter(|(path, _)| !path.ends_with("runtime.lock"))
         .collect();
     assert_eq!(after, before, "a refused claim creates no database");
-    cleanup(state);
-    cleanup(foreign);
 }
 
 #[tokio::test]
 async fn desktop_rust_state_owner_marker_is_accepted_before_database_creation() {
-    let state = temporary_state("desktop-rust-owner");
+    let state_directory = temporary_state("desktop-rust-owner");
+    let state = state_directory.path();
     let owner = state.join("rust-state-owner.json");
     fs::write(
         &owner,
@@ -145,25 +146,25 @@ async fn desktop_rust_state_owner_marker_is_accepted_before_database_creation() 
         }
     }
 
-    let store = RuntimeStore::open(Some(&state))
+    let store = RuntimeStore::open(Some(state))
         .await
         .expect("desktop's preclaimed fresh state opens in the Rust server");
     drop(store);
     assert!(state.join("canvas.sqlite3").is_file());
     assert!(owner.is_file());
     assert!(canvas_log.is_file());
-    cleanup(state);
 }
 
 #[tokio::test]
 async fn python_startup_artifacts_are_accepted_for_a_fresh_state() {
-    let state = temporary_state("python-lock");
+    let state_directory = temporary_state("python-lock");
+    let state = state_directory.path();
     let lock = state.join("runtime.lock");
     fs::write(&lock, b"python startup lock").expect("Python lock sentinel writes");
     create_private_directory(&state.join("accounts"));
     create_private_directory(&state.join("multi-server"));
 
-    let store = RuntimeStore::open(Some(&state))
+    let store = RuntimeStore::open(Some(state))
         .await
         .expect("Python startup artifacts are allowed entries");
     drop(store);
@@ -173,7 +174,6 @@ async fn python_startup_artifacts_are_accepted_for_a_fresh_state() {
     );
     assert!(state.join("canvas.sqlite3").is_file());
     assert!(state.join("analytics.sqlite3").is_file());
-    cleanup(state);
 }
 
 /// launchd or systemd can start the supervisor before the first backend. The
@@ -184,8 +184,9 @@ async fn python_startup_artifacts_are_accepted_for_a_fresh_state() {
 async fn running_rust_supervisor_files_are_accepted_and_its_journal_is_kept() {
     use std::os::unix::fs::MetadataExt;
 
-    let state = temporary_state("rsup");
-    let journal = studio_runtime_store::supervisor_journal::SupervisorJournal::open(&state)
+    let state_directory = temporary_state("rsup");
+    let state = state_directory.path();
+    let journal = studio_runtime_store::supervisor_journal::SupervisorJournal::open(state)
         .expect("supervisor journal opens first");
     journal
         .reserve("server-command:kept", "signature", 1.0)
@@ -212,7 +213,7 @@ async fn running_rust_supervisor_files_are_accepted_and_its_journal_is_kept() {
         .expect("journal metadata")
         .ino();
 
-    let store = RuntimeStore::open(Some(&state))
+    let store = RuntimeStore::open(Some(state))
         .await
         .expect("a fresh state with only supervisor files opens");
     drop(store);
@@ -234,7 +235,7 @@ async fn running_rust_supervisor_files_are_accepted_and_its_journal_is_kept() {
         "the supervisor keeps its recorded handle"
     );
     assert!(
-        fs::read_dir(&state)
+        fs::read_dir(state)
             .expect("state entries")
             .filter_map(Result::ok)
             .all(|entry| !entry
@@ -245,18 +246,17 @@ async fn running_rust_supervisor_files_are_accepted_and_its_journal_is_kept() {
     );
     drop(listener);
     drop(journal);
-    cleanup(state);
 }
 
 #[tokio::test]
 async fn fresh_state_without_supervisor_still_creates_the_supervisor_journal() {
-    let state = temporary_state("no-supervisor");
-    let store = RuntimeStore::open(Some(&state))
+    let state_directory = temporary_state("no-supervisor");
+    let state = state_directory.path();
+    let store = RuntimeStore::open(Some(state))
         .await
         .expect("an empty state opens");
     drop(store);
     assert!(state.join("supervisor.sqlite3").is_file());
-    cleanup(state);
 }
 
 #[tokio::test]
@@ -279,12 +279,13 @@ async fn supervisor_files_do_not_hide_partial_or_foreign_state() {
         ),
     ];
     for (name, files, message) in cases {
-        let state = temporary_state(name);
+        let state_directory = temporary_state(name);
+        let state = state_directory.path();
         for file in files {
             fs::write(state.join(file), b"sentinel").expect("fixture file writes");
         }
-        let before = filesystem_snapshot(&state);
-        let error = match RuntimeStore::open(Some(&state)).await {
+        let before = filesystem_snapshot(state);
+        let error = match RuntimeStore::open(Some(state)).await {
             Ok(_) => panic!("{name}: state must be refused"),
             Err(error) => error,
         };
@@ -292,25 +293,19 @@ async fn supervisor_files_do_not_hide_partial_or_foreign_state() {
             matches!(&error, StoreError::SchemaMismatch(text) if text.contains(message)),
             "{name}: unexpected refusal {error}"
         );
-        assert_eq!(filesystem_snapshot(&state), before, "{name}: files changed");
+        assert_eq!(filesystem_snapshot(state), before, "{name}: files changed");
         assert!(!state.join("runtime.lock").exists(), "{name}: lock created");
-        cleanup(state);
     }
 }
 
 /// A random suffix keeps parallel test processes apart. The short prefix keeps
 /// `supervisor.sock` under the macOS 104-byte socket path limit, also below a
 /// long per-user TMPDIR such as /var/folders/<id>/T.
-fn temporary_state(name: &str) -> PathBuf {
+fn temporary_state(name: &str) -> tempfile::TempDir {
     tempfile::Builder::new()
         .prefix(&format!("sfs-{name}-"))
         .tempdir()
         .expect("temporary state directory creates")
-        .keep()
-}
-
-fn cleanup(path: PathBuf) {
-    fs::remove_dir_all(path).expect("temporary state directory removes");
 }
 
 fn filesystem_snapshot(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {

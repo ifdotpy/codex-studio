@@ -165,6 +165,7 @@ def workload(journal_type, directory, count):
 class JournalConnectionReuse(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix="studio-journal-reuse-")
+        self.addCleanup(self.tmp.cleanup)
         self.directory = Path(self.tmp.name)
         self.journals = []
         self.releases = []

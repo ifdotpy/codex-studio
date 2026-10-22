@@ -68,6 +68,7 @@ class DelayedServer(fixture.FakeServer):
 class PrepareSteerContract(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         self.runtime = make_runtime(Runtime, self.root, DelayedServer)
         self.runtime.preparation_wait_seconds = .01
@@ -485,6 +486,7 @@ class BackloggedServer(fixture.FakeServer):
 class PreparationReceiptContract(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
         self.runtime = make_runtime(Runtime, Path(self.temp.name), BackloggedServer)
 
     def tearDown(self):

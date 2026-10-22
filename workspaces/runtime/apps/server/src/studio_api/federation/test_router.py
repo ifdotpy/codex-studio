@@ -173,6 +173,7 @@ class FakeContext:
 class FederationRouterTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
         self.runtime = FakeRuntime()
         self.context = FakeContext(Path(self.temp.name), self.runtime)
         app = FastAPI()

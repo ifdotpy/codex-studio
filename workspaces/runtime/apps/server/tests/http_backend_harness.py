@@ -582,7 +582,7 @@ class BackendProcess:
             if state_root is not None
             else self._directory("state")
         )
-        self.vm_state = self.scratch_root.parent / f"vm-{self.root.name[-8:]}"
+        self.vm_state = self.root / "linux-vm"
         self.vm_state.mkdir(parents=True, exist_ok=True)
         self.home = self._directory("home")
         self.codex_home = self._directory("codex-home")

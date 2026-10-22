@@ -31,6 +31,7 @@ impl Oracle {
         .arg("-B")
         .arg(base.join("tests/wave7_p03_message_ingress/oracle.py"))
         .arg(root.path())
+        .env("TMPDIR", root.path())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())

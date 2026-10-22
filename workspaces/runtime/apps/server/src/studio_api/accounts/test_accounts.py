@@ -482,6 +482,7 @@ class AccountsRouterTests(unittest.TestCase):
         self.cache = Path.home() / ".cache" / "codex-studio-fastapi" / "tests-tmp" / ("accounts-" + str(uuid4()))
         self.cache.mkdir(parents=True)
         self.tmp = tempfile.TemporaryDirectory(dir=self.cache)
+        self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
         self.home = self.root / "home"
         self.profile = self.home / ".codex"

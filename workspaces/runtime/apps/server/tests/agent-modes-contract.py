@@ -33,6 +33,7 @@ from codex_agent_modes import guidance
 class AgentModes(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
         self.rt = make_runtime(f.ControlledRuntime, Path(self.tmp.name), f.f.FakeServer)
         self.rt.catalog = lambda account='default': copy.deepcopy(f.CATALOG)
         self.lead = self.rt.new_lead({'cwd': self.tmp.name})

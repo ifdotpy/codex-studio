@@ -101,6 +101,7 @@ class Runtime:
 class NativeVoiceContract(unittest.TestCase):
     def setUp(self):
         self.folder = tempfile.TemporaryDirectory()
+        self.addCleanup(self.folder.cleanup)
         self.runtime = Runtime(self.folder.name)
         self.voice = VoiceStore(self.runtime)
         self.server = self.runtime.server

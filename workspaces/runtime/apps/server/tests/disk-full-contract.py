@@ -46,6 +46,7 @@ INCIDENT = ("ENOSPC: no space left on device, rename '/state/account-servers/cla
 class DiskFullContract(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         self.free = 100 * GIB
         sampler = patch('codex_disk_space.free_bytes', side_effect=lambda _root: self.free)

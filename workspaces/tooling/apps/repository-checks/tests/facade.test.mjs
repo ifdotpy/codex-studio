@@ -1284,28 +1284,79 @@ test("WASM preparation locates only the pinned CLI and builds before binding", (
   }
 });
 
-test("Playwright launcher removes the session BROWSER selector", () => {
+test("Playwright launcher clears BROWSER and removes state after success and failure", () => {
   const root = mkdtempSync(
     path.join(os.tmpdir(), "studio-browser-environment-"),
   );
   const witness = path.join(root, "pnpm");
-  writeFileSync(
-    witness,
-    `#!${process.execPath}\nif ('BROWSER' in process.env) process.exit(17); console.log('isolated browser');`,
-  );
-  chmodSync(witness, 0o755);
   try {
-    const result = spawnSync(
-      process.execPath,
-      ["workspaces/client/apps/web/scripts/run-browser-tests.mjs", "--list"],
-      {
-        encoding: "utf8",
-        env: { ...process.env, PATH: root, BROWSER: "/session/studio-browser" },
-      },
-    );
-    assert.equal(result.status, 0, result.stderr);
-    assert.match(result.stdout, /isolated browser/);
+    for (const status of [0, 19]) {
+      writeFileSync(
+        witness,
+        `#!${process.execPath}\nif ('BROWSER' in process.env) process.exit(17); console.log('isolated browser'); process.exit(${status});`,
+      );
+      chmodSync(witness, 0o755);
+      const result = spawnSync(
+        process.execPath,
+        ["workspaces/client/apps/web/scripts/run-browser-tests.mjs", "--list"],
+        {
+          encoding: "utf8",
+          env: {
+            ...process.env,
+            PATH: root,
+            TMPDIR: root,
+            KEEP_TEST_ARTIFACTS: "",
+            BROWSER: "/session/studio-browser",
+          },
+        },
+      );
+      assert.equal(result.status, status, result.stderr);
+      assert.match(result.stdout, /isolated browser/);
+      assert.deepEqual(readdirSync(root), ["pnpm"]);
+    }
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("tests retain temporary state ownership and follow the platform temp root", async () => {
+  const { temporaryStateFindings, repositoryTemporaryStateFindings } =
+    await import("../test-temp-state.mjs");
+  assert.deepEqual(repositoryTemporaryStateFindings(process.cwd()), []);
+  for (const source of [
+    `let root = tempfile::tempdir().unwrap().${"keep"}();`,
+    `let root = dir.\n${"into_path"}();`,
+    `tempfile::TempDir::${"keep"}(root);`,
+    `root.${"disable_cleanup"}(true);`,
+    "static ROOT: OnceLock<tempfile::TempDir> = OnceLock::new();",
+    "struct Template { root: tempfile::TempDir } static ROOT: OnceCell<Template> = OnceCell::const_new();",
+    `root = tempfile.TemporaryDirectory(dir="${"/" + "tmp"}")`,
+  ]) {
+    assert.equal(temporaryStateFindings("tests/example.rs", source).length, 1);
+  }
+  const fixture = `assert_eq!(normalize("${"/" + "tmp"}/example"), "example");`;
+  assert.deepEqual(
+    temporaryStateFindings("tests/example.rs", fixture, [fixture]),
+    [],
+  );
+  assert.equal(
+    temporaryStateFindings("tests/example.rs", `${fixture}\n${fixture}`, [
+      fixture,
+    ]).length,
+    1,
+  );
+  assert.deepEqual(
+    temporaryStateFindings(
+      "tests/example.rs",
+      "let root = tempfile::tempdir().unwrap();",
+    ),
+    [],
+  );
+  assert.deepEqual(
+    temporaryStateFindings(
+      "src/persistence.rs",
+      `let path = file.${"keep"}();`,
+    ),
+    [],
+  );
 });

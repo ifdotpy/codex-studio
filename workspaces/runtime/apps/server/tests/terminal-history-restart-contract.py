@@ -26,6 +26,7 @@ from codex_terminals import TerminalManager, HISTORY_LIMIT, ARCHIVE_CHUNK
 class TerminalHistory(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
         self.manager = TerminalManager(self.temp.name)
         with self.manager.db() as db:
             db.execute('INSERT INTO user_terminals VALUES (?,?,?,?)',

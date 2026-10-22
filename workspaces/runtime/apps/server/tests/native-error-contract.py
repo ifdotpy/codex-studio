@@ -44,6 +44,7 @@ CODES = ['contextWindowExceeded', 'sessionBudgetExceeded', 'usageLimitExceeded',
 class NativeErrorContract(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
         self.runtime = make_runtime(Runtime, Path(self.temp.name), fixture.FakeServer)
         self.server = self.runtime.connect()
         self.a = self.runtime.create({'name': 'Lead', 'cwd': self.temp.name, 'prompt': 'Work'})

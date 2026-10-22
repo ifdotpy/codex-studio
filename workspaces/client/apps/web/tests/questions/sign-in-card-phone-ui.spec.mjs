@@ -4,7 +4,7 @@
 // shows the code with a copy button. The card fits the screen without a horizontal scroll.
 import { createRequire } from "node:module";
 import { createServer as createNetServer } from "node:net";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -43,7 +43,7 @@ test.use({
 
 test("Sign-in card at phone width uses paste mode and the device code", async ({
   page,
-}) => {
+}, testInfo) => {
   const root = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const require = createRequire(
     join(root, "workspaces/client/apps/web/package.json"),
@@ -189,10 +189,9 @@ render();
     ).toBeVisible();
     expect(await page.evaluate(() => window.__copied)).toEqual(["WDJB-MJHT"]);
     expect(await page.evaluate(() => window.__opened)).toEqual([]);
-    await mkdir("/tmp/oidc/web", { recursive: true }).catch(() => {});
     await page
       .screenshot({
-        path: "/tmp/oidc/web/sign-in-card-phone-approval.png",
+        path: testInfo.outputPath("sign-in-card-phone-approval.png"),
         fullPage: true,
       })
       .catch(() => {});
@@ -222,7 +221,7 @@ render();
     expect(await fits()).toEqual({ overflow: 0, outside: 0 });
     await page
       .screenshot({
-        path: "/tmp/oidc/web/sign-in-card-phone-waiting.png",
+        path: testInfo.outputPath("sign-in-card-phone-waiting.png"),
         fullPage: true,
       })
       .catch(() => {});

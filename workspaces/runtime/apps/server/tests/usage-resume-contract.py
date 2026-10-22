@@ -62,6 +62,7 @@ class UsageResumeContract(unittest.TestCase):
 
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
         self.runtime = make_runtime(ManualRuntime, Path(self.temp.name), fixture.FakeServer)
         self.server = self.runtime.connect()
         original_call = self.server.call

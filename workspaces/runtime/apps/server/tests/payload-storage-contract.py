@@ -44,6 +44,7 @@ from studio_api.sync.resources.relay.client import NotifyCommittedWriteError
 class PayloadStorageContract(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         self.db = sqlite3.connect(self.root / "canvas.sqlite3", timeout=5)
         self.db.row_factory = sqlite3.Row

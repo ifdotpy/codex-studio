@@ -17,6 +17,7 @@ from codex_sync import SyncStore
 class SyncStoreTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="sync-store-")
+        self.addCleanup(self.temp.cleanup)
         self.path = Path(self.temp.name) / "state.sqlite3"
         with self.connect() as db:
             db.executescript("""

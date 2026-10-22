@@ -15,7 +15,8 @@ import urllib.request
 bundle = Path(sys.argv[1]).resolve()
 info = plistlib.loads((bundle / "Contents/Info.plist").read_bytes())
 executable = bundle / "Contents/MacOS" / info["CFBundleExecutable"]
-fixture = Path(tempfile.mkdtemp(prefix="studio-native-pkg-", dir="/tmp")).resolve()
+temporary = tempfile.TemporaryDirectory(prefix="studio-native-pkg-")
+fixture = Path(temporary.name).resolve()
 state = fixture / "state"
 with socket.socket() as listener:
     listener.bind(("127.0.0.1", 0))
@@ -58,8 +59,7 @@ try:
             raise RuntimeError("Backend did not start from this bundle")
         owned_pid = identity["pid"]
         assert (fixture / "profile/client/local").is_dir()
-        print(json.dumps({"result": "PASS", "bundle": str(bundle), "evidence": str(fixture),
-                          "backendPid": identity["pid"], "stateDir": identity["stateDir"],
+        print(json.dumps({"result": "PASS", "bundle": str(bundle), "backendPid": identity["pid"], "stateDir": identity["stateDir"],
                           "checks": "hidden packaged host started its bundled backend in isolated state"}))
 finally:
     if host is not None and host.poll() is None:
@@ -75,4 +75,4 @@ finally:
             os.kill(owned_pid, signal.SIGTERM)
         except ProcessLookupError:
             pass
-    print(f"Package startup evidence: {fixture}", file=sys.stderr)
+    temporary.cleanup()

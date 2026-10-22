@@ -24,6 +24,7 @@ spec.loader.exec_module(f)
 class IdleSendContract(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory(prefix='studio-idle-send-')
+        self.addCleanup(self.directory.cleanup)
         self.runtime = make_runtime(f.Runtime, Path(self.directory.name), f.FakeServer)
         self.runtime.closed = True
         self.runtime.changed.set()

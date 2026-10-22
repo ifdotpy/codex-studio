@@ -388,7 +388,7 @@ async fn callback_actor_flushes_fallback_tail_and_loses_session_on_disconnect() 
 
 #[allow(clippy::disallowed_methods)]
 async fn seeded_store() -> (tempfile::TempDir, RuntimeStore) {
-    static TEMPLATE: OnceLock<tempfile::TempDir> = OnceLock::new();
+    static TEMPLATE: OnceLock<python_test_support::StateTemplate> = OnceLock::new();
     let template = TEMPLATE.get_or_init(|| {
         let template = fixture_directory();
         let python = python_test_support::prepared_python(
@@ -405,15 +405,12 @@ async fn seeded_store() -> (tempfile::TempDir, RuntimeStore) {
             .status()
             .expect("Python writes the disposable runtime fixture template");
         assert!(status.success(), "Python fixture creation failed");
-        template
+        python_test_support::StateTemplate::capture(template.path())
     });
     let root = fixture_directory();
     let state = root.path().join("state");
     fs::create_dir(&state).expect("disposable clone state root");
-    for database in ["canvas.sqlite3", "analytics.sqlite3"] {
-        fs::copy(template.path().join(database), state.join(database))
-            .expect("clone Python template");
-    }
+    template.write(&state);
     let store = RuntimeStore::open(Some(&state))
         .await
         .expect("open voice fixture store");
@@ -456,14 +453,7 @@ async fn seeded_store() -> (tempfile::TempDir, RuntimeStore) {
 }
 
 fn fixture_directory() -> tempfile::TempDir {
-    if let Some(tmpfs) = std::env::var_os("STUDIO_RUNTIME_CORPUS_TMP") {
-        tempfile::Builder::new()
-            .prefix("voice-state-")
-            .tempdir_in(tmpfs)
-            .expect("temporary voice state root on configured tmpfs")
-    } else {
-        tempfile::tempdir().expect("temporary voice state root")
-    }
+    python_test_support::disposable_state_dir()
 }
 
 #[tokio::test]

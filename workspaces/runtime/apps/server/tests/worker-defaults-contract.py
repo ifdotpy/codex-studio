@@ -72,6 +72,7 @@ class ControlledRuntime(f.Runtime):
 class WorkerDefaults(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix="worker-defaults-")
+        self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
         self.runtime = make_runtime(ControlledRuntime, self.root, f.FakeServer)
         self.runtime.catalog = lambda account="default": copy.deepcopy(CATALOG)

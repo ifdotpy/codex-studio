@@ -29,7 +29,7 @@ def load_runtime_live():
 
 class LiveIsolation(unittest.TestCase):
     def setUp(self):
-        self.temp = Path(tempfile.mkdtemp(prefix="live-isolation-"))
+        self.temp = Path(self.enterContext(tempfile.TemporaryDirectory(prefix="live-isolation-")))
         self.addCleanup(shutil.rmtree, self.temp, ignore_errors=True)
         # A stand-in for the default state of the running Studio, which Rust owns.
         live = self.temp / "xdg-state" / "codex-agents"

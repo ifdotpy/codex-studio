@@ -30,6 +30,7 @@ class ControlledRuntime(f.Runtime):
 class OldTurnTaskCompletion(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         self.runtime = make_runtime(ControlledRuntime, self.root, f.FakeServer)
         self.agent = self.runtime.create({'name': 'Exact tool history',

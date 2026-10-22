@@ -25,7 +25,6 @@ const WORKER: &str = "415ccbb7-cd04-444e-8599-af5c52da8e5e";
 const FOREIGN: &str = "787d59cc-071a-4918-990a-cb1dffba4e2f";
 
 struct Template {
-    _scratch: tempfile::TempDir,
     value: Value,
 }
 
@@ -61,7 +60,6 @@ fn template() -> &'static Template {
             "reservations": [{"record": {"id": "thread-0:spawn:request-1", "agent": "bf2eeb40-0cc8-44ef-a4e8-aa321b4d7331", "threadId": "thread-0", "callId": "alias-1", "tool": "orchestration_spawn", "signature": "c91f8a50f288534226b47d6abda036631ba03b0ad5aae43ad0b8e1fe6431fc12", "rpcId": 1, "turnId": "turn-0", "epoch": 3, "accountKey": "default", "connectionId": "connection", "created": 10.0, "updated": 10.0, "readOnly": false, "timing": {"reservationBeganAt": 49476990541458_i64, "reservationLockedAt": 49476991477012_i64, "reservationEndedAt": 49476991698409_i64}, "request_id": "request-1", "stage": "queued", "outcome": "pending", "cancelRequested": false}}],
         });
         Template {
-            _scratch: scratch,
             value,
         }
     })
@@ -73,13 +71,16 @@ async fn fixture() -> (tempfile::TempDir, Arc<RuntimeStore>, CallbackContext) {
     let store = Arc::new(RuntimeStore::open(Some(directory.path())).await.unwrap());
     let agents = template.value["agents"].as_array().unwrap().clone();
     let monitor = template.value["monitor"].clone();
+    let cwd = json!(directory.path());
     store
         .transaction_with::<_, StoreError>(move |tx| {
             for agent in &agents {
-                let record = studio_runtime_store::AgentRecord::from_value(agent.clone())
+                let mut record = studio_runtime_store::AgentRecord::from_value(agent.clone())
                     .map_err(|error| StoreError::SchemaMismatch(error.to_string()))?;
+                record.extra.insert("cwd".into(), cwd.clone());
+                record.extra.insert("hostProjectPath".into(), cwd.clone());
                 studio_runtime_store::AgentRepository::put(tx, &record)?;
-                crate::agents_create::publish_agent(tx, agent)?;
+                crate::agents_create::publish_agent(tx, &record.value())?;
             }
             tx.execute(
                 "INSERT INTO runtime_monitors(id,record) VALUES(?1,?2)",

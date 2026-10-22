@@ -47,7 +47,7 @@ class MacSyncRounds(base.LayrEndToEnd):
         from mac_sync import MacSync
         from upload import extract_tree
 
-        mac = Path(tempfile.mkdtemp(prefix="mac-folder-"))
+        mac = Path(self.enterContext(tempfile.TemporaryDirectory(prefix="mac-folder-")))
         self.addCleanup(shutil.rmtree, mac, True)
         subprocess.run(["git", "init", "-q", str(mac)], check=True)
         (mac / ".gitignore").write_text("build/\n.env\n")
@@ -229,7 +229,7 @@ class MacSyncRounds(base.LayrEndToEnd):
         lines = self.projects.folder(self.project) / "lines"
 
         async def move(worktree, name, subpath, operation):
-            archive = Path(tempfile.mkdtemp()) / "worktree.tar.gz"
+            archive = Path(self.enterContext(tempfile.TemporaryDirectory())) / "worktree.tar.gz"
             migration.worktree_archive(worktree, archive)
             upload = Path("/var/lib/codex-studio/projects") / ("mac-wt-" + operation[4:28])
             if not upload.exists():
@@ -240,7 +240,7 @@ class MacSyncRounds(base.LayrEndToEnd):
                 "upload": str(upload), "message": "Worktree " + name}, None)
 
         # A worktree of the project repository: changed, new, ignored and deleted files.
-        worktree = Path(tempfile.mkdtemp(prefix="mac-worktree-")) / "topic"
+        worktree = Path(self.enterContext(tempfile.TemporaryDirectory(prefix="mac-worktree-"))) / "topic"
         subprocess.run(["git", "-C", str(mac), "add", "-A"], check=True)
         subprocess.run(["git", "-C", str(mac), "-c", "user.email=a@b", "-c", "user.name=a", "commit", "-qm", "base"],
                        check=True)
@@ -271,7 +271,7 @@ class MacSyncRounds(base.LayrEndToEnd):
         (main / "sub/old.txt").write_text("gone in the worktree\n")
         await sync.layr(["add", "-A"], cwd=main, owner=owner)
         await sync.layr(["commit", "-qm", "sub"], cwd=main, owner=owner)
-        nested = Path(tempfile.mkdtemp(prefix="mac-nested-"))
+        nested = Path(self.enterContext(tempfile.TemporaryDirectory(prefix="mac-nested-")))
         subprocess.run(["git", "init", "-q", str(nested)], check=True)
         (nested / "lib.txt").write_text("worktree lib\n")
         await move(nested, "wt-sub-fix", "sub", "mac-" + "2" * 32)

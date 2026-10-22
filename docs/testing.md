@@ -136,9 +136,8 @@ invalidate an otherwise authorized start.
 The Rust runtime differential corpora use one isolated Python JSON-lines oracle
 per test process and Python-written SQLite seed backups. Suites that use the
 shared `disposable_state_dir` test helper keep SQLite state and oracle scratch
-on a memory filesystem
-(`STUDIO_RUNTIME_CORPUS_TMP`, else Linux `/dev/shm`, else the temporary
-directory), because per-commit fsync on a disk-backed `TMPDIR` dominates their
+below the platform temporary directory. Set `TMPDIR` to a disposable memory
+filesystem when needed: per-commit fsync on a disk-backed directory dominates
 run time under shared I/O load. Default nextest runs
 explicit fast witnesses; its account-worker crash matrix covers four deterministic
 scenarios (normal transcript commit, submitted-before-written recovery, pending
@@ -822,3 +821,19 @@ checks. The [pre-commit hook](../.githooks/pre-commit) checks staged content onl
 it does not replace behavior tests.
 
 Runtime Clippy (`just clippy-runtime`) rejects blocking calls on Tokio threads, blocking filesystem calls in HTTP handlers, blocking lock guards or RefCell borrows held across awaits, and oversized inline futures; use async APIs, labeled `blocking_pool::spawn_blocking`, or a documented dedicated non-Tokio thread (policy: [runtime/clippy.toml](../workspaces/runtime/clippy.toml)).
+
+## Disposable test state
+
+Tests keep the `tempfile::TempDir` or Python `TemporaryDirectory` owner alive
+until stores and child processes close. Register Python cleanup immediately in
+`setUp` so a setup failure also removes state. Use the platform temporary root
+(`TMPDIR`), and cache fixture bytes instead of directories in static values.
+Playwright screenshots belong in its managed output directories.
+The tooling test [temporary-state guard](../workspaces/tooling/apps/repository-checks/test-temp-state.mjs)
+rejects cleanup-disabling calls and new hard-coded temporary paths. Its exact-line
+fixture inventory permits existing path-mapping and protocol examples, not new
+filesystem allocations. No new debug retention switch is provided.
+
+Browser and smoke fixtures remove their directories after success or failure.
+Set the existing `KEEP_TEST_ARTIFACTS` switch explicitly when debugging requires
+retained browser output.

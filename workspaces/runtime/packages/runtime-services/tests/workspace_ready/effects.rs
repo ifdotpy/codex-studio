@@ -4,7 +4,6 @@ mod prepared_python_support;
 use super::*;
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
-use std::sync::{Mutex, OnceLock};
 use studio_runtime_store::path_identity::CanonicalPath;
 use studio_runtime_store::{AgentRecord, AgentRepository};
 
@@ -273,6 +272,7 @@ impl OracleWorker {
         let mut child = Command::new(python)
             .arg("-B")
             .arg(script)
+            .env("TMPDIR", root.path())
             .env("HOME", root.path().join("home"))
             .env("CODEX_HOME", root.path().join("codex"))
             .env("CLAUDE_CONFIG_DIR", root.path().join("claude"))
@@ -316,6 +316,21 @@ impl OracleWorker {
     }
 }
 
+impl Drop for OracleWorker {
+    fn drop(&mut self) {
+        if let Err(error) = self.child.kill() {
+            assert_eq!(
+                error.kind(),
+                std::io::ErrorKind::InvalidInput,
+                "stop oracle worker"
+            );
+        }
+        self.child
+            .wait()
+            .expect("reap oracle worker before removing its state");
+    }
+}
+
 fn oracle(root: &Path, mut request: Value) -> Value {
     for name in ["home", "codex", "claude"] {
         std::fs::create_dir_all(root.join(name)).expect("isolated home");
@@ -323,12 +338,7 @@ fn oracle(root: &Path, mut request: Value) -> Value {
     if request["command"] == "seed" {
         request["codexHome"] = json!(root.join("codex"));
     }
-    static WORKER: OnceLock<Mutex<OracleWorker>> = OnceLock::new();
-    WORKER
-        .get_or_init(|| Mutex::new(OracleWorker::start()))
-        .lock()
-        .expect("oracle worker mutex")
-        .request(request)
+    OracleWorker::start().request(request)
 }
 
 #[cfg(not(target_os = "macos"))]

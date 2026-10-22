@@ -1143,7 +1143,7 @@ mod tests {
     async fn test_state() -> TestState {
         let tmpfs = std::env::var_os("CS_TERMINAL_TEST_STATE_DIR")
             .map(PathBuf::from)
-            .unwrap_or_else(|| std::env::temp_dir().join("cs-terminals-test-state"));
+            .unwrap_or_else(std::env::temp_dir);
         std::fs::create_dir_all(&tmpfs).expect("tmpfs test state directory");
         let directory = tempfile::Builder::new()
             .prefix("terminal-driver-test-")
@@ -2845,7 +2845,7 @@ mod tests {
         let state = test_state().await;
         let test_state_root = std::env::var_os("CS_TERMINAL_TEST_STATE_DIR")
             .map(PathBuf::from)
-            .unwrap_or_else(|| std::env::temp_dir().join("cs-terminals-test-state"));
+            .unwrap_or_else(std::env::temp_dir);
         std::fs::create_dir_all(&test_state_root).expect("tmpfs test state directory");
         let rust_directory = tempfile::Builder::new()
             .prefix("terminal-action-rust-")

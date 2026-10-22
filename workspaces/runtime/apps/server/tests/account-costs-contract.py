@@ -45,6 +45,7 @@ class OfflinePricing:
 class AccountCosts(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(); self.root = Path(self.temp.name)
+        self.addCleanup(self.temp.cleanup)
         self.accounts = Accounts(self.root)
         self.cli = self.root / 'scan.py'
         self.cli.write_text('''import json,pathlib,sys,time

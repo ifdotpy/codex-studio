@@ -31,6 +31,7 @@ spec.loader.exec_module(fixture)
 class MissingThreadContract(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
         # This fixture tests thread unload/rejection only. Prevent the
         # independent session-name worker from writing nativeNameFailure while
         # the tests compare the agent record around an unload notification.

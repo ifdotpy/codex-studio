@@ -264,6 +264,7 @@ class ProcessProxyTailDeliveryContract(unittest.TestCase):
 class SupervisorNextReaderFenceContract(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix='supervisor-next-fence-')
+        self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         self.supervisor = process_supervisor.Supervisor(self.root)
         self.supervisor.journal = process_supervisor.Journal(self.root)
@@ -342,6 +343,7 @@ class SupervisorNextReaderFenceContract(unittest.TestCase):
 class StdoutPersistenceContract(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix='supervisor-storage-')
+        self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         self.supervisor = process_supervisor.Supervisor(self.root)
         self.supervisor.journal = process_supervisor.Journal(self.root)

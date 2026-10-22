@@ -301,7 +301,7 @@ fn outcome_boundary_identity_is_stable_across_replay_interleaving() {
 fn test_root() -> PathBuf {
     std::env::var_os("STUDIO_ACCOUNT_TEST_ROOT")
         .map(PathBuf::from)
-        .unwrap_or_else(|| std::env::temp_dir().join("studio-account-worker-tests"))
+        .unwrap_or_else(std::env::temp_dir)
 }
 /// The one queued fixture agent every account-worker test starts from.
 const FIXTURE_AGENT_ID: &str = "fixture-agent";

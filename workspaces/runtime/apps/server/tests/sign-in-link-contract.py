@@ -69,7 +69,7 @@ class Catalog(unittest.TestCase):
 class SignInLinks(unittest.TestCase):
     def setUp(self):
         # A short folder: a macOS Unix socket path has at most 103 bytes.
-        self.root = Path(tempfile.mkdtemp(prefix="sil-", dir="/tmp"))
+        self.root = Path(self.enterContext(tempfile.TemporaryDirectory(prefix="sil-")))
         self.runtime = f.make_runtime(f.Runtime, self.root, f.FakeServer)
         self.provider = FakeProvider()
         self.tools = []

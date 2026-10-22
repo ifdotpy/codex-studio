@@ -141,17 +141,8 @@ export function choosePlaywrightScratchRoot(
     });
   }
 
-  const mounts = memoryMounts();
-  const candidates = [...mounts, "/tmp", environment.TMPDIR, tmpdir()].filter(
-    (value, index, values) => value && values.indexOf(value) === index,
-  );
-  const tested = candidates.map((candidate) =>
-    probeCandidate(candidate, probeBytes),
-  );
-  const eligible = tested
-    .filter((result) => result.passed && result.memoryBacked)
-    .sort((left, right) => right.availableBytes - left.availableBytes);
-  const chosen = eligible[0] ?? tested.find((result) => result.passed);
+  const tested = [probeCandidate(environment.TMPDIR ?? tmpdir(), probeBytes)];
+  const chosen = tested.find((result) => result.passed);
   if (!chosen)
     throw new Error(
       `No temporary filesystem passed the ${probeBytes}-byte fsync probe: ${JSON.stringify(tested)}`,

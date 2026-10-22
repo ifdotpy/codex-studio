@@ -16,10 +16,7 @@ use tempfile::TempDir;
 const NOW: f64 = 1_800_000_000.0;
 
 fn temporary_state() -> TempDir {
-    match std::env::var_os("RULES_TEST_TMPDIR") {
-        Some(root) => tempfile::tempdir_in(root).expect("owned test state root"),
-        None => tempfile::tempdir().expect("test state"),
-    }
+    prepared_python_support::disposable_state_dir()
 }
 
 struct Template(TempDir);

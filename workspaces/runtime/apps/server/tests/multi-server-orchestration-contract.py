@@ -73,6 +73,7 @@ class LinkTransport(FakeTransport):
 class CrossServer(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix='studio-multi-server-')
+        self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
         self.network, self.runtimes, self.transports = {}, {}, {}
         for server in ('home', 'remote'):

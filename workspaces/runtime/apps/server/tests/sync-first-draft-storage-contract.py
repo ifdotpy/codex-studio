@@ -19,7 +19,8 @@ from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
 
-root = Path(tempfile.mkdtemp(prefix="sync-first-draft-storage-", dir=os.environ["TMPDIR"]))
+temporary = tempfile.TemporaryDirectory(prefix="sync-first-draft-storage-")
+root = Path(temporary.name)
 state = root / "state"
 state.mkdir()
 env = os.environ.copy()

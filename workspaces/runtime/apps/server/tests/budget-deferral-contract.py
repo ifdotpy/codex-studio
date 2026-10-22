@@ -62,6 +62,7 @@ install_scoped_agent_reads(Runtime)
 class DeferralTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
         self.r = Runtime(Path(self.temp.name) / 'db')
         self.a = {'id': 'a', 'rootId': 'a', 'threadId': 'thread', 'accountKey': 'other-account', 'epoch': 0,
                   'created': 0, 'tokensUsed': 10, 'tokenBudget': 1, 'status': 'starting', 'inFlight': True, 'autoWake': True,
