@@ -402,7 +402,8 @@ impl native_actions::Preparation for ReviewPreparation {
 fn worker_error(error: WorkerError) -> NativeError {
     match error {
         WorkerError::PreparationPending(reason)
-            if reason == preparation::CATALOG_PENDING_REASON =>
+            if reason.reason
+                == studio_runtime_schema::agent_progress::StartWaitReason::ModelCatalog =>
         {
             NativeError::Unavailable(preparation::CATALOG_PENDING_REASON)
         }

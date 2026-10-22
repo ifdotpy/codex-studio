@@ -1324,3 +1324,14 @@ Studio does not upgrade a CLI during a move.
 Snapshot cache reuse depends on provider support and cache lifetime.
 The local Claude probe read 96.51% of input tokens from the cache after a folder
 change with both options. Cross-machine Claude cache reuse remains unverified.
+
+## Why an agent waits
+
+1. The admission owner records one [typed `startWait`](../workspaces/runtime/packages/runtime-schema/src/agent_progress.rs) for the current agent epoch.
+2. Account starts report a running-turn slot, burst pause deadline, or earlier start.
+3. Disk admission, model preparation, and provider startup report their own blockers.
+4. Other preparation dependencies report a dependency wait; input keeps its identity.
+5. Sync and `orchestration_status` use the same projection; `queued[].reasons` contains that wait object.
+6. The UI shows its reason. `until`, when present, is a retry deadline in Unix seconds.
+7. A claim clears gate waits; submission clears preparation waits. Other epochs and settled turns cannot display them.
+8. A dispatch handoff has no gate blocker yet; it is distinct from an owner holding work.

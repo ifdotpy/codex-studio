@@ -8,6 +8,7 @@ remain separate contracts; known disagreements are checked in
 # Runtime reuses these overloads as its public class attributes under TYPE_CHECKING.
 # Helpers use this narrow Protocol when they need only record-store operations.
 
+from codex_start_wait import StartWaitReason
 from typing import Annotated, Literal, Protocol, TYPE_CHECKING, overload
 from typing_extensions import NotRequired, TypedDict
 from pydantic import ConfigDict, Field
@@ -365,10 +366,10 @@ class CapacityRetryRecord(TypedDict):
 
 class StartWaitRecord(TypedDict):
     """A queued start waiting for its account's start throttle (Rust account_start_gate)."""
-    reason: Literal["slot", "pause"]
+    reason: StartWaitReason
     epoch: SafeInt
-    runningTurns: SafeInt
-    maxRunningTurns: SafeInt
+    runningTurns: NotRequired[SafeInt]
+    maxRunningTurns: NotRequired[SafeInt]
     until: NotRequired[float]
 
 
