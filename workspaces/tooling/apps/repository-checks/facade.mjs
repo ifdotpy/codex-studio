@@ -1294,6 +1294,7 @@ function fastTierCommands(root) {
               "test(cost_content_ignores_account_listing_order)",
               "test(subscribed_content_is_computed_once_per_coalesced_revision)",
               "test(unavailable_and_racing_content_keep_the_safe_refresh)",
+              "test(provider_versions::tests::preference_read_error_fails_closed_without_an_upstream_request)",
               "test(token_publications_do_not_repeat_or_invalidate_content_projections)",
             ]),
           ],

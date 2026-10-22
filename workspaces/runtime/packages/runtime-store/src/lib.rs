@@ -601,13 +601,15 @@ fn install_table_change_hooks(
             }
         },
     ))?;
+    // Leave entity tables outside this rule: SQLite also authorizes DELETE
+    // during DROP TABLE, where IGNORE would suppress the schema operation.
+    // Missing entity delete counts already fall back to a broad refresh.
     connection.authorizer(Some(|context: AuthContext<'_>| match context.action {
         AuthAction::Delete { table_name }
             if context.database_name == Some("main")
-                && (OBSERVED_TABLES
+                && OBSERVED_TABLES
                     .iter()
-                    .any(|observed| observed.name() == table_name)
-                    || ENTITY_RESOURCE_TABLES.contains(&table_name)) =>
+                    .any(|observed| observed.name() == table_name) =>
         {
             // SQLite documents IGNORE here as retaining DELETE semantics while
             // disabling the truncate optimization, so update_hook sees rows.
