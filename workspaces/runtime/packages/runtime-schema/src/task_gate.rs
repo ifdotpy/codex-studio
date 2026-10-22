@@ -86,7 +86,7 @@ mod tests {
             json!(""),
             json!({"command":"true","timeout_ms":0}),
             json!({"command":"true","timeout_ms":MAX_TIMEOUT_MS+1}),
-            json!({"command":"true","cwd":"/tmp"}),
+            json!({"command":"true","cwd":std::env::temp_dir()}),
         ] {
             assert!(!validator.is_valid(&value));
             assert!(parse(&value).is_err());

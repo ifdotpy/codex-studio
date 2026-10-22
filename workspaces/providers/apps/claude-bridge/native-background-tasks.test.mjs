@@ -7,6 +7,7 @@ import { startBridge } from "./testing/bridge-harness.mjs";
 // Exercise the real bridge with task events and a native wake after turn end.
 const FAKE_SDK = String.raw`
 import fs from 'node:fs';
+import path from 'node:path';
 export const tool=(name,description,schema,call)=>({name,description,schema,call});
 export const createSdkMcpServer=value=>({...value});
 export const forkSession=async()=>({sessionId:'22222222-2222-4222-8222-222222222222'});
@@ -36,7 +37,7 @@ export function query({prompt,options}){
    const status=fs.readFileSync(cwd+'/.finish','utf8');
    // A state patch can precede the notification that supplies the final output.
    yield {type:'system',subtype:'task_updated',task_id:'native-1',patch:{status:status==='stopped'?'killed':status},uuid:'s-4'};
-   yield {type:'system',subtype:'task_notification',task_id:'native-1',status,output_file:'/tmp/native-1.output',summary:'Task '+status,uuid:'s-5'};
+   yield {type:'system',subtype:'task_notification',task_id:'native-1',status,output_file:path.join(cwd,'native-1.output'),summary:'Task '+status,uuid:'s-5'};
    yield {type:'assistant',uuid:'wake-message',message:{id:'wake-message',model:'claude-opus-5-5',usage,content:[{type:'text',text:'Native task finished'}]}};
    yield {type:'result',subtype:'success',usage,result:'Native task finished'};
    await new Promise(resolve=>abort.signal.addEventListener('abort',resolve,{once:true}));
@@ -97,7 +98,10 @@ test.each(["completed", "failed", "killed", "stopped"])(
     const terminal = events.at(-1);
     assert.equal(terminal.params.turnId, turn);
     assert.equal(terminal.params.item.tool, "local_bash");
-    assert.equal(terminal.params.item.outputFile, "/tmp/native-1.output");
+    assert.equal(
+      terminal.params.item.outputFile,
+      path.join(bridge.root, "native-1.output"),
+    );
     assert.equal(terminal.params.item.result.content[0].text, "Task " + status);
     assert.equal(
       bridge.notes.filter((n) => n.method === "turn/started").length,
