@@ -1336,6 +1336,30 @@ function fastTierCommands(root) {
       options: { script: "test:unit:fast" },
     },
     {
+      item: web,
+      label: "Native draft notification witnesses",
+      commands: [
+        [
+          "pnpm",
+          [
+            "--filter",
+            "codex-agents-web",
+            "exec",
+            "vitest",
+            "run",
+            "--config",
+            "vitest.unit.config.ts",
+            "src/native/useNativeDrafts.test.ts",
+          ],
+        ],
+      ],
+      options: {
+        selector: "Native drafts idle and refresh work counts",
+        reason:
+          "Prevent idle polling and lost draft notifications during a refresh.",
+      },
+    },
+    {
       item: { name: "codex-agents-desktop", ecosystem: "pnpm" },
       label: "Rust-only desktop startup witnesses",
       commands: [

@@ -190,6 +190,13 @@ and generated names in SQLite and copies them to Codex with `thread/name/set`.
 The copy uses the session's account and thread. It starts no model turn. A native
 failure preserves the Studio name and retries with backoff. Drafts sync when they
 have a native thread; existing sessions and transferred threads sync as well.
+Native composer draft synchronization follows this flow:
+
+1. Recover committed local text and queued writes before the first server refresh.
+2. Refresh on draft notifications, connection recovery, resume, and completed local writes.
+3. Combine simultaneous triggers and retain one follow-up when notified during a refresh.
+4. Keep idle windows quiet; closing the view removes listeners and pending refreshes.
+
 Deleting an agent chat removes it from the user list until the next agent message. Its participants retain their history.
 Deletion stops the selected agent and its descendants and removes them from the interface.
 Stored transcripts and project files remain on disk. Deleted agents cannot resume from late events or message retries.
