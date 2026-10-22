@@ -1,23 +1,9 @@
-use crate::prepared_python_support as python_test_support;
 use serde_json::Value;
-use std::{path::Path, process::Command};
 use studio_runtime_services::recovery_policy::{RecoverySnapshot, native_operations_settled};
 #[test]
-#[allow(clippy::disallowed_methods)]
 fn python_written_eligibility_corpus() {
-    let python = python_test_support::prepared_python(
-        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
-    );
-    let result = Command::new(python)
-        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/recovery/oracle.py"))
-        .output()
-        .expect("oracle starts");
-    assert!(
-        result.status.success(),
-        "{}",
-        String::from_utf8_lossy(&result.stderr)
-    );
-    let output: Value = serde_json::from_slice(&result.stdout).expect("oracle JSON");
+    let output: Value = serde_json::from_str(include_str!("recovery/oracle.json"))
+        .expect("frozen eligibility corpus");
     let cases = output["eligibility"]
         .as_array()
         .expect("valid recovery fixture");

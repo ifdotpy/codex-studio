@@ -1,0 +1,2703 @@
+{
+  "local": "local-fixture",
+  "actor": "agent-fixture",
+  "now": 1000.125,
+  "cases": [
+    {
+      "name": "add-changed-location",
+      "family": "location",
+      "outbox": {
+        "id": "0717ff85-d0fa-5813-8a54-8df2a5f9f66e",
+        "server": "peer",
+        "body": {
+          "requestId": "0717ff85-d0fa-5813-8a54-8df2a5f9f66e",
+          "action": "add_location",
+          "payload": {
+            "project": "/home-project",
+            "name": "東京",
+            "path": "/requested",
+            "request": {
+              "action": "add_location",
+              "project": "/home-project",
+              "server": "peer",
+              "path": "/requested"
+            },
+            "signature": "94c0aefe928e29b61af97cb6156a1f97a7f9313621916bb80ec6d36fe87661c8"
+          }
+        },
+        "state": "queued",
+        "result": null
+      },
+      "project": {
+        "id": "/home-project",
+        "path": "/home-project",
+        "name": "東京",
+        "created": 10,
+        "homeServerId": "local-fixture",
+        "locations": [
+          {
+            "serverId": "local-fixture",
+            "path": "/home-project",
+            "projectId": "/home-project"
+          },
+          {
+            "serverId": "peer",
+            "path": "/old",
+            "projectId": "/old"
+          }
+        ],
+        "locationsRevision": 3,
+        "extension": {
+          "nested": [1, null, "🦀"]
+        }
+      },
+      "receipt": {
+        "requestId": "0717ff85-d0fa-5813-8a54-8df2a5f9f66e",
+        "outcome": "applied",
+        "value": {
+          "serverId": "peer",
+          "path": "/requested",
+          "canonicalPath": "/canonical",
+          "projectId": "/canonical",
+          "gitOrigin": null,
+          "homeProjectId": "/home-project",
+          "requestId": "0717ff85-d0fa-5813-8a54-8df2a5f9f66e"
+        }
+      },
+      "expected": {
+        "project": {
+          "id": "/home-project",
+          "path": "/home-project",
+          "name": "東京",
+          "created": 10,
+          "homeServerId": "local-fixture",
+          "locations": [
+            {
+              "serverId": "local-fixture",
+              "path": "/home-project",
+              "projectId": "/home-project"
+            },
+            {
+              "serverId": "peer",
+              "projectId": "/canonical",
+              "gitOrigin": null,
+              "path": "/canonical",
+              "requestedPath": "/requested"
+            }
+          ],
+          "locationsRevision": 4,
+          "extension": {
+            "nested": [1, null, "🦀"]
+          },
+          "updated": 1000.125
+        },
+        "receipt": {
+          "requestId": "0717ff85-d0fa-5813-8a54-8df2a5f9f66e",
+          "outcome": "applied",
+          "value": {
+            "serverId": "peer",
+            "path": "/requested",
+            "canonicalPath": "/canonical",
+            "projectId": "/canonical",
+            "gitOrigin": null,
+            "homeProjectId": "/home-project",
+            "requestId": "0717ff85-d0fa-5813-8a54-8df2a5f9f66e"
+          }
+        },
+        "registration": {
+          "requestId": "0717ff85-d0fa-5813-8a54-8df2a5f9f66e",
+          "outcome": "applied",
+          "value": {
+            "serverId": "peer",
+            "path": "/requested",
+            "canonicalPath": "/canonical",
+            "projectId": "/canonical",
+            "gitOrigin": null,
+            "homeProjectId": "/home-project",
+            "requestId": "0717ff85-d0fa-5813-8a54-8df2a5f9f66e"
+          },
+          "projectId": "/home-project"
+        }
+      }
+    },
+    {
+      "name": "add-legacy-location",
+      "family": "location",
+      "legacy": true,
+      "outbox": {
+        "id": "305a6580-bd0d-5d6d-b1ea-36c22cc305e3",
+        "server": "peer",
+        "body": {
+          "requestId": "305a6580-bd0d-5d6d-b1ea-36c22cc305e3",
+          "action": "add_location",
+          "payload": {
+            "project": "/home-project",
+            "name": "東京",
+            "path": "/requested",
+            "request": {
+              "action": "add_location",
+              "project": "/home-project",
+              "server": "peer",
+              "path": "/requested"
+            },
+            "signature": "94c0aefe928e29b61af97cb6156a1f97a7f9313621916bb80ec6d36fe87661c8"
+          }
+        },
+        "state": "queued",
+        "result": null
+      },
+      "project": {
+        "id": "/home-project",
+        "path": "/home-project",
+        "name": "東京",
+        "created": 10,
+        "extension": {
+          "nested": [1, null, "🦀"]
+        }
+      },
+      "receipt": {
+        "requestId": "305a6580-bd0d-5d6d-b1ea-36c22cc305e3",
+        "outcome": "applied",
+        "value": {
+          "serverId": "peer",
+          "path": "/requested",
+          "canonicalPath": "/canonical",
+          "projectId": "/canonical",
+          "gitOrigin": null,
+          "homeProjectId": "/home-project",
+          "requestId": "305a6580-bd0d-5d6d-b1ea-36c22cc305e3"
+        }
+      },
+      "expected": {
+        "project": {
+          "id": "/home-project",
+          "path": "/home-project",
+          "name": "東京",
+          "created": 10,
+          "extension": {
+            "nested": [1, null, "🦀"]
+          },
+          "homeServerId": "local-fixture",
+          "locations": [
+            {
+              "serverId": "local-fixture",
+              "path": "/home-project",
+              "projectId": "/home-project"
+            },
+            {
+              "serverId": "peer",
+              "projectId": "/canonical",
+              "gitOrigin": null,
+              "path": "/canonical",
+              "requestedPath": "/requested"
+            }
+          ],
+          "locationsRevision": 1,
+          "updated": 1000.125
+        },
+        "receipt": {
+          "requestId": "305a6580-bd0d-5d6d-b1ea-36c22cc305e3",
+          "outcome": "applied",
+          "value": {
+            "serverId": "peer",
+            "path": "/requested",
+            "canonicalPath": "/canonical",
+            "projectId": "/canonical",
+            "gitOrigin": null,
+            "homeProjectId": "/home-project",
+            "requestId": "305a6580-bd0d-5d6d-b1ea-36c22cc305e3"
+          }
+        },
+        "registration": {
+          "requestId": "305a6580-bd0d-5d6d-b1ea-36c22cc305e3",
+          "outcome": "applied",
+          "value": {
+            "serverId": "peer",
+            "path": "/requested",
+            "canonicalPath": "/canonical",
+            "projectId": "/canonical",
+            "gitOrigin": null,
+            "homeProjectId": "/home-project",
+            "requestId": "305a6580-bd0d-5d6d-b1ea-36c22cc305e3"
+          },
+          "projectId": "/home-project"
+        }
+      }
+    },
+    {
+      "name": "add-deleted-project",
+      "family": "location",
+      "deleted": true,
+      "outbox": {
+        "id": "501c3b66-cc24-5dc4-aa62-fa05007507fc",
+        "server": "peer",
+        "body": {
+          "requestId": "501c3b66-cc24-5dc4-aa62-fa05007507fc",
+          "action": "add_location",
+          "payload": {
+            "project": "/home-project",
+            "name": "東京",
+            "path": "/requested",
+            "request": {
+              "action": "add_location",
+              "project": "/home-project",
+              "server": "peer",
+              "path": "/requested"
+            },
+            "signature": "94c0aefe928e29b61af97cb6156a1f97a7f9313621916bb80ec6d36fe87661c8"
+          }
+        },
+        "state": "queued",
+        "result": null
+      },
+      "project": null,
+      "receipt": {
+        "requestId": "501c3b66-cc24-5dc4-aa62-fa05007507fc",
+        "outcome": "applied",
+        "value": {
+          "serverId": "peer",
+          "path": "/requested",
+          "canonicalPath": "/canonical",
+          "projectId": "/canonical",
+          "gitOrigin": null,
+          "homeProjectId": "/home-project",
+          "requestId": "501c3b66-cc24-5dc4-aa62-fa05007507fc"
+        }
+      },
+      "expected": {
+        "project": null,
+        "receipt": {
+          "requestId": "501c3b66-cc24-5dc4-aa62-fa05007507fc",
+          "outcome": "applied",
+          "value": {
+            "serverId": "peer",
+            "path": "/requested",
+            "canonicalPath": "/canonical",
+            "projectId": "/canonical",
+            "gitOrigin": null,
+            "homeProjectId": "/home-project",
+            "requestId": "501c3b66-cc24-5dc4-aa62-fa05007507fc"
+          }
+        },
+        "registration": {
+          "requestId": "501c3b66-cc24-5dc4-aa62-fa05007507fc",
+          "outcome": "applied",
+          "value": {
+            "serverId": "peer",
+            "path": "/requested",
+            "canonicalPath": "/canonical",
+            "projectId": "/canonical",
+            "gitOrigin": null,
+            "homeProjectId": "/home-project",
+            "requestId": "501c3b66-cc24-5dc4-aa62-fa05007507fc"
+          },
+          "projectId": "/home-project"
+        }
+      }
+    },
+    {
+      "name": "add-double-slash-path",
+      "family": "location",
+      "canonical": "//host/path",
+      "outbox": {
+        "id": "a5169921-8d8a-5248-9ac4-f8f14dd6af3a",
+        "server": "peer",
+        "body": {
+          "requestId": "a5169921-8d8a-5248-9ac4-f8f14dd6af3a",
+          "action": "add_location",
+          "payload": {
+            "project": "/home-project",
+            "name": "東京",
+            "path": "/requested",
+            "request": {
+              "action": "add_location",
+              "project": "/home-project",
+              "server": "peer",
+              "path": "/requested"
+            },
+            "signature": "94c0aefe928e29b61af97cb6156a1f97a7f9313621916bb80ec6d36fe87661c8"
+          }
+        },
+        "state": "queued",
+        "result": null
+      },
+      "project": {
+        "id": "/home-project",
+        "path": "/home-project",
+        "name": "東京",
+        "created": 10,
+        "homeServerId": "local-fixture",
+        "locations": [
+          {
+            "serverId": "local-fixture",
+            "path": "/home-project",
+            "projectId": "/home-project"
+          },
+          {
+            "serverId": "peer",
+            "path": "/old",
+            "projectId": "/old"
+          }
+        ],
+        "locationsRevision": 3,
+        "extension": {
+          "nested": [1, null, "🦀"]
+        }
+      },
+      "receipt": {
+        "requestId": "a5169921-8d8a-5248-9ac4-f8f14dd6af3a",
+        "outcome": "applied",
+        "value": {
+          "serverId": "peer",
+          "path": "/requested",
+          "canonicalPath": "//host/path",
+          "projectId": "//host/path",
+          "gitOrigin": null,
+          "homeProjectId": "/home-project",
+          "requestId": "a5169921-8d8a-5248-9ac4-f8f14dd6af3a"
+        }
+      },
+      "expected": {
+        "project": {
+          "id": "/home-project",
+          "path": "/home-project",
+          "name": "東京",
+          "created": 10,
+          "homeServerId": "local-fixture",
+          "locations": [
+            {
+              "serverId": "local-fixture",
+              "path": "/home-project",
+              "projectId": "/home-project"
+            },
+            {
+              "serverId": "peer",
+              "projectId": "//host/path",
+              "gitOrigin": null,
+              "path": "//host/path",
+              "requestedPath": "/requested"
+            }
+          ],
+          "locationsRevision": 4,
+          "extension": {
+            "nested": [1, null, "🦀"]
+          },
+          "updated": 1000.125
+        },
+        "receipt": {
+          "requestId": "a5169921-8d8a-5248-9ac4-f8f14dd6af3a",
+          "outcome": "applied",
+          "value": {
+            "serverId": "peer",
+            "path": "/requested",
+            "canonicalPath": "//host/path",
+            "projectId": "//host/path",
+            "gitOrigin": null,
+            "homeProjectId": "/home-project",
+            "requestId": "a5169921-8d8a-5248-9ac4-f8f14dd6af3a"
+          }
+        },
+        "registration": {
+          "requestId": "a5169921-8d8a-5248-9ac4-f8f14dd6af3a",
+          "outcome": "applied",
+          "value": {
+            "serverId": "peer",
+            "path": "/requested",
+            "canonicalPath": "//host/path",
+            "projectId": "//host/path",
+            "gitOrigin": null,
+            "homeProjectId": "/home-project",
+            "requestId": "a5169921-8d8a-5248-9ac4-f8f14dd6af3a"
+          },
+          "projectId": "/home-project"
+        }
+      }
+    },
+    {
+      "name": "remove-location",
+      "family": "location",
+      "action": "remove_location",
+      "outbox": {
+        "id": "1c837045-0968-55ee-b9c7-88d712e9543d",
+        "server": "peer",
+        "body": {
+          "requestId": "1c837045-0968-55ee-b9c7-88d712e9543d",
+          "action": "remove_location",
+          "payload": {
+            "project": "/home-project",
+            "name": "東京",
+            "path": null,
+            "request": {
+              "action": "remove_location",
+              "project": "/home-project",
+              "server": "peer",
+              "path": null
+            },
+            "signature": "00a86f70b595ea94b9b506ffd9b6325e950462f560d9f7b7fecc6e9daa9b2318"
+          }
+        },
+        "state": "queued",
+        "result": null
+      },
+      "project": {
+        "id": "/home-project",
+        "path": "/home-project",
+        "name": "東京",
+        "created": 10,
+        "homeServerId": "local-fixture",
+        "locations": [
+          {
+            "serverId": "local-fixture",
+            "path": "/home-project",
+            "projectId": "/home-project"
+          },
+          {
+            "serverId": "peer",
+            "path": "/old",
+            "projectId": "/old"
+          }
+        ],
+        "locationsRevision": 3,
+        "extension": {
+          "nested": [1, null, "🦀"]
+        }
+      },
+      "receipt": {
+        "requestId": "1c837045-0968-55ee-b9c7-88d712e9543d",
+        "outcome": "applied",
+        "value": {
+          "removed": true,
+          "serverId": "peer"
+        }
+      },
+      "expected": {
+        "project": {
+          "id": "/home-project",
+          "path": "/home-project",
+          "name": "東京",
+          "created": 10,
+          "homeServerId": "local-fixture",
+          "locations": [
+            {
+              "serverId": "local-fixture",
+              "path": "/home-project",
+              "projectId": "/home-project"
+            }
+          ],
+          "locationsRevision": 4,
+          "extension": {
+            "nested": [1, null, "🦀"]
+          },
+          "updated": 1000.125
+        },
+        "receipt": {
+          "requestId": "1c837045-0968-55ee-b9c7-88d712e9543d",
+          "outcome": "applied",
+          "value": {
+            "removed": true,
+            "serverId": "peer"
+          }
+        },
+        "registration": {
+          "requestId": "1c837045-0968-55ee-b9c7-88d712e9543d",
+          "outcome": "applied",
+          "value": {
+            "removed": true,
+            "serverId": "peer"
+          },
+          "projectId": "/home-project"
+        }
+      }
+    },
+    {
+      "name": "release-waiting-not-started",
+      "family": "release",
+      "operation": {
+        "agent": "agent-fixture",
+        "created": 700.0,
+        "deadline": 900.0,
+        "epoch": 1,
+        "fingerprint": "4f077b9e3748b02ee1d5479b5553ed9fdc2c8a8d53c3ccb7ce277d781be1f1d4",
+        "id": "a739d205-1529-5210-abb9-28b5172110d2",
+        "phase": "unknown",
+        "result": {
+          "requestId": "a739d205-1529-5210-abb9-28b5172110d2",
+          "status": "accepted"
+        },
+        "server": "peer",
+        "side": "source",
+        "uncertainPhase": "waiting"
+      },
+      "agent": {
+        "id": "agent-fixture",
+        "rootId": "agent-fixture",
+        "epoch": 1,
+        "status": "queued",
+        "autoWake": true,
+        "inFlight": false,
+        "threadId": "native-thread",
+        "accountKey": "default",
+        "cwd": "/fixture/relocation",
+        "executionMove": {
+          "id": "a739d205-1529-5210-abb9-28b5172110d2",
+          "phase": "unknown",
+          "server": "peer"
+        }
+      },
+      "targetReceipt": {
+        "phase": "not_started"
+      },
+      "changed": true,
+      "expected": {
+        "operation": {
+          "agent": "agent-fixture",
+          "created": 700.0,
+          "deadline": 900.0,
+          "epoch": 1,
+          "error": "The move stopped before any transfer. The chat stays on this server",
+          "fingerprint": "4f077b9e3748b02ee1d5479b5553ed9fdc2c8a8d53c3ccb7ce277d781be1f1d4",
+          "id": "a739d205-1529-5210-abb9-28b5172110d2",
+          "phase": "failed",
+          "releasedAt": 1000.125,
+          "result": {
+            "requestId": "a739d205-1529-5210-abb9-28b5172110d2",
+            "status": "accepted"
+          },
+          "server": "peer",
+          "side": "source",
+          "uncertainPhase": "waiting"
+        },
+        "agent": {
+          "id": "agent-fixture",
+          "rootId": "agent-fixture",
+          "epoch": 1,
+          "status": "waiting",
+          "autoWake": true,
+          "inFlight": false,
+          "threadId": "native-thread",
+          "accountKey": "default",
+          "cwd": "/fixture/relocation",
+          "error": "The move stopped before any transfer. The chat stays on this server; ask for the move again"
+        }
+      }
+    },
+    {
+      "name": "release-exported-expired",
+      "family": "release",
+      "uncertain": "exported",
+      "target": "receiving",
+      "operation": {
+        "agent": "agent-fixture",
+        "created": 700.0,
+        "deadline": 900.0,
+        "epoch": 1,
+        "fingerprint": "d6d60002f08b361c8aa58752eb5dc13b26f90e5837c299c7c1d7cc021f33ecbe",
+        "id": "05bdd066-b638-5c72-8088-3137827493b8",
+        "phase": "unknown",
+        "result": {
+          "requestId": "05bdd066-b638-5c72-8088-3137827493b8",
+          "status": "accepted"
+        },
+        "server": "peer",
+        "side": "source",
+        "uncertainPhase": "exported"
+      },
+      "agent": {
+        "id": "agent-fixture",
+        "rootId": "agent-fixture",
+        "epoch": 1,
+        "status": "queued",
+        "autoWake": true,
+        "inFlight": false,
+        "threadId": "native-thread",
+        "accountKey": "default",
+        "cwd": "/fixture/relocation",
+        "executionMove": {
+          "id": "05bdd066-b638-5c72-8088-3137827493b8",
+          "phase": "unknown",
+          "server": "peer"
+        }
+      },
+      "targetReceipt": {
+        "phase": "receiving"
+      },
+      "changed": true,
+      "expected": {
+        "operation": {
+          "agent": "agent-fixture",
+          "created": 700.0,
+          "deadline": 900.0,
+          "epoch": 1,
+          "error": "The move did not finish before its deadline. The chat stays on this server",
+          "fingerprint": "d6d60002f08b361c8aa58752eb5dc13b26f90e5837c299c7c1d7cc021f33ecbe",
+          "id": "05bdd066-b638-5c72-8088-3137827493b8",
+          "phase": "failed",
+          "releasedAt": 1000.125,
+          "result": {
+            "requestId": "05bdd066-b638-5c72-8088-3137827493b8",
+            "status": "accepted"
+          },
+          "server": "peer",
+          "side": "source",
+          "uncertainPhase": "exported"
+        },
+        "agent": {
+          "id": "agent-fixture",
+          "rootId": "agent-fixture",
+          "epoch": 1,
+          "status": "waiting",
+          "autoWake": true,
+          "inFlight": false,
+          "threadId": "native-thread",
+          "accountKey": "default",
+          "cwd": "/fixture/relocation",
+          "error": "The move did not finish before its deadline. The chat stays on this server; ask for the move again"
+        }
+      }
+    },
+    {
+      "name": "hold-waiting-imported",
+      "family": "release",
+      "target": "ready",
+      "operation": {
+        "agent": "agent-fixture",
+        "created": 700.0,
+        "deadline": 900.0,
+        "epoch": 1,
+        "fingerprint": "e21f1127f04921011bb9341a80fc0d848a607911385b659a7c75ac9f1134b1d3",
+        "id": "b9121182-2153-5bb7-8316-c817279f5651",
+        "phase": "unknown",
+        "result": {
+          "requestId": "b9121182-2153-5bb7-8316-c817279f5651",
+          "status": "accepted"
+        },
+        "server": "peer",
+        "side": "source",
+        "uncertainPhase": "waiting"
+      },
+      "agent": {
+        "id": "agent-fixture",
+        "rootId": "agent-fixture",
+        "epoch": 1,
+        "status": "queued",
+        "autoWake": true,
+        "inFlight": false,
+        "threadId": "native-thread",
+        "accountKey": "default",
+        "cwd": "/fixture/relocation",
+        "executionMove": {
+          "id": "b9121182-2153-5bb7-8316-c817279f5651",
+          "phase": "unknown",
+          "server": "peer"
+        }
+      },
+      "targetReceipt": {
+        "phase": "ready"
+      },
+      "changed": false,
+      "expected": {
+        "operation": {
+          "agent": "agent-fixture",
+          "created": 700.0,
+          "deadline": 900.0,
+          "epoch": 1,
+          "fingerprint": "e21f1127f04921011bb9341a80fc0d848a607911385b659a7c75ac9f1134b1d3",
+          "id": "b9121182-2153-5bb7-8316-c817279f5651",
+          "phase": "unknown",
+          "result": {
+            "requestId": "b9121182-2153-5bb7-8316-c817279f5651",
+            "status": "accepted"
+          },
+          "server": "peer",
+          "side": "source",
+          "uncertainPhase": "waiting"
+        },
+        "agent": {
+          "id": "agent-fixture",
+          "rootId": "agent-fixture",
+          "epoch": 1,
+          "status": "queued",
+          "autoWake": true,
+          "inFlight": false,
+          "threadId": "native-thread",
+          "accountKey": "default",
+          "cwd": "/fixture/relocation",
+          "executionMove": {
+            "id": "b9121182-2153-5bb7-8316-c817279f5651",
+            "phase": "unknown",
+            "server": "peer"
+          }
+        }
+      }
+    },
+    {
+      "name": "hold-exported-active",
+      "family": "release",
+      "uncertain": "exported",
+      "target": "active",
+      "operation": {
+        "agent": "agent-fixture",
+        "created": 700.0,
+        "deadline": 900.0,
+        "epoch": 1,
+        "fingerprint": "168f0f93da555d503e7e9bbe6377f7a9179528bd07b757cd53fccb378afa559e",
+        "id": "aa07a2fe-e38d-51b0-84b8-27943bb71647",
+        "phase": "unknown",
+        "result": {
+          "requestId": "aa07a2fe-e38d-51b0-84b8-27943bb71647",
+          "status": "accepted"
+        },
+        "server": "peer",
+        "side": "source",
+        "uncertainPhase": "exported"
+      },
+      "agent": {
+        "id": "agent-fixture",
+        "rootId": "agent-fixture",
+        "epoch": 1,
+        "status": "queued",
+        "autoWake": true,
+        "inFlight": false,
+        "threadId": "native-thread",
+        "accountKey": "default",
+        "cwd": "/fixture/relocation",
+        "executionMove": {
+          "id": "aa07a2fe-e38d-51b0-84b8-27943bb71647",
+          "phase": "unknown",
+          "server": "peer"
+        }
+      },
+      "targetReceipt": {
+        "phase": "active"
+      },
+      "changed": false,
+      "expected": {
+        "operation": {
+          "agent": "agent-fixture",
+          "created": 700.0,
+          "deadline": 900.0,
+          "epoch": 1,
+          "fingerprint": "168f0f93da555d503e7e9bbe6377f7a9179528bd07b757cd53fccb378afa559e",
+          "id": "aa07a2fe-e38d-51b0-84b8-27943bb71647",
+          "phase": "unknown",
+          "result": {
+            "requestId": "aa07a2fe-e38d-51b0-84b8-27943bb71647",
+            "status": "accepted"
+          },
+          "server": "peer",
+          "side": "source",
+          "uncertainPhase": "exported"
+        },
+        "agent": {
+          "id": "agent-fixture",
+          "rootId": "agent-fixture",
+          "epoch": 1,
+          "status": "queued",
+          "autoWake": true,
+          "inFlight": false,
+          "threadId": "native-thread",
+          "accountKey": "default",
+          "cwd": "/fixture/relocation",
+          "executionMove": {
+            "id": "aa07a2fe-e38d-51b0-84b8-27943bb71647",
+            "phase": "unknown",
+            "server": "peer"
+          }
+        }
+      }
+    },
+    {
+      "name": "hold-exported-before-deadline",
+      "family": "release",
+      "uncertain": "exported",
+      "deadline": 1100,
+      "target": "receiving",
+      "operation": {
+        "agent": "agent-fixture",
+        "created": 700.0,
+        "deadline": 1100,
+        "epoch": 1,
+        "fingerprint": "4d2621e169a17c0a4c927ea3d96f523a30b8940fcc6aefe6aa5e5b3386ec755c",
+        "id": "20afd50b-d63f-5d74-8394-a8f1ac5981af",
+        "phase": "unknown",
+        "result": {
+          "requestId": "20afd50b-d63f-5d74-8394-a8f1ac5981af",
+          "status": "accepted"
+        },
+        "server": "peer",
+        "side": "source",
+        "uncertainPhase": "exported"
+      },
+      "agent": {
+        "id": "agent-fixture",
+        "rootId": "agent-fixture",
+        "epoch": 1,
+        "status": "queued",
+        "autoWake": true,
+        "inFlight": false,
+        "threadId": "native-thread",
+        "accountKey": "default",
+        "cwd": "/fixture/relocation",
+        "executionMove": {
+          "id": "20afd50b-d63f-5d74-8394-a8f1ac5981af",
+          "phase": "unknown",
+          "server": "peer"
+        }
+      },
+      "targetReceipt": {
+        "phase": "receiving"
+      },
+      "changed": false,
+      "expected": {
+        "operation": {
+          "agent": "agent-fixture",
+          "created": 700.0,
+          "deadline": 1100,
+          "epoch": 1,
+          "fingerprint": "4d2621e169a17c0a4c927ea3d96f523a30b8940fcc6aefe6aa5e5b3386ec755c",
+          "id": "20afd50b-d63f-5d74-8394-a8f1ac5981af",
+          "phase": "unknown",
+          "result": {
+            "requestId": "20afd50b-d63f-5d74-8394-a8f1ac5981af",
+            "status": "accepted"
+          },
+          "server": "peer",
+          "side": "source",
+          "uncertainPhase": "exported"
+        },
+        "agent": {
+          "id": "agent-fixture",
+          "rootId": "agent-fixture",
+          "epoch": 1,
+          "status": "queued",
+          "autoWake": true,
+          "inFlight": false,
+          "threadId": "native-thread",
+          "accountKey": "default",
+          "cwd": "/fixture/relocation",
+          "executionMove": {
+            "id": "20afd50b-d63f-5d74-8394-a8f1ac5981af",
+            "phase": "unknown",
+            "server": "peer"
+          }
+        }
+      }
+    },
+    {
+      "name": "hold-importing-unknown",
+      "family": "release",
+      "uncertain": "importing",
+      "operation": {
+        "agent": "agent-fixture",
+        "created": 700.0,
+        "deadline": 900.0,
+        "epoch": 1,
+        "fingerprint": "377e4dd1d2dba2d7be010cfc4e6a30ace543afd1ddacff6712e5a5e467262f5c",
+        "id": "ae549de8-77a3-54d9-982a-793f7f040c8d",
+        "phase": "unknown",
+        "result": {
+          "requestId": "ae549de8-77a3-54d9-982a-793f7f040c8d",
+          "status": "accepted"
+        },
+        "server": "peer",
+        "side": "source",
+        "uncertainPhase": "importing"
+      },
+      "agent": {
+        "id": "agent-fixture",
+        "rootId": "agent-fixture",
+        "epoch": 1,
+        "status": "queued",
+        "autoWake": true,
+        "inFlight": false,
+        "threadId": "native-thread",
+        "accountKey": "default",
+        "cwd": "/fixture/relocation",
+        "executionMove": {
+          "id": "ae549de8-77a3-54d9-982a-793f7f040c8d",
+          "phase": "unknown",
+          "server": "peer"
+        }
+      },
+      "targetReceipt": {
+        "phase": "not_started"
+      },
+      "changed": false,
+      "expected": {
+        "operation": {
+          "agent": "agent-fixture",
+          "created": 700.0,
+          "deadline": 900.0,
+          "epoch": 1,
+          "fingerprint": "377e4dd1d2dba2d7be010cfc4e6a30ace543afd1ddacff6712e5a5e467262f5c",
+          "id": "ae549de8-77a3-54d9-982a-793f7f040c8d",
+          "phase": "unknown",
+          "result": {
+            "requestId": "ae549de8-77a3-54d9-982a-793f7f040c8d",
+            "status": "accepted"
+          },
+          "server": "peer",
+          "side": "source",
+          "uncertainPhase": "importing"
+        },
+        "agent": {
+          "id": "agent-fixture",
+          "rootId": "agent-fixture",
+          "epoch": 1,
+          "status": "queued",
+          "autoWake": true,
+          "inFlight": false,
+          "threadId": "native-thread",
+          "accountKey": "default",
+          "cwd": "/fixture/relocation",
+          "executionMove": {
+            "id": "ae549de8-77a3-54d9-982a-793f7f040c8d",
+            "phase": "unknown",
+            "server": "peer"
+          }
+        }
+      }
+    },
+    {
+      "name": "expire-waiting",
+      "family": "expire",
+      "operation": {
+        "agent": "agent-fixture",
+        "created": 700.0,
+        "deadline": 900.0,
+        "epoch": 1,
+        "fingerprint": "f69aaca101b576483ba598d30288f0a89e9c127c5485165a7442b2ba442b53fb",
+        "id": "4a2e2d8b-9b91-55f9-94cb-afb22d7daf0c",
+        "phase": "waiting",
+        "result": {
+          "requestId": "4a2e2d8b-9b91-55f9-94cb-afb22d7daf0c",
+          "status": "accepted"
+        },
+        "server": "peer",
+        "side": "source"
+      },
+      "agent": {
+        "id": "agent-fixture",
+        "rootId": "agent-fixture",
+        "epoch": 1,
+        "status": "queued",
+        "autoWake": true,
+        "inFlight": false,
+        "threadId": "native-thread",
+        "accountKey": "default",
+        "cwd": "/fixture/relocation",
+        "executionMove": {
+          "id": "4a2e2d8b-9b91-55f9-94cb-afb22d7daf0c",
+          "phase": "waiting",
+          "server": "peer"
+        }
+      },
+      "changed": true,
+      "expected": {
+        "operation": {
+          "agent": "agent-fixture",
+          "created": 700.0,
+          "deadline": 900.0,
+          "epoch": 1,
+          "error": "The move recovery deadline expired after 300 seconds. The outcome stays unknown; no input was repeated",
+          "fingerprint": "f69aaca101b576483ba598d30288f0a89e9c127c5485165a7442b2ba442b53fb",
+          "id": "4a2e2d8b-9b91-55f9-94cb-afb22d7daf0c",
+          "phase": "unknown",
+          "recoveryExpiredAt": 1000.125,
+          "result": {
+            "requestId": "4a2e2d8b-9b91-55f9-94cb-afb22d7daf0c",
+            "status": "accepted"
+          },
+          "server": "peer",
+          "side": "source",
+          "uncertainPhase": "waiting"
+        },
+        "agent": {
+          "id": "agent-fixture",
+          "rootId": "agent-fixture",
+          "epoch": 1,
+          "status": "queued",
+          "autoWake": true,
+          "inFlight": false,
+          "threadId": "native-thread",
+          "accountKey": "default",
+          "cwd": "/fixture/relocation",
+          "executionMove": {
+            "id": "4a2e2d8b-9b91-55f9-94cb-afb22d7daf0c",
+            "phase": "unknown",
+            "server": "peer"
+          },
+          "error": "The move recovery deadline expired after 300 seconds. The outcome stays unknown; no input was repeated"
+        }
+      }
+    },
+    {
+      "name": "expire-importing",
+      "family": "expire",
+      "phase": "importing",
+      "operation": {
+        "agent": "agent-fixture",
+        "created": 700.0,
+        "deadline": 900.0,
+        "epoch": 1,
+        "fingerprint": "471e4fbc3354b6992d441d5a57622baf894dcd16e7145e3fa4086a8b1bf6fadd",
+        "id": "0807de3a-b65a-5e22-9c9e-342c4203efd1",
+        "phase": "importing",
+        "result": {
+          "requestId": "0807de3a-b65a-5e22-9c9e-342c4203efd1",
+          "status": "accepted"
+        },
+        "server": "peer",
+        "side": "source"
+      },
+      "agent": {
+        "id": "agent-fixture",
+        "rootId": "agent-fixture",
+        "epoch": 1,
+        "status": "queued",
+        "autoWake": true,
+        "inFlight": false,
+        "threadId": "native-thread",
+        "accountKey": "default",
+        "cwd": "/fixture/relocation",
+        "executionMove": {
+          "id": "0807de3a-b65a-5e22-9c9e-342c4203efd1",
+          "phase": "importing",
+          "server": "peer"
+        }
+      },
+      "changed": true,
+      "expected": {
+        "operation": {
+          "agent": "agent-fixture",
+          "created": 700.0,
+          "deadline": 900.0,
+          "epoch": 1,
+          "error": "The move recovery deadline expired after 300 seconds. The outcome stays unknown; no input was repeated",
+          "fingerprint": "471e4fbc3354b6992d441d5a57622baf894dcd16e7145e3fa4086a8b1bf6fadd",
+          "id": "0807de3a-b65a-5e22-9c9e-342c4203efd1",
+          "phase": "unknown",
+          "recoveryExpiredAt": 1000.125,
+          "result": {
+            "requestId": "0807de3a-b65a-5e22-9c9e-342c4203efd1",
+            "status": "accepted"
+          },
+          "server": "peer",
+          "side": "source",
+          "uncertainPhase": "importing"
+        },
+        "agent": {
+          "id": "agent-fixture",
+          "rootId": "agent-fixture",
+          "epoch": 1,
+          "status": "queued",
+          "autoWake": true,
+          "inFlight": false,
+          "threadId": "native-thread",
+          "accountKey": "default",
+          "cwd": "/fixture/relocation",
+          "executionMove": {
+            "id": "0807de3a-b65a-5e22-9c9e-342c4203efd1",
+            "phase": "unknown",
+            "server": "peer"
+          },
+          "error": "The move recovery deadline expired after 300 seconds. The outcome stays unknown; no input was repeated"
+        }
+      }
+    },
+    {
+      "name": "expire-legacy-deadline",
+      "family": "expire",
+      "missing_deadline": true,
+      "operation": {
+        "agent": "agent-fixture",
+        "created": 700.0,
+        "epoch": 1,
+        "fingerprint": "aa67965554704700aa20249d0b4d54e60c90b0e0e1094fb22cfed20bfd803ded",
+        "id": "80e35e1a-db91-5753-bd11-c0e368bee986",
+        "phase": "waiting",
+        "result": {
+          "requestId": "80e35e1a-db91-5753-bd11-c0e368bee986",
+          "status": "accepted"
+        },
+        "server": "peer",
+        "side": "source"
+      },
+      "agent": {
+        "id": "agent-fixture",
+        "rootId": "agent-fixture",
+        "epoch": 1,
+        "status": "queued",
+        "autoWake": true,
+        "inFlight": false,
+        "threadId": "native-thread",
+        "accountKey": "default",
+        "cwd": "/fixture/relocation",
+        "executionMove": {
+          "id": "80e35e1a-db91-5753-bd11-c0e368bee986",
+          "phase": "waiting",
+          "server": "peer"
+        }
+      },
+      "changed": true,
+      "expected": {
+        "operation": {
+          "agent": "agent-fixture",
+          "created": 700.0,
+          "epoch": 1,
+          "error": "The move recovery deadline expired after 300 seconds. The outcome stays unknown; no input was repeated",
+          "fingerprint": "aa67965554704700aa20249d0b4d54e60c90b0e0e1094fb22cfed20bfd803ded",
+          "id": "80e35e1a-db91-5753-bd11-c0e368bee986",
+          "phase": "unknown",
+          "recoveryExpiredAt": 1000.125,
+          "result": {
+            "requestId": "80e35e1a-db91-5753-bd11-c0e368bee986",
+            "status": "accepted"
+          },
+          "server": "peer",
+          "side": "source",
+          "uncertainPhase": "waiting"
+        },
+        "agent": {
+          "id": "agent-fixture",
+          "rootId": "agent-fixture",
+          "epoch": 1,
+          "status": "queued",
+          "autoWake": true,
+          "inFlight": false,
+          "threadId": "native-thread",
+          "accountKey": "default",
+          "cwd": "/fixture/relocation",
+          "executionMove": {
+            "id": "80e35e1a-db91-5753-bd11-c0e368bee986",
+            "phase": "unknown",
+            "server": "peer"
+          },
+          "error": "The move recovery deadline expired after 300 seconds. The outcome stays unknown; no input was repeated"
+        }
+      }
+    },
+    {
+      "name": "before-deadline",
+      "family": "expire",
+      "deadline": 1100,
+      "operation": {
+        "agent": "agent-fixture",
+        "created": 700.0,
+        "deadline": 1100,
+        "epoch": 1,
+        "fingerprint": "53fc43d04ea7cd5dec3a28b706140690786cccda25212c397d648bcf2501ef63",
+        "id": "7f5fe89d-c4ee-5c07-9dd2-3414efb7615c",
+        "phase": "waiting",
+        "result": {
+          "requestId": "7f5fe89d-c4ee-5c07-9dd2-3414efb7615c",
+          "status": "accepted"
+        },
+        "server": "peer",
+        "side": "source"
+      },
+      "agent": {
+        "id": "agent-fixture",
+        "rootId": "agent-fixture",
+        "epoch": 1,
+        "status": "queued",
+        "autoWake": true,
+        "inFlight": false,
+        "threadId": "native-thread",
+        "accountKey": "default",
+        "cwd": "/fixture/relocation",
+        "executionMove": {
+          "id": "7f5fe89d-c4ee-5c07-9dd2-3414efb7615c",
+          "phase": "waiting",
+          "server": "peer"
+        }
+      },
+      "changed": false,
+      "expected": {
+        "operation": {
+          "agent": "agent-fixture",
+          "created": 700.0,
+          "deadline": 1100,
+          "epoch": 1,
+          "fingerprint": "53fc43d04ea7cd5dec3a28b706140690786cccda25212c397d648bcf2501ef63",
+          "id": "7f5fe89d-c4ee-5c07-9dd2-3414efb7615c",
+          "phase": "waiting",
+          "result": {
+            "requestId": "7f5fe89d-c4ee-5c07-9dd2-3414efb7615c",
+            "status": "accepted"
+          },
+          "server": "peer",
+          "side": "source"
+        },
+        "agent": {
+          "id": "agent-fixture",
+          "rootId": "agent-fixture",
+          "epoch": 1,
+          "status": "queued",
+          "autoWake": true,
+          "inFlight": false,
+          "threadId": "native-thread",
+          "accountKey": "default",
+          "cwd": "/fixture/relocation",
+          "executionMove": {
+            "id": "7f5fe89d-c4ee-5c07-9dd2-3414efb7615c",
+            "phase": "waiting",
+            "server": "peer"
+          }
+        }
+      }
+    },
+    {
+      "name": "cache-first-observation",
+      "family": "cache",
+      "operation": {
+        "created": 700.0,
+        "deadline": 900.0,
+        "descriptor": {
+          "acceptedResult": {
+            "requestId": "2c0ef944-630e-58e1-8394-590cd3ff7ac0",
+            "status": "accepted"
+          },
+          "agent": {
+            "accountKey": "default",
+            "autoWake": true,
+            "cwd": "/fixture/relocation",
+            "epoch": 1,
+            "id": "agent-fixture",
+            "inFlight": false,
+            "rootId": "agent-fixture",
+            "status": "waiting",
+            "threadId": "native-thread"
+          }
+        },
+        "id": "ac901e77-8a46-5910-a4fa-93ae6227e606",
+        "move": "2c0ef944-630e-58e1-8394-590cd3ff7ac0",
+        "phase": "active",
+        "principal": "peer",
+        "side": "target"
+      },
+      "agent": {
+        "id": "agent-fixture",
+        "rootId": "agent-fixture",
+        "epoch": 1,
+        "status": "queued",
+        "autoWake": true,
+        "inFlight": true,
+        "threadId": "native-thread",
+        "accountKey": "default",
+        "cwd": "/fixture/relocation",
+        "executionMove": {
+          "id": "2c0ef944-630e-58e1-8394-590cd3ff7ac0",
+          "phase": "unknown",
+          "server": "peer"
+        },
+        "movedFrom": {
+          "move": "2c0ef944-630e-58e1-8394-590cd3ff7ac0",
+          "server": "peer"
+        },
+        "turnId": "turn-a"
+      },
+      "notification": {
+        "turnId": "turn-a",
+        "requestUsage": {
+          "cachedInputTokens": 31,
+          "inputTokens": 42,
+          "cacheWriteInputTokens": 3
+        }
+      },
+      "expected": {
+        "operation": {
+          "created": 700.0,
+          "deadline": 900.0,
+          "descriptor": {
+            "acceptedResult": {
+              "requestId": "2c0ef944-630e-58e1-8394-590cd3ff7ac0",
+              "status": "accepted"
+            },
+            "agent": {
+              "accountKey": "default",
+              "autoWake": true,
+              "cwd": "/fixture/relocation",
+              "epoch": 1,
+              "id": "agent-fixture",
+              "inFlight": false,
+              "rootId": "agent-fixture",
+              "status": "waiting",
+              "threadId": "native-thread"
+            }
+          },
+          "firstTurnCache": {
+            "cacheWriteInputTokens": 3,
+            "cachedInputTokens": 31,
+            "inputTokens": 42,
+            "observedAt": 1000.125,
+            "turnId": "turn-a"
+          },
+          "id": "ac901e77-8a46-5910-a4fa-93ae6227e606",
+          "move": "2c0ef944-630e-58e1-8394-590cd3ff7ac0",
+          "phase": "active",
+          "principal": "peer",
+          "side": "target"
+        },
+        "agent": {
+          "id": "agent-fixture",
+          "rootId": "agent-fixture",
+          "epoch": 1,
+          "status": "queued",
+          "autoWake": true,
+          "inFlight": true,
+          "threadId": "native-thread",
+          "accountKey": "default",
+          "cwd": "/fixture/relocation",
+          "executionMove": {
+            "id": "2c0ef944-630e-58e1-8394-590cd3ff7ac0",
+            "phase": "unknown",
+            "server": "peer"
+          },
+          "movedFrom": {
+            "move": "2c0ef944-630e-58e1-8394-590cd3ff7ac0",
+            "server": "peer"
+          },
+          "turnId": "turn-a"
+        }
+      }
+    },
+    {
+      "name": "cache-existing-observation",
+      "family": "cache",
+      "already": true,
+      "operation": {
+        "created": 700.0,
+        "deadline": 900.0,
+        "descriptor": {
+          "acceptedResult": {
+            "requestId": "67e995de-879f-54be-99c5-2bdb006829b9",
+            "status": "accepted"
+          },
+          "agent": {
+            "accountKey": "default",
+            "autoWake": true,
+            "cwd": "/fixture/relocation",
+            "epoch": 1,
+            "id": "agent-fixture",
+            "inFlight": false,
+            "rootId": "agent-fixture",
+            "status": "waiting",
+            "threadId": "native-thread"
+          }
+        },
+        "firstTurnCache": {
+          "cachedInputTokens": 23,
+          "inputTokens": 34
+        },
+        "id": "3ffe943b-3d40-5c55-baf9-8e9875c775ac",
+        "move": "67e995de-879f-54be-99c5-2bdb006829b9",
+        "phase": "active",
+        "principal": "peer",
+        "side": "target"
+      },
+      "agent": {
+        "id": "agent-fixture",
+        "rootId": "agent-fixture",
+        "epoch": 1,
+        "status": "queued",
+        "autoWake": true,
+        "inFlight": true,
+        "threadId": "native-thread",
+        "accountKey": "default",
+        "cwd": "/fixture/relocation",
+        "executionMove": {
+          "id": "67e995de-879f-54be-99c5-2bdb006829b9",
+          "phase": "unknown",
+          "server": "peer"
+        },
+        "movedFrom": {
+          "move": "67e995de-879f-54be-99c5-2bdb006829b9",
+          "server": "peer"
+        },
+        "turnId": "turn-a"
+      },
+      "notification": {
+        "turnId": "turn-a",
+        "requestUsage": {
+          "cachedInputTokens": 31,
+          "inputTokens": 42,
+          "cacheWriteInputTokens": 3
+        }
+      },
+      "expected": {
+        "operation": {
+          "created": 700.0,
+          "deadline": 900.0,
+          "descriptor": {
+            "acceptedResult": {
+              "requestId": "67e995de-879f-54be-99c5-2bdb006829b9",
+              "status": "accepted"
+            },
+            "agent": {
+              "accountKey": "default",
+              "autoWake": true,
+              "cwd": "/fixture/relocation",
+              "epoch": 1,
+              "id": "agent-fixture",
+              "inFlight": false,
+              "rootId": "agent-fixture",
+              "status": "waiting",
+              "threadId": "native-thread"
+            }
+          },
+          "firstTurnCache": {
+            "cachedInputTokens": 23,
+            "inputTokens": 34
+          },
+          "id": "3ffe943b-3d40-5c55-baf9-8e9875c775ac",
+          "move": "67e995de-879f-54be-99c5-2bdb006829b9",
+          "phase": "active",
+          "principal": "peer",
+          "side": "target"
+        },
+        "agent": {
+          "id": "agent-fixture",
+          "rootId": "agent-fixture",
+          "epoch": 1,
+          "status": "queued",
+          "autoWake": true,
+          "inFlight": true,
+          "threadId": "native-thread",
+          "accountKey": "default",
+          "cwd": "/fixture/relocation",
+          "executionMove": {
+            "id": "67e995de-879f-54be-99c5-2bdb006829b9",
+            "phase": "unknown",
+            "server": "peer"
+          },
+          "movedFrom": {
+            "move": "67e995de-879f-54be-99c5-2bdb006829b9",
+            "server": "peer"
+          },
+          "turnId": "turn-a"
+        }
+      }
+    },
+    {
+      "name": "cache-idle-agent",
+      "family": "cache",
+      "inFlight": false,
+      "operation": {
+        "created": 700.0,
+        "deadline": 900.0,
+        "descriptor": {
+          "acceptedResult": {
+            "requestId": "f8acd4cc-298e-52b8-b294-00210885d6b9",
+            "status": "accepted"
+          },
+          "agent": {
+            "accountKey": "default",
+            "autoWake": true,
+            "cwd": "/fixture/relocation",
+            "epoch": 1,
+            "id": "agent-fixture",
+            "inFlight": false,
+            "rootId": "agent-fixture",
+            "status": "waiting",
+            "threadId": "native-thread"
+          }
+        },
+        "id": "b8b3f167-51c1-502e-b703-1fcb45012ceb",
+        "move": "f8acd4cc-298e-52b8-b294-00210885d6b9",
+        "phase": "active",
+        "principal": "peer",
+        "side": "target"
+      },
+      "agent": {
+        "id": "agent-fixture",
+        "rootId": "agent-fixture",
+        "epoch": 1,
+        "status": "queued",
+        "autoWake": true,
+        "inFlight": false,
+        "threadId": "native-thread",
+        "accountKey": "default",
+        "cwd": "/fixture/relocation",
+        "executionMove": {
+          "id": "f8acd4cc-298e-52b8-b294-00210885d6b9",
+          "phase": "unknown",
+          "server": "peer"
+        },
+        "movedFrom": {
+          "move": "f8acd4cc-298e-52b8-b294-00210885d6b9",
+          "server": "peer"
+        },
+        "turnId": "turn-a"
+      },
+      "notification": {
+        "turnId": "turn-a",
+        "requestUsage": {
+          "cachedInputTokens": 31,
+          "inputTokens": 42,
+          "cacheWriteInputTokens": 3
+        }
+      },
+      "expected": {
+        "operation": {
+          "created": 700.0,
+          "deadline": 900.0,
+          "descriptor": {
+            "acceptedResult": {
+              "requestId": "f8acd4cc-298e-52b8-b294-00210885d6b9",
+              "status": "accepted"
+            },
+            "agent": {
+              "accountKey": "default",
+              "autoWake": true,
+              "cwd": "/fixture/relocation",
+              "epoch": 1,
+              "id": "agent-fixture",
+              "inFlight": false,
+              "rootId": "agent-fixture",
+              "status": "waiting",
+              "threadId": "native-thread"
+            }
+          },
+          "id": "b8b3f167-51c1-502e-b703-1fcb45012ceb",
+          "move": "f8acd4cc-298e-52b8-b294-00210885d6b9",
+          "phase": "active",
+          "principal": "peer",
+          "side": "target"
+        },
+        "agent": {
+          "id": "agent-fixture",
+          "rootId": "agent-fixture",
+          "epoch": 1,
+          "status": "queued",
+          "autoWake": true,
+          "inFlight": false,
+          "threadId": "native-thread",
+          "accountKey": "default",
+          "cwd": "/fixture/relocation",
+          "executionMove": {
+            "id": "f8acd4cc-298e-52b8-b294-00210885d6b9",
+            "phase": "unknown",
+            "server": "peer"
+          },
+          "movedFrom": {
+            "move": "f8acd4cc-298e-52b8-b294-00210885d6b9",
+            "server": "peer"
+          },
+          "turnId": "turn-a"
+        }
+      }
+    },
+    {
+      "name": "cache-wrong-turn",
+      "family": "cache",
+      "notification": {
+        "turnId": "turn-b",
+        "requestUsage": {
+          "cachedInputTokens": 33
+        }
+      },
+      "operation": {
+        "created": 700.0,
+        "deadline": 900.0,
+        "descriptor": {
+          "acceptedResult": {
+            "requestId": "c1d84483-a602-5868-9292-191d0afd0a87",
+            "status": "accepted"
+          },
+          "agent": {
+            "accountKey": "default",
+            "autoWake": true,
+            "cwd": "/fixture/relocation",
+            "epoch": 1,
+            "id": "agent-fixture",
+            "inFlight": false,
+            "rootId": "agent-fixture",
+            "status": "waiting",
+            "threadId": "native-thread"
+          }
+        },
+        "id": "b85671b7-ba31-54a4-834c-233558167554",
+        "move": "c1d84483-a602-5868-9292-191d0afd0a87",
+        "phase": "active",
+        "principal": "peer",
+        "side": "target"
+      },
+      "agent": {
+        "id": "agent-fixture",
+        "rootId": "agent-fixture",
+        "epoch": 1,
+        "status": "queued",
+        "autoWake": true,
+        "inFlight": true,
+        "threadId": "native-thread",
+        "accountKey": "default",
+        "cwd": "/fixture/relocation",
+        "executionMove": {
+          "id": "c1d84483-a602-5868-9292-191d0afd0a87",
+          "phase": "unknown",
+          "server": "peer"
+        },
+        "movedFrom": {
+          "move": "c1d84483-a602-5868-9292-191d0afd0a87",
+          "server": "peer"
+        },
+        "turnId": "turn-a"
+      },
+      "expected": {
+        "operation": {
+          "created": 700.0,
+          "deadline": 900.0,
+          "descriptor": {
+            "acceptedResult": {
+              "requestId": "c1d84483-a602-5868-9292-191d0afd0a87",
+              "status": "accepted"
+            },
+            "agent": {
+              "accountKey": "default",
+              "autoWake": true,
+              "cwd": "/fixture/relocation",
+              "epoch": 1,
+              "id": "agent-fixture",
+              "inFlight": false,
+              "rootId": "agent-fixture",
+              "status": "waiting",
+              "threadId": "native-thread"
+            }
+          },
+          "id": "b85671b7-ba31-54a4-834c-233558167554",
+          "move": "c1d84483-a602-5868-9292-191d0afd0a87",
+          "phase": "active",
+          "principal": "peer",
+          "side": "target"
+        },
+        "agent": {
+          "id": "agent-fixture",
+          "rootId": "agent-fixture",
+          "epoch": 1,
+          "status": "queued",
+          "autoWake": true,
+          "inFlight": true,
+          "threadId": "native-thread",
+          "accountKey": "default",
+          "cwd": "/fixture/relocation",
+          "executionMove": {
+            "id": "c1d84483-a602-5868-9292-191d0afd0a87",
+            "phase": "unknown",
+            "server": "peer"
+          },
+          "movedFrom": {
+            "move": "c1d84483-a602-5868-9292-191d0afd0a87",
+            "server": "peer"
+          },
+          "turnId": "turn-a"
+        }
+      }
+    },
+    {
+      "name": "cache-fallback-usage",
+      "family": "cache",
+      "notification": {
+        "tokenUsage": {
+          "last": {
+            "cachedInputTokens": 0,
+            "inputTokens": 100
+          }
+        }
+      },
+      "operation": {
+        "created": 700.0,
+        "deadline": 900.0,
+        "descriptor": {
+          "acceptedResult": {
+            "requestId": "cbfb0e98-58f7-57f5-86d1-a8db06421c78",
+            "status": "accepted"
+          },
+          "agent": {
+            "accountKey": "default",
+            "autoWake": true,
+            "cwd": "/fixture/relocation",
+            "epoch": 1,
+            "id": "agent-fixture",
+            "inFlight": false,
+            "rootId": "agent-fixture",
+            "status": "waiting",
+            "threadId": "native-thread"
+          }
+        },
+        "id": "f321062d-f232-565a-b297-185a0e5942bc",
+        "move": "cbfb0e98-58f7-57f5-86d1-a8db06421c78",
+        "phase": "active",
+        "principal": "peer",
+        "side": "target"
+      },
+      "agent": {
+        "id": "agent-fixture",
+        "rootId": "agent-fixture",
+        "epoch": 1,
+        "status": "queued",
+        "autoWake": true,
+        "inFlight": true,
+        "threadId": "native-thread",
+        "accountKey": "default",
+        "cwd": "/fixture/relocation",
+        "executionMove": {
+          "id": "cbfb0e98-58f7-57f5-86d1-a8db06421c78",
+          "phase": "unknown",
+          "server": "peer"
+        },
+        "movedFrom": {
+          "move": "cbfb0e98-58f7-57f5-86d1-a8db06421c78",
+          "server": "peer"
+        },
+        "turnId": "turn-a"
+      },
+      "expected": {
+        "operation": {
+          "created": 700.0,
+          "deadline": 900.0,
+          "descriptor": {
+            "acceptedResult": {
+              "requestId": "cbfb0e98-58f7-57f5-86d1-a8db06421c78",
+              "status": "accepted"
+            },
+            "agent": {
+              "accountKey": "default",
+              "autoWake": true,
+              "cwd": "/fixture/relocation",
+              "epoch": 1,
+              "id": "agent-fixture",
+              "inFlight": false,
+              "rootId": "agent-fixture",
+              "status": "waiting",
+              "threadId": "native-thread"
+            }
+          },
+          "firstTurnCache": {
+            "cacheWriteInputTokens": null,
+            "cachedInputTokens": 0,
+            "inputTokens": 100,
+            "observedAt": 1000.125,
+            "turnId": "turn-a"
+          },
+          "id": "f321062d-f232-565a-b297-185a0e5942bc",
+          "move": "cbfb0e98-58f7-57f5-86d1-a8db06421c78",
+          "phase": "active",
+          "principal": "peer",
+          "side": "target"
+        },
+        "agent": {
+          "id": "agent-fixture",
+          "rootId": "agent-fixture",
+          "epoch": 1,
+          "status": "queued",
+          "autoWake": true,
+          "inFlight": true,
+          "threadId": "native-thread",
+          "accountKey": "default",
+          "cwd": "/fixture/relocation",
+          "executionMove": {
+            "id": "cbfb0e98-58f7-57f5-86d1-a8db06421c78",
+            "phase": "unknown",
+            "server": "peer"
+          },
+          "movedFrom": {
+            "move": "cbfb0e98-58f7-57f5-86d1-a8db06421c78",
+            "server": "peer"
+          },
+          "turnId": "turn-a"
+        }
+      }
+    },
+    {
+      "name": "cache-boolean-not-integer",
+      "family": "cache",
+      "notification": {
+        "requestUsage": {
+          "cachedInputTokens": true
+        }
+      },
+      "operation": {
+        "created": 700.0,
+        "deadline": 900.0,
+        "descriptor": {
+          "acceptedResult": {
+            "requestId": "f12f664c-3ba8-5899-903b-3224fec014a3",
+            "status": "accepted"
+          },
+          "agent": {
+            "accountKey": "default",
+            "autoWake": true,
+            "cwd": "/fixture/relocation",
+            "epoch": 1,
+            "id": "agent-fixture",
+            "inFlight": false,
+            "rootId": "agent-fixture",
+            "status": "waiting",
+            "threadId": "native-thread"
+          }
+        },
+        "id": "ecd9185d-56ea-5191-a8d8-3e03d9950d2b",
+        "move": "f12f664c-3ba8-5899-903b-3224fec014a3",
+        "phase": "active",
+        "principal": "peer",
+        "side": "target"
+      },
+      "agent": {
+        "id": "agent-fixture",
+        "rootId": "agent-fixture",
+        "epoch": 1,
+        "status": "queued",
+        "autoWake": true,
+        "inFlight": true,
+        "threadId": "native-thread",
+        "accountKey": "default",
+        "cwd": "/fixture/relocation",
+        "executionMove": {
+          "id": "f12f664c-3ba8-5899-903b-3224fec014a3",
+          "phase": "unknown",
+          "server": "peer"
+        },
+        "movedFrom": {
+          "move": "f12f664c-3ba8-5899-903b-3224fec014a3",
+          "server": "peer"
+        },
+        "turnId": "turn-a"
+      },
+      "expected": {
+        "operation": {
+          "created": 700.0,
+          "deadline": 900.0,
+          "descriptor": {
+            "acceptedResult": {
+              "requestId": "f12f664c-3ba8-5899-903b-3224fec014a3",
+              "status": "accepted"
+            },
+            "agent": {
+              "accountKey": "default",
+              "autoWake": true,
+              "cwd": "/fixture/relocation",
+              "epoch": 1,
+              "id": "agent-fixture",
+              "inFlight": false,
+              "rootId": "agent-fixture",
+              "status": "waiting",
+              "threadId": "native-thread"
+            }
+          },
+          "id": "ecd9185d-56ea-5191-a8d8-3e03d9950d2b",
+          "move": "f12f664c-3ba8-5899-903b-3224fec014a3",
+          "phase": "active",
+          "principal": "peer",
+          "side": "target"
+        },
+        "agent": {
+          "id": "agent-fixture",
+          "rootId": "agent-fixture",
+          "epoch": 1,
+          "status": "queued",
+          "autoWake": true,
+          "inFlight": true,
+          "threadId": "native-thread",
+          "accountKey": "default",
+          "cwd": "/fixture/relocation",
+          "executionMove": {
+            "id": "f12f664c-3ba8-5899-903b-3224fec014a3",
+            "phase": "unknown",
+            "server": "peer"
+          },
+          "movedFrom": {
+            "move": "f12f664c-3ba8-5899-903b-3224fec014a3",
+            "server": "peer"
+          },
+          "turnId": "turn-a"
+        }
+      }
+    },
+    {
+      "name": "cache-ready-not-active",
+      "family": "cache",
+      "phase": "ready",
+      "operation": {
+        "created": 700.0,
+        "deadline": 900.0,
+        "descriptor": {
+          "acceptedResult": {
+            "requestId": "32c2b4ac-f8a0-5979-9237-028bc6efde37",
+            "status": "accepted"
+          },
+          "agent": {
+            "accountKey": "default",
+            "autoWake": true,
+            "cwd": "/fixture/relocation",
+            "epoch": 1,
+            "id": "agent-fixture",
+            "inFlight": false,
+            "rootId": "agent-fixture",
+            "status": "waiting",
+            "threadId": "native-thread"
+          }
+        },
+        "id": "615d039f-538d-55a3-b868-edf6acd7f48a",
+        "move": "32c2b4ac-f8a0-5979-9237-028bc6efde37",
+        "phase": "ready",
+        "principal": "peer",
+        "side": "target"
+      },
+      "agent": {
+        "id": "agent-fixture",
+        "rootId": "agent-fixture",
+        "epoch": 1,
+        "status": "queued",
+        "autoWake": true,
+        "inFlight": true,
+        "threadId": "native-thread",
+        "accountKey": "default",
+        "cwd": "/fixture/relocation",
+        "executionMove": {
+          "id": "32c2b4ac-f8a0-5979-9237-028bc6efde37",
+          "phase": "unknown",
+          "server": "peer"
+        },
+        "movedFrom": {
+          "move": "32c2b4ac-f8a0-5979-9237-028bc6efde37",
+          "server": "peer"
+        },
+        "turnId": "turn-a"
+      },
+      "notification": {
+        "turnId": "turn-a",
+        "requestUsage": {
+          "cachedInputTokens": 31,
+          "inputTokens": 42,
+          "cacheWriteInputTokens": 3
+        }
+      },
+      "expected": {
+        "operation": {
+          "created": 700.0,
+          "deadline": 900.0,
+          "descriptor": {
+            "acceptedResult": {
+              "requestId": "32c2b4ac-f8a0-5979-9237-028bc6efde37",
+              "status": "accepted"
+            },
+            "agent": {
+              "accountKey": "default",
+              "autoWake": true,
+              "cwd": "/fixture/relocation",
+              "epoch": 1,
+              "id": "agent-fixture",
+              "inFlight": false,
+              "rootId": "agent-fixture",
+              "status": "waiting",
+              "threadId": "native-thread"
+            }
+          },
+          "id": "615d039f-538d-55a3-b868-edf6acd7f48a",
+          "move": "32c2b4ac-f8a0-5979-9237-028bc6efde37",
+          "phase": "ready",
+          "principal": "peer",
+          "side": "target"
+        },
+        "agent": {
+          "id": "agent-fixture",
+          "rootId": "agent-fixture",
+          "epoch": 1,
+          "status": "queued",
+          "autoWake": true,
+          "inFlight": true,
+          "threadId": "native-thread",
+          "accountKey": "default",
+          "cwd": "/fixture/relocation",
+          "executionMove": {
+            "id": "32c2b4ac-f8a0-5979-9237-028bc6efde37",
+            "phase": "unknown",
+            "server": "peer"
+          },
+          "movedFrom": {
+            "move": "32c2b4ac-f8a0-5979-9237-028bc6efde37",
+            "server": "peer"
+          },
+          "turnId": "turn-a"
+        }
+      }
+    },
+    {
+      "name": "status-waiting",
+      "family": "status",
+      "operation": {
+        "agent": "agent-fixture",
+        "created": 700.0,
+        "deadline": 900.0,
+        "epoch": 1,
+        "fingerprint": "306205b7301edf5dbbd851332acebb34b9d68dda20e6bd4a31bd8252ad5c2e8b",
+        "firstTurnCache": {
+          "cachedInputTokens": 23
+        },
+        "id": "fa043aa4-b2e6-5b6a-9414-f7853a52cb73",
+        "phase": "waiting",
+        "result": {
+          "requestId": "fa043aa4-b2e6-5b6a-9414-f7853a52cb73",
+          "status": "accepted"
+        },
+        "server": "peer",
+        "side": "source",
+        "uncertainPhase": "waiting"
+      },
+      "agent": {
+        "id": "agent-fixture",
+        "rootId": "agent-fixture",
+        "epoch": 1,
+        "status": "queued",
+        "autoWake": true,
+        "inFlight": false,
+        "threadId": "native-thread",
+        "accountKey": "default",
+        "cwd": "/fixture/relocation",
+        "executionMove": {
+          "id": "fa043aa4-b2e6-5b6a-9414-f7853a52cb73",
+          "phase": "unknown",
+          "server": "peer"
+        }
+      },
+      "status": {
+        "requestId": "fa043aa4-b2e6-5b6a-9414-f7853a52cb73",
+        "phase": "waiting",
+        "error": null,
+        "acceptance": {
+          "requestId": "fa043aa4-b2e6-5b6a-9414-f7853a52cb73",
+          "status": "accepted"
+        },
+        "server": "peer",
+        "firstTurnCache": {
+          "cachedInputTokens": 23
+        }
+      },
+      "expected": {
+        "operation": {
+          "agent": "agent-fixture",
+          "created": 700.0,
+          "deadline": 900.0,
+          "epoch": 1,
+          "fingerprint": "306205b7301edf5dbbd851332acebb34b9d68dda20e6bd4a31bd8252ad5c2e8b",
+          "firstTurnCache": {
+            "cachedInputTokens": 23
+          },
+          "id": "fa043aa4-b2e6-5b6a-9414-f7853a52cb73",
+          "phase": "waiting",
+          "result": {
+            "requestId": "fa043aa4-b2e6-5b6a-9414-f7853a52cb73",
+            "status": "accepted"
+          },
+          "server": "peer",
+          "side": "source",
+          "uncertainPhase": "waiting"
+        },
+        "agent": {
+          "id": "agent-fixture",
+          "rootId": "agent-fixture",
+          "epoch": 1,
+          "status": "queued",
+          "autoWake": true,
+          "inFlight": false,
+          "threadId": "native-thread",
+          "accountKey": "default",
+          "cwd": "/fixture/relocation",
+          "executionMove": {
+            "id": "fa043aa4-b2e6-5b6a-9414-f7853a52cb73",
+            "phase": "unknown",
+            "server": "peer"
+          }
+        }
+      }
+    },
+    {
+      "name": "status-complete-cached",
+      "family": "status",
+      "phase": "complete",
+      "operation": {
+        "agent": "agent-fixture",
+        "created": 700.0,
+        "deadline": 900.0,
+        "epoch": 1,
+        "fingerprint": "f8551c1a3396d7cb37478329fe2353490e9e8bc281a25346062eec0bd8985bbf",
+        "firstTurnCache": {
+          "cachedInputTokens": 23
+        },
+        "id": "33548279-06b4-5362-aace-bc1220eb7720",
+        "phase": "complete",
+        "result": {
+          "requestId": "33548279-06b4-5362-aace-bc1220eb7720",
+          "status": "accepted"
+        },
+        "server": "peer",
+        "side": "source",
+        "uncertainPhase": "waiting"
+      },
+      "agent": {
+        "id": "agent-fixture",
+        "rootId": "agent-fixture",
+        "epoch": 1,
+        "status": "queued",
+        "autoWake": true,
+        "inFlight": false,
+        "threadId": "native-thread",
+        "accountKey": "default",
+        "cwd": "/fixture/relocation",
+        "executionMove": {
+          "id": "33548279-06b4-5362-aace-bc1220eb7720",
+          "phase": "unknown",
+          "server": "peer"
+        }
+      },
+      "status": {
+        "requestId": "33548279-06b4-5362-aace-bc1220eb7720",
+        "phase": "complete",
+        "error": null,
+        "acceptance": {
+          "requestId": "33548279-06b4-5362-aace-bc1220eb7720",
+          "status": "accepted"
+        },
+        "server": "peer",
+        "firstTurnCache": {
+          "cachedInputTokens": 23
+        }
+      },
+      "expected": {
+        "operation": {
+          "agent": "agent-fixture",
+          "created": 700.0,
+          "deadline": 900.0,
+          "epoch": 1,
+          "fingerprint": "f8551c1a3396d7cb37478329fe2353490e9e8bc281a25346062eec0bd8985bbf",
+          "firstTurnCache": {
+            "cachedInputTokens": 23
+          },
+          "id": "33548279-06b4-5362-aace-bc1220eb7720",
+          "phase": "complete",
+          "result": {
+            "requestId": "33548279-06b4-5362-aace-bc1220eb7720",
+            "status": "accepted"
+          },
+          "server": "peer",
+          "side": "source",
+          "uncertainPhase": "waiting"
+        },
+        "agent": {
+          "id": "agent-fixture",
+          "rootId": "agent-fixture",
+          "epoch": 1,
+          "status": "queued",
+          "autoWake": true,
+          "inFlight": false,
+          "threadId": "native-thread",
+          "accountKey": "default",
+          "cwd": "/fixture/relocation",
+          "executionMove": {
+            "id": "33548279-06b4-5362-aace-bc1220eb7720",
+            "phase": "unknown",
+            "server": "peer"
+          }
+        }
+      }
+    },
+    {
+      "name": "tool-applied",
+      "family": "tool",
+      "record": {
+        "id": "tool:tool-applied",
+        "agent": "agent-fixture",
+        "epoch": 1,
+        "accountKey": "default",
+        "connectionId": "connection-a",
+        "tool": "orchestration_servers",
+        "stage": "completed",
+        "outcome": "unknown",
+        "updated": 1,
+        "result": {
+          "success": true,
+          "contentItems": [
+            {
+              "type": "inputText",
+              "text": "{\"requestId\": \"648f65f3-5433-5136-a9e1-7fa02892668f\", \"outcome\": \"unknown\"}"
+            }
+          ]
+        }
+      },
+      "previous": {
+        "success": true,
+        "contentItems": [
+          {
+            "type": "inputText",
+            "text": "{\"requestId\": \"648f65f3-5433-5136-a9e1-7fa02892668f\", \"outcome\": \"unknown\"}"
+          }
+        ]
+      },
+      "outbox": {
+        "id": "648f65f3-5433-5136-a9e1-7fa02892668f",
+        "server": "peer",
+        "body": {
+          "requestId": "648f65f3-5433-5136-a9e1-7fa02892668f",
+          "action": "remove_location",
+          "payload": {
+            "project": "/home-project",
+            "name": "project",
+            "path": null,
+            "signature": "00a86f70b595ea94b9b506ffd9b6325e950462f560d9f7b7fecc6e9daa9b2318",
+            "request": {
+              "action": "remove_location",
+              "project": "/home-project",
+              "server": "peer",
+              "path": null
+            }
+          }
+        },
+        "state": "complete",
+        "result": {
+          "requestId": "648f65f3-5433-5136-a9e1-7fa02892668f",
+          "outcome": "applied",
+          "value": {
+            "removed": true,
+            "serverId": "peer"
+          }
+        }
+      },
+      "changed": true,
+      "expected": {
+        "record": {
+          "id": "tool:tool-applied",
+          "agent": "agent-fixture",
+          "epoch": 1,
+          "accountKey": "default",
+          "connectionId": "connection-a",
+          "tool": "orchestration_servers",
+          "stage": "completed",
+          "outcome": "applied",
+          "updated": 1000.125,
+          "result": {
+            "success": true,
+            "contentItems": [
+              {
+                "type": "inputText",
+                "text": "{\"outcome\": \"applied\", \"requestId\": \"648f65f3-5433-5136-a9e1-7fa02892668f\", \"value\": {\"removed\": true, \"serverId\": \"peer\"}}"
+              },
+              {
+                "type": "inputText",
+                "text": "[Time awareness] Tool result finalized at 1970-01-01T00:16:40.125Z"
+              }
+            ]
+          }
+        },
+        "result": {
+          "success": true,
+          "contentItems": [
+            {
+              "type": "inputText",
+              "text": "{\"outcome\": \"applied\", \"requestId\": \"648f65f3-5433-5136-a9e1-7fa02892668f\", \"value\": {\"removed\": true, \"serverId\": \"peer\"}}"
+            },
+            {
+              "type": "inputText",
+              "text": "[Time awareness] Tool result finalized at 1970-01-01T00:16:40.125Z"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "tool-not-applied",
+      "family": "tool",
+      "outcome": "not_applied",
+      "record": {
+        "id": "tool:tool-not-applied",
+        "agent": "agent-fixture",
+        "epoch": 1,
+        "accountKey": "default",
+        "connectionId": "connection-a",
+        "tool": "orchestration_servers",
+        "stage": "completed",
+        "outcome": "unknown",
+        "updated": 1,
+        "result": {
+          "success": true,
+          "contentItems": [
+            {
+              "type": "inputText",
+              "text": "{\"requestId\": \"a9dbd3b2-c30b-51d2-9ef7-1fd8aaf17950\", \"outcome\": \"unknown\"}"
+            }
+          ]
+        }
+      },
+      "previous": {
+        "success": true,
+        "contentItems": [
+          {
+            "type": "inputText",
+            "text": "{\"requestId\": \"a9dbd3b2-c30b-51d2-9ef7-1fd8aaf17950\", \"outcome\": \"unknown\"}"
+          }
+        ]
+      },
+      "outbox": {
+        "id": "a9dbd3b2-c30b-51d2-9ef7-1fd8aaf17950",
+        "server": "peer",
+        "body": {
+          "requestId": "a9dbd3b2-c30b-51d2-9ef7-1fd8aaf17950",
+          "action": "remove_location",
+          "payload": {
+            "project": "/home-project",
+            "name": "project",
+            "path": null,
+            "signature": "00a86f70b595ea94b9b506ffd9b6325e950462f560d9f7b7fecc6e9daa9b2318",
+            "request": {
+              "action": "remove_location",
+              "project": "/home-project",
+              "server": "peer",
+              "path": null
+            }
+          }
+        },
+        "state": "complete",
+        "result": {
+          "requestId": "a9dbd3b2-c30b-51d2-9ef7-1fd8aaf17950",
+          "outcome": "not_applied",
+          "value": {
+            "removed": true,
+            "serverId": "peer"
+          }
+        }
+      },
+      "changed": true,
+      "expected": {
+        "record": {
+          "id": "tool:tool-not-applied",
+          "agent": "agent-fixture",
+          "epoch": 1,
+          "accountKey": "default",
+          "connectionId": "connection-a",
+          "tool": "orchestration_servers",
+          "stage": "failed",
+          "outcome": "not_applied",
+          "updated": 1000.125,
+          "result": {
+            "success": true,
+            "contentItems": [
+              {
+                "type": "inputText",
+                "text": "{\"outcome\": \"not_applied\", \"requestId\": \"a9dbd3b2-c30b-51d2-9ef7-1fd8aaf17950\", \"value\": {\"removed\": true, \"serverId\": \"peer\"}}"
+              },
+              {
+                "type": "inputText",
+                "text": "[Time awareness] Tool result finalized at 1970-01-01T00:16:40.125Z"
+              }
+            ]
+          }
+        },
+        "result": {
+          "success": true,
+          "contentItems": [
+            {
+              "type": "inputText",
+              "text": "{\"outcome\": \"not_applied\", \"requestId\": \"a9dbd3b2-c30b-51d2-9ef7-1fd8aaf17950\", \"value\": {\"removed\": true, \"serverId\": \"peer\"}}"
+            },
+            {
+              "type": "inputText",
+              "text": "[Time awareness] Tool result finalized at 1970-01-01T00:16:40.125Z"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "tool-old-applied-wrapper",
+      "family": "tool",
+      "oldOutcome": "applied",
+      "record": {
+        "id": "tool:tool-old-applied-wrapper",
+        "agent": "agent-fixture",
+        "epoch": 1,
+        "accountKey": "default",
+        "connectionId": "connection-a",
+        "tool": "orchestration_servers",
+        "stage": "completed",
+        "outcome": "applied",
+        "updated": 1,
+        "result": {
+          "success": true,
+          "contentItems": [
+            {
+              "type": "inputText",
+              "text": "{\"requestId\": \"3f4286f7-a460-51c6-80ac-22ef455b78fa\", \"outcome\": \"unknown\"}"
+            }
+          ]
+        }
+      },
+      "previous": {
+        "success": true,
+        "contentItems": [
+          {
+            "type": "inputText",
+            "text": "{\"requestId\": \"3f4286f7-a460-51c6-80ac-22ef455b78fa\", \"outcome\": \"unknown\"}"
+          }
+        ]
+      },
+      "outbox": {
+        "id": "3f4286f7-a460-51c6-80ac-22ef455b78fa",
+        "server": "peer",
+        "body": {
+          "requestId": "3f4286f7-a460-51c6-80ac-22ef455b78fa",
+          "action": "remove_location",
+          "payload": {
+            "project": "/home-project",
+            "name": "project",
+            "path": null,
+            "signature": "00a86f70b595ea94b9b506ffd9b6325e950462f560d9f7b7fecc6e9daa9b2318",
+            "request": {
+              "action": "remove_location",
+              "project": "/home-project",
+              "server": "peer",
+              "path": null
+            }
+          }
+        },
+        "state": "complete",
+        "result": {
+          "requestId": "3f4286f7-a460-51c6-80ac-22ef455b78fa",
+          "outcome": "applied",
+          "value": {
+            "removed": true,
+            "serverId": "peer"
+          }
+        }
+      },
+      "changed": true,
+      "expected": {
+        "record": {
+          "id": "tool:tool-old-applied-wrapper",
+          "agent": "agent-fixture",
+          "epoch": 1,
+          "accountKey": "default",
+          "connectionId": "connection-a",
+          "tool": "orchestration_servers",
+          "stage": "completed",
+          "outcome": "applied",
+          "updated": 1000.125,
+          "result": {
+            "success": true,
+            "contentItems": [
+              {
+                "type": "inputText",
+                "text": "{\"outcome\": \"applied\", \"requestId\": \"3f4286f7-a460-51c6-80ac-22ef455b78fa\", \"value\": {\"removed\": true, \"serverId\": \"peer\"}}"
+              },
+              {
+                "type": "inputText",
+                "text": "[Time awareness] Tool result finalized at 1970-01-01T00:16:40.125Z"
+              }
+            ]
+          }
+        },
+        "result": {
+          "success": true,
+          "contentItems": [
+            {
+              "type": "inputText",
+              "text": "{\"outcome\": \"applied\", \"requestId\": \"3f4286f7-a460-51c6-80ac-22ef455b78fa\", \"value\": {\"removed\": true, \"serverId\": \"peer\"}}"
+            },
+            {
+              "type": "inputText",
+              "text": "[Time awareness] Tool result finalized at 1970-01-01T00:16:40.125Z"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "tool-still-queued",
+      "family": "tool",
+      "state": "queued",
+      "record": {
+        "id": "tool:tool-still-queued",
+        "agent": "agent-fixture",
+        "epoch": 1,
+        "accountKey": "default",
+        "connectionId": "connection-a",
+        "tool": "orchestration_servers",
+        "stage": "completed",
+        "outcome": "unknown",
+        "updated": 1,
+        "result": {
+          "success": true,
+          "contentItems": [
+            {
+              "type": "inputText",
+              "text": "{\"requestId\": \"a4f6ea3f-9cc6-54ee-bdde-c5a4149c309a\", \"outcome\": \"unknown\"}"
+            }
+          ]
+        }
+      },
+      "previous": {
+        "success": true,
+        "contentItems": [
+          {
+            "type": "inputText",
+            "text": "{\"requestId\": \"a4f6ea3f-9cc6-54ee-bdde-c5a4149c309a\", \"outcome\": \"unknown\"}"
+          }
+        ]
+      },
+      "outbox": {
+        "id": "a4f6ea3f-9cc6-54ee-bdde-c5a4149c309a",
+        "server": "peer",
+        "body": {
+          "requestId": "a4f6ea3f-9cc6-54ee-bdde-c5a4149c309a",
+          "action": "remove_location",
+          "payload": {
+            "project": "/home-project",
+            "name": "project",
+            "path": null,
+            "signature": "00a86f70b595ea94b9b506ffd9b6325e950462f560d9f7b7fecc6e9daa9b2318",
+            "request": {
+              "action": "remove_location",
+              "project": "/home-project",
+              "server": "peer",
+              "path": null
+            }
+          }
+        },
+        "state": "queued",
+        "result": {
+          "requestId": "a4f6ea3f-9cc6-54ee-bdde-c5a4149c309a",
+          "outcome": "applied",
+          "value": {
+            "removed": true,
+            "serverId": "peer"
+          }
+        }
+      },
+      "changed": false,
+      "expected": {
+        "record": {
+          "id": "tool:tool-still-queued",
+          "agent": "agent-fixture",
+          "epoch": 1,
+          "accountKey": "default",
+          "connectionId": "connection-a",
+          "tool": "orchestration_servers",
+          "stage": "completed",
+          "outcome": "unknown",
+          "updated": 1,
+          "result": {
+            "success": true,
+            "contentItems": [
+              {
+                "type": "inputText",
+                "text": "{\"requestId\": \"a4f6ea3f-9cc6-54ee-bdde-c5a4149c309a\", \"outcome\": \"unknown\"}"
+              }
+            ]
+          }
+        },
+        "result": {
+          "success": true,
+          "contentItems": [
+            {
+              "type": "inputText",
+              "text": "{\"requestId\": \"a4f6ea3f-9cc6-54ee-bdde-c5a4149c309a\", \"outcome\": \"unknown\"}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "tool-previous-applied",
+      "family": "tool",
+      "previous": {
+        "success": true,
+        "contentItems": [
+          {
+            "type": "inputText",
+            "text": "{\"requestId\": \"2cdf2626-dfef-5956-85f0-baf9c819d1b0\", \"outcome\": \"applied\"}"
+          }
+        ]
+      },
+      "record": {
+        "id": "tool:tool-previous-applied",
+        "agent": "agent-fixture",
+        "epoch": 1,
+        "accountKey": "default",
+        "connectionId": "connection-a",
+        "tool": "orchestration_servers",
+        "stage": "completed",
+        "outcome": "unknown",
+        "updated": 1,
+        "result": {
+          "success": true,
+          "contentItems": [
+            {
+              "type": "inputText",
+              "text": "{\"requestId\": \"2cdf2626-dfef-5956-85f0-baf9c819d1b0\", \"outcome\": \"applied\"}"
+            }
+          ]
+        }
+      },
+      "outbox": {
+        "id": "2cdf2626-dfef-5956-85f0-baf9c819d1b0",
+        "server": "peer",
+        "body": {
+          "requestId": "2cdf2626-dfef-5956-85f0-baf9c819d1b0",
+          "action": "remove_location",
+          "payload": {
+            "project": "/home-project",
+            "name": "project",
+            "path": null,
+            "signature": "00a86f70b595ea94b9b506ffd9b6325e950462f560d9f7b7fecc6e9daa9b2318",
+            "request": {
+              "action": "remove_location",
+              "project": "/home-project",
+              "server": "peer",
+              "path": null
+            }
+          }
+        },
+        "state": "complete",
+        "result": {
+          "requestId": "2cdf2626-dfef-5956-85f0-baf9c819d1b0",
+          "outcome": "applied",
+          "value": {
+            "removed": true,
+            "serverId": "peer"
+          }
+        }
+      },
+      "changed": false,
+      "expected": {
+        "record": {
+          "id": "tool:tool-previous-applied",
+          "agent": "agent-fixture",
+          "epoch": 1,
+          "accountKey": "default",
+          "connectionId": "connection-a",
+          "tool": "orchestration_servers",
+          "stage": "completed",
+          "outcome": "unknown",
+          "updated": 1,
+          "result": {
+            "success": true,
+            "contentItems": [
+              {
+                "type": "inputText",
+                "text": "{\"requestId\": \"2cdf2626-dfef-5956-85f0-baf9c819d1b0\", \"outcome\": \"applied\"}"
+              }
+            ]
+          }
+        },
+        "result": {
+          "success": true,
+          "contentItems": [
+            {
+              "type": "inputText",
+              "text": "{\"requestId\": \"2cdf2626-dfef-5956-85f0-baf9c819d1b0\", \"outcome\": \"applied\"}"
+            }
+          ]
+        }
+      }
+    }
+  ]
+}
