@@ -27,7 +27,7 @@ export default function AccountSignInNotice({
     <div className="sync-status">
       <span>
         {account.organizationMismatch
-          ? `Signed in to a different organization: ${organizationLabel(account.organizationMismatch.observed)}; expected ${organizationLabel(account.organizationMismatch.expected)}.`
+          ? `Signed in to a different organization: ${organizationLabel(account.organizationMismatch.observed)}. This profile requires ${organizationLabel(account.organizationMismatch.expected)}.`
           : `${provider} needs sign-in. ${account.email || account.label}`}
       </span>
       <Button size="compact-sm" onClick={() => onSignIn(account.id)}>

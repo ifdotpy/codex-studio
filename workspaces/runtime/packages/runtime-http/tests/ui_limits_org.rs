@@ -81,6 +81,21 @@ async fn limits_exposes_agent_policy_and_accounts_exposes_only_safe_organization
     );
     assert_eq!(body["eligibility"], expected);
     assert_eq!(body["eligibility"]["canRun"], true);
+    for (path, status) in [
+        ("/api/limits?account_key=claude&cached=1&agent=unknown", 404),
+        ("/api/limits?account_key=default&cached=1&agent=worker", 400),
+    ] {
+        let response = app.clone().oneshot(get(path)).await.unwrap();
+        assert_eq!(response.status(), status, "{path}");
+    }
+    let response = app
+        .clone()
+        .oneshot(get("/api/limits?account_key=claude&cached=1"))
+        .await
+        .unwrap();
+    let shared: Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert!(shared.get("eligibility").is_none());
     let response = app.oneshot(get("/api/accounts")).await.unwrap();
     assert_eq!(response.status(), 200);
     let body: Value =

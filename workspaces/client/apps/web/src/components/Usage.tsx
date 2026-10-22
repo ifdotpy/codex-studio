@@ -478,7 +478,11 @@ export default function Usage({
     ? Math.round((contextTokens / contextWindow) * 100)
     : null;
   const buckets = readBuckets(limits, now);
-  const modelLimits = useLimitEligibility(accountAgent, limits);
+  const modelLimits = useLimitEligibility(
+    agent,
+    limits,
+    selectedAccountKey === fallbackKey,
+  );
   const eligibility = modelEligibility(accountAgent, modelLimits);
   const recovered = useRecoveredLimit(accountAgent, modelLimits, now);
   const recovery = recovered

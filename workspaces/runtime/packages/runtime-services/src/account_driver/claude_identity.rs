@@ -203,8 +203,12 @@ mod tests {
         let path = dir.path().join(".claude.json");
         let status = br#"{"loggedIn":true,"authMethod":"claude.ai","email":"a@example.test","orgId":"org-a"}"#;
         let metadata = super::super::parse_claude_status(status, true);
-        std::fs::write(&path, json!({"oauthAccount":{"emailAddress":"a@example.test","organizationUuid":"org-a","accountUuid":"account-a"}}).to_string()).unwrap();
+        std::fs::write(&path, json!({"oauthAccount":{"emailAddress":"a@example.test","organizationUuid":"org-a","organizationName":"Fixture organization","accountUuid":"account-a"}}).to_string()).unwrap();
         let observed = with_native_identity(metadata.clone(), &path);
+        assert_eq!(
+            observed.organization_name.as_deref(),
+            Some("Fixture organization")
+        );
         assert_eq!(
             observed.credential_identity.as_deref(),
             Some(identity("a@example.test", Some("org-a"), Some("account-a")).as_str())

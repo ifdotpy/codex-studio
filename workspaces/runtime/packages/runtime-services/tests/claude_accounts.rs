@@ -77,7 +77,7 @@ fn organization_metadata(org: &str, account: Option<&str>) -> AuthMetadata {
     studio_runtime_services::account_driver::claude::auth_metadata_from_output(
         &serde_json::to_vec(&json!({"loggedIn":true,"authMethod":"claude.ai",
             "email":"fixture@example.test","subscriptionType":"max",
-            "orgId":org,"accountUuid":account}))
+            "orgId":org,"orgName":"Fixture organization","accountUuid":account}))
         .unwrap(),
         true,
     )
@@ -86,6 +86,10 @@ fn organization_metadata(org: &str, account: Option<&str>) -> AuthMetadata {
 #[test]
 fn same_email_two_organizations_have_different_credential_identities() {
     let first = organization_metadata("org-a", Some("account-a"));
+    assert_eq!(
+        first.organization_name.as_deref(),
+        Some("Fixture organization")
+    );
     let second = organization_metadata("org-b", Some("account-a"));
     assert_ne!(first.credential_identity, second.credential_identity);
     assert_eq!(first.account_id, second.account_id);

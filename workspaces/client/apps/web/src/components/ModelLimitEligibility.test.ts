@@ -84,7 +84,7 @@ test("organization mismatch keeps the existing sign-in action and profile pin", 
     }),
   );
   expect(html).toContain(
-    "Signed in to a different organization: Observed organization (87654321); expected Expected organization (12345678).",
+    "Signed in to a different organization: Observed organization (87654321). This profile requires Expected organization (12345678).",
   );
   expect(html).toContain("Sign in to Claude");
   const profile = render(
