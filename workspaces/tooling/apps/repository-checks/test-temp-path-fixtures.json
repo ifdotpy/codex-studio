@@ -55,7 +55,7 @@
   ],
   "workspaces/client/packages/client-core/src/file_links.rs": [
     "\"\\u{200b} file:///tmp/%D0%96%F0%9F%A6%80.rs#L12C2 \\u{200b}\",",
-    "json!({\"path\":\"/tmp/\u0416\ud83e\udd80.rs\",\"line\":12}),",
+    "json!({\"path\":\"/tmp/Ж🦀.rs\",\"line\":12}),",
     "\"sandbox:/tmp/report.md:9:2\",",
     "json!({\"path\":\"/tmp/report.md\",\"line\":9}),",
     "\"file://localhost/tmp/a.md#L4-L8\",",
@@ -140,13 +140,11 @@
     "\"provider\":\"codex\",\"model\":\"gpt-6-astra\",\"cwd\":\"/tmp/work\",\"threadId\":\"source-thread\",",
     "skills_root: PathBuf::from(\"/tmp/skills\"),",
     "account_home: \"/tmp/source\".into(),",
-    "server_source_root: PathBuf::from(\"/tmp/server\"),",
     "\"model\":\"gpt-6-astra\",\"cwd\":\"/tmp/work\",\"threadId\":\"source-thread\"}))",
     "json!({\"id\":\"source\",\"home\":\"/tmp/source\",\"provider\":\"codex\"}),",
     "json!({\"id\":\"target\",\"home\":\"/tmp/target\",\"provider\":\"codex\"}),",
     "skills_root: PathBuf::from(\"/tmp/skills\"),",
-    "account_home: \"/tmp/target\".into(),",
-    "server_source_root: PathBuf::from(\"/tmp/server\"),"
+    "account_home: \"/tmp/target\".into(),"
   ],
   "workspaces/runtime/packages/runtime-services/src/account_worker/preparation/pipeline.rs": [
     "cwd: \"/tmp/project\".into(),"
