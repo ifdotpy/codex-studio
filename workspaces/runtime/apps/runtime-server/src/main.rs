@@ -53,7 +53,7 @@ const SHUTDOWN_JOIN_GRACE: Duration = Duration::from_secs(20);
 const SCHEDULER_FAILURE_RETRY: Duration = Duration::from_secs(30);
 const CONTINUATION_FAILURE_RETRY_SECONDS: f64 = 60.0;
 // Maximum agents staged per continuation tick, shared by all continuation kinds.
-const CONTINUATION_TICK_AGENT_LIMIT: usize = 32;
+const CONTINUATION_TICK_AGENT_LIMIT: i64 = 32;
 const AUTH_RESUME_PROOF_PENDING_PREDICATE: &str = "json_type(record,'$.authResumeProofPending')='object' AND json(json_extract(record,'$.authResumeProofPending')) <> '{}'";
 const CURRENT_USAGE_RESUME_DUE_ROWS: &str = "SELECT resume.agent AS agent,CAST(json_extract(resume.record,'$.dueAt') AS REAL) AS due FROM runtime_usage_resumes AS resume JOIN runtime_agents AS owner ON owner.id=resume.agent AND json_extract(owner.record,'$.usageResume.id')=resume.id WHERE json_extract(resume.record,'$.status')='scheduled' AND json_type(resume.record,'$.dueAt') IN ('integer','real')";
 const CURRENT_CAPACITY_RETRY_DUE_ROWS: &str = "SELECT retry.agent AS agent,CAST(json_extract(retry.record,'$.dueAt') AS REAL) AS due FROM runtime_capacity_retries AS retry JOIN runtime_agents AS owner ON owner.id=retry.agent AND json_extract(owner.record,'$.capacityRetry.id')=retry.id WHERE json_extract(retry.record,'$.status')='scheduled' AND json_type(retry.record,'$.dueAt') IN ('integer','real')";
@@ -2156,7 +2156,10 @@ mod exit_logging_tests {
             .await
             .expect("first batch");
         assert!(first.failed);
-        assert_eq!(state.errors.len(), super::CONTINUATION_TICK_AGENT_LIMIT);
+        assert_eq!(
+            state.errors.len(),
+            usize::try_from(super::CONTINUATION_TICK_AGENT_LIMIT).expect("positive batch limit")
+        );
         let second =
             run_continuation_tick(store, 2.0 + CONTINUATION_FAILURE_RETRY_SECONDS, &mut state)
                 .await
@@ -2190,7 +2193,7 @@ mod exit_logging_tests {
             "later valid cursors progress while early cursors keep failing"
         );
         let reader = store.test_reader().expect("reader");
-        let pending: usize = reader.query_row(
+        let pending: i64 = reader.query_row(
             "SELECT COUNT(*) FROM runtime_agents WHERE json_extract(record,'$.authResumeProofPending') IS NOT NULL",
             [], |row| row.get(0),
         ).expect("remaining pending cursors");
