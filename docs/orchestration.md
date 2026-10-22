@@ -1473,3 +1473,11 @@ change with both options. Cross-machine Claude cache reuse remains unverified.
 2. After a confirmed connection refusal, the client starts `studio-runtime-server` and verifies its executable build identity.
 3. Recovery owns the independent Rust process supervisor; quitting the client leaves runtime work active.
 4. A timeout or incompatible owner fails visibly without starting a replacement.
+
+## Rust state recovery
+
+1. Open the current Rust database layouts; Python marker and journal layouts are no longer upgraded.
+2. Restore account limits from `rateLimitsByAccount` and transcript text from its current full-text owner.
+3. Reconcile uncertain input with the accepted native attempt and current native history. Missing evidence stays held.
+4. Answer provider cards only with their Rust journal admission; retire replies after the worker checkpoint.
+5. Keep the Rust receipt upgrades and dated Rust agent migrations for already written Rust state.

@@ -539,17 +539,10 @@ fn verify_payload_migration(connection: &Connection) -> StoreResult<PayloadMigra
         connection,
         "canvas.sqlite3",
         "runtime_payload_migrations",
-        &["name", "cursor", "complete"],
+        &["name", "cursor", "complete", "status", "updated", "error"],
     )?;
-    let columns = table_columns(connection, "runtime_payload_migrations")?;
-    let has_status = columns.contains("status");
-    let select = if has_status {
-        "SELECT cursor,complete,status FROM runtime_payload_migrations WHERE name='payload-v1:tasks'"
-    } else {
-        "SELECT cursor,complete,NULL FROM runtime_payload_migrations WHERE name='payload-v1:tasks'"
-    };
     let marker = connection
-        .query_row(select, [], |row| {
+        .query_row("SELECT cursor,complete,status FROM runtime_payload_migrations WHERE name='payload-v1:tasks'", [], |row| {
             Ok((
                 row.get::<_, i64>(0)?,
                 row.get::<_, i64>(1)?,
@@ -568,7 +561,7 @@ fn verify_payload_migration(connection: &Connection) -> StoreResult<PayloadMigra
         ));
     }
     if complete == 1 {
-        if has_status && status.as_deref() != Some("complete") {
+        if status.as_deref() != Some("complete") {
             return Err(object_mismatch(
                 "canvas.sqlite3",
                 "runtime_payload_migrations.payload-v1:tasks",
@@ -577,12 +570,10 @@ fn verify_payload_migration(connection: &Connection) -> StoreResult<PayloadMigra
         }
         Ok(PayloadMigrationState::Complete)
     } else {
-        if has_status
-            && !matches!(
-                status.as_deref(),
-                Some("pending" | "running" | "waitingForSpace" | "error")
-            )
-        {
+        if !matches!(
+            status.as_deref(),
+            Some("pending" | "running" | "waitingForSpace" | "error")
+        ) {
             return Err(object_mismatch(
                 "canvas.sqlite3",
                 "runtime_payload_migrations.payload-v1:tasks",
@@ -713,6 +704,24 @@ mod tests {
     }
 
     #[test]
+    fn python_payload_marker_layout_is_refused_without_upgrade() {
+        let db = Connection::open_in_memory().expect("SQLite");
+        db.execute_batch("CREATE TABLE runtime_payload_migrations(name TEXT PRIMARY KEY,cursor INTEGER NOT NULL,complete INTEGER NOT NULL);
+            INSERT INTO runtime_payload_migrations VALUES('payload-v1:tasks',7,1);").expect("old layout");
+        assert!(
+            matches!(verify_payload_migration(&db), Err(crate::StoreError::SchemaObjectMismatch { object, .. }) if object == "runtime_payload_migrations")
+        );
+        let columns: i64 = db
+            .query_row(
+                "SELECT count(*) FROM pragma_table_info('runtime_payload_migrations')",
+                [],
+                |row| row.get(0),
+            )
+            .expect("unchanged columns");
+        assert_eq!(columns, 3, "verification never upgrades old layouts");
+    }
+
+    #[test]
     fn absent_in_progress_and_complete_payload_markers_are_distinct() {
         let db = Connection::open_in_memory().expect("in-memory SQLite opens");
         assert_eq!(
@@ -720,8 +729,8 @@ mod tests {
             PayloadMigrationState::NotStarted
         );
         db.execute_batch(
-            "CREATE TABLE runtime_payload_migrations(name TEXT PRIMARY KEY,cursor INTEGER NOT NULL,complete INTEGER NOT NULL,status TEXT);
-             INSERT INTO runtime_payload_migrations VALUES('payload-v1:tasks',7,0,'waitingForSpace');",
+            "CREATE TABLE runtime_payload_migrations(name TEXT PRIMARY KEY,cursor INTEGER NOT NULL,complete INTEGER NOT NULL,status TEXT,updated REAL,error TEXT);
+             INSERT INTO runtime_payload_migrations VALUES('payload-v1:tasks',7,0,'waitingForSpace',NULL,NULL);",
         )
         .expect("in-progress marker inserts");
         assert_eq!(
