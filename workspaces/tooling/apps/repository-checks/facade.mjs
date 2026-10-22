@@ -1368,6 +1368,31 @@ function fastTierCommands(root) {
       label: "web unit safety witnesses",
       options: { script: "test:unit:fast" },
     },
+    {
+      item: { name: "codex-agents-desktop", ecosystem: "pnpm" },
+      label: "Rust-only desktop startup witnesses",
+      commands: [
+        [
+          "pnpm",
+          [
+            "--filter",
+            "codex-agents-desktop",
+            "exec",
+            "vitest",
+            "run",
+            "--config",
+            "vitest.config.mjs",
+            "backend.test.mjs",
+            "backend-selection.test.mjs",
+          ],
+        ],
+      ],
+      options: {
+        selector: "Rust runtime startup and identity",
+        reason:
+          "Check startup without Python, binary build identity, existing-owner attachment, and uncertain connection refusals.",
+      },
+    },
     { item: tooling, label: "tooling tests" },
   ];
 }

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { _electron as electron } from "playwright-core";
-import { mkdtemp, realpath, rm } from "node:fs/promises";
+import { mkdtemp, realpath, rm, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -37,6 +37,7 @@ try {
       // This fixture owns a fresh state and no supervisor service. Do not
       // inherit the running Studio installation's supervisor mode.
       CODEX_AGENTS_SUPERVISOR_MODE: "0",
+      CODEX_AGENTS_PYTHON: "/nonexistent",
     },
   });
   const page = await desktop.firstWindow();
@@ -69,24 +70,10 @@ try {
     { encoding: "utf8" },
   );
   assert.ok(diagnosticsHelp.includes("--port PORT"));
-  // The backend finds the QUIC link binary next to its scripts (docs/peer-link.md).
-  const peerLink = execFileSync(
-    "python3",
-    [
-      "-B",
-      "-c",
-      "import sys; sys.path.insert(0, sys.argv[1]); import codex_peer_link; print(codex_peer_link.binary())",
-      path.join(path.dirname(executable), "../Resources/workspace/scripts"),
-    ],
-    { encoding: "utf8", env: { ...process.env, STUDIO_PEER_LINK_BIN: "" } },
-  ).trim();
-  assert.equal(
-    peerLink,
-    await realpath(
-      path.join(
-        path.dirname(executable),
-        "../Resources/workspace/bin/studio-peer-link",
-      ),
+  const peerLink = await realpath(
+    path.join(
+      path.dirname(executable),
+      "../Resources/workspace/bin/studio-peer-link",
     ),
   );
   const peerLinkStart = spawnSync(peerLink, [], {
@@ -95,30 +82,18 @@ try {
   });
   assert.equal(peerLinkStart.status, 1);
   assert.ok(peerLinkStart.stderr.includes("The configuration is missing"));
-  const roleSkills = JSON.parse(
-    execFileSync(
-      "python3",
-      [
-        "-B",
-        "-c",
-        `
-import json, sys
-sys.path.insert(0, sys.argv[1])
-from codex_runtime import Runtime
-print(json.dumps({name: Runtime.role_guidance({"isLead": lead}) for name, lead in [("orchestrator", True), ("subagent", False)]}))
-`,
-        path.join(path.dirname(executable), "../Resources/workspace/scripts"),
-      ],
-      { encoding: "utf8" },
-    ),
-  );
-  assert.ok(
-    roleSkills.orchestrator.includes("[Studio role skill: codex-orchestrator]"),
-  );
-  assert.ok(
-    roleSkills.subagent.includes("[Studio role skill: codex-subagent]"),
-  );
+  for (const role of ["orchestrator", "subagent"]) {
+    const skill = await readFile(
+      path.join(
+        path.dirname(executable),
+        `../Resources/workspace/.agents/skills/codex-${role}/SKILL.md`,
+      ),
+      "utf8",
+    );
+    assert.ok(skill.includes(`name: codex-${role}`));
+  }
   const identity = await (await fetch(`${origin}/api/desktop`)).json();
+  assert.equal(identity.backendKind, "rust");
   pid = identity.pid;
   assert.equal(identity.stateDir, await realpath(state));
   const command = execFileSync(
@@ -128,7 +103,7 @@ print(json.dumps({name: Runtime.role_guidance({"isLead": lead}) for name, lead i
   );
   assert.ok(
     command.includes(
-      "Codex Studio.app/Contents/Resources/workspace/scripts/codex-canvas",
+      "Codex Studio.app/Contents/Resources/workspace/bin/studio-runtime-server",
     ),
   );
   assert.equal(await desktop.evaluate(({ app }) => app.isPackaged), true);

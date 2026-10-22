@@ -1483,3 +1483,10 @@ change with both options. Cross-machine Claude cache reuse remains unverified.
 2. The installer verifies the staged app and waits for the VM maintenance lock.
 3. The guest relays native provider requests to the Rust process supervisor.
 4. Guest restarts reuse the supervisor socket and journal; an uncertain owner stays blocked.
+
+## Desktop runtime startup
+
+1. Electron and Tauri verify the backend identity and canonical state directory before attaching.
+2. After a confirmed connection refusal, the client starts `studio-runtime-server` and verifies its executable build identity.
+3. Recovery owns the independent Rust process supervisor; quitting the client leaves runtime work active.
+4. A timeout or incompatible owner fails visibly without starting a replacement.
