@@ -156,6 +156,13 @@ const BOUNDARY_ALLOWLIST = [
       "The fast tier checks the release-binaries commit and SHA-256 manifest contract of the desktop packagers and the native package flow, which have no fast-tier test runner of their own.",
   },
   {
+    importer: "codex-studio-tooling",
+    file: "workspaces/tooling/apps/repository-checks/tests/signing-check.test.mjs",
+    specifier: "../../../../client/apps/desktop/**",
+    reason:
+      "The fast tier checks the signing check and the unlock error contract of the desktop packager with a fake security tool, because the desktop package has no fast-tier test runner of its own.",
+  },
+  {
     importer: "codex-agents-web",
     file: "tests/**",
     specifier: "../../../../../runtime/apps/server/tests/**",
