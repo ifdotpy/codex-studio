@@ -103,6 +103,13 @@ async fn session_cost(
     query: QueryParams,
 ) -> Result<Json<crate::generated::SessionCostResponse>, ApiError> {
     let agent = query.nonempty_str("agent").unwrap_or_default().to_owned();
+    session_cost_for_agent(state, agent).await
+}
+
+pub(super) async fn session_cost_for_agent(
+    state: HttpState,
+    agent: String,
+) -> Result<Json<crate::generated::SessionCostResponse>, ApiError> {
     if agent.is_empty() || !valid_agent_id(&agent) {
         return Err(ApiError::new(StatusCode::BAD_REQUEST, "Select a chat"));
     }

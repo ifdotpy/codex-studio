@@ -131,7 +131,13 @@ async fn sync_stream(
     } else {
         "initial"
     };
-    let view = match state.resource_notifications.changes_since(&resources, None) {
+    let view = match state
+        .resource_notifications
+        .changes_since_with_content(&resources, None, |resource| {
+            resource_content(state.clone(), resource)
+        })
+        .await
+    {
         Ok(view) if !view.cursor.closed => view,
         _ => return ApiError::internal().into_response(),
     };
@@ -152,6 +158,7 @@ async fn sync_stream(
     initial.push_back(token_rate_event(&state.workspace_id, &cursor, &rates));
 
     let stream_state = ResourceStream {
+        http_state: Some(state.clone()),
         initial,
         workspace_id: state.workspace_id,
         epoch: subscription_snapshot.epoch,
@@ -171,6 +178,98 @@ async fn sync_stream(
         ),
     };
     event_response(stream::unfold(stream_state, next_frame))
+}
+
+/// Read the same projections as the resource endpoints. Unsupported resources
+/// and failed reads retain broad invalidation; this path never starts providers,
+/// local-cost scanners, terminal processes, or projection maintenance writes.
+async fn resource_content(state: HttpState, resource: Value) -> Option<Vec<u8>> {
+    use crate::generated::ResourceRef;
+    let resource: ResourceRef = serde_json::from_value(resource).ok()?;
+    match resource {
+        ResourceRef::AccountsResource(_) => {
+            serde_json::to_vec(&super::catalog::accounts(State(state)).await.ok()?.0).ok()
+        }
+        ResourceRef::DesktopResource(_) => {
+            serde_json::to_vec(&super::desktop::get(State(state)).await.ok()?.0).ok()
+        }
+        ResourceRef::TerminalsResource(_) => {
+            serde_json::to_vec(&super::terminals::listing(State(state)).await.ok()?.0).ok()
+        }
+        ResourceRef::QueueResource(resource) => serde_json::to_vec(
+            &super::work_items::queue_for_agent(state, resource.agent_id)
+                .await
+                .ok()?,
+        )
+        .ok(),
+        ResourceRef::SessionCostResource(resource) => serde_json::to_vec(
+            &super::insights::session_cost_for_agent(state, resource.agent_id)
+                .await
+                .ok()?
+                .0,
+        )
+        .ok(),
+        ResourceRef::ModelsResource(_) => {
+            let catalog = state.model_catalog.cached_resource_content()?;
+            let accounts = super::catalog::accounts(State(state)).await.ok()?.0;
+            // Only account fields consumed by account_catalog/worker_catalog
+            // affect model reads; labels and login receipts do not.
+            let contexts = accounts
+                .accounts
+                .iter()
+                .map(|account| {
+                    (
+                        &account.id,
+                        &account.home,
+                        &account.provider,
+                        &account.status,
+                        &account.error,
+                        &account.deleted,
+                        &account.disconnected,
+                        &account.duplicate_of,
+                        &account.can_attempt_native_proof,
+                    )
+                })
+                .collect::<Vec<_>>();
+            serde_json::to_vec(&(accounts.default_account_key, contexts, catalog)).ok()
+        }
+        ResourceRef::CostsResource(_) => {
+            let policy = state.account_policy.clone()?;
+            studio_runtime_process::blocking_pool::spawn_blocking(
+                "runtime-http/resource-cost-content",
+                move || {
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .ok()?
+                        .as_secs_f64();
+                    let costs = policy
+                        .accounts()
+                        .accounts
+                        .into_iter()
+                        .map(|account| {
+                            let account: crate::generated::Account =
+                                serde_json::from_value(account).ok()?;
+                            let value = studio_runtime_services::usage::account_cost_snapshot(
+                                std::path::Path::new(&state.state_dir),
+                                &account.id,
+                                &serde_json::to_value(&account).ok()?,
+                                now,
+                            )
+                            .ok()?;
+                            // The generated response drops the scanner-only refresh hint.
+                            serde_json::from_value::<crate::generated::AccountCostResponse>(value)
+                                .ok()
+                        })
+                        .collect::<Option<Vec<_>>>()?;
+                    serde_json::to_vec(&costs).ok()
+                },
+            )
+            .await
+            .ok()
+            .flatten()
+        }
+        _ => None,
+    }
 }
 
 fn parse_resources(query: &QueryParams, state: &HttpState) -> Result<Vec<Value>, ApiError> {
@@ -228,6 +327,7 @@ async fn read_entity_sequence(
 }
 
 struct ResourceStream {
+    http_state: Option<HttpState>,
     initial: VecDeque<Event>,
     workspace_id: String,
     epoch: String,
@@ -294,7 +394,11 @@ async fn next_frame(
         };
         let view = match state
             .notifications
-            .changes_since(&state.resources, Some(state.last_revision))
+            .changes_since_with_content(&state.resources, Some(state.last_revision), |resource| {
+                let http_state = state.http_state.clone();
+                async move { resource_content(http_state?, resource).await }
+            })
+            .await
         {
             Ok(view) if !view.cursor.closed => view,
             _ => return None,
@@ -495,6 +599,110 @@ mod tests {
         ));
     }
 
+    #[tokio::test(start_paused = true)]
+    async fn unrelated_commits_do_not_reread_five_unchanged_resources() {
+        use axum::body::Body;
+        use axum::extract::ConnectInfo;
+        use axum::http::Request;
+        use futures_util::StreamExt;
+        use studio_runtime_services::account_policy::AccountPolicyState;
+        use tower::ServiceExt;
+
+        let root = tempfile::tempdir().expect("isolated state");
+        let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
+        store
+            .transaction(|tx| {
+                tx.execute(
+                    "INSERT INTO runtime_agents(id,record) VALUES('agent-1',?1)",
+                    [
+                        json!({"id":"agent-1","rootId":"agent-1","epoch":1,"status":"idle"})
+                            .to_string(),
+                    ],
+                )?;
+                Ok(())
+            })
+            .await
+            .expect("agent");
+        let policy = AccountPolicyState::from_startup(
+            Some(br#"{"version":1,"defaultAccountKey":"default","accounts":{},"logins":{}}"#),
+            [],
+        )
+        .expect("account policy");
+        let state = HttpState::new(
+            "token".into(),
+            "workspace".into(),
+            root.path()
+                .join("unavailable-desktop-volume")
+                .display()
+                .to_string(),
+            4321,
+            None,
+            Some(store.clone()),
+            Some(Arc::new(policy)),
+        );
+        let resources = json!([
+            {"kind":"accounts"}, {"kind":"desktop"}, {"kind":"terminals"},
+            {"kind":"queue","agentId":"agent-1"}, {"kind":"models"}
+        ]);
+        let query = form_urlencoded::Serializer::new(String::new())
+            .append_pair("protocol", SYNC_PROTOCOL_VERSION_TEXT)
+            .append_pair("resources", &resources.to_string())
+            .finish();
+        let request = Request::builder()
+            .uri(format!("/api/sync/stream?{query}"))
+            .header("host", "127.0.0.1:4321")
+            .header("x-canvas-token", "token")
+            .extension(ConnectInfo(std::net::SocketAddr::from((
+                [127, 0, 0, 1],
+                12345,
+            ))))
+            .body(Body::empty())
+            .expect("request");
+        let response = crate::router(state.clone())
+            .expect("router")
+            .oneshot(request)
+            .await
+            .expect("response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let mut body = response.into_body().into_data_stream();
+        assert!(
+            String::from_utf8_lossy(&body.next().await.expect("initial").expect("bytes"))
+                .contains("event: resources")
+        );
+        assert!(
+            String::from_utf8_lossy(&body.next().await.expect("rates").expect("bytes"))
+                .contains("event: token-rates")
+        );
+        for index in 0..42 {
+            store.transaction(move |tx| {
+                tx.execute("INSERT INTO runtime_items(id,agent,created,record) VALUES(?1,'other',1,'{}')", [format!("item-{index}")])?;
+                Ok(())
+            }).await.expect("unrelated commit");
+        }
+        let frame = body.next().await.expect("heartbeat").expect("bytes");
+        assert!(
+            String::from_utf8_lossy(&frame).contains("event: heartbeat"),
+            "42 unrelated commits must cause zero resource re-reads: {}",
+            String::from_utf8_lossy(&frame)
+        );
+        store.transaction(|tx| {
+            tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.queueMutationRevision',1) WHERE id='agent-1'", [])?;
+            Ok(())
+        }).await.expect("queue content changes");
+        let frame = body.next().await.expect("queue refresh").expect("bytes");
+        let text = String::from_utf8_lossy(&frame);
+        let document: Value = serde_json::from_str(
+            text.lines()
+                .find_map(|line| line.strip_prefix("data: "))
+                .expect("data"),
+        )
+        .expect("JSON");
+        assert_eq!(
+            document["resources"],
+            json!([{"kind":"queue","agentId":"agent-1"}])
+        );
+    }
+
     #[tokio::test]
     async fn stream_documents_match_frozen_resource_hub() {
         let rate = json!({"turnId":"turn", "active":false,"estimated":true,"rate":1.25,"outputTokens":400});
@@ -561,6 +769,7 @@ mod tests {
         let mut changes = hub.subscribe();
         let baseline = changes.borrow_and_update().clone();
         let state = ResourceStream {
+            http_state: None,
             initial: VecDeque::new(),
             workspace_id: "workspace".to_owned(),
             epoch: baseline.epoch,
@@ -603,6 +812,7 @@ mod tests {
         let changes = hub.subscribe();
         let baseline = changes.borrow().clone();
         let state = ResourceStream {
+            http_state: None,
             initial: VecDeque::new(),
             workspace_id: "workspace".to_owned(),
             epoch: baseline.epoch,
@@ -715,6 +925,7 @@ mod tests {
         let changes = hub.subscribe();
         let baseline = changes.borrow().clone();
         ResourceStream {
+            http_state: None,
             initial: VecDeque::new(),
             workspace_id: "workspace".into(),
             epoch: baseline.epoch,
@@ -926,6 +1137,7 @@ mod tests {
         let changes = hub.subscribe();
         let baseline = changes.borrow().clone();
         let state = ResourceStream {
+            http_state: None,
             initial: VecDeque::new(),
             workspace_id: "workspace".to_owned(),
             epoch: baseline.epoch,

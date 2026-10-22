@@ -1235,6 +1235,41 @@ function fastTierCommands(root) {
     },
     {
       item: { name: "studio-runtime-http", ecosystem: "cargo" },
+      label: "resource content invalidation witnesses",
+      commands: [
+        [
+          "cargo",
+          [
+            "nextest",
+            "run",
+            "--locked",
+            "--no-tests",
+            "fail",
+            "--message-format",
+            "libtest-json-plus",
+            "-p",
+            "studio-runtime-http",
+            "-p",
+            "studio-runtime-services",
+            "--lib",
+            "-E",
+            nextestAnyOf([
+              "test(unrelated_commits_do_not_reread_five_unchanged_resources)",
+              "test(subscribed_content_is_computed_once_per_coalesced_revision)",
+              "test(unavailable_and_racing_content_keep_the_safe_refresh)",
+            ]),
+          ],
+        ],
+      ],
+      options: {
+        selector:
+          "subscribed resource content and shared coalesced projections",
+        reason:
+          "Unrelated commits must not trigger resource re-reads or duplicate server projections; unknown and racing reads retain safe refreshes.",
+      },
+    },
+    {
+      item: { name: "studio-runtime-http", ecosystem: "cargo" },
       label: "shared named schema validation witnesses",
       commands: [
         [

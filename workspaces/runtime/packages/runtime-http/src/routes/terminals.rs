@@ -80,7 +80,7 @@ async fn require_reconciled_driver(state: &HttpState) -> Result<(), ApiError> {
     }
 }
 
-async fn listing(
+pub(super) async fn listing(
     State(state): State<HttpState>,
 ) -> Result<Json<crate::generated::TerminalList>, ApiError> {
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
