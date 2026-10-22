@@ -15,6 +15,7 @@ futures-util = { workspace = true }
 mime_guess = { workspace = true }
 notify = { workspace = true }
 studio-runtime-process = { path = "../../packages/runtime-process" }
+studio-runtime-schema = { path = "../../packages/runtime-schema" }
 studio-runtime-providers = { path = "../../packages/runtime-providers" }
 studio-runtime-http = { path = "../../packages/runtime-http" }
 studio-runtime-services = { path = "../../packages/runtime-services" }

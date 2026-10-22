@@ -8,10 +8,11 @@
 # healthy is rolled back to the previous one.
 set -euo pipefail
 
-# The systemd user unit of the live server.
-readonly UNIT=codex-studio
-# TCP port of the live server.
-readonly PORT=4620
+# Service layout has one owner, shared with the Rust operator commands.
+layout_values=$(node -e 'const c=JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")); for(const k of ["unitName","port","binaryRelative","rootRelative","currentRelative"]) console.log(c[k])' "$(dirname "$0")/service-layout.json")
+mapfile -t layout <<<"$layout_values"
+readonly UNIT=${layout[0]}
+readonly PORT=${layout[1]}
 # Seconds to wait for the first HTTP 200 after a restart.
 readonly START_TIMEOUT_SECONDS=120
 # Seconds the unit must then stay active without a restart.
@@ -21,10 +22,11 @@ readonly KEPT_RELEASES=3
 
 repository=$(git rev-parse --show-toplevel)
 commit=$(git -C "$repository" rev-parse --verify "${1:-HEAD}^{commit}")
-root=${CODEX_STUDIO_SERVER_ROOT:-$HOME/.local/share/codex-studio/server}
+root=${CODEX_STUDIO_SERVER_ROOT:-$HOME/${layout[3]}}
 release=$root/releases/$commit
-binary=bin/studio-runtime-server
-dropin=${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/$UNIT.service.d/zz-delivery.conf
+binary=${layout[2]}
+current=$root/${layout[4]}
+dropin=${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/$UNIT.d/zz-delivery.conf
 
 # One build directory for every release, so a delivery reuses earlier builds.
 export CARGO_TARGET_DIR=$root/target
@@ -63,23 +65,23 @@ healthy() {
 }
 
 start() {
-  ln -sfn "$1" "$root/current.next"
-  mv -T "$root/current.next" "$root/current"
+  ln -sfn "$1" "$current.next"
+  mv -T "$current.next" "$current"
   mkdir -p "$(dirname "$dropin")"
-  printf '[Service]\nExecStart=\nExecStart=%s/current/%s --port %s\n' \
-    "$root" "$binary" "$PORT" >"$dropin"
+  node -e 'const binary=process.argv[1]; if(/[\r\n\0]/.test(binary)) throw Error("invalid service executable path"); const quoted=binary.replaceAll("\\", "\\\\").replaceAll("\"", "\\\"").replaceAll("%", "%%").replaceAll("$", "$$$$"); process.stdout.write(`[Service]\nExecStart=\nExecStart="${quoted}" --port ${process.argv[2]}\n`)' \
+    "$current/$binary" "$PORT" >"$dropin"
   systemctl --user daemon-reload
   systemctl --user restart "$UNIT"
 }
 
-previous=$(readlink "$root/current" || true)
+previous=$(readlink "$current" || true)
 start "$release"
 if ! healthy "$release"; then
   echo "release $commit is unhealthy; rolling back" >&2
   if [ -n "$previous" ]; then
     start "$previous"
   else
-    rm -f "$root/current" "$dropin"
+    rm -f "$current" "$dropin"
     systemctl --user daemon-reload
     systemctl --user restart "$UNIT"
   fi
