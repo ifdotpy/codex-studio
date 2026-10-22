@@ -1073,6 +1073,14 @@ function comprehensiveTierCommands(root) {
       options: { allowZeroTests: true, buildOnly: true },
     },
     {
+      // The publication gate owns the same lint the CI Clippy job runs; the
+      // justfile recipe is its single command owner.
+      item: { name: "Rust Clippy", ecosystem: "cargo" },
+      label: "Rust Clippy",
+      commands: [["just", ["clippy-runtime"]]],
+      options: { allowZeroTests: true, buildOnly: true },
+    },
+    {
       item: { name: "Rust workspace", ecosystem: "cargo" },
       label: "Rust nextest",
       commands: [

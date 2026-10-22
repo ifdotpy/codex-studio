@@ -56,6 +56,11 @@ test("short and comprehensive recipes preserve their owned test boundaries", () 
     comprehensive.command.indexOf("studio-runtime-server") <
       comprehensive.command.indexOf("test-server.py"),
   );
+  assert.match(comprehensive.command, /['"]just['"] ['"]clippy-runtime['"]/);
+  assert.ok(
+    comprehensive.command.indexOf("build:bundle") <
+      comprehensive.command.indexOf("clippy-runtime"),
+  );
   assert.match(fast.command, /boundaries-check/);
   assert.match(
     fast.command,
