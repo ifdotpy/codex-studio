@@ -355,8 +355,13 @@ fn validate(request: &SessionRequest) -> Result<(), PortError> {
             && (request.expected_scope.as_ref() != Some(&request.scope)
                 || !request.operation.starts_with("mcp-reconnect:")
                 || request.params.as_object().is_none_or(|params| {
-                    params.len() != 2 || !["threadId", "name"].iter().all(|key|
-                        params.get(*key).and_then(Value::as_str).is_some_and(|v| !v.trim().is_empty()))
+                    params.len() != 2
+                        || !["threadId", "name"].iter().all(|key| {
+                            params
+                                .get(*key)
+                                .and_then(Value::as_str)
+                                .is_some_and(|v| !v.trim().is_empty())
+                        })
                 })))
         || (request.method == Method::ThreadRead
             && request
@@ -596,8 +601,13 @@ pub(super) fn valid_actorless_request_shape(
         }
         Method::McpServerStatusList => {
             only(&["threadId", "limit"], &["cursor"])
-                && params.get("cursor").is_none_or(|v| v.as_str().is_some_and(|v| !v.is_empty()))
-                && params.get("limit") == Some(&json!(100))
+                && params
+                    .get("cursor")
+                    .is_none_or(|v| v.as_str().is_some_and(|v| !v.is_empty()))
+                && params.get("limit")
+                    == Some(&json!(
+                        studio_runtime_schema::shared_values::NATIVE_TERMINAL_ITEMS_PER_PAGE
+                    ))
                 && params.get("threadId").is_some_and(|thread_id| {
                     thread_id.is_null()
                         || thread_id
@@ -893,15 +903,25 @@ mod validation_tests {
         request.expected_scope = Some(request.scope.clone());
         request.params = json!({"threadId":"thread","name":"server"});
         assert!(validate(&request).is_ok());
-        for params in [json!({"threadId":"thread","name":""}), json!({"threadId":"thread","name":"server","all":true})] {
-            let mut invalid = request.clone(); invalid.params = params;
+        for params in [
+            json!({"threadId":"thread","name":""}),
+            json!({"threadId":"thread","name":"server","all":true}),
+        ] {
+            let mut invalid = request.clone();
+            invalid.params = params;
             assert_eq!(validate(&invalid), Err(PortError::Invalid));
         }
-        let mut invalid = request.clone(); invalid.actor = None;
+        let mut invalid = request.clone();
+        invalid.actor = None;
         assert_eq!(validate(&invalid), Err(PortError::Invalid));
-        let mut invalid = request; invalid.expected_scope = None;
+        let mut invalid = request;
+        invalid.expected_scope = None;
         assert_eq!(validate(&invalid), Err(PortError::Invalid));
-        assert!(valid_actorless_request_shape(Method::McpServerStatusList, &json!({"threadId":"thread","limit":100,"cursor":"next"}), "catalog"));
+        assert!(valid_actorless_request_shape(
+            Method::McpServerStatusList,
+            &json!({"threadId":"thread","limit":100,"cursor":"next"}),
+            "catalog"
+        ));
     }
 
     #[test]
