@@ -880,7 +880,7 @@ function fastTierCommands(root) {
     },
     {
       item: { name: "studio-runtime-services", ecosystem: "cargo" },
-      label: "provider callback acceptance witnesses",
+      label: "provider callback and monitor projection witnesses",
       commands: [
         [
           "cargo",
@@ -896,7 +896,7 @@ function fastTierCommands(root) {
             "studio-runtime-services",
             "--lib",
             "-E",
-            "test(account_worker::tests::callback_handoff::) | test(account_worker::tests::callback_head_of_line) | test(stale_stamp_of_an_undelivered_steer_batch_does_not_block_the_next_turn) | test(stamp_tests::)",
+            "test(account_worker::tests::callback_handoff::) | test(account_worker::tests::callback_head_of_line) | test(stale_stamp_of_an_undelivered_steer_batch_does_not_block_the_next_turn) | test(stamp_tests::) | test(sync_policy::tests::monitor_)",
           ],
         ],
         [
@@ -920,9 +920,9 @@ function fastTierCommands(root) {
       ],
       options: {
         selector:
-          "account_worker::tests::callback_handoff, callback_head_of_line, stale batch stamp recovery and the session callback lane",
+          "account_worker::tests::callback_handoff, callback_head_of_line, stale batch stamp recovery, the session callback lane and monitor publication work",
         reason:
-          "Check that a provider request is durably accepted with its journal batch, that its record owns the answer through every crash point without a repeated answer, and that an unanswered request never stops provider events or new work, and that a stamp left by an undelivered steer batch is replaced instead of holding the agent.",
+          "Check that a provider request is durably accepted with its journal batch, that its record owns the answer through every crash point without a repeated answer, and that an unanswered request never stops provider events or new work, and that a stamp left by an undelivered steer batch is replaced instead of holding the agent. Monitor output must publish exactly one monitor projection while preserving window membership and rollback.",
       },
     },
     {

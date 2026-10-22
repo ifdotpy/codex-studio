@@ -67,6 +67,7 @@ test("short and comprehensive recipes preserve their owned test boundaries", () 
   );
   assert.match(fast.command, /account_worker::tests::callback_handoff::/);
   assert.match(fast.command, /callback_head_of_line/);
+  assert.match(fast.command, /sync_policy::tests::monitor_/);
   assert.match(
     fast.command,
     /active_barrier_holds_new_requests_but_not_callback_answers/,

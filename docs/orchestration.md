@@ -170,6 +170,13 @@ have a native thread; existing sessions and transferred threads sync as well.
 Deleting an agent chat removes it from the user list until the next agent message. Its participants retain their history.
 Deletion stops the selected agent and its descendants and removes them from the interface.
 Stored transcripts and project files remain on disk. Deleted agents cannot resume from late events or message retries.
+Monitor projection updates follow this flow:
+
+1. Creation, status, owner, and creation-time changes select the canonical monitor window.
+2. Output, byte counts, and activity changes publish only that monitor's projection.
+3. Terminal monitors outside the window stay retired; owner deletion maintains the window.
+4. Source changes, projections, and tombstones commit in the same transaction.
+
 Agents use `orchestration_monitor` for all long commands, checks, and watchers.
 A settled turn with active owned commands stays in `waiting_on_monitor`. Each
 command queues one durable `monitor_exit` event when its outcome is decided,
