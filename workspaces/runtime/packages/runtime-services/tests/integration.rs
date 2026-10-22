@@ -111,3 +111,6 @@ pub(crate) mod process_support;
 
 #[path = "support/projections.rs"]
 pub(crate) mod projection_fixtures;
+
+#[path = "recovery/frozen.rs"]
+pub(crate) mod recovery_fixtures;
