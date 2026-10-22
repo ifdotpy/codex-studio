@@ -1,4 +1,4 @@
-//! Kernel process identity, with legacy comparison only for durable journal upgrades.
+//! Kernel process identity for supervisor ownership and signals.
 //!
 //! Linux: `linux:<boot_id>:<start ticks>` from `/proc`. Ticks count from boot,
 //! and the boot ID is random per boot.
@@ -16,13 +16,11 @@ use rustix::process::{Pid, Signal, getpgid, getsid, kill_process_group};
 #[cfg(target_os = "linux")]
 use std::fs;
 use std::{
-    io::Read,
     path::Path,
-    process::{Command, Stdio},
     thread,
     time::{Duration, Instant},
 };
-use studio_runtime_providers::supervisor_v1::{StartMatch, compare_start, is_native_start};
+use studio_runtime_providers::supervisor_protocol::{StartMatch, compare_start, is_native_start};
 
 pub(super) const RETRY: Duration = Duration::from_millis(20);
 
@@ -106,18 +104,7 @@ pub(crate) fn macos_start_identity(boot_id: &str, seconds: u64, microseconds: u6
     format!("macos:{boot_id}:{seconds}.{microseconds:06}")
 }
 
-/// The Python supervisor's macOS token for the same libproc start instant:
-/// the `<secs>.<usecs:06>` tail of a native macOS identity.
-#[cfg(target_os = "macos")]
-fn python_macos_start(native: &str) -> Option<&str> {
-    native
-        .strip_prefix("macos:")?
-        .rsplit_once(':')
-        .map(|(_, start)| start)
-}
-
-/// `<secs>.<usecs:06>`: the decimal start format of the Python supervisor on
-/// macOS (libproc) and Windows, and the tail of a native macOS identity.
+/// `<secs>.<usecs:06>`: the tail of a native macOS identity.
 fn decimal_start(value: &str) -> bool {
     value.split_once('.').is_some_and(|(seconds, micros)| {
         seconds.parse::<u64>().is_ok_and(|seconds| seconds > 0)
@@ -221,65 +208,7 @@ pub(crate) fn signal_verified_group_member(
 
 pub(super) fn inspect_start(pid: u32, expected: &str) -> Result<(StartMatch, Option<String>)> {
     let actual = start_time(pid, false)?;
-    #[cfg(target_os = "macos")]
-    if !is_native_start(expected) && decimal_start(expected) {
-        // Python's macOS token is the same libproc instant, taken from this
-        // one read, so no PID replacement can fall between the two values.
-        let legacy = actual.as_deref().and_then(python_macos_start);
-        return Ok((compare_start(expected, actual.as_deref(), legacy), actual));
-    }
-    let legacy = if actual.is_some() && !is_native_start(expected) {
-        let value = legacy_start(pid)?;
-        // A PID replaced while ps ran cannot authorize an upgrade.
-        if start_time(pid, false)? != actual {
-            return Ok((StartMatch::Different, actual));
-        }
-        value
-    } else {
-        None
-    };
-    Ok((
-        compare_start(expected, actual.as_deref(), legacy.as_deref()),
-        actual,
-    ))
-}
-
-#[allow(
-    clippy::disallowed_methods,
-    reason = "identity adoption runs on supervisor startup or connection blocking workers"
-)]
-fn legacy_start(pid: u32) -> Result<Option<String>> {
-    // Read the historical Python token only during adoption, never before a signal.
-    let mut child = Command::new("/bin/ps")
-        .args(["-p", &pid.to_string(), "-o", "lstart="])
-        .env("LC_ALL", "C")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()?;
-    let deadline = Instant::now() + Duration::from_secs(2);
-    let status = loop {
-        if let Some(status) = child.try_wait()? {
-            break status;
-        }
-        if Instant::now() >= deadline {
-            child.kill()?;
-            child.wait()?;
-            return Err(Error::Refused("Process identity lookup timed out"));
-        }
-        thread::sleep(RETRY);
-    };
-    let mut output = String::new();
-    child
-        .stdout
-        .take()
-        .ok_or(Error::Refused("Missing identity output"))?
-        .take(512)
-        .read_to_string(&mut output)?;
-    if !status.success() || output.trim().is_empty() {
-        return Ok(None);
-    }
-    Ok(Some(output.trim().to_owned()))
+    Ok((compare_start(expected, actual.as_deref()), actual))
 }
 pub(super) fn free_space(root: &Path, required: u64) -> Result<()> {
     let info = rustix::fs::statvfs(root).map_err(std::io::Error::from)?;
@@ -297,7 +226,7 @@ pub(super) fn free_space(root: &Path, required: u64) -> Result<()> {
 pub(super) fn stop_verified(pid: u32, pgid: u32, expected: &str) -> Result<&'static str> {
     if !is_native_start(expected) {
         return Err(Error::Refused(
-            "Legacy child identity requires durable upgrade before signal",
+            "Child identity is not a native kernel identity",
         ));
     }
     match start_time(pid, false)?.as_deref() {
@@ -379,8 +308,7 @@ pub(super) fn valid_start(value: &str) -> bool {
     }) || value.strip_prefix("macos:").is_some_and(|rest| {
         rest.split_once(':')
             .is_some_and(|(boot, start)| boot_uuid(boot) && decimal_start(start))
-    }) || chrono::NaiveDateTime::parse_from_str(value, "%a %b %e %H:%M:%S %Y").is_ok()
-        || decimal_start(value)
+    })
 }
 
 #[cfg(test)]
@@ -408,12 +336,12 @@ mod tests {
     }
 
     #[test]
-    fn valid_start_accepts_native_and_python_tokens_only() {
+    fn valid_start_accepts_only_native_tokens() {
         let boot = "1CCC2169-B973-447A-B702-3F226EECA807";
         assert!(valid_start(&format!("macos:{boot}:1790895321.190147")));
         assert!(valid_start(&format!("linux:{boot}:1234")));
-        assert!(valid_start("1790895321.190147"));
-        assert!(valid_start("Fri Oct  2 00:55:21 2026"));
+        assert!(!valid_start("1790895321.190147"));
+        assert!(!valid_start("Fri Oct  2 00:55:21 2026"));
         assert!(!valid_start(&format!("macos:{boot}:1790895321.19014")));
         assert!(!valid_start("macos:short:1790895321.190147"));
         assert!(!valid_start(&format!("macos:{boot}:1234")));
@@ -503,46 +431,10 @@ mod tests {
 
     #[test]
     #[cfg(target_os = "macos")]
-    fn python_macos_token_is_adopted_only_for_the_same_live_process() {
-        let (blocker, pid, identity) = Blocker::start();
-        let python = python_macos_start(&identity)
-            .expect("native token has a Python tail")
-            .to_owned();
-        let (seconds, micros) = python.split_once('.').expect("decimal token");
-        assert_eq!(
-            inspect_start(pid, &python).expect("inspect"),
-            (StartMatch::Legacy, Some(identity.clone()))
-        );
-        let micros: u64 = micros.parse().expect("micros");
-        let other = format!("{seconds}.{:06}", (micros + 1) % MICROS_PER_SECOND);
-        assert_eq!(
-            inspect_start(pid, &other).expect("inspect").0,
-            StartMatch::Different
-        );
-        // A legacy token never authorizes a signal, even when it matches.
-        assert!(matches!(
-            stop_verified(pid, pid, &python),
-            Err(Error::Refused(
-                "Legacy child identity requires durable upgrade before signal"
-            ))
-        ));
-        assert_eq!(
-            start_time(pid, false).expect("read").as_deref(),
-            Some(identity.as_str())
-        );
-        drop(blocker);
-        assert_eq!(
-            inspect_start(pid, &python).expect("inspect").0,
-            StartMatch::Gone
-        );
-    }
-
-    #[test]
-    #[cfg(target_os = "macos")]
     fn reused_pid_with_another_start_is_never_signalled() {
         let (blocker, pid, identity) = Blocker::start();
-        let python = python_macos_start(&identity).expect("tail");
-        let (seconds, micros) = python.split_once('.').expect("decimal token");
+        let tail = identity.rsplit_once(':').expect("native token").1;
+        let (seconds, micros) = tail.split_once('.').expect("decimal token");
         let micros: u64 = micros.parse().expect("micros");
         // The same PID and boot with a different start is a reused PID.
         let stale = macos_start_identity(

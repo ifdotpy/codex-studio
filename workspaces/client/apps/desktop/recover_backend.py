@@ -17,7 +17,7 @@ import urllib.request
 
 
 # Supervisor protocol version that the Rust backend uses to start providers. Owner:
-# workspaces/runtime/packages/runtime-process/src/protocol.rs (SUPERVISOR_PROTOCOL_V2);
+# workspaces/runtime/packages/runtime-providers/src/supervisor_protocol.rs (SUPERVISOR_PROTOCOL_V2);
 # recovery-test.py checks this copy against it.
 SUPERVISOR_PROTOCOL_V2 = 2
 # Owner: MAX_SUPERVISOR_FRAME_BYTES in runtime-process/src/supervisor_contract.rs.

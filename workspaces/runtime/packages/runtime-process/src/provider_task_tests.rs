@@ -284,7 +284,6 @@ fn actor(
             cwd: "/".into(),
             extra: Default::default(),
         },
-        reattach_commands: Vec::new(),
         identity: BackendIdentity {
             backend_id: BackendId("unit".into()),
             state_dir: "/unused".into(),

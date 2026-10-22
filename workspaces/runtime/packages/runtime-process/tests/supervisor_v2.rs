@@ -90,7 +90,7 @@ impl Write for DropOpenResponse {
 }
 
 #[test]
-fn disposable_rust_supervisor_v1_actions_events_replay_and_reattach() {
+fn disposable_rust_supervisor_v2_actions_events_replay_and_reattach() {
     let state = DisposableState::new();
     let workspace = state.0.join("workspace");
     fs::create_dir_all(&workspace).unwrap();
@@ -106,11 +106,14 @@ printf 'stderr:%s' "$text" >&2
 printf '{"id":%s,"result":{"echo":"%s"}}\n' "$id" "$text"
 "#;
     let command = shell_command(wait_script);
-    let handle = SupervisorHandle("rust-v1-main".into());
+    let handle = SupervisorHandle("rust-v2-main".into());
 
     let mut client = connect_client(&state);
     let health = client.health(HealthRequest::default()).unwrap();
-    assert_eq!(health.protocol, 1);
+    assert_eq!(
+        health.protocol,
+        studio_runtime_process::SUPERVISOR_PROTOCOL_V2
+    );
     assert_eq!(
         health.durability,
         studio_runtime_process::Durability::SqliteFullSyncPerRequest
@@ -428,7 +431,9 @@ fn lost_action_response_is_unknown_outcome() {
         std::io::BufReader::new(&server_side)
             .read_line(&mut line)
             .unwrap();
-        server_side.write_all(b"{\"ok\":true}\n").unwrap();
+        server_side
+            .write_all(b"{\"ok\":true,\"protocol\":2}\n")
+            .unwrap();
         let mut line = String::new();
         std::io::BufReader::new(&server_side)
             .read_line(&mut line)
@@ -474,7 +479,42 @@ fn handshake_rejection_is_a_typed_protocol_mismatch() {
     let result = SupervisorClient::from_transport(client_side, identity);
     assert!(matches!(
         result,
-        Err(SupervisorError::ProtocolMismatch { expected: 1, .. })
+        Err(SupervisorError::ProtocolMismatch {
+            expected: studio_runtime_process::SUPERVISOR_PROTOCOL_V2,
+            ..
+        })
     ));
     server.join().unwrap();
+}
+
+#[test]
+fn supervisor_rejects_retired_protocol_before_admission() {
+    let state = DisposableState::new();
+    let _supervisor = SupervisorProcess::start(&state);
+    let mut socket = std::os::unix::net::UnixStream::connect(state.socket()).unwrap();
+    socket.set_read_timeout(Some(HANG_GUARD)).unwrap();
+    writeln!(
+        socket,
+        "{}",
+        json!({"protocol":1,"stateDir":state.0,"backendId":"retired-client"})
+    )
+    .unwrap();
+    let mut response = String::new();
+    std::io::BufReader::new(&socket)
+        .read_line(&mut response)
+        .unwrap();
+    let response: Value = serde_json::from_str(&response).unwrap();
+    assert!(
+        response.get("error").is_some(),
+        "retired protocol admitted: {response}"
+    );
+    assert_ne!(response.get("ok"), Some(&Value::Bool(true)));
+    drop(socket);
+    assert_eq!(
+        connect_client(&state)
+            .health(HealthRequest::default())
+            .unwrap()
+            .protocol,
+        studio_runtime_process::SUPERVISOR_PROTOCOL_V2
+    );
 }

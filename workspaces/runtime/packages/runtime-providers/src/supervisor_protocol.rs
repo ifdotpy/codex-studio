@@ -1,9 +1,10 @@
-//! Pure protocol-v1 admission and journal decisions. No I/O or clock access.
+//! Pure supervisor admission and journal decisions. No I/O or clock access.
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
 
-pub const PROTOCOL: u64 = 1;
+/// Version of the maintained process supervisor wire protocol.
+pub const SUPERVISOR_PROTOCOL_V2: u64 = 2;
 pub const HANDLE_LIMIT: u64 = 256 * 1024 * 1024;
 pub const MAX_HANDLE_CHARACTERS: usize = 180;
 
@@ -16,11 +17,9 @@ pub struct Refusal(pub &'static str);
 ///
 /// This type owns that contract for every Rust reader and writer. Codex app-server ids are
 /// integers. The Claude bridge gives its server requests string ids (`claude:<uuid>`), and a
-/// reply to one carries that string. The Python supervisor
-/// (`codex_process_supervisor.Child.write`) journals the id it receives without conversion,
-/// so one journal can hold integer, text and null ids. Only an integer is an RPC identity
-/// that the supervisor renumbers and that `operationStatus` can prove. The parity check is
-/// `supervisor_python_written_text_native_ids_stay_exact` in the runtime-services tests.
+/// reply to one carries that string. A journal can hold integer, text and null ids.
+/// Only an integer is an RPC identity that the supervisor renumbers and that
+/// `operationStatus` can prove.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Deserialize, Serialize)]
 #[serde(untagged)]
 pub enum NativeId {
@@ -42,32 +41,26 @@ impl From<i64> for NativeId {
     }
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Handshake {
-    pub protocol: u64,
-    pub state_dir: String,
-    pub backend_id: Option<String>,
-    #[serde(default)]
-    pub probe: bool,
-    #[serde(default)]
-    pub operator: bool,
-}
-
 #[derive(Default)]
 pub struct Ownership {
     owner: Option<String>,
     connections: usize,
 }
 impl Ownership {
-    pub fn attach(&mut self, first: &Handshake, root: &str) -> Result<Option<String>, Refusal> {
-        if first.protocol != PROTOCOL || first.state_dir != root {
+    pub fn attach(
+        &mut self,
+        state_dir: &std::path::Path,
+        backend_id: Option<&str>,
+        probe: bool,
+        root: &std::path::Path,
+    ) -> Result<Option<String>, Refusal> {
+        if state_dir != root {
             return Err(Refusal("Supervisor protocol or state directory mismatch"));
         }
-        let owner = if first.probe {
+        let owner = if probe {
             None
         } else {
-            first.backend_id.clone()
+            backend_id.map(str::to_owned)
         };
         if let Some(id) = &owner {
             if self.connections > 0 && self.owner.as_ref() != Some(id) {
@@ -181,7 +174,7 @@ impl Command {
     }
 }
 
-/// Construct only from checked journal records, including Python-written rows.
+/// Construct only from checked journal records.
 #[derive(Deserialize)]
 struct HandleRecord {
     sequence: u64,
@@ -269,7 +262,7 @@ impl HandleSnapshot {
                 "Supervisor output journal is full; waiting for backend replay acknowledgement",
             ));
         }
-        // Python renumbers only an integer id; a text id is journaled and written unchanged.
+        // Renumber only an integer id; journal and write a text id unchanged.
         let rpc = message.get("method").is_some() && native_id.and_then(NativeId::rpc).is_some();
         if rpc && self.record.rpc_sequence + 1 >= i64::MAX as u64 {
             return Err(Refusal("Supervisor RPC sequence exhausted"));
@@ -329,7 +322,7 @@ impl ReceiptSnapshot {
         if self.record.generation != Some(current.record.generation) {
             return Ok(json!({"accepted":false,"reason":"native_generation_changed"}));
         }
-        // Like Python, only an integer id proves the RPC identity of a monitor request.
+        // Only an integer id proves the RPC identity of a monitor request.
         let Some(native_id) = self.record.native_id.as_ref().and_then(NativeId::rpc) else {
             return Ok(json!({"accepted":false,"reason":"rpc_identity_missing"}));
         };
@@ -358,38 +351,28 @@ pub enum WriteDecision {
 pub enum StartMatch {
     Gone,
     Exact,
-    Legacy,
     Different,
 }
 
 /// Prefixes of the kernel start identities the Rust supervisor records:
 /// `linux:<boot_id>:<start ticks>` and `macos:<boot session uuid>:<secs>.<usecs>`.
-/// Any other recorded value is a legacy Python token.
+/// Other recorded values cannot authorize ownership.
 pub const NATIVE_START_PREFIXES: [&str; 2] = ["linux:", "macos:"];
 
 /// Whether a recorded start identity is a native kernel identity that may
-/// authorize a signal, as opposed to a legacy token that needs an upgrade first.
+/// authorize a signal.
 pub fn is_native_start(value: &str) -> bool {
     NATIVE_START_PREFIXES
         .iter()
         .any(|prefix| value.starts_with(prefix))
 }
 
-/// Legacy equality permits one durable upgrade; only kernel identity authorizes signals.
-pub fn compare_start(expected: &str, actual: Option<&str>, legacy: Option<&str>) -> StartMatch {
-    let Some(actual) = actual else {
-        return StartMatch::Gone;
-    };
-    if is_native_start(expected) {
-        if expected == actual {
-            StartMatch::Exact
-        } else {
-            StartMatch::Different
-        }
-    } else if legacy == Some(expected) {
-        StartMatch::Legacy
-    } else {
-        StartMatch::Different
+/// Only the exact native kernel identity can authorize ownership.
+pub fn compare_start(expected: &str, actual: Option<&str>) -> StartMatch {
+    match actual {
+        None => StartMatch::Gone,
+        Some(actual) if is_native_start(expected) && expected == actual => StartMatch::Exact,
+        Some(_) => StartMatch::Different,
     }
 }
 
@@ -404,31 +387,17 @@ mod start_identity_tests {
         assert!(is_native_start(MAC));
         assert!(is_native_start("linux:boot:12"));
         assert!(!is_native_start("1790895321.190147"));
-        assert_eq!(compare_start(MAC, Some(MAC), None), StartMatch::Exact);
+        assert_eq!(compare_start(MAC, Some(MAC)), StartMatch::Exact);
         let other = "macos:1CCC2169-B973-447A-B702-3F226EECA807:1790895321.190148";
-        assert_eq!(compare_start(MAC, Some(other), None), StartMatch::Different);
-        // A matching legacy value never upgrades a native expectation.
-        assert_eq!(
-            compare_start(MAC, Some(other), Some(MAC)),
-            StartMatch::Different
-        );
-        assert_eq!(compare_start(MAC, None, None), StartMatch::Gone);
+        assert_eq!(compare_start(MAC, Some(other)), StartMatch::Different);
+        assert_eq!(compare_start(MAC, None), StartMatch::Gone);
     }
 
     #[test]
-    fn python_macos_token_is_legacy_only_when_the_live_value_matches() {
-        let python = "1790895321.190147";
-        assert_eq!(
-            compare_start(python, Some(MAC), Some("1790895321.190147")),
-            StartMatch::Legacy
-        );
-        assert_eq!(
-            compare_start(python, Some(MAC), Some("1790895321.190148")),
-            StartMatch::Different
-        );
-        assert_eq!(
-            compare_start(python, Some(MAC), None),
-            StartMatch::Different
-        );
+    fn supervisor_rejects_python_identity_adoption() {
+        for python in ["1790895321.190147", "Tue Oct 13 12:00:00 2026"] {
+            assert_eq!(compare_start(python, Some(MAC)), StartMatch::Different);
+            assert_eq!(compare_start(python, Some(python)), StartMatch::Different);
+        }
     }
 }

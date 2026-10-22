@@ -1800,7 +1800,7 @@ async fn provider_input_barrier(root: &std::path::Path, backend_id: &str) -> Val
     );
     wire_send(
         &mut peer,
-        json!({"protocol":1,"stateDir":root,"backendId":backend_id}),
+        json!({"protocol":studio_runtime_process::SUPERVISOR_PROTOCOL_V2,"stateDir":root,"backendId":backend_id}),
     )
     .await;
     let attached = wire_read(&mut peer).await;
@@ -1854,7 +1854,6 @@ async fn every_launch_signature_field_matches_frozen_appserver_contract() {
             isolated,
             root.path().into(),
         );
-        let reattach_commands = launch.reattach_commands.clone();
         let listener = tokio::net::UnixListener::bind(root.path().join("supervisor.sock")).unwrap();
         let factory = studio_runtime_process::provider_task::SupervisorProviderTaskFactory::new(
             studio_runtime_process::BackendIdentity {
@@ -1893,22 +1892,6 @@ async fn every_launch_signature_field_matches_frozen_appserver_contract() {
         assert_eq!(open["env"], json!(oracle.env));
         assert_eq!(open["cwd"], json!(oracle.cwd));
         assert_eq!(open["command"], json!(with_unload_override(&oracle)));
-        let environment: BTreeMap<String, String> =
-            serde_json::from_value(open["env"].clone()).unwrap();
-        // The frozen pre-unload-override command remains eligible for reattachment.
-        assert_eq!(reattach_commands, std::slice::from_ref(&oracle.command));
-        assert_eq!(
-            studio_runtime_store::supervisor_journal::launch_signature(
-                &reattach_commands[0],
-                &environment,
-                open["cwd"].as_str()
-            ),
-            studio_runtime_store::supervisor_journal::launch_signature(
-                &oracle.command,
-                &oracle.env,
-                oracle.cwd.as_deref()
-            )
-        );
         wire_send(&mut peer,json!({"requestId":open["requestId"],"result":{"resumed":false,"initResult":null,"acknowledged":0,"sequence":0,"generation":1,"returnCode":null,"pid":1}})).await;
         drop(preparing.await.unwrap());
     }
@@ -1938,10 +1921,6 @@ fn direct_launch_command_and_environment_match_frozen_contract() {
             root.path().into(),
         );
         assert_eq!(launch.command, with_unload_override(&oracle));
-        assert_eq!(
-            launch.reattach_commands,
-            std::slice::from_ref(&oracle.command)
-        );
         assert_eq!(
             serde_json::to_value(launch.environment).unwrap(),
             json!(oracle.env)
@@ -2312,15 +2291,13 @@ async fn host_start_reattaches_existing_launch_and_delivers_http_input() {
     .unwrap();
     std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
     let environment: BTreeMap<String, String> = std::env::vars().collect();
-    let mut launch = host_runtime::codex_launch(
+    let launch = host_runtime::codex_launch(
         Some(executable.to_str().unwrap()),
         environment.clone(),
         home.to_string_lossy().into_owned(),
         false,
         fixture._root.path().into(),
     );
-    // Seed the supervisor with the pre-unload-override command to verify reattachment.
-    launch.command = launch.reattach_commands.remove(0);
     let root = fixture._root.path().to_path_buf();
     let mut supervisor = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-server/tests/wave7_p01_registry",
@@ -2351,7 +2328,7 @@ async fn host_start_reattaches_existing_launch_and_delivers_http_input() {
     );
     wire_send(
         &mut peer,
-        json!({"protocol":1,"stateDir":fixture._root.path(),"backendId":"reattach-fixture"}),
+        json!({"protocol":studio_runtime_process::SUPERVISOR_PROTOCOL_V2,"stateDir":fixture._root.path(),"backendId":"reattach-fixture"}),
     )
     .await;
     assert!(wire_read(&mut peer).await["error"].is_null());

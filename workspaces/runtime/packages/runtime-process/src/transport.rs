@@ -1,6 +1,6 @@
 use std::io::{BufRead, Read, Write};
 
-use serde_json::Value;
+use serde::Serialize;
 
 use crate::protocol::SupervisorError;
 use crate::supervisor_contract::MAX_SUPERVISOR_FRAME_BYTES;
@@ -12,7 +12,10 @@ pub(crate) const MAX_FRAME_BYTES: usize = MAX_SUPERVISOR_FRAME_BYTES;
 pub trait SupervisorTransport: Read + Write {}
 impl<T: Read + Write> SupervisorTransport for T {}
 
-pub(crate) fn write_frame(writer: &mut impl Write, value: &Value) -> Result<(), SupervisorError> {
+pub(crate) fn write_frame(
+    writer: &mut impl Write,
+    value: &impl Serialize,
+) -> Result<(), SupervisorError> {
     let frame = crate::provider_shared::serialize_frame(value)?;
     write_frame_bytes(writer, &frame)
 }

@@ -427,10 +427,7 @@ so provider memory follows running workers: a Claude thread's CLI exits, and the
 Codex app-server frees the thread at once, because Studio launches it with
 `thread_unload_delay_secs=0` (`CODEX_THREAD_UNLOAD_DELAY` in
 [provider_adapter.rs](../workspaces/runtime/packages/runtime-services/src/provider_adapter.rs);
-Codex's own default keeps it loaded for 30 minutes). An app-server started
-before that override is reattached with its own command
-(`ProviderLaunchSpec::reattach_commands`) and keeps Codex's default until it
-exits. The next turn resumes the thread. A deleted agent's thread unloads at once in the same way; deleting a
+Codex's own default keeps it loaded for 30 minutes). The next turn resumes the thread. A deleted agent's thread unloads at once in the same way; deleting a
 team re-evaluates its members' idle clocks as soon as the deletion commits. A
 live lead's, ordinary chat's, or waiting worker's thread
 unloads after `idleSessionUnloadMinutes` of the same idleness, because each resume costs a
@@ -490,6 +487,14 @@ Authenticated `POST /api/context-repair` with `id` requests the same repair for 
 Its receipt retains source and copy hashes, event IDs, and the resulting native thread.
 The operation requires free space for the source copy and native fork.
 Unsupported or ambiguous history remains unchanged.
+
+Supervisor connection and reattachment follow one path:
+
+1. Runtime, operator and VM guest clients request the current supervisor protocol and require its version in the reply.
+2. The supervisor rejects retired versions before admitting a backend.
+3. Open reuses a running child only when its launch signature matches the configured current command, environment and working directory.
+4. Changed launch signatures are refused; no older command is adopted and no duplicate child starts.
+5. Recovery signals only an exact native kernel identity; retired Python identities never authorize a signal or an identity upgrade.
 
 A supervisor event sequence is meaningful only inside one journal epoch.
 A new supervisor journal and a recreated handle row both number their events from one again.
