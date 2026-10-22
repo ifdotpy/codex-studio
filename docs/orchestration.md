@@ -89,12 +89,20 @@ Transcript reasoning projection follows the stored row order:
 3. Add its timing to the existing groups and drop the raw record before reading
    the next. Group intervals remain retained until the page is assembled.
 
-Workers appear on the right. Select a worker to read its conversation, then select **Lead** to return.
-On a narrow screen, **Team** opens the worker panel.
-Worker cards show the original assignment and the last report from a completed
-turn. Open each excerpt to read more. Reports do not imply acceptance by the lead.
-The team summary counts workers who are active, need your answer, or have finished.
-Deferred questions remain unanswered and leave the attention count.
+Provider payload ownership follows readiness and delivery:
+
+1. Write readiness borrows the front action; errors leave that action retained.
+2. A retained result moves into its database transaction and back to its request.
+3. Before checkpoint, only a committed reply with a waiter is copied for delivery;
+   its correlation stays retained until checkpoint, including after waiter loss.
+4. At checkpoint the result moves to its waiter. Unknown correlation stays
+   available for exact late evidence without resending the request.
+   Workers appear on the right. Select a worker to read its conversation, then select **Lead** to return.
+   On a narrow screen, **Team** opens the worker panel.
+   Worker cards show the original assignment and the last report from a completed
+   turn. Open each excerpt to read more. Reports do not imply acceptance by the lead.
+   The team summary counts workers who are active, need your answer, or have finished.
+   Deferred questions remain unanswered and leave the attention count.
 
 Assistant text stays visible in chronological order, outside tool disclosures.
 Only consecutive tool calls share a group. Groups start closed and retain the
