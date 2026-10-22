@@ -5,7 +5,6 @@ use anyhow::{bail, Result};
 use desk_core::sign::Signer;
 use desk_core::writer::{self, Bucket, Layr, Summary, Writer, MAX_DEPTH};
 use desk_core::{keys, zst, Policy, Reader, Store, VaultInfo};
-use serde_json::Value;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
