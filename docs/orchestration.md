@@ -82,6 +82,15 @@ Provider session expiry keeps request order:
    predecessor releases the thread. Written requests retain uncertain identities.
 4. Pending outcomes and remaining actions stay owned by the session for shutdown.
 
+Provider payload ownership follows readiness and delivery:
+
+1. Write readiness borrows the front action; errors leave that action retained.
+2. A retained result moves into its database transaction and back to its request.
+3. Before checkpoint, only a committed reply with a waiter is copied for delivery;
+   its correlation stays retained until checkpoint, including after waiter loss.
+4. At checkpoint the result moves to its waiter. Unknown correlation stays
+   available for exact late evidence without resending the request.
+
 Workers appear on the right. Select a worker to read its conversation, then select **Lead** to return.
 On a narrow screen, **Team** opens the worker panel.
 Worker cards show the original assignment and the last report from a completed

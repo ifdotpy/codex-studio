@@ -280,7 +280,7 @@ impl Worker {
                 "retained-session/ticket-mismatch".into(),
             ));
         }
-        let result = match outcome {
+        let value = match outcome {
             SessionOutcome::Resolved {
                 outcome:
                     RequestOutcome::Reply {
@@ -312,7 +312,6 @@ impl Worker {
             _ => None,
         };
         let key = pending.call.key();
-        let value = result.clone();
         let written = match outcome {
             SessionOutcome::Write {
                 recovery: Some(recovery),
@@ -455,26 +454,7 @@ impl Worker {
                 .cloned()
                 .unwrap_or_else(|| retained_account.clone());
             let checkpoint = checkpoints.get(&scope).copied().unwrap_or(0);
-            if pending.result_cursor > checkpoint {
-                if let Some(result @ (RequestResult::Reply(_) | RequestResult::Rejected(_))) =
-                    pending.result.clone()
-                    && committed_replies.contains(&(scope, pending.result_cursor))
-                    && let Some(reply) = pending.reply.take()
-                {
-                    let _ignored =
-                        reply.send(Ok(pending.call.receipt(pending.ticket.clone(), result)));
-                }
-                return true;
-            }
-            if let Some(result) = pending.result.take() {
-                if let Some(reply) = pending.reply.take() {
-                    let _ignored = reply.send(Ok(pending
-                        .call
-                        .receipt(pending.ticket.clone(), result.clone())));
-                }
-                return result == RequestResult::Unknown;
-            }
-            true
+            pending.complete_result(checkpoint, &committed_replies, scope)
         });
         if self.retained_barriers.is_empty() {
             return Ok(());
@@ -532,5 +512,170 @@ impl Worker {
             }
         }
         self.complete_retained().await
+    }
+}
+
+impl PendingRequest {
+    /// Keep correlation until checkpoint; only a committed callback reply may
+    /// answer early. Borrow through eligibility, then copy solely for that waiter.
+    fn complete_result(
+        &mut self,
+        checkpoint: u64,
+        committed_replies: &BTreeSet<(String, u64)>,
+        scope: String,
+    ) -> bool {
+        if self.result_cursor > checkpoint {
+            if let Some(result @ (RequestResult::Reply(_) | RequestResult::Rejected(_))) =
+                self.result.as_ref()
+                && committed_replies.contains(&(scope, self.result_cursor))
+                && let Some(reply) = self.reply.take()
+                && !reply.is_closed()
+            {
+                let _ignored =
+                    reply.send(Ok(self.call.receipt(self.ticket.clone(), result.clone())));
+            }
+            return true;
+        }
+        if let Some(result) = self.result.take() {
+            let unknown = result == RequestResult::Unknown;
+            if let Some(reply) = self.reply.take() {
+                let _ignored = reply.send(Ok(self.call.receipt(self.ticket.clone(), result)));
+            }
+            return unknown;
+        }
+        true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const RESULT_CURSOR: u64 = 2;
+    const BEFORE_RESULT: u64 = RESULT_CURSOR - 1;
+    // Bytes in the owned string whose allocation must survive final delivery.
+    const PAYLOAD_BYTES: usize = 4096;
+
+    fn pending(
+        result: RequestResult,
+    ) -> (
+        PendingRequest,
+        oneshot::Receiver<Result<SessionReceipt, PortError>>,
+    ) {
+        let (reply, received) = oneshot::channel();
+        (
+            PendingRequest {
+                call: Call {
+                    scope: ConnectionScope {
+                        account: "account".into(),
+                        connection: "connection".into(),
+                        generation: 1,
+                    },
+                    operation: "ownership-witness".into(),
+                    actor: None,
+                    transfer: None,
+                    deleted_actor_session: None,
+                    method: Method::ThreadRead.as_str().into(),
+                    params: Value::Null,
+                },
+                ticket: RequestTicket {
+                    generation: 1,
+                    id: RequestId::String("request".into()),
+                    method: Method::ThreadRead,
+                },
+                actor_id: None,
+                reply: Some(reply),
+                result: Some(result),
+                result_cursor: RESULT_CURSOR,
+                volatile: false,
+            },
+            received,
+        )
+    }
+
+    fn payload_pointer(result: &RequestResult) -> *const u8 {
+        match result {
+            RequestResult::Reply(Value::String(text))
+            | RequestResult::Rejected(Value::String(text)) => text.as_ptr(),
+            _ => panic!("expected owned string result"),
+        }
+    }
+
+    #[test]
+    fn payload_delivery_moves_checkpointed_reply_and_rejection() {
+        for result in [
+            RequestResult::Reply(Value::String("r".repeat(PAYLOAD_BYTES))),
+            RequestResult::Rejected(Value::String("e".repeat(PAYLOAD_BYTES))),
+        ] {
+            let pointer = payload_pointer(&result);
+            let (mut pending, mut received) = pending(result);
+            assert!(!pending.complete_result(RESULT_CURSOR, &BTreeSet::new(), "account".into()));
+            let receipt = received
+                .try_recv()
+                .expect("checkpointed response")
+                .expect("successful receipt");
+            assert_eq!(
+                payload_pointer(&receipt.result),
+                pointer,
+                "final delivery must move the original allocation"
+            );
+            assert!(pending.result.is_none());
+            assert!(pending.reply.is_none());
+        }
+    }
+
+    #[test]
+    fn payload_delivery_keeps_ineligible_and_already_delivered_reply_until_checkpoint() {
+        let (mut pending, mut received) = pending(RequestResult::Reply(Value::String(
+            "r".repeat(PAYLOAD_BYTES),
+        )));
+        let pointer = payload_pointer(pending.result.as_ref().expect("retained result"));
+        let uncommitted = BTreeSet::new();
+        let committed = BTreeSet::from([("account".into(), RESULT_CURSOR)]);
+        assert!(pending.complete_result(BEFORE_RESULT, &uncommitted, "account".into()));
+        assert!(
+            received.try_recv().is_err(),
+            "an uncommitted reply cannot escape"
+        );
+        assert!(pending.reply.is_some());
+        assert!(pending.complete_result(BEFORE_RESULT, &committed, "account".into()));
+        let receipt = received
+            .try_recv()
+            .expect("committed early response")
+            .expect("successful receipt");
+        assert_ne!(
+            payload_pointer(&receipt.result),
+            pointer,
+            "early delivery retains a separate recovery allocation"
+        );
+        assert!(pending.reply.is_none());
+        assert!(pending.complete_result(BEFORE_RESULT, &committed, "account".into()));
+        assert_eq!(
+            payload_pointer(pending.result.as_ref().expect("retained correlation")),
+            pointer
+        );
+        assert!(!pending.complete_result(RESULT_CURSOR, &committed, "account".into()));
+        assert!(pending.result.is_none());
+    }
+
+    #[test]
+    fn payload_delivery_preserves_unknown_correlation_and_never_sends_it_early() {
+        let (mut pending, mut received) = pending(RequestResult::Unknown);
+        let committed = BTreeSet::from([("account".into(), RESULT_CURSOR)]);
+        assert!(pending.complete_result(BEFORE_RESULT, &committed, "account".into()));
+        assert!(received.try_recv().is_err());
+        assert!(pending.complete_result(RESULT_CURSOR, &committed, "account".into()));
+        assert_eq!(
+            received
+                .try_recv()
+                .expect("checkpointed unknown")
+                .expect("receipt")
+                .result,
+            RequestResult::Unknown
+        );
+        assert!(
+            pending.complete_result(RESULT_CURSOR, &committed, "account".into()),
+            "late evidence must still find its correlation"
+        );
     }
 }

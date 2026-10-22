@@ -1164,7 +1164,7 @@ impl SessionTask {
         // Keep the current action retained until it is processed: an error or an
         // unwind leaves it at the front for cleanup. Positive outcomes are
         // retained before record removal or write release.
-        while let Some(action) = self.retained.actions.front().cloned() {
+        while let Some(action) = self.retained.actions.front() {
             match action {
                 Action::Write(frame) => match frame {
                     Frame::Request(request) => {
@@ -1179,10 +1179,7 @@ impl SessionTask {
                             &self.handle,
                             Generation(self.state.generation()),
                         );
-                        let write = PreparedWrite::new(
-                            operation.clone(),
-                            &Frame::Notification(notification),
-                        )?;
+                        let write = PreparedWrite::new(operation.clone(), frame)?;
                         self.retained.initialized = Some(PendingWrite {
                             write,
                             operation,
@@ -1193,6 +1190,8 @@ impl SessionTask {
                     _ => return Err(SessionTaskError::Invalid),
                 },
                 Action::Resolve { ticket, outcome } => {
+                    let ticket = ticket.clone();
+                    let outcome = outcome.clone();
                     if self.retain_resolution(
                         ticket.clone(),
                         outcome,
@@ -1204,6 +1203,7 @@ impl SessionTask {
                     }
                 }
                 Action::GenerationClosed { generation } => {
+                    let generation = *generation;
                     self.emit(control, SessionOutcome::GenerationClosed { generation })
                 }
                 Action::Dispatch(_) | Action::ThreadReleased { .. } => {}

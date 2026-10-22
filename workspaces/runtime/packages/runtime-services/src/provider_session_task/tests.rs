@@ -280,3 +280,30 @@ async fn closure_panic_unknown_batch_does_not_return_unknown_twice() {
 #[path = "../../tests/support/session_outcomes.rs"]
 mod outcome_checks;
 use outcome_checks::CheckedExit;
+
+/// These paths inspect readiness/eligibility, so copying their payload is a
+/// regression even when the resulting wire data remains identical.
+#[test]
+fn payload_readiness_and_retained_delivery_do_not_clone_before_eligibility() {
+    let session = include_str!("../provider_session_task.rs");
+    let apply = session
+        .split("fn apply_actions(")
+        .nth(1)
+        .unwrap()
+        .split("fn retain_resolution(")
+        .next()
+        .unwrap();
+    assert!(
+        !apply.contains("front().cloned()"),
+        "readiness must borrow the retained action rather than clone its frame"
+    );
+    let retained = include_str!("../account_worker/retained/runtime.rs");
+    assert!(
+        !retained.contains("let value = result.clone();"),
+        "the database closure must take ownership of its result"
+    );
+    assert!(
+        !retained.contains("pending.result.clone()"),
+        "eligibility must borrow the result until a committed reply has a waiter"
+    );
+}

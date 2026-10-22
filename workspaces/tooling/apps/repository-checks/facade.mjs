@@ -999,6 +999,8 @@ function fastTierCommands(root) {
               "test(work_write::actor_tests::nonempty_file_submission_rechecks_cwd_and_replays_without_filesystem_work)",
               "test(ancestry_reads_only_the_checked_parent_chain)",
               "test(send_to_descendant_is_followup_input_while_parent_and_broadcast_are_chat)",
+              "test(provider_session_task::tests::payload_readiness_and_retained_delivery_do_not_clone_before_eligibility)",
+              "test(account_worker::retained::runtime::tests::payload_delivery_)",
               "test(account_worker::tests::retained::automatic_recovery_)",
               "test(account_worker::tests::retained::startup_first_pass_reconciles_exact_history_without_replaying_unknown_input)",
             ]),
