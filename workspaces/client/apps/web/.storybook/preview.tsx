@@ -11,14 +11,31 @@ import { theme } from "../src/theme";
 
 const preview: Preview = {
   decorators: [
-    (Story) => (
-      <MantineProvider theme={theme} defaultColorScheme="dark">
-        <div style={{ color: "var(--text)", padding: 24 }}>
+    (Story, context) => (
+      <MantineProvider
+        theme={theme}
+        forceColorScheme={
+          context.globals.colorScheme === "light" ? "light" : "dark"
+        }
+      >
+        <div
+          style={{
+            color: "var(--text)",
+            padding: "var(--mantine-spacing-sm)",
+            minWidth: 0,
+          }}
+        >
           <Story />
         </div>
       </MantineProvider>
     ),
   ],
+  initialGlobals: { colorScheme: "dark" },
+  globalTypes: {
+    colorScheme: {
+      toolbar: { icon: "circlehollow", items: ["light", "dark"] },
+    },
+  },
   parameters: {
     layout: "centered",
   },
