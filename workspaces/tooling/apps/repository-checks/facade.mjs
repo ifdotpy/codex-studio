@@ -979,6 +979,7 @@ function fastTierCommands(root) {
               "test(server_exec::tests::existing_start_fence_)",
               "test(server_exec::tests::output_tail_append_does_not_move_retained_bytes)",
               "test(payload_blobs::tests::payload_preview_projects_only_retained_string_bytes)",
+              "test(notification_dispatch::stream::tests::analytics_delta_size_)",
             ]),
           ],
         ],

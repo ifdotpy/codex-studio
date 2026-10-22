@@ -11,6 +11,10 @@ Large checkpoint and tool payloads keep their existing blob format. The server
 moves ordinary fields into the stored record and inserts only the preview for
 an externalized field; it does not copy the discarded payload into that record.
 
+Streaming analytics appends each delta to its existing text and updates retained
+JSON bytes from that fragment's escaped size. Command-output trimming subtracts
+the escaped size of the removed prefix, preserving the existing character limit.
+
 Use the [Electron desktop app](../workspaces/client/apps/desktop/README.md), or build the [React interface](../workspaces/client/apps/web/README.md), start `codex-canvas`, and open <http://127.0.0.1:4620>.
 Use the new-chat action inside a project. The server creates an empty lead conversation immediately.
 If the current lead chat is empty, it reuses that chat and preserves the draft.
