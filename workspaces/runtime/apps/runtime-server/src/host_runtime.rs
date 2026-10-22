@@ -35,7 +35,6 @@ use studio_runtime_services::{
     thread_prepare::{CatalogSnapshot, CatalogSource},
 };
 use studio_runtime_store::RuntimeStore;
-use studio_runtime_store::path_identity::CanonicalPath;
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
 
@@ -108,7 +107,9 @@ fn resolve_install_root_from_executable(
     #[cfg(debug_assertions)]
     {
         let source_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../..");
-        let source_root = CanonicalPath::existing(&source_root).map_err(|_| located())?;
+        let source_root =
+            studio_runtime_store::path_identity::CanonicalPath::existing(&source_root)
+                .map_err(|_| located())?;
         if is_root(&source_root) {
             return Ok(InstallRoot(source_root.to_path_buf()));
         }
