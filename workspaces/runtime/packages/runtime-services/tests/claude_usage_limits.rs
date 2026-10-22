@@ -216,3 +216,50 @@ fn missing_observation_reschedules_without_followup() {
     );
     assert!(decision.effects.is_empty());
 }
+
+#[test]
+fn ui_eligibility_matches_resume_decisions_on_shared_fixtures() {
+    let fixtures: Value = serde_json::from_str(include_str!("claude_usage_ui_cases.json")).unwrap();
+    for case in fixtures.as_array().unwrap() {
+        let state = snapshot(case["model"].as_str().unwrap());
+        let raw = &case["observation"];
+        let limits = LimitsObservation::from_record(raw.clone(), None).unwrap();
+        let view = usage_resume::eligibility(raw, &state.agent, 1000.0);
+        let decision = usage_resume::tick(&state, &limits, 1000.0).unwrap();
+        assert_eq!(
+            view["canRun"],
+            decision.record.unwrap()["status"] == "started",
+            "{}",
+            case["name"]
+        );
+        assert_eq!(view["allowed"], limits.allowed(&state.agent, 1000.0));
+        assert_eq!(view["resetAt"], json!(limits.reset_at(&state.agent)));
+        assert_eq!(view["canRun"], case["canRun"], "{}", case["name"]);
+        assert_eq!(view["overage"], case["overage"], "{}", case["name"]);
+        assert_eq!(
+            view["buckets"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|b| b["id"].clone())
+                .collect::<Vec<_>>(),
+            case["buckets"].as_array().unwrap().clone(),
+            "{}",
+            case["name"]
+        );
+    }
+}
+
+#[test]
+fn ui_decision_expires_at_the_first_applicable_window_reset() {
+    let state = snapshot("sonnet");
+    let mut raw = json!({"accountKey":"default","at":1000.0,"data":data(20.0)});
+    raw["data"]["rateLimits"]["primary"]["resetsAt"] = json!(1002.0);
+    let view = usage_resume::eligibility(&raw, &state.agent, 1000.0);
+    assert_eq!(view["canRun"], true);
+    assert_eq!(view["validUntil"], 1002.0);
+    assert_eq!(
+        usage_resume::eligibility(&raw, &state.agent, 1002.0)["canRun"],
+        false
+    );
+}

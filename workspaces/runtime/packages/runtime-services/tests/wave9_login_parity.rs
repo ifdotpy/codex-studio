@@ -271,6 +271,7 @@ async fn compare_claude(expected: &Value, adding: bool) {
             account_id: Some("claude:fixture@example.test".into()),
             email: Some("fixture@example.test".into()),
             plan: Some("max".into()),
+            organization_name: None,
             credential_identity: Some("claude:fixture@example.test".into()),
             error: None,
             error_kind: None,

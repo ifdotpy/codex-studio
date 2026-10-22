@@ -14,6 +14,7 @@ fn metadata(email: &str) -> AuthMetadata {
         account_id: Some(format!("claude:{email}")),
         email: Some(email.into()),
         plan: Some("max".into()),
+        organization_name: None,
         credential_identity: Some(format!("claude:{email}")),
         error: None,
         error_kind: None,
@@ -225,5 +226,81 @@ fn registration_retry_upgrades_legacy_identity_without_rebinding() {
                 &organization_metadata("org-b", Some("account-a"))
             )
             .is_err()
+    );
+}
+
+#[test]
+fn public_organization_metadata_keeps_pins_and_excludes_private_identity() {
+    let (dir, driver, options) = fixture();
+    let mut original = organization_metadata(
+        "organization-private-id-12345678",
+        Some("private-account-uuid"),
+    );
+    original.organization_name = Some("Expected organization".into());
+    let key = driver
+        .register_claude_verified(options, "Fixture", dir.path(), &original)
+        .unwrap();
+    let profile = driver.claude_profile(&key).unwrap();
+    let mut changed = organization_metadata(
+        "organization-private-id-87654321",
+        Some("other-account-uuid"),
+    );
+    changed.organization_name = Some("Observed organization".into());
+    let refused = driver
+        .refresh_claude_verified(&key, &profile, &changed, true)
+        .unwrap();
+    assert_eq!(refused["status"], "changed");
+    let snapshot = driver.listing_snapshot().unwrap();
+    let account = snapshot.accounts.iter().find(|a| a["id"] == key).unwrap();
+    assert_eq!(
+        account["organization"],
+        json!({"name":"Expected organization","idSuffix":"12345678"})
+    );
+    assert_eq!(
+        account["organizationMismatch"]["observed"],
+        json!({"name":"Observed organization","idSuffix":"87654321"})
+    );
+    let public = serde_json::to_string(account).unwrap();
+    for secret in [
+        "_credentialIdentity",
+        "_organizationName",
+        "private-account-uuid",
+        "other-account-uuid",
+        "organization-private-id-",
+    ] {
+        assert!(!public.contains(secret), "public account leaked {secret}");
+    }
+    driver
+        .refresh_claude_verified(&key, &refused, &original, true)
+        .unwrap();
+    let restored = driver.listing_snapshot().unwrap();
+    let account = restored.accounts.iter().find(|a| a["id"] == key).unwrap();
+    assert!(account.get("organizationMismatch").is_none());
+}
+
+#[test]
+fn public_ui_contracts_match_persisted_validators() {
+    // OpenAPI owns these public shapes. Check each persisted validator copy.
+    let public: serde_json::Value =
+        serde_json::from_str(include_str!("../../runtime-http/openapi.json")).unwrap();
+    let accounts: serde_json::Value = serde_json::from_str(
+        &include_str!("../../runtime-schema/src/schemas/account-registry.schema.json")
+            .replace("#/$defs/", "#/components/schemas/"),
+    )
+    .unwrap();
+    let limits: serde_json::Value = serde_json::from_str(
+        &include_str!("../../runtime-schema/src/schemas/workspace-usage-limits.schema.json")
+            .replace("#/$defs/", "#/components/schemas/"),
+    )
+    .unwrap();
+    for name in ["ClaudeOrganization", "ClaudeOrganizationMismatch"] {
+        assert_eq!(
+            public["components"]["schemas"][name], accounts["$defs"][name],
+            "{name} must match its OpenAPI owner"
+        );
+    }
+    assert_eq!(
+        public["components"]["schemas"]["UsageEligibility"], limits["$defs"]["UsageEligibility"],
+        "UsageEligibility must match its OpenAPI owner"
     );
 }

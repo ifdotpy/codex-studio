@@ -1,0 +1,452 @@
+[
+  {
+    "name": "sonnet ignores the full opus bucket",
+    "model": "sonnet",
+    "observation": {
+      "accountKey": "default",
+      "at": 1000,
+      "stale": false,
+      "data": {
+        "rateLimits": {
+          "limitId": "claude",
+          "primary": {
+            "usedPercent": 20,
+            "resetsAt": 1300
+          }
+        },
+        "rateLimitsByLimitId": {
+          "claude-opus": {
+            "secondary": {
+              "usedPercent": 100,
+              "resetsAt": 9000
+            }
+          },
+          "claude-sonnet": {
+            "secondary": {
+              "usedPercent": 20,
+              "resetsAt": 5000
+            }
+          }
+        }
+      }
+    },
+    "canRun": true,
+    "overage": "unavailable",
+    "buckets": ["claude", "claude-sonnet"]
+  },
+  {
+    "name": "opus uses its own full bucket",
+    "model": "opus",
+    "observation": {
+      "accountKey": "default",
+      "at": 1000,
+      "stale": false,
+      "data": {
+        "rateLimits": {
+          "limitId": "claude",
+          "primary": {
+            "usedPercent": 20,
+            "resetsAt": 1300
+          }
+        },
+        "rateLimitsByLimitId": {
+          "claude-opus": {
+            "secondary": {
+              "usedPercent": 100,
+              "resetsAt": 9000
+            }
+          },
+          "claude-sonnet": {
+            "secondary": {
+              "usedPercent": 20,
+              "resetsAt": 5000
+            }
+          }
+        }
+      }
+    },
+    "canRun": false,
+    "overage": "unavailable",
+    "buckets": ["claude", "claude-opus"]
+  },
+  {
+    "name": "unknown model checks all buckets",
+    "model": "custom-sonnet-proxy",
+    "observation": {
+      "accountKey": "default",
+      "at": 1000,
+      "stale": false,
+      "data": {
+        "rateLimits": {
+          "limitId": "claude",
+          "primary": {
+            "usedPercent": 20,
+            "resetsAt": 1300
+          }
+        },
+        "rateLimitsByLimitId": {
+          "claude-opus": {
+            "secondary": {
+              "usedPercent": 100,
+              "resetsAt": 9000
+            }
+          },
+          "claude-sonnet": {
+            "secondary": {
+              "usedPercent": 20,
+              "resetsAt": 5000
+            }
+          }
+        }
+      }
+    },
+    "canRun": false,
+    "overage": "unavailable",
+    "buckets": ["claude", "claude-opus", "claude-sonnet"]
+  },
+  {
+    "name": "sonnet full shared bucket",
+    "model": "sonnet",
+    "observation": {
+      "accountKey": "default",
+      "at": 1000,
+      "stale": false,
+      "data": {
+        "rateLimits": {
+          "limitId": "claude",
+          "primary": {
+            "usedPercent": 100,
+            "resetsAt": 1300
+          }
+        },
+        "rateLimitsByLimitId": {
+          "claude-opus": {
+            "secondary": {
+              "usedPercent": 100,
+              "resetsAt": 9000
+            }
+          },
+          "claude-sonnet": {
+            "secondary": {
+              "usedPercent": 20,
+              "resetsAt": 5000
+            }
+          }
+        }
+      }
+    },
+    "canRun": false,
+    "overage": "unavailable",
+    "buckets": ["claude", "claude-sonnet"]
+  },
+  {
+    "name": "overage allowed",
+    "model": "sonnet",
+    "observation": {
+      "accountKey": "default",
+      "at": 1000,
+      "stale": false,
+      "data": {
+        "rateLimits": {
+          "limitId": "claude",
+          "primary": {
+            "usedPercent": 100,
+            "resetsAt": 1300
+          }
+        },
+        "rateLimitsByLimitId": {
+          "claude-opus": {
+            "secondary": {
+              "usedPercent": 100,
+              "resetsAt": 9000
+            }
+          },
+          "claude-sonnet": {
+            "secondary": {
+              "usedPercent": 20,
+              "resetsAt": 5000
+            }
+          }
+        },
+        "claudeRateLimit": {
+          "rateLimitType": "five_hour",
+          "overageStatus": "allowed",
+          "isUsingOverage": false
+        }
+      }
+    },
+    "canRun": true,
+    "overage": "allowed",
+    "buckets": ["claude", "claude-sonnet"]
+  },
+  {
+    "name": "overage allowed_warning",
+    "model": "sonnet",
+    "observation": {
+      "accountKey": "default",
+      "at": 1000,
+      "stale": false,
+      "data": {
+        "rateLimits": {
+          "limitId": "claude",
+          "primary": {
+            "usedPercent": 100,
+            "resetsAt": 1300
+          }
+        },
+        "rateLimitsByLimitId": {
+          "claude-opus": {
+            "secondary": {
+              "usedPercent": 100,
+              "resetsAt": 9000
+            }
+          },
+          "claude-sonnet": {
+            "secondary": {
+              "usedPercent": 20,
+              "resetsAt": 5000
+            }
+          }
+        },
+        "claudeRateLimit": {
+          "rateLimitType": "five_hour",
+          "overageStatus": "allowed_warning",
+          "isUsingOverage": false
+        }
+      }
+    },
+    "canRun": true,
+    "overage": "allowed",
+    "buckets": ["claude", "claude-sonnet"]
+  },
+  {
+    "name": "overage allowed in use",
+    "model": "sonnet",
+    "observation": {
+      "accountKey": "default",
+      "at": 1000,
+      "stale": false,
+      "data": {
+        "rateLimits": {
+          "limitId": "claude",
+          "primary": {
+            "usedPercent": 100,
+            "resetsAt": 1300
+          }
+        },
+        "rateLimitsByLimitId": {
+          "claude-opus": {
+            "secondary": {
+              "usedPercent": 100,
+              "resetsAt": 9000
+            }
+          },
+          "claude-sonnet": {
+            "secondary": {
+              "usedPercent": 20,
+              "resetsAt": 5000
+            }
+          }
+        },
+        "claudeRateLimit": {
+          "rateLimitType": "five_hour",
+          "overageStatus": "allowed",
+          "isUsingOverage": true
+        }
+      }
+    },
+    "canRun": true,
+    "overage": "in_use",
+    "buckets": ["claude", "claude-sonnet"]
+  },
+  {
+    "name": "overage rejected in use",
+    "model": "sonnet",
+    "observation": {
+      "accountKey": "default",
+      "at": 1000,
+      "stale": false,
+      "data": {
+        "rateLimits": {
+          "limitId": "claude",
+          "primary": {
+            "usedPercent": 100,
+            "resetsAt": 1300
+          }
+        },
+        "rateLimitsByLimitId": {
+          "claude-opus": {
+            "secondary": {
+              "usedPercent": 100,
+              "resetsAt": 9000
+            }
+          },
+          "claude-sonnet": {
+            "secondary": {
+              "usedPercent": 20,
+              "resetsAt": 5000
+            }
+          }
+        },
+        "claudeRateLimit": {
+          "rateLimitType": "five_hour",
+          "overageStatus": "rejected",
+          "isUsingOverage": true
+        }
+      }
+    },
+    "canRun": false,
+    "overage": "rejected",
+    "buckets": ["claude", "claude-sonnet"]
+  },
+  {
+    "name": "stale observation",
+    "model": "sonnet",
+    "observation": {
+      "accountKey": "default",
+      "at": 990,
+      "stale": false,
+      "data": {
+        "rateLimits": {
+          "limitId": "claude",
+          "primary": {
+            "usedPercent": 20,
+            "resetsAt": 1300
+          }
+        },
+        "rateLimitsByLimitId": {
+          "claude-opus": {
+            "secondary": {
+              "usedPercent": 100,
+              "resetsAt": 9000
+            }
+          },
+          "claude-sonnet": {
+            "secondary": {
+              "usedPercent": 20,
+              "resetsAt": 5000
+            }
+          }
+        }
+      }
+    },
+    "canRun": false,
+    "overage": "unavailable",
+    "buckets": ["claude", "claude-sonnet"]
+  },
+  {
+    "name": "marked stale observation",
+    "model": "sonnet",
+    "observation": {
+      "accountKey": "default",
+      "at": 1000,
+      "stale": true,
+      "data": {
+        "rateLimits": {
+          "limitId": "claude",
+          "primary": {
+            "usedPercent": 20,
+            "resetsAt": 1300
+          }
+        },
+        "rateLimitsByLimitId": {
+          "claude-opus": {
+            "secondary": {
+              "usedPercent": 100,
+              "resetsAt": 9000
+            }
+          },
+          "claude-sonnet": {
+            "secondary": {
+              "usedPercent": 20,
+              "resetsAt": 5000
+            }
+          }
+        }
+      }
+    },
+    "canRun": false,
+    "overage": "unavailable",
+    "buckets": ["claude", "claude-sonnet"]
+  },
+  {
+    "name": "unknown bucket still blocks",
+    "model": "sonnet",
+    "observation": {
+      "accountKey": "default",
+      "at": 1000,
+      "stale": false,
+      "data": {
+        "rateLimits": {
+          "limitId": "claude",
+          "primary": {
+            "usedPercent": 20,
+            "resetsAt": 1300
+          }
+        },
+        "rateLimitsByLimitId": {
+          "claude-opus": {
+            "secondary": {
+              "usedPercent": 100,
+              "resetsAt": 9000
+            }
+          },
+          "claude-sonnet": {
+            "secondary": {
+              "usedPercent": 20,
+              "resetsAt": 5000
+            }
+          },
+          "unknown": {
+            "primary": {
+              "usedPercent": 100,
+              "resetsAt": 10000
+            }
+          }
+        }
+      }
+    },
+    "canRun": false,
+    "overage": "unavailable",
+    "buckets": ["claude", "claude-sonnet", "unknown"]
+  },
+  {
+    "name": "native rejection blocks",
+    "model": "sonnet",
+    "observation": {
+      "accountKey": "default",
+      "at": 1000,
+      "stale": false,
+      "data": {
+        "rateLimits": {
+          "limitId": "claude",
+          "primary": {
+            "usedPercent": 20,
+            "resetsAt": 1300
+          },
+          "claudeRateLimit": {
+            "status": "rejected",
+            "resetsAt": 1400
+          }
+        },
+        "rateLimitsByLimitId": {
+          "claude-opus": {
+            "secondary": {
+              "usedPercent": 100,
+              "resetsAt": 9000
+            }
+          },
+          "claude-sonnet": {
+            "secondary": {
+              "usedPercent": 20,
+              "resetsAt": 5000
+            }
+          }
+        }
+      }
+    },
+    "canRun": false,
+    "overage": "unavailable",
+    "buckets": ["claude", "claude-sonnet"]
+  }
+]

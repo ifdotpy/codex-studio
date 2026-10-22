@@ -55,6 +55,42 @@ pub(crate) fn belongs_to(identity: &str, email: &str) -> bool {
         || tuple(identity).is_some_and(|(stored, _, _)| stored == email)
 }
 
+/// Only this suffix, never the credential tuple or full UUID, reaches the UI.
+const ORGANIZATION_ID_SUFFIX_CHARS: usize = 8;
+pub(crate) fn organization(
+    identity: Option<&str>,
+    name: Option<&str>,
+) -> Option<serde_json::Value> {
+    let (_, org, _) = tuple(identity?)?;
+    let org = org?;
+    let suffix: String = org
+        .chars()
+        .rev()
+        .take(ORGANIZATION_ID_SUFFIX_CHARS)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    Some(serde_json::json!({"name": name, "idSuffix": suffix}))
+}
+
+pub(crate) fn organization_mismatch(
+    expected: Option<&str>,
+    expected_name: Option<&str>,
+    observed: Option<&str>,
+    observed_name: Option<&str>,
+) -> Option<serde_json::Value> {
+    let (_, old_org, _) = tuple(expected?)?;
+    let (_, new_org, _) = tuple(observed?)?;
+    if old_org.is_none() || new_org.is_none() || old_org == new_org {
+        return None;
+    }
+    Some(serde_json::json!({
+        "expected": organization(expected, expected_name)?,
+        "observed": organization(observed, observed_name)?,
+    }))
+}
+
 /// Native auth status omits the account UUID in some CLI versions. Read only
 /// the native profile metadata and require agreement with the status result.
 pub(crate) fn with_native_identity(mut metadata: AuthMetadata, path: &Path) -> AuthMetadata {
@@ -71,6 +107,7 @@ pub(crate) fn with_native_identity(mut metadata: AuthMetadata, path: &Path) -> A
     struct Account {
         email_address: Option<String>,
         organization_uuid: Option<String>,
+        organization_name: Option<String>,
         account_uuid: Option<String>,
     }
     let file = match File::open(path) {
@@ -107,6 +144,11 @@ pub(crate) fn with_native_identity(mut metadata: AuthMetadata, path: &Path) -> A
             .is_some_and(|(a, b)| a != b)
     {
         return AuthMetadata::error(Some("parser"));
+    }
+    if metadata.organization_name.is_none() {
+        metadata.organization_name = account
+            .organization_name
+            .filter(|name| !name.trim().is_empty());
     }
     metadata.credential_identity = Some(identity(
         email,

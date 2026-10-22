@@ -1554,6 +1554,12 @@
           },
           "status": {
             "$ref": "#/components/schemas/AccountStatus"
+          },
+          "organization": {
+            "$ref": "#/components/schemas/ClaudeOrganization"
+          },
+          "organizationMismatch": {
+            "$ref": "#/components/schemas/ClaudeOrganizationMismatch"
           }
         },
         "required": [
@@ -57884,6 +57890,9 @@
             ],
             "default": null,
             "title": "Readat"
+          },
+          "eligibility": {
+            "$ref": "#/components/schemas/UsageEligibility"
           }
         },
         "required": [
@@ -63694,6 +63703,125 @@
           "maxBytes",
           "released"
         ]
+      },
+      "ClaudeOrganization": {
+        "additionalProperties": false,
+        "properties": {
+          "idSuffix": {
+            "type": "string"
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "name",
+          "idSuffix"
+        ],
+        "type": "object"
+      },
+      "ClaudeOrganizationMismatch": {
+        "additionalProperties": false,
+        "properties": {
+          "expected": {
+            "$ref": "#/components/schemas/ClaudeOrganization"
+          },
+          "observed": {
+            "$ref": "#/components/schemas/ClaudeOrganization"
+          }
+        },
+        "required": [
+          "expected",
+          "observed"
+        ],
+        "type": "object"
+      },
+      "UsageEligibility": {
+        "additionalProperties": false,
+        "properties": {
+          "accountKey": {
+            "type": "string"
+          },
+          "agentId": {
+            "type": "string"
+          },
+          "allowed": {
+            "type": "boolean"
+          },
+          "buckets": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "overageAllowed": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "id",
+                "overageAllowed"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "canRun": {
+            "type": "boolean"
+          },
+          "checkedAt": {
+            "type": "number"
+          },
+          "fresh": {
+            "type": "boolean"
+          },
+          "model": {
+            "type": "string"
+          },
+          "overage": {
+            "enum": [
+              "allowed",
+              "in_use",
+              "rejected",
+              "unavailable"
+            ],
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "resetAt": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "validUntil": {
+            "type": [
+              "number",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "agentId",
+          "accountKey",
+          "model",
+          "provider",
+          "allowed",
+          "canRun",
+          "fresh",
+          "checkedAt",
+          "validUntil",
+          "resetAt",
+          "overage",
+          "buckets"
+        ],
+        "type": "object"
       }
     }
   },
@@ -71106,6 +71234,14 @@
             "required": false,
             "schema": {
               "const": "1",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "agent",
+            "required": false,
+            "schema": {
               "type": "string"
             }
           }
