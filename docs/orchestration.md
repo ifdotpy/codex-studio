@@ -1478,3 +1478,10 @@ change with both options. Cross-machine Claude cache reuse remains unverified.
 2. After a confirmed connection refusal, the client starts `studio-runtime-server` and verifies its executable build identity.
 3. Recovery owns the independent Rust process supervisor; quitting the client leaves runtime work active.
 4. A timeout or incompatible owner fails visibly without starting a replacement.
+
+### Local draft synchronization
+
+1. Import, receive, and acknowledge look up each stored draft by workspace and ID
+   inside the command transaction, preserving pending edits and newer master versions.
+2. The command commits its changes and returns one complete draft view; it does not
+   scan every stored draft again for each incoming document.
