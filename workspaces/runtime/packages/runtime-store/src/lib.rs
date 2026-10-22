@@ -1293,6 +1293,7 @@ impl RuntimeStore {
                 agent_volatile::prepare(transaction)?;
                 feature_schema::prepare(transaction)?;
                 StartupRecoveryRepository::prepare_indexes(transaction)?;
+                MonitorsRepository::prepare_indexes(transaction)?;
                 AgentIndexedReads::prepare_index(transaction)?;
                 schema::verify_bootstrap(transaction)?;
                 verify_observed_tables_are_rowid(transaction)
