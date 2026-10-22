@@ -459,7 +459,7 @@ pub(crate) fn check_archive_worktree(agent: &Value) -> Result<(), WorkspaceClean
         serde_json::from_value(agent.clone()).map_err(|_| WorkspaceCleanupError::InvalidRecord)?;
     if workspace.worktree_ready {
         let identity = worktree_identity(agent)?;
-        check_worktree(&identity).map_err(|_| WorkspaceCleanupError::NotSent)?;
+        checked_cleanup_worktree(&identity).map_err(|_| WorkspaceCleanupError::NotSent)?;
     }
     Ok(())
 }
