@@ -1,4 +1,3 @@
-use crate::prepared_python_support as python_test_support;
 use futures_util::future::BoxFuture;
 use serde_json::{Value, json};
 use std::{collections::VecDeque, time::Instant};
@@ -89,25 +88,6 @@ async fn read(replies: Vec<Result<Value, HistoryError>>) -> Result<Option<Value>
     HistoryRead::new(&mut reader, scope(), Instant::now() + READ_DEADLINE)
         .exact_turn("thread", "turn")
         .await
-}
-#[allow(clippy::disallowed_methods)]
-async fn oracle(script: &'static str) -> std::process::Output {
-    studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-services/tests/recovery_history",
-        move || {
-            let source =
-                std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src");
-            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("tests/recovery")
-                .join(script);
-            std::process::Command::new(python_test_support::prepared_python(&source))
-                .arg(path)
-                .output()
-        },
-    )
-    .await
-    .expect("oracle process task")
-    .expect("oracle process")
 }
 #[tokio::test]
 async fn exact_turn_keeps_complete_text_and_coalesces_identical_items() {
@@ -286,13 +266,8 @@ async fn unreadable_turn_retains_every_effect_and_active_turn_is_not_completion(
 
 #[tokio::test]
 async fn complete_history_outputs_and_calls_match_python() {
-    let output = oracle("history_oracle.py").await;
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let cases: Vec<Value> = serde_json::from_slice(&output.stdout).expect("valid recovery fixture");
+    let cases: Vec<Value> = serde_json::from_str(include_str!("recovery/history_oracle.json"))
+        .expect("frozen recovery cases");
     assert_eq!(cases.len(), 12);
     for case in cases {
         let mut reader = Reader {
@@ -415,13 +390,8 @@ async fn exact_start_reports_only_explicit_not_applied_receipts_as_negative_proo
 
 #[tokio::test]
 async fn legacy_start_matches_python_complete_history() {
-    let output = oracle("start_oracle.py").await;
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let cases: Vec<Value> = serde_json::from_slice(&output.stdout).expect("cases");
+    let cases: Vec<Value> = serde_json::from_str(include_str!("recovery/start_oracle.json"))
+        .expect("frozen recovery cases");
     for case in cases.iter().filter(|c| c["history_case"] == true) {
         let mut reader = Reader {
             replies: case["replies"]

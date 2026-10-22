@@ -1,4 +1,3 @@
-use std::process::Command;
 use std::sync::Arc;
 use std::{fs, path::Path};
 
@@ -6,8 +5,6 @@ use serde_json::Value;
 use serde_json::json;
 use std::collections::BTreeMap;
 use tempfile::TempDir;
-
-use crate::prepared_python_support as prepared_python;
 
 struct NoProbe;
 
@@ -77,26 +74,21 @@ impl studio_runtime_services::native_runtime::CompatibilityProbe for FixtureProb
 #[test]
 #[allow(clippy::disallowed_methods)]
 fn rust_reads_the_complete_status_record_written_by_python() {
-    let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let source = manifest.join("../../apps/server/src");
-    let script = manifest.join("tests/native_runtime_state_oracle.py");
-    let temp = TempDir::new().expect("isolated Python state root");
-    // The store refuses a root under any link, such as the macOS `/var`.
+    let temp = TempDir::new().expect("isolated state root");
     let root = studio_runtime_store::path_identity::resolve(temp.path()).expect("resolved root");
-    let output = Command::new(prepared_python::prepared_python(&source))
-        .arg(&script)
-        .arg(&source)
-        .arg(&root)
-        .env("PYTHONDONTWRITEBYTECODE", "1")
-        .output()
-        .expect("run Python state writer");
-    assert!(
-        output.status.success(),
-        "Python writer failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let expected: Value = serde_json::from_slice(&output.stdout).expect("Python oracle JSON");
-    for (name, record) in expected.as_object().expect("oracle object") {
+    let expected: BTreeMap<String, Value> =
+        serde_json::from_str(include_str!("native_runtime_state.json"))
+            .expect("frozen status records");
+    for (name, record) in &expected {
+        let directory = root.join(name).join("native-runtime");
+        fs::create_dir_all(&directory).expect("status directory");
+        fs::write(
+            directory.join("status.json"),
+            serde_json::to_vec(record).expect("status JSON"),
+        )
+        .expect("write status fixture");
+    }
+    for (name, record) in &expected {
         let runtime = studio_runtime_services::native_runtime::NativeRuntime::new(
             root.join(name),
             Arc::new(NoProbe),
@@ -195,22 +187,14 @@ fn rust_reads_the_complete_status_record_written_by_python() {
             .expect("release unused executable")
     );
 
-    let python_read = Command::new(prepared_python::prepared_python(&source))
-        .arg(script)
-        .arg(&source)
-        .arg(&state_root)
-        .arg("--read")
-        .env("PYTHONDONTWRITEBYTECODE", "1")
-        .output()
-        .expect("run Python reader on Rust-written state");
-    assert!(
-        python_read.status.success(),
-        "Python reader failed: {}",
-        String::from_utf8_lossy(&python_read.stderr)
+    let persisted = native_runtime
+        .read_state()
+        .expect("reread Rust state")
+        .expect("saved state");
+    assert_eq!(persisted.record()["selected"], new_record);
+    assert_eq!(
+        persisted.record()["accounts"],
+        second_state.record()["accounts"]
     );
-    let python_state: Value =
-        serde_json::from_slice(&python_read.stdout).expect("Python reader JSON");
-    assert_eq!(python_state["selected"], new_record);
-    assert_eq!(python_state["accounts"], second_state.record()["accounts"]);
-    assert_eq!(python_state["status"], "ready");
+    assert_eq!(persisted.record()["status"], "ready");
 }

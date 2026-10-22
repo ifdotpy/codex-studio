@@ -1,7 +1,5 @@
-use crate::prepared_python_support as python_oracle;
 use futures_util::future::BoxFuture;
 use std::path::PathBuf;
-use std::process::Command;
 use std::sync::{Arc, OnceLock};
 
 use serde_json::Value;
@@ -9,8 +7,11 @@ use studio_runtime_services::multi_server_auth::{AccessError, OwnerObservation, 
 use studio_runtime_services::multi_server_pairing::{MultiServerBoundary, OwnerLookup};
 use studio_runtime_store::RuntimeStore;
 
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Fixture {
-    files: python_oracle::StateTemplate,
+    canvas_sql: String,
+    signing_identity: Box<serde_json::value::RawValue>,
     pub data: Value,
 }
 static FIXTURE: OnceLock<Fixture> = OnceLock::new();
@@ -23,65 +24,67 @@ fn test_directory() -> tempfile::TempDir {
         .tempdir_in(root)
         .expect("isolated fixture root")
 }
-#[allow(clippy::disallowed_methods)]
 pub fn fixture() -> &'static Fixture {
     FIXTURE.get_or_init(|| {
-        let root = test_directory();
-        let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src");
-        let python = python_oracle::prepared_python(&source);
-        let script = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .expect("packages")
-            .join("runtime-services/tests/multi_server/oracle.py");
-        let mut command = Command::new(python);
-        if env!("CARGO_PKG_NAME") == "studio-runtime-http" {
-            command.env(
-                "MULTI_SERVER_ORACLE_NOW",
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .expect("clock")
-                    .as_secs()
-                    .to_string(),
-            );
-        }
-        let output = command
-            .arg(script)
-            .arg(root.path())
-            .env("PYTHONDONTWRITEBYTECODE", "1")
-            .output()
-            .expect("run isolated Python writer");
-        assert!(
-            output.status.success(),
-            "Python writer: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        let data = serde_json::from_slice(&output.stdout).expect("oracle JSON");
-        Fixture {
-            files: python_oracle::StateTemplate::capture(root.path()),
-            data,
-        }
+        serde_json::from_str(include_str!("fixture.json")).expect("frozen multi-server fixture")
     })
 }
-#[allow(clippy::disallowed_methods)]
 pub async fn store() -> (tempfile::TempDir, Arc<RuntimeStore>) {
-    let template = fixture();
     let root = test_directory();
-    template.files.write(root.path());
     let store = Arc::new(
         RuntimeStore::open(Some(root.path()))
             .await
-            .expect("open Python-written state"),
+            .expect("open fixture state"),
     );
+    store
+        .transaction_with(|tx| {
+            tx.execute_batch(&fixture().canvas_sql)?;
+            Ok::<_, studio_runtime_store::StoreError>(())
+        })
+        .await
+        .expect("restore frozen multi-server rows");
     (root, store)
 }
+
+/// The disposable oracle key only signs test requests at the HTTP wall clock.
+#[allow(clippy::disallowed_methods)]
+pub fn signing_identity() -> &'static studio_runtime_services::remote_transport::RemoteIdentity {
+    static IDENTITY: OnceLock<studio_runtime_services::remote_transport::RemoteIdentity> =
+        OnceLock::new();
+    IDENTITY.get_or_init(|| {
+        let root = test_directory();
+        let directory = root.path().join("multi-server");
+        std::fs::create_dir(&directory).expect("fixture identity directory");
+        let path = directory.join("identity.json");
+        std::fs::write(&path, fixture().signing_identity.get()).expect("fixture identity");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700))
+                .expect("private identity directory");
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
+                .expect("private identity file");
+        }
+        studio_runtime_services::remote_transport::load_multi_server_identity(root.path())
+            .expect("frozen signing identity")
+    })
+}
+/// Request fields shared by the service corpus and HTTP caller; cases also carry expectations.
+#[derive(serde::Deserialize)]
+pub struct FixtureRequest {
+    pub method: String,
+    pub target: String,
+    pub raw: String,
+    pub headers: Vec<(String, String)>,
+}
+
 pub fn request(case: &Value) -> Result<SignedRequest, AccessError> {
-    let headers =
-        serde_json::from_value::<Vec<(String, String)>>(case["headers"].clone()).expect("headers");
+    let case: FixtureRequest = serde_json::from_value(case.clone()).expect("fixture request");
     SignedRequest::from_headers(
-        case["method"].as_str().expect("method"),
-        case["target"].as_str().expect("target"),
-        &headers,
-        case["raw"].as_str().expect("raw").as_bytes(),
+        &case.method,
+        &case.target,
+        &case.headers,
+        case.raw.as_bytes(),
     )
 }
 pub struct Owner;

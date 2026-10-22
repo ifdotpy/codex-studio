@@ -1,0 +1,1562 @@
+[
+  {
+    "name": "write-0-None-new",
+    "action": "write",
+    "row": {
+      "id": "fixture",
+      "signature": "signature",
+      "pid": 123,
+      "sequence": 0,
+      "acknowledged": 0,
+      "rpc_sequence": 0,
+      "init_result": null,
+      "created": 10.0,
+      "closed_at": null,
+      "closed_reason": null,
+      "generation": 1
+    },
+    "prior": null,
+    "message": { "method": "echo", "params": {}, "id": 700 },
+    "native": null,
+    "expected": {
+      "result": {
+        "accepted": true,
+        "duplicate": false,
+        "remoteId": null,
+        "durableMs": 0.0
+      }
+    },
+    "outbound": { "id": 700, "method": "echo", "params": {} }
+  },
+  {
+    "name": "write-0-None-duplicate",
+    "action": "write",
+    "row": {
+      "id": "fixture",
+      "signature": "signature",
+      "pid": 123,
+      "sequence": 0,
+      "acknowledged": 0,
+      "rpc_sequence": 0,
+      "init_result": null,
+      "created": 10.0,
+      "closed_at": null,
+      "closed_reason": null,
+      "generation": 1
+    },
+    "prior": {
+      "handle": "fixture",
+      "operation_id": "monitor:0:None",
+      "digest": "dd39e985bf8a467ade7f245ecada13a2eeef9fa575b46eda9f13fbfec81dbc8a",
+      "native_id": null,
+      "accepted": 1792684371.8523042,
+      "generation": 1,
+      "response": null,
+      "response_sequence": null
+    },
+    "message": { "method": "echo", "params": {}, "id": 701 },
+    "native": null,
+    "expected": {
+      "result": {
+        "accepted": true,
+        "duplicate": true,
+        "remoteId": null,
+        "durableMs": 0.0
+      }
+    },
+    "outbound": null
+  },
+  {
+    "name": "write-0-None-conflict",
+    "action": "write",
+    "row": {
+      "id": "fixture",
+      "signature": "signature",
+      "pid": 123,
+      "sequence": 0,
+      "acknowledged": 0,
+      "rpc_sequence": 0,
+      "init_result": null,
+      "created": 10.0,
+      "closed_at": null,
+      "closed_reason": null,
+      "generation": 1
+    },
+    "prior": {
+      "handle": "fixture",
+      "operation_id": "monitor:0:None",
+      "digest": "dd39e985bf8a467ade7f245ecada13a2eeef9fa575b46eda9f13fbfec81dbc8a",
+      "native_id": null,
+      "accepted": 1792684371.8523042,
+      "generation": 1,
+      "response": null,
+      "response_sequence": null
+    },
+    "message": { "method": "echo", "params": { "changed": true }, "id": 701 },
+    "native": null,
+    "expected": {
+      "error": "Supervisor operation id was reused with different content"
+    },
+    "outbound": null
+  },
+  {
+    "name": "write-0-17-new",
+    "action": "write",
+    "row": {
+      "id": "fixture",
+      "signature": "signature",
+      "pid": 123,
+      "sequence": 0,
+      "acknowledged": 0,
+      "rpc_sequence": 0,
+      "init_result": null,
+      "created": 10.0,
+      "closed_at": null,
+      "closed_reason": null,
+      "generation": 1
+    },
+    "prior": null,
+    "message": { "method": "echo", "params": {}, "id": 700 },
+    "native": 17,
+    "expected": {
+      "result": {
+        "accepted": true,
+        "duplicate": false,
+        "remoteId": 1,
+        "durableMs": 0.0
+      }
+    },
+    "outbound": { "method": "echo", "params": {}, "id": 1 }
+  },
+  {
+    "name": "write-0-17-duplicate",
+    "action": "write",
+    "row": {
+      "id": "fixture",
+      "signature": "signature",
+      "pid": 123,
+      "sequence": 0,
+      "acknowledged": 0,
+      "rpc_sequence": 1,
+      "init_result": null,
+      "created": 10.0,
+      "closed_at": null,
+      "closed_reason": null,
+      "generation": 1
+    },
+    "prior": {
+      "handle": "fixture",
+      "operation_id": "monitor:0:17",
+      "digest": "dd39e985bf8a467ade7f245ecada13a2eeef9fa575b46eda9f13fbfec81dbc8a",
+      "native_id": 1,
+      "accepted": 1792684371.8530262,
+      "generation": 1,
+      "response": null,
+      "response_sequence": null
+    },
+    "message": { "method": "echo", "params": {}, "id": 701 },
+    "native": 17,
+    "expected": {
+      "result": {
+        "accepted": true,
+        "duplicate": true,
+        "remoteId": 1,
+        "durableMs": 0.0
+      }
+    },
+    "outbound": null
+  },
+  {
+    "name": "write-0-17-conflict",
+    "action": "write",
+    "row": {
+      "id": "fixture",
+      "signature": "signature",
+      "pid": 123,
+      "sequence": 0,
+      "acknowledged": 0,
+      "rpc_sequence": 1,
+      "init_result": null,
+      "created": 10.0,
+      "closed_at": null,
+      "closed_reason": null,
+      "generation": 1
+    },
+    "prior": {
+      "handle": "fixture",
+      "operation_id": "monitor:0:17",
+      "digest": "dd39e985bf8a467ade7f245ecada13a2eeef9fa575b46eda9f13fbfec81dbc8a",
+      "native_id": 1,
+      "accepted": 1792684371.8530262,
+      "generation": 1,
+      "response": null,
+      "response_sequence": null
+    },
+    "message": { "method": "echo", "params": { "changed": true }, "id": 701 },
+    "native": 17,
+    "expected": {
+      "error": "Supervisor operation id was reused with different content"
+    },
+    "outbound": null
+  },
+  {
+    "name": "write-0-claude:fixture-request-new",
+    "action": "write",
+    "row": {
+      "id": "fixture",
+      "signature": "signature",
+      "pid": 123,
+      "sequence": 0,
+      "acknowledged": 0,
+      "rpc_sequence": 1,
+      "init_result": null,
+      "created": 10.0,
+      "closed_at": null,
+      "closed_reason": null,
+      "generation": 1
+    },
+    "prior": null,
+    "message": { "method": "echo", "params": {}, "id": 700 },
+    "native": "claude:fixture-request",
+    "expected": {
+      "result": {
+        "accepted": true,
+        "duplicate": false,
+        "remoteId": "claude:fixture-request",
+        "durableMs": 0.0
+      }
+    },
+    "outbound": { "id": 700, "method": "echo", "params": {} }
+  },
+  {
+    "name": "write-0-claude:fixture-request-duplicate",
+    "action": "write",
+    "row": {
+      "id": "fixture",
+      "signature": "signature",
+      "pid": 123,
+      "sequence": 0,
+      "acknowledged": 0,
+      "rpc_sequence": 1,
+      "init_result": null,
+      "created": 10.0,
+      "closed_at": null,
+      "closed_reason": null,
+      "generation": 1
+    },
+    "prior": {
+      "handle": "fixture",
+      "operation_id": "monitor:0:claude:fixture-request",
+      "digest": "dd39e985bf8a467ade7f245ecada13a2eeef9fa575b46eda9f13fbfec81dbc8a",
+      "native_id": "claude:fixture-request",
+      "accepted": 1792684371.8533318,
+      "generation": 1,
+      "response": null,
+      "response_sequence": null
+    },
+    "message": { "method": "echo", "params": {}, "id": 701 },
+    "native": "claude:fixture-request",
+    "expected": {
+      "result": {
+        "accepted": true,
+        "duplicate": true,
+        "remoteId": "claude:fixture-request",
+        "durableMs": 0.0
+      }
+    },
+    "outbound": null
+  },
+  {
+    "name": "write-0-claude:fixture-request-conflict",
+    "action": "write",
+    "row": {
+      "id": "fixture",
+      "signature": "signature",
+      "pid": 123,
+      "sequence": 0,
+      "acknowledged": 0,
+      "rpc_sequence": 1,
+      "init_result": null,
+      "created": 10.0,
+      "closed_at": null,
+      "closed_reason": null,
+      "generation": 1
+    },
+    "prior": {
+      "handle": "fixture",
+      "operation_id": "monitor:0:claude:fixture-request",
+      "digest": "dd39e985bf8a467ade7f245ecada13a2eeef9fa575b46eda9f13fbfec81dbc8a",
+      "native_id": "claude:fixture-request",
+      "accepted": 1792684371.8533318,
+      "generation": 1,
+      "response": null,
+      "response_sequence": null
+    },
+    "message": { "method": "echo", "params": { "changed": true }, "id": 701 },
+    "native": "claude:fixture-request",
+    "expected": {
+      "error": "Supervisor operation id was reused with different content"
+    },
+    "outbound": null
+  },
+  {
+    "name": "write-1-None-new",
+    "action": "write",
+    "row": {
+      "id": "fixture",
+      "signature": "signature",
+      "pid": 123,
+      "sequence": 0,
+      "acknowledged": 0,
+      "rpc_sequence": 1,
+      "init_result": null,
+      "created": 10.0,
+      "closed_at": null,
+      "closed_reason": null,
+      "generation": 1
+    },
+    "prior": null,
+    "message": {
+      "method": "echo",
+      "params": { "text": "\u00e9\u96ea\ud83d\ude00", "fraction": 1e-6 },
+      "id": 700
+    },
+    "native": null,
+    "expected": {
+      "result": {
+        "accepted": true,
+        "duplicate": false,
+        "remoteId": null,
+        "durableMs": 0.0
+      }
+    },
+    "outbound": {
+      "id": 700,
+      "method": "echo",
+      "params": { "fraction": 1e-6, "text": "\u00e9\u96ea\ud83d\ude00" }
+    }
+  },
+  {
+    "name": "write-1-None-duplicate",
+    "action": "write",
+    "row": {
+      "id": "fixture",
+      "signature": "signature",
+      "pid": 123,
+      "sequence": 0,
+      "acknowledged": 0,
+      "rpc_sequence": 1,
+      "init_result": null,
+      "created": 10.0,
+      "closed_at": null,
+      "closed_reason": null,
+      "generation": 1
+    },
+    "prior": {
+      "handle": "fixture",
+      "operation_id": "monitor:1:None",
+      "digest": "36637459fd0c0b47fd0bd8b89b1a40f9c8ff735b5f99db1e1568275bb8d1ef26",
+      "native_id": null,
+      "accepted": 1792684371.8535905,
+      "generation": 1,
+      "response": null,
+      "response_sequence": null
+    },
+    "message": {
+      "method": "echo",
+      "params": { "text": "\u00e9\u96ea\ud83d\ude00", "fraction": 1e-6 },
+      "id": 701
+    },
+    "native": null,
+    "expected": {
+      "result": {
+        "accepted": true,
+        "duplicate": true,
+        "remoteId": null,
+        "durableMs": 0.0
+      }
+    },
+    "outbound": null
+  },
+  {
+    "name": "write-1-None-conflict",
+    "action": "write",
+    "row": {
+      "id": "fixture",
+      "signature": "signature",
+      "pid": 123,
+      "sequence": 0,
+      "acknowledged": 0,
+      "rpc_sequence": 1,
+      "init_result": null,
+      "created": 10.0,
+      "closed_at": null,
+      "closed_reason": null,
+      "generation": 1
+    },
+    "prior": {
+      "handle": "fixture",
+      "operation_id": "monitor:1:None",
+      "digest": "36637459fd0c0b47fd0bd8b89b1a40f9c8ff735b5f99db1e1568275bb8d1ef26",
+      "native_id": null,
+      "accepted": 1792684371.8535905,
+      "generation": 1,
+      "response": null,
+      "response_sequence": null
+    },
+    "message": { "method": "echo", "params": { "changed": true }, "id": 701 },
+    "native": null,
+    "expected": {
+      "error": "Supervisor operation id was reused with different content"
+    },
+    "outbound": null
+  },
+  {
+    "name": "write-1-17-new",
+    "action": "write",
+    "row": {
+      "id": "fixture",
+      "signature": "signature",
+      "pid": 123,
+      "sequence": 0,
+      "acknowledged": 0,
+      "rpc_sequence": 1,
+      "init_result": null,
+      "created": 10.0,
+      "closed_at": null,
+      "closed_reason": null,
+      "generation": 1
+    },
+    "prior": null,
+    "message": {
+      "method": "echo",
+      "params": { "text": "\u00e9\u96ea\ud83d\ude00", "fraction": 1e-6 },
+      "id": 700
+    },
+    "native": 17,
+    "expected": {
+      "result": {
+        "accepted": true,
+        "duplicate": false,
+        "remoteId": 2,
+        "durableMs": 0.0
+      }
+    },
+    "outbound": {
+      "method": "echo",
+      "params": { "text": "\u00e9\u96ea\ud83d\ude00", "fraction": 1e-6 },
+      "id": 2
+    }
+  },
+  {
+    "name": "write-1-17-duplicate",
+    "action": "write",
+    "row": {
+      "id": "fixture",
+      "signature": "signature",
+      "pid": 123,
+      "sequence": 0,
+      "acknowledged": 0,
+      "rpc_sequence": 2,
+      "init_result": null,
+      "created": 10.0,
+      "closed_at": null,
+      "closed_reason": null,
+      "generation": 1
+    },
+    "prior": {
+      "handle": "fixture",
+      "operation_id": "monitor:1:17",
+      "digest": "36637459fd0c0b47fd0bd8b89b1a40f9c8ff735b5f99db1e1568275bb8d1ef26",
+      "native_id": 2,
+      "accepted": 1792684371.8538291,
+      "generation": 1,
+      "response": null,
+      "response_sequence": null
+    },
+    "message": {
+      "method": "echo",
+      "params": { "text": "\u00e9\u96ea\ud83d\ude00", "fraction": 1e-6 },
+      "id": 701
+    },
+    "native": 17,
+    "expected": {
+      "result": {
+        "accepted": true,
+        "duplicate": true,
+        "remoteId": 2,
+        "durableMs": 0.0
+      }
+    },
+    "outbound": null
+  },
+  {
+    "name": "write-1-17-conflict",
+    "action": "write",
+    "row": {
+      "id": "fixture",
+      "signature": "signature",
+      "pid": 123,
+      "sequence": 0,
+      "acknowledged": 0,
+      "rpc_sequence": 2,
+      "init_result": null,
+      "created": 10.0,
+      "closed_at": null,
+      "closed_reason": null,
+      "generation": 1
+    },
+    "prior": {
+      "handle": "fixture",
+      "operation_id": "monitor:1:17",
+      "digest": "36637459fd0c0b47fd0bd8b89b1a40f9c8ff735b5f99db1e1568275bb8d1ef26",
+      "native_id": 2,
+      "accepted": 1792684371.8538291,
+      "generation": 1,
+      "response": null,
+      "response_sequence": null
+    },
+    "message": { "method": "echo", "params": { "changed": true }, "id": 701 },
+    "native": 17,
+    "expected": {
+      "error": "Supervisor operation id was reused with different content"
+    },
+    "outbound": null
+  },
+  {
+    "name": "write-1-claude:fixture-request-new",
+    "action": "write",
+    "row": {
+      "id": "fixture",
+      "signature": "signature",
+      "pid": 123,
+      "sequence": 0,
+      "acknowledged": 0,
+      "rpc_sequence": 2,
+      "init_result": null,
+      "created": 10.0,
+      "closed_at": null,
+      "closed_reason": null,
+      "generation": 1
+    },
+    "prior": null,
+    "message": {
+      "method": "echo",
+      "params": { "text": "\u00e9\u96ea\ud83d\ude00", "fraction": 1e-6 },
+      "id": 700
+    },
+    "native": "claude:fixture-request",
+    "expected": {
+      "result": {
+        "accepted": true,
+        "duplicate": false,
+        "remoteId": "claude:fixture-request",
+        "durableMs": 0.0
+      }
+    },
+    "outbound": {
+      "id": 700,
+      "method": "echo",
+      "params": { "fraction": 1e-6, "text": "\u00e9\u96ea\ud83d\ude00" }
+    }
+  },
+  {
+    "name": "write-1-claude:fixture-request-duplicate",
+    "action": "write",
+    "row": {
+      "id": "fixture",
+      "signature": "signature",
+      "pid": 123,
+      "sequence": 0,
+      "acknowledged": 0,
+      "rpc_sequence": 2,
+      "init_result": null,
+      "created": 10.0,
+      "closed_at": null,
+      "closed_reason": null,
+      "generation": 1
+    },
+    "prior": {
+      "handle": "fixture",
+      "operation_id": "monitor:1:claude:fixture-request",
+      "digest": "36637459fd0c0b47fd0bd8b89b1a40f9c8ff735b5f99db1e1568275bb8d1ef26",
+      "native_id": "claude:fixture-request",
+      "accepted": 1792684371.8540525,
+      "generation": 1,
+      "response": null,
+      "response_sequence": null
+    },
+    "message": {
+      "method": "echo",
+      "params": { "text": "\u00e9\u96ea\ud83d\ude00", "fraction": 1e-6 },
+      "id": 701
+    },
+    "native": "claude:fixture-request",
+    "expected": {
+      "result": {
+        "accepted": true,
+        "duplicate": true,
+        "remoteId": "claude:fixture-request",
+        "durableMs": 0.0
+      }
+    },
+    "outbound": null
+  },
+  {
+    "name": "write-1-claude:fixture-request-conflict",
+    "action": "write",
+    "row": {
+      "id": "fixture",
+      "signature": "signature",
+      "pid": 123,
+      "sequence": 0,
+      "acknowledged": 0,
+      "rpc_sequence": 2,
+      "init_result": null,
+      "created": 10.0,
+      "closed_at": null,
+      "closed_reason": null,
+      "generation": 1
+    },
+    "prior": {
+      "handle": "fixture",
+      "operation_id": "monitor:1:claude:fixture-request",
+      "digest": "36637459fd0c0b47fd0bd8b89b1a40f9c8ff735b5f99db1e1568275bb8d1ef26",
+      "native_id": "claude:fixture-request",
+      "accepted": 1792684371.8540525,
+      "generation": 1,
+      "response": null,
+      "response_sequence": null
+    },
+    "message": { "method": "echo", "params": { "changed": true }, "id": 701 },
+    "native": "claude:fixture-request",
+    "expected": {
+      "error": "Supervisor operation id was reused with different content"
+    },
+    "outbound": null
+  },
+  {
+    "name": "write-2-None-new",
+    "action": "write",
+    "row": {
+      "id": "fixture",
+      "signature": "signature",
+      "pid": 123,
+      "sequence": 0,
+      "acknowledged": 0,
+      "rpc_sequence": 2,
+      "init_result": null,
+      "created": 10.0,
+      "closed_at": null,
+      "closed_reason": null,
+      "generation": 1
+    },
+    "prior": null,
+    "message": { "method": "initialized", "id": 700 },
+    "native": null,
+    "expected": {
+      "result": {
+        "accepted": true,
+        "duplicate": false,
+        "remoteId": null,
+        "durableMs": 0.0
+      }
+    },
+    "outbound": { "id": 700, "method": "initialized" }
+  },
+  {
+    "name": "write-2-None-duplicate",
+    "action": "write",
+    "row": {
+      "id": "fixture",
+      "signature": "signature",
+      "pid": 123,
+      "sequence": 0,
+      "acknowledged": 0,
+      "rpc_sequence": 2,
+      "init_result": null,
+      "created": 10.0,
+      "closed_at": null,
+      "closed_reason": null,
+      "generation": 1
+    },
+    "prior": {
+      "handle": "fixture",
+      "operation_id": "monitor:2:None",
+      "digest": "aba8c91241d7fab24e31ec3a6740ba9d9b3dd12695edbc8f14b78eaf23c9ba55",
+      "native_id": null,
+      "accepted": 1792684371.854275,
+      "generation": 1,
+      "response": null,
+      "response_sequence": null
+    },
+    "message": { "method": "initialized", "id": 701 },
+    "native": null,
+    "expected": {
+      "result": {
+        "accepted": true,
+        "duplicate": true,
+        "remoteId": null,
+        "durableMs": 0.0
+      }
+    },
+    "outbound": null
+  },
+  {
+    "name": "write-2-None-conflict",
+    "action": "write",
+    "row": {
+      "id": "fixture",
+      "signature": "signature",
+      "pid": 123,
+      "sequence": 0,
+      "acknowledged": 0,
+      "rpc_sequence": 2,
+      "init_result": null,
+      "created": 10.0,
+      "closed_at": null,
+      "closed_reason": null,
+      "generation": 1
+    },
+    "prior": {
+      "handle": "fixture",
+      "operation_id": "monitor:2:None",
+      "digest": "aba8c91241d7fab24e31ec3a6740ba9d9b3dd12695edbc8f14b78eaf23c9ba55",
+      "native_id": null,
+      "accepted": 1792684371.854275,
+      "generation": 1,
+      "response": null,
+      "response_sequence": null
+    },
+    "message": {
+      "method": "initialized",
+      "id": 701,
+      "params": { "changed": true }
+    },
+    "native": null,
+    "expected": {
+      "error": "Supervisor operation id was reused with different content"
+    },
+    "outbound": null
+  },
+  {
+    "name": "write-2-17-new",
+    "action": "write",
+    "row": {
+      "id": "fixture",
+      "signature": "signature",
+      "pid": 123,
+      "sequence": 0,
+      "acknowledged": 0,
+      "rpc_sequence": 2,
+      "init_result": null,
+      "created": 10.0,
+      "closed_at": null,
+      "closed_reason": null,
+      "generation": 1
+    },
+    "prior": null,
+    "message": { "method": "initialized", "id": 700 },
+    "native": 17,
+    "expected": {
+      "result": {
+        "accepted": true,
+        "duplicate": false,
+        "remoteId": 3,
+        "durableMs": 0.0
+      }
+    },
+    "outbound": { "method": "initialized", "id": 3 }
+  },
+  {
+    "name": "write-2-17-duplicate",
+    "action": "write",
+    "row": {
+      "id": "fixture",
+      "signature": "signature",
+      "pid": 123,
+      "sequence": 0,
+      "acknowledged": 0,
+      "rpc_sequence": 3,
+      "init_result": null,
+      "created": 10.0,
+      "closed_at": null,
+      "closed_reason": null,
+      "generation": 1
+    },
+    "prior": {
+      "handle": "fixture",
+      "operation_id": "monitor:2:17",
+      "digest": "aba8c91241d7fab24e31ec3a6740ba9d9b3dd12695edbc8f14b78eaf23c9ba55",
+      "native_id": 3,
+      "accepted": 1792684371.8544865,
+      "generation": 1,
+      "response": null,
+      "response_sequence": null
+    },
+    "message": { "method": "initialized", "id": 701 },
+    "native": 17,
+    "expected": {
+      "result": {
+        "accepted": true,
+        "duplicate": true,
+        "remoteId": 3,
+        "durableMs": 0.0
+      }
+    },
+    "outbound": null
+  },
+  {
+    "name": "write-2-17-conflict",
+    "action": "write",
+    "row": {
+      "id": "fixture",
+      "signature": "signature",
+      "pid": 123,
+      "sequence": 0,
+      "acknowledged": 0,
+      "rpc_sequence": 3,
+      "init_result": null,
+      "created": 10.0,
+      "closed_at": null,
+      "closed_reason": null,
+      "generation": 1
+    },
+    "prior": {
+      "handle": "fixture",
+      "operation_id": "monitor:2:17",
+      "digest": "aba8c91241d7fab24e31ec3a6740ba9d9b3dd12695edbc8f14b78eaf23c9ba55",
+      "native_id": 3,
+      "accepted": 1792684371.8544865,
+      "generation": 1,
+      "response": null,
+      "response_sequence": null
+    },
+    "message": {
+      "method": "initialized",
+      "id": 701,
+      "params": { "changed": true }
+    },
+    "native": 17,
+    "expected": {
+      "error": "Supervisor operation id was reused with different content"
+    },
+    "outbound": null
+  },
+  {
+    "name": "write-2-claude:fixture-request-new",
+    "action": "write",
+    "row": {
+      "id": "fixture",
+      "signature": "signature",
+      "pid": 123,
+      "sequence": 0,
+      "acknowledged": 0,
+      "rpc_sequence": 3,
+      "init_result": null,
+      "created": 10.0,
+      "closed_at": null,
+      "closed_reason": null,
+      "generation": 1
+    },
+    "prior": null,
+    "message": { "method": "initialized", "id": 700 },
+    "native": "claude:fixture-request",
+    "expected": {
+      "result": {
+        "accepted": true,
+        "duplicate": false,
+        "remoteId": "claude:fixture-request",
+        "durableMs": 0.0
+      }
+    },
+    "outbound": { "id": 700, "method": "initialized" }
+  },
+  {
+    "name": "write-2-claude:fixture-request-duplicate",
+    "action": "write",
+    "row": {
+      "id": "fixture",
+      "signature": "signature",
+      "pid": 123,
+      "sequence": 0,
+      "acknowledged": 0,
+      "rpc_sequence": 3,
+      "init_result": null,
+      "created": 10.0,
+      "closed_at": null,
+      "closed_reason": null,
+      "generation": 1
+    },
+    "prior": {
+      "handle": "fixture",
+      "operation_id": "monitor:2:claude:fixture-request",
+      "digest": "aba8c91241d7fab24e31ec3a6740ba9d9b3dd12695edbc8f14b78eaf23c9ba55",
+      "native_id": "claude:fixture-request",
+      "accepted": 1792684371.854898,
+      "generation": 1,
+      "response": null,
+      "response_sequence": null
+    },
+    "message": { "method": "initialized", "id": 701 },
+    "native": "claude:fixture-request",
+    "expected": {
+      "result": {
+        "accepted": true,
+        "duplicate": true,
+        "remoteId": "claude:fixture-request",
+        "durableMs": 0.0
+      }
+    },
+    "outbound": null
+  },
+  {
+    "name": "write-2-claude:fixture-request-conflict",
+    "action": "write",
+    "row": {
+      "id": "fixture",
+      "signature": "signature",
+      "pid": 123,
+      "sequence": 0,
+      "acknowledged": 0,
+      "rpc_sequence": 3,
+      "init_result": null,
+      "created": 10.0,
+      "closed_at": null,
+      "closed_reason": null,
+      "generation": 1
+    },
+    "prior": {
+      "handle": "fixture",
+      "operation_id": "monitor:2:claude:fixture-request",
+      "digest": "aba8c91241d7fab24e31ec3a6740ba9d9b3dd12695edbc8f14b78eaf23c9ba55",
+      "native_id": "claude:fixture-request",
+      "accepted": 1792684371.854898,
+      "generation": 1,
+      "response": null,
+      "response_sequence": null
+    },
+    "message": {
+      "method": "initialized",
+      "id": 701,
+      "params": { "changed": true }
+    },
+    "native": "claude:fixture-request",
+    "expected": {
+      "error": "Supervisor operation id was reused with different content"
+    },
+    "outbound": null
+  },
+  {
+    "name": "write-3-None-new",
+    "action": "write",
+    "row": {
+      "id": "fixture",
+      "signature": "signature",
+      "pid": 123,
+      "sequence": 0,
+      "acknowledged": 0,
+      "rpc_sequence": 3,
+      "init_result": null,
+      "created": 10.0,
+      "closed_at": null,
+      "closed_reason": null,
+      "generation": 1
+    },
+    "prior": null,
+    "message": { "id": 700, "result": { "ok": true } },
+    "native": null,
+    "expected": {
+      "result": {
+        "accepted": true,
+        "duplicate": false,
+        "remoteId": null,
+        "durableMs": 0.0
+      }
+    },
+    "outbound": { "id": 700, "result": { "ok": true } }
+  },
+  {
+    "name": "write-3-None-duplicate",
+    "action": "write",
+    "row": {
+      "id": "fixture",
+      "signature": "signature",
+      "pid": 123,
+      "sequence": 0,
+      "acknowledged": 0,
+      "rpc_sequence": 3,
+      "init_result": null,
+      "created": 10.0,
+      "closed_at": null,
+      "closed_reason": null,
+      "generation": 1
+    },
+    "prior": {
+      "handle": "fixture",
+      "operation_id": "monitor:3:None",
+      "digest": "40264754331e6db5c6dd2a9fd90600626400a2c3ef4d232a4e4e3bd50b177b09",
+      "native_id": null,
+      "accepted": 1792684371.855121,
+      "generation": 1,
+      "response": null,
+      "response_sequence": null
+    },
+    "message": { "id": 701, "result": { "ok": true } },
+    "native": null,
+    "expected": {
+      "result": {
+        "accepted": true,
+        "duplicate": true,
+        "remoteId": null,
+        "durableMs": 0.0
+      }
+    },
+    "outbound": null
+  },
+  {
+    "name": "write-3-None-conflict",
+    "action": "write",
+    "row": {
+      "id": "fixture",
+      "signature": "signature",
+      "pid": 123,
+      "sequence": 0,
+      "acknowledged": 0,
+      "rpc_sequence": 3,
+      "init_result": null,
+      "created": 10.0,
+      "closed_at": null,
+      "closed_reason": null,
+      "generation": 1
+    },
+    "prior": {
+      "handle": "fixture",
+      "operation_id": "monitor:3:None",
+      "digest": "40264754331e6db5c6dd2a9fd90600626400a2c3ef4d232a4e4e3bd50b177b09",
+      "native_id": null,
+      "accepted": 1792684371.855121,
+      "generation": 1,
+      "response": null,
+      "response_sequence": null
+    },
+    "message": {
+      "id": 701,
+      "result": { "ok": true },
+      "params": { "changed": true }
+    },
+    "native": null,
+    "expected": {
+      "error": "Supervisor operation id was reused with different content"
+    },
+    "outbound": null
+  },
+  {
+    "name": "write-3-17-new",
+    "action": "write",
+    "row": {
+      "id": "fixture",
+      "signature": "signature",
+      "pid": 123,
+      "sequence": 0,
+      "acknowledged": 0,
+      "rpc_sequence": 3,
+      "init_result": null,
+      "created": 10.0,
+      "closed_at": null,
+      "closed_reason": null,
+      "generation": 1
+    },
+    "prior": null,
+    "message": { "id": 700, "result": { "ok": true } },
+    "native": 17,
+    "expected": {
+      "result": {
+        "accepted": true,
+        "duplicate": false,
+        "remoteId": 17,
+        "durableMs": 0.0
+      }
+    },
+    "outbound": { "id": 700, "result": { "ok": true } }
+  },
+  {
+    "name": "write-3-17-duplicate",
+    "action": "write",
+    "row": {
+      "id": "fixture",
+      "signature": "signature",
+      "pid": 123,
+      "sequence": 0,
+      "acknowledged": 0,
+      "rpc_sequence": 3,
+      "init_result": null,
+      "created": 10.0,
+      "closed_at": null,
+      "closed_reason": null,
+      "generation": 1
+    },
+    "prior": {
+      "handle": "fixture",
+      "operation_id": "monitor:3:17",
+      "digest": "40264754331e6db5c6dd2a9fd90600626400a2c3ef4d232a4e4e3bd50b177b09",
+      "native_id": 17,
+      "accepted": 1792684371.855328,
+      "generation": 1,
+      "response": null,
+      "response_sequence": null
+    },
+    "message": { "id": 701, "result": { "ok": true } },
+    "native": 17,
+    "expected": {
+      "result": {
+        "accepted": true,
+        "duplicate": true,
+        "remoteId": 17,
+        "durableMs": 0.0
+      }
+    },
+    "outbound": null
+  },
+  {
+    "name": "write-3-17-conflict",
+    "action": "write",
+    "row": {
+      "id": "fixture",
+      "signature": "signature",
+      "pid": 123,
+      "sequence": 0,
+      "acknowledged": 0,
+      "rpc_sequence": 3,
+      "init_result": null,
+      "created": 10.0,
+      "closed_at": null,
+      "closed_reason": null,
+      "generation": 1
+    },
+    "prior": {
+      "handle": "fixture",
+      "operation_id": "monitor:3:17",
+      "digest": "40264754331e6db5c6dd2a9fd90600626400a2c3ef4d232a4e4e3bd50b177b09",
+      "native_id": 17,
+      "accepted": 1792684371.855328,
+      "generation": 1,
+      "response": null,
+      "response_sequence": null
+    },
+    "message": {
+      "id": 701,
+      "result": { "ok": true },
+      "params": { "changed": true }
+    },
+    "native": 17,
+    "expected": {
+      "error": "Supervisor operation id was reused with different content"
+    },
+    "outbound": null
+  },
+  {
+    "name": "write-3-claude:fixture-request-new",
+    "action": "write",
+    "row": {
+      "id": "fixture",
+      "signature": "signature",
+      "pid": 123,
+      "sequence": 0,
+      "acknowledged": 0,
+      "rpc_sequence": 3,
+      "init_result": null,
+      "created": 10.0,
+      "closed_at": null,
+      "closed_reason": null,
+      "generation": 1
+    },
+    "prior": null,
+    "message": { "id": 700, "result": { "ok": true } },
+    "native": "claude:fixture-request",
+    "expected": {
+      "result": {
+        "accepted": true,
+        "duplicate": false,
+        "remoteId": "claude:fixture-request",
+        "durableMs": 0.0
+      }
+    },
+    "outbound": { "id": 700, "result": { "ok": true } }
+  },
+  {
+    "name": "write-3-claude:fixture-request-duplicate",
+    "action": "write",
+    "row": {
+      "id": "fixture",
+      "signature": "signature",
+      "pid": 123,
+      "sequence": 0,
+      "acknowledged": 0,
+      "rpc_sequence": 3,
+      "init_result": null,
+      "created": 10.0,
+      "closed_at": null,
+      "closed_reason": null,
+      "generation": 1
+    },
+    "prior": {
+      "handle": "fixture",
+      "operation_id": "monitor:3:claude:fixture-request",
+      "digest": "40264754331e6db5c6dd2a9fd90600626400a2c3ef4d232a4e4e3bd50b177b09",
+      "native_id": "claude:fixture-request",
+      "accepted": 1792684371.855527,
+      "generation": 1,
+      "response": null,
+      "response_sequence": null
+    },
+    "message": { "id": 701, "result": { "ok": true } },
+    "native": "claude:fixture-request",
+    "expected": {
+      "result": {
+        "accepted": true,
+        "duplicate": true,
+        "remoteId": "claude:fixture-request",
+        "durableMs": 0.0
+      }
+    },
+    "outbound": null
+  },
+  {
+    "name": "write-3-claude:fixture-request-conflict",
+    "action": "write",
+    "row": {
+      "id": "fixture",
+      "signature": "signature",
+      "pid": 123,
+      "sequence": 0,
+      "acknowledged": 0,
+      "rpc_sequence": 3,
+      "init_result": null,
+      "created": 10.0,
+      "closed_at": null,
+      "closed_reason": null,
+      "generation": 1
+    },
+    "prior": {
+      "handle": "fixture",
+      "operation_id": "monitor:3:claude:fixture-request",
+      "digest": "40264754331e6db5c6dd2a9fd90600626400a2c3ef4d232a4e4e3bd50b177b09",
+      "native_id": "claude:fixture-request",
+      "accepted": 1792684371.855527,
+      "generation": 1,
+      "response": null,
+      "response_sequence": null
+    },
+    "message": {
+      "id": 701,
+      "result": { "ok": true },
+      "params": { "changed": true }
+    },
+    "native": "claude:fixture-request",
+    "expected": {
+      "error": "Supervisor operation id was reused with different content"
+    },
+    "outbound": null
+  },
+  {
+    "name": "ack-0",
+    "action": "cursor",
+    "row": {
+      "id": "fixture",
+      "signature": "signature",
+      "pid": 123,
+      "sequence": 3,
+      "acknowledged": 1,
+      "rpc_sequence": 3,
+      "init_result": null,
+      "created": 10.0,
+      "closed_at": null,
+      "closed_reason": null,
+      "generation": 1
+    },
+    "cursor": 0,
+    "ack": true,
+    "error": "Supervisor ACK cursor is outside the saved sequence range"
+  },
+  {
+    "name": "ack-1",
+    "action": "cursor",
+    "row": {
+      "id": "fixture",
+      "signature": "signature",
+      "pid": 123,
+      "sequence": 3,
+      "acknowledged": 1,
+      "rpc_sequence": 3,
+      "init_result": null,
+      "created": 10.0,
+      "closed_at": null,
+      "closed_reason": null,
+      "generation": 1
+    },
+    "cursor": 1,
+    "ack": true,
+    "error": null
+  },
+  {
+    "name": "ack-2",
+    "action": "cursor",
+    "row": {
+      "id": "fixture",
+      "signature": "signature",
+      "pid": 123,
+      "sequence": 3,
+      "acknowledged": 1,
+      "rpc_sequence": 3,
+      "init_result": null,
+      "created": 10.0,
+      "closed_at": null,
+      "closed_reason": null,
+      "generation": 1
+    },
+    "cursor": 2,
+    "ack": true,
+    "error": null
+  },
+  {
+    "name": "ack-3",
+    "action": "cursor",
+    "row": {
+      "id": "fixture",
+      "signature": "signature",
+      "pid": 123,
+      "sequence": 3,
+      "acknowledged": 1,
+      "rpc_sequence": 3,
+      "init_result": null,
+      "created": 10.0,
+      "closed_at": null,
+      "closed_reason": null,
+      "generation": 1
+    },
+    "cursor": 3,
+    "ack": true,
+    "error": null
+  },
+  {
+    "name": "ack-4",
+    "action": "cursor",
+    "row": {
+      "id": "fixture",
+      "signature": "signature",
+      "pid": 123,
+      "sequence": 3,
+      "acknowledged": 1,
+      "rpc_sequence": 3,
+      "init_result": null,
+      "created": 10.0,
+      "closed_at": null,
+      "closed_reason": null,
+      "generation": 1
+    },
+    "cursor": 4,
+    "ack": true,
+    "error": "Supervisor ACK cursor is outside the saved sequence range"
+  },
+  {
+    "name": "replay-0",
+    "action": "cursor",
+    "row": {
+      "id": "fixture",
+      "signature": "signature",
+      "pid": 123,
+      "sequence": 3,
+      "acknowledged": 1,
+      "rpc_sequence": 3,
+      "init_result": null,
+      "created": 10.0,
+      "closed_at": null,
+      "closed_reason": null,
+      "generation": 1
+    },
+    "cursor": 0,
+    "ack": false,
+    "error": "Supervisor replay cursor is stale or ahead of the journal"
+  },
+  {
+    "name": "replay-1",
+    "action": "cursor",
+    "row": {
+      "id": "fixture",
+      "signature": "signature",
+      "pid": 123,
+      "sequence": 3,
+      "acknowledged": 1,
+      "rpc_sequence": 3,
+      "init_result": null,
+      "created": 10.0,
+      "closed_at": null,
+      "closed_reason": null,
+      "generation": 1
+    },
+    "cursor": 1,
+    "ack": false,
+    "error": null
+  },
+  {
+    "name": "replay-2",
+    "action": "cursor",
+    "row": {
+      "id": "fixture",
+      "signature": "signature",
+      "pid": 123,
+      "sequence": 3,
+      "acknowledged": 1,
+      "rpc_sequence": 3,
+      "init_result": null,
+      "created": 10.0,
+      "closed_at": null,
+      "closed_reason": null,
+      "generation": 1
+    },
+    "cursor": 2,
+    "ack": false,
+    "error": null
+  },
+  {
+    "name": "replay-3",
+    "action": "cursor",
+    "row": {
+      "id": "fixture",
+      "signature": "signature",
+      "pid": 123,
+      "sequence": 3,
+      "acknowledged": 1,
+      "rpc_sequence": 3,
+      "init_result": null,
+      "created": 10.0,
+      "closed_at": null,
+      "closed_reason": null,
+      "generation": 1
+    },
+    "cursor": 3,
+    "ack": false,
+    "error": null
+  },
+  {
+    "name": "replay-4",
+    "action": "cursor",
+    "row": {
+      "id": "fixture",
+      "signature": "signature",
+      "pid": 123,
+      "sequence": 3,
+      "acknowledged": 1,
+      "rpc_sequence": 3,
+      "init_result": null,
+      "created": 10.0,
+      "closed_at": null,
+      "closed_reason": null,
+      "generation": 1
+    },
+    "cursor": 4,
+    "ack": false,
+    "error": "Supervisor replay cursor is stale or ahead of the journal"
+  },
+  {
+    "name": "next-0",
+    "action": "cursor",
+    "row": {
+      "id": "fixture",
+      "signature": "signature",
+      "pid": 123,
+      "sequence": 3,
+      "acknowledged": 1,
+      "rpc_sequence": 3,
+      "init_result": null,
+      "created": 10.0,
+      "closed_at": null,
+      "closed_reason": null,
+      "generation": 1
+    },
+    "cursor": 0,
+    "ack": false,
+    "error": "Supervisor replay cursor is stale or ahead of the journal"
+  },
+  {
+    "name": "next-1",
+    "action": "cursor",
+    "row": {
+      "id": "fixture",
+      "signature": "signature",
+      "pid": 123,
+      "sequence": 3,
+      "acknowledged": 1,
+      "rpc_sequence": 3,
+      "init_result": null,
+      "created": 10.0,
+      "closed_at": null,
+      "closed_reason": null,
+      "generation": 1
+    },
+    "cursor": 1,
+    "ack": false,
+    "error": null
+  },
+  {
+    "name": "next-2",
+    "action": "cursor",
+    "row": {
+      "id": "fixture",
+      "signature": "signature",
+      "pid": 123,
+      "sequence": 3,
+      "acknowledged": 1,
+      "rpc_sequence": 3,
+      "init_result": null,
+      "created": 10.0,
+      "closed_at": null,
+      "closed_reason": null,
+      "generation": 1
+    },
+    "cursor": 2,
+    "ack": false,
+    "error": null
+  },
+  {
+    "name": "next-3",
+    "action": "cursor",
+    "row": {
+      "id": "fixture",
+      "signature": "signature",
+      "pid": 123,
+      "sequence": 3,
+      "acknowledged": 1,
+      "rpc_sequence": 3,
+      "init_result": null,
+      "created": 10.0,
+      "closed_at": null,
+      "closed_reason": null,
+      "generation": 1
+    },
+    "cursor": 3,
+    "ack": false,
+    "error": null
+  },
+  {
+    "name": "next-4",
+    "action": "cursor",
+    "row": {
+      "id": "fixture",
+      "signature": "signature",
+      "pid": 123,
+      "sequence": 3,
+      "acknowledged": 1,
+      "rpc_sequence": 3,
+      "init_result": null,
+      "created": 10.0,
+      "closed_at": null,
+      "closed_reason": null,
+      "generation": 1
+    },
+    "cursor": 4,
+    "ack": false,
+    "error": "Supervisor replay cursor is stale or ahead of the journal"
+  }
+]

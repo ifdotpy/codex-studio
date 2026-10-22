@@ -1,7 +1,6 @@
 #![allow(clippy::unwrap_used)]
-use crate::prepared_python_support as python_test_support;
 use serde_json::{Value, json};
-use std::{fs, path::Path, process::Command};
+use std::{fs, path::Path};
 use studio_runtime_providers::supervisor_v1::{
     HANDLE_LIMIT, HandleSnapshot, NativeId, ReceiptSnapshot, WriteDecision,
 };
@@ -17,31 +16,51 @@ fn disposable_root() -> tempfile::TempDir {
     }
 }
 
-fn template(corpus: bool) -> tempfile::TempDir {
-    template_mode(if corpus {
-        "--corpus"
-    } else {
-        "--template-only"
-    })
+enum Seed {
+    Corpus,
+    Empty,
+    Legacy,
+    NativeIds,
+    Requests,
 }
-#[allow(clippy::disallowed_methods)]
-fn template_mode(mode: &str) -> tempfile::TempDir {
+
+fn template(corpus: bool) -> tempfile::TempDir {
+    template_mode(if corpus { Seed::Corpus } else { Seed::Empty })
+}
+fn template_mode(seed: Seed) -> tempfile::TempDir {
     let root = disposable_root();
-    let python = python_test_support::prepared_python(
-        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
-    );
-    let mut command = Command::new(python);
-    command
-        .arg("-B")
-        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/supervisor/oracle.py"))
-        .arg(root.path());
-    command.arg(mode);
-    let output = command.output().unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    let directory = match seed {
+        Seed::Corpus if std::env::var("STUDIO_RUNTIME_CORPUS_FULL").as_deref() == Ok("1") => {
+            "corpus-full"
+        }
+        Seed::Corpus => "corpus",
+        Seed::Empty => "template-only",
+        Seed::Legacy => "legacy-template",
+        Seed::NativeIds => "native-id-template",
+        Seed::Requests => "request-cwd",
+    };
+    let source = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/supervisor/frozen")
+        .join(directory);
+    for entry in fs::read_dir(source).unwrap() {
+        let path = entry.unwrap().path();
+        let name = path.file_name().unwrap().to_str().unwrap();
+        match name {
+            "supervisor.sql" => crate::recovery_fixtures::database(
+                root.path(),
+                "supervisor.sqlite3",
+                &fs::read_to_string(&path).unwrap(),
+            ),
+            "expected.sql" => crate::recovery_fixtures::database(
+                &root.path().join("expected"),
+                "supervisor.sqlite3",
+                &fs::read_to_string(&path).unwrap(),
+            ),
+            _ => {
+                fs::copy(&path, root.path().join(name)).unwrap();
+            }
+        }
+    }
     root
 }
 #[test]
@@ -537,7 +556,7 @@ fn supervisor_reopen_reservation_survives_crash_without_old_identity() {
 
 #[test]
 fn supervisor_python_legacy_schema_migrates_without_losing_rows() {
-    let root = template_mode("--legacy-template");
+    let root = template_mode(Seed::Legacy);
     let journal = SupervisorJournal::open(root.path()).unwrap();
     let row = journal.handle("fixture").unwrap().unwrap();
     assert_eq!(row.snapshot.generation(), 1);
@@ -693,7 +712,7 @@ fn supervisor_legacy_upgrade_is_durable_and_rejects_stale_identity() {
 #[test]
 fn supervisor_open_requires_cwd_but_accepts_null() {
     use studio_runtime_providers::supervisor_v1::Request;
-    let root = template_mode("--request-cwd");
+    let root = template_mode(Seed::Requests);
     let cases: Vec<Value> =
         serde_json::from_slice(&fs::read(root.path().join("requests.json")).unwrap()).unwrap();
     assert_eq!(cases.len(), 3);
@@ -710,7 +729,7 @@ fn supervisor_open_requires_cwd_but_accepts_null() {
 /// replies with text ids. The Rust supervisor must open that journal and keep every receipt.
 #[test]
 fn supervisor_python_written_text_native_ids_stay_exact() {
-    let root = template_mode("--native-id-template");
+    let root = template_mode(Seed::NativeIds);
     let saved: Value =
         serde_json::from_slice(&fs::read(root.path().join("native-ids.json")).unwrap()).unwrap();
     let journal = SupervisorJournal::open(root.path()).unwrap();

@@ -3,43 +3,17 @@
 
 use super::*;
 use crate::managed_host_tools::{PostCommitPort, SendPort};
-use std::{path::PathBuf, process::Command, sync::OnceLock};
+use std::path::PathBuf;
 use studio_runtime_store::RuntimeStore;
 
-#[path = "../../../../tests/support/prepared_python.rs"]
-mod prepared_python;
+#[path = "../../../../tests/provider_callbacks/fixture.rs"]
+mod frozen;
 
-#[allow(clippy::disallowed_methods)]
-fn template() -> (tempfile::TempDir, Value) {
-    static TEMPLATE: OnceLock<(prepared_python::StateTemplate, Value)> = OnceLock::new();
-    let (files, value) = TEMPLATE.get_or_init(|| {
-        let scratch = tempfile::tempdir().unwrap();
-        let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let source = manifest.join("../../apps/server/src");
-        let oracle = manifest.join("tests/provider_callbacks/oracle.py");
-        let output = Command::new(prepared_python::prepared_python(&source))
-            .arg(oracle)
-            .arg(scratch.path())
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "oracle: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        let value: Value = serde_json::from_slice(&output.stdout).unwrap();
-        (
-            prepared_python::StateTemplate::capture(&PathBuf::from(
-                value["template"].as_str().unwrap(),
-            )),
-            value,
-        )
-    });
-    let directory = tempfile::tempdir().unwrap();
-    files.write(directory.path());
-    let mut value = value.clone();
-    value["template"] = json!(directory.path());
-    (directory, value)
+async fn template() -> (tempfile::TempDir, Value) {
+    let (root, store, mut value) = frozen::state().await;
+    drop(store);
+    value["template"] = json!(root.path());
+    (root, value)
 }
 
 async fn send(
@@ -104,7 +78,7 @@ async fn try_send_args_with(
     RuntimeStore,
     Result<Value, crate::managed_host_tools::Error>,
 ) {
-    let (directory, oracle) = template();
+    let (directory, oracle) = template().await;
     let store = RuntimeStore::open(Some(directory.path())).await.unwrap();
     store
         .transaction(move |tx| {
@@ -169,7 +143,7 @@ async fn try_send_args_with(
 
 #[tokio::test]
 async fn production_release_notifies_the_registry_after_a_committed_send() {
-    let (directory, oracle) = template();
+    let (directory, oracle) = template().await;
     let store = RuntimeStore::open(Some(directory.path())).await.unwrap();
     let actor = oracle["agents"][0].clone();
     let context = CallbackContext {
@@ -234,7 +208,7 @@ async fn production_release_notifies_the_registry_after_a_committed_send() {
 
 #[tokio::test]
 async fn monitor_cancel_release_notifies_only_the_monitor_dispatcher() {
-    let (directory, oracle) = template();
+    let (directory, oracle) = template().await;
     let store = RuntimeStore::open(Some(directory.path())).await.unwrap();
     let actor = oracle["agents"][0].clone();
     let context = CallbackContext {
@@ -280,7 +254,7 @@ async fn monitor_cancel_release_notifies_only_the_monitor_dispatcher() {
 
 #[tokio::test]
 async fn complaint_submit_read_and_respond_share_the_notification_service() {
-    let (directory, oracle) = template();
+    let (directory, oracle) = template().await;
     let store = RuntimeStore::open(Some(directory.path())).await.unwrap();
     let worker = oracle["agents"][1].clone();
     let lead = oracle["agents"][0].clone();
@@ -342,7 +316,7 @@ async fn complaint_submit_read_and_respond_share_the_notification_service() {
 
 #[tokio::test]
 async fn send_to_descendant_is_followup_input_while_parent_and_broadcast_are_chat() {
-    let (_template_directory, oracle) = template();
+    let (_template_directory, oracle) = template().await;
     let child = oracle["agents"][1]["id"].as_str().unwrap();
     let lead = oracle["agents"][0]["id"].as_str().unwrap();
 
@@ -403,7 +377,7 @@ async fn send_to_descendant_is_followup_input_while_parent_and_broadcast_are_cha
 #[tokio::test]
 async fn send_preserves_explicit_next_turn_for_followup_and_chat() {
     use studio_runtime_schema::DeliveryMoment;
-    let (_template_directory, oracle) = template();
+    let (_template_directory, oracle) = template().await;
     for (sender, target_index, event_prefix) in [(0, 1, ""), (1, 0, "chat:")] {
         let target = oracle["agents"][target_index]["id"].as_str().unwrap();
         let id = format!("explicit-next-{sender}");
@@ -445,7 +419,7 @@ async fn send_preserves_explicit_next_turn_for_followup_and_chat() {
 /// ancestor cancels a descendant's watch; any other agent is refused by name.
 #[tokio::test]
 async fn an_ancestor_cancels_a_descendant_watch_and_others_are_refused_by_name() {
-    let (directory, oracle) = template();
+    let (directory, oracle) = template().await;
     let store = RuntimeStore::open(Some(directory.path())).await.unwrap();
     let log_root = store.state_dir().join("monitor-logs");
     let watch = |id: &str, owner: &Value| {
@@ -540,7 +514,7 @@ async fn an_ancestor_cancels_a_descendant_watch_and_others_are_refused_by_name()
 /// refused with its reason.
 #[tokio::test]
 async fn send_resolves_a_unique_visible_prefix_and_names_a_refused_id() {
-    let (_template_directory, oracle) = template();
+    let (_template_directory, oracle) = template().await;
     let child = oracle["agents"][1]["id"].as_str().unwrap();
 
     let (_root, store, value) = send(0, &child[..8], "send-child-prefix").await;
@@ -586,7 +560,7 @@ async fn send_resolves_a_unique_visible_prefix_and_names_a_refused_id() {
 /// does not refuse sends to other agents.
 #[tokio::test]
 async fn an_unusual_record_of_another_team_does_not_refuse_sends() {
-    let (_template_directory, oracle) = template();
+    let (_template_directory, oracle) = template().await;
     let lead = &oracle["agents"][0];
     let child = oracle["agents"][1]["id"].as_str().unwrap();
     let foreign = |id: &str, cwd: &str| {
@@ -644,7 +618,7 @@ async fn an_unusual_record_of_another_team_does_not_refuse_sends() {
 /// result, so a replay of the request reports the same members.
 #[tokio::test]
 async fn a_broadcast_names_a_member_that_cannot_be_checked_and_reaches_the_others() {
-    let (_template_directory, oracle) = template();
+    let (_template_directory, oracle) = template().await;
     let lead = &oracle["agents"][0];
     let lead_id = lead["id"].as_str().unwrap();
     let child = oracle["agents"][1]["id"].as_str().unwrap();
@@ -692,7 +666,7 @@ async fn a_broadcast_names_a_member_that_cannot_be_checked_and_reaches_the_other
 /// refusal names the stored-record location.
 #[tokio::test]
 async fn a_broadcast_with_no_member_that_can_be_checked_is_refused_by_location() {
-    let (_template_directory, oracle) = template();
+    let (_template_directory, oracle) = template().await;
     let lead = oracle["agents"][0]["id"].as_str().unwrap();
     let template = PathBuf::from(oracle["template"].as_str().unwrap()).join("canvas.sqlite3");
     let connection =
@@ -750,7 +724,7 @@ fn a_stored_refusal_names_its_location() {
 /// refused only while its own shared reply turn is in flight.
 #[tokio::test]
 async fn radio_member_message_is_refused_only_during_its_shared_reply_turn() {
-    let (directory, oracle) = template();
+    let (directory, oracle) = template().await;
     let store = RuntimeStore::open(Some(directory.path())).await.unwrap();
     let lead = oracle["agents"][0]["id"].as_str().unwrap().to_owned();
     let worker = oracle["agents"][1].clone();
@@ -882,7 +856,7 @@ async fn callback_blob_case(race: BlobRace) {
     use studio_runtime_providers::{Frame, Method, RequestFrame, RequestId};
     const HANG_GUARD: std::time::Duration = std::time::Duration::from_secs(10);
     const LARGE_RESULT_BYTES: usize = 128 * 1024;
-    let (directory, oracle) = template();
+    let (directory, oracle) = template().await;
     let store = Arc::new(RuntimeStore::open(Some(directory.path())).await.unwrap());
     let actor = &oracle["agents"][0];
     let context = CallbackContext {
@@ -1190,7 +1164,7 @@ async fn callback_panel_returns_the_retired_progress_notice() {
         CallbackDecision, ManagedToolPortsConfig, dispatch_with_managed_tools,
     };
     use studio_runtime_providers::{Frame, Method, RequestFrame, RequestId, ResponseBody};
-    let (directory, oracle) = template();
+    let (directory, oracle) = template().await;
     let store = Arc::new(RuntimeStore::open(Some(directory.path())).await.unwrap());
     let context = CallbackContext {
         agent: oracle["agents"][0]["id"].as_str().unwrap().into(),
