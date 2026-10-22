@@ -3311,6 +3311,67 @@ async fn lead_archive_and_restore_run_through_the_lifecycle_owner() {
     assert!(worker_record(&store, &worker)["deletedAt"].is_number());
 }
 
+#[tokio::test]
+async fn archive_finished_runs_for_codex_and_claude_leads_through_tool_dispatch() {
+    // A lead on an older live build got "requires agent-management/archive-finished"
+    // although the turn reminder told it to run this action. The tool dispatch is
+    // the same for both providers; this keeps each provider's lead on that path.
+    for (provider, model) in [("codex", "gpt-6-astra"), ("claude", "claude-opus-5-5")] {
+        let (_root, store, context) = fixture_arc().await;
+        store
+            .transaction_with::<_, StoreError>(move |tx| {
+                tx.execute(
+                    "UPDATE runtime_agents SET record=json_set(record,'$.provider',?1,'$.model',?2) \
+                     WHERE id IN (?3,?4)",
+                    params![provider, model, LEAD, WORKER],
+                )?;
+                tx.execute(
+                    "UPDATE runtime_agents SET record=json_set(record,'$.status','completed','$.turnId',NULL,\
+                     '$.inFlight',json('false'),'$.lastCompletedTurn','turn-1','$.lastCompletedTurnStatus','completed') \
+                     WHERE id=?1",
+                    [WORKER],
+                )?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        let frame = call(
+            &context,
+            "archive-finished-provider",
+            "orchestration_agent_manage",
+            json!({"action":"archive_finished","request_id":format!("finished-{provider}")}),
+        );
+        let ports = shared_ports(
+            crate::provider_callbacks::managed_tool_ports(
+                &store,
+                &context,
+                &frame,
+                Arc::new(tokio::sync::Notify::new()),
+            )
+            .await
+            .unwrap(),
+        );
+        let (success, value) = tool_reply(
+            dispatch_with_managed_tools(Arc::clone(&store), &context, &frame, 30.0, ports)
+                .await
+                .unwrap(),
+        );
+        assert!(success, "{provider} lead: {value}");
+        let report: crate::agent_management_store::ArchiveFinishedResult =
+            serde_json::from_value(value.clone()).expect("typed archive summary");
+        assert_eq!(report.archived, 1, "{provider} lead: {value}");
+        let worker = studio_runtime_store::AgentRepository::get(
+            &store.test_reader().unwrap(),
+            &studio_runtime_store::AgentId::from(WORKER),
+        )
+        .unwrap()
+        .unwrap()
+        .value();
+        assert_eq!(worker["provider"], provider);
+        assert!(worker["deletedAt"].is_number(), "{provider} lead: {worker}");
+    }
+}
+
 // Count ancestry SQL separately from fixture setup and unrelated routing work.
 thread_local! {
     static ANCESTRY_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
