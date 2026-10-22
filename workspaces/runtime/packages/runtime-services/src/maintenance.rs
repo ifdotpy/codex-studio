@@ -1,8 +1,8 @@
 //! Idempotent startup cleanup for retired review assignments.
 //!
-//! This mirrors `codex_state_cleanup.remove_review_assignments`: remove
+//! Remove
 //! `reviewSchedules` and `reviewTargets`, and cancel only pending `chat_review`
-//! events (`workspaces/runtime/apps/server/src/codex_state_cleanup.py:6-20`).
+//! events.
 //! Payload retention remains an optional manual operation; Rust reads every
 //! coherent `payload-v1:tasks` phase. Rust provider stderr is drained to a sink
 //! by `runtime-process::provider_stdio`; this module does not create log files.

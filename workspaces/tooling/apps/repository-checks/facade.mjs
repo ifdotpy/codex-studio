@@ -19,7 +19,6 @@ const MIN_JUST = [1, 58, 0];
 const COST = {
   pnpm: "focused; package test only",
   cargo: "focused; package compile and test",
-  server: "focused; isolated Python suite runner",
 };
 const NOT_STARTED = "backend, browser, Electron, provider";
 const LOG_RETENTION_MS = 14 * 24 * 60 * 60 * 1000;
@@ -39,10 +38,6 @@ const UNSAFE_RUST_ALLOWLIST = [
   [
     "workspaces/runtime/packages/runtime-proc-sys/src/lib.rs",
     "Read-only macOS libproc and sysctl process identity queries.",
-  ],
-  [
-    "workspaces/runtime/packages/operations-python/src/lib.rs",
-    "PyO3 extension.",
   ],
   [
     "workspaces/runtime/packages/runtime-services/src/image_workspace_macos/fsevents_ffi.rs",
@@ -161,27 +156,6 @@ const BOUNDARY_ALLOWLIST = [
     specifier: "../../../../client/apps/desktop/**",
     reason:
       "The fast tier checks the signing check and the unlock error contract of the desktop packager with a fake security tool, because the desktop package has no fast-tier test runner of its own.",
-  },
-  {
-    importer: "codex-agents-web",
-    file: "tests/**",
-    specifier: "../../../../../runtime/apps/server/tests/**",
-    reason:
-      "Renderer browser tests reuse local setup fixtures maintained with the server test runner.",
-  },
-  {
-    importer: "server",
-    file: "tests/claude-*-contract.mjs",
-    specifier: "../../../../providers/apps/claude-bridge/**",
-    reason:
-      "Server bridge contract tests import the actual bridge implementation under test.",
-  },
-  {
-    importer: "server",
-    file: "tests/fixtures/ux-*.tsx",
-    specifier: "../../../../../client/apps/web/**",
-    reason:
-      "Server-owned visual fixtures reuse renderer components and styles for isolated UX validation.",
   },
   {
     importer: "codex-agents-desktop",
@@ -306,7 +280,6 @@ export function discover(root = rootFrom()) {
       });
     }
   }
-  packages.set("server", serverPackage());
   return [...packages.values()].sort((a, b) => a.name.localeCompare(b.name));
 }
 
@@ -345,17 +318,7 @@ function assertPinnedCargoToolchain(root) {
     );
 }
 
-function serverPackage() {
-  return {
-    name: "server",
-    ecosystem: "server",
-    dir: "workspaces/runtime/apps/server",
-    manifest: null,
-  };
-}
-
 function target(root, pkg) {
-  if (pkg === "server") return packageTarget([serverPackage()], pkg);
   return packageTarget(discover(root), pkg);
 }
 
@@ -500,29 +463,6 @@ export function commandFor(root, item, action, caseName = "", options = {}) {
         : []),
     ];
   }
-  if (item.name === "server") {
-    const python = path.join(
-      root,
-      "workspaces/runtime/apps/server/src/codex_python.py",
-    );
-    if (action === "test")
-      return [
-        [
-          "python3",
-          [
-            python,
-            "--exec",
-            path.join(
-              root,
-              "workspaces/runtime/apps/server/src/test-server.py",
-            ),
-            ...(caseName ? ["--filter", caseName] : []),
-            ...(options.serverArgs ?? []),
-          ],
-        ],
-      ];
-    return [["python3", [python, "--mypy"]]];
-  }
   fail(`Unsupported package ecosystem: ${item.ecosystem}`);
 }
 
@@ -594,7 +534,7 @@ function plan(root, item, action, caseName, commands, options = {}) {
       ? "Pinned pnpm and workspace dependencies installed"
       : item.ecosystem === "cargo"
         ? `Pinned Rust toolchain and required crates available; target output uses ${cargoTarget(root)}`
-        : "Managed Python runtime and server development dependencies prepared";
+        : "Required package tools available";
   return {
     package: item.name,
     case: caseName || null,
@@ -605,7 +545,7 @@ function plan(root, item, action, caseName, commands, options = {}) {
           ? "package test script (Vitest for codex-agents-web)"
           : item.ecosystem === "cargo"
             ? `Cargo package ${item.name}`
-            : "Python server runner suite filter",
+            : "package tests",
     workingDirectory,
     invocationDirectory: root,
     command: reproduction(root, commands),
@@ -620,7 +560,7 @@ function plan(root, item, action, caseName, commands, options = {}) {
         ? "Run only the selected package's manifest-owned test or check command."
         : item.ecosystem === "cargo"
           ? "Compile and run only the selected Cargo package and its declared dependencies."
-          : "Pass the selected suite filter to the server runner, which owns discovery and isolation.",
+          : "Run the selected package tests.",
     notStarted: NOT_STARTED,
     costCategory: options.costCategory
       ? options.costCategory
@@ -629,7 +569,7 @@ function plan(root, item, action, caseName, commands, options = {}) {
           ? "package-local type and unit checks"
           : item.ecosystem === "cargo"
             ? "package-local fmt, clippy, and unit checks"
-            : "server runtime type check"
+            : "package checks"
         : COST[item.ecosystem],
     executesNothing: true,
   };
@@ -639,8 +579,6 @@ function selectorDescription(item, caseName, options) {
   if (options.selector) return options.selector;
   if (item.ecosystem === "cargo")
     return `Cargo test-name substring${options.cargoTargets?.length ? `; Cargo target selection: ${options.cargoTargets.join(" ")}` : ""}${options.passthrough?.length ? `; test harness args after --: ${options.passthrough.join(" ")}` : ""}`;
-  if (item.ecosystem === "server")
-    return "server runner --filter suite substring";
   const manifest = manifestFor(item);
   const script = manifest.scripts?.[manifest.codexStudioChecks?.test] ?? "";
   if (/\bvitest\b/.test(script))
@@ -691,107 +629,6 @@ function browserSmokeTestOptions() {
   };
 }
 
-function serverCategoryOptions(category, suite = "") {
-  const serverArgs = ["--only", category];
-  if (category === "expensive") {
-    if (!suite)
-      fail(
-        "Select one load-class suite with its exact path; zero tests executed",
-      );
-    if (
-      !suite.includes("/") ||
-      ["*", "?", "["].some((char) => suite.includes(char))
-    )
-      fail(
-        "Load-class selection requires one exact suite path; zero tests executed",
-      );
-    serverArgs.push("--filter", suite);
-  } else if (suite) {
-    fail("A suite path is accepted only for the expensive load-class category");
-  }
-  return {
-    serverArgs,
-    selector:
-      category === "expensive"
-        ? `one exact load-class suite path: ${suite}`
-        : category === "fast"
-          ? "server runner FAST_SUITES selection"
-          : `server runner category: ${category}`,
-    reason:
-      category === "expensive"
-        ? "Run one explicitly selected load-class suite as a separately announced manual run."
-        : category === "fast"
-          ? "Run the server runner's deterministic fast witnesses without discovering the full server inventory."
-          : "Select the server runner's registered opt-in category without duplicating its suite list.",
-    costCategory:
-      category === "expensive"
-        ? "load-class; manual single-suite run"
-        : `server opt-in category: ${category}`,
-  };
-}
-
-function serverShardOptions(indexText, countText) {
-  const index = Number(indexText);
-  const count = Number(countText);
-  if (
-    !Number.isSafeInteger(index) ||
-    !Number.isSafeInteger(count) ||
-    count < 1 ||
-    index < 0 ||
-    index >= count
-  )
-    fail("Usage: test-server-shard <zero-based-index> <shard-count>");
-  return {
-    serverArgs: [
-      "--shard-index",
-      String(index),
-      "--shard-count",
-      String(count),
-    ],
-    selector: `default server suites in shard ${index + 1}/${count}`,
-    reason:
-      "Select a stable disjoint shard from the server runner's default suite inventory.",
-    costCategory: `fast server shard ${index + 1}/${count}`,
-    label: `server shard ${index + 1}/${count}`,
-  };
-}
-
-function serverShardCommands(root, options) {
-  return [
-    ...operationsModulePreparation().commands,
-    ...commandFor(root, serverPackage(), "test", "", options),
-  ];
-}
-
-function serverShardPlan(root, index, count) {
-  const item = serverPackage();
-  const options = serverShardOptions(index, count);
-  return plan(
-    root,
-    item,
-    "test",
-    "",
-    serverShardCommands(root, options),
-    options,
-  );
-}
-
-export function serverShardRunOptions(indexText, countText) {
-  return serverShardOptions(indexText, countText);
-}
-
-function serverCategoryPlan(root, category, suite = "") {
-  const item = serverPackage();
-  const options = serverCategoryOptions(category, suite);
-  const commands = commandFor(root, item, "test", "", options);
-  const value = plan(root, item, "test", "", commands, options);
-  value.target =
-    category === "expensive"
-      ? `one load-class server suite (${suite})`
-      : `server opt-in category ${category}`;
-  return value;
-}
-
 function browserPlan(root, smoke = false) {
   const item = packageTarget(discover(root), "codex-agents-web");
   const options = smoke ? browserSmokeTestOptions() : browserTestOptions();
@@ -805,12 +642,6 @@ function browserPlan(root, smoke = false) {
   );
   value.notStarted = "backend, Electron, provider";
   return value;
-}
-
-function loadClassConditions() {
-  process.stdout.write(
-    "Load-class run conditions: run this as its own announced run; state the duration and resource budget to the team before starting; run no other checks or load jobs alongside it; stop every load generator when the run ends or fails.\n",
-  );
 }
 
 function webWasmPreparation(root) {
@@ -832,17 +663,6 @@ function webWasmPreparation(root) {
   };
 }
 
-function operationsModulePreparation() {
-  return {
-    item: { name: "native operations preparation", ecosystem: "cargo" },
-    label: "native operations preparation",
-    commands: [
-      ["cargo", ["build", "--locked", "-p", "studio-operations-python"]],
-    ],
-    options: { allowZeroTests: true, buildOnly: true },
-  };
-}
-
 // A fast-tier nextest filter with one witness per line, so independent changes
 // add separate lines instead of rewriting one shared filter string.
 function nextestAnyOf(terms) {
@@ -851,7 +671,6 @@ function nextestAnyOf(terms) {
 
 function fastTierCommands(root) {
   const packages = discover(root);
-  const server = serverPackage();
   const web = packageTarget(packages, "codex-agents-web");
   const tooling = packageTarget(packages, "codex-studio-tooling");
   const facade = path.join(
@@ -859,7 +678,6 @@ function fastTierCommands(root) {
     "workspaces/tooling/apps/repository-checks/facade.mjs",
   );
   return [
-    operationsModulePreparation(),
     webWasmPreparation(root),
     {
       item: { name: "studio-runtime-server", ecosystem: "cargo" },
@@ -910,6 +728,21 @@ function fastTierCommands(root) {
       },
     },
     {
+      item: { name: "native WebView fixture", ecosystem: "pnpm" },
+      label: "native WebView fixture",
+      commands: [
+        [
+          "node",
+          ["--test", "workspaces/client/apps/native/check-native.test.mjs"],
+        ],
+      ],
+      options: {
+        selector: "native HTTP fixture contracts",
+        reason:
+          "Check the hidden native WebView harness without opening a window.",
+      },
+    },
+    {
       item: { name: "schema and dependency guards", ecosystem: "pnpm" },
       label: "schema and dependency guards",
       commands: [
@@ -940,11 +773,6 @@ function fastTierCommands(root) {
         reason:
           "Check desktop recovery without Python backend imports or supervisor scripts.",
       },
-    },
-    {
-      item: server,
-      label: "server safety witnesses",
-      options: serverCategoryOptions("fast"),
     },
     {
       item: { name: "studio-runtime-providers", ecosystem: "cargo" },
@@ -1364,6 +1192,7 @@ function fastTierCommands(root) {
               "test(completed_child_turn_reports_unsubmitted_assignment_once_with_final_text)",
               "test(account_worker::tests::continuation_start::capacity_retry_restart_unknown_reports_once_without_resending)",
               "test(agent_progress_schema_matches_strict_serde_contract)",
+              "test(contracts::tests::generated_contracts_do_not_recreate_the_removed_backend)",
               "test(disk_space::tests::)",
               "test(archive_finished_)",
               "test(archive_finished_reason_survives_dispatch_and_receipt_replay)",
@@ -1429,12 +1258,10 @@ function fastTierCommands(root) {
 
 function comprehensiveTierCommands(root) {
   const packages = discover(root);
-  const server = serverPackage();
   const web = packageTarget(packages, "codex-agents-web");
   const bridge = packageTarget(packages, "studio-claude-bridge");
   const tooling = packageTarget(packages, "codex-studio-tooling");
   return [
-    operationsModulePreparation(),
     webWasmPreparation(root),
     {
       item: { name: "Rust HTTP fixture preparation", ecosystem: "cargo" },
@@ -1447,8 +1274,7 @@ function comprehensiveTierCommands(root) {
       ],
       options: { allowZeroTests: true, buildOnly: true },
     },
-    { item: server, label: "server" },
-    { item: bridge, label: "server bridge" },
+    { item: bridge, label: "provider bridge" },
     {
       // The native client crate embeds web/dist at compile time.
       item: { name: "renderer build", ecosystem: "pnpm" },
@@ -1530,13 +1356,7 @@ function fastTierRestNonRustCommands(root) {
 }
 
 function heavyTierCommands(root) {
-  const server = serverPackage();
   return [
-    {
-      label: "heavy server suites",
-      item: server,
-      options: serverCategoryOptions("heavy"),
-    },
     {
       label: "full browser project",
       item: packageTarget(discover(root), "codex-agents-web"),
@@ -1574,32 +1394,32 @@ export function recipePlan(root, name) {
         : name === "test-comprehensive"
           ? "repository comprehensive regression tier"
           : name === "test-fast-rest"
-            ? "comprehensive remainder excluding default server suites and browser smoke"
-            : "comprehensive non-Rust remainder excluding default server suites and browser smoke"
-      : "server heavy suites followed by full browser project",
+            ? "comprehensive remainder excluding browser smoke"
+            : "comprehensive non-Rust remainder excluding browser smoke"
+      : "full browser project",
     workingDirectory: root,
     invocationDirectory: root,
     command: reproduction(root, commandLists.flat()),
     selector: fast
       ? name === "test-fast"
-        ? "fixture-backed server retry and recovery witnesses, Rust/Python state schema parity, web API safety witnesses, tooling and shared contract guards"
+        ? "Rust retry and recovery witnesses, state schema contracts, web API safety witnesses, tooling and shared contract guards"
         : name === "test-comprehensive"
-          ? "the previous broad default server, server bridge, Rust workspace, web type and unit checks, tooling tests, browser smoke subset"
+          ? "provider bridge, Rust workspace, web type and unit checks, tooling tests, browser smoke subset"
           : name === "test-fast-rest"
-            ? "server bridge, Rust workspace nextest, web type checks and unit tests, tooling tests"
-            : "server bridge, web type checks and unit tests, tooling tests"
-      : "server --only heavy, then codex-agents-web test:browser",
+            ? "provider bridge, Rust workspace nextest, web type checks and unit tests, tooling tests"
+            : "provider bridge, web type checks and unit tests, tooling tests"
+      : "codex-agents-web test:browser",
     requiredSetup:
       name === "test-fast"
-        ? "Frozen pnpm dependencies; managed Python runtime and development dependencies, Rust toolchain, pinned wasm-bindgen CLI and cargo-nextest; web WASM is generated by the gate; no browser or model provider"
-        : "Frozen pnpm dependencies, managed Python runtime and development dependencies, Rust toolchain and cargo-nextest, browser binaries",
+        ? "Frozen pnpm dependencies; Rust toolchain, pinned wasm-bindgen CLI and cargo-nextest; web WASM is generated by the gate; no browser or model provider"
+        : "Frozen pnpm dependencies, Rust toolchain and cargo-nextest, browser binaries",
     reason: fast
       ? name === "test-fast"
         ? "Run selected deterministic safety witnesses and read-only contract guards in one sequential command."
         : name === "test-comprehensive"
           ? "Run the previous broad local regression recipe in one sequential command."
-          : "Run the non-server checks from the comprehensive tier in one sequential command."
-      : "Run the complete heavy tier sequentially; load-class server suites are excluded.",
+          : "Run the remaining checks from the comprehensive tier in one sequential command."
+      : "Run the full browser project as an announced manual check.",
     notStarted: "Electron, provider-dependent opt-in suites, load-class suites",
     costCategory: fast
       ? name === "test-fast"
@@ -1649,50 +1469,6 @@ export async function executeRecipe(root, name, steps) {
   };
 }
 
-export function serverRunDiagnostics(output) {
-  const diagnosticLines = output
-    .split("\n")
-    .filter((line) => line.startsWith("Server runner diagnostics: "));
-  const latest = diagnosticLines
-    .at(-1)
-    ?.slice("Server runner diagnostics: ".length);
-  if (latest) {
-    try {
-      const parsed = JSON.parse(latest);
-      const durations = Object.entries(parsed.suiteDurations ?? {})
-        .map(([suite, seconds]) => ({ suite, seconds: Number(seconds) }))
-        .filter(({ seconds }) => Number.isFinite(seconds))
-        .sort((left, right) => right.seconds - left.seconds)
-        .slice(0, 10);
-      return {
-        planLine: `Selected worker plan: ${JSON.stringify(parsed.workerPlan)}`,
-        durations,
-      };
-    } catch {
-      // Fall through to the human-readable records for older runner output.
-    }
-  }
-  const planLine = output
-    .split("\n")
-    .find((line) =>
-      /^(?:Selected (?:automatic )?worker plan|Focused worker plan): /.test(
-        line,
-      ),
-    );
-  const durations = [...output.matchAll(/^Finished (.+): .*?, ([\d.]+)s$/gm)]
-    .map((match) => ({ suite: match[1], seconds: Number(match[2]) }))
-    .filter(({ seconds }) => Number.isFinite(seconds))
-    .sort((left, right) => right.seconds - left.seconds)
-    .slice(0, 10);
-  return { planLine, durations };
-}
-
-async function executeServerCategory(root, category, suite = "") {
-  const options = serverCategoryOptions(category, suite);
-  const result = await execute(root, serverPackage(), "", false, options);
-  return result.exitCode;
-}
-
 export function parseCounts(item, output) {
   // ANSI CSI sequences contain control characters by design.
   // oxlint-disable-next-line no-control-regex
@@ -1717,34 +1493,6 @@ export function parseCounts(item, output) {
       },
       { passed: 0, failed: 0, skipped: 0, executed: 0, summaryFound: false },
     );
-  }
-  if (item.ecosystem === "server") {
-    const suite = normalizedOutput.match(
-      /Server suites: (\d+) passed, (\d+) failed, (\d+) skipped \(opt-in\), (\d+) skipped \(environment\)/,
-    );
-    const testOutcomes = normalizedOutput.match(/Test outcomes: (\{[^\n]*\})/);
-    const outcomes = testOutcomes ? JSON.parse(testOutcomes[1]) : {};
-    const passed = (outcomes.passed ?? 0) + (suite ? +suite[1] : 0);
-    const structuredFailedSuites =
-      normalizedOutput.match(/^FAIL .*failing IDs:/gm)?.length ?? 0;
-    const unstructuredFailedSuites = Math.max(
-      0,
-      (suite ? +suite[2] : 0) - structuredFailedSuites,
-    );
-    const failed =
-      (outcomes.failed ?? 0) +
-      (outcomes.error ?? 0) +
-      (outcomes.unexpected_success ?? 0) +
-      unstructuredFailedSuites;
-    const skipped =
-      (outcomes.skipped ?? 0) + (suite ? +suite[3] + +suite[4] : 0);
-    return {
-      passed,
-      failed,
-      skipped,
-      executed: passed + failed,
-      summaryFound: Boolean(suite),
-    };
   }
   const testLines = normalizedOutput
     .split("\n")
@@ -1963,15 +1711,6 @@ export function nextestSelectionError(exitCode) {
     : null;
 }
 
-function preparedPython(root) {
-  return runSync(
-    "python3",
-    [path.join(root, "workspaces/runtime/apps/server/src/codex_python.py")],
-    root,
-    "Prepared Python resolution",
-  ).trim();
-}
-
 export async function execute(
   root,
   item,
@@ -2018,10 +1757,7 @@ export async function execute(
                       ? "codex-process-supervisor.exe"
                       : "codex-process-supervisor",
                   ),
-                  // Rust Python-oracle tests must not resolve Node through a
-                  // developer PATH that may traverse protected agent homes.
                   CODEX_NODE: process.execPath,
-                  CODEX_AGENTS_PYTHON: preparedPython(root),
                 }
               : {}),
           }
@@ -2109,38 +1845,20 @@ export async function execute(
     ...(signal ? { signal } : {}),
     ...(errors.length ? { errors } : {}),
   };
-  const serverFailures =
-    item.ecosystem === "server" && exitCode !== 0
-      ? output.split("\n").filter((line) => line.startsWith("FAIL "))
-      : [];
   const playwrightFailureOutput = playwrightFailures.length
     ? `Failing Playwright tests:\n${playwrightFailures.map(({ title, error }) => `- ${title}: ${error}`).join("\n")}\n`
     : "";
   if (asJson) process.stdout.write(`${JSON.stringify(result)}\n`);
   else
     process.stdout.write(
-      `${options.label ?? item.name}${caseName ? ` / ${caseName}` : ""}: ${result.status}${counts.passed === null ? "" : ` — ${counts.passed} passed, ${counts.failed} failed${counts.flaky === null || counts.flaky === undefined ? "" : `, ${counts.flaky} flaky`}, ${counts.skipped} skipped`}${counts.executed === 0 && !options.allowZeroTests ? " — zero tests executed" : ""}; ${durationSeconds}s\nCommand: ${run.command}\nFull log: ${logPath}${playwrightReportPath ? `\nPlaywright JSON report: ${playwrightReportPath}` : ""}\n${item.ecosystem === "server" ? formatServerRunDiagnostics(output) : ""}${serverFailures.length ? `Failing server suites:\n${serverFailures.join("\n")}\n` : ""}${playwrightFailureOutput}`,
+      `${options.label ?? item.name}${caseName ? ` / ${caseName}` : ""}: ${result.status}${counts.passed === null ? "" : ` — ${counts.passed} passed, ${counts.failed} failed${counts.flaky === null || counts.flaky === undefined ? "" : `, ${counts.flaky} flaky`}, ${counts.skipped} skipped`}${counts.executed === 0 && !options.allowZeroTests ? " — zero tests executed" : ""}; ${durationSeconds}s\nCommand: ${run.command}\nFull log: ${logPath}${playwrightReportPath ? `\nPlaywright JSON report: ${playwrightReportPath}` : ""}\n${playwrightFailureOutput}`,
     );
   return result;
 }
 
-function formatServerRunDiagnostics(output) {
-  const { planLine, durations } = serverRunDiagnostics(output);
-  return [
-    planLine ?? "Selected worker plan: unavailable in runner output",
-    "Ten slowest server suites:",
-    ...(durations.length
-      ? durations.map(
-          ({ suite, seconds }) => `  ${seconds.toFixed(2)}s ${suite}`,
-        )
-      : ["  unavailable in runner output"]),
-    "",
-  ].join("\n");
-}
-
 function usage() {
   process.stdout.write(
-    "Usage: facade.mjs packages | test <package> [file-or-case] [--name <pattern>] [-- <cargo args>] [--json] | test-plan <package> [file-or-case] [--name <pattern>] [-- <cargo args>] [--json] | test-fast | test-comprehensive | test-fast-rest | test-fast-rest-non-rust | test-server-shard <index> <count> | test-heavy | test-browser | test-browser-smoke | test-server-category <category> | test-server-load <suite-path> | check <package> [--dry-run] [--json] | contracts-check | boundaries-check | check-affected <base> [--dry-run]\n",
+    "Usage: facade.mjs packages | test <package> [file-or-case] [--name <pattern>] [-- <cargo args>] [--json] | test-plan <package> [file-or-case] [--name <pattern>] [-- <cargo args>] [--json] | test-fast | test-comprehensive | test-fast-rest | test-fast-rest-non-rust | test-heavy | test-browser | test-browser-smoke | check <package> [--dry-run] [--json] | contracts-check | boundaries-check | check-affected <base> [--dry-run]\n",
   );
 }
 
@@ -2764,15 +2482,6 @@ export async function main(argv = process.argv.slice(2)) {
     );
     return result.exitCode;
   }
-  if (action === "test-server-shard") {
-    const options = serverShardOptions(packageName || "", requestedCase || "");
-    return (
-      await execute(root, serverPackage(), "", json, {
-        ...options,
-        commands: serverShardCommands(root, options),
-      })
-    ).exitCode;
-  }
   if (action === "test-heavy") {
     const result = await executeRecipe(
       root,
@@ -2789,16 +2498,6 @@ export async function main(argv = process.argv.slice(2)) {
     const item = packageTarget(discover(root), "codex-agents-web");
     return (await execute(root, item, "", json, browserSmokeTestOptions()))
       .exitCode;
-  }
-  if (action === "test-server-category")
-    return executeServerCategory(root, packageName || "", requestedCase || "");
-  if (action === "test-server-load") {
-    if (!packageName)
-      fail(
-        "Select one load-class suite with its exact path; zero tests executed",
-      );
-    loadClassConditions();
-    return executeServerCategory(root, "expensive", packageName);
   }
   if (!["test", "test-plan", "check"].includes(action)) {
     usage();
@@ -2820,34 +2519,12 @@ export async function main(argv = process.argv.slice(2)) {
       reportPlan(recipePlan(root, packageName), json);
       return 0;
     }
-    if (packageName === "test-server-shard") {
-      reportPlan(
-        serverShardPlan(root, requestedCase || "", rest[0] || ""),
-        json,
-      );
-      return 0;
-    }
     if (packageName === "test-browser") {
       reportPlan(browserPlan(root), json);
       return 0;
     }
     if (packageName === "test-browser-smoke") {
       reportPlan(browserPlan(root, true), json);
-      return 0;
-    }
-    if (packageName === "test-server-heavy") {
-      reportPlan(serverCategoryPlan(root, "heavy"), json);
-      return 0;
-    }
-    if (packageName === "test-server-opt-in") {
-      reportPlan(serverCategoryPlan(root, requestedCase || "automated"), json);
-      return 0;
-    }
-    if (packageName === "test-server-load") {
-      reportPlan(
-        serverCategoryPlan(root, "expensive", requestedCase || ""),
-        json,
-      );
       return 0;
     }
   }
@@ -2886,7 +2563,6 @@ export async function main(argv = process.argv.slice(2)) {
                 ? {
                     NEXTEST_EXPERIMENTAL_LIBTEST_JSON: "1",
                     CODEX_NODE: process.execPath,
-                    CODEX_AGENTS_PYTHON: preparedPython(root),
                   }
                 : {}),
             }

@@ -53,7 +53,7 @@ pub const BROWSER_SKILL_TIMEOUT_SECONDS: u64 = 20;
 /// Text that tells a lead, once, that Studio no longer uses its old
 /// `PROGRESS.md` file. The `orchestration_context` topic `panel` returns it,
 /// and the turn context delivers it to a lead that received the old file
-/// guidance. Python's `codex_shared_values.py` holds a checked copy.
+/// guidance.
 pub const PROGRESS_FILE_RETIRED_NOTICE: &str = "Studio no longer reads or shows PROGRESS.md. Do not create or update a progress file for Studio. Report status in the chat.";
 /// Largest inline workspace preview, in bytes.
 pub const MAX_WORKSPACE_PREVIEW_BYTES: u64 = 20971520;

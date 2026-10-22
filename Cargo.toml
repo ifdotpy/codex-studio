@@ -10,7 +10,6 @@ members = [
     "workspaces/runtime/apps/process-supervisor",
     "workspaces/runtime/apps/runtime-server",
     "workspaces/runtime/packages/operations",
-    "workspaces/runtime/packages/operations-python",
     "workspaces/runtime/packages/runtime-providers",
     "workspaces/runtime/packages/runtime-priority-sys",
     "workspaces/runtime/packages/runtime-proc-sys",
@@ -71,8 +70,6 @@ sysinfo = { version = "=0.39.6", default-features = false, features = ["system"]
 sha2 = "0.11.0"
 strum = { version = "=0.28.0", default-features = false, features = ["derive"] }
 thiserror = "=2.0.20"
-pyo3 = { version = "0.29", features = ["abi3-py311", "extension-module"] }
-pyo3-build-config = "0.29"
 
 axum = "=0.8.9"
 form_urlencoded = "=1.2.2"

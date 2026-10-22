@@ -27,7 +27,6 @@ mod monitor_start_preparation;
 mod monitor_wake_guarantees;
 mod multi_server_corpus;
 mod native_runtime_state_corpus;
-mod notification_dispatch_corpus;
 mod payload_safety_oracle;
 mod portable_history_python_parity;
 mod process_controls;
@@ -40,7 +39,6 @@ mod recovery_corpus;
 mod recovery_history;
 mod recovery_store;
 mod relocation_corpus;
-mod restart_recovery_exclusion;
 mod rules_engine_corpus;
 mod rules_tick_atomic;
 mod scheduler_python_parity;
@@ -104,8 +102,8 @@ pub(crate) mod monitor_runtime_support;
 #[path = "multi_server/common.rs"]
 pub(crate) mod multi_server_fixtures;
 
-#[path = "support/prepared_python.rs"]
-pub(crate) mod prepared_python_support;
+#[path = "support/state_template.rs"]
+pub(crate) mod state_template;
 
 #[cfg(unix)]
 #[path = "../../runtime-process/tests/support/mod.rs"]

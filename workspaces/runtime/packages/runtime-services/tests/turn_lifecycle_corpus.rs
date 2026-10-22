@@ -479,7 +479,6 @@ async fn apply(store: &Arc<RuntimeStore>, case: &Value) -> Result<Value, String>
                 String::new(),
                 studio_runtime_services::model_catalog::ModelCatalogService::new(),
                 guidance_root.path().to_path_buf(),
-                guidance_root.path().to_path_buf(),
             )
             .map_err(|e| e.to_string())?;
             assert!(resources

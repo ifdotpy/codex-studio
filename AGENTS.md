@@ -51,7 +51,7 @@ server, Rust, web, tooling, and browser-smoke checks in parallel jobs.
 Run `just test-comprehensive` locally on the exact commit before every push
 to `main`. A successful short tier does not replace this publication gate.
 The comprehensive command preserves the
-previous broad local gate, including the default server suites, workspace Rust
+previous broad local gate, including provider bridge tests, workspace Rust
 tests, web type and unit checks, tooling tests, and browser smoke. Run
 heavy-tier checks by hand as announced runs; they are not in hosted CI for now.
 Each heavy run has a Just command. A test that needs repeated runs to be trusted
@@ -69,11 +69,9 @@ work on the same machine. State its duration and resource budget before it
 starts. Its owner stops every load generator when the run ends or fails; do not
 leave detached generators. Results of ordinary checks taken while a load run was
 active are not valid evidence. See [docs/testing.md](docs/testing.md) for the
-single-suite Just entry.
+manual-run rules.
 
 ## Code checks
-
-Run `pnpm run typecheck:runtime` (or `python3 workspaces/runtime/apps/server/src/codex_python.py --mypy`) to run the strict mypy ratchet across the runtime. It is intentionally not part of the pre-commit hook.
 
 The repository root owns Oxlint and Oxfmt. Install their pinned dependencies with
 `pnpm install --frozen-lockfile`. Activate the required pre-commit hook once per clone with

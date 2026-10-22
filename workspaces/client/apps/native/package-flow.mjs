@@ -66,7 +66,7 @@ export function planFlow({ out, hostedCiPassed, directory, commit }) {
           label: "native host check",
           command: "just",
           args: ["test-native-webview"],
-          // check-native.py reads target/debug; keep the dev build out of the
+          // The native check reads target/debug; keep the dev build out of the
           // shared release directory.
           withoutEnvironment: ["CARGO_TARGET_DIR", releaseTargetEnvironment],
         },

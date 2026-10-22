@@ -2328,7 +2328,7 @@ async fn dispatcher_service_bundle_calls_spawn_and_review_entry_points() {
             .unwrap(),
     )
     .unwrap();
-    let review_target = project_path.join("workspaces/runtime/apps/server");
+    let review_target = project_path.join("workspaces/runtime/apps/runtime-server");
     let home = std::path::PathBuf::from(std::env::var_os("HOME").expect("test HOME"));
     std::fs::create_dir_all(&home).unwrap();
     let tilde_target = home.join("review-target");
@@ -2482,7 +2482,7 @@ async fn dispatcher_service_bundle_calls_spawn_and_review_entry_points() {
         &store,
         &actor,
         &json!({"agents":[{"name":"Alternate","prompt":"Work in the server folder",
-            "model":"gpt-6-luna","workspace":"shared","cwd":"workspaces/runtime/apps/server"}]}),
+            "model":"gpt-6-luna","workspace":"shared","cwd":"workspaces/runtime/apps/runtime-server"}]}),
         "dispatcher-spawn-alternate",
         20.75,
         &CreationEnvironment,
@@ -2505,7 +2505,7 @@ async fn dispatcher_service_bundle_calls_spawn_and_review_entry_points() {
         &actor,
         &json!({"agents":[{"name":"Alternate worktree",
             "prompt":"Work in a worktree of the server folder","model":"gpt-6-luna",
-            "workspace":"worktree","base_ref":"HEAD","cwd":"workspaces/runtime/apps/server"}]}),
+            "workspace":"worktree","base_ref":"HEAD","cwd":"workspaces/runtime/apps/runtime-server"}]}),
         "dispatcher-spawn-alternate-worktree",
         20.76,
         &CreationEnvironment,
@@ -2800,7 +2800,7 @@ async fn dispatcher_service_bundle_calls_spawn_and_review_entry_points() {
     assert!(crate::managed_child_create::request_review(
         &store,
         &latest_actor,
-        &json!({"target":{"type":"uncommittedChanges"},"cwd":format!("{review_cwd}/workspaces/runtime/apps/server")}),
+        &json!({"target":{"type":"uncommittedChanges"},"cwd":format!("{review_cwd}/workspaces/runtime/apps/runtime-server")}),
         "dispatcher-capacity-refusal",
         22.0,
         &CreationEnvironment,

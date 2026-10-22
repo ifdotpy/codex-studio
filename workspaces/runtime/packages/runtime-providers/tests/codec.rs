@@ -437,7 +437,7 @@ fn pending_book_keeps_lost_outcomes_unknown_and_detects_bad_responses() {
 fn recorded_provider_fixtures_round_trip_and_keep_declared_order_and_ids() {
     let root = concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../apps/server/tests/fixtures/provider-replay"
+        "/tests/fixtures/provider-replay"
     );
     let fixture_dir = std::path::Path::new(root);
     let mut names = std::fs::read_dir(fixture_dir)

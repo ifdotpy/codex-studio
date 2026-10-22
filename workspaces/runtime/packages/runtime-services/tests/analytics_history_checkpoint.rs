@@ -29,8 +29,7 @@ fn fixture_directory() -> tempfile::TempDir {
         .expect("disposable fixture directory")
 }
 fn fixture() -> (tempfile::TempDir, Value) {
-    static TEMPLATE: OnceLock<(crate::prepared_python_support::StateTemplate, Value)> =
-        OnceLock::new();
+    static TEMPLATE: OnceLock<(crate::state_template::StateTemplate, Value)> = OnceLock::new();
     let (root, agent) = TEMPLATE.get_or_init(|| {
         let root = fixture_directory();
         let path = root.path().to_owned();
@@ -57,7 +56,7 @@ fn fixture() -> (tempfile::TempDir, Value) {
                 .expect("clone uses WAL");
         }
         (
-            crate::prepared_python_support::StateTemplate::capture(copy.path()),
+            crate::state_template::StateTemplate::capture(copy.path()),
             agent,
         )
     });

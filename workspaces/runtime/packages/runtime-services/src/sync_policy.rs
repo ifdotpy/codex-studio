@@ -22,9 +22,8 @@ pub const ENTITY_PAGE_LIMIT: i64 = SYNC_ENTITY_PAGE_LIMIT;
 pub const OTHER_PAGE_LIMIT: i64 = SYNC_BATCH_LIMIT;
 const PREFERENCE_FIELD_CAP: usize = 3000;
 const MAX_CLOCK_SKEW_MS: i64 = 5 * 60 * 1000;
-// Python owner: codex_entity_contracts.MONITOR_TERMINAL_WINDOW and
-// MONITOR_FINAL_WINDOW. A parity test below keeps both independently named
-// caps aligned; the caps have separate meanings despite sharing a value.
+// Independent projection caps, in monitor rows: terminal history and final
+// window membership have separate meanings despite sharing a value.
 const MONITOR_TERMINAL_WINDOW: usize = 100;
 const MONITOR_FINAL_WINDOW: usize = 100;
 use studio_runtime_store::startup_recovery::ACTIVE_MONITOR_STATUSES as MONITOR_ACTIVE_STATUSES;
@@ -45,7 +44,7 @@ const AGENT_ORGANIZATION_FIELDS_MARKER: &str = "agent_organization_fields";
 const AGENT_ORGANIZATION_FIELDS_VERSION: i64 = 3;
 
 /// Whether Python's durable seed and entity-view upgrade markers prove the
-/// persisted sync projection is complete. Python owner: codex_sync_entities.seed.
+/// persisted sync projection is complete. Legacy behavior: codex_sync_entities.seed.
 pub fn has_complete_entity_seed(connection: &Connection) -> StoreResult<bool> {
     let seeded = connection
         .query_row(
@@ -875,7 +874,7 @@ fn projection_records(
     transaction: &Transaction<'_>,
     table: &str,
 ) -> StoreResult<Vec<(String, String)>> {
-    // Python owner: codex_sync_entities._stored_record skips malformed rows
+    // Legacy behavior: codex_sync_entities._stored_record skips malformed rows
     // while refreshing sync projections instead of failing the whole pull.
     Ok(stored_record_rows(transaction, table)?
         .into_iter()
@@ -2307,36 +2306,6 @@ mod tests {
     }
 
     #[test]
-    fn monitor_window_contract_matches_python_owner() {
-        let python = include_str!("../../../apps/server/src/codex_entity_contracts.py");
-        for expected in [
-            format!("MONITOR_TERMINAL_WINDOW = {MONITOR_TERMINAL_WINDOW}"),
-            format!("MONITOR_FINAL_WINDOW = {MONITOR_FINAL_WINDOW}"),
-            format!(
-                "MONITOR_TERMINAL_STATUSES = ({})",
-                MONITOR_TERMINAL_STATUSES
-                    .iter()
-                    .map(|status| format!("\"{status}\""))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ),
-            format!(
-                "ACTIVE_MONITOR_STATUSES = ({})",
-                MONITOR_ACTIVE_STATUSES
-                    .iter()
-                    .map(|status| format!("\"{status}\""))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ),
-        ] {
-            assert!(
-                python.lines().any(|line| line.trim() == expected),
-                "Python owner codex_entity_contracts.py must declare {expected}"
-            );
-        }
-    }
-
-    #[test]
     fn monitor_window_uses_indexed_status_ranges() {
         let connection = Connection::open_in_memory().expect("database");
         connection
@@ -2415,7 +2384,7 @@ mod tests {
         insert_monitor(&connection, "deleted-owner", "deleted", "starting", 200);
         insert_monitor(&connection, "invalid-owner", "broken", "approval", 201);
         insert_monitor(&connection, "missing-owner", "missing", "running", 202);
-        // Python owner selector: codex_entity_contracts.monitor_records.
+        // Legacy selector: codex_entity_contracts.monitor_records.
         // Equal timestamps intentionally exercise the SQL tie behavior at the
         // terminal window boundary, including owner filtering after selection.
         let expected_terminal_ids = connection
