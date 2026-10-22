@@ -7,8 +7,10 @@
 use std::collections::{BTreeSet, VecDeque};
 use std::sync::{Arc, Mutex, OnceLock};
 
+use serde::Deserialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
+use studio_runtime_store::ResourceChange;
 use thiserror::Error;
 
 use crate::change_notifications::{ChangeNotificationHub, ChangeSnapshot};
@@ -27,11 +29,40 @@ pub enum ResourceNotifyError {
     Unavailable,
 }
 
+// Notification roles only: HTTP's generated ResourceRef owns input validation.
+#[derive(Deserialize)]
+struct ResourceScope {
+    kind: ResourceKind,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "kebab-case")]
+enum ResourceKind {
+    State,
+    Transcript,
+    Transcripts,
+    Room,
+    Task,
+    Tasks,
+    Workspace,
+    MultiServer,
+    #[serde(other)]
+    Other,
+}
+
+struct ContentVersion {
+    key: String,
+    digest: Option<[u8; 32]>,
+    checked_revision: i64,
+    revision: i64,
+}
+
 struct Publications {
     receipts: VecDeque<(String, [u8; 32])>,
     versions: VecDeque<(String, i64)>,
     pruned_revision: i64,
     entity_reset_revision: i64,
+    entity_revision: i64,
 }
 
 /// A consistent resource view, with only the requested resources that changed.
@@ -47,18 +78,38 @@ pub struct ResourceChanges {
 pub struct ResourceNotifications {
     changes: Arc<ChangeNotificationHub>,
     publications: Mutex<Publications>,
+    // Serialize subscribed projections so readers share one computation per revision.
+    content: tokio::sync::Mutex<VecDeque<ContentVersion>>,
 }
 
 impl ResourceNotifications {
     pub fn new(changes: Arc<ChangeNotificationHub>) -> Self {
         Self {
             changes,
+            content: tokio::sync::Mutex::new(VecDeque::new()),
             publications: Mutex::new(Publications {
                 receipts: VecDeque::new(),
                 versions: VecDeque::new(),
                 pruned_revision: 0,
                 entity_reset_revision: 0,
+                entity_revision: 0,
             }),
+        }
+    }
+
+    /// One post-commit wake; exact entity-only writes do not move the broad cursor.
+    pub fn notify_store_commit(&self, change: ResourceChange) {
+        match change {
+            ResourceChange::All => self.changes.notify_one(),
+            ResourceChange::Entities => {
+                let Ok(mut state) = self.publications.lock() else {
+                    self.changes.notify_one();
+                    return;
+                };
+                self.changes.try_publish(1, false, |cursor| {
+                    state.entity_revision = cursor.revision;
+                });
+            }
         }
     }
 
@@ -145,7 +196,9 @@ impl ResourceNotifications {
         let mut versions = Vec::new();
         for resource in resources {
             let key = resource.to_string();
-            let explicit = if resource["kind"] == "state" {
+            let scope: ResourceScope = serde_json::from_value(resource.clone())
+                .map_err(|_| ResourceNotifyError::Invalid)?;
+            let explicit = if matches!(scope.kind, ResourceKind::State) {
                 state.entity_reset_revision
             } else {
                 state
@@ -154,12 +207,20 @@ impl ResourceNotifications {
                     .find(|(existing, _)| *existing == key)
                     .map_or(0, |(_, revision)| *revision)
             };
-            // Multi-server discovery reads also refresh volatile access timestamps. Its
-            // semantic cursor must come only from explicit multi-server publications.
-            let version = if resource.get("kind").and_then(Value::as_str) == Some("multi-server") {
-                explicit
-            } else {
-                explicit.max(cursor.resource_revision)
+            let version = match scope.kind {
+                // Discovery reads refresh volatile access timestamps; only its
+                // explicit publications may advance this semantic cursor.
+                ResourceKind::MultiServer => explicit,
+                ResourceKind::State
+                | ResourceKind::Transcript
+                | ResourceKind::Transcripts
+                | ResourceKind::Room
+                | ResourceKind::Task
+                | ResourceKind::Tasks
+                | ResourceKind::Workspace => explicit
+                    .max(cursor.resource_revision)
+                    .max(state.entity_revision),
+                ResourceKind::Other => explicit.max(cursor.resource_revision),
             };
             if after.is_none_or(|revision| version > revision) || overflow {
                 selected.push(resource.clone());
@@ -177,6 +238,78 @@ impl ResourceNotifications {
             entity_reset: after.is_some_and(|revision| state.entity_reset_revision > revision),
             overflow,
         })
+    }
+
+    /// Compare only subscribed invalidation candidates with their served content.
+    /// Uncomputable or racing reads retain the original safe refresh. The bounded
+    /// cache shares computations across streams; no publication does projection work.
+    pub async fn changes_since_with_content<F, Fut>(
+        &self,
+        resources: &[Value],
+        after: Option<i64>,
+        mut read: F,
+    ) -> Result<ResourceChanges, ResourceNotifyError>
+    where
+        F: FnMut(Value) -> Fut,
+        Fut: std::future::Future<Output = Option<Vec<u8>>>,
+    {
+        let mut content = self.content.lock().await;
+        // Sample after acquiring the guard: a queued subscriber uses the newest
+        // coalesced revision and any projections the previous reader completed.
+        let mut view = self.changes_since(resources, after)?;
+        if view.cursor.closed {
+            return Ok(view);
+        }
+        let mut selected = Vec::new();
+        let mut versions = Vec::new();
+        for (resource, version) in view.resources.iter().zip(&view.versions) {
+            let key = resource.to_string();
+            let existing = content.iter().position(|entry| entry.key == key);
+            let cached = existing.filter(|index| content[*index].checked_revision == *version);
+            let revision = if let Some(index) = cached {
+                content[index].revision
+            } else {
+                let digest = read(resource.clone())
+                    .await
+                    .map(|bytes| Sha256::digest(&bytes).into());
+                // Only a publication affecting this resource makes its read
+                // uncertain. Token and unrelated-resource publications do not.
+                let latest =
+                    self.changes_since(std::slice::from_ref(resource), Some(view.cursor.revision))?;
+                if latest.cursor.closed {
+                    view.cursor.closed = true;
+                    return Ok(view);
+                }
+                if !latest.resources.is_empty() {
+                    selected.push(resource.clone());
+                    versions.push(*version);
+                    continue;
+                }
+                let revision = existing
+                    .filter(|index| digest.is_some() && content[*index].digest == digest)
+                    .map_or(*version, |index| content[index].revision);
+                if let Some(index) = existing {
+                    content.remove(index);
+                }
+                if content.len() == MAX_RESOURCE_VERSIONS {
+                    content.pop_front();
+                }
+                content.push_back(ContentVersion {
+                    key,
+                    digest,
+                    checked_revision: *version,
+                    revision,
+                });
+                revision
+            };
+            if after.is_none_or(|after| revision > after) {
+                selected.push(resource.clone());
+                versions.push(revision);
+            }
+        }
+        view.resources = selected;
+        view.versions = versions;
+        Ok(view)
     }
 
     /// External state notifications require a reset even if their entity sequence is unchanged.
@@ -206,6 +339,139 @@ fn validate(value: &Value) -> Result<(), ResourceNotifyError> {
 mod tests {
     use super::*;
     use std::sync::mpsc;
+
+    #[tokio::test]
+    async fn subscribed_content_is_computed_once_per_coalesced_revision() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let hub = Arc::new(ChangeNotificationHub::new());
+        let notifications = ResourceNotifications::new(hub.clone());
+        let resources = vec![
+            json!({"kind":"accounts"}),
+            json!({"kind":"models"}),
+            json!({"kind":"costs"}),
+            json!({"kind":"desktop"}),
+            json!({"kind":"terminals"}),
+        ];
+        let calls = AtomicUsize::new(0);
+        let read = |resource: Value| {
+            calls.fetch_add(1, Ordering::Relaxed);
+            std::future::ready(Some(serde_json::to_vec(&resource).expect("content")))
+        };
+        let initial = notifications
+            .changes_since_with_content(&resources, None, read)
+            .await
+            .expect("initial");
+        assert_eq!(initial.resources, resources);
+        assert_eq!(calls.load(Ordering::Relaxed), resources.len());
+        for _ in 0..42 {
+            hub.notify_one();
+        }
+        let changed = notifications
+            .changes_since_with_content(&resources, Some(0), read)
+            .await
+            .expect("coalesced wake");
+        assert!(
+            changed.resources.is_empty(),
+            "unchanged content causes no client re-reads"
+        );
+        assert_eq!(calls.load(Ordering::Relaxed), resources.len() * 2);
+        let second = notifications
+            .changes_since_with_content(&resources, Some(0), read)
+            .await
+            .expect("second stream");
+        assert!(second.resources.is_empty());
+        assert_eq!(
+            calls.load(Ordering::Relaxed),
+            resources.len() * 2,
+            "subscribers share the projection"
+        );
+        notifications
+            .publish_once(&json!({"requestId":"changed-account","resources":[{"kind":"accounts"}]}))
+            .expect("publish");
+        let changed = notifications
+            .changes_since_with_content(&resources, Some(42), |resource| {
+                std::future::ready(Some(if resource == resources[0] {
+                    b"changed".to_vec()
+                } else {
+                    serde_json::to_vec(&resource).expect("content")
+                }))
+            })
+            .await
+            .expect("changed content");
+        assert_eq!(changed.resources, vec![resources[0].clone()]);
+        assert_eq!(changed.versions, vec![43]);
+    }
+
+    #[tokio::test]
+    async fn token_publications_do_not_repeat_or_invalidate_content_projections() {
+        let hub = Arc::new(ChangeNotificationHub::new());
+        let notifications = ResourceNotifications::new(hub.clone());
+        let resources = [json!({"kind":"accounts"})];
+        notifications
+            .changes_since_with_content(&resources, None, |_| async { Some(vec![0]) })
+            .await
+            .expect("initial");
+        hub.notify_one();
+        let view = notifications
+            .changes_since_with_content(&resources, Some(0), |_| {
+                hub.try_publish(1, false, |_| {});
+                std::future::ready(Some(vec![0]))
+            })
+            .await
+            .expect("token raced with unchanged projection");
+        assert!(
+            view.resources.is_empty(),
+            "tokens do not change resource content"
+        );
+        let second = notifications
+            .changes_since_with_content(&resources, Some(0), |_| async {
+                panic!("token-only revision changes must reuse the computed resource version")
+            })
+            .await
+            .expect("second subscriber");
+        assert!(second.resources.is_empty());
+    }
+
+    #[tokio::test]
+    async fn unavailable_and_racing_content_keep_the_safe_refresh() {
+        let hub = Arc::new(ChangeNotificationHub::new());
+        let notifications = ResourceNotifications::new(hub.clone());
+        let resources = [json!({"kind":"accounts"})];
+        notifications
+            .changes_since_with_content(&resources, None, |_| async { Some(vec![0]) })
+            .await
+            .expect("initial");
+        hub.notify_one();
+        let unavailable = notifications
+            .changes_since_with_content(&resources, Some(0), |_| async { None })
+            .await
+            .expect("unavailable");
+        assert_eq!(unavailable.resources, resources);
+        let shared = notifications
+            .changes_since_with_content(&resources, Some(0), |_| async {
+                panic!("do not retry a failed projection in the same revision")
+            })
+            .await
+            .expect("shared unavailable");
+        assert_eq!(shared.resources, resources);
+        hub.notify_one();
+        let racing = notifications
+            .changes_since_with_content(&resources, Some(1), |_| {
+                hub.notify_one();
+                std::future::ready(Some(vec![0]))
+            })
+            .await
+            .expect("racing");
+        assert_eq!(racing.resources, resources);
+        let stable = notifications
+            .changes_since_with_content(&resources, Some(1), |_| async { Some(vec![0]) })
+            .await
+            .expect("stable");
+        assert_eq!(
+            stable.resources, resources,
+            "unavailable read retired the old digest"
+        );
+    }
 
     #[test]
     fn resource_version_metadata_is_bounded_and_eviction_requires_refresh() {

@@ -42,7 +42,6 @@ import { createHash, randomUUID } from "node:crypto";
 import { createInterface } from "node:readline";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { stripVTControlCharacters } from "node:util";
 import { createCommandTransport, commandMethods } from "./commands.mjs";
 
@@ -100,22 +99,6 @@ import {
   canonicalJson,
 } from "./move-external.mjs";
 
-// The hash of this bridge's own sources. The server retires an idle bridge whose sources an
-// update replaced on disk (codex_claude_controls.retire_idle_bridge), since a running bridge
-// keeps the code it started with.
-const bridgeBuild = (async () => {
-  const folder = path.dirname(fileURLToPath(import.meta.url));
-  const names = (await fs.readdir(folder))
-    .filter((name) => name.endsWith(".mjs") && !name.endsWith(".test.mjs"))
-    .sort();
-  const hash = createHash("sha256");
-  for (const name of names) {
-    hash.update(name + "\n");
-    hash.update(await fs.readFile(path.join(folder, name)));
-    hash.update("\n");
-  }
-  return hash.digest("hex");
-})();
 const externalConfigs = new Map();
 
 const providerOptions = JSON.parse(process.env.STUDIO_CLAUDE_OPTIONS || "{}");
@@ -2140,7 +2123,6 @@ async function handle(method, p) {
       platform: process.platform,
       capabilities: {
         claudeVersion: 23,
-        claudeBuild: await bridgeBuild,
         passiveAccountRead: true,
         activityRead: true,
       },

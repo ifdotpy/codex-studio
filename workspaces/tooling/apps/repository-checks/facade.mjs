@@ -1234,6 +1234,80 @@ function fastTierCommands(root) {
       },
     },
     {
+      item: { name: "studio-runtime-store", ecosystem: "cargo" },
+      label: "entity commit invalidation witnesses",
+      commands: [
+        [
+          "cargo",
+          [
+            "nextest",
+            "run",
+            "--locked",
+            "--no-tests",
+            "fail",
+            "--message-format",
+            "libtest-json-plus",
+            "-p",
+            "studio-runtime-http",
+            "-p",
+            "studio-runtime-store",
+            "--lib",
+            "-E",
+            nextestAnyOf([
+              "test(entity_only_commits_preserve_volatile_resources_and_refresh_entity_refs)",
+              "test(resource_change_classifier_tests::)",
+              "test(entity_resource_hints_cover_tombstones_deletes_and_unknown_commits)",
+              "test(tracked_observer_tables_must_keep_rowid_storage)",
+            ]),
+          ],
+        ],
+      ],
+      options: {
+        selector:
+          "typed entity-only commit hints and conservative broad refresh",
+        reason:
+          "Entity-only writes must wake entity-backed refs without advancing volatile resource versions; unknown and mixed writes retain broad invalidation.",
+      },
+    },
+    {
+      item: { name: "studio-runtime-http", ecosystem: "cargo" },
+      label: "resource content invalidation witnesses",
+      commands: [
+        [
+          "cargo",
+          [
+            "nextest",
+            "run",
+            "--locked",
+            "--no-tests",
+            "fail",
+            "--message-format",
+            "libtest-json-plus",
+            "-p",
+            "studio-runtime-http",
+            "-p",
+            "studio-runtime-services",
+            "--lib",
+            "-E",
+            nextestAnyOf([
+              "test(unrelated_commits_do_not_reread_five_unchanged_resources)",
+              "test(cost_content_ignores_account_listing_order)",
+              "test(subscribed_content_is_computed_once_per_coalesced_revision)",
+              "test(unavailable_and_racing_content_keep_the_safe_refresh)",
+              "test(provider_versions::tests::preference_read_error_fails_closed_without_an_upstream_request)",
+              "test(token_publications_do_not_repeat_or_invalidate_content_projections)",
+            ]),
+          ],
+        ],
+      ],
+      options: {
+        selector:
+          "subscribed resource content and shared coalesced projections",
+        reason:
+          "Unrelated commits must not trigger resource re-reads or duplicate server projections; unknown and racing reads retain safe refreshes.",
+      },
+    },
+    {
       item: { name: "studio-runtime-http", ecosystem: "cargo" },
       label: "shared named schema validation witnesses",
       commands: [
@@ -1260,6 +1334,34 @@ function fastTierCommands(root) {
           "shared named validator startup and invalid-value error parity",
         reason:
           "Preserve named-schema validation and error locations while HTTP reuses the compiled schema owner.",
+      },
+    },
+    {
+      item: { name: "studio-runtime-http", ecosystem: "cargo" },
+      label: "branch turn metadata lookup witnesses",
+      commands: [
+        [
+          "cargo",
+          [
+            "nextest",
+            "run",
+            "--locked",
+            "--no-tests",
+            "fail",
+            "--message-format",
+            "libtest-json-plus",
+            "-p",
+            "studio-runtime-http",
+            "--lib",
+            "-E",
+            "test(routes::branches::tests::branch_)",
+          ],
+        ],
+      ],
+      options: {
+        selector: "branch predecessor metadata and bounded history reads",
+        reason:
+          "Avoid decoding turn bodies and reading past the predecessor while preserving branch cutoffs and unknown fork outcomes.",
       },
     },
     {

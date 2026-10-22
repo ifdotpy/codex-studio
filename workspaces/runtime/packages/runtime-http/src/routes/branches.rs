@@ -26,6 +26,23 @@ use studio_runtime_store::{
 use crate::error::ApiError;
 use crate::router::HttpState;
 
+// Number of turn metadata records per branch lookup page. This uses the
+// retained session's existing actor-bound metadata read shape.
+const BRANCH_TURNS_PER_PAGE: u32 = 10;
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BranchTurnPage {
+    data: Vec<BranchTurnId>,
+    next_cursor: Option<String>,
+}
+
+// Native turn fields other than the ID are deliberately not retained here.
+#[derive(serde::Deserialize)]
+struct BranchTurnId {
+    id: String,
+}
+
 pub(crate) fn routes() -> RouteGroup {
     RouteGroup::new(vec![post(
         "/api/branch",
@@ -298,19 +315,19 @@ async fn branch(
     let selected_turn = selected.record["turnId"].as_str().map(str::to_owned);
     let fork_turn = if before {
         async {
-            // Python reads the full thread history before resolving `before`.
             // Stable per-page operation IDs let the retained broker replay a known
             // page without resending an uncertain one.
             let mut cursor: Option<String> = None;
             let mut seen_cursors = HashSet::new();
-            let mut turn_ids = Vec::new();
+            let selected_turn = selected_turn.as_deref().ok_or_else(ApiError::internal)?;
+            let mut selected_found = false;
             let mut page = 0_u64;
             loop {
                 let mut params = json!({
                     "threadId":source["threadId"],
-                    "limit":20,
+                    "limit":BRANCH_TURNS_PER_PAGE,
                     "sortDirection":"desc",
-                    "itemsView":"full"
+                    "itemsView":"notLoaded"
                 });
                 if let Some(cursor_value) = &cursor {
                     params["cursor"] = json!(cursor_value);
@@ -328,24 +345,25 @@ async fn branch(
                     params,
                 )
                 .await?;
-                let turns = result
-                    .get("data")
-                    .and_then(Value::as_array)
-                    .ok_or_else(ApiError::internal)?;
-                for turn in turns {
-                    let id = turn
-                        .get("id")
-                        .and_then(Value::as_str)
-                        .filter(|id| !id.is_empty())
-                        .ok_or_else(ApiError::internal)?;
-                    turn_ids.push(id.to_owned());
+                let result: BranchTurnPage =
+                    serde_json::from_value(result).map_err(|_| ApiError::internal())?;
+                for turn in result.data {
+                    if turn.id.is_empty() {
+                        return Err(ApiError::internal());
+                    }
+                    if selected_found {
+                        return Ok(Some(turn.id));
+                    }
+                    selected_found = turn.id == selected_turn;
                 }
-                let Some(next) = result
-                    .get("nextCursor")
-                    .and_then(Value::as_str)
-                    .filter(|next| !next.is_empty())
-                else {
-                    break;
+                let Some(next) = result.next_cursor.filter(|next| !next.is_empty()) else {
+                    return if selected_found {
+                        Ok(None)
+                    } else {
+                        Err(bad_request(
+                            "The selected turn is absent from native history",
+                        ))
+                    };
                 };
                 if !seen_cursors.insert(next.to_owned()) {
                     return Err(ApiError::internal());
@@ -353,12 +371,6 @@ async fn branch(
                 cursor = Some(next.to_owned());
                 page = page.checked_add(1).ok_or_else(ApiError::internal)?;
             }
-            let selected_turn = selected_turn.as_deref().ok_or_else(ApiError::internal)?;
-            let position = turn_ids
-                .iter()
-                .position(|turn| turn == selected_turn)
-                .ok_or_else(|| bad_request("The selected turn is absent from native history"))?;
-            Ok::<_, ApiError>(turn_ids.get(position + 1).cloned())
         }
         .await
     } else {
@@ -1142,3 +1154,239 @@ fn bad_request(message: &str) -> ApiError {
 }
 
 inventory::submit! { crate::routes::manifest::RouteModuleRegistration { name:"branches",routes:Some(routes),dependencies:&[] } }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+    use studio_runtime_services::account_session_runtime::{
+        AccountSessionFuture, ConnectionScope, SessionReceipt,
+    };
+    use studio_runtime_store::AgentRecord;
+
+    const HISTORY_TURNS: usize = 100;
+    const TURN_BODY_BYTES: usize = 4096;
+
+    #[derive(Default)]
+    struct HistoryPort {
+        requests: Mutex<Vec<ProviderRequest>>,
+        body_bytes: Mutex<usize>,
+    }
+
+    impl AccountSessionPort for HistoryPort {
+        fn current_scope(&self, account: &str) -> Option<ConnectionScope> {
+            Some(ConnectionScope {
+                account: account.into(),
+                connection: "fixture".into(),
+                generation: 1,
+            })
+        }
+        fn ensure_session<'a>(
+            &'a self,
+            account: &'a str,
+        ) -> AccountSessionFuture<'a, ConnectionScope> {
+            Box::pin(async move { Ok(self.current_scope(account).expect("fixture scope")) })
+        }
+        fn provider_request<'a>(
+            &'a self,
+            request: ProviderRequest,
+        ) -> AccountSessionFuture<'a, SessionReceipt> {
+            Box::pin(async move {
+                self.requests
+                    .lock()
+                    .expect("requests")
+                    .push(request.clone());
+                let result = match request.method {
+                    Method::ModelList => {
+                        json!({"data":[{"model":"gpt-5.6-sol"}],"nextCursor":null})
+                    }
+                    Method::ThreadTurnsList => {
+                        let start = request.params["cursor"]
+                            .as_str()
+                            .map(|s| s.parse::<usize>().expect("cursor"))
+                            .unwrap_or(0);
+                        let end = (start
+                            + request.params["limit"].as_u64().expect("limit") as usize)
+                            .min(HISTORY_TURNS);
+                        let full = request.params["itemsView"] != "notLoaded";
+                        let data: Vec<_> = (start..end).map(|index| {
+                            let items = if full {
+                                *self.body_bytes.lock().expect("bytes") += TURN_BODY_BYTES;
+                                json!([{"type":"agentMessage","text":"x".repeat(TURN_BODY_BYTES)}])
+                            } else { json!([]) };
+                            json!({"id":format!("turn-{}", HISTORY_TURNS-index),"items":items})
+                        }).collect();
+                        json!({"data":data,"nextCursor":(end < HISTORY_TURNS).then(|| end.to_string())})
+                    }
+                    Method::ThreadFork | Method::ThreadStart => {
+                        return Err(AccountSessionError::Unknown);
+                    }
+                    other => panic!("unexpected method {other:?}"),
+                };
+                Ok(SessionReceipt {
+                    scope: self.current_scope(&request.account).expect("scope"),
+                    operation: request.operation,
+                    ticket: Some(studio_runtime_providers::RequestTicket {
+                        generation: 1,
+                        id: studio_runtime_providers::RequestId::String("fixture".into()),
+                        method: request.method,
+                    }),
+                    certainty: RequestCertainty::Written,
+                    result: Some(ProviderResponse::Reply(result)),
+                    not_sent_reason: None,
+                    replayed: false,
+                })
+            })
+        }
+    }
+
+    async fn lookup(selected: usize, before: bool) -> (Arc<HistoryPort>, Value) {
+        let root = tempfile::tempdir().expect("state");
+        let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
+        let cwd = root.path().display().to_string();
+        store
+            .transaction(move |tx| {
+                AgentRepository::put(
+                    tx,
+                    &AgentRecord::from_value(json!({
+                        "id":"source","rootId":"source","epoch":0,"status":"idle",
+                        "cwd":cwd,"threadId":"thread","isLead":true,"model":"gpt-5.6-sol"
+                    }))?,
+                )?;
+                TranscriptRepository::put_item(
+                    tx,
+                    "message",
+                    "source",
+                    &json!({
+                        "id":"message","role":"assistant","turnId":format!("turn-{selected}")
+                    }),
+                    1.0,
+                    "message",
+                    false,
+                )
+                .expect("transcript fixture");
+                Ok(())
+            })
+            .await
+            .expect("seed");
+        let policy = Arc::new(studio_runtime_services::account_policy::AccountPolicyState::from_startup(
+            Some(br#"{"version":1,"defaultAccountKey":"default","accounts":{"default":{"id":"default","home":"fixture","label":"Default","source":"Codex CLI","status":"signedOut"}},"logins":{}}"#), []
+        ).expect("policy"));
+        let mut state = HttpState::new(
+            "token".into(),
+            "fixture".into(),
+            root.path().display().to_string(),
+            4000,
+            None,
+            Some(store.clone()),
+            Some(policy),
+        );
+        let port = Arc::new(HistoryPort::default());
+        state.account_session = Some(port.clone());
+        let result = branch(
+            State(state.clone()),
+            ApiJson(
+                serde_json::from_value(json!({
+                    "id":"lookup","agent":"source","message_id":"message","before":before
+                }))
+                .expect("request"),
+            ),
+        )
+        .await;
+        assert!(result.is_err(), "fixture leaves fork outcome unknown");
+        let operation = store
+            .read_async("branch witness", |db| {
+                let raw: String = db
+                    .query_row(
+                        "SELECT record FROM runtime_workspace_operations WHERE id='branch:lookup'",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .expect("operation");
+                serde_json::from_str::<Value>(&raw).map_err(studio_runtime_store::StoreError::from)
+            })
+            .await
+            .expect("operation read");
+        state
+            .model_catalog
+            .shutdown()
+            .await
+            .expect("catalog shutdown");
+        (port, operation)
+    }
+
+    #[tokio::test]
+    async fn branch_before_reads_no_turn_bodies_and_stops_after_predecessor() {
+        let (port, operation) = lookup(81, true).await;
+        assert_eq!(
+            *port.body_bytes.lock().expect("bytes"),
+            0,
+            "branch lookup must decode no item bodies"
+        );
+        let requests = port.requests.lock().expect("requests");
+        let pages: Vec<_> = requests
+            .iter()
+            .filter(|r| r.method == Method::ThreadTurnsList)
+            .collect();
+        assert_eq!(pages.len(), 3, "predecessor crosses a page boundary");
+        assert_eq!(pages[0].operation, "branch:lookup:turns:0");
+        assert_eq!(pages[1].operation, "branch:lookup:turns:1");
+        assert_eq!(pages[2].operation, "branch:lookup:turns:2");
+        assert_eq!(operation["forkTurnId"], "turn-80");
+        assert_eq!(operation["phase"], "recovery_required");
+        assert_eq!(
+            requests.last().expect("fork").params["lastTurnId"],
+            "turn-80"
+        );
+    }
+    #[tokio::test]
+    async fn branch_before_handles_same_page_first_and_missing_turns() {
+        for (selected, predecessor, pages) in
+            [(95, Some("turn-94"), 1), (1, None, 10), (0, None, 10)]
+        {
+            let (port, operation) = lookup(selected, true).await;
+            assert_eq!(*port.body_bytes.lock().expect("bytes"), 0);
+            let requests = port.requests.lock().expect("requests");
+            assert_eq!(
+                requests
+                    .iter()
+                    .filter(|r| r.method == Method::ThreadTurnsList)
+                    .count(),
+                pages
+            );
+            if selected == 0 {
+                assert_eq!(operation["phase"], "failed");
+                assert!(
+                    requests
+                        .iter()
+                        .all(|r| !matches!(r.method, Method::ThreadFork | Method::ThreadStart))
+                );
+            } else {
+                assert_eq!(
+                    operation["forkTurnId"],
+                    predecessor.map_or(Value::Null, |id| json!(id))
+                );
+                assert_eq!(
+                    requests.last().expect("branch").method,
+                    if predecessor.is_some() {
+                        Method::ThreadFork
+                    } else {
+                        Method::ThreadStart
+                    }
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn branch_after_uses_selected_turn_without_history_read() {
+        let (port, operation) = lookup(81, false).await;
+        assert_eq!(operation["forkTurnId"], "turn-81");
+        let requests = port.requests.lock().expect("requests");
+        assert!(requests.iter().all(|r| r.method != Method::ThreadTurnsList));
+        assert_eq!(
+            requests.last().expect("fork").params["lastTurnId"],
+            "turn-81"
+        );
+    }
+}
