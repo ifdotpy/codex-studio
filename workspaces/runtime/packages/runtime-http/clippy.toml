@@ -3,6 +3,8 @@
 # Runtime::block_on is reserved for rare synchronous runtime entry points; banning it
 # would also flag every tokio::test expansion, so audit its production callers directly.
 disallowed-methods = [
+  { path = "jsonschema::ValidationOptions::build", reason = "named validators are compiled once by studio_runtime_schema::compiled_validator; only inline request parts and DraftPayload compile locally" },
+  { path = "jsonschema::ValidationOptions::build_map", reason = "use studio_runtime_schema::compiled_validator; build_map creates separate compiler contexts and does not share named roots" },
   { path = "std::fs::canonicalize", reason = "use studio_runtime_store::path_identity typed constructors; the sole host path identity owner" },
   { path = "std::path::Path::canonicalize", reason = "use studio_runtime_store::path_identity typed constructors; the sole host path identity owner" },
   { path = "tokio::fs::canonicalize", reason = "use studio_runtime_store::path_identity typed constructors; the sole host path identity owner" },
