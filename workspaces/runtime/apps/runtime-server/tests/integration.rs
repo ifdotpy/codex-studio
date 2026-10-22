@@ -7,5 +7,4 @@ mod wave7_p01_registry;
 #[cfg(unix)]
 pub(crate) use wave7_p01_registry::{account_registry, host_runtime, provider_ports};
 
-#[path = "../../../packages/runtime-services/tests/support/prepared_python.rs"]
-pub(crate) mod prepared_python_support;
+mod fixture_support;

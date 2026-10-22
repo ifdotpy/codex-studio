@@ -1,0 +1,91 @@
+{
+  "agents": [
+    {
+      "id": "b",
+      "record": "{\"id\": \"b\", \"isLead\": true, \"parentId\": null, \"rootId\": \"b\", \"cwd\": \"/tmp/tmpmji2nead/TMPDIR/tmp6sjztb6t/one/project\", \"threadId\": \"native-b\", \"accountKey\": \"default\", \"history\": [\"original\"], \"autoWake\": true, \"epoch\": 1, \"name\": \"b\", \"status\": \"idle\", \"inFlight\": false, \"events\": 0, \"provider\": \"codex\", \"model\": \"fake-model\", \"role\": \"orchestrator\", \"depth\": 0, \"prompt\": \"\", \"worktree\": false, \"nativeEffort\": null}"
+    },
+    {
+      "id": "c",
+      "record": "{\"id\": \"c\", \"isLead\": true, \"parentId\": null, \"rootId\": \"c\", \"cwd\": \"/tmp/tmpmji2nead/TMPDIR/tmp6sjztb6t/one/project\", \"threadId\": \"native-c\", \"accountKey\": \"default\", \"history\": [\"original\"], \"autoWake\": true, \"epoch\": 1, \"name\": \"c\", \"status\": \"idle\", \"inFlight\": false, \"events\": 0, \"provider\": \"codex\", \"model\": \"fake-model\", \"role\": \"orchestrator\", \"depth\": 0, \"prompt\": \"\", \"worktree\": false, \"nativeEffort\": null}"
+    },
+    {
+      "id": "d",
+      "record": "{\"id\": \"d\", \"isLead\": true, \"parentId\": null, \"rootId\": \"d\", \"cwd\": \"/tmp/tmpmji2nead/TMPDIR/tmp6sjztb6t/one/project\", \"threadId\": \"native-d\", \"accountKey\": \"default\", \"history\": [\"original\"], \"autoWake\": true, \"epoch\": 1, \"name\": \"d\", \"status\": \"idle\", \"inFlight\": false, \"events\": 0, \"provider\": \"codex\", \"model\": \"fake-model\", \"role\": \"orchestrator\", \"depth\": 0, \"prompt\": \"\", \"worktree\": false, \"nativeEffort\": null}"
+    },
+    {
+      "id": "a",
+      "record": "{\"id\": \"a\", \"isLead\": true, \"parentId\": null, \"rootId\": \"a\", \"cwd\": \"/tmp/tmpmji2nead/TMPDIR/tmp6sjztb6t/one/project\", \"threadId\": \"native-a\", \"accountKey\": \"default\", \"history\": [\"original\"], \"autoWake\": true, \"epoch\": 1, \"name\": \"a\", \"status\": \"running\", \"inFlight\": true, \"events\": 0, \"provider\": \"codex\", \"model\": \"fake-model\", \"role\": \"orchestrator\", \"depth\": 0, \"prompt\": \"\", \"worktree\": false, \"nativeEffort\": null, \"turnId\": \"turn\", \"startAttempt\": {\"id\": \"fixture-attempt\", \"events\": [\"radio-turn:695be789-33b3-4b77-90aa-e74b52e2e9e4\"], \"epoch\": 1, \"submitted\": true, \"threadId\": \"native-a\", \"observedTurnId\": \"turn\"}}"
+    }
+  ],
+  "projects": [
+    {
+      "id": "/tmp/tmpmji2nead/TMPDIR/tmp6sjztb6t/one/project",
+      "record": "{\"id\": \"/tmp/tmpmji2nead/TMPDIR/tmp6sjztb6t/one/project\", \"path\": \"/tmp/tmpmji2nead/TMPDIR/tmp6sjztb6t/one/project\", \"name\": \"project\", \"created\": 1792684203.1226544, \"accountKey\": \"default\", \"accountRevision\": 1, \"peerTeams\": [{\"id\": \"bcfcc221-2818-4f84-a579-8c2d93e7dbdd\", \"name\": \"Team\", \"members\": [\"a\", \"b\"]}], \"peerTeamsRevision\": 1, \"updated\": 1792684203.1240332}"
+    }
+  ],
+  "rooms": [
+    {
+      "id": "radio:bcfcc221-2818-4f84-a579-8c2d93e7dbdd",
+      "record": "{\"id\": \"radio:bcfcc221-2818-4f84-a579-8c2d93e7dbdd\", \"kind\": \"private\", \"members\": [\"a\", \"b\"], \"projectPath\": \"/tmp/tmpmji2nead/TMPDIR/tmp6sjztb6t/one/project\", \"customName\": \"Team \\u00b7 Shared chat\", \"created\": 1792684203.1249325, \"userHidden\": false, \"radio\": {\"teamId\": \"bcfcc221-2818-4f84-a579-8c2d93e7dbdd\", \"revision\": 3, \"status\": \"stopping\", \"speaker\": \"a\", \"next\": [], \"active\": {\"eventId\": \"radio-turn:695be789-33b3-4b77-90aa-e74b52e2e9e4\", \"agentId\": \"a\", \"epoch\": 1, \"threadId\": \"native-a\", \"identity\": [\"native-a\", 1, 0], \"through\": 1}, \"error\": null, \"seen\": {}}, \"updated\": 1792684203.127696}"
+    }
+  ],
+  "events": [
+    {
+      "id": "radio-turn:695be789-33b3-4b77-90aa-e74b52e2e9e4",
+      "agent": "a",
+      "kind": "radio_turn",
+      "text": "This is a shared chat with two equal agents. It is your turn to reply. All your assistant text is visible to the user and the other participant. Reply normally here. Do not forward this conversation through messaging tools. Other independent work is not part of this room. Reply once, then yield.\nShared room (JSON):\n{\"roomId\": \"radio:bcfcc221-2818-4f84-a579-8c2d93e7dbdd\", \"selfId\": \"a\", \"participants\": [{\"id\": \"a\", \"name\": \"a\", \"model\": \"fake-model\", \"provider\": \"codex\"}, {\"id\": \"b\", \"name\": \"b\", \"model\": \"fake-model\", \"provider\": \"codex\"}]}\nShared messages since your last successful reply (JSON):\n[{\"seq\": 1, \"sender\": \"user\", \"text\": \"question\", \"created\": 1792684203.126209}]",
+      "status": "delivered",
+      "created": 0.0,
+      "epoch": 1,
+      "turn_id": "turn",
+      "error": null
+    }
+  ],
+  "chat_messages": [
+    {
+      "seq": 1,
+      "id": "radio:seed-send",
+      "room": "radio:bcfcc221-2818-4f84-a579-8c2d93e7dbdd",
+      "sender": "user",
+      "text": "question",
+      "created": 1792684203.126209,
+      "deliveries": "{}"
+    }
+  ],
+  "requests": [],
+  "completed_turns": [],
+  "items": [],
+  "operation_receipts": [
+    {
+      "id": "peer-team:f8e153aa-bea4-408a-a9c8-67be68200f98",
+      "signature": "24bb021086c1afff4ba0edadb3278719538f3fe1cf40faa7184d1ebf516b0ccc",
+      "result": "{\"id\": \"/tmp/tmpmji2nead/TMPDIR/tmp6sjztb6t/one/project\", \"path\": \"/tmp/tmpmji2nead/TMPDIR/tmp6sjztb6t/one/project\", \"name\": \"project\", \"created\": 1792684203.1226544, \"accountKey\": \"default\", \"accountRevision\": 1, \"peerTeams\": [{\"id\": \"bcfcc221-2818-4f84-a579-8c2d93e7dbdd\", \"name\": \"Team\", \"members\": [\"a\", \"b\"]}], \"peerTeamsRevision\": 1, \"updated\": 1792684203.1240332}"
+    },
+    {
+      "id": "radio:fec2221e-8d16-40aa-ae04-341b93486539",
+      "signature": "19b38702d64ffd751efac44b9c1cf67704be39cc517acdb075fec7d94b9805e8",
+      "result": "{\"room\": {\"id\": \"radio:bcfcc221-2818-4f84-a579-8c2d93e7dbdd\", \"kind\": \"private\", \"members\": [\"a\", \"b\"], \"projectPath\": \"/tmp/tmpmji2nead/TMPDIR/tmp6sjztb6t/one/project\", \"customName\": \"Team \\u00b7 Shared chat\", \"created\": 1792684203.1249325, \"userHidden\": false, \"radio\": {\"teamId\": \"bcfcc221-2818-4f84-a579-8c2d93e7dbdd\", \"revision\": 0, \"status\": \"idle\", \"speaker\": null, \"next\": [], \"active\": null, \"error\": null, \"seen\": {}}, \"updated\": 1792684203.1251116}}"
+    },
+    {
+      "id": "radio:seed-send",
+      "signature": "2d4acf3b87e5817090f99af3225925ca138e366cf176cb8667dd3a61135f96b7",
+      "result": "{\"room\": {\"id\": \"radio:bcfcc221-2818-4f84-a579-8c2d93e7dbdd\", \"kind\": \"private\", \"members\": [\"a\", \"b\"], \"projectPath\": \"/tmp/tmpmji2nead/TMPDIR/tmp6sjztb6t/one/project\", \"customName\": \"Team \\u00b7 Shared chat\", \"created\": 1792684203.1249325, \"userHidden\": false, \"radio\": {\"teamId\": \"bcfcc221-2818-4f84-a579-8c2d93e7dbdd\", \"revision\": 1, \"status\": \"waiting\", \"speaker\": null, \"next\": [\"a\", \"b\"], \"active\": null, \"error\": null, \"seen\": {}}, \"updated\": 1792684203.126237}}"
+    },
+    {
+      "id": "radio:b166e67a-05ff-482b-ad2e-682d950ed2b1",
+      "signature": "48d89864c8a2292add67cc58bc0c58765bd7bb2090f24481fa5e1a7c866156e3",
+      "result": "{\"room\": {\"id\": \"radio:bcfcc221-2818-4f84-a579-8c2d93e7dbdd\", \"kind\": \"private\", \"members\": [\"a\", \"b\"], \"projectPath\": \"/tmp/tmpmji2nead/TMPDIR/tmp6sjztb6t/one/project\", \"customName\": \"Team \\u00b7 Shared chat\", \"created\": 1792684203.1249325, \"userHidden\": false, \"radio\": {\"teamId\": \"bcfcc221-2818-4f84-a579-8c2d93e7dbdd\", \"revision\": 3, \"status\": \"stopping\", \"speaker\": \"a\", \"next\": [], \"active\": {\"eventId\": \"radio-turn:695be789-33b3-4b77-90aa-e74b52e2e9e4\", \"agentId\": \"a\", \"epoch\": 1, \"threadId\": \"native-a\", \"identity\": [\"native-a\", 1, 0], \"through\": 1}, \"error\": null, \"seen\": {}}, \"updated\": 1792684203.127696}}"
+    }
+  ],
+  "sync_entities": [
+    {
+      "collection": "peerTeam",
+      "id": "bcfcc221-2818-4f84-a579-8c2d93e7dbdd",
+      "seq": 1,
+      "hash": "23174c4a36d6a6a61d842d9fe23d65655025ad82a3ce82a5b5994b0fdef3a26b",
+      "payload": "{\"collection\":\"peerTeam\",\"id\":\"bcfcc221-2818-4f84-a579-8c2d93e7dbdd\",\"value\":{\"id\":\"bcfcc221-2818-4f84-a579-8c2d93e7dbdd\",\"members\":[\"a\",\"b\"],\"name\":\"Team\",\"projectPath\":\"/tmp/tmpmji2nead/TMPDIR/tmp6sjztb6t/one/project\",\"revision\":1}}",
+      "deleted": 0
+    }
+  ]
+}

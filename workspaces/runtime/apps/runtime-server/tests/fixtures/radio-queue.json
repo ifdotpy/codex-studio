@@ -1,0 +1,74 @@
+{
+  "agents": [
+    {
+      "id": "a",
+      "record": "{\"id\": \"a\", \"isLead\": true, \"parentId\": null, \"rootId\": \"a\", \"cwd\": \"/tmp/tmpvsbm7b7r/TMPDIR/tmpg81zifju/one/project\", \"threadId\": \"native-a\", \"accountKey\": \"default\", \"history\": [\"original\"], \"autoWake\": true, \"epoch\": 1, \"name\": \"a\", \"status\": \"queued\", \"inFlight\": false, \"events\": 0, \"provider\": \"codex\", \"model\": \"fake-model\", \"role\": \"orchestrator\", \"depth\": 0, \"prompt\": \"\", \"worktree\": false, \"nativeEffort\": null}"
+    },
+    {
+      "id": "b",
+      "record": "{\"id\": \"b\", \"isLead\": true, \"parentId\": null, \"rootId\": \"b\", \"cwd\": \"/tmp/tmpvsbm7b7r/TMPDIR/tmpg81zifju/one/project\", \"threadId\": \"native-b\", \"accountKey\": \"default\", \"history\": [\"original\"], \"autoWake\": true, \"epoch\": 1, \"name\": \"b\", \"status\": \"idle\", \"inFlight\": false, \"events\": 0, \"provider\": \"codex\", \"model\": \"fake-model\", \"role\": \"orchestrator\", \"depth\": 0, \"prompt\": \"\", \"worktree\": false, \"nativeEffort\": null}"
+    },
+    {
+      "id": "c",
+      "record": "{\"id\": \"c\", \"isLead\": true, \"parentId\": null, \"rootId\": \"c\", \"cwd\": \"/tmp/tmpvsbm7b7r/TMPDIR/tmpg81zifju/one/project\", \"threadId\": \"native-c\", \"accountKey\": \"default\", \"history\": [\"original\"], \"autoWake\": true, \"epoch\": 1, \"name\": \"c\", \"status\": \"idle\", \"inFlight\": false, \"events\": 0, \"provider\": \"codex\", \"model\": \"fake-model\", \"role\": \"orchestrator\", \"depth\": 0, \"prompt\": \"\", \"worktree\": false, \"nativeEffort\": null}"
+    },
+    {
+      "id": "d",
+      "record": "{\"id\": \"d\", \"isLead\": true, \"parentId\": null, \"rootId\": \"d\", \"cwd\": \"/tmp/tmpvsbm7b7r/TMPDIR/tmpg81zifju/one/project\", \"threadId\": \"native-d\", \"accountKey\": \"default\", \"history\": [\"original\"], \"autoWake\": true, \"epoch\": 1, \"name\": \"d\", \"status\": \"idle\", \"inFlight\": false, \"events\": 0, \"provider\": \"codex\", \"model\": \"fake-model\", \"role\": \"orchestrator\", \"depth\": 0, \"prompt\": \"\", \"worktree\": false, \"nativeEffort\": null}"
+    }
+  ],
+  "projects": [
+    {
+      "id": "/tmp/tmpvsbm7b7r/TMPDIR/tmpg81zifju/one/project",
+      "record": "{\"id\": \"/tmp/tmpvsbm7b7r/TMPDIR/tmpg81zifju/one/project\", \"path\": \"/tmp/tmpvsbm7b7r/TMPDIR/tmpg81zifju/one/project\", \"name\": \"project\", \"created\": 1792684203.4102838, \"accountKey\": \"default\", \"accountRevision\": 1, \"peerTeams\": [{\"id\": \"3e80f09d-fea2-4627-a84b-d4c0c4c331fd\", \"name\": \"Team\", \"members\": [\"a\", \"b\"]}], \"peerTeamsRevision\": 1, \"updated\": 1792684203.411634}"
+    }
+  ],
+  "rooms": [
+    {
+      "id": "radio:3e80f09d-fea2-4627-a84b-d4c0c4c331fd",
+      "record": "{\"id\": \"radio:3e80f09d-fea2-4627-a84b-d4c0c4c331fd\", \"kind\": \"private\", \"members\": [\"a\", \"b\"], \"projectPath\": \"/tmp/tmpvsbm7b7r/TMPDIR/tmpg81zifju/one/project\", \"customName\": \"Team \\u00b7 Shared chat\", \"created\": 1792684203.4125156, \"userHidden\": false, \"radio\": {\"teamId\": \"3e80f09d-fea2-4627-a84b-d4c0c4c331fd\", \"revision\": 1, \"status\": \"waiting\", \"speaker\": null, \"next\": [\"a\", \"b\"], \"active\": null, \"error\": null, \"seen\": {}}, \"updated\": 1792684203.413821}"
+    }
+  ],
+  "events": [],
+  "chat_messages": [
+    {
+      "seq": 1,
+      "id": "radio:seed-send",
+      "room": "radio:3e80f09d-fea2-4627-a84b-d4c0c4c331fd",
+      "sender": "user",
+      "text": "question",
+      "created": 1792684203.4137945,
+      "deliveries": "{}"
+    }
+  ],
+  "requests": [],
+  "completed_turns": [],
+  "items": [],
+  "operation_receipts": [
+    {
+      "id": "peer-team:3ff9f831-e3e6-4b9d-80e5-4d89bb618eb6",
+      "signature": "322af3adf4badd9d7d580a71aab9163d45b8f2142100cb21f1c8dd57f3e8f45f",
+      "result": "{\"id\": \"/tmp/tmpvsbm7b7r/TMPDIR/tmpg81zifju/one/project\", \"path\": \"/tmp/tmpvsbm7b7r/TMPDIR/tmpg81zifju/one/project\", \"name\": \"project\", \"created\": 1792684203.4102838, \"accountKey\": \"default\", \"accountRevision\": 1, \"peerTeams\": [{\"id\": \"3e80f09d-fea2-4627-a84b-d4c0c4c331fd\", \"name\": \"Team\", \"members\": [\"a\", \"b\"]}], \"peerTeamsRevision\": 1, \"updated\": 1792684203.411634}"
+    },
+    {
+      "id": "radio:34af8503-c18a-4fd4-8961-391a790498b3",
+      "signature": "55ed9e48507978ebffeaa8eaa640496bcc747b0cff8bf1afbfbea54d1b0dff02",
+      "result": "{\"room\": {\"id\": \"radio:3e80f09d-fea2-4627-a84b-d4c0c4c331fd\", \"kind\": \"private\", \"members\": [\"a\", \"b\"], \"projectPath\": \"/tmp/tmpvsbm7b7r/TMPDIR/tmpg81zifju/one/project\", \"customName\": \"Team \\u00b7 Shared chat\", \"created\": 1792684203.4125156, \"userHidden\": false, \"radio\": {\"teamId\": \"3e80f09d-fea2-4627-a84b-d4c0c4c331fd\", \"revision\": 0, \"status\": \"idle\", \"speaker\": null, \"next\": [], \"active\": null, \"error\": null, \"seen\": {}}, \"updated\": 1792684203.41269}}"
+    },
+    {
+      "id": "radio:seed-send",
+      "signature": "0f36c7ed2999d8b51178b649dd724f39f001495b6d1cb381bd244eb7bbd16515",
+      "result": "{\"room\": {\"id\": \"radio:3e80f09d-fea2-4627-a84b-d4c0c4c331fd\", \"kind\": \"private\", \"members\": [\"a\", \"b\"], \"projectPath\": \"/tmp/tmpvsbm7b7r/TMPDIR/tmpg81zifju/one/project\", \"customName\": \"Team \\u00b7 Shared chat\", \"created\": 1792684203.4125156, \"userHidden\": false, \"radio\": {\"teamId\": \"3e80f09d-fea2-4627-a84b-d4c0c4c331fd\", \"revision\": 1, \"status\": \"waiting\", \"speaker\": null, \"next\": [\"a\", \"b\"], \"active\": null, \"error\": null, \"seen\": {}}, \"updated\": 1792684203.413821}}"
+    }
+  ],
+  "sync_entities": [
+    {
+      "collection": "peerTeam",
+      "id": "3e80f09d-fea2-4627-a84b-d4c0c4c331fd",
+      "seq": 1,
+      "hash": "c898f82dd65dccf3571fb3c2dead4d82d2ed9cf407b7c0976f57968d9f03580c",
+      "payload": "{\"collection\":\"peerTeam\",\"id\":\"3e80f09d-fea2-4627-a84b-d4c0c4c331fd\",\"value\":{\"id\":\"3e80f09d-fea2-4627-a84b-d4c0c4c331fd\",\"members\":[\"a\",\"b\"],\"name\":\"Team\",\"projectPath\":\"/tmp/tmpvsbm7b7r/TMPDIR/tmpg81zifju/one/project\",\"revision\":1}}",
+      "deleted": 0
+    }
+  ]
+}
