@@ -275,7 +275,6 @@ pub(super) async fn recover(
                 crate::lifecycle_effects::notify_parent_of_disconnect(tx, &agent_id, at)?;
             }
         }
-        retire_generations(tx, &account, generation.0)?;
         pad_legacy_receipt_keys(tx, &account)?;
         for (id, attempt) in restore {
             let mut agent = stored_agent(tx, &id)?;
@@ -328,12 +327,7 @@ pub(super) async fn recover(
                 continue;
             }
             if context.method()? == Method::TurnStart {
-                SchedulerRepository::settle_start_outcome(
-                    tx,
-                    &context.intent.identity(),
-                    "uncertain",
-                    None,
-                )?;
+                uncertain(tx, &context, Some(&request.ticket), false, false)?;
             }
             if matches!(
                 context.method()?,
@@ -374,6 +368,9 @@ pub(super) async fn recover(
             }
             recovered.push((context, request));
         }
+        // Settle every old start's uncertainty before retiring its transport
+        // receipt: capacity state and parent notices belong to that same decision.
+        retire_generations(tx, &account, generation.0)?;
         Ok(recovered)
     })
     .await
@@ -1199,20 +1196,7 @@ fn settle_outcome(
                             }
                             preparation::accept_turn(tx, &context, &ticket, turn)?;
                         } else {
-                            stage_capacity_start(
-                                tx,
-                                i,
-                                CapacityStartOutcome::Failed {
-                                    reason: "The provider reply named no turn. The turn outcome is unknown.",
-                                    unknown: true,
-                                },
-                            )?;
-                            SchedulerRepository::settle_start_outcome(
-                                tx,
-                                &i.identity(),
-                                "uncertain",
-                                None,
-                            )?;
+                            uncertain(tx, &context, Some(&ticket), false, session_closed)?;
                             return Ok(SettledOutcome::default());
                         }
                     }
@@ -1221,14 +1205,6 @@ fn settle_outcome(
                             // Hold new starts for the recheck interval.
                             crate::disk_space::observe_full();
                         }
-                        stage_capacity_start(
-                            tx,
-                            i,
-                            CapacityStartOutcome::Failed {
-                                reason: "The provider rejected the turn start.",
-                                unknown: false,
-                            },
-                        )?;
                         SchedulerRepository::settle_start_rejected_provider(
                             tx,
                             &i.agent_id,
@@ -1239,6 +1215,14 @@ fn settle_outcome(
                             ticket.generation,
                             i.thread_id.as_deref().unwrap_or(""),
                             error,
+                        )?;
+                        stage_capacity_start(
+                            tx,
+                            i,
+                            CapacityStartOutcome::Failed {
+                                reason: "The provider rejected the turn start.",
+                                unknown: false,
+                            },
                         )?;
                     }
                 },
@@ -1369,6 +1353,16 @@ fn uncertain(
                 _ => None,
             },
         )?;
+        if matches!(outcome, TurnStart::Unknown) {
+            stage_capacity_start(
+                tx,
+                &context.intent,
+                CapacityStartOutcome::Failed {
+                    reason: "The provider turn start outcome is unknown. Check the existing request before continuing.",
+                    unknown: true,
+                },
+            )?;
+        }
     }
     Ok(false)
 }

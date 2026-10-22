@@ -170,6 +170,13 @@ have a native thread; existing sessions and transferred threads sync as well.
 Deleting an agent chat removes it from the user list until the next agent message. Its participants retain their history.
 Deletion stops the selected agent and its descendants and removes them from the interface.
 Stored transcripts and project files remain on disk. Deleted agents cannot resume from late events or message retries.
+Monitor projection updates follow this flow:
+
+1. Creation, status, owner, and creation-time changes select the canonical monitor window.
+2. Output, byte counts, and activity changes publish only that monitor's projection.
+3. Terminal monitors outside the window stay retired; owner deletion maintains the window.
+4. Source changes, projections, and tombstones commit in the same transaction.
+
 Agents use `orchestration_monitor` for all long commands, checks, and watchers.
 A settled turn with active owned commands stays in `waiting_on_monitor`. Each
 command queues one durable `monitor_exit` event when its outcome is decided,
@@ -193,6 +200,17 @@ and command monitors for the current chat and its descendants. Tool calls remain
 the conversation. It has no cross-team filter.
 The workspace API retains up to 100 completed task records and 100 completed
 monitor records within that chat. Active records remain available.
+
+Server command output snapshots follow one flow:
+
+1. The durable claim and start fence precede process creation.
+2. The command publishes its initial state, then coalesces changed output using
+   `SNAPSHOT_PUBLISH_INTERVAL` in
+   [server_exec.rs](../workspaces/runtime/packages/runtime-services/src/server_exec.rs).
+3. Idle commands keep their existing snapshot. Failed writes remain pending.
+4. Snapshot serialization, atomic replacement, and fsync run on the labeled
+   blocking pool. Each write finishes before another begins.
+5. The final snapshot finishes before the final record is saved and released.
 
 Inbox, workspace agent choices, and attention counts use the same lead tree.
 Two chats remain separate even when they use the same account or project folder.
@@ -712,6 +730,16 @@ consumes generated copies. Both backends use them:
   exact input to the queue.
 - Atomic file writes remove their temporary file on any failure and keep the
   previous file.
+
+### Capacity retry outcomes
+
+1. A temporary failure schedules one follow-up through the ordinary input queue.
+2. An accepted start binds the retry to that turn; its completion reports the result.
+3. A rejected start ends the retry as `failed` and sends one parent `child_result`.
+4. A lost start outcome, including across restart, ends the retry as `unknown`
+   and sends one parent recovery notice. The submitted input stays uncertain.
+5. Recovery never resends that input. A late acceptance can bind the same retry
+   to its existing turn; repeated recovery does not repeat the notice.
 
 ## Stop and recovery
 
@@ -1335,3 +1363,12 @@ change with both options. Cross-machine Claude cache reuse remains unverified.
 6. The UI shows its reason. `until`, when present, is a retry deadline in Unix seconds.
 7. A claim clears gate waits; submission clears preparation waits. Other epochs and settled turns cannot display them.
 8. A dispatch handoff has no gate blocker yet; it is distinct from an owner holding work.
+
+### History observer lock boundaries
+
+1. The history watcher resolves filesystem metadata before coalescing events under
+   its pending-events mutex, so synchronous store observers can finish during a
+   slow metadata lookup.
+2. Legacy terminal-error repair reads its completion checkpoint before requesting
+   the Canvas writer. Pending repairs recheck the checkpoint inside the existing
+   analytics transaction before applying a page; completed repairs skip admission.
