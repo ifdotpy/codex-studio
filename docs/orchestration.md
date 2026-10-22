@@ -1445,3 +1445,13 @@ change with both options. Cross-machine Claude cache reuse remains unverified.
 3. The lifecycle owner validates each final changed agent row and publishes its canonical renderer view once.
 4. Source state, receipts and renderer views commit together; a projection failure rolls them all back.
 5. Replaying committed journal identities returns the saved outcomes without publishing agents again.
+
+### History scheduling
+
+1. The history runner ingests the initial roster in store row order.
+2. Store notifications validate changed rows and update the retained ready order.
+3. Each step selects one checked actor, preserving active priority, the active quota,
+   checked-time order and store-row ties; it does not rescan the roster.
+4. Partial imports remain ready; current imports wait for a notification.
+5. Input failures wait for relevant input, budget or profile changes; deletion
+   and retirement remove the actor and its scheduling state.
