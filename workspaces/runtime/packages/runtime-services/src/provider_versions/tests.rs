@@ -346,6 +346,7 @@ fn claude_version_probe_uses_launch_binary_and_reports_configured_binary_separat
 async fn provider_update_notice_durable_failure_restart_and_replay_matrix() {
     let temp = isolated_tempdir();
     let rust_state = temp.path().join("rust-state");
+    std::fs::create_dir(&rust_state).expect("isolated notice directory");
     let store = Arc::new(
         RuntimeStore::open(Some(&rust_state))
             .await
