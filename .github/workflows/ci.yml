@@ -228,6 +228,9 @@ jobs:
           fetch-depth: 0
       - uses: ./.github/actions/fast-tier-setup
       - uses: ./.github/actions/client-build-setup
+        with:
+          native: "true"
+          renderer-checks: "false"
       - name: List facade recipes
         run: just --list
       - name: Run non-Rust fast-tier checks
