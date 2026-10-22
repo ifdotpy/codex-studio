@@ -478,11 +478,16 @@ the user question for leads, and a worker refuses it. Codex has no such prompt:
 `thread/resume` loads the stored history without a dialog.
 Studio checks ownership before unsubscribing a thread and stops the provider
 process only when all loaded threads have been released and no work remains.
-An unknown unsubscribe result keeps the thread loaded.
+An unknown unsubscribe result keeps the thread loaded. A thread whose last turn
+ended with a provider error (native status `systemError`) has no running turn
+and unloads like an idle one.
 
 Idle checks follow provider events, committed ownership changes, and the next
-idle deadline. Pending local requests park the deadline until their completion
-event. Queued commands prevent process shutdown without erasing its idle time.
+idle deadline. A pending local request for a thread parks that thread's deadline
+until the request completes. Requests for other threads, or for no thread (another
+agent's turn, a monitor command), do not park it. Process shutdown waits until
+the worker holds no local work. Queued commands prevent process shutdown without
+erasing its idle time.
 The worker loop owns this reconciliation; it does not start periodic scans.
 
 Account worker shutdown settles callback answers through the session owner:
