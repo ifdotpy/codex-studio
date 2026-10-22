@@ -1125,9 +1125,10 @@ impl SessionTask {
     }
 
     fn apply_actions(&mut self, control: bool) -> Result<(), SessionTaskError> {
-        // Keep the remaining transition batch owned across fallible processing.
-        // Positive outcomes are retained before record removal or write release.
-        while let Some(action) = self.retained.actions.pop_front() {
+        // Keep the current action retained until it is processed: an error or an
+        // unwind leaves it at the front for cleanup. Positive outcomes are
+        // retained before record removal or write release.
+        while let Some(action) = self.retained.actions.front().cloned() {
             match action {
                 Action::Write(frame) => match frame {
                     Frame::Request(request) => {
@@ -1166,6 +1167,7 @@ impl SessionTask {
                 }
                 Action::Dispatch(_) | Action::ThreadReleased { .. } => {}
             }
+            self.retained.actions.pop_front();
         }
         Ok(())
     }
