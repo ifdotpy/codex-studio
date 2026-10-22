@@ -1486,3 +1486,10 @@ change with both options. Cross-machine Claude cache reuse remains unverified.
 3. Reconcile uncertain input with the accepted native attempt and current native history. Missing evidence stays held.
 4. Answer provider cards only with their Rust journal admission; retire replies after the worker checkpoint.
 5. Keep the Rust receipt upgrades and dated Rust agent migrations for already written Rust state.
+
+### Local draft synchronization
+
+1. Import, receive, and acknowledge look up each stored draft by workspace and ID
+   inside the command transaction, preserving pending edits and newer master versions.
+2. The command commits its changes and returns one complete draft view; it does not
+   scan every stored draft again for each incoming document.

@@ -849,6 +849,34 @@ function fastTierCommands(root) {
         ]
       : []),
     {
+      item: { name: "studio-client-core", ecosystem: "cargo" },
+      label: "keyed draft synchronization witness",
+      commands: [
+        [
+          "cargo",
+          [
+            "nextest",
+            "run",
+            "--locked",
+            "--no-tests",
+            "fail",
+            "--message-format",
+            "libtest-json-plus",
+            "-p",
+            "studio-client-core",
+            "--lib",
+            "-E",
+            "test(draft_store::tests::synchronization_decodes_only_the_keyed_draft_per_incoming_document)",
+          ],
+        ],
+      ],
+      options: {
+        selector: "draft synchronization keyed decode count",
+        reason:
+          "Check one stored draft decode per incoming document, workspace isolation, and a single final response view scan.",
+      },
+    },
+    {
       item: { name: "studio-runtime-providers", ecosystem: "cargo" },
       label: "provider request body ownership witnesses",
       commands: [
