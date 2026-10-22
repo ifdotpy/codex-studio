@@ -65,11 +65,13 @@ test("runs Playwright in an isolated home with no interpreter probe", async () =
   });
 
   await import("../scripts/run-browser-tests.mjs");
+  // The pinned CLI runs directly; Corepack cannot see its cache in the isolated home.
   assert.deepEqual(
     calls.map((call) => call.command),
-    ["pnpm"],
+    [process.execPath],
   );
-  assert.deepEqual(calls[0].args, ["exec", "playwright", "test", "--list"]);
+  assert.match(calls[0].args[0], /@playwright[\\/]test[\\/]cli\.js$/);
+  assert.deepEqual(calls[0].args.slice(1), ["test", "--list"]);
   assert.equal(process.exitCode, 0);
 });
 
