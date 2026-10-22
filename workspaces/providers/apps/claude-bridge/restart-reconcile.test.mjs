@@ -344,6 +344,7 @@ test("bridge reads retain the unconfirmed outcome and reason without a model que
     assert.match(result.thread.turns[0].error.message, /could not confirm/);
     const state = await bridge.call("claude/state", { threadId: sessionId });
     assert.equal(state.turns[0].status, "uncertain");
+    assert.deepEqual(state.turns[0].error, result.thread.turns[0].error);
     assert.equal(
       bridge.notes.some((entry) => entry.method === "turn/started"),
       false,

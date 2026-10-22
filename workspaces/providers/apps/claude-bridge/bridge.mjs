@@ -2343,6 +2343,7 @@ async function handle(method, p) {
       turns: s.turns.map((t) => ({
         id: t.id,
         status: t.status,
+        ...(t.error ? { error: t.error } : {}),
         canRestoreFiles: fileRestoreReason(s, t, active) === null,
         restoreFilesUnavailableReason: fileRestoreReason(s, t, active),
         text:
