@@ -1,30 +1,16 @@
 #![allow(clippy::duplicate_mod)]
 
 use super::*;
-use std::{
-    io::{BufRead, BufReader, Write},
-    process::{Child, ChildStdin, ChildStdout, Command, Stdio},
-    sync::{
-        Mutex,
-        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering as AtomicOrdering},
-    },
+use std::sync::{
+    Mutex,
+    atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering as AtomicOrdering},
 };
 use studio_runtime_store::RuntimeStore;
 
-#[path = "../../tests/support/prepared_python.rs"]
-mod prepared_python;
-
 const CASES: &str = include_str!("../../tests/provider_versions/cases.json");
-const NOTICE_CASES: &str = include_str!("../../tests/turn_lifecycle/notification_cases.json");
-
-struct PythonFixture {
-    child: Child,
-    input: ChildStdin,
-    output: BufReader<ChildStdout>,
-}
 
 fn isolated_tempdir() -> tempfile::TempDir {
-    prepared_python::disposable_state_dir()
+    tempfile::tempdir().expect("isolated provider version state")
 }
 
 struct MutableConnections(Mutex<Vec<ProviderProfile>>, tokio::sync::watch::Sender<u64>);
@@ -182,66 +168,13 @@ impl UpstreamFetch for CountingFetch {
     }
 }
 
-impl PythonFixture {
-    fn new(scratch: &std::path::Path) -> Self {
-        let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src");
-        let python = prepared_python::prepared_python(&source);
-        let mut child = Command::new(python)
-            .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/turn_lifecycle/oracle.py"))
-            .arg(scratch)
-            .env("PYTHONDONTWRITEBYTECODE", "1")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .spawn()
-            .expect("Python fixture oracle starts");
-        Self {
-            input: child.stdin.take().expect("oracle stdin"),
-            output: BufReader::new(child.stdout.take().expect("oracle stdout")),
-            child,
-        }
-    }
-
-    fn call(&mut self, value: Value) -> Value {
-        writeln!(self.input, "{value}").expect("oracle command writes");
-        self.input.flush().expect("oracle command flushes");
-        let mut line = String::new();
-        self.output
-            .read_line(&mut line)
-            .expect("oracle response reads");
-        let response: Value = serde_json::from_str(&line).expect("oracle response JSON");
-        assert!(response.get("error").is_none(), "{}", response["error"]);
-        response["result"].clone()
-    }
-}
-
-impl Drop for PythonFixture {
-    fn drop(&mut self) {
-        let _ignored = writeln!(self.input, "{{\"command\":\"close\"}}");
-        let _ignored = self.input.flush();
-        let _ignored = self.child.wait();
-    }
-}
-
 #[test]
 #[allow(clippy::disallowed_methods)]
 fn version_parse_and_comparison_match_the_real_python_functions() {
     let cases: Vec<[String; 2]> = serde_json::from_str(CASES).expect("version corpus");
-    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src");
-    let python = prepared_python::prepared_python(&source);
-    let oracle = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/provider_versions/oracle.py");
-    let corpus = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/provider_versions/cases.json");
-    let output = Command::new(python)
-        .arg(oracle)
-        .arg(corpus)
-        .output()
-        .expect("Python oracle launches");
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let expected: Vec<[bool; 3]> = serde_json::from_slice(&output.stdout).expect("oracle JSON");
+    let expected: Vec<[bool; 3]> =
+        serde_json::from_str(include_str!("../../tests/provider_versions/expected.json"))
+            .expect("frozen version comparisons");
     let actual = cases
         .iter()
         .map(|[installed, available]| {
@@ -412,20 +345,11 @@ fn claude_version_probe_uses_launch_binary_and_reports_configured_binary_separat
 #[allow(clippy::disallowed_methods)]
 async fn provider_update_notice_durable_failure_restart_and_replay_matrix() {
     let temp = isolated_tempdir();
-    let mut oracle = PythonFixture::new(temp.path());
-    let cases: Vec<Value> = serde_json::from_str(NOTICE_CASES).expect("notice seed corpus");
     let rust_state = temp.path().join("rust-state");
-    oracle.call(json!({
-        "command":"case",
-        "module":"notification_dispatch",
-        "root":temp.path().join("python-state"),
-        "rust":rust_state,
-        "case":cases[0]
-    }));
     let store = Arc::new(
         RuntimeStore::open(Some(&rust_state))
             .await
-            .expect("open Python-written state"),
+            .expect("open isolated notice state"),
     );
     let adapter = SyncProviderVersionStore(store.clone());
     let first = json!({
@@ -462,21 +386,10 @@ async fn provider_update_notice_durable_failure_restart_and_replay_matrix() {
         first.clone(),
         upstream_warning.clone(),
     ];
-    let python_source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src");
-    let python = prepared_python::prepared_python(&python_source);
-    let projection_oracle =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/provider_versions/projection_oracle.py");
-    let expected_output = Command::new(python)
-        .arg(projection_oracle)
-        .output()
-        .expect("Python provider/sync projection oracle starts");
-    assert!(
-        expected_output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&expected_output.stderr)
-    );
-    let expected: Value = serde_json::from_slice(&expected_output.stdout)
-        .expect("Python provider/sync projection oracle JSON");
+    let expected: Value = serde_json::from_str(include_str!(
+        "../../tests/provider_versions/projection.json"
+    ))
+    .expect("frozen provider projection");
     let warn_write = |trigger: &str| {
         let trigger = trigger.to_owned();
         store.transaction(move |transaction| {
@@ -667,15 +580,6 @@ fn profile(account: &str, provider: &str, connection: &str) -> ProviderProfile {
 async fn preference_read_error_fails_closed_without_an_upstream_request() {
     let temporary = isolated_tempdir();
     let root = temporary.path().join("state");
-    let mut oracle = PythonFixture::new(temporary.path());
-    let cases: Vec<Value> = serde_json::from_str(NOTICE_CASES).expect("notice seed corpus");
-    oracle.call(json!({
-        "command":"case",
-        "module":"notification_dispatch",
-        "root":temporary.path().join("python-state"),
-        "rust":root,
-        "case":cases[0]
-    }));
     std::fs::create_dir_all(&root).expect("isolated state directory exists");
     let runtime = Arc::new(
         RuntimeStore::open(Some(&root))
