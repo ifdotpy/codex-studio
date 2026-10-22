@@ -888,6 +888,8 @@ function fastTierCommands(root) {
               "test(fresh_state::rust_fresh_state_catalog_is_deterministic_and_survives_reopen)",
               "test(cross_runtime::fixture_records_are_readable_and_writable_in_rust)",
               "test(sql_guard_tests::)",
+              "test(account_limits_ignore_python_single_account_fallback)",
+              "test(python_payload_marker_layout_is_refused_without_upgrade)",
             ]),
           ],
         ],
@@ -1002,6 +1004,7 @@ function fastTierCommands(root) {
             "-E",
             nextestAnyOf([
               "test(/^provider_session_task::active_barrier_holds_new_requests_but_not_callback_answers_or_interrupts$/)",
+              "test(provider_callbacks_unjournaled_card_is_refused_without_writes)",
               "test(/^provider_session_task::expiry_batch_preserves_all_queued_request_outcomes_in_order$/)",
               "test(/^turn_lifecycle_corpus::fast_witnesses_cover_transitions_states_and_review_findings$/)",
               "test(/^wave9_safety_buffering_executor::comparison_normalizes_only_generated_identity_and_role_source_roots$/)",

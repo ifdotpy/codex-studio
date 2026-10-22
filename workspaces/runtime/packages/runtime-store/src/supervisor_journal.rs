@@ -603,39 +603,10 @@ fn validate_event(event: &Value) -> Result<()> {
 }
 
 fn migrate(db: &Connection) -> Result<()> {
-    // Match Journal's additive legacy migrations, atomically and before readers.
+    // Create the current journal schema atomically before readers.
     db.execute_batch("BEGIN IMMEDIATE")?;
     let result = (|| -> Result<()> {
         db.execute_batch(include_str!("supervisor_schema.sql"))?;
-        for (table, column, declaration) in [
-            ("handles", "closed_at", "REAL"),
-            ("handles", "closed_reason", "TEXT"),
-            ("handles", "generation", "INTEGER NOT NULL DEFAULT 0"),
-            ("events", "generation", "INTEGER NOT NULL DEFAULT 1"),
-            ("child_identities", "job_name", "TEXT NOT NULL DEFAULT ''"),
-            (
-                "child_identities",
-                "job_kill_on_close",
-                "INTEGER NOT NULL DEFAULT 0",
-            ),
-            ("operations", "generation", "INTEGER"),
-            ("operations", "response", "TEXT"),
-            ("operations", "response_sequence", "INTEGER"),
-        ] {
-            let present: bool = db.query_row(
-                "SELECT EXISTS(SELECT 1 FROM pragma_table_info(?) WHERE name=?)",
-                params![table, column],
-                |row| row.get(0),
-            )?;
-            if !present {
-                db.execute_batch(&format!(
-                    "ALTER TABLE {table} ADD COLUMN {column} {declaration}"
-                ))?;
-                if table == "handles" && column == "generation" {
-                    db.execute("UPDATE handles SET generation=1 WHERE pid>0", [])?;
-                }
-            }
-        }
         db.execute_batch("CREATE INDEX IF NOT EXISTS operations_monitor_native ON operations(handle,generation,native_id) WHERE substr(operation_id,1,8)='monitor:'")?;
         Ok(())
     })();

@@ -133,51 +133,6 @@ impl ContextRepairRepository {
         }
         Ok(Some(result))
     }
-    pub fn batches(
-        db: &Connection,
-        agent: &Value,
-        events: &[Value],
-        maximum_bytes: usize,
-    ) -> StoreResult<Vec<Value>> {
-        let mut result = Vec::new();
-        let mut used_bytes = 0;
-        let mut seen = std::collections::BTreeSet::new();
-        for event in events {
-            let Some(key) = event["metadata"]["transcriptItemId"].as_str() else {
-                continue;
-            };
-            if !seen.insert(key) {
-                continue;
-            }
-            let record: Option<(String,f64)> = db.query_row("SELECT record,created FROM runtime_items WHERE id=?1 AND agent=?2 AND length(CAST(record AS BLOB))<=65536", params![key,agent["id"].as_str()], |row| Ok((row.get(0)?,row.get(1)?))).optional()?;
-            let Some((record, created)) = record else {
-                continue;
-            };
-            let item: Value = serde_json::from_str(&record)?;
-            let Some(inputs) = item["inputs"].as_array() else {
-                continue;
-            };
-            let fulltext: Option<String> = db.query_row("SELECT body FROM runtime_item_fulltext WHERE id=?1 AND length(CAST(body AS BLOB))<=65536", [key], |row| row.get(0)).optional()?;
-            let mut members = Vec::new();
-            let mut member_bytes = 0;
-            for input in inputs {
-                let Some(id) = input["id"].as_str() else {
-                    continue;
-                };
-                let member: Option<(String,String)> = db.query_row("SELECT json_object('id',e.id,'agent',e.agent,'epoch',e.epoch,'kind',e.kind,'text',e.text,'status',e.status,'created',e.created,'turn_id',e.turn_id,'error',e.error),m.record FROM runtime_events e JOIN runtime_event_meta m ON m.id=e.id WHERE e.id=?1 AND e.agent=?2 AND e.epoch=?3 AND length(CAST(e.text AS BLOB))<=65536 AND length(CAST(m.record AS BLOB))<=65536", params![id,agent["id"].as_str(),agent["epoch"].as_i64()], |row| Ok((row.get(0)?,row.get(1)?))).optional()?;
-                if let Some((row, meta)) = member {
-                    let mut row: Value = serde_json::from_str(&row)?;
-                    row["metadata"] = serde_json::from_str(&meta)?;
-                    capture_bytes(&mut member_bytes, &row, maximum_bytes)?;
-                    members.push(row);
-                }
-            }
-            let batch = json!({"item":item,"row":{"id":key,"agent":agent["id"],"created":created,"record":record},"fulltext":fulltext,"members":members});
-            capture_bytes(&mut used_bytes, &batch, maximum_bytes)?;
-            result.push(batch);
-        }
-        Ok(result)
-    }
     pub fn completed(db: &Connection, agent: &str, turn: &str) -> StoreResult<bool> {
         Ok(db
             .query_row(

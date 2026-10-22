@@ -180,25 +180,8 @@ pub async fn history_output(
                 .ok_or(TerminalError::UnknownTerminal)
         })
         .await?;
-    let record = current.record;
-    let archive_id = id.to_owned();
-    let row = store
-        .transaction(move |transaction| {
-            let row = TerminalsRepository::get(transaction, &archive_id)?
-                .ok_or_else(|| StoreError::SchemaMismatch("unknown terminal".into()))?;
-            if !row.output.is_empty()
-                && TerminalsRepository::archive_start(transaction, &archive_id)?.is_none()
-            {
-                TerminalsRepository::append_output(
-                    transaction,
-                    &archive_id,
-                    row.offset,
-                    &row.output,
-                )?;
-            }
-            Ok(row)
-        })
-        .await?;
+    let record = current.record.clone();
+    let row = current;
     let terminal_id = id.to_owned();
     let (start, available, cursor, chunks) = store
         .read_async("runtime-services/terminal_driver", move |connection| {
@@ -1047,7 +1030,7 @@ mod tests {
     use super::{
         INPUT_LIMIT, OUTPUT_LIMIT, SessionError, TerminalCreate, TerminalDriver, TerminalError,
         TerminalEvent, TerminalNotification, TerminalOutcome, TerminalSession, decode_utf8,
-        history_output, new_id, now_seconds, output, receipt_signature, size, terminal_title,
+        history_output, new_id, output, receipt_signature, size, terminal_title,
     };
     use serde_json::Value;
     use studio_runtime_store::{
@@ -2913,36 +2896,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn driver_seeds_python_legacy_output_and_refuses_bad_history_without_writes() {
+    async fn driver_refuses_bad_history_without_writes() {
         let state = test_state().await;
-        let driver = test_driver(&state, FakeSession::default());
-        let id = "legacy-terminal";
-        let now = now_seconds();
-        let record = TerminalRecord::from_value(serde_json::json!({"id":id,"agent":"agent","title":"old","cwd":"/tmp","status":"exited","created":now,"updated":now,"exitCode":0}))
-            .expect("terminal record");
-        let transaction_id = id.to_owned();
-        state
-            .store
-            .as_ref()
-            .expect("store")
-            .transaction(move |tx| {
-                TerminalsRepository::put(tx, &transaction_id, &record, "legacy", 9)
-            })
-            .await
-            .expect("legacy row");
-        driver
-            .apply_notification(TerminalNotification {
-                terminal_id: id.into(),
-                sequence: 1,
-                event: TerminalEvent::Output(b" delta".to_vec()),
-            })
-            .await
-            .expect("append delta");
-        let history = history_output(state.store.as_ref().expect("store").clone(), id, 9, 32)
-            .await
-            .expect("history");
-        assert_eq!(history["text"], "legacy delta");
-
         let bad = "invalid-record";
         let transaction_bad = bad.to_owned();
         state
