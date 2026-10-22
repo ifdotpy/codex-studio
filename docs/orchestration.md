@@ -1519,3 +1519,10 @@ change with both options. Cross-machine Claude cache reuse remains unverified.
 6. The existing receipt owner atomically commits recovery and the callback result using prepared payloads only.
 7. Panel guidance is read once before its callback transaction; the transaction still checks lead authority.
 8. A lost response uses the saved request identity and existing uncertain-outcome recovery.
+
+## Desktop runtime startup
+
+1. Electron and Tauri verify the backend identity and canonical state directory before attaching.
+2. After a confirmed connection refusal, the client starts `studio-runtime-server` and verifies its executable build identity.
+3. Recovery owns the independent Rust process supervisor; quitting the client leaves runtime work active.
+4. A timeout or incompatible owner fails visibly without starting a replacement.

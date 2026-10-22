@@ -13,12 +13,7 @@ const {
 const fs = require("node:fs/promises");
 const path = require("node:path");
 const { randomUUID } = require("node:crypto");
-const {
-  ensureBackend,
-  identity,
-  updateStatus,
-  backendSelection,
-} = require("./backend.cjs");
+const { ensureBackend, identity, updateStatus } = require("./backend.cjs");
 const {
   configureRecovery,
   isInstalledApplication,
@@ -930,11 +925,6 @@ async function nativeAction(event, request) {
   }
 }
 async function start() {
-  const selectedBackend = backendSelection?.(process.env) || "python";
-  if (selectedBackend === "rust" && supervisorPreference())
-    throw new Error(
-      "The Rust runtime server cannot use the configured Python process supervisor. Disable supervisor mode before selecting Rust.",
-    );
   if (recoverySupported) {
     if (isInstalledApplication(app.getAppPath())) {
       try {
@@ -977,7 +967,6 @@ async function start() {
         port: Number(process.env.CODEX_DESKTOP_PORT || 4620),
         env: {
           ...process.env,
-          CODEX_DESKTOP_BACKEND: selectedBackend,
           CODEX_AGENTS_SUPERVISOR_MODE: supervisorPreference() ? "1" : "0",
         },
       });
