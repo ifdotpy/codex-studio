@@ -1314,3 +1314,12 @@ Studio does not upgrade a CLI during a move.
 Snapshot cache reuse depends on provider support and cache lifetime.
 The local Claude probe read 96.51% of input tokens from the cache after a folder
 change with both options. Cross-machine Claude cache reuse remains unverified.
+
+### History observer lock boundaries
+
+1. The history watcher resolves filesystem metadata before coalescing events under
+   its pending-events mutex, so synchronous store observers can finish during a
+   slow metadata lookup.
+2. Legacy terminal-error repair reads its completion checkpoint before requesting
+   the Canvas writer. Pending repairs recheck the checkpoint inside the existing
+   analytics transaction before applying a page; completed repairs skip admission.
