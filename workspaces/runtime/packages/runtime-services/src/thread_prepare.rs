@@ -1099,6 +1099,7 @@ fn preparation_release_id(s: &Snapshot) -> Option<String> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod archive_finished_catalog_tests {
     use super::*;
 

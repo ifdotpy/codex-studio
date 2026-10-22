@@ -713,7 +713,7 @@ async fn exited_generation_entries_do_not_hold_back_the_initialize_reply() {
     session.checked_shutdown().await;
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 use crate::process_support as support;
 
 #[cfg(target_os = "linux")]
