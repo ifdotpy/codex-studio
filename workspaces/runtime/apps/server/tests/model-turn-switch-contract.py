@@ -46,6 +46,7 @@ class LoadedThreadServer(fixture.FakeServer):
 class ModelTurnSwitchContract(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="studio-model-turn-switch-")
+        self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
         self.runtime = make_runtime(fixture.Runtime, self.root, LoadedThreadServer)
         self.server = self.runtime.connect()

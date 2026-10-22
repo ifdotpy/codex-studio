@@ -45,6 +45,7 @@ if os.environ.get("CODEX_SCHEDULER_CACHE_SOURCE"):
 class RosterCache(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
         self.path = Path(self.tmp.name) / "canvas.sqlite3"
         self.connections = []
         self.scans = []

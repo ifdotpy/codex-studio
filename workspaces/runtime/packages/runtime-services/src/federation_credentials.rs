@@ -672,7 +672,8 @@ mod tests {
     async fn first_use_conflict_preserves_the_credential_directory_and_journal() {
         for directory_exists in [false, true] {
             for foreign_target in [false, true] {
-                let (root, store) = remote_transport::tests::runtime_store_fixture().await;
+                let (_directory, root, store) =
+                    remote_transport::tests::runtime_store_fixture().await;
                 store
                     .transaction(move |tx| {
                         assert!(Journal::reserve_name(tx, "reserved", "Original", "local")?);
@@ -722,7 +723,6 @@ mod tests {
                     .await
                     .expect("reservation remains unapplied");
                 drop(store);
-                fs::remove_dir_all(root).expect("remove disposable state");
             }
         }
     }
@@ -730,7 +730,7 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn rename_notifies_after_identity_file_write_with_stable_request_id() {
-        let (root, store) = remote_transport::tests::runtime_store_fixture().await;
+        let (_directory, root, store) = remote_transport::tests::runtime_store_fixture().await;
         let credentials = Credentials::default();
         let notified = Arc::new(StdMutex::new(Vec::new()));
         let notified_by_callback = Arc::clone(&notified);
@@ -765,7 +765,7 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn canceled_rename_retains_serialization_until_file_write_and_commit_finish() {
-        let (root, store) = remote_transport::tests::runtime_store_fixture().await;
+        let (_directory, root, store) = remote_transport::tests::runtime_store_fixture().await;
         let mut credentials = Credentials::default();
         credentials
             .identity(Arc::clone(&store), None)
@@ -830,13 +830,12 @@ mod tests {
             .await
             .expect("journal settled");
         drop(store);
-        fs::remove_dir_all(root).expect("remove disposable state");
     }
 
     #[cfg(unix)]
     #[tokio::test]
     async fn canceled_initial_identity_creation_finishes_before_later_rename() {
-        let (root, store) = remote_transport::tests::runtime_store_fixture().await;
+        let (_directory, root, store) = remote_transport::tests::runtime_store_fixture().await;
         let mut credentials = Credentials::default();
         let gate = Arc::new(TestWriteGate::new());
         let _release_gate = TestWriteGateRelease(Arc::clone(&gate));
@@ -890,7 +889,6 @@ mod tests {
         let identity = remote_transport::read_multi_server_identity(&root).expect("identity read");
         assert_eq!(identity.label, "After create");
         drop(store);
-        fs::remove_dir_all(root).expect("remove disposable state");
     }
 
     #[cfg(unix)]

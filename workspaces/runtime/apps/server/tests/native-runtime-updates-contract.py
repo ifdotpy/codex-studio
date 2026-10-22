@@ -101,6 +101,7 @@ class Runtime(fixture.Runtime):
 class Contract(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="studio-native-runtime-")
+        self.addCleanup(self.temp.cleanup)
         self.rt = Runtime(Path(self.temp.name))
         self.old = self.rt.server
         self.source = self.rt.root / "new-codex"

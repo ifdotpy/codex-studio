@@ -20,6 +20,7 @@ from codex_analytics import AnalyticsMixin
 class AnalyticsStorageContract(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
         root = Path(self.temp.name)
         self.canvas = root / "canvas.sqlite3"
         self.analytics = root / "analytics.sqlite3"

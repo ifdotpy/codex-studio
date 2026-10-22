@@ -301,7 +301,7 @@ fn outcome_boundary_identity_is_stable_across_replay_interleaving() {
 fn test_root() -> PathBuf {
     std::env::var_os("STUDIO_ACCOUNT_TEST_ROOT")
         .map(PathBuf::from)
-        .unwrap_or_else(|| std::env::temp_dir().join("studio-account-worker-tests"))
+        .unwrap_or_else(std::env::temp_dir)
 }
 /// The one queued fixture agent every account-worker test starts from.
 const FIXTURE_AGENT_ID: &str = "fixture-agent";
@@ -457,7 +457,8 @@ impl Peer {
                                 }
                                 let (receipt, result) = oneshot::channel();
                                 tokio::select! {biased; _=Shutdown::cancelled(&mut stopped)=>break, sent=out.send(Wire {value:write.message().clone(),receipt})=>{sent.unwrap();}}
-                                tokio::select! {biased; _=Shutdown::cancelled(&mut stopped)=>break, r=result=>r.unwrap_or(CommandReceipt::Unknown)}
+                                // Preserve an available receipt when shutdown is also ready.
+                                tokio::select! {biased; r=result=>r.unwrap_or(CommandReceipt::Unknown), _=Shutdown::cancelled(&mut stopped)=>break}
                             }
                         };
                         let _ignored = reply.send(result);

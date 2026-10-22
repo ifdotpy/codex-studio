@@ -20,6 +20,7 @@ from layr_agents import AgentHandlers, PRIVATE_FOLDER, REVIEWER_DENY, REVIEWERS_
 class ReviewerLines(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name).resolve()
         self.project = self.root / "store/projects/proof"
         (self.project / "lines/main").mkdir(parents=True)
@@ -139,6 +140,7 @@ class ReviewerLines(unittest.IsolatedAsyncioTestCase):
 class TaskHandoff(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name).resolve()
         (self.root / "store/projects/proof/lines/main").mkdir(parents=True)
         with patch.object(AgentHandlers, "join_project_groups"):

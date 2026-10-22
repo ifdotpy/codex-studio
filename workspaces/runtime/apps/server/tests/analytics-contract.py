@@ -40,6 +40,7 @@ from codex_analytics import payload_size
 class AnalyticsContract(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
         self.runtime = make_runtime(Runtime, Path(self.temp.name), fixture.FakeServer)
         self.agent = self.runtime.create({'name': 'Analytics lead', 'cwd': self.temp.name, 'prompt': 'Wait'})
         fixture.eventually(lambda: self.runtime.agent(self.agent['id'])['status'] == 'running')

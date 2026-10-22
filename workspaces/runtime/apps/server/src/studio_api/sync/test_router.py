@@ -999,7 +999,7 @@ class SyncRouterTests(unittest.TestCase):
             "title": "Existing chat",
         }
         context.runtime.transcript_responses = [unchanged_transcript, unchanged_transcript]
-        database = Path(tempfile.mkdtemp()) / "sync.sqlite"
+        database = Path(self.enterContext(tempfile.TemporaryDirectory())) / "sync.sqlite"
 
         @contextmanager
         def connect():
@@ -1028,7 +1028,7 @@ class SyncRouterTests(unittest.TestCase):
 
     def test_entity_pull_resets_when_client_checkpoint_exceeds_server_high(self) -> None:
         context = ContextStub()
-        database = Path(tempfile.mkdtemp()) / "sync.sqlite"
+        database = Path(self.enterContext(tempfile.TemporaryDirectory())) / "sync.sqlite"
 
         @contextmanager
         def connect():

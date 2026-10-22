@@ -25,7 +25,6 @@ const WORKER: &str = "415ccbb7-cd04-444e-8599-af5c52da8e5e";
 const FOREIGN: &str = "787d59cc-071a-4918-990a-cb1dffba4e2f";
 
 struct Template {
-    _scratch: tempfile::TempDir,
     value: Value,
 }
 
@@ -61,7 +60,6 @@ fn template() -> &'static Template {
             "reservations": [{"record": {"id": "thread-0:spawn:request-1", "agent": "bf2eeb40-0cc8-44ef-a4e8-aa321b4d7331", "threadId": "thread-0", "callId": "alias-1", "tool": "orchestration_spawn", "signature": "c91f8a50f288534226b47d6abda036631ba03b0ad5aae43ad0b8e1fe6431fc12", "rpcId": 1, "turnId": "turn-0", "epoch": 3, "accountKey": "default", "connectionId": "connection", "created": 10.0, "updated": 10.0, "readOnly": false, "timing": {"reservationBeganAt": 49476990541458_i64, "reservationLockedAt": 49476991477012_i64, "reservationEndedAt": 49476991698409_i64}, "request_id": "request-1", "stage": "queued", "outcome": "pending", "cancelRequested": false}}],
         });
         Template {
-            _scratch: scratch,
             value,
         }
     })
@@ -73,13 +71,16 @@ async fn fixture() -> (tempfile::TempDir, Arc<RuntimeStore>, CallbackContext) {
     let store = Arc::new(RuntimeStore::open(Some(directory.path())).await.unwrap());
     let agents = template.value["agents"].as_array().unwrap().clone();
     let monitor = template.value["monitor"].clone();
+    let cwd = json!(directory.path());
     store
         .transaction_with::<_, StoreError>(move |tx| {
             for agent in &agents {
-                let record = studio_runtime_store::AgentRecord::from_value(agent.clone())
+                let mut record = studio_runtime_store::AgentRecord::from_value(agent.clone())
                     .map_err(|error| StoreError::SchemaMismatch(error.to_string()))?;
+                record.extra.insert("cwd".into(), cwd.clone());
+                record.extra.insert("hostProjectPath".into(), cwd.clone());
                 studio_runtime_store::AgentRepository::put(tx, &record)?;
-                crate::agents_create::publish_agent(tx, agent)?;
+                crate::agents_create::publish_agent(tx, &record.value())?;
             }
             tx.execute(
                 "INSERT INTO runtime_monitors(id,record) VALUES(?1,?2)",
@@ -3308,4 +3309,131 @@ async fn lead_archive_and_restore_run_through_the_lifecycle_owner() {
         "lost tool reply replays the original batch result"
     );
     assert!(worker_record(&store, &worker)["deletedAt"].is_number());
+}
+
+// Count ancestry SQL separately from fixture setup and unrelated routing work.
+thread_local! {
+    static ANCESTRY_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[tokio::test]
+async fn ancestry_reads_only_the_checked_parent_chain() {
+    use super::{AgentAncestry, agent_ancestry};
+    let (_directory, store, context) = fixture().await;
+    let sender = context.agent;
+    let base = template().value["agents"][1].clone();
+    let sender_for_setup = sender.clone();
+    store
+        .transaction_with::<_, StoreError>(move |tx| {
+            for (id, parent) in [
+                ("chain-middle", sender_for_setup.as_str()),
+                ("chain-leaf", "chain-middle"),
+            ] {
+                let mut record = base.clone();
+                record["id"] = json!(id);
+                record["rootId"] = json!(sender_for_setup);
+                record["parentId"] = json!(parent);
+                tx.execute(
+                    "INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",
+                    params![id, record.to_string()],
+                )?;
+            }
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let mut reader = store.test_reader().unwrap();
+    reader.trace_v2(
+        rusqlite::trace::TraceEventCodes::SQLITE_TRACE_STMT,
+        Some(|event| {
+            if let rusqlite::trace::TraceEvent::Stmt(statement, _) = event
+                && statement
+                    .sql()
+                    .starts_with("SELECT record FROM runtime_agents WHERE id=")
+            {
+                ANCESTRY_READS.with(|count| count.set(count.get() + 1));
+            }
+        }),
+    );
+    let check = |reader: &mut rusqlite::Connection| {
+        ANCESTRY_READS.with(|count| count.set(0));
+        let tx = reader.transaction().unwrap();
+        assert_eq!(
+            agent_ancestry(&tx, &sender, "chain-leaf").unwrap(),
+            AgentAncestry::Descendant
+        );
+        assert_eq!(ANCESTRY_READS.with(std::cell::Cell::get), 3);
+        // A stopped/tombstoned edge is still part of the stored parent chain.
+        assert!(
+            super::is_descendant(
+                &tx,
+                &Actor::from_record(&template().value["agents"][0], &sender, 3).unwrap(),
+                "chain-leaf"
+            )
+            .unwrap()
+        );
+    };
+    check(&mut reader);
+    // Malformed unrelated records, including tombstones, must never be decoded.
+    // These rows are a bounded deterministic fixture, not a load generator.
+    const UNRELATED_AGENTS: usize = 512;
+    store.transaction(move |tx| {
+        for index in 0..UNRELATED_AGENTS {
+            let id = format!("unrelated-{index}");
+            let record = json!({"id":id,"deletedAt":if index % 2 == 0 {json!(1.0)} else {Value::Null}});
+            tx.execute("INSERT INTO runtime_agents(id,record) VALUES(?1,?2)", params![id, record.to_string()])?;
+        }
+        tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.deletedAt',1.0) WHERE id='chain-middle'", [])?;
+        Ok(())
+    }).await.unwrap();
+    check(&mut reader);
+    let tx = reader.transaction().unwrap();
+    for alias in [
+        "parent",
+        "lead",
+        "broadcast",
+        "all",
+        "remote:agent",
+        "federated:agent",
+    ] {
+        ANCESTRY_READS.with(|count| count.set(0));
+        assert_eq!(
+            agent_ancestry(&tx, &sender, alias).unwrap(),
+            AgentAncestry::Unrelated
+        );
+        assert_eq!(ANCESTRY_READS.with(std::cell::Cell::get), 0);
+    }
+    assert_eq!(
+        agent_ancestry(&tx, &sender, "missing").unwrap(),
+        AgentAncestry::Unrelated
+    );
+    drop(tx);
+    drop(reader);
+    store.transaction_with::<_, Error>(move |tx| {
+    tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.parentId','missing') WHERE id='chain-middle'", []).unwrap();
+    assert_eq!(
+        agent_ancestry(tx, &sender, "chain-leaf").unwrap(),
+        AgentAncestry::Unrelated
+    );
+    tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.parentId','chain-leaf') WHERE id='chain-middle'", []).unwrap();
+    assert_eq!(
+        agent_ancestry(tx, &sender, "chain-leaf").unwrap(),
+        AgentAncestry::Cycle
+    );
+    tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.rootId','other-root') WHERE id='chain-middle'", []).unwrap();
+    assert_eq!(
+        agent_ancestry(tx, &sender, "chain-leaf").unwrap(),
+        AgentAncestry::Unrelated
+    );
+    tx.execute(
+        "UPDATE runtime_agents SET record=json_set(record,'$.parentId',42) WHERE id='chain-leaf'",
+        [],
+    )
+    .unwrap();
+    assert!(matches!(
+        agent_ancestry(tx, &sender, "chain-leaf"),
+        Err(Error::Store(_))
+    ));
+    Ok(())
+    }).await.unwrap();
 }

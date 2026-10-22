@@ -21,6 +21,7 @@ spec.loader.exec_module(f)
 class SendDefault(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
         self.runtime = make_runtime(f.Runtime, Path(self.temp.name), f.FakeServer)
         self.lead = self.runtime.create({'name': 'Lead', 'cwd': self.temp.name, 'prompt': 'Fixture'})
         f.eventually(lambda: self.runtime.agent(self.lead['id'])['status'] == 'running')

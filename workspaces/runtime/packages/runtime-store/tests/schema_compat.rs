@@ -1,8 +1,6 @@
 use crate::prepared_python_support;
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::{Connection, params};
 use serde_json::{Value, json};
@@ -15,13 +13,14 @@ const LIVE_SCHEMA: &str = include_str!("fixtures/live-state-schema.json");
 
 #[tokio::test]
 async fn live_schema_opens_and_supported_repositories_preserve_the_catalog() {
-    let state = temporary_state();
-    create_from_live_schema(&state);
+    let state_directory = temporary_state();
+    let state = state_directory.path();
+    create_from_live_schema(state);
     seed_records(&state.join("canvas.sqlite3"));
     let analytics_before = catalog(&state.join("analytics.sqlite3"));
     let derived_before_open = derived_catalog(&state.join("canvas.sqlite3"));
 
-    let store = RuntimeStore::open(Some(&state))
+    let store = RuntimeStore::open(Some(state))
         .await
         .expect("schema-only live fixture opens");
     let replaced = replaced_derived_objects(
@@ -121,7 +120,7 @@ async fn live_schema_opens_and_supported_repositories_preserve_the_catalog() {
         added.len(),
         studio_runtime_store::cost_aggregate::SCHEMA_OBJECTS.len()
     );
-    let reopened = RuntimeStore::open(Some(&state))
+    let reopened = RuntimeStore::open(Some(state))
         .await
         .expect("Python-shaped schema remains openable");
     let reader = reopened
@@ -136,20 +135,20 @@ async fn live_schema_opens_and_supported_repositories_preserve_the_catalog() {
     );
     drop(reader);
     drop(reopened);
-    cleanup(state);
 }
 
 #[tokio::test]
 async fn rust_open_adds_analytics_limits_index_to_existing_schema_without_it() {
-    let state = temporary_state();
-    create_from_live_schema(&state);
+    let state_directory = temporary_state();
+    let state = state_directory.path();
+    create_from_live_schema(state);
     let analytics_path = state.join("analytics.sqlite3");
     let db = Connection::open(&analytics_path).expect("analytics fixture opens");
     db.execute("DROP INDEX analytics_limits_account_at", [])
         .expect("fixture index drops");
     drop(db);
 
-    let store = RuntimeStore::open(Some(&state))
+    let store = RuntimeStore::open(Some(state))
         .await
         .expect("Rust opens existing analytics schema");
     drop(store);
@@ -167,7 +166,6 @@ async fn rust_open_adds_analytics_limits_index_to_existing_schema_without_it() {
         "Rust open creates the missing analytics limits index"
     );
     drop(db);
-    cleanup(state);
 }
 
 #[tokio::test]
@@ -179,14 +177,15 @@ async fn missing_required_objects_are_typed_and_name_the_object() {
             "runtime_tasks",
         ),
     ] {
-        let state = temporary_state();
-        create_from_live_schema(&state);
+        let state_directory = temporary_state();
+        let state = state_directory.path();
+        create_from_live_schema(state);
         Connection::open(state.join("canvas.sqlite3"))
             .expect("database opens")
             .execute_batch(sql)
             .expect("negative case mutates disposable schema");
         let before = catalog(&state.join("canvas.sqlite3"));
-        let error = match RuntimeStore::open(Some(&state)).await {
+        let error = match RuntimeStore::open(Some(state)).await {
             Ok(_) => panic!("incompatible required schema was accepted"),
             Err(error) => error,
         };
@@ -195,16 +194,16 @@ async fn missing_required_objects_are_typed_and_name_the_object() {
             "expected typed refusal naming {expected}, got {error:?}"
         );
         assert_eq!(before, catalog(&state.join("canvas.sqlite3")));
-        cleanup(state);
     }
 }
 
 #[tokio::test]
 async fn renamed_sync_table_with_equivalent_structure_opens() {
-    let state = temporary_state();
-    create_from_live_schema(&state);
+    let state_directory = temporary_state();
+    let state = state_directory.path();
+    create_from_live_schema(state);
     let canvas = state.join("canvas.sqlite3");
-    let initial_store = RuntimeStore::open(Some(&state))
+    let initial_store = RuntimeStore::open(Some(state))
         .await
         .expect("fixture prepares on open");
     drop(initial_store);
@@ -222,7 +221,7 @@ async fn renamed_sync_table_with_equivalent_structure_opens() {
         )
         .expect("rename round trip preserves the table structure");
 
-    let store = RuntimeStore::open(Some(&state))
+    let store = RuntimeStore::open(Some(state))
         .await
         .expect("structurally equivalent table opens");
     assert_eq!(
@@ -235,13 +234,13 @@ async fn renamed_sync_table_with_equivalent_structure_opens() {
         identity
     );
     drop(store);
-    cleanup(state);
 }
 
 #[tokio::test]
 async fn missing_automatic_unique_index_is_named_and_left_untouched() {
-    let state = temporary_state();
-    create_from_live_schema(&state);
+    let state_directory = temporary_state();
+    let state = state_directory.path();
+    create_from_live_schema(state);
     let canvas = state.join("canvas.sqlite3");
     Connection::open(&canvas)
         .expect("fixture DB opens")
@@ -258,7 +257,7 @@ async fn missing_automatic_unique_index_is_named_and_left_untouched() {
         .expect("table has matching columns but lacks its unique constraint");
     let before = catalog(&canvas);
 
-    let error = match RuntimeStore::open(Some(&state)).await {
+    let error = match RuntimeStore::open(Some(state)).await {
         Ok(_) => panic!("sync_documents without UNIQUE(scope,id) was accepted"),
         Err(error) => error,
     };
@@ -268,13 +267,13 @@ async fn missing_automatic_unique_index_is_named_and_left_untouched() {
         "constraint error should identify sync_documents, got {error:?}"
     );
     assert_eq!(catalog(&canvas), before);
-    cleanup(state);
 }
 
 #[tokio::test]
 async fn unicode_altered_table_column_is_named_and_left_untouched() {
-    let state = temporary_state();
-    create_from_live_schema(&state);
+    let state_directory = temporary_state();
+    let state = state_directory.path();
+    create_from_live_schema(state);
     let canvas = state.join("canvas.sqlite3");
     let altered_table = format!(
         "DROP TABLE sync_identity; CREATE TABLE sync_identity(id TEXT{}PRIMARY KEY);",
@@ -286,7 +285,7 @@ async fn unicode_altered_table_column_is_named_and_left_untouched() {
         .expect("SQLite accepts the altered type declaration");
     let before = catalog(&canvas);
 
-    let error = match RuntimeStore::open(Some(&state)).await {
+    let error = match RuntimeStore::open(Some(state)).await {
         Ok(_) => panic!("incompatible sync_identity column is accepted"),
         Err(error) => error,
     };
@@ -295,7 +294,6 @@ async fn unicode_altered_table_column_is_named_and_left_untouched() {
         "table error should name sync_identity.id, got {error:?}"
     );
     assert_eq!(catalog(&canvas), before);
-    cleanup(state);
 }
 
 #[tokio::test]
@@ -306,9 +304,10 @@ async fn sync_schema_has_no_unchecked_table_constraints() {
         "extend structural comparison before adding CHECK or FOREIGN KEY constraints"
     );
 
-    let state = temporary_state();
-    create_from_live_schema(&state);
-    let store = RuntimeStore::open(Some(&state))
+    let state_directory = temporary_state();
+    let state = state_directory.path();
+    create_from_live_schema(state);
+    let store = RuntimeStore::open(Some(state))
         .await
         .expect("scratch-derived sync schema opens");
     let db = store.test_reader().expect("reader opens");
@@ -346,15 +345,15 @@ async fn sync_schema_has_no_unchecked_table_constraints() {
     }
     drop(db);
     drop(store);
-    cleanup(state);
 }
 
 #[tokio::test]
 async fn noncanonical_tombstone_triggers_are_replaced() {
-    let state = temporary_state();
-    create_from_live_schema(&state);
+    let state_directory = temporary_state();
+    let state = state_directory.path();
+    create_from_live_schema(state);
     let trigger = "sync_entity_tombstone_count_update";
-    let canonical_store = RuntimeStore::open(Some(&state))
+    let canonical_store = RuntimeStore::open(Some(state))
         .await
         .expect("canonical schema opens");
     drop(canonical_store);
@@ -390,7 +389,7 @@ async fn noncanonical_tombstone_triggers_are_replaced() {
             .expect("SQLite accepts the noncanonical trigger");
         drop(database);
 
-        let store = RuntimeStore::open(Some(&state))
+        let store = RuntimeStore::open(Some(state))
             .await
             .expect("noncanonical trigger is repaired");
         assert_eq!(stored_sql(&canvas, trigger), canonical);
@@ -432,7 +431,6 @@ async fn noncanonical_tombstone_triggers_are_replaced() {
             .await
             .expect("variant tombstone is removed before the next case");
     }
-    cleanup(state);
 }
 
 fn drop_sync_family(path: &Path) {
@@ -588,9 +586,10 @@ fn sync_seed_rows(path: &Path) -> Vec<String> {
 
 #[tokio::test]
 async fn python_upgraded_event_windows_remain_atomic_when_reopened_by_rust() {
-    let state = temporary_state();
-    create_from_live_schema(&state);
-    prepare_with_python(&state);
+    let state_directory = temporary_state();
+    let state = state_directory.path();
+    create_from_live_schema(state);
+    prepare_with_python(state);
     let canvas = state.join("canvas.sqlite3");
     // Simulate a development state that briefly had the Python-only trigger.
     let database = Connection::open(&canvas).expect("Python-prepared state opens");
@@ -598,7 +597,7 @@ async fn python_upgraded_event_windows_remain_atomic_when_reopened_by_rust() {
         .execute_batch("CREATE TRIGGER sync_entity_event_window_v2_INSERT AFTER INSERT ON runtime_events BEGIN SELECT sync_entity_event_window(); END;")
         .expect("intermediate trigger fixture creates");
     drop(database);
-    let store = RuntimeStore::open(Some(&state))
+    let store = RuntimeStore::open(Some(state))
         .await
         .expect("Rust upgrades the actual Python-prepared state");
     let window = include_str!("../src/sync_schema.sql")
@@ -684,30 +683,31 @@ async fn python_upgraded_event_windows_remain_atomic_when_reopened_by_rust() {
     assert_eq!(obsolete, 0);
     drop(reader);
     drop(store);
-    cleanup(state);
 }
 
 #[tokio::test]
 async fn python_prepared_sync_schema_matches_rust_bootstrap_and_is_idempotent() {
-    let python_state = temporary_state();
-    let rust_state = temporary_state();
-    for state in [&python_state, &rust_state] {
+    let python_state_directory = temporary_state();
+    let python_state = python_state_directory.path();
+    let rust_state_directory = temporary_state();
+    let rust_state = rust_state_directory.path();
+    for state in [python_state, rust_state] {
         create_from_live_schema(state);
         drop_sync_family(&state.join("canvas.sqlite3"));
     }
-    prepare_with_python(&python_state);
+    prepare_with_python(python_state);
     let python_canvas = python_state.join("canvas.sqlite3");
     let python_before_open = derived_catalog(&python_canvas);
     let python_seeds = sync_seed_rows(&python_state.join("canvas.sqlite3"));
 
-    let python_store = RuntimeStore::open(Some(&python_state))
+    let python_store = RuntimeStore::open(Some(python_state))
         .await
         .expect("Rust structurally accepts the actual Python-prepared tables");
     drop(python_store);
     let python_after_open = derived_catalog(&python_canvas);
     let python_replaced = replaced_derived_objects(&python_before_open, &python_after_open);
 
-    let store = RuntimeStore::open(Some(&rust_state))
+    let store = RuntimeStore::open(Some(rust_state))
         .await
         .expect("Rust opens an empty sync family and bootstraps it");
     assert_eq!(
@@ -764,7 +764,7 @@ async fn python_prepared_sync_schema_matches_rust_bootstrap_and_is_idempotent() 
     let before_second_seeds = sync_seed_rows(&rust_state.join("canvas.sqlite3"));
     let before_second_schema_version = schema_version(&rust_state.join("canvas.sqlite3"));
     drop(store);
-    let store = RuntimeStore::open(Some(&rust_state))
+    let store = RuntimeStore::open(Some(rust_state))
         .await
         .expect("second store open succeeds");
     assert_eq!(
@@ -782,14 +782,13 @@ async fn python_prepared_sync_schema_matches_rust_bootstrap_and_is_idempotent() 
         "second open does not bump the schema cookie"
     );
     drop(store);
-    cleanup(python_state);
-    cleanup(rust_state);
 }
 
 #[tokio::test]
 async fn sync_bootstrap_repairs_missing_objects_in_the_committed_live_fixture() {
-    let state = temporary_state();
-    create_from_live_schema(&state);
+    let state_directory = temporary_state();
+    let state = state_directory.path();
+    create_from_live_schema(state);
     let canvas = state.join("canvas.sqlite3");
     let db = Connection::open(&canvas).expect("fixture DB opens");
     db.execute_batch(
@@ -807,7 +806,7 @@ async fn sync_bootstrap_repairs_missing_objects_in_the_committed_live_fixture() 
     .expect("fixture loses only lazily created objects");
     drop(db);
 
-    let store = RuntimeStore::open(Some(&state))
+    let store = RuntimeStore::open(Some(state))
         .await
         .expect("partially prepared fixture opens");
     let legacy_watch: i64 = store
@@ -916,13 +915,13 @@ async fn sync_bootstrap_repairs_missing_objects_in_the_committed_live_fixture() 
     );
     drop(db);
     drop(store);
-    cleanup(state);
 }
 
 #[tokio::test]
 async fn incompatible_sync_table_is_named_and_left_untouched() {
-    let state = temporary_state();
-    create_from_live_schema(&state);
+    let state_directory = temporary_state();
+    let state = state_directory.path();
+    create_from_live_schema(state);
     let canvas = state.join("canvas.sqlite3");
     let db = Connection::open(&canvas).expect("fixture DB opens");
     db.execute_batch(
@@ -932,7 +931,7 @@ async fn incompatible_sync_table_is_named_and_left_untouched() {
     .expect("incompatible table fixture is created");
     drop(db);
     let before = catalog(&canvas);
-    let error = match RuntimeStore::open(Some(&state)).await {
+    let error = match RuntimeStore::open(Some(state)).await {
         Ok(_) => panic!("incompatible same-name table is accepted during open"),
         Err(error) => error,
     };
@@ -941,13 +940,13 @@ async fn incompatible_sync_table_is_named_and_left_untouched() {
         "bootstrap should name sync_entities, got {error:?}"
     );
     assert_eq!(catalog(&canvas), before);
-    cleanup(state);
 }
 
 #[tokio::test]
 async fn sync_bootstrap_failure_rolls_back_earlier_ddl_and_seed_rows() {
-    let state = temporary_state();
-    create_from_live_schema(&state);
+    let state_directory = temporary_state();
+    let state = state_directory.path();
+    create_from_live_schema(state);
     let canvas = state.join("canvas.sqlite3");
     drop_sync_family(&canvas);
     let db = Connection::open(&canvas).expect("fixture DB opens");
@@ -960,11 +959,10 @@ async fn sync_bootstrap_failure_rolls_back_earlier_ddl_and_seed_rows() {
     drop(db);
     let before = catalog(&canvas);
     assert!(
-        RuntimeStore::open(Some(&state)).await.is_err(),
+        RuntimeStore::open(Some(state)).await.is_err(),
         "identity seed failure should abort open"
     );
     assert_eq!(catalog(&canvas), before);
-    cleanup(state);
 }
 
 fn create_from_live_schema(root: &Path) {
@@ -1079,19 +1077,6 @@ fn stored_sql(path: &Path, name: &str) -> String {
         .expect("trigger SQL is stored")
 }
 
-fn temporary_state() -> PathBuf {
-    let nonce = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("clock is after Unix epoch")
-        .as_nanos();
-    let root = std::env::temp_dir().join(format!(
-        "runtime-store-schema-{}-{nonce}",
-        std::process::id()
-    ));
-    fs::create_dir_all(&root).expect("temporary state directory creates");
-    root
-}
-
-fn cleanup(root: PathBuf) {
-    fs::remove_dir_all(root).expect("temporary state directory is removed");
+fn temporary_state() -> tempfile::TempDir {
+    tempfile::tempdir().expect("temporary state directory creates")
 }

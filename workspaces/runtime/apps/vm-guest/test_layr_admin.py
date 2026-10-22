@@ -25,6 +25,7 @@ from layr_share import Share, project_id
 class BrokerTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         self.broker = Broker(self.root / "state", self.root / "store", modules=())
 
@@ -276,6 +277,7 @@ class ProjectExecTests(unittest.IsolatedAsyncioTestCase):
 
     async def asyncSetUp(self):
         self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         self.main = self.root / "store/projects/app/lines/main"
         (self.main / "web").mkdir(parents=True)
@@ -326,6 +328,7 @@ class SeedTests(unittest.IsolatedAsyncioTestCase):
 
     async def asyncSetUp(self):
         self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         self.main = self.root / "store/projects/app/lines/main"
         self.main.mkdir(parents=True)

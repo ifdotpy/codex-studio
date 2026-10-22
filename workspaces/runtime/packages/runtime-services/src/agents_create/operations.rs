@@ -4242,7 +4242,8 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn creation_rechecks_replay_and_previous_eligibility_after_controlled_interleaving() {
-        let root = std::env::temp_dir().join(format!("creation-recheck-{}", new_id().expect("id")));
+        let directory = tempfile::tempdir().expect("owned test directory");
+        let root = directory.path().to_path_buf();
         std::fs::create_dir_all(&root).expect("temporary state");
         let schema: Value = serde_json::from_str(include_str!(
             "../../../runtime-store/src/runtime-state-schema.json"
@@ -4440,6 +4441,5 @@ mod tests {
             );
         }
         drop(store);
-        std::fs::remove_dir_all(root).expect("remove temporary state");
     }
 }

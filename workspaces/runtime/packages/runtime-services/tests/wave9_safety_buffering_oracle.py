@@ -135,7 +135,8 @@ class RuntimePort:
         )
         self.lock = threading.RLock()
         # The state folder of production Runtime.new_thread_params (the browser launcher check).
-        self.root = Path(tempfile.mkdtemp(prefix="state-"))
+        self.temporary = tempfile.TemporaryDirectory(prefix="state-")
+        self.root = Path(self.temporary.name)
         self.servers = {"acct": Server()}
         self.calls = []
         self.loaded = set()
@@ -209,37 +210,41 @@ class RuntimePort:
 
 def run_path():
     runtime = RuntimePort()
-    with patch.object(safety, "Timer", NoTimer), patch(
-        "codex_browser.configure_browser", lambda _runtime, _agent, params: params
-    ):
-        safety.action(runtime, "agent", {"safety": "retry", "turnId": "turn"})
-        for stage, result in [
-            ("turns", {"data": [{"id": "turn", "status": "inProgress"}]}),
-            ("items", {"data": [{"turnId": "turn", "item": {"type": "userMessage", "content": [{"type": "text", "text": "hello"}]}}]}),
-            ("interrupt", {}),
-            ("verify_turns", {"data": [{"id": "turn", "status": "interrupted"}]}),
-            ("verify_items", {"data": [{"turnId": "turn", "item": {"type": "userMessage", "content": [{"type": "text", "text": "hello"}]}}]}),
-            ("fork", {"thread": {"id": "new-thread"}}),
-            ("start", {"turn": {"id": "new-turn"}}),
-        ]:
-            row = runtime.connection.execute(
-                "SELECT record FROM runtime_safety_retries ORDER BY id"
-            ).fetchone()
-            operation = json.loads(row[0])
-            future = Future()
-            future.set_result(result)
-            safety.complete(runtime, operation, stage, future)
-    stored = json.loads(runtime.connection.execute(
-        "SELECT record FROM runtime_safety_retries ORDER BY id"
-    ).fetchone()[0])
-    agent = runtime.agent("agent")
-    return {
-        "calls": runtime.calls,
-        "stage": stored["stage"],
-        "input": stored.get("input"),
-        "threadId": agent.get("threadId"),
-        "turnId": agent.get("turnId"),
-    }
+    try:
+        with patch.object(safety, "Timer", NoTimer), patch(
+            "codex_browser.configure_browser", lambda _runtime, _agent, params: params
+        ):
+            safety.action(runtime, "agent", {"safety": "retry", "turnId": "turn"})
+            for stage, result in [
+                ("turns", {"data": [{"id": "turn", "status": "inProgress"}]}),
+                ("items", {"data": [{"turnId": "turn", "item": {"type": "userMessage", "content": [{"type": "text", "text": "hello"}]}}]}),
+                ("interrupt", {}),
+                ("verify_turns", {"data": [{"id": "turn", "status": "interrupted"}]}),
+                ("verify_items", {"data": [{"turnId": "turn", "item": {"type": "userMessage", "content": [{"type": "text", "text": "hello"}]}}]}),
+                ("fork", {"thread": {"id": "new-thread"}}),
+                ("start", {"turn": {"id": "new-turn"}}),
+            ]:
+                row = runtime.connection.execute(
+                    "SELECT record FROM runtime_safety_retries ORDER BY id"
+                ).fetchone()
+                operation = json.loads(row[0])
+                future = Future()
+                future.set_result(result)
+                safety.complete(runtime, operation, stage, future)
+        stored = json.loads(runtime.connection.execute(
+            "SELECT record FROM runtime_safety_retries ORDER BY id"
+        ).fetchone()[0])
+        agent = runtime.agent("agent")
+        return {
+            "calls": runtime.calls,
+            "stage": stored["stage"],
+            "input": stored.get("input"),
+            "threadId": agent.get("threadId"),
+            "turnId": agent.get("turnId"),
+        }
+    finally:
+        runtime.connection.close()
+        runtime.temporary.cleanup()
 
 
 if __name__ == "__main__":

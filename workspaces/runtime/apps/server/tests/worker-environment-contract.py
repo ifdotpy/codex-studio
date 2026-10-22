@@ -28,6 +28,7 @@ from codex_sync_entities import project as project_entity
 class WorkerEnvironment(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix='worker-environment-')
+        self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
         self.project = self.root / 'project'
         self.nested = self.project / 'nested'

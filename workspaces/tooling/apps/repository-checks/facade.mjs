@@ -938,7 +938,7 @@ function fastTierCommands(root) {
             "studio-runtime-services",
             "--lib",
             "-E",
-            "test(account_worker::tests::callback_handoff::) | test(account_worker::tests::callback_head_of_line) | test(stale_stamp_of_an_undelivered_steer_batch_does_not_block_the_next_turn) | test(stamp_tests::) | test(sync_policy::tests::monitor_) | test(work_write::actor_tests::submission_manifest_boundaries_use_shared_limits) | test(work_write::actor_tests::nonempty_file_submission_rechecks_cwd_and_replays_without_filesystem_work)",
+            "test(account_worker::tests::callback_handoff::) | test(account_worker::tests::callback_head_of_line) | test(stale_stamp_of_an_undelivered_steer_batch_does_not_block_the_next_turn) | test(stamp_tests::) | test(sync_policy::tests::monitor_) | test(work_write::actor_tests::submission_manifest_boundaries_use_shared_limits) | test(work_write::actor_tests::nonempty_file_submission_rechecks_cwd_and_replays_without_filesystem_work) | test(ancestry_reads_only_the_checked_parent_chain) | test(send_to_descendant_is_followup_input_while_parent_and_broadcast_are_chat) | test(account_worker::tests::retained::automatic_recovery_) | test(account_worker::tests::retained::startup_first_pass_reconciles_exact_history_without_replaying_unknown_input)",
           ],
         ],
         [
@@ -962,9 +962,9 @@ function fastTierCommands(root) {
       ],
       options: {
         selector:
-          "account_worker::tests::callback_handoff, callback_head_of_line, stale batch stamp recovery, the session callback lane, monitor publication work and work_write submission boundaries",
+          "account_worker::tests::callback_handoff, callback_head_of_line, stale batch stamp recovery, automatic turn recovery, the session callback lane, monitor publication work and work_write submission boundaries",
         reason:
-          "Check that a provider request is durably accepted with its journal batch, that its record owns the answer through every crash point without a repeated answer, and that an unanswered request never stops provider events or new work, and that a stamp left by an undelivered steer batch is replaced instead of holding the agent. Monitor output must publish exactly one monitor projection while preserving window membership and rollback. Task submissions keep limits, workspace ownership and replay at the shared manifest bound.",
+          "Check that a provider request is durably accepted with its journal batch, that its record owns the answer through every crash point without a repeated answer, and that an unanswered request never stops provider events or new work, and that a stamp left by an undelivered steer batch is replaced instead of holding the agent. Monitor output must publish exactly one monitor projection while preserving window membership and rollback. Task submissions keep limits, workspace ownership and replay at the shared manifest bound. Native-history recovery continues authorized workers once, preserves explicit Stop, and never replays uncertain input.",
       },
     },
     {
@@ -1115,7 +1115,7 @@ function fastTierCommands(root) {
             "studio-runtime-schema",
             "--lib",
             "-E",
-            "test(nonempty_file_submission_rechecks_cwd_and_replays_without_filesystem_work) | test(unrelated_reservation_started_after_path_capture_does_not_refuse_ready_token) | test(room_membership_uses_symlink_paths_resolved_by_the_creation_owner) | test(agent_progress::tests::) | test(completed_child_turn_reports_unsubmitted_assignment_once_with_final_text) | test(account_worker::tests::continuation_start::capacity_retry_restart_unknown_reports_once_without_resending) | test(agent_progress_schema_matches_strict_serde_contract) | test(disk_space::tests::) | test(archive_finished_) | test(lead_archive_and_restore_run_through_the_lifecycle_owner) | test(status_snapshot_tracks_capacity_finished_pages_and_revision_replay) | test(workspace_pending_reuses_reserved_attempt) | test(long_answers_use_canonical_bounded_agent_sync_projection)",
+            "test(journal_fixture_directory_is_removed_on_return_and_unwind) | test(nonempty_file_submission_rechecks_cwd_and_replays_without_filesystem_work) | test(unrelated_reservation_started_after_path_capture_does_not_refuse_ready_token) | test(room_membership_uses_symlink_paths_resolved_by_the_creation_owner) | test(agent_progress::tests::) | test(completed_child_turn_reports_unsubmitted_assignment_once_with_final_text) | test(account_worker::tests::continuation_start::capacity_retry_restart_unknown_reports_once_without_resending) | test(agent_progress_schema_matches_strict_serde_contract) | test(disk_space::tests::) | test(archive_finished_) | test(lead_archive_and_restore_run_through_the_lifecycle_owner) | test(status_snapshot_tracks_capacity_finished_pages_and_revision_replay) | test(workspace_pending_reuses_reserved_attempt) | test(long_answers_use_canonical_bounded_agent_sync_projection)",
           ],
         ],
       ],

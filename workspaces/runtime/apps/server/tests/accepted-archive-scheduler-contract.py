@@ -216,6 +216,7 @@ class AcceptedArchiveScheduler(unittest.TestCase):
 
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix='accepted-archive-scheduler-')
+        self.addCleanup(self.temp.cleanup)
         self.runtime = ArchiveFixture(self.temp.name)
 
     def tearDown(self):

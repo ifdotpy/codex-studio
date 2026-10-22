@@ -189,6 +189,7 @@ class Runtime:
 class Contract(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="studio-native-tools-")
+        self.addCleanup(self.temp.cleanup)
         self.rt = Runtime(Path(self.temp.name))
         self.native = self.rt.server
         home = self.rt.home

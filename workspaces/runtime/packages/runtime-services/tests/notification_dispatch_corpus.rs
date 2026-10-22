@@ -30,6 +30,7 @@ impl Oracle {
         let mut child = Command::new(python)
             .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/turn_lifecycle/oracle.py"))
             .arg(scratch)
+            .env("TMPDIR", scratch)
             .env("PYTHONDONTWRITEBYTECODE", "1")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -1374,7 +1375,7 @@ async fn corpus(full: bool, runtime_effects: bool) {
     assert!(!report.is_empty(), "case filter matched nothing");
     let report_path = std::env::var_os("NOTIFICATION_CORPUS_REPORT")
         .map(PathBuf::from)
-        .unwrap_or_else(|| std::env::temp_dir().join("notification-corpus-report.json"));
+        .unwrap_or_else(|| root.0.join("notification-corpus-report.json"));
     let report_path = if runtime_effects {
         report_path.with_extension("runtime-effects.json")
     } else {

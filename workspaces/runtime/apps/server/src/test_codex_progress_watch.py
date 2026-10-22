@@ -64,6 +64,7 @@ class FakeObserver:
 class ProgressWatchdogTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="studio-progress-watch-")
+        self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
         self.callback_condition = threading.Condition()
         self.first = provision_progress(self.root, "first")

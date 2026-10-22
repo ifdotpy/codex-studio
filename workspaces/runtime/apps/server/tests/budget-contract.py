@@ -47,6 +47,7 @@ install_scoped_agent_reads(Runtime)
 class BudgetTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
         self.path = Path(self.temp.name) / 'db'
         self.r = Runtime(self.path)
         self.a = {'id': 'a', 'rootId': 'a', 'threadId': 'thread', 'turnId': 'turn',

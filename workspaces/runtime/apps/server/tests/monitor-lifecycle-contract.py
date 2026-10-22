@@ -108,6 +108,7 @@ class MonitorServer(fixture.FakeServer):
 class MonitorLifecycleContract(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
         self.runtime = make_runtime(Runtime, Path(self.temp.name), MonitorServer)
         self.agent = self.runtime.create({"name": "Monitor lead", "cwd": self.temp.name, "prompt": "Wait"})
         fixture.eventually(lambda: self.runtime.agent(self.agent["id"])["status"] == "running")

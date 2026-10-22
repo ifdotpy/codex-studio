@@ -453,8 +453,13 @@ pub async fn hold_agent_turn(
     store: &studio_runtime_store::RuntimeStore,
     agent_id: &str,
     epoch: i64,
+    #[cfg(test)] gate_override: Option<&DiskGate>,
 ) -> Result<bool, studio_runtime_store::StoreError> {
-    hold_agent_turn_with_gate(store, agent_id, epoch, GATE.get()).await
+    #[cfg(test)]
+    let gate = gate_override.or_else(|| GATE.get());
+    #[cfg(not(test))]
+    let gate = GATE.get();
+    hold_agent_turn_with_gate(store, agent_id, epoch, gate).await
 }
 
 async fn hold_agent_turn_with_gate(

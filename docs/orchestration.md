@@ -262,6 +262,17 @@ Table previews show at most 200 rows and 100 columns.
 Their text parser stops after 1,048,576 UTF-16 code units.
 Source and Save a copy retain the complete file within the file API limit.
 
+### Agent send routing
+
+1. The server checks the sender's current identity and epoch in the effect transaction.
+2. `parent`, `lead`, and `broadcast` use chat routing without ancestry reads.
+3. An agent ID or unique visible prefix resolves before descendant routing.
+4. The [shared ancestry check](../workspaces/runtime/packages/runtime-services/src/managed_host_tools.rs)
+   reads checked records by indexed ID along the target's parent chain, within the sender's root.
+5. A matching parent permits descendant input; a missing edge ends the check,
+   malformed edges and cycles refuse it, and other targets use authorized chat routing.
+6. The existing transaction saves effects and replay receipts together.
+
 ### Agent progress file
 
 Each managed conversation displays its agent's plain `PROGRESS.md` between the
@@ -473,6 +484,14 @@ Idle checks follow provider events, committed ownership changes, and the next
 idle deadline. Pending local requests park the deadline until their completion
 event. Queued commands prevent process shutdown without erasing its idle time.
 The worker loop owns this reconciliation; it does not start periodic scans.
+
+Account worker shutdown settles callback answers through the session owner:
+
+1. Drain completed handlers and callback write events while the event lane is open.
+2. If the lane closes, join the session and settle its retained final outcomes
+   through the same callback receipt path. A closed lane alone is not a failure.
+3. Report an unknown write or failed cleanup to the caller; never resend an
+   answer whose write outcome is unknown.
 
 ## Token accounting and saved context
 
@@ -784,11 +803,16 @@ The runtime stores agents, events, transcripts, command watches and approval req
 in `runtime_*` tables in `canvas.sqlite3`. Existing chat tables remain intact.
 Only one runtime can own the state directory. SQLite uses write-ahead logging.
 
-After a server restart, queued input and verified interrupted work can resume.
-Continuation requires the original permission and authoritative native evidence.
-An unacknowledged delivery stays uncertain and is not replayed. Command watches
-without a definitive result remain lost. See [restart recovery](restart-recovery.md)
-for the persistence contract and exact limits.
+After a backend restart or provider disconnect:
+
+1. Leads and workers use the same automatic native-history check for their saved turn.
+2. An authorized turn confirmed interrupted gets one guarded follow-up to continue
+   its existing task; the original input is never sent again.
+3. Explicit Stop, pause, deletion, changed epochs and native failure holds block continuation.
+4. Unknown native outcomes stay held until native history proves what happened.
+5. Queued input keeps its order. Command watches without a definitive result remain lost.
+
+See [restart recovery](restart-recovery.md) for the persistence contract and limits.
 
 ## Codex features
 

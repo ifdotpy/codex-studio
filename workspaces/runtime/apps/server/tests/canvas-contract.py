@@ -75,6 +75,7 @@ class RelayFixture(BaseHTTPRequestHandler):
 class CanvasContract(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="codex-canvas-test-")
+        self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name) / "state"
         self.profile = Path(self.temp.name) / "profile"
         self.relay = ThreadingHTTPServer(("127.0.0.1", 0), RelayFixture)

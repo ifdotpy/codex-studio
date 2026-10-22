@@ -576,15 +576,8 @@ mod tests {
 
     #[test]
     fn unknown_reservation_is_not_sent_again_after_database_restart() {
-        use std::time::{SystemTime, UNIX_EPOCH};
-
-        let path = std::env::temp_dir().join(format!(
-            "studio-remote-send-once-{}.sqlite",
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("clock")
-                .as_nanos()
-        ));
+        let directory = tempfile::tempdir().expect("owned test directory");
+        let path = directory.path().join("snapshot.sqlite3");
         let mut sent = 0;
         {
             let mut db = Connection::open(&path).expect("journal database opens");
@@ -621,7 +614,7 @@ mod tests {
                 sent += 1;
             }
         }
-        std::fs::remove_file(path).expect("test journal is removed");
+
         assert_eq!(sent, 1);
     }
 

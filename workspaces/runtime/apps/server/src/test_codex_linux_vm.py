@@ -57,6 +57,7 @@ class Guest:
 class ClientTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix='vm-client-')
+        self.addCleanup(self.temporary.cleanup)
         self.directory = Path(self.temporary.name)
         self.client = vm.Client(self.directory)
         # Bootstrap tests have a socket fixture, not a VM host listener.
@@ -469,6 +470,7 @@ class PackagedLayoutTests(unittest.TestCase):
 class ProvisionTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix='vm-provision-script-')
+        self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         self.addCleanup(self.temp.cleanup)
         self.script = vm._provision_script('0.160.1', '2.1.291', vm._pnpm_version())

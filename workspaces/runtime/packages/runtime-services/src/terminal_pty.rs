@@ -538,7 +538,7 @@ mod tests {
     fn terminal_cwd() -> TempDir {
         let root = std::env::var_os("CS_TERMINAL_TEST_STATE_DIR")
             .map(std::path::PathBuf::from)
-            .unwrap_or_else(|| std::env::temp_dir().join("cs-terminals-test-state"));
+            .unwrap_or_else(std::env::temp_dir);
         std::fs::create_dir_all(&root).expect("tmpfs test state directory");
         tempfile::Builder::new()
             .prefix("terminal-pty-")
