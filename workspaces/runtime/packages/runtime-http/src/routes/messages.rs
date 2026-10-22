@@ -319,7 +319,7 @@ fn default_connected() -> bool {
     true
 }
 
-fn coordination_error(error: CoordinationError) -> ApiError {
+pub(super) fn coordination_error(error: CoordinationError) -> ApiError {
     match error {
         CoordinationError::RequiresDependency(dependency) => ApiError::dependency(dependency),
         CoordinationError::InvalidRequest(message) | CoordinationError::Conflict(message) => {

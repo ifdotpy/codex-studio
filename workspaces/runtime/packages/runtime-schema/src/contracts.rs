@@ -54,6 +54,10 @@ fn shared_values_ts() -> String {
         &[
             ("MAX_SAFE_INTEGER", values::MAX_SAFE_INTEGER.to_string()),
             (
+                "WORKER_TURN_LIMIT_REASON",
+                json_string(crate::worker_capabilities::TURN_LIMIT_REASON),
+            ),
+            (
                 "MAX_USER_ATTACHMENT_BYTES",
                 values::MAX_USER_ATTACHMENT_BYTES.to_string(),
             ),

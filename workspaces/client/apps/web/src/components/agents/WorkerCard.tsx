@@ -1,3 +1,5 @@
+import { WorkerLimits, RetainedWorktree } from "./AgentLimits";
+import { WORKER_TURN_LIMIT_REASON } from "../../generated/sharedValues";
 import { useServerApi } from "../../servers/ServerServicesContext";
 import { useSyncedVisualState } from "../../sync/useSyncedVisualState";
 import {
@@ -196,45 +198,48 @@ const WorkerCardView = memo(function WorkerCardView({
           /^Command [["']/.test(error)
         ? "The agent stopped with an error."
         : error;
-  const statusDetail = agent.stall
-    ? "Stalled: assigned task not submitted"
-    : ["waiting_on_monitor"].includes(agent.status ?? "")
-      ? commandWaitLabel(agent)
-      : (startWaitLabel(agent) ??
-        (indicator?.kind === "answer" ||
-        ["waiting", "parked"].includes(agent.status ?? "") ||
-        (indicator?.kind === "working" && !agent.inFlight)
-          ? indicator?.label || statusLabel(agent.status ?? "")
-          : awaitingAnswer
-            ? "Needs your answer"
-            : agent.status === "starting" && agent.worktreePreparation
-              ? agent.worktreePreparation === "waiting"
-                ? "Waiting to prepare folder"
-                : "Preparing folder"
-              : deferred && agent.status === "approval"
-                ? "Question deferred"
-                : agent.status === "starting" &&
-                    (agent.startAttempt?.prepareError ||
-                      agent.startAttempt?.responseError)
-                  ? "Waiting for Codex"
-                  : [
-                      agent.status === "completed"
-                        ? "Finished"
-                        : agent.status === "failed"
-                          ? diskHeld
-                            ? DISK_FULL_WAIT_LABEL
-                            : "Failed"
-                          : agent.status === "running" && agent.inFlight
-                            ? "Working"
-                            : statusLabel(
-                                agent.status ?? "",
-                                undefined,
-                                agent.parkedEvent ?? undefined,
-                              ),
-                      nativeReleaseLabel(agent),
-                    ]
-                      .filter(Boolean)
-                      .join(" · ")));
+  const statusDetail =
+    agent.terminalReason === WORKER_TURN_LIMIT_REASON
+      ? "Stopped: turn limit reached"
+      : agent.stall
+        ? "Stalled: assigned task not submitted"
+        : ["waiting_on_monitor"].includes(agent.status ?? "")
+          ? commandWaitLabel(agent)
+          : (startWaitLabel(agent) ??
+            (indicator?.kind === "answer" ||
+            ["waiting", "parked"].includes(agent.status ?? "") ||
+            (indicator?.kind === "working" && !agent.inFlight)
+              ? indicator?.label || statusLabel(agent.status ?? "")
+              : awaitingAnswer
+                ? "Needs your answer"
+                : agent.status === "starting" && agent.worktreePreparation
+                  ? agent.worktreePreparation === "waiting"
+                    ? "Waiting to prepare folder"
+                    : "Preparing folder"
+                  : deferred && agent.status === "approval"
+                    ? "Question deferred"
+                    : agent.status === "starting" &&
+                        (agent.startAttempt?.prepareError ||
+                          agent.startAttempt?.responseError)
+                      ? "Waiting for Codex"
+                      : [
+                          agent.status === "completed"
+                            ? "Finished"
+                            : agent.status === "failed"
+                              ? diskHeld
+                                ? DISK_FULL_WAIT_LABEL
+                                : "Failed"
+                              : agent.status === "running" && agent.inFlight
+                                ? "Working"
+                                : statusLabel(
+                                    agent.status ?? "",
+                                    undefined,
+                                    agent.parkedEvent ?? undefined,
+                                  ),
+                          nativeReleaseLabel(agent),
+                        ]
+                          .filter(Boolean)
+                          .join(" · ")));
   const statusText =
     !awaitingAnswer &&
     ["waiting", "parked", "queued"].includes(agent.status || "")
@@ -335,6 +340,8 @@ const WorkerCardView = memo(function WorkerCardView({
           <pre>{errorView.details || errorView.message}</pre>
         </details>
       )}
+      <WorkerLimits agent={agent} />
+      <RetainedWorktree agent={agent} />
       {overview?.result ? (
         <WorkerExcerpt
           agentId={agent.id}
