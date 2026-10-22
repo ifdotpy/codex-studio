@@ -1,0 +1,128 @@
+{
+  "empty-accounts": {
+    "accounts": {},
+    "candidates": [],
+    "checkedAt": 0.0,
+    "selected": null,
+    "status": "ready"
+  },
+  "fresh": {
+    "accounts": {},
+    "candidates": [],
+    "checkedAt": null,
+    "selected": null,
+    "status": "checking"
+  },
+  "rejected": {
+    "accounts": {},
+    "candidates": [
+      {
+        "error": "compatibility check failed",
+        "path": "/fixture/codex",
+        "status": "rejected"
+      }
+    ],
+    "checkedAt": 9.25,
+    "selected": null,
+    "status": "failed"
+  },
+  "rotation": {
+    "accounts": {
+      "default": {
+        "pid": null,
+        "reason": "active session",
+        "rotation": {
+          "id": "op-a",
+          "old": {
+            "generation": 9,
+            "pid": 42
+          },
+          "phase": "closing",
+          "target": {
+            "path": "/fixture/native-runtime/builds/hash/codex"
+          }
+        },
+        "status": "waiting",
+        "targetVersion": "2.0.0",
+        "updatedAt": 4.0,
+        "version": null
+      }
+    },
+    "candidates": [
+      {
+        "companionIdentity": {
+          "codex-code-mode-host": {
+            "path": "/fixture/helper"
+          }
+        },
+        "identity": {
+          "mtimeNs": 123,
+          "path": "/fixture/codex"
+        },
+        "path": "/fixture/codex",
+        "status": "approved",
+        "version": "1.2.3"
+      }
+    ],
+    "checkedAt": 7.5,
+    "futurePythonField": {
+      "preserve": [null, false, 8]
+    },
+    "selected": {
+      "approvalRevision": 2,
+      "bundleSha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "checks": {
+        "schema": {
+          "methods": ["initialize"]
+        },
+        "smoke": ["ok"]
+      },
+      "companions": {
+        "codex-code-mode-host": {
+          "path": "/fixture/native-runtime/builds/hash/codex-code-mode-host",
+          "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "sourceIdentity": {
+            "path": "/fixture/codex-code-mode-host",
+            "size": 8
+          },
+          "sourcePath": "/fixture/codex-code-mode-host"
+        }
+      },
+      "path": "/fixture/native-runtime/builds/hash/codex",
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "sourceIdentity": {
+        "mtimeNs": 123,
+        "path": "/fixture/codex",
+        "size": 12
+      },
+      "sourcePath": "/fixture/codex",
+      "validatedAt": 4.5,
+      "version": "1.2.3"
+    },
+    "status": "ready"
+  },
+  "unknown-account-state": {
+    "accounts": {
+      "secondary": {
+        "rotation": null,
+        "status": "failed"
+      }
+    },
+    "candidates": [
+      {
+        "error": "",
+        "path": "",
+        "status": "rejected"
+      }
+    ],
+    "checkedAt": 1.0,
+    "extension": {
+      "newer-python-field": {
+        "absent": false,
+        "null": null
+      }
+    },
+    "selected": null,
+    "status": "ready"
+  }
+}

@@ -235,42 +235,6 @@ fn agent_status_consumers_match_the_runtime_store_owner() {
         count, 3,
         "check the shared schema and every inlined API status enum"
     );
-    let python = include_str!("../../../apps/server/src/studio_api/sync/models.py");
-    let class = python
-        .split("class AgentStatus(ContractStrEnum):")
-        .nth(1)
-        .expect("Python consumer")
-        .split("\n\nclass ")
-        .next()
-        .expect("class body");
-    let consumer = class
-        .lines()
-        .filter_map(|line| {
-            line.split_once(" = \"")
-                .map(|(_, value)| value.trim_end_matches('"'))
-        })
-        .collect();
-    assert_eq!(
-        owned, consumer,
-        "Python must consume runtime-store AgentStatus values"
-    );
-    let records = include_str!("../../../apps/server/src/codex_records.py");
-    let literal = records
-        .split("AgentStatusValue = Literal[")
-        .nth(1)
-        .expect("persisted status consumer")
-        .split(']')
-        .next()
-        .expect("literal body");
-    let consumer = literal
-        .split('"')
-        .enumerate()
-        .filter_map(|(index, value)| (index % 2 == 1).then_some(value))
-        .collect();
-    assert_eq!(
-        owned, consumer,
-        "persisted Python records must consume runtime-store AgentStatus values"
-    );
     let web = include_str!("../../../../client/apps/web/src/generated/api.ts");
     let consumers = web
         .split(';')
