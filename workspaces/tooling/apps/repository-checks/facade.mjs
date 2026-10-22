@@ -991,6 +991,7 @@ function fastTierCommands(root) {
             "-E",
             nextestAnyOf([
               "test(account_worker::tests::callback_handoff::)",
+              "test(account_worker::tests::auth_hold::held_start_wakes_nothing_until_an_account_change)",
               "test(account_worker::tests::callback_head_of_line)",
               "test(stale_stamp_of_an_undelivered_steer_batch_does_not_block_the_next_turn)",
               "test(stamp_tests::)",
