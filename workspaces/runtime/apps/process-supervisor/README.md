@@ -2,15 +2,14 @@
 
 ## Change contract
 
-Own native child processes independently of backend connections and accept both
-the existing Python supervisor protocol v1 and the explicitly negotiated v2
-event-wait protocol. The binary only accepts an explicit
+Own native child processes independently of backend connections and accept only
+the explicitly negotiated supervisor v2 protocol. The binary only accepts an explicit
 `--state` directory. It does not install a service, choose a production state,
 connect to another supervisor, or change HTTP operations. Linux is the initial
 target. Other platforms refuse startup until native identity/transport support
 has been implemented and verified.
 
-The pure protocol rules live in `runtime-providers::supervisor_v1`, process and
+The pure protocol rules live in `runtime-providers::supervisor_protocol`, process and
 socket effects in `runtime-process::supervisor_daemon`, and the independent
 `supervisor.sqlite3` journal in `runtime-store::supervisor_journal`. The runtime
 application database is never opened. No provider credentials are discovered;
@@ -28,14 +27,13 @@ codex-process-supervisor --state /explicit/disposable/state
 ```
 
 The directory is private, the socket is mode 0600, and `supervisor.lock` is an
-exclusive process lease compatible with Python. `--wait-for-lease` waits for that
-lease without connecting to or signaling the current owner. Service installation
-and production cutover remain separate operator actions; existing launchers
-continue to select Python.
+exclusive process lease. `--wait-for-lease` waits for that
+lease without connecting to or signaling the current owner. Service installation and production
+cutover remain separate operator actions.
 
-V1 connections retain their unchanged protocol/state-directory/backend
-handshake and action behavior. V2 clients explicitly request protocol 2 and
-require the daemon to echo version 2; they do not fall back to v1. V2 `nextBatch`
+All clients, including the retained VM guest and operator tools, request the
+version owned by [`supervisor_protocol.rs`](../../packages/runtime-providers/src/supervisor_protocol.rs)
+and require the daemon to echo it. Other versions are refused before backend admission. V2 `nextBatch`
 waits for a committed event or terminal reader completion on a separate
 same-backend connection, leaving the control connection available for ACK and
 other actions. Its ordered event payloads are raw JSON and batches are bounded
@@ -52,14 +50,14 @@ backend process death leave children and their journal intact.
 
 The caller owns handle, operation ID, launch settings and message. The supervisor
 owns generation, RPC ID, event sequence, receipt time, PID/start identity and
-acknowledged cursor. The operation identity is `(handle, operationId)` as in v1;
+acknowledged cursor. The operation identity is `(handle, operationId)`;
 its digest excludes the caller's native RPC ID. An identical retry returns the
 saved receipt and never writes stdin again. Different content is rejected.
 
 Acceptance commits with SQLite FULL synchronous before child stdin is written.
 A disconnect, timeout or supervisor death after commit leaves an accepted receipt
 with an uncertain delivery outcome. No automatic resend occurs. Child input has
-a bounded deadline; timeout cannot undo acceptance. The v1 `operationStatus`
+a bounded deadline; timeout cannot undo acceptance. The `operationStatus`
 action remains restricted to monitor operation IDs and exposes a response only
 after the backend has acknowledged its event.
 
@@ -71,22 +69,16 @@ an empty query cannot hide a final committed event. A full journal pauses pipe
 reading; health exposes backpressure and persistence errors.
 
 On supervisor restart, the lease is acquired before the socket or journal is
-replaced. Existing Python-written journal records are read in place. For each
-open handle, recovery compares its saved process start identity with the current
-process and verifies that its process group belongs to that PID. Rust-created
-identities contain the Linux boot ID and `/proc/<pid>/stat` start ticks, compared
-exactly even when two starts fall in the same wall-clock second. A matching legacy
-Python `lstart` identity and process-group leader are accepted once, then upgraded
-in a FULL-sync transaction before any signal; failed commit leaves the child
-untouched and recovery blocked. The first legacy acceptance inherits Python's
-one-second PID-reuse ambiguity. Subsequent verification uses only boot ID and
-kernel ticks; a legacy mismatch never authorizes a signal. A verified
+replaced. For each open handle, recovery compares the saved native process start
+identity with the current process and verifies that its process group belongs
+to that PID. Identities include the boot identity and exact kernel start time.
+A mismatched or retired Python identity never authorizes a signal or a durable
+identity rewrite. A verified
 live group receives TERM, then a bounded, reverified KILL escalation if needed.
 Receipts and output survive, the old handle is closed, and fallback readiness is
-recorded. Linux v1 checks the recorded root's exit; it does not prove that a
+recorded. Recovery checks the recorded root's exit; it does not prove that a
 descendant which escaped the process group has exited, or permit signaling an
-unverified process after the recorded root disappears. A missing identity or failed cleanup blocks recovery. Unlike the Python recovery
-path, an uncertain handle remains open in the journal so another restart cannot
+unverified process after the recorded root disappears. A missing identity or failed cleanup blocks recovery. An uncertain handle remains open in the journal so another restart cannot
 forget that refusal. A replacement spawn is reserved durably even when its prior
 handle was already closed; the old PID identity is removed before spawning.
 Recovery retains only the latest 16 audit entries per handle. An operator can
@@ -101,49 +93,28 @@ never signaled; the old handle is closed with an identity-mismatch reason. A
 spawn interrupted before its identity is committed is deliberately refused as
 unknown ownership. Recovery never claims that an uncertain write was not sent.
 
-The initial cutover has explicit resource guardrails:
+Resource limits belong to the shared protocol, journal and daemon owners linked
+above. Capacity and framing refusals leave existing children untouched. An idle
+established connection has no frame deadline; a started frame has a bounded
+absolute deadline that trickled bytes cannot extend.
 
-| Resource                   | Rust                                          | Python v1                           | Reason for a lower limit and refusal                                                                                                                                      |
-| -------------------------- | --------------------------------------------- | ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Simultaneous connections   | 512                                           | No explicit limit                   | Bound socket threads and retained request buffers; `Supervisor connection capacity reached`.                                                                              |
-| In-memory child handles    | 128                                           | No explicit limit                   | Bound pipe readers, writers and retained output; `Supervisor child capacity reached`. Existing handles may still reconnect.                                               |
-| Incoming control frame     | 1 MiB                                         | 1 MiB on Windows, unlimited on Unix | Match the existing Rust client's transport bound on Unix; `Supervisor frame exceeds the size limit or is incomplete`.                                                     |
-| SQLite database            | 1 GiB, or the existing size if already larger | No global cap                       | Bound receipts and orphan state without deleting them; `supervisor journal: database or disk is full` rolls back new writes. Oversized existing journals remain readable. |
-| Buffered output per handle | 256 MiB                                       | 256 MiB                             | Same journal limit; reading pauses, writes report `Supervisor output journal is full; waiting for backend replay acknowledgement`.                                        |
-| One stdout frame           | 256 MiB                                       | No explicit limit                   | Avoid an unlimited unterminated line; `Child stdout frame exceeds journal capacity` appears in reader health.                                                             |
-| Child input deadline       | 5 seconds                                     | No explicit deadline                | A stalled pipe returns `Child input deadline exceeded; durable outcome remains unknown`; accepted input is never resent.                                                  |
+## Protocol and launch identity
 
-Handshakes and frames in progress each have a 10-second absolute deadline;
-Python v1 has no explicit Unix read deadline. A partial frame cannot extend its
-deadline by trickling bytes. An idle established connection has no read deadline.
-Expiry returns `Supervisor handshake or frame deadline exceeded`, releases the
-connection slot and backend admission, and leaves existing children untouched.
+Only v2 is accepted. `nextBatch` validates generation and cursor, returns ordered
+committed events without advancing the acknowledged cursor, and waits for events
+or terminal completion. Its separate connection can be cancelled without
+stopping the child or control connection. Existing v2 control actions retain
+their response shapes.
 
-Capacity and framing refusals never signal existing children. Native identity on
-macOS and Windows transport are named startup refusals in this first cut.
-
-## Protocol migration
-
-V1 clients keep their original handshake, actions, and response shapes,
-including nonblocking `next`. The new Rust provider factory requests v2
-explicitly; a v1-only daemon rejects that handshake, and the client does not
-silently retry with v1. When upgrading a v1-only daemon that owns active
-children, leave it running until those handles are safely idle, then replace it
-with the v2-capable daemon. Do not stop an active v1 daemon to force an upgrade:
-its child ownership must remain intact.
-
-V2 adds `nextBatch` for event-driven waiting. It validates the requested
-generation and cursor, returns ordered committed events without advancing the
-acknowledged cursor, and waits until an event or terminal completion is
-available. It does not run a periodic empty query. The separate event-wait
-connection can be cancelled by disconnect without affecting the child or the
-control connection. Other v2 control actions retain their existing action
-shapes; v1 responses remain unchanged.
+Reattachment requires the configured current command, environment and working
+directory to match the running child's launch signature. There is no list of
+older accepted launch commands. A changed signature is refused before another
+child can start.
 
 ## Focused tests
 
 `cargo test -p studio-process-supervisor` uses Cargo's built Rust supervisor.
 Each fixture creates disposable state, launches harmless shell children and
-cleans up its owned processes. Recovery setup uses `SupervisorJournal`; SQLite
-triggers inject failed identity upgrades without an interpreter. Failed-start
+cleans up its owned processes. Recovery setup uses `SupervisorJournal` to prove that exact native identities
+permit cleanup while mismatched and retired identities never permit a signal. Failed-start
 checks read typed journal rows. No Python backend or Python test client runs.

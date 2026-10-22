@@ -10,7 +10,7 @@ use std::{
     path::Path,
     sync::{Mutex, MutexGuard},
 };
-use studio_runtime_providers::supervisor_v1::{
+use studio_runtime_providers::supervisor_protocol::{
     HANDLE_LIMIT, HandleSnapshot, NativeId, ReceiptSnapshot, Refusal, WriteDecision,
 };
 
@@ -496,30 +496,6 @@ impl SupervisorJournal {
             tx.execute(
                 "UPDATE handles SET closed_at=?,closed_reason=? WHERE id=?",
                 params![now, reason, handle],
-            )?;
-            Ok(((), None))
-        })
-    }
-    /// Commit stronger identity before the caller may signal an adopted child.
-    pub fn upgrade_identity(&self, expected: &StoredHandle, start: &str) -> Result<()> {
-        self.transaction(|tx, buffered| {
-            let current = stored(
-                tx,
-                &expected.id,
-                buffered.get(&expected.id).copied().unwrap_or_default(),
-            )?
-            .ok_or(Refusal("Unknown supervisor handle"))?;
-            if current.closed_at.is_some()
-                || current.pid != expected.pid
-                || current.pgid != expected.pgid
-                || current.start_time != expected.start_time
-                || current.signature != expected.signature
-            {
-                return Err(Refusal("Child identity changed before durable upgrade").into());
-            }
-            tx.execute(
-                "UPDATE child_identities SET start_time=? WHERE handle=?",
-                params![start, expected.id],
             )?;
             Ok(((), None))
         })

@@ -774,6 +774,59 @@ function fastTierCommands(root) {
           "Check desktop recovery without Python backend imports or supervisor scripts.",
       },
     },
+    ...(process.platform === "linux"
+      ? [
+          {
+            item: {
+              name: "supervisor protocol boundaries",
+              ecosystem: "cargo",
+            },
+            label: "supervisor protocol and identity witnesses",
+            commands: [
+              [
+                "cargo",
+                [
+                  "nextest",
+                  "run",
+                  "--locked",
+                  "--no-tests",
+                  "fail",
+                  "--message-format",
+                  "libtest-json-plus",
+                  "-p",
+                  "studio-process-supervisor",
+                  "--test",
+                  "clients",
+                  "-E",
+                  "test(supervisor_rejects_retired_protocol_before_admission)",
+                ],
+              ],
+              [
+                "cargo",
+                [
+                  "nextest",
+                  "run",
+                  "--locked",
+                  "--no-tests",
+                  "fail",
+                  "--message-format",
+                  "libtest-json-plus",
+                  "-p",
+                  "studio-runtime-providers",
+                  "--lib",
+                  "-E",
+                  "test(supervisor_rejects_python_identity_adoption)",
+                ],
+              ],
+            ],
+            options: {
+              selector: "current supervisor protocol and kernel identity",
+              reason:
+                "Reject retired protocol and Python identity adoption before ownership changes.",
+            },
+          },
+        ]
+      : []),
     {
       item: { name: "studio-runtime-providers", ecosystem: "cargo" },
       label: "provider request body ownership witnesses",
@@ -1043,6 +1096,7 @@ function fastTierCommands(root) {
                   "-E",
                   nextestAnyOf([
                     "test(/^provider_stdio::killed_provider_is_reaped_with_full_journal_and_unobserved_write$/)",
+                    "test(running_child_reattaches_only_with_the_current_command)",
                     "test(/^wave7_p01_registry::direct_child_sigkill_settles_unknown_without_resend$/)",
                     "test(/^state_check::state_check_reads_fixture_rows_without_changing_or_disclosing_them$/)",
                   ]),

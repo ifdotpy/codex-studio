@@ -44,14 +44,14 @@ done
     writeln!(
         socket,
         "{}",
-        json!({"protocol":1,"stateDir":state.0,"backendId":identity.backend_id.0})
+        json!({"protocol":studio_runtime_process::SUPERVISOR_PROTOCOL_V2,"stateDir":state.0,"backendId":identity.backend_id.0})
     )
     .unwrap();
     let mut reply = String::new();
     BufReader::new(&socket).read_line(&mut reply).unwrap();
     assert_eq!(
         serde_json::from_str::<Value>(&reply).unwrap(),
-        json!({"ok":true})
+        json!({"ok":true,"protocol":studio_runtime_process::SUPERVISOR_PROTOCOL_V2})
     );
     writeln!(socket,"{}",json!({"requestId":99,"action":"write","handle":handle.0,"operationId":"monitor:lost","nativeId":17,"message":{"method":"echo","params":{"text":"one"}}})).unwrap();
     drop(socket); // The action response cannot reach this backend connection.

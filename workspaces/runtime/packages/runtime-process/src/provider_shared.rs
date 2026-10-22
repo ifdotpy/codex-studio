@@ -1,10 +1,9 @@
-//! Pure supervisor-v1 framing and retained-child launch policy shared by both adapters.
+//! Pure supervisor framing and retained-child launch policy shared by both adapters.
 use crate::protocol::{
     AckRequest, AdminCloseHandleRequest, CursorRequest, FinishFallbackRequest, HandleRequest,
     HealthRequest, NativeId, NextBatchRequest, OpenRequest, OperationStatusRequest,
     RetireCommandRequest, WriteRequest,
 };
-use crate::supervisor_contract::PROCESS_SUPERVISOR_PROTOCOL_VERSION;
 use crate::{
     BackendIdentity, OperationId, SUPERVISOR_PROTOCOL_V2, SupervisorAction, SupervisorError,
     SupervisorHandle, SupervisorHandshakeV2, SupervisorHandshakeV2Result,
@@ -182,36 +181,6 @@ pub(crate) fn initialized_operation_id(
         String::new()
     };
     OperationId(format!("initialized:{}{suffix}", handle.0))
-}
-
-pub(crate) fn handshake_request(identity: &BackendIdentity, operator: bool) -> Value {
-    let mut handshake = serde_json::json!({
-        "protocol": PROCESS_SUPERVISOR_PROTOCOL_VERSION,
-        "stateDir": identity.state_dir,
-        "backendId": identity.backend_id,
-    });
-    if operator && let Some(object) = handshake.as_object_mut() {
-        object.remove("backendId");
-        object.insert("operator".into(), Value::Bool(true));
-    }
-    handshake
-}
-
-pub(crate) fn validate_handshake(response: &str) -> Result<(), SupervisorError> {
-    let value: Value = serde_json::from_str(response)?;
-    if value.get("ok") == Some(&Value::Bool(true)) {
-        Ok(())
-    } else {
-        Err(SupervisorError::ProtocolMismatch {
-            expected: PROCESS_SUPERVISOR_PROTOCOL_VERSION,
-            received: None,
-            detail: value
-                .get("error")
-                .and_then(Value::as_str)
-                .unwrap_or("unexpected handshake response")
-                .to_owned(),
-        })
-    }
 }
 
 pub(crate) fn handshake_request_v2(identity: &BackendIdentity) -> SupervisorHandshakeV2 {

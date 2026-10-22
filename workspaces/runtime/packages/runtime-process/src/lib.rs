@@ -1,4 +1,4 @@
-//! Asynchronous provider adapters, process ports and the supervisor v1 client.
+//! Asynchronous provider adapters, process ports and the supervisor v2 client.
 
 pub use studio_runtime_store::blocking_pool;
 pub mod child_priority;

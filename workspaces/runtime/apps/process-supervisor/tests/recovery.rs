@@ -77,7 +77,7 @@ impl Drop for Probe {
 enum RecoveryCase {
     Collision,
     Legacy,
-    UpgradeFails,
+    Native,
 }
 
 struct StartIdentity {
@@ -141,13 +141,13 @@ fn start_identity(pid: u32) -> StartIdentity {
 
 #[test]
 #[allow(clippy::disallowed_methods)]
-fn kernel_collision_refuses_signal_and_legacy_upgrade_commits_before_signal() {
+fn recovery_signals_only_exact_native_identity() {
     use std::os::unix::process::CommandExt;
     use std::process::Stdio;
     for case in [
         RecoveryCase::Collision,
         RecoveryCase::Legacy,
-        RecoveryCase::UpgradeFails,
+        RecoveryCase::Native,
     ] {
         let state = DisposableState::new();
         let mut probe = Probe(
@@ -165,6 +165,8 @@ fn kernel_collision_refuses_signal_and_legacy_upgrade_commits_before_signal() {
         let identity = start_identity(probe.0.id());
         let saved = if case == RecoveryCase::Collision {
             &identity.collision
+        } else if case == RecoveryCase::Native {
+            &identity.native
         } else {
             &identity.legacy
         };
@@ -174,18 +176,13 @@ fn kernel_collision_refuses_signal_and_legacy_upgrade_commits_before_signal() {
             .opened("fixture", "saved", probe.0.id(), saved)
             .unwrap();
         drop(journal);
-        if case == RecoveryCase::UpgradeFails {
-            rusqlite::Connection::open(state.0.join("supervisor.sqlite3")).unwrap().execute_batch(
-                "CREATE TRIGGER block_upgrade BEFORE UPDATE OF start_time ON child_identities BEGIN SELECT RAISE(ABORT,'injected'); END"
-            ).unwrap();
-        }
         let _supervisor = SupervisorProcess::start(&state);
         let mut client = connect_client(&state);
         let health = client.health(HealthRequest::default()).unwrap();
-        if case == RecoveryCase::Legacy {
+        if case == RecoveryCase::Native {
             assert!(health.recovery.blocked.is_none());
             assert!(health.handles.is_empty());
-            wait_until("verified adopted child termination", || {
+            wait_until("verified native child termination", || {
                 probe.0.try_wait().unwrap().is_some()
             });
         } else {
@@ -193,10 +190,7 @@ fn kernel_collision_refuses_signal_and_legacy_upgrade_commits_before_signal() {
                 probe.0.try_wait().unwrap().is_none(),
                 "{case:?}: must not signal probe"
             );
-            assert_eq!(
-                health.recovery.blocked.is_some(),
-                case == RecoveryCase::UpgradeFails
-            );
+            assert!(health.recovery.blocked.is_none());
         }
         let db = rusqlite::Connection::open_with_flags(
             state.0.join("supervisor.sqlite3"),
@@ -211,20 +205,13 @@ fn kernel_collision_refuses_signal_and_legacy_upgrade_commits_before_signal() {
             )
             .unwrap();
         let (outcome, outcome_start): (String, String) = db.query_row("SELECT outcome,start_time FROM recovery_events WHERE handle='fixture' ORDER BY id DESC LIMIT 1", [], |row| Ok((row.get(0)?, row.get(1)?))).unwrap();
-        if case == RecoveryCase::Legacy {
+        if case == RecoveryCase::Native {
             assert_eq!(start, identity.native);
             assert_eq!(outcome_start, identity.native);
             assert!(matches!(outcome.as_str(), "terminated" | "killed"));
         } else {
             assert_eq!(&start, saved);
-            assert_eq!(
-                outcome,
-                if case == RecoveryCase::Collision {
-                    "identity-mismatch"
-                } else {
-                    "termination-failed"
-                }
-            );
+            assert_eq!(outcome, "identity-mismatch");
         }
     }
 }

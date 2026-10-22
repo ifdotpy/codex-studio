@@ -191,8 +191,7 @@ fn stalled_handshake_and_started_frame_release_connection_slot() {
         let (_root, supervisor) = fixture();
         let (mut peer, server) = UnixStream::pair().unwrap();
         peer.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-        let handshake =
-            json!({"protocol":PROTOCOL,"stateDir":supervisor.root,"backendId":"stalled"});
+        let handshake = json!({"protocol":SUPERVISOR_PROTOCOL_V2,"stateDir":supervisor.root,"backendId":"stalled"});
         if phase == "partial request" {
             write_frame(&mut peer, &handshake).unwrap();
         } else if phase == "partial handshake" {
@@ -225,14 +224,10 @@ fn stalled_handshake_and_started_frame_release_connection_slot() {
             lock(&supervisor.ownership)
                 .unwrap()
                 .attach(
-                    &Handshake {
-                        protocol: PROTOCOL,
-                        state_dir: supervisor.root.to_string_lossy().into_owned(),
-                        backend_id: Some("replacement".into()),
-                        probe: false,
-                        operator: false,
-                    },
-                    &supervisor.root.to_string_lossy()
+                    &supervisor.root,
+                    Some("replacement"),
+                    false,
+                    &supervisor.root
                 )
                 .is_ok()
         );
@@ -242,7 +237,12 @@ fn stalled_handshake_and_started_frame_release_connection_slot() {
         reader.read_line(&mut line).unwrap();
         let error: Value = serde_json::from_str(&line).unwrap();
         assert_eq!(
-            error["error"], "Supervisor handshake or frame deadline exceeded",
+            error["error"],
+            if phase == "partial request" {
+                "Supervisor frame deadline exceeded"
+            } else {
+                "Supervisor handshake or frame deadline exceeded"
+            },
             "{phase}"
         );
     }
@@ -256,7 +256,7 @@ fn established_idle_connection_has_no_frame_deadline() {
     let copy = supervisor.clone();
     write_frame(
         &mut peer,
-        &json!({"protocol":PROTOCOL,"stateDir":supervisor.root,"backendId":"idle"}),
+        &json!({"protocol":SUPERVISOR_PROTOCOL_V2,"stateDir":supervisor.root,"backendId":"idle"}),
     )
     .unwrap();
     let worker = thread::spawn(move || {
