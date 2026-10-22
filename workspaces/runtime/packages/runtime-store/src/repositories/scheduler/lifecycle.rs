@@ -951,8 +951,9 @@ impl SchedulerRepository {
     /// Return the exact input batch of an idle start to the queue before the
     /// provider received it, and queue the agent to claim it again. The caller
     /// proves that the input never reached the provider: the session proved
-    /// its request not written. So the retry cannot repeat a message. `reason`
-    /// names the request and the cause; the attempt keeps it as its error.
+    /// its request not written, or the durable submitted commit refused it
+    /// before any write. So the retry cannot repeat a message. `reason` names
+    /// the request and the cause; the attempt keeps it as its error.
     ///
     /// A start reserved during a busy turn takes the busy rejection path of
     /// `return_unapplied_input`. Returns false and changes nothing when the
