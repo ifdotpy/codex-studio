@@ -1144,6 +1144,7 @@ function fastTierCommands(root) {
                   nextestAnyOf([
                     "test(/^provider_stdio::killed_provider_is_reaped_with_full_journal_and_unobserved_write$/)",
                     "test(/^wave7_p01_registry::direct_child_sigkill_settles_unknown_without_resend$/)",
+                    "test(/^state_check::state_check_reads_fixture_rows_without_changing_or_disclosing_them$/)",
                   ]),
                 ],
               ],
