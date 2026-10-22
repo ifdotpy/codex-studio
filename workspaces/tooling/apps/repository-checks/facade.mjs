@@ -990,6 +990,8 @@ function fastTierCommands(root) {
               "test(agent_columns::tests::migration_2026_10_20_columns_round_trips_an_old_state_once)",
               "test(agent_columns::tests::migration_2026_10_21_removes_capacity_column_and_replaces_wake_index_once)",
               "test(/^sql_callback_guard::/)",
+              "test(fresh_state::rust_fresh_state_catalog_is_deterministic_and_survives_reopen)",
+              "test(cross_runtime::fixture_records_are_readable_and_writable_in_rust)",
               "test(sql_guard_tests::)",
             ]),
           ],
