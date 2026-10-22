@@ -1144,7 +1144,6 @@ function fastTierCommands(root) {
             "-E",
             nextestAnyOf([
               "test(/^provider_session_task::active_barrier_holds_new_requests_but_not_callback_answers_or_interrupts$/)",
-              "test(claude_bridge::bridge_identity_)",
               "test(provider_callbacks_unjournaled_card_is_refused_without_writes)",
               "test(/^provider_session_task::expiry_batch_preserves_all_queued_request_outcomes_in_order$/)",
               "test(/^turn_lifecycle_corpus::fast_witnesses_cover_transitions_states_and_review_findings$/)",
@@ -1451,30 +1450,6 @@ function fastTierCommands(root) {
         selector: "Rust runtime startup and identity",
         reason:
           "Check startup without Python, binary build identity, existing-owner attachment, and uncertain connection refusals.",
-      },
-    },
-    {
-      item: packageTarget(packages, "studio-claude-bridge"),
-      label: "Claude installed SDK identity witness",
-      commands: [
-        [
-          "pnpm",
-          [
-            "--filter",
-            "studio-claude-bridge",
-            "exec",
-            "vitest",
-            "run",
-            "--config",
-            "vitest.config.mjs",
-            "build-identity.test.mjs",
-          ],
-        ],
-      ],
-      options: {
-        selector: "initialize identity after an installed SDK-only update",
-        reason:
-          "Invalidate retained bridge identities when only the installed SDK version changes.",
       },
     },
     {

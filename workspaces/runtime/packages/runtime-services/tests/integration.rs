@@ -12,7 +12,6 @@ mod budget_corpus;
 mod catalog_reads_corpus;
 mod change_notifications;
 mod claude_accounts;
-mod claude_bridge;
 mod claude_controls_actor;
 mod claude_login;
 mod claude_login_actor;

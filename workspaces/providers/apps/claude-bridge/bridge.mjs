@@ -25,7 +25,6 @@ import { createHash, randomUUID } from "node:crypto";
 import { createInterface } from "node:readline";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { stripVTControlCharacters } from "node:util";
 import { createCommandTransport, commandMethods } from "./commands.mjs";
 
@@ -77,39 +76,6 @@ import {
   canonicalJson,
 } from "./move-external.mjs";
 
-// Sources and installed SDK version identify the code retained by this process.
-// claude_bridge::bridge_build owns the matching server digest; its parity witness
-// checks this initialize response. Active work stays held until verified idle retirement.
-const bridgeBuild = (async () => {
-  const folder = path.dirname(fileURLToPath(import.meta.url));
-  const names = (await fs.readdir(folder))
-    .filter((name) => name.endsWith(".mjs") && !name.endsWith(".test.mjs"))
-    .sort();
-  const hash = createHash("sha256");
-  for (const name of names) {
-    hash.update(name + "\n");
-    hash.update(await fs.readFile(path.join(folder, name)));
-    hash.update("\n");
-  }
-  const { version } = z
-    .object({ version: z.string() })
-    .parse(
-      JSON.parse(
-        await fs.readFile(
-          path.join(
-            folder,
-            "node_modules",
-            "@anthropic-ai",
-            "claude-agent-sdk",
-            "package.json",
-          ),
-          "utf8",
-        ),
-      ),
-    );
-  hash.update("@anthropic-ai/claude-agent-sdk\n" + version + "\n");
-  return hash.digest("hex");
-})();
 const externalConfigs = new Map();
 
 const providerOptions = JSON.parse(process.env.STUDIO_CLAUDE_OPTIONS || "{}");
@@ -2111,7 +2077,6 @@ async function handle(method, p) {
       platform: process.platform,
       capabilities: {
         claudeVersion: 23,
-        claudeBuild: await bridgeBuild,
         passiveAccountRead: true,
         activityRead: true,
       },
