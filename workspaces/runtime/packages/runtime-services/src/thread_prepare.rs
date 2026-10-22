@@ -159,7 +159,6 @@ pub(crate) fn full_tool_catalog(catalog: &CatalogSnapshot) -> Vec<ToolDefinition
 pub struct GuidanceBundle {
     pub instructions: String,
     pub role: String,
-    pub progress: String,
     pub thread_config: Map<String, Value>,
     /// Native Chrome setup of a host Codex thread; `None` for an agent without
     /// one (Claude, VM). Its config overrides are already in `thread_config`.
@@ -179,10 +178,8 @@ pub struct BrowserGuidance {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum WorkspaceReadiness {
-    /// The adapter has verified this optional writable progress directory.
-    Ready {
-        progress_directory: Option<String>,
-    },
+    /// The adapter has prepared the workspace.
+    Ready,
     Pending,
     Image,
     Vm,
@@ -276,6 +273,28 @@ pub struct Snapshot {
     pub pending: Option<PendingPreparation>,
     pub loaded: Option<LoadedIdentity>,
     pub closed: bool,
+    /// The native parameters an imported agent keeps (Python `frozenNativeParams`).
+    #[serde(default)]
+    pub frozen: Option<FrozenParams>,
+}
+
+/// The saved native thread parameters of an agent that another server moved here
+/// (Python `codex_agent_move` writes `frozenNativeParams`). The thread keeps the
+/// instructions, model and tools it was started with; Python's
+/// `Runtime.new_thread_params` and `Runtime.tool_definitions` apply them in place
+/// of this server's guidance and catalog.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FrozenParams {
+    pub base_instructions: Value,
+    pub developer_instructions: Value,
+    pub model: Value,
+    pub dynamic_tools: Vec<ToolDefinition>,
+    /// Codex reasoning effort; `None` keeps the thread's config value.
+    #[serde(default)]
+    pub effort: Option<Value>,
+    /// Codex reasoning summary; `None` keeps the thread's config value.
+    #[serde(default)]
+    pub summary: Option<Value>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -350,7 +369,16 @@ pub struct CatalogFilter<'a> {
 
 /// Uses the immutable selected catalog, never a newly discovered live catalog.
 pub fn tool_definitions(s: &Snapshot) -> Result<Vec<ToolDefinition>, Refusal> {
-    // Python `Runtime.tool_definitions`: a native reviewer gets no Studio tools.
+    // Python `Runtime.tool_definitions`: an imported agent keeps its saved tools,
+    // without spawn when its root may not delegate.
+    if let Some(frozen) = &s.frozen {
+        let mut definitions = frozen.dynamic_tools.clone();
+        if !s.root.can_delegate {
+            definitions.retain(|tool| tool.name != "orchestration_spawn");
+        }
+        return Ok(definitions);
+    }
+    // A native reviewer gets no Studio tools.
     if s.actor.native_review {
         return Ok(Vec::new());
     }
@@ -417,15 +445,6 @@ pub fn filter_tool_definitions(
         result.push(tool);
     }
     Ok(result)
-}
-
-fn progress_directory(s: &Snapshot) -> Option<&str> {
-    match &s.workspace {
-        WorkspaceReadiness::Ready { progress_directory } if s.settings.is_lead => {
-            progress_directory.as_deref()
-        }
-        _ => None,
-    }
 }
 
 fn refusal(s: &Snapshot) -> Option<Refusal> {
@@ -521,22 +540,10 @@ pub fn plan(s: &Snapshot, next_attempt_id: &str, transport_ticket: &str) -> Outc
         config.insert("review_model".into(), json!(s.settings.model));
     }
     let mut instructions = format!("{}\n{}", s.guidance.instructions, role_text(s));
-    if s.settings.is_lead && !s.guidance.progress.is_empty() {
-        instructions.push_str(&format!("\n{}", s.guidance.progress));
-    }
     instructions.push_str(&format!("\n{}", s.settings.profile_instructions));
     if s.settings.needs_title {
         instructions.push_str(
             "\nBefore the first task, call orchestration_title with a short task title.\n",
-        );
-    }
-    if s.settings.yolo_mode == Some(false)
-        && s.settings.role != Role::Reviewer
-        && let Some(directory) = progress_directory(s)
-    {
-        config.insert(
-            "sandbox_workspace_write.writable_roots".into(),
-            json!([directory]),
         );
     }
     let mut params = Map::new();
@@ -578,24 +585,39 @@ pub fn plan(s: &Snapshot, next_attempt_id: &str, transport_ticket: &str) -> Outc
         instructions.push('\n');
         instructions.push_str(text);
     }
-    let mut context_versions = Map::new();
-    let mut artifacts = Vec::new();
-    for (key, text) in [
-        ("roleSkill", role_text(s)),
-        ("progressFile", s.guidance.progress.as_str()),
-    ] {
-        if !text.is_empty() && instructions.contains(text) {
-            let version = sha256_hex(json!(text).to_string().as_bytes())[..24].to_owned();
-            context_versions.insert(key.into(), json!(version));
-            if key == "roleSkill" {
-                artifacts.push(ArtifactIntent::RememberRole {
-                    version,
-                    text: text.to_owned(),
-                });
+    let mut developer_instructions = json!(instructions);
+    if let Some(frozen) = &s.frozen {
+        // Python `Runtime.new_thread_params` applies the saved values last.
+        params.insert("baseInstructions".into(), frozen.base_instructions.clone());
+        developer_instructions = frozen.developer_instructions.clone();
+        params.insert("model".into(), frozen.model.clone());
+        if s.account.provider != ProviderKind::Claude
+            && let Some(config) = params.get_mut("config").and_then(Value::as_object_mut)
+        {
+            for (key, value) in [
+                ("model_reasoning_effort", &frozen.effort),
+                ("model_reasoning_summary", &frozen.summary),
+            ] {
+                if let Some(value) = value.as_ref().filter(|value| !value.is_null()) {
+                    config.insert(key.into(), value.clone());
+                }
             }
         }
     }
-    params.insert("developerInstructions".into(), json!(instructions));
+    // Python `preparation_context_versions` reads the submitted instructions.
+    let submitted = developer_instructions.as_str().unwrap_or_default();
+    let mut context_versions = Map::new();
+    let mut artifacts = Vec::new();
+    let role = role_text(s);
+    if !role.is_empty() && submitted.contains(role) {
+        let version = sha256_hex(json!(role).to_string().as_bytes())[..24].to_owned();
+        context_versions.insert("roleSkill".into(), json!(version));
+        artifacts.push(ArtifactIntent::RememberRole {
+            version,
+            text: role.to_owned(),
+        });
+    }
+    params.insert("developerInstructions".into(), developer_instructions);
     let tool_catalog = if method == Method::Start || provider.capabilities().tools_on_every_turn {
         params.insert("dynamicTools".into(), json!(tools));
         Some(tools)
@@ -721,11 +743,7 @@ pub fn turn_params(s: &Snapshot, input: &TurnInput) -> Result<Map<String, Value>
         } else if s.settings.role == Role::Reviewer {
             json!({"type":"readOnly"})
         } else {
-            let mut roots = vec![s.actor.cwd.as_str()];
-            if let Some(directory) = progress_directory(s) {
-                roots.push(directory);
-            }
-            json!({"type":"workspaceWrite","writableRoots":roots,"networkAccess":false})
+            json!({"type":"workspaceWrite","writableRoots":[s.actor.cwd],"networkAccess":false})
         };
         params.insert(
             "approvalPolicy".into(),
@@ -1062,6 +1080,7 @@ fn preparation_release_id(s: &Snapshot) -> Option<String> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod archive_finished_catalog_tests {
     use super::*;
 
@@ -1099,7 +1118,7 @@ mod archive_finished_catalog_tests {
                 session_tool: SessionTool::Move,
             },
         )
-        .expect("tool catalog filters")
+        .expect("catalog filter accepts the bundled tools")
         .into_iter()
         .find(|tool| tool.name == "orchestration_agent_manage")
         .expect("the manage tool is in every agent catalog")
@@ -1110,7 +1129,7 @@ mod archive_finished_catalog_tests {
             .as_array()
             .expect("an action enum")
             .iter()
-            .map(|action| action.as_str().expect("action name is text").to_owned())
+            .map(|action| action.as_str().expect("a string action").to_owned())
             .collect()
     }
 

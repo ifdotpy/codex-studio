@@ -1,0 +1,68 @@
+[
+  {
+    "scenario": "edit",
+    "input": {
+      "updated": 1788798612345,
+      "text": "Привет 👋\nA quoted \"value\"",
+      "session": "lead",
+      "id": "device:lead",
+      "device": "device",
+      "alternatives": ["first", "second"],
+      "metadata": {
+        "2": "two",
+        "10": "ten",
+        "😀": false,
+        "": null,
+        "z": {
+          "b": [1, true, null],
+          "a": "nested"
+        }
+      }
+    },
+    "expected": "{\"alternatives\":[\"first\",\"second\"],\"device\":\"device\",\"id\":\"device:lead\",\"metadata\":{\"10\":\"ten\",\"2\":\"two\",\"z\":{\"a\":\"nested\",\"b\":[1,true,null]},\"\":null,\"😀\":false},\"session\":\"lead\",\"text\":\"Привет 👋\\nA quoted \\\"value\\\"\",\"updated\":1788798612345}"
+  },
+  {
+    "scenario": "clear",
+    "input": {
+      "updated": 1788798612345,
+      "text": "",
+      "session": "lead",
+      "id": "device:lead",
+      "device": "device",
+      "alternatives": ["first", "second"],
+      "metadata": {
+        "2": "two",
+        "10": "ten",
+        "😀": false,
+        "": null,
+        "z": {
+          "b": [1, true, null],
+          "a": "nested"
+        }
+      }
+    },
+    "expected": "{\"alternatives\":[\"first\",\"second\"],\"device\":\"device\",\"id\":\"device:lead\",\"metadata\":{\"10\":\"ten\",\"2\":\"two\",\"z\":{\"a\":\"nested\",\"b\":[1,true,null]},\"\":null,\"😀\":false},\"session\":\"lead\",\"text\":\"\",\"updated\":1788798612345}"
+  },
+  {
+    "scenario": "alternatives",
+    "input": {
+      "updated": 1788798612345,
+      "text": "Привет 👋\nA quoted \"value\"",
+      "session": "lead",
+      "id": "device:lead",
+      "device": "device",
+      "alternatives": ["other device"],
+      "metadata": {
+        "2": "two",
+        "10": "ten",
+        "😀": false,
+        "": null,
+        "z": {
+          "b": [1, true, null],
+          "a": "nested"
+        }
+      }
+    },
+    "expected": "{\"alternatives\":[\"other device\"],\"device\":\"device\",\"id\":\"device:lead\",\"metadata\":{\"10\":\"ten\",\"2\":\"two\",\"z\":{\"a\":\"nested\",\"b\":[1,true,null]},\"\":null,\"😀\":false},\"session\":\"lead\",\"text\":\"Привет 👋\\nA quoted \\\"value\\\"\",\"updated\":1788798612345}"
+  }
+]

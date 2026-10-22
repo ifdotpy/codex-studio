@@ -20,7 +20,6 @@ async fn post_compaction_roster_uses_live_store_and_stops_after_delivery() {
         let store = RuntimeStore::open(Some(directory.path()))
             .await
             .expect("runtime store opens");
-        let state_root = directory.path().to_path_buf();
         let resources = PreparationResources::bundled(
             directory.path().display().to_string(),
             crate::model_catalog::ModelCatalogService::new(),
@@ -65,7 +64,7 @@ async fn post_compaction_roster_uses_live_store_and_stops_after_delivery() {
                     "attempt_id":"prepare","account_key":"default","provider":provider,
                     "thread_id":format!("{actor}-thread"),"cwd":"/work","model":null,
                     "events":[{"id":"wake","kind":"user","text":"continue","created":1.0,"epoch":1,"error":null,"metadata":{}}]})).expect("turn intent deserializes");
-                let (before, events) = submission_snapshot(tx, &resources, &record, &intent, &state_root)?;
+                let (before, events) = submission_snapshot(tx, &resources, &record, &intent)?;
                 assert!(before.team_state.is_none());
                 assert!(!input_text(&turn::compile(&before, &events).expect("initial turn compiles")).contains("[Studio team state after compaction]"));
                 let notification = json!({"method":"item/completed","params":{
@@ -80,7 +79,7 @@ async fn post_compaction_roster_uses_live_store_and_stops_after_delivery() {
                 )?;
                 record = AgentRepository::get(tx, &actor.into())?.expect("actor remains after compaction").value();
                 assert_eq!(record["compactions"], 1);
-                let (snapshot, events) = submission_snapshot(tx, &resources, &record, &intent, &state_root)?;
+                let (snapshot, events) = submission_snapshot(tx, &resources, &record, &intent)?;
                 let restored = turn::compile(&snapshot, &events).expect("restored turn compiles");
                 let text = input_text(&restored);
                 assert_eq!(text.matches("[Studio team state after compaction]").count(), 1, "{actor}");
@@ -102,7 +101,7 @@ async fn post_compaction_roster_uses_live_store_and_stops_after_delivery() {
                     assert!(!text.contains("nested"));
                 }
                 tx.execute("INSERT INTO runtime_context_manifests(agent,thread_id,compactions,sequence,event_id,record) VALUES(?1,?2,1,?3,'wake',?4)", rusqlite::params![actor, format!("{actor}-thread"),i64::try_from(restored.manifest.sequence).expect("manifest sequence fits i64"),json!(restored.manifest).to_string()])?;
-                let (snapshot, events) = submission_snapshot(tx, &resources, &record, &intent, &state_root)?;
+                let (snapshot, events) = submission_snapshot(tx, &resources, &record, &intent)?;
                 assert!(snapshot.team_state.is_none());
                 assert!(!input_text(&turn::compile(&snapshot, &events).expect("turn after delivery compiles")).contains("[Studio team state after compaction]"));
             }

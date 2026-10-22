@@ -40,7 +40,6 @@ impl AccountSessionPort for InterruptBroker {
         &self,
         request: ProviderRequest,
     ) -> AccountSessionFuture<'_, SessionReceipt> {
-        assert_eq!(request.method, Method::TurnInterrupt);
         assert_eq!(request.expected_scope.as_ref(), Some(&self.scope));
         let reader = self.store.test_reader().expect("committed store read");
         let raw: String = reader
@@ -52,11 +51,16 @@ impl AccountSessionPort for InterruptBroker {
             .expect("stopped agent exists");
         let agent: Value = serde_json::from_str(&raw).expect("agent record");
         assert_eq!(agent["status"], "paused");
-        assert_eq!(agent["startAttempt"]["interrupt"]["outcome"], "unknown");
-        assert_eq!(
-            agent["startAttempt"]["interrupt"]["requestTicket"],
-            request.operation
-        );
+        let interrupt = &agent["startAttempt"]["interrupt"];
+        if request.method == Method::TurnInterrupt {
+            assert_eq!(interrupt["outcome"], "unknown");
+            assert_eq!(interrupt["requestTicket"], request.operation);
+        } else {
+            // The command cleanup follows the settled interrupt.
+            assert_eq!(request.method, Method::ThreadBackgroundTerminalsClean);
+            assert_eq!(interrupt["outcome"], "accepted");
+            assert_eq!(request.params, json!({"threadId":"fixture-thread"}));
+        }
         self.calls.lock().expect("calls lock").push(request.clone());
         let scope = self.scope.clone();
         Box::pin(async move {
@@ -181,13 +185,20 @@ async fn production_lifecycle_bundle_interrupts_active_turn_through_http_route()
     );
     drop(state);
     assert_eq!(response["stopped"], json!(["agent"]));
-    assert_eq!(calls.len(), 1);
     assert_eq!(
-        calls[0].actor.as_ref().map(|actor| actor.agent.as_str()),
-        Some("agent")
+        calls.iter().map(|call| call.method).collect::<Vec<_>>(),
+        [
+            Method::TurnInterrupt,
+            Method::ThreadBackgroundTerminalsClean
+        ]
     );
-    assert_eq!(calls[0].expected_scope.as_ref(), Some(&broker.scope));
-    assert_eq!(calls[0].method, Method::TurnInterrupt);
+    for call in calls.iter() {
+        assert_eq!(
+            call.actor.as_ref().map(|actor| actor.agent.as_str()),
+            Some("agent")
+        );
+        assert_eq!(call.expected_scope.as_ref(), Some(&broker.scope));
+    }
     let reader = store.test_reader().expect("final state");
     let raw: String = reader
         .query_row(
@@ -268,7 +279,13 @@ async fn production_delete_route_interrupts_and_settles_active_turn() {
     let agent: Value = serde_json::from_str(&raw).expect("agent record");
     assert_eq!(status, 200, "response={response}; agent={raw}");
     assert_eq!(response["deleted"], json!(["agent"]));
-    assert_eq!(calls.len(), 1);
+    assert_eq!(
+        calls.iter().map(|call| call.method).collect::<Vec<_>>(),
+        [
+            Method::TurnInterrupt,
+            Method::ThreadBackgroundTerminalsClean
+        ]
+    );
     assert!(agent["deletedAt"].is_number() || agent["deletedAt"] == true);
     assert_eq!(agent["status"], "paused");
     assert_eq!(agent["inFlight"], false);

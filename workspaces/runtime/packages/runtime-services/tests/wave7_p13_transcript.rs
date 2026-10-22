@@ -1,7 +1,7 @@
-//! Complete differential reader outputs from a Python notification replay, after restart.
-use crate::prepared_python_support as prepared_python;
+//! Complete reader outputs from frozen notification snapshots, after restart.
+use base64::Engine;
 use serde_json::{Value, json};
-use std::{path::Path, process::Command, sync::Arc};
+use std::{collections::BTreeMap, path::Path, sync::Arc};
 use studio_runtime_services::{
     transcript,
     transcript_runtime::{self, PageRequest},
@@ -12,24 +12,20 @@ use studio_runtime_store::RuntimeStore;
 #[allow(clippy::disallowed_methods)]
 async fn python_turn_readers_survive_restart_with_identical_cursors_and_receipts() {
     let root = tempfile::tempdir().expect("isolated state");
-    let environment = prepared_python::IsolatedTestEnvironment::new();
-    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let mut command = Command::new(prepared_python::prepared_python(
-        &manifest.join("../../apps/server/src"),
-    ));
-    environment.apply(&mut command);
-    let output = command
-        .arg(manifest.join("tests/wave7_p13_transcript/oracle.py"))
-        .arg(root.path())
-        .env("PYTHONDONTWRITEBYTECODE", "1")
-        .output()
-        .expect("oracle");
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let cases: Vec<Value> = serde_json::from_slice(&output.stdout).expect("corpus JSON");
+    let mode = if std::env::var_os("STUDIO_RUNTIME_CORPUS_FULL").is_some() {
+        "full"
+    } else {
+        "default"
+    };
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/wave7_p13_transcript")
+        .join(mode);
+    let cases: Vec<Value> = serde_json::from_str(
+        &std::fs::read_to_string(fixtures.join("cases.json"))
+            .expect("frozen transcript corpus")
+            .replace("@FIXTURE_ROOT@", &root.path().to_string_lossy()),
+    )
+    .expect("corpus JSON");
     eprintln!(
         "P13 corpus: {} states, {} complete pages, {} refused/invalid pages",
         cases.len(),
@@ -44,8 +40,11 @@ async fn python_turn_readers_survive_restart_with_identical_cursors_and_receipts
     );
     let mut fault_count = 0;
     for case in cases {
+        let name = case["path"].as_str().expect("snapshot name");
+        let state = root.path().join(name);
+        restore_snapshot(&fixtures.join(name), &state, root.path());
         let mut store = Arc::new(
-            RuntimeStore::open(Some(Path::new(case["path"].as_str().expect("path"))))
+            RuntimeStore::open(Some(&state))
                 .await
                 .expect("Python store"),
         );
@@ -213,7 +212,7 @@ async fn python_turn_readers_survive_restart_with_identical_cursors_and_receipts
             let committed = sync_snapshot(&store);
             drop(store);
             store = Arc::new(
-                RuntimeStore::open(Some(Path::new(case["path"].as_str().expect("path"))))
+                RuntimeStore::open(Some(&state))
                     .await
                     .expect("reasoning restart"),
             );
@@ -298,7 +297,7 @@ async fn python_turn_readers_survive_restart_with_identical_cursors_and_receipts
                     );
                     drop(store);
                     store = Arc::new(
-                        RuntimeStore::open(Some(Path::new(case["path"].as_str().expect("path"))))
+                        RuntimeStore::open(Some(&state))
                             .await
                             .expect("restart after failed sync write"),
                     );
@@ -322,7 +321,7 @@ async fn python_turn_readers_survive_restart_with_identical_cursors_and_receipts
             );
             drop(store);
             store = Arc::new(
-                RuntimeStore::open(Some(Path::new(case["path"].as_str().expect("path"))))
+                RuntimeStore::open(Some(&state))
                     .await
                     .expect("restart after commit failure"),
             );
@@ -345,11 +344,7 @@ async fn python_turn_readers_survive_restart_with_identical_cursors_and_receipts
             );
             let seq = got["checkpoint"]["seq"].as_i64().expect("cursor");
             drop(store);
-            let store = Arc::new(
-                RuntimeStore::open(Some(Path::new(case["path"].as_str().expect("path"))))
-                    .await
-                    .expect("restart"),
-            );
+            let store = Arc::new(RuntimeStore::open(Some(&state)).await.expect("restart"));
             let next = transcript::pull_scope(Arc::clone(&store), "transcript:agent", "agent", seq)
                 .await
                 .expect("replay");
@@ -402,4 +397,34 @@ fn native_text(mut value: Value) -> Value {
         }
     }
     value
+}
+
+// SQL and blob bytes are frozen once; every test owns fresh writable copies.
+#[allow(clippy::disallowed_methods)]
+fn restore_snapshot(fixture: &Path, state: &Path, root: &Path) {
+    std::fs::create_dir(state).expect("snapshot directory");
+    for name in ["canvas.sqlite3", "analytics.sqlite3"] {
+        let sql = std::fs::read_to_string(fixture.join(format!("{name}.sql")))
+            .expect("frozen SQLite seed")
+            .replace(
+                "@FIXTURE_ROOT@",
+                &root.to_string_lossy().replace('\'', "''"),
+            );
+        let db = rusqlite::Connection::open(state.join(name)).expect("snapshot database");
+        db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;")
+            .expect("snapshot durability");
+        db.execute_batch(&sql).expect("restore frozen SQLite seed");
+    }
+    let blobs: BTreeMap<String, String> = serde_json::from_str(
+        &std::fs::read_to_string(fixture.join("blobs.json")).expect("frozen blobs"),
+    )
+    .expect("blob map");
+    for (relative, encoded) in blobs {
+        let target = state.join("blobs").join(relative);
+        std::fs::create_dir_all(target.parent().expect("blob parent")).expect("blob directory");
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .expect("frozen blob bytes");
+        std::fs::write(target, bytes).expect("restore blob");
+    }
 }

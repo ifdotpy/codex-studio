@@ -736,6 +736,8 @@ enum LifecycleRequest {
     ArchiveFinished {
         #[serde(default, rename = "request_id")]
         _request_id: Option<String>,
+        #[serde(default = "crate::agent_management_store::finished_archive_reason")]
+        reason: String,
         #[serde(default)]
         unassign_work: bool,
     },
@@ -746,6 +748,7 @@ enum LifecycleCommand {
     Finished {
         actor: String,
         epoch: i64,
+        reason: String,
         unassign_work: bool,
     },
 }
@@ -808,13 +811,16 @@ async fn lifecycle_management(
                             target: agent_id,
                         })
                     }
-                    LifecycleRequest::ArchiveFinished { unassign_work, .. } => {
-                        LifecycleCommand::Finished {
-                            actor: actor_id,
-                            epoch,
-                            unassign_work,
-                        }
-                    }
+                    LifecycleRequest::ArchiveFinished {
+                        reason,
+                        unassign_work,
+                        ..
+                    } => LifecycleCommand::Finished {
+                        actor: actor_id,
+                        epoch,
+                        reason,
+                        unassign_work,
+                    },
                 })
             },
         )
@@ -832,11 +838,13 @@ async fn lifecycle_management(
         LifecycleCommand::Finished {
             actor,
             epoch,
+            reason,
             unassign_work,
         } => crate::agent_management_store::archive_finished(
             store,
             &actor,
             epoch,
+            &reason,
             unassign_work,
             now,
         )

@@ -4999,26 +4999,6 @@
   },
   {
     "family": "guidance",
-    "name": "no-progress",
-    "snapshot": {
-      "workspace": {
-        "progress_directory": null
-      }
-    },
-    "fast": true
-  },
-  {
-    "family": "guidance",
-    "name": "empty-progress",
-    "snapshot": {
-      "guidance": {
-        "progress": ""
-      }
-    },
-    "fast": true
-  },
-  {
-    "family": "guidance",
     "name": "empty-model",
     "snapshot": {
       "settings": {
@@ -8032,5 +8012,140 @@
       "claude_read_submitted": false
     },
     "fast": true
+  },
+  {
+    "family": "frozen",
+    "name": "frozen-codex-start",
+    "fast": true,
+    "snapshot": {
+      "actor": {
+        "thread_id": null
+      },
+      "account": {
+        "provider": "codex"
+      },
+      "frozen": {
+        "base_instructions": "Frozen base",
+        "developer_instructions": "Frozen guidance\n[Synthetic role]\nAuthority comes from the root.\n[End role]",
+        "model": "frozen-model",
+        "dynamic_tools": [
+          {
+            "name": "orchestration_spawn",
+            "description": "Frozen spawn",
+            "inputSchema": {
+              "type": "object",
+              "properties": {}
+            }
+          },
+          {
+            "name": "orchestration_message",
+            "description": "Frozen message",
+            "inputSchema": {
+              "type": "object",
+              "properties": {
+                "target": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        ],
+        "effort": "low",
+        "summary": "concise"
+      }
+    }
+  },
+  {
+    "family": "frozen",
+    "name": "frozen-codex-resume-without-delegation",
+    "fast": true,
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread"
+      },
+      "catalog": {
+        "source": "legacy"
+      },
+      "account": {
+        "provider": "codex"
+      },
+      "root": {
+        "can_delegate": false
+      },
+      "frozen": {
+        "base_instructions": "Frozen base",
+        "developer_instructions": "Frozen guidance only",
+        "model": "frozen-model",
+        "dynamic_tools": [
+          {
+            "name": "orchestration_spawn",
+            "description": "Frozen spawn",
+            "inputSchema": {
+              "type": "object",
+              "properties": {}
+            }
+          },
+          {
+            "name": "orchestration_message",
+            "description": "Frozen message",
+            "inputSchema": {
+              "type": "object",
+              "properties": {
+                "target": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        ]
+      }
+    }
+  },
+  {
+    "family": "frozen",
+    "name": "frozen-claude-resume",
+    "fast": true,
+    "snapshot": {
+      "actor": {
+        "thread_id": "thread"
+      },
+      "catalog": {
+        "source": "legacy"
+      },
+      "account": {
+        "provider": "claude"
+      },
+      "settings": {
+        "model": "default"
+      },
+      "frozen": {
+        "base_instructions": "Frozen base",
+        "developer_instructions": "Frozen guidance\n[Synthetic role]\nAuthority comes from the root.\n[End role]",
+        "model": "default",
+        "dynamic_tools": [
+          {
+            "name": "orchestration_spawn",
+            "description": "Frozen spawn",
+            "inputSchema": {
+              "type": "object",
+              "properties": {}
+            }
+          },
+          {
+            "name": "orchestration_message",
+            "description": "Frozen message",
+            "inputSchema": {
+              "type": "object",
+              "properties": {
+                "target": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        ],
+        "effort": "high"
+      }
+    }
   }
 ]

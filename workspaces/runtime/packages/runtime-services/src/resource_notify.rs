@@ -220,7 +220,7 @@ mod tests {
             .versions
             .extend((0..MAX_RESOURCE_VERSIONS).map(|index| {
                 (
-                    json!({"kind":"panel","agentId":index.to_string()}).to_string(),
+                    json!({"kind":"queue","agentId":index.to_string()}).to_string(),
                     1,
                 )
             }));
@@ -237,7 +237,7 @@ mod tests {
             MAX_RESOURCE_VERSIONS
         );
         let view = notifications
-            .changes_since(&[json!({"kind":"panel","agentId":"0"})], Some(0))
+            .changes_since(&[json!({"kind":"queue","agentId":"0"})], Some(0))
             .expect("lagged reader");
         assert!(view.overflow);
         assert_eq!(view.resources.len(), 1);

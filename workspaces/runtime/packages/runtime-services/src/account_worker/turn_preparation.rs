@@ -461,9 +461,12 @@ async fn settle(
     run: &Run,
     result: Result<preparation::RequestPreparation, WorkerError>,
 ) -> Result<store::PreparationStep<preparation::RequestPreparation>, WorkerError> {
-    store::preparation_step(&run.bridge.store, &run.resources, &run.intent, async {
-        result
-    })
+    Box::pin(store::preparation_step(
+        &run.bridge.store,
+        &run.resources,
+        &run.intent,
+        async { result },
+    ))
     .await
 }
 

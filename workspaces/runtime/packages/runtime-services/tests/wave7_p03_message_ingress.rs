@@ -1,202 +1,116 @@
-//! Message ingress at its transaction boundary, using Python-written databases.
-use crate::prepared_python_support as python_test_support;
-
-use std::io::{BufRead, BufReader, Write};
+//! Message ingress at its transaction boundary, using frozen historical state.
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
-use std::sync::mpsc::{self, Receiver};
-use std::time::{Duration, Instant};
+use std::process::{Command, Stdio};
 
+use serde::Deserialize;
 use serde_json::{Value, json};
 use studio_runtime_services::coordination::{self, PostManagedMessage};
 use studio_runtime_services::message_admission::PreparedAdmission;
 use studio_runtime_store::RuntimeStore;
 
-struct Oracle {
-    child: Child,
-    input: ChildStdin,
-    output: Receiver<Result<String, String>>,
-    reader: Option<std::thread::JoinHandle<()>>,
-    root: tempfile::TempDir,
-    next_root: usize,
-    case_name: String,
+/// Marker in the historical SQL and JSON, rebound to this fixture's real workspace.
+const WORKSPACE_MARKER: &str = "__INGRESS_WORKSPACE__";
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct Expected {
+    results: Value,
+    state: BTreeMap<String, Value>,
+    operation_receipts: Value,
+    receipts: Value,
 }
-impl Oracle {
+
+struct Fixture {
+    root: tempfile::TempDir,
+}
+impl Fixture {
     fn new() -> Self {
         let root = tempfile::tempdir().expect("isolated root");
-        let base = Path::new(env!("CARGO_MANIFEST_DIR"));
-        let mut child = Command::new(python_test_support::prepared_python(
-            &base.join("../../apps/server/src"),
-        ))
-        .arg("-B")
-        .arg(base.join("tests/wave7_p03_message_ingress/oracle.py"))
-        .arg(root.path())
-        .env("TMPDIR", root.path())
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .expect("Python oracle");
-        let stdout = child.stdout.take().expect("stdout");
-        let (sender, output) = mpsc::channel();
-        let reader = Some(std::thread::spawn(move || {
-            read_oracle_lines(stdout, sender)
-        }));
-        let case_name = std::thread::current()
-            .name()
-            .unwrap_or("Python message-ingress test")
-            .to_owned();
-        Self {
-            input: child.stdin.take().expect("stdin"),
-            output,
-            reader,
-            child,
-            root,
-            next_root: 0,
-            case_name,
-        }
+        std::fs::create_dir(root.path().join("workspace")).expect("workspace");
+        Self { root }
     }
-    fn call(&mut self, command: Value) -> Value {
-        if let Some(name) = command.pointer("/case/name").and_then(Value::as_str) {
-            self.case_name = name.to_owned();
-        }
-        writeln!(self.input, "{command}")
-            .and_then(|()| self.input.flush())
-            .unwrap_or_else(|error| {
-                panic!("{}: send Python oracle command: {error}", self.case_name)
-            });
-        let line = match self
-            .output
-            .recv_timeout(python_test_support::PYTHON_ORACLE_TIMEOUT)
-        {
-            Ok(Ok(line)) => line,
-            Ok(Err(error)) => panic!("{}: read Python oracle reply: {error}", self.case_name),
-            Err(mpsc::RecvTimeoutError::Timeout) => {
-                self.terminate("reply timed out")
-                    .unwrap_or_else(|error| panic!("{}: {error}", self.case_name));
-                panic!(
-                    "{}: Python oracle exceeded {} second reply timeout",
-                    self.case_name,
-                    python_test_support::PYTHON_ORACLE_TIMEOUT.as_secs()
-                );
-            }
-            Err(mpsc::RecvTimeoutError::Disconnected) => {
-                panic!("{}: Python oracle closed its reply stream", self.case_name)
-            }
-        };
-        let result: Value = serde_json::from_str(&line).unwrap_or_else(|error| {
-            panic!(
-                "{}: invalid Python oracle JSON reply: {error}",
-                self.case_name
-            )
-        });
-        assert!(
-            result.get("oracleError").is_none(),
-            "{}: {result}",
-            self.case_name
+    fn sql(&self, source: &str) -> String {
+        source.replace(
+            WORKSPACE_MARKER,
+            &self
+                .root
+                .path()
+                .join("workspace")
+                .to_string_lossy()
+                .replace('\'', "''"),
+        )
+    }
+    fn seed(&self, name: &str) -> PathBuf {
+        let root = self.root.path().join(name);
+        crate::recovery_fixtures::state(
+            &root,
+            &self.sql(include_str!("wave7_p03_message_ingress/canvas.sqlite3.sql")),
+            include_str!("wave7_p03_message_ingress/analytics.sqlite3.sql"),
         );
-        result
-    }
-    fn seed(&mut self, name: &str, case: &Value) -> (PathBuf, Value) {
-        let root = self
-            .root
-            .path()
-            .join(format!("{:04}-{name}", self.next_root));
-        self.next_root += 1;
-        let expected = self.call(json!({"rust":root,"case":case}));
-        (root, expected)
-    }
-
-    fn terminate(&mut self, reason: &str) -> Result<(), String> {
-        match self.child.try_wait() {
-            Ok(Some(_)) => return Ok(()),
-            Ok(None) => {}
-            Err(error) => return Err(format!("check Python oracle before termination: {error}")),
+        let db = rusqlite::Connection::open(root.join("canvas.sqlite3")).expect("seed reader");
+        let hashes: Vec<(String, String, String)> = db
+            .prepare("SELECT collection,id,payload FROM sync_entities WHERE payload IS NOT NULL")
+            .expect("seed hashes")
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .expect("seed payloads")
+            .collect::<Result<_, _>>()
+            .expect("seed rows");
+        for (collection, id, payload) in hashes {
+            db.execute(
+                "UPDATE sync_entities SET hash=?1 WHERE collection=?2 AND id=?3",
+                rusqlite::params![
+                    studio_runtime_store::sha256_hex(payload.as_bytes()),
+                    collection,
+                    id
+                ],
+            )
+            .expect("rebind seed hash");
         }
-        if let Err(error) = self.child.kill()
-            && error.kind() != std::io::ErrorKind::InvalidInput
+        drop(db);
+        let identity_root = root.join("multi-server");
+        std::fs::create_dir(&identity_root).expect("identity directory");
+        let identity = identity_root.join("identity.json");
+        std::fs::write(
+            &identity,
+            include_str!("wave7_p03_message_ingress/identity.json"),
+        )
+        .expect("frozen server identity");
+        #[cfg(unix)]
         {
-            return Err(format!("terminate Python oracle after {reason}: {error}"));
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&identity_root, std::fs::Permissions::from_mode(0o700))
+                .expect("private identity directory");
+            std::fs::set_permissions(&identity, std::fs::Permissions::from_mode(0o600))
+                .expect("private identity file");
         }
-        self.child
-            .wait()
-            .map(|_| ())
-            .map_err(|error| format!("reap Python oracle after {reason}: {error}"))
+        root
     }
-}
-impl Drop for Oracle {
-    fn drop(&mut self) {
-        let mut close_error = None;
-        if let Err(error) = writeln!(self.input, "{{\"close\":true}}") {
-            close_error = Some(format!("send close: {error}"));
-        }
-        let status =
-            wait_child_with_timeout(&mut self.child, python_test_support::PYTHON_ORACLE_TIMEOUT);
-        let mut failure = close_error;
-        match status {
-            Ok(status) if status.success() => {}
-            Ok(status) => {
-                failure.get_or_insert_with(|| format!("Python oracle exited with {status}"));
-            }
-            Err(()) => {
-                if let Err(error) = self.terminate("shutdown timed out") {
-                    failure.get_or_insert(error);
-                }
-                failure.get_or_insert_with(|| {
-                    format!(
-                        "Python oracle exceeded {} second shutdown timeout",
-                        python_test_support::PYTHON_ORACLE_TIMEOUT.as_secs()
-                    )
-                });
-            }
-        }
-        if let Some(reader) = self.reader.take()
-            && reader.join().is_err()
-        {
-            failure.get_or_insert_with(|| "Python oracle output reader panicked".into());
-        }
-        if !std::thread::panicking()
-            && let Some(failure) = failure
-        {
-            panic!("{}: {failure}", self.case_name);
-        }
+    fn expected(&self, name: &str) -> Expected {
+        let workspace =
+            serde_json::to_string(&self.root.path().join("workspace")).expect("workspace JSON");
+        let source = include_str!("wave7_p03_message_ingress/expected.json")
+            .replace(WORKSPACE_MARKER, &workspace[1..workspace.len() - 1]);
+        let mut cases: BTreeMap<String, Expected> =
+            serde_json::from_str(&source).expect("frozen ingress expectations");
+        cases.remove(name).expect("named ingress expectation")
+    }
+    async fn configure(&self, store: &RuntimeStore, case: &str) {
+        let source = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/wave7_p03_message_ingress")
+                .join(format!("{case}.sql")),
+        )
+        .expect("frozen live case configuration");
+        let sql = self.sql(&source);
+        store.transaction(move |tx| {
+            tx.execute_batch(&sql)?;
+            tx.execute("UPDATE sync_entities SET hash=sync_entity_hash(payload) WHERE payload IS NOT NULL", [])?;
+            studio_runtime_store::agent_volatile::migrate_2026_10_20(tx)
+        }).await.expect("configure ingress case");
     }
 }
 
-fn read_oracle_lines(stdout: ChildStdout, sender: mpsc::Sender<Result<String, String>>) {
-    let mut reader = BufReader::new(stdout);
-    loop {
-        let mut line = String::new();
-        match reader.read_line(&mut line) {
-            Ok(0) => return,
-            Ok(_) => {
-                if sender.send(Ok(line)).is_err() {
-                    return;
-                }
-            }
-            Err(error) => {
-                if sender.send(Err(error.to_string())).is_err() {
-                    return;
-                }
-                return;
-            }
-        }
-    }
-}
-
-#[allow(clippy::disallowed_methods)]
-fn wait_child_with_timeout(child: &mut Child, timeout: Duration) -> Result<ExitStatus, ()> {
-    let deadline = Instant::now() + timeout;
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => return Ok(status),
-            Ok(None) if Instant::now() < deadline => {
-                std::thread::sleep(Duration::from_millis(10));
-            }
-            Ok(None) | Err(_) => return Err(()),
-        }
-    }
-}
 async fn send(
     store: &RuntimeStore,
     step: &Value,
@@ -267,7 +181,7 @@ fn post(
     )
 }
 
-async fn python_send_and_receipt_corpus(oracle: &mut Oracle) {
+async fn python_send_and_receipt_corpus(fixture: &Fixture) {
     let cases: Vec<Value> =
         serde_json::from_str(include_str!("wave7_p03_message_ingress/cases.json")).expect("cases");
     for mut case in cases {
@@ -287,17 +201,12 @@ async fn python_send_and_receipt_corpus(oracle: &mut Oracle) {
             }
         }
         let name = case["name"].as_str().expect("case name");
-        let (root, expected) = oracle.seed(name, &case);
+        let root = fixture.seed(name);
+        let expected = fixture.expected(name);
         let store = RuntimeStore::open(Some(&root))
             .await
-            .unwrap_or_else(|error| panic!("{name}: Python state opens: {error}"));
-        oracle.call(json!({"configure":root,"case":case}));
-        // Python wrote old-format agents into the opened state: move their
-        // volatile fields as the open does (format 2026-10-20).
-        store
-            .transaction(studio_runtime_store::agent_volatile::migrate_2026_10_20)
-            .await
-            .expect("volatile agent fields move");
+            .unwrap_or_else(|error| panic!("{name}: frozen state opens: {error}"));
+        fixture.configure(&store, name).await;
         let mut results = Vec::new();
         for step in case["steps"].as_array().expect("steps") {
             if let Some(status) = step.get("status") {
@@ -322,9 +231,7 @@ async fn python_send_and_receipt_corpus(oracle: &mut Oracle) {
         }
         assert_eq!(
             json!(results),
-            case.get("rustResults")
-                .unwrap_or(&expected["results"])
-                .clone(),
+            case.get("rustResults").unwrap_or(&expected.results).clone(),
             "{name}: complete send results (existing account-name redaction is explicit)"
         );
         let receipts = store
@@ -337,24 +244,128 @@ async fn python_send_and_receipt_corpus(oracle: &mut Oracle) {
             })
             .await
             .unwrap_or_else(|error| json!({"error":error.to_string()}));
-        assert_eq!(receipts, expected["receipts"], "{name}: complete receipts");
-        let actual = oracle.call(json!({"snapshot":root}));
-        for (table, rows) in actual.as_object().expect("snapshot").iter() {
+        assert_eq!(receipts, expected.receipts, "{name}: complete receipts");
+        let actual = logical_state(&store);
+        for (table, rows) in &actual {
             if table == "runtime_operation_receipts" {
                 assert_eq!(
-                    expected["state"][table],
+                    expected.state[table],
                     json!([]),
                     "Python has no auxiliary admission receipt"
                 );
                 assert_eq!(
-                    rows, &expected["operationReceipts"],
+                    rows, &expected.operation_receipts,
                     "{name}: complete auxiliary receipts"
                 );
             } else {
-                assert_json(rows, &expected["state"][table], &format!("{name}/{table}"));
+                assert_json(rows, &expected.state[table], &format!("{name}/{table}"));
             }
         }
     }
+}
+
+/// Match the historical oracle's logical projection, retaining its hash checks
+/// and omitting only independently generated scheduling timestamps.
+fn logical_state(store: &RuntimeStore) -> BTreeMap<String, Value> {
+    let db = store.test_reader().expect("logical state reader");
+    let json_rows = |sql: &str| -> Vec<Value> {
+        db.prepare(sql)
+            .expect("logical state query")
+            .query_map([], |row| row.get::<_, String>(0))
+            .expect("logical state rows")
+            .map(|row| serde_json::from_str(&row.expect("JSON row")).expect("logical JSON"))
+            .collect()
+    };
+    let pairs = |sql: &str| -> BTreeMap<String, Value> {
+        db.prepare(sql)
+            .expect("logical keyed query")
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .expect("logical keyed rows")
+            .map(|row| {
+                let (id, raw) = row.expect("keyed row");
+                (id, serde_json::from_str(&raw).expect("keyed JSON"))
+            })
+            .collect()
+    };
+    let mut agents = pairs("SELECT id,record FROM runtime_agents ORDER BY id");
+    for (id, record) in &mut agents {
+        studio_runtime_store::agent_volatile::merge(&db, id, record).expect("merged agent");
+    }
+    let mut hashes = db
+        .prepare("SELECT hash,payload FROM sync_entities WHERE payload IS NOT NULL")
+        .expect("hash query");
+    for row in hashes
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .expect("hash rows")
+    {
+        let (hash, payload) = row.expect("hash row");
+        assert_eq!(hash, studio_runtime_store::sha256_hex(payload.as_bytes()));
+    }
+    let invalid_capacity_timestamps: i64 = db.query_row(
+        "SELECT count(*) FROM runtime_capacity_retries WHERE json_extract(record,'$.status')='finished' AND COALESCE(json_extract(record,'$.updatedAt')>1,0)=0", [], |row| row.get(0)
+    ).expect("capacity timestamps");
+    assert_eq!(
+        invalid_capacity_timestamps, 0,
+        "capacity reset refreshes updatedAt"
+    );
+    let invalid_generated_timestamps: i64 = db.query_row(
+        "SELECT
+            (SELECT count(*) FROM runtime_events WHERE typeof(created) NOT IN ('integer','real')) +
+            (SELECT count(*) FROM runtime_event_meta WHERE COALESCE(json_type(record,'$.acceptedAt'),'null') NOT IN ('integer','real')) +
+            (SELECT count(*) FROM messages WHERE typeof(at) NOT IN ('integer','real')) +
+            (SELECT count(*) FROM sync_entities WHERE collection='event' AND payload IS NOT NULL AND COALESCE(json_type(payload,'$.value.created'),'null') NOT IN ('integer','real'))",
+        [], |row| row.get(0),
+    ).expect("generated timestamp types");
+    assert_eq!(
+        invalid_generated_timestamps, 0,
+        "normalized timestamps remain numeric"
+    );
+    let mut state = BTreeMap::from([
+        ("agents".into(), json!(agents)),
+        (
+            "metadata".into(),
+            json!(pairs(
+                "SELECT id,json_remove(record,'$.acceptedAt','$.timing') FROM runtime_event_meta ORDER BY id"
+            )),
+        ),
+    ]);
+    for (name, sql) in [
+        (
+            "events",
+            "SELECT json_object('id',id,'agent',agent,'kind',kind,'text',text,'status',status,'epoch',epoch,'turn_id',turn_id,'error',error) FROM runtime_events ORDER BY id",
+        ),
+        (
+            "messages",
+            "SELECT json_object('id',id,'room',room,'author',author,'text',text,'at','generated timestamp','deliveries',json(deliveries)) FROM messages ORDER BY rowid",
+        ),
+        (
+            "runtime_operation_receipts",
+            "SELECT json_object('id',id,'signature',json(signature),'result',json(result)) FROM runtime_operation_receipts ORDER BY rowid",
+        ),
+        (
+            "sync_entities",
+            "SELECT json_object('collection',collection,'id',id,'seq',seq,'hash',CASE WHEN payload IS NULL THEN hash ELSE 'verified payload hash' END,'payload',json(CASE WHEN collection='event' AND payload IS NOT NULL THEN json_set(payload,'$.value.created','generated timestamp') ELSE payload END),'deleted',deleted) FROM sync_entities ORDER BY rowid",
+        ),
+        (
+            "sync_documents",
+            "SELECT json_object('seq',seq,'scope',scope,'id',id,'payload',json(payload),'deleted',deleted) FROM sync_documents ORDER BY rowid",
+        ),
+        (
+            "sync_versions",
+            "SELECT json_object('seq',seq,'scope',scope,'hash',hash,'deleted',deleted,'updated',updated) FROM sync_versions ORDER BY rowid",
+        ),
+        (
+            "runtime_capacity_retries",
+            "SELECT json_object('id',id,'agent',agent,'record',json(CASE WHEN json_extract(record,'$.status')='finished' THEN json_set(record,'$.updatedAt','generated timestamp') ELSE record END)) FROM runtime_capacity_retries ORDER BY rowid",
+        ),
+    ] {
+        state.insert(name.into(), json!(json_rows(sql)));
+    }
+    state
 }
 
 fn assert_json(actual: &Value, expected: &Value, path: &str) {
@@ -536,9 +547,8 @@ async fn ingress_crash_child() {
     std::process::exit(73);
 }
 
-async fn each_write_occurrence_and_commit_wake_crash_recovers_exactly_once(oracle: &mut Oracle) {
+async fn each_write_occurrence_and_commit_wake_crash_recovers_exactly_once(fixture: &Fixture) {
     use std::sync::atomic::Ordering;
-    let capacity = json!({"capacity":{"id":"retry","status":"scheduled","dueAt":100,"updatedAt":1},"steps":[]});
     let mut reached = 0;
     for &(table, operation) in WRITE_BOUNDARIES {
         if std::env::var_os("STUDIO_RUNTIME_CORPUS_FULL").is_none()
@@ -547,9 +557,9 @@ async fn each_write_occurrence_and_commit_wake_crash_recovers_exactly_once(oracl
             continue;
         }
         for point in ["BEFORE", "AFTER"] {
-            let (root, _) = oracle.seed(&format!("count-{table}-{operation}-{point}"), &capacity);
+            let root = fixture.seed(&format!("count-{table}-{operation}-{point}"));
             let store = RuntimeStore::open(Some(&root)).await.expect("count store");
-            oracle.call(json!({"configure":root,"case":capacity}));
+            fixture.configure(&store, "capacity").await;
             let count = arm_statement(&store, table, operation, point, usize::MAX).await;
             let prepared = PreparedAdmission::read(&store.test_reader().expect("read"), "agent")
                 .expect("SQL admission inputs")
@@ -611,7 +621,7 @@ async fn each_write_occurrence_and_commit_wake_crash_recovers_exactly_once(oracl
         }
     }
     for point in ["before_commit", "after_commit", "before_wake", "after_wake"] {
-        let (root, _) = oracle.seed(point, &json!({"steps":[]}));
+        let root = fixture.seed(point);
         let store = RuntimeStore::open(Some(&root))
             .await
             .expect("before handoff");
@@ -652,8 +662,8 @@ async fn each_write_occurrence_and_commit_wake_crash_recovers_exactly_once(oracl
 
 #[tokio::test]
 async fn event_projection_failure_returns_error_and_rolls_back_message_admission() {
-    let mut oracle = Oracle::new();
-    let (root, _) = oracle.seed("projection-failure", &json!({"steps":[]}));
+    let fixture = Fixture::new();
+    let root = fixture.seed("projection-failure");
     let store = RuntimeStore::open(Some(&root)).await.expect("store");
     store
         .transaction(move |tx| {
@@ -689,7 +699,7 @@ async fn event_projection_failure_returns_error_and_rolls_back_message_admission
     assert_eq!(snapshot(&store), before);
 }
 
-async fn injected_policy_denials_and_changed_workspace_snapshot_write_nothing(oracle: &mut Oracle) {
+async fn injected_policy_denials_and_changed_workspace_snapshot_write_nothing(fixture: &Fixture) {
     use studio_runtime_services::coordination::CoordinationError;
     use studio_runtime_services::message_admission::MessageAdmission;
     use studio_runtime_store::{AgentRecord, Transaction};
@@ -722,7 +732,7 @@ async fn injected_policy_denials_and_changed_workspace_snapshot_write_nothing(or
             Ok(())
         }
     }
-    let (root, _) = oracle.seed("gates", &json!({"steps":[]}));
+    let root = fixture.seed("gates");
     let store = RuntimeStore::open(Some(&root)).await.expect("store");
     for policy in [
         Policy {
@@ -786,10 +796,10 @@ async fn injected_policy_denials_and_changed_workspace_snapshot_write_nothing(or
     assert_eq!(snapshot(&store), before);
 }
 
-async fn voice_delivery_prepares_workspace_admission(oracle: &mut Oracle) {
+async fn voice_delivery_prepares_workspace_admission(fixture: &Fixture) {
     use studio_runtime_services::voice;
     for operation in ["unrelated", "checkpoint", "capture"] {
-        let (root, _) = oracle.seed(operation, &json!({"steps":[]}));
+        let root = fixture.seed(operation);
         let store = std::sync::Arc::new(RuntimeStore::open(Some(&root)).await.expect("store"));
         let record = studio_runtime_store::VoiceRecord {
             sequence: 0,
@@ -847,8 +857,8 @@ async fn voice_delivery_prepares_workspace_admission(oracle: &mut Oracle) {
     }
 }
 
-async fn corrupt_replay_and_workspace_operation_errors_name_the_row(oracle: &mut Oracle) {
-    let (root, _) = oracle.seed("malformed", &json!({"steps":[]}));
+async fn corrupt_replay_and_workspace_operation_errors_name_the_row(fixture: &Fixture) {
+    let root = fixture.seed("malformed");
     let store = RuntimeStore::open(Some(&root)).await.expect("store");
     send(&store, &json!({})).await.expect("accepted");
     store
@@ -890,10 +900,10 @@ async fn corrupt_replay_and_workspace_operation_errors_name_the_row(oracle: &mut
     assert_eq!(snapshot(&store), before);
 }
 
-async fn late_operation_paths_use_the_prepared_canonical_relation(oracle: &mut Oracle) {
+async fn late_operation_paths_use_the_prepared_canonical_relation(fixture: &Fixture) {
     use studio_runtime_store::AgentRepository;
     for scenario in ["known_unrelated", "known_alias", "unknown_alias"] {
-        let (root, _) = oracle.seed(scenario, &json!({"steps":[]}));
+        let root = fixture.seed(scenario);
         let store = RuntimeStore::open(Some(&root)).await.expect("store");
         let mut other = AgentRepository::get(&store.test_reader().expect("read"), &"agent".into())
             .expect("get")
@@ -966,11 +976,11 @@ async fn late_operation_paths_use_the_prepared_canonical_relation(oracle: &mut O
 
 #[tokio::test]
 async fn message_ingress_python_oracle_corpus() {
-    let mut oracle = Oracle::new();
-    corrupt_replay_and_workspace_operation_errors_name_the_row(&mut oracle).await;
-    injected_policy_denials_and_changed_workspace_snapshot_write_nothing(&mut oracle).await;
-    late_operation_paths_use_the_prepared_canonical_relation(&mut oracle).await;
-    python_send_and_receipt_corpus(&mut oracle).await;
-    voice_delivery_prepares_workspace_admission(&mut oracle).await;
-    each_write_occurrence_and_commit_wake_crash_recovers_exactly_once(&mut oracle).await;
+    let fixture = Fixture::new();
+    corrupt_replay_and_workspace_operation_errors_name_the_row(&fixture).await;
+    injected_policy_denials_and_changed_workspace_snapshot_write_nothing(&fixture).await;
+    late_operation_paths_use_the_prepared_canonical_relation(&fixture).await;
+    python_send_and_receipt_corpus(&fixture).await;
+    voice_delivery_prepares_workspace_admission(&fixture).await;
+    each_write_occurrence_and_commit_wake_crash_recovers_exactly_once(&fixture).await;
 }

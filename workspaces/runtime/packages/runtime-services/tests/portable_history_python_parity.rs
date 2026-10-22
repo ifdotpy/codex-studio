@@ -1,7 +1,7 @@
-use crate::prepared_python_support as prepared_python;
-use std::io::{Read, Write};
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 
 use serde_json::{Value, json};
 use studio_runtime_services::portable_history::{
@@ -11,28 +11,17 @@ use studio_runtime_services::portable_history::{
 use studio_runtime_store::RuntimeStore;
 
 #[test]
-#[allow(clippy::disallowed_methods)]
-fn python_archive_writer_and_context_are_read_without_loss() {
+fn frozen_archive_writer_and_context_are_read_without_loss() {
     let root = isolated_test_root();
-    let output = Command::new(python_executable())
-        .arg(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/portable_history/producer.py"))
-        .arg(server_source())
-        .arg(root.path())
-        .env("PYTHONDONTWRITEBYTECODE", "1")
-        .output()
-        .expect("prepared Python archive producer starts");
-    assert!(
-        output.status.success(),
-        "Python archive producer failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let cases: Vec<Value> = serde_json::from_slice(&output.stdout).expect("Python corpus JSON");
+    let cases = frozen_archives(root.path());
     assert_eq!(cases.len(), 10, "all archive behavior families are present");
     for case in &cases {
-        let name = case["name"].as_str().expect("case name");
-        let state_root = Path::new(case["root"].as_str().expect("archive root"));
-        let descriptor = ArchiveDescriptor::from_value(case["descriptor"].clone())
-            .unwrap_or_else(|error| panic!("Rust rejected Python descriptor {name}: {error}"));
+        let name = case.name.as_str();
+        let state_root = case.root.as_path();
+        let descriptor = ArchiveDescriptor::from_value(
+            serde_json::to_value(&case.descriptor).expect("descriptor JSON"),
+        )
+        .unwrap_or_else(|error| panic!("Rust rejected Python descriptor {name}: {error}"));
         let validated = validate_history(state_root, &descriptor)
             .unwrap_or_else(|error| panic!("Rust rejected Python archive {name}: {error}"));
         assert_eq!(validated, descriptor, "descriptor round trip for {name}");
@@ -49,16 +38,18 @@ fn python_archive_writer_and_context_are_read_without_loss() {
         assert_eq!(
             history_context(state_root, &descriptor)
                 .unwrap_or_else(|error| panic!("Rust context failed for {name}: {error}")),
-            case["context"].as_str().expect("Python context"),
+            case.context.as_str(),
             "context excerpt differs from Python for {name}"
         );
     }
     let archive_case = cases
         .iter()
-        .find(|case| case["name"] == "native-pages")
+        .find(|case| case.name == "native-pages")
         .expect("tamper witness archive");
-    let descriptor = ArchiveDescriptor::from_value(archive_case["descriptor"].clone())
-        .expect("Python descriptor");
+    let descriptor = ArchiveDescriptor::from_value(
+        serde_json::to_value(&archive_case.descriptor).expect("descriptor JSON"),
+    )
+    .expect("Python descriptor");
     let path = descriptor.path();
     let original = std::fs::read(path).expect("archive bytes");
     let mut tampered = original.clone();
@@ -71,11 +62,7 @@ fn python_archive_writer_and_context_are_read_without_loss() {
     tampered[start..start + original_text.len()].copy_from_slice(changed_text);
     std::fs::write(path, tampered).expect("tamper synthetic archive");
     assert!(
-        read_history(
-            Path::new(archive_case["root"].as_str().expect("archive root")),
-            &descriptor
-        )
-        .is_err(),
+        read_history(archive_case.root.as_path(), &descriptor).is_err(),
         "modified archive bytes are refused"
     );
     std::fs::write(path, original).expect("restore synthetic archive");
@@ -112,19 +99,13 @@ fn python_archive_writer_and_context_are_read_without_loss() {
     assert_eq!(truncated.pop(), Some(b'\n'));
     std::fs::write(path, &truncated).expect("truncate synthetic footer");
     let truncated_descriptor = refreshed_descriptor(&descriptor, &truncated);
-    assert!(
-        validate_history(
-            Path::new(archive_case["root"].as_str().expect("archive root")),
-            &truncated_descriptor
-        )
-        .is_err()
-    );
+    assert!(validate_history(archive_case.root.as_path(), &truncated_descriptor).is_err());
     std::fs::write(path, original).expect("restore synthetic archive");
     let ordinary = cases
         .iter()
-        .find(|case| case["name"] == "ordinary-and-input")
+        .find(|case| case.name == "ordinary-and-input")
         .expect("input event fixture");
-    let path = ordinary["descriptor"]["path"].as_str().expect("path");
+    let path = ordinary.descriptor.path();
     let archive = std::fs::read_to_string(path).expect("Python archive JSONL");
     assert!(
         archive.contains("original input 😀"),
@@ -133,45 +114,42 @@ fn python_archive_writer_and_context_are_read_without_loss() {
     assert!(archive.contains("日本語.png"), "asset metadata retained");
     let restored = cases
         .iter()
-        .find(|case| case["name"] == "restored-item")
+        .find(|case| case.name == "restored-item")
         .expect("restored fixture");
-    let restored_context = restored["context"].as_str().expect("context");
+    let restored_context = restored.context.as_str();
     assert!(!restored_context.contains("must not enter excerpt"));
     let native = cases
         .iter()
-        .find(|case| case["name"] == "native-pages")
+        .find(|case| case.name == "native-pages")
         .expect("native page fixture");
     assert!(
-        native["context"]
-            .as_str()
-            .expect("context")
+        native
+            .context
             .contains("Python-written native assistant text")
     );
     let item_page = cases
         .iter()
-        .find(|case| case["name"] == "native-item-page")
+        .find(|case| case.name == "native-item-page")
         .expect("native item-page fixture");
     assert!(
-        item_page["context"]
-            .as_str()
-            .expect("context")
+        item_page
+            .context
             .contains("Python-written native item-page text")
     );
     let unmaterialized = cases
         .iter()
-        .find(|case| case["name"] == "native-unmaterialized")
+        .find(|case| case.name == "native-unmaterialized")
         .expect("unmaterialized fixture");
-    let unmaterialized_path = unmaterialized["descriptor"]["path"]
-        .as_str()
-        .expect("archive path");
+    let unmaterialized_path = unmaterialized.descriptor.path();
     assert!(
         std::fs::read_to_string(unmaterialized_path)
             .expect("unmaterialized archive")
             .contains("thread/turns/list is unavailable before first user message")
     );
-    let unmaterialized_descriptor =
-        ArchiveDescriptor::from_value(unmaterialized["descriptor"].clone())
-            .expect("unmaterialized descriptor");
+    let unmaterialized_descriptor = ArchiveDescriptor::from_value(
+        serde_json::to_value(&unmaterialized.descriptor).expect("descriptor JSON"),
+    )
+    .expect("unmaterialized descriptor");
     assert_invalid_mutated_archive(&unmaterialized_descriptor, |records| {
         let marker = records
             .iter_mut()
@@ -181,46 +159,55 @@ fn python_archive_writer_and_context_are_read_without_loss() {
     });
     let chain = cases
         .iter()
-        .find(|case| case["name"] == "ancestor-chain")
+        .find(|case| case.name == "ancestor-chain")
         .expect("ancestor chain fixture");
-    assert_eq!(chain["descriptor"]["counts"]["ancestor"], json!(2));
+    assert_eq!(
+        chain.descriptor.to_value().expect("descriptor JSON")["counts"]["ancestor"],
+        json!(2)
+    );
     for name in ["restored-empty-list", "restored-empty-object"] {
         let case = cases
             .iter()
-            .find(|case| case["name"] == name)
+            .find(|case| case.name == name)
             .expect("empty restored fixture");
-        assert!(case["context"].as_str().expect("context").contains(
-            if name == "restored-empty-list" {
-                "empty list stays in excerpt"
-            } else {
-                "empty object stays in excerpt"
-            }
-        ));
+        assert!(
+            case.context
+                .as_str()
+                .contains(if name == "restored-empty-list" {
+                    "empty list stays in excerpt"
+                } else {
+                    "empty object stays in excerpt"
+                })
+        );
     }
 }
 
 #[tokio::test]
-#[allow(clippy::disallowed_methods)]
-async fn rust_writer_reads_python_state_and_refusal_publishes_nothing() {
+async fn rust_writer_reads_frozen_state_and_refusal_publishes_nothing() {
     let root = isolated_test_root();
-    let output = Command::new(python_executable())
-        .arg(
-            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("tests/portable_history/store_producer.py"),
-        )
-        .arg(server_source())
-        .arg(root.path())
-        .env("PYTHONDONTWRITEBYTECODE", "1")
-        .output()
-        .expect("prepared Python state producer starts");
-    assert!(
-        output.status.success(),
-        "Python state producer failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let state: Value = serde_json::from_slice(&output.stdout).expect("Python state identity");
-    let agent_id = state["agent"].as_str().expect("agent ID").to_owned();
-    let epoch = state["epoch"].as_i64().expect("agent epoch");
+    let state: FrozenState =
+        serde_json::from_str(include_str!("portable_history/fixtures/state.json"))
+            .expect("frozen state identity");
+    for (name, sql) in [
+        (
+            "canvas.sqlite3",
+            include_str!("portable_history/fixtures/canvas.sql"),
+        ),
+        (
+            "analytics.sqlite3",
+            include_str!("portable_history/fixtures/analytics.sql"),
+        ),
+    ] {
+        rusqlite::Connection::open(root.path().join(name))
+            .expect("fixture database opens")
+            .execute_batch(&format!(
+                "PRAGMA journal_mode=WAL; {}",
+                sql.replace("<fixture-root>", &root.path().to_string_lossy())
+            ))
+            .expect("frozen Python state loads");
+    }
+    let agent_id = state.agent;
+    let epoch = state.epoch;
     let store = RuntimeStore::open(Some(root.path()))
         .await
         .expect("Rust opens Python state");
@@ -229,7 +216,7 @@ async fn rust_writer_reads_python_state_and_refusal_publishes_nothing() {
         account_key: "default".to_owned(),
         epoch,
         thread_id: Some("native-thread".to_owned()),
-        source_settings: state["settings"].clone(),
+        source_settings: state.settings.clone(),
         source_connection_generation: Some(12),
         transfer_id: "rust-transfer-1".to_owned(),
         native_history: None,
@@ -397,46 +384,10 @@ async fn rust_writer_reads_python_state_and_refusal_publishes_nothing() {
     );
     assert!(context.contains("empty afterRestore fixture 1"));
     assert!(context.contains("empty afterRestore fixture 2"));
-    let mut python_reader = Command::new(python_executable())
-        .arg(
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/portable_history/rust_reader.py"),
-        )
-        .arg(server_source())
-        .arg(root.path())
-        .env("PYTHONDONTWRITEBYTECODE", "1")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("Python archive reader starts");
-    python_reader
-        .stdin
-        .take()
-        .expect("Python reader stdin")
-        .write_all(&serde_json::to_vec(&descriptor).expect("Rust descriptor JSON"))
-        .expect("send Rust descriptor to Python reader");
-    let python_output = python_reader
-        .wait_with_output()
-        .expect("Python archive reader exits");
-    assert!(
-        python_output.status.success(),
-        "Python rejected Rust archive: {}",
-        String::from_utf8_lossy(&python_output.stderr)
-    );
-    let python_result: Value =
-        serde_json::from_slice(&python_output.stdout).expect("Python reader result");
-    assert_eq!(
-        python_result["context"], context,
-        "Python reads Rust writer output"
-    );
     let retry = export_history(&store, base_input())
         .await
         .expect("published winner is retry safe");
     assert_eq!(retry, descriptor);
-}
-
-fn python_executable() -> PathBuf {
-    prepared_python::prepared_python(&server_source())
 }
 
 fn isolated_test_root() -> tempfile::TempDir {
@@ -450,10 +401,6 @@ fn isolated_test_root() -> tempfile::TempDir {
     } else {
         tempfile::tempdir().expect("isolated corpus root")
     }
-}
-
-fn server_source() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src")
 }
 
 fn refreshed_descriptor(descriptor: &ArchiveDescriptor, bytes: &[u8]) -> ArchiveDescriptor {
@@ -589,4 +536,155 @@ fn assert_invalid_footer_order(descriptor: &ArchiveDescriptor) {
     let result = validate_history(root, &updated);
     std::fs::write(descriptor.path(), original).expect("restore original archive");
     assert!(result.is_err(), "record after footer must be refused");
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FrozenState {
+    agent: String,
+    epoch: i64,
+    settings: Value,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FrozenCase {
+    name: String,
+    descriptor: ArchiveDescriptor,
+    context: String,
+    archives: Vec<FrozenArchive>,
+    #[serde(skip)]
+    root: PathBuf,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FrozenArchive {
+    descriptor: RelocatedDescriptor,
+    records: Vec<FrozenRecord>,
+    counts: BTreeMap<String, u64>,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged, deny_unknown_fields)]
+enum FrozenRecord {
+    Line { line: String },
+    Ancestor { ancestor: String },
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RelocatedDescriptor {
+    version: u64,
+    path: PathBuf,
+    sha256: String,
+    bytes: u64,
+    counts: BTreeMap<String, u64>,
+    source: studio_runtime_services::portable_history::HistorySource,
+    transfer_id: String,
+}
+
+#[derive(Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum RelocatedRecord<'a> {
+    Ancestor {
+        archive: &'a ArchiveDescriptor,
+    },
+    Footer {
+        counts: &'a BTreeMap<String, u64>,
+        #[serde(rename = "contentSha256")]
+        content_sha256: String,
+    },
+}
+
+fn frozen_archives(root: &Path) -> Vec<FrozenCase> {
+    let mut cases: Vec<FrozenCase> =
+        serde_json::from_str(include_str!("portable_history/fixtures/archives.json"))
+            .expect("frozen Python archive corpus");
+    for case in &mut cases {
+        case.root = root.join(&case.name);
+        let directory = case.root.join("portable-history");
+        std::fs::create_dir_all(&directory).expect("fixture archive directory");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            const PRIVATE_ARCHIVE_DIRECTORY_MODE: u32 = 0o700;
+            std::fs::set_permissions(
+                &directory,
+                std::fs::Permissions::from_mode(PRIVATE_ARCHIVE_DIRECTORY_MODE),
+            )
+            .expect("private archive fixture directory");
+        }
+        let mut descriptors = BTreeMap::<String, ArchiveDescriptor>::new();
+        for archive in &mut case.archives {
+            let filename = archive
+                .descriptor
+                .path
+                .file_name()
+                .expect("archive filename")
+                .to_str()
+                .expect("UTF-8 archive filename")
+                .to_owned();
+            let mut bytes = Vec::new();
+            for record in &archive.records {
+                match record {
+                    FrozenRecord::Line { line } => bytes.extend_from_slice(line.as_bytes()),
+                    FrozenRecord::Ancestor { ancestor } => {
+                        serde_json::to_writer(
+                            &mut bytes,
+                            &RelocatedRecord::Ancestor {
+                                archive: descriptors
+                                    .get(ancestor)
+                                    .expect("earlier ancestor fixture"),
+                            },
+                        )
+                        .expect("relocate ancestor record");
+                    }
+                }
+                bytes.push(b'\n');
+            }
+            let content_sha256 = studio_runtime_store::sha256_hex(&bytes);
+            serde_json::to_writer(
+                &mut bytes,
+                &RelocatedRecord::Footer {
+                    counts: &archive.counts,
+                    content_sha256,
+                },
+            )
+            .expect("relocated archive footer");
+            bytes.push(b'\n');
+            archive.descriptor.path = directory.join(&filename);
+            archive.descriptor.bytes = bytes.len() as u64;
+            archive.descriptor.sha256 = studio_runtime_store::sha256_hex(&bytes);
+            let mut file =
+                tempfile::NamedTempFile::new_in(&directory).expect("private archive fixture");
+            std::io::Write::write_all(&mut file, &bytes).expect("write relocated archive");
+            file.persist(&archive.descriptor.path)
+                .expect("publish archive fixture");
+            let descriptor: ArchiveDescriptor = serde_json::from_value(
+                serde_json::to_value(&archive.descriptor).expect("relocated descriptor JSON"),
+            )
+            .expect("relocated descriptor");
+            descriptors.insert(filename, descriptor);
+        }
+        case.descriptor = descriptors
+            .remove(
+                case.descriptor
+                    .path()
+                    .file_name()
+                    .expect("case archive filename")
+                    .to_str()
+                    .expect("UTF-8 case filename"),
+            )
+            .expect("case archive fixture");
+        let descriptor: RelocatedDescriptor = serde_json::from_value(
+            serde_json::to_value(&case.descriptor).expect("descriptor JSON"),
+        )
+        .expect("typed relocated descriptor");
+        case.context = case
+            .context
+            .replace("<archive-path>", &descriptor.path.to_string_lossy())
+            .replace("<archive-sha256>", &descriptor.sha256);
+    }
+    cases
 }

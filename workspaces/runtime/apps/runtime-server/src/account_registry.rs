@@ -177,21 +177,40 @@ fn archive_deadline_read_deferred(
     retry_at.is_some_and(|retry_at| retry_at > now)
 }
 
+/// Paired clocks for converting the stored Unix-seconds deadline without
+/// restarting its remaining hold after asynchronous database work.
+struct ChildResultReleaseClock {
+    monotonic: tokio::time::Instant,
+    wall_seconds: f64,
+}
+
+impl ChildResultReleaseClock {
+    fn capture() -> Self {
+        Self {
+            monotonic: tokio::time::Instant::now(),
+            wall_seconds: event_time(),
+        }
+    }
+
+    fn release_at(&self, deadline_seconds: f64) -> tokio::time::Instant {
+        self.monotonic + Duration::from_secs_f64((deadline_seconds - self.wall_seconds).max(0.0))
+    }
+}
+
 /// Wake when the earliest held child result stops waiting for its siblings
 /// (the stored child-result hold); a failed read retries after `RETRY_DELAY`.
 async fn child_result_release_at(
     store: Arc<studio_runtime_store::RuntimeStore>,
 ) -> Option<tokio::time::Instant> {
-    let now = event_time();
+    let clock = ChildResultReleaseClock::capture();
+    let now = clock.wall_seconds;
     let read = store
         .read_async("runtime-server/account_registry", move |db| {
             SchedulerRepository::child_result_release_at(db, now)
         })
         .await;
     match read {
-        Ok(deadline) => deadline.map(|deadline| {
-            tokio::time::Instant::now() + Duration::from_secs_f64((deadline - now).max(0.0))
-        }),
+        Ok(deadline) => deadline.map(|deadline| clock.release_at(deadline)),
         Err(error) => {
             studio_runtime_services::diagnostics::log_stderr(format_args!(
                 "account registry child result release read deferred: {error}"
@@ -418,18 +437,28 @@ struct BrokerCallbackReplyPort {
     broker: AccountSessionBroker,
 }
 
+impl BrokerCallbackReplyPort {
+    fn session(
+        &self,
+        account: &str,
+    ) -> Option<studio_runtime_services::account_worker::retained::RetainedSessionPort> {
+        self.broker
+            .sessions
+            .read()
+            .ok()
+            .and_then(|sessions| sessions.get(account).cloned())
+    }
+}
+
 impl studio_runtime_services::callback_runtime::CallbackReplyPort for BrokerCallbackReplyPort {
+    /// The session must be the provider process that sent the callback; see
+    /// `RetainedSessionPort::serves_callback`.
     fn has_live_session(
         &self,
         context: &studio_runtime_services::provider_callbacks::CallbackContext,
     ) -> bool {
-        self.broker
-            .live_scope(&context.account)
-            .is_some_and(|scope| {
-                scope.account == context.account
-                    && scope.connection == context.connection
-                    && scope.generation == context.generation
-            })
+        self.session(&context.account)
+            .is_some_and(|session| session.serves_callback(context))
     }
 
     fn deliver<'a>(
@@ -438,61 +467,14 @@ impl studio_runtime_services::callback_runtime::CallbackReplyPort for BrokerCall
         deadline: Duration,
     ) -> studio_runtime_services::callback_runtime::CallbackReplyFuture<'a> {
         Box::pin(async move {
-            use studio_runtime_services::{
-                account_worker::retained::PortError,
-                callback_runtime::{ReplyOutcome, ReplyReceipt},
-                provider_session_task::WriteOutcome,
-                recovery_history::ConnectionScope,
-            };
-
             let identity = reply.identity.clone();
-            let context = &identity.context;
-            let expected = ConnectionScope {
-                account: context.account.clone(),
-                connection: context.connection.clone(),
-                generation: context.generation,
-            };
-            let session = self
-                .broker
-                .sessions
-                .read()
-                .ok()
-                .and_then(|sessions| sessions.get(&context.account).cloned());
-            let Some(session) =
-                session.filter(|session| session.is_live() && session.scope() == &expected)
-            else {
-                return Ok(ReplyReceipt {
+            let Some(session) = self.session(&identity.context.account) else {
+                return Ok(studio_runtime_services::callback_runtime::ReplyReceipt {
                     identity,
-                    outcome: ReplyOutcome::NotSent,
+                    outcome: studio_runtime_services::callback_runtime::ReplyOutcome::NotSent,
                 });
             };
-            let operation = identity.operation_id();
-            let frame = reply.frame();
-            let until = std::time::Instant::now() + deadline;
-            let outcome = session
-                .submit_committed_frame(&expected, operation, frame, until)
-                .await;
-            let outcome = match outcome {
-                Ok(WriteOutcome::Written) => ReplyOutcome::Written,
-                Ok(WriteOutcome::NotSent) => ReplyOutcome::NotSent,
-                Ok(WriteOutcome::Unknown) | Err(PortError::Unknown) => ReplyOutcome::Unknown,
-                Err(PortError::Identity | PortError::NotSent | PortError::Deadline) => {
-                    ReplyOutcome::NotSent
-                }
-                Err(PortError::Capacity) => {
-                    return Err(
-                        studio_runtime_services::provider_callbacks::CallbackError::Invalid(
-                            "Callback response queue is full",
-                        ),
-                    );
-                }
-                Err(_) => {
-                    return Err(
-                        studio_runtime_services::provider_callbacks::CallbackError::Unknown,
-                    );
-                }
-            };
-            Ok(ReplyReceipt { identity, outcome })
+            session.deliver_callback_reply(reply, deadline).await
         })
     }
 }
@@ -2142,8 +2124,7 @@ mod bounded_reconcile_tests {
         assert_eq!(page["default"][0].2.as_deref(), Some("image"));
     }
 
-    #[tokio::test]
-    async fn next_wake_includes_the_earliest_child_result_release() {
+    async fn held_child_result_store() -> (tempfile::TempDir, Arc<RuntimeStore>) {
         let directory = tempfile::tempdir().expect("isolated store directory");
         let store = Arc::new(
             RuntimeStore::open(Some(directory.path()))
@@ -2187,6 +2168,13 @@ mod bounded_reconcile_tests {
             .await
             .expect("held child result stored");
 
+        (directory, store)
+    }
+
+    #[tokio::test]
+    async fn next_wake_includes_the_earliest_child_result_release() {
+        let (_directory, store) = held_child_result_store().await;
+        let hold = studio_runtime_store::CHILD_RESULT_COALESCE_MAX;
         let before = tokio::time::Instant::now();
         let wake = next_registry_wake_at(store, None, None, &BTreeMap::new())
             .await
@@ -2194,6 +2182,65 @@ mod bounded_reconcile_tests {
         assert!(
             wake > before && wake <= before + hold,
             "the wake falls at the release of the held result"
+        );
+    }
+
+    fn assert_child_result_read_delay_consumed(delay: Duration) {
+        // A single blocking thread and a channel gate hold the real read before
+        // it starts. Polling once records its clocks before controlled time moves.
+        const BLOCKING_THREADS: usize = 1;
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .max_blocking_threads(BLOCKING_THREADS)
+            .build()
+            .expect("isolated current-thread runtime");
+        runtime.block_on(async {
+            let (_directory, store) = held_child_result_store().await;
+            tokio::time::pause();
+            let (entered_tx, entered_rx) = oneshot::channel();
+            let (release_tx, release_rx) = std::sync::mpsc::channel();
+            let blocker = studio_runtime_store::blocking_pool::spawn_blocking(
+                "runtime-server/tests/child_result_read_gate",
+                move || {
+                    entered_tx.send(()).expect("announce blocking gate");
+                    release_rx.recv().expect("release blocking gate");
+                },
+            );
+            entered_rx.await.expect("blocking gate entered");
+            let retries = BTreeMap::new();
+            let before = tokio::time::Instant::now();
+            let wake = next_registry_wake_at(store, None, None, &retries);
+            tokio::pin!(wake);
+            assert!(futures_util::poll!(&mut wake).is_pending());
+            tokio::time::advance(delay).await;
+            release_tx.send(()).expect("release database read");
+            blocker.await.expect("blocking gate completes");
+            let wake = wake.await.expect("held child result schedules a wake");
+            let hold = studio_runtime_store::CHILD_RESULT_COALESCE_MAX;
+            assert!(wake <= before + hold, "read delay must consume the hold");
+            if delay >= hold {
+                assert!(
+                    wake <= tokio::time::Instant::now(),
+                    "elapsed hold wakes immediately"
+                );
+            } else {
+                assert!(wake > before + delay, "unelapsed hold remains scheduled");
+            }
+        });
+    }
+
+    /// Simulated database wait used within a hold and beyond its end. Unit: time.
+    const CHILD_RESULT_READ_DELAY: Duration = Duration::from_secs(1);
+
+    #[test]
+    fn child_result_release_consumes_partial_read_delay() {
+        assert_child_result_read_delay_consumed(CHILD_RESULT_READ_DELAY);
+    }
+
+    #[test]
+    fn child_result_release_consumes_elapsed_read_delay() {
+        assert_child_result_read_delay_consumed(
+            studio_runtime_store::CHILD_RESULT_COALESCE_MAX + CHILD_RESULT_READ_DELAY,
         );
     }
 }

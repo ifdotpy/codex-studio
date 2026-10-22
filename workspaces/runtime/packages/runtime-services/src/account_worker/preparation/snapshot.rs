@@ -91,7 +91,6 @@ pub type VmProviderRefreshFuture<'a> =
 #[derive(Clone)]
 pub struct PreparationResources {
     pub instructions: String,
-    pub progress_template: String,
     pub thread_config: Map<String, Value>,
     pub tools: Vec<thread::ToolDefinition>,
     pub legacy_tools: Vec<thread::ToolDefinition>,
@@ -104,7 +103,6 @@ pub struct PreparationResources {
     /// The shared (base) Codex home whose `node_repl` and Chrome plugin the
     /// browser setup copies; empty leaves host Codex threads without a browser.
     pub shared_home: String,
-    pub server_source_root: PathBuf,
     pub claude_account_pin: Value,
     pub account_driver: Option<Arc<crate::account_driver::AccountDriver>>,
     /// The host's registry-backed session surface for preparation calls that
@@ -131,24 +129,17 @@ impl PreparationResources {
         let root =
             CanonicalPath::existing(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../.."))
                 .map_err(|_| invalid("repository root"))?;
-        Self::bundled_at(
-            account_home,
-            model_catalog,
-            root.to_path_buf(),
-            root.join("workspaces/runtime/apps/server/src"),
-        )
+        Self::bundled_at(account_home, model_catalog, root.to_path_buf())
     }
 
     pub fn bundled_at(
         account_home: String,
         model_catalog: ModelCatalogService,
         root: PathBuf,
-        server_source_root: PathBuf,
     ) -> Result<Self, WorkerError> {
         #[derive(Deserialize)]
         struct Bundled {
             instructions: String,
-            progress_template: String,
             thread_config: Map<String, Value>,
             tools: Vec<thread::ToolDefinition>,
         }
@@ -219,7 +210,6 @@ impl PreparationResources {
         Ok(Self {
             role_guidance,
             instructions: data.instructions,
-            progress_template: data.progress_template,
             thread_config: data.thread_config,
             tools: data.tools,
             legacy_tools,
@@ -228,7 +218,6 @@ impl PreparationResources {
             account_home,
             filesystem_inputs: None,
             shared_home: String::new(),
-            server_source_root,
             claude_account_pin: Value::Null,
             account_driver: None,
             account_session: None,
@@ -627,38 +616,17 @@ pub(in crate::account_worker) fn authorization_paths(
 #[derive(Clone)]
 pub(super) struct FilesystemSnapshot {
     resolved_paths: BTreeMap<String, String>,
-    pub thread_inputs: ThreadFilesystemInputs,
 }
 
-#[derive(Clone)]
-pub(super) struct ThreadFilesystemInputs {
-    pub progress_directory: Option<String>,
-}
 impl FilesystemSnapshot {
     /// Capture the observations of one admission: the resolved paths of the
-    /// rows its authorization decision reads, and the progress directory.
-    /// `rows` come from [`authorization_rows`].
+    /// rows its authorization decision reads. `rows` come from
+    /// [`authorization_rows`].
     pub fn capture_for_authorization(
-        store: &RuntimeStore,
-        intent: &TurnIntent,
         rows: &crate::submit_gates::AuthorizationRecords,
     ) -> Result<Self, WorkerError> {
-        let resolved_paths = authorization_paths(rows)?;
-        let mut snapshot = Self::capture(store, &intent.agent_id)?;
-        snapshot.resolved_paths = resolved_paths;
-        Ok(snapshot)
-    }
-
-    /// Capture the progress directory only; no row is read or resolved.
-    pub fn capture(store: &RuntimeStore, id: &str) -> Result<Self, WorkerError> {
-        let resolved_paths = BTreeMap::new();
-        let progress = store.root().join("progress").join(id);
-        let progress_directory = (progress.is_dir()
-            && CanonicalPath::existing(&progress).ok().as_deref() == Some(progress.as_path()))
-        .then(|| progress.to_string_lossy().into_owned());
         Ok(Self {
-            resolved_paths,
-            thread_inputs: ThreadFilesystemInputs { progress_directory },
+            resolved_paths: authorization_paths(rows)?,
         })
     }
 }
@@ -770,7 +738,7 @@ pub(super) fn guidance(
     let provider = ProviderKind::of_record(record).map_err(|_| invalid("agent/provider"))?;
     crate::worker_capabilities::for_provider(&capabilities, provider.key())
         .map_err(|s| refusal(s.into()))?;
-    let (role, progress) = role_guidance(resources, record, state_root)?;
+    let role = role_guidance(resources, record)?;
     let mut thread_config = resources.thread_config.clone();
     // A managed worker (a child agent) runs without the user's MCP servers, so
     // none of them is spawned per thread. The lead and root chats keep them.
@@ -858,7 +826,6 @@ pub(super) fn guidance(
     Ok(thread::GuidanceBundle {
         instructions: resources.instructions.clone(),
         role,
-        progress,
         thread_config,
         browser,
     })
@@ -910,14 +877,9 @@ fn browser_guidance(
     })
 }
 
-/// The role skill text and the lead's progress guidance of `record`. A turn
-/// needs only these; the thread config (with its account MCP read) is the
-/// thread snapshot's.
-fn role_guidance(
-    resources: &PreparationResources,
-    record: &Value,
-    state_root: &Path,
-) -> Result<(String, String), WorkerError> {
+/// The role skill text of `record`. A turn needs only this; the thread config
+/// (with its account MCP read) is the thread snapshot's.
+fn role_guidance(resources: &PreparationResources, record: &Value) -> Result<String, WorkerError> {
     let lead = flag(record, "isLead")?;
     let name = if lead {
         "codex-orchestrator"
@@ -977,42 +939,7 @@ fn role_guidance(
             content
         )
     };
-    let progress = if lead && !resources.progress_template.is_empty() {
-        progress_context(resources, record, state_root)?
-    } else {
-        String::new()
-    };
-    Ok((role, progress))
-}
-
-/// The progress-file guidance of a host lead. Its role guidance and the
-/// `orchestration_context` topics `panel` and `background` use this text.
-pub(crate) fn progress_context(
-    resources: &PreparationResources,
-    record: &Value,
-    state_root: &Path,
-) -> Result<String, WorkerError> {
-    let id = record["id"].as_str().ok_or_else(|| invalid("agent/id"))?;
-    if id.is_empty()
-        || id.len() > 200
-        || !id
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
-    {
-        return Err(invalid("progress agent"));
-    }
-    let path = state_root.join("progress").join(id).join("PROGRESS.md");
-    let progress = resources
-        .progress_template
-        .replace("{progress_file}", &path.to_string_lossy())
-        .replace(
-            "{layout_file}",
-            &path
-                .with_file_name("PROGRESS.layout.json")
-                .to_string_lossy(),
-        );
-    let layout_guidance = progress_layout_guidance(std::env::current_exe().ok(), &path);
-    Ok(progress.replace("{progress_layout_check}", &layout_guidance))
+    Ok(role)
 }
 
 /// The catalog an agent's thread uses: its saved source, else legacy for an
@@ -1090,15 +1017,6 @@ pub(crate) fn actor_tool_definitions(
         .map_err(|_| invalid("tool catalog"))
 }
 
-fn progress_layout_guidance(server: Option<PathBuf>, progress_file: &Path) -> String {
-    server.map_or_else(String::new, |server| {
-        format!(
-            "After editing PROGRESS.md, run {} progress-layout {} --wait 3 once to check which top-level lines or list items are visible. Trim only when important lines are hidden. Exit 0 means the current revision is visible, including clipped content (or is empty); 1 means unsupported content or a file-read error; 2 means no current measurement exists. The hint describes the least visible current client. Exact revisions and recent clients remain separate. Do not loop or wake another agent. ",
-            shell_quote(&server.to_string_lossy()),
-            shell_quote(&progress_file.to_string_lossy()),
-        )
-    })
-}
 pub(super) fn native_thread_blocked(record: &Value) -> bool {
     let Some(thread) = record["threadId"].as_str().filter(|s| !s.is_empty()) else {
         return false;
@@ -1238,13 +1156,36 @@ fn host_worktree(
     Ok(Some(thread::HostWorktree { tree, fence }))
 }
 
+/// Python `frozenNativeParams` of a moved agent. Python reads the three saved
+/// fields and the tools by key, so a missing one is an invalid stored agent.
+fn frozen_params(record: &Value) -> Result<Option<thread::FrozenParams>, WorkerError> {
+    let Some(frozen) = record.get("frozenNativeParams").filter(|v| !v.is_null()) else {
+        return Ok(None);
+    };
+    let field = |key: &str| {
+        frozen
+            .get(key)
+            .cloned()
+            .ok_or_else(|| invalid("agent/frozenNativeParams"))
+    };
+    let dynamic_tools = serde_json::from_value(field("dynamicTools")?)
+        .map_err(|_| invalid("agent/frozenNativeParams"))?;
+    Ok(Some(thread::FrozenParams {
+        base_instructions: field("baseInstructions")?,
+        developer_instructions: field("developerInstructions")?,
+        model: field("model")?,
+        dynamic_tools,
+        effort: frozen.get("effort").cloned(),
+        summary: frozen.get("summary").cloned(),
+    }))
+}
+
 pub(super) fn thread_snapshot(
     tx: &Transaction<'_>,
     resources: &PreparationResources,
     record: &Value,
     connection: &str,
     state_root: &Path,
-    filesystem: &ThreadFilesystemInputs,
     account_transfer_owner: Option<&str>,
 ) -> Result<thread::Snapshot, WorkerError> {
     let id = record["id"].as_str().ok_or_else(|| invalid("agent/id"))?;
@@ -1264,9 +1205,6 @@ pub(super) fn thread_snapshot(
     } else {
         thread::Role::Implementer
     });
-    let progress_directory = lead
-        .then_some(filesystem.progress_directory.clone())
-        .flatten();
     let owned_transfer = account_transfer_owner
         .map(|transfer_id| {
             crate::account_transfer_driver::owns_reading_member(tx, transfer_id, id)
@@ -1287,12 +1225,8 @@ pub(super) fn thread_snapshot(
     } else {
         None
     };
-    let unsupported = if record
-        .get("frozenNativeParams")
-        .is_some_and(|v| !v.is_null())
-    {
-        Some(thread::Refusal::FrozenImport)
-    } else if record.get("nativeToolUpdate").is_some_and(|v| !v.is_null()) {
+    let frozen = frozen_params(record)?;
+    let unsupported = if record.get("nativeToolUpdate").is_some_and(|v| !v.is_null()) {
         Some(thread::Refusal::NativeCatalogMutation)
     } else {
         None
@@ -1359,13 +1293,14 @@ pub(super) fn thread_snapshot(
                 .and_then(|v| v["digest"].as_str())
                 .map(str::to_owned),
         },
-        workspace: thread::WorkspaceReadiness::Ready { progress_directory },
+        workspace: thread::WorkspaceReadiness::Ready,
         host_worktree: host_worktree(record, &root, role, lead)?,
         unsupported,
         admission,
         pending: None,
         loaded: None,
         closed: false,
+        frozen,
     })
 }
 
@@ -1397,7 +1332,6 @@ pub(super) fn submission_snapshot(
     resources: &PreparationResources,
     record: &Value,
     intent: &TurnIntent,
-    state_root: &Path,
 ) -> Result<(turn::PreparationSnapshot, Vec<turn::Event>), WorkerError> {
     let root_id = record["rootId"]
         .as_str()
@@ -1408,7 +1342,7 @@ pub(super) fn submission_snapshot(
         ));
     }
     let root = agent(tx, root_id)?.value();
-    let (role, progress) = role_guidance(resources, record, state_root)?;
+    let role = role_guidance(resources, record)?;
     let plan=record_by_id(tx, "runtime_plans", root_id)?.map(|s|serde_json::from_str::<Value>(&s).map_err(|_|invalid("plan"))).transpose()?.filter(|v|v["native"].is_object()).map(|v|decode(json!({"id":v["id"],"rootId":v["rootId"],"steps":v["native"].get("plan").cloned().unwrap_or_else(||json!([])),"explanation":v["native"].get("explanation").filter(|v|!v.is_null()).cloned().unwrap_or(json!(""))}),"plan")).transpose()?;
     let mut complaints = Vec::new();
     for raw in lead_complaints(tx, &intent.agent_id)? {
@@ -1601,7 +1535,7 @@ pub(super) fn submission_snapshot(
             team_state,
             delivered_reminders,
             assets,
-            guidance: turn::GuidanceBundle { role, progress },
+            guidance: turn::GuidanceBundle { role },
             artifact_paths: BTreeMap::new(),
             prepared_at: now(),
             operation_id: String::new(),
@@ -1609,21 +1543,9 @@ pub(super) fn submission_snapshot(
         events,
     ))
 }
-pub(super) fn ensure_context_tables(tx: &Transaction<'_>) -> Result<(), WorkerError> {
+pub(crate) fn ensure_context_tables(tx: &Transaction<'_>) -> Result<(), WorkerError> {
     tx.execute_batch("CREATE TABLE IF NOT EXISTS runtime_context_manifests(agent TEXT NOT NULL,thread_id TEXT NOT NULL,compactions INTEGER NOT NULL,sequence INTEGER NOT NULL,event_id TEXT NOT NULL,record TEXT NOT NULL,PRIMARY KEY(agent,thread_id,compactions)); CREATE TABLE IF NOT EXISTS runtime_context_reminders(agent TEXT NOT NULL,version TEXT NOT NULL,event_id TEXT NOT NULL,PRIMARY KEY(agent,version));")?;
     Ok(())
-}
-
-fn shell_quote(value: &str) -> String {
-    if !value.is_empty()
-        && value
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b"_@%+=:,./-".contains(&b))
-    {
-        value.into()
-    } else {
-        format!("'{}'", value.replace('\'', "'\"'\"'"))
-    }
 }
 
 fn root_concurrency(root: &Value) -> Result<u16, WorkerError> {
@@ -1691,6 +1613,46 @@ mod resource_tests {
     }
 
     use super::*;
+
+    /// igor-mbp rehearsal 2026-10-22: two moved Claude agents carried Python's
+    /// `frozenNativeParams`; Rust refused them (`thread-preparation/FrozenImport`)
+    /// and a child result turned the completed parent into a failed agent.
+    #[test]
+    fn a_moved_agent_keeps_its_frozen_native_parameters() {
+        let tool = json!({"name":"orchestration_message","description":"Saved","inputSchema":{"type":"object"}});
+        let record = json!({"frozenNativeParams":{"baseInstructions":"base","developerInstructions":"guidance",
+            "model":"default","dynamicTools":[tool],"effort":"high"}});
+        let frozen = frozen_params(&record).expect("valid").expect("frozen");
+        assert_eq!(frozen.model, json!("default"));
+        assert_eq!(frozen.developer_instructions, json!("guidance"));
+        assert_eq!(frozen.dynamic_tools.len(), 1);
+        assert_eq!(frozen.effort, Some(json!("high")));
+        assert_eq!(frozen.summary, None);
+        assert!(
+            frozen_params(&json!({"frozenNativeParams":null}))
+                .expect("absent")
+                .is_none()
+        );
+        for missing in [
+            "baseInstructions",
+            "developerInstructions",
+            "model",
+            "dynamicTools",
+        ] {
+            let mut broken = record.clone();
+            broken["frozenNativeParams"]
+                .as_object_mut()
+                .expect("object")
+                .remove(missing);
+            assert!(frozen_params(&broken).is_err(), "{missing} is required");
+        }
+        let mut malformed = record;
+        malformed["frozenNativeParams"]["dynamicTools"] = json!([{"name":"orchestration_message"}]);
+        assert!(
+            frozen_params(&malformed).is_err(),
+            "a tool needs its schema"
+        );
+    }
 
     #[test]
     fn native_thread_blocks_follow_the_current_thread_and_turn() {
@@ -1795,27 +1757,6 @@ mod resource_tests {
             })
             .await
             .expect("a review object is read as a review child");
-    }
-
-    #[test]
-    fn guidance_points_at_the_progress_layout_command() {
-        let resources = PreparationResources::bundled(String::new(), ModelCatalogService::new())
-            .expect("runtime resources");
-        let bundle = guidance(
-            &resources,
-            &json!({"id":"lead", "isLead":true}),
-            Path::new("/state"),
-        )
-        .expect("progress guidance");
-        let server = shell_quote(
-            &std::env::current_exe()
-                .expect("test executable path")
-                .to_string_lossy(),
-        );
-        assert!(bundle.progress.contains(&format!(
-            "run {server} progress-layout /state/progress/lead/PROGRESS.md --wait 3 once"
-        )));
-        assert!(!bundle.progress.contains(".py"));
     }
 
     #[test]
@@ -2168,7 +2109,7 @@ mod workspace_fence_tests {
                         record["nativeToolSource"] = json!("current");
                     }
                     let snapshot = thread_snapshot(tx, &resources, &record, "connection", Path::new("/state"),
-                        &ThreadFilesystemInputs { progress_directory: None }, None)?;
+                        None)?;
                     let attempt = match thread::plan(&snapshot, "attempt", "ticket") {
                         thread::Outcome::Start(attempt) | thread::Outcome::Resume(attempt) => attempt,
                         other => panic!("expected thread launch, got {other:?}"),
@@ -2217,7 +2158,7 @@ mod workspace_fence_tests {
                         record["nativeToolSource"] = json!("current");
                     }
                     let snapshot = thread_snapshot(tx, &resources, &record, "connection", Path::new("/state"),
-                        &ThreadFilesystemInputs { progress_directory: None }, None)?;
+                        None)?;
                     let attempt = match thread::plan(&snapshot, "attempt", "ticket") {
                         thread::Outcome::Start(attempt) | thread::Outcome::Resume(attempt) => attempt,
                         other => panic!("expected thread launch, got {other:?}"),

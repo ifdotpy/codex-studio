@@ -12,6 +12,7 @@ mod monitor_port;
 mod multi_server_discovery;
 mod multi_server_owner;
 mod native_probe;
+mod operator_cli;
 #[cfg(unix)]
 mod peer_link;
 mod provider_ports;
@@ -44,7 +45,6 @@ use studio_runtime_store::{ObservedTable, RuntimeStore, account_state};
 use tokio::net::TcpListener;
 use tokio::sync::{Notify, watch};
 
-const DEFAULT_PORT: u16 = 4620;
 const SERVER_SHUTDOWN_GRACE: Duration = Duration::from_secs(20);
 /// Default ceiling for Tokio's async executor workers, measured in threads.
 const DEFAULT_ASYNC_EXECUTOR_MAX_WORKER_THREADS: usize = 4;
@@ -109,11 +109,14 @@ fn async_executor_worker_threads(
     }
 }
 
-fn main() {
+fn main() -> std::process::ExitCode {
     // The launcher of agent sign-in links runs this binary (`browser_host::write_launcher`).
     #[cfg(unix)]
     if let Some(code) = studio_runtime_services::browser_host::shim_main(env::args_os()) {
         std::process::exit(code);
+    }
+    if let Some(code) = operator_cli::dispatch() {
+        return code;
     }
     std::panic::set_hook(Box::new(|panic| {
         log_stderr(format_args!("{}", panic_observed_log(panic.location())));
@@ -350,26 +353,6 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
         let (report, ok) = studio_runtime_services::image_workspace::mounts_command(&args[1..])?;
         println!("{}", serde_json::to_string_pretty(&report)?);
         std::process::exit(if ok { 0 } else { 1 });
-    }
-    if args.first().map(String::as_str) == Some("progress-layout") {
-        let (file, wait) = match &args[1..] {
-            [file] => (file, 0.0),
-            [file, flag, wait] if flag == "--wait" => (file, wait.parse::<f64>()?),
-            _ => return Err("usage: progress-layout <PROGRESS.md> [--wait <seconds>]".into()),
-        };
-        if !(0.0..=studio_runtime_services::progress_panel::LAYOUT_CHECK_MAX_WAIT_SECONDS)
-            .contains(&wait)
-        {
-            return Err("--wait must be between 0 and 5 seconds".into());
-        }
-        let file = PathBuf::from(file);
-        let (result, code) = studio_runtime_process::blocking_pool::spawn_blocking(
-            "runtime-server/progress-layout",
-            move || studio_runtime_services::progress_panel::layout_check(&file, wait),
-        )
-        .await?;
-        println!("{}", serde_json::to_string_pretty(&result)?);
-        std::process::exit(code);
     }
     let port = parse_port(args.into_iter())?;
     startup_trace("backend-identity-started");
@@ -1825,7 +1808,7 @@ fn native_platform() -> Option<studio_runtime_services::provider_binaries::Nativ
 }
 
 fn parse_port(mut args: impl Iterator<Item = String>) -> Result<u16, Box<dyn std::error::Error>> {
-    let mut port = DEFAULT_PORT;
+    let mut port = operator_cli::service_layout()?.port;
     while let Some(argument) = args.next() {
         if argument == "--port" {
             port = args.next().ok_or("--port requires a number")?.parse()?;

@@ -1,0 +1,334 @@
+{
+  "vm": {
+    "settingsRead": {
+      "cpus": 2,
+      "memoryBytes": 4294967296,
+      "systemDiskBytes": 17179869184,
+      "dataDiskBytes": 137438953472
+    },
+    "settingsSet": {
+      "cpus": 1,
+      "memoryBytes": 4294967296,
+      "systemDiskBytes": 17179869184,
+      "dataDiskBytes": 137438953472
+    },
+    "configured": {
+      "state": "paused",
+      "folder": "<mac-folder>",
+      "enabled": false,
+      "conflicts": ["file.txt"],
+      "choices": [],
+      "withAgent": [],
+      "deletes": 0,
+      "reason": "Paused by the user"
+    },
+    "resolved": {
+      "path": "file.txt",
+      "choice": "vm",
+      "mainStateId": "main-1",
+      "status": {
+        "state": "paused",
+        "folder": "<mac-folder>",
+        "enabled": false,
+        "conflicts": [],
+        "choices": [],
+        "withAgent": [],
+        "deletes": 0,
+        "reason": "Paused by the user"
+      }
+    },
+    "events": [],
+    "eventMetadata": {},
+    "guestCalls": [
+      {
+        "method": "sync.mac.head",
+        "params": {
+          "projectId": "p1"
+        },
+        "requestId": null
+      },
+      {
+        "method": "sync.mac.read",
+        "params": {
+          "projectId": "p1",
+          "stateId": "main-1",
+          "path": "file.txt",
+          "offset": 0
+        },
+        "requestId": null
+      }
+    ],
+    "persisted": {
+      "status.json": {
+        "choices": [],
+        "conflicts": [],
+        "deletes": 0,
+        "reason": "Paused by the user",
+        "rescan": [],
+        "state": "synced",
+        "withAgent": []
+      },
+      "held.json": {},
+      "manifest.json": {
+        "file.txt": {
+          "b": "main-1",
+          "h": "eaead5c159e646cbe4ecd9b51103ca7bcf67b2caa075b8d59456ae0c07b884ca",
+          "k": "file",
+          "s": 13,
+          "x": 420
+        }
+      },
+      "config.json": {
+        "enabled": false
+      }
+    },
+    "macFile": "guest version"
+  },
+  "mac": {
+    "settingsRead": {
+      "cpus": 2,
+      "memoryBytes": 4294967296,
+      "systemDiskBytes": 17179869184,
+      "dataDiskBytes": 137438953472
+    },
+    "settingsSet": {
+      "cpus": 1,
+      "memoryBytes": 4294967296,
+      "systemDiskBytes": 17179869184,
+      "dataDiskBytes": 137438953472
+    },
+    "configured": {
+      "state": "paused",
+      "folder": "<mac-folder>",
+      "enabled": false,
+      "conflicts": ["file.txt"],
+      "choices": [],
+      "withAgent": [],
+      "deletes": 0,
+      "reason": "Paused by the user"
+    },
+    "resolved": {
+      "path": "file.txt",
+      "choice": "mac",
+      "mainStateId": "main-1",
+      "status": {
+        "state": "paused",
+        "folder": "<mac-folder>",
+        "enabled": false,
+        "conflicts": [],
+        "choices": [],
+        "withAgent": [],
+        "deletes": 0,
+        "reason": "Paused by the user"
+      }
+    },
+    "events": [],
+    "eventMetadata": {},
+    "guestCalls": [
+      {
+        "method": "sync.mac.head",
+        "params": {
+          "projectId": "p1"
+        },
+        "requestId": null
+      },
+      {
+        "method": "sync.mac.read",
+        "params": {
+          "projectId": "p1",
+          "stateId": "main-1",
+          "path": "file.txt",
+          "offset": 0
+        },
+        "requestId": null
+      }
+    ],
+    "persisted": {
+      "status.json": {
+        "choices": [],
+        "conflicts": [],
+        "deletes": 0,
+        "reason": "Paused by the user",
+        "rescan": ["file.txt"],
+        "state": "synced",
+        "withAgent": []
+      },
+      "held.json": {},
+      "manifest.json": {
+        "file.txt": {
+          "b": "main-1",
+          "h": "eaead5c159e646cbe4ecd9b51103ca7bcf67b2caa075b8d59456ae0c07b884ca",
+          "k": "file",
+          "s": -1,
+          "x": 420,
+          "m": 0
+        }
+      },
+      "config.json": {
+        "enabled": false
+      }
+    },
+    "macFile": "mac version"
+  },
+  "agent": {
+    "settingsRead": {
+      "cpus": 2,
+      "memoryBytes": 4294967296,
+      "systemDiskBytes": 17179869184,
+      "dataDiskBytes": 137438953472
+    },
+    "settingsSet": {
+      "cpus": 1,
+      "memoryBytes": 4294967296,
+      "systemDiskBytes": 17179869184,
+      "dataDiskBytes": 137438953472
+    },
+    "configured": {
+      "state": "paused",
+      "folder": "<mac-folder>",
+      "enabled": false,
+      "conflicts": ["file.txt"],
+      "choices": [],
+      "withAgent": [],
+      "deletes": 0,
+      "reason": "Paused by the user"
+    },
+    "resolved": {
+      "path": "file.txt",
+      "choice": "agent",
+      "mainStateId": "main-1",
+      "line": "mac-conflict",
+      "stateId": "handoff-1",
+      "kind": "file",
+      "leadId": "lead",
+      "status": {
+        "state": "paused",
+        "folder": "<mac-folder>",
+        "enabled": false,
+        "conflicts": [],
+        "choices": [],
+        "withAgent": ["file.txt"],
+        "deletes": 0,
+        "reason": "Paused by the user"
+      }
+    },
+    "events": [
+      {
+        "id": "mac-conflict:handoff-1:aadf327c8267c09d",
+        "agent": "lead",
+        "kind": "followup",
+        "text": "[Studio Mac sync] The user's Mac folder and main changed file.txt in different ways. The user asked you to combine the two versions. The Mac version is layr state handoff-1 in the line mac-conflict. Read the Mac version with `layr show handoff-1:file.txt`. Put one version that keeps both changes in main and commit it. Studio then writes main's file to the Mac folder.",
+        "status": "pending",
+        "created": 1792684500.216258,
+        "epoch": 0,
+        "turnId": null,
+        "error": null
+      }
+    ],
+    "eventMetadata": {
+      "mac-conflict:handoff-1:aadf327c8267c09d": {
+        "assets": [],
+        "delivery": "next_turn",
+        "requestedDelivery": "next_turn"
+      }
+    },
+    "guestCalls": [
+      {
+        "method": "sync.mac.head",
+        "params": {
+          "projectId": "p1"
+        },
+        "requestId": null
+      },
+      {
+        "method": "sync.mac.read",
+        "params": {
+          "projectId": "p1",
+          "stateId": "main-1",
+          "path": "file.txt",
+          "offset": 0
+        },
+        "requestId": null
+      },
+      {
+        "method": "sync.mac.handoff",
+        "params": {
+          "projectId": "p1",
+          "operationId": "mac-6685f91510adca76969b6ebc45605bb3",
+          "path": "file.txt",
+          "kind": "file",
+          "upload": "/var/lib/codex-studio/projects/mac-sync-6685f91510adca76969b6ebc"
+        },
+        "requestId": "mac-6685f91510adca76969b6ebc45605bb3"
+      }
+    ],
+    "persisted": {
+      "status.json": {
+        "choices": [],
+        "conflicts": [],
+        "deletes": 0,
+        "reason": "Paused by the user",
+        "rescan": [],
+        "state": "waiting",
+        "withAgent": ["file.txt"]
+      },
+      "held.json": {
+        "file.txt": {
+          "base": "main-1",
+          "h": "11caf9bbb84d8a87cbfc2d45b97ad55089962de8487ee56be3e1ff77533460de",
+          "stateId": "handoff-1",
+          "why": "agent"
+        }
+      },
+      "manifest.json": {},
+      "config.json": {
+        "enabled": false
+      }
+    },
+    "macFile": "mac version"
+  },
+  "memory-ceiling": {
+    "error": "VM memory must leave macOS enough memory: at most 8.0 GiB on this Mac.",
+    "settingsBefore": {
+      "cpus": 2,
+      "memoryBytes": 4294967296,
+      "systemDiskBytes": 17179869184,
+      "dataDiskBytes": 137438953472
+    },
+    "settingsAfter": {
+      "cpus": 2,
+      "memoryBytes": 4294967296,
+      "systemDiskBytes": 17179869184,
+      "dataDiskBytes": 137438953472
+    }
+  },
+  "write-space-preflight": {
+    "preflights": [
+      {
+        "method": "project.import",
+        "error": "Not enough free disk space for the Linux VM: 0 free, 5368709120 required (bytes).",
+        "channelOpened": false
+      },
+      {
+        "method": "line.branch",
+        "error": "Not enough free disk space for the Linux VM: 0 free, 5368709120 required (bytes).",
+        "channelOpened": false
+      },
+      {
+        "method": "upload.begin",
+        "error": "Not enough free disk space for the Linux VM: 0 free, 5368709120 required (bytes).",
+        "channelOpened": false
+      },
+      {
+        "method": "upload.commit",
+        "error": "Not enough free disk space for the Linux VM: 0 free, 5368709120 required (bytes).",
+        "channelOpened": false
+      },
+      {
+        "method": "sync.push",
+        "error": "Not enough free disk space for the Linux VM: 0 free, 5368709120 required (bytes).",
+        "channelOpened": false
+      }
+    ]
+  }
+}

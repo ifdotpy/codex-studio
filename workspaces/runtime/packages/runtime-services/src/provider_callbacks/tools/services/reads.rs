@@ -68,11 +68,11 @@ pub(super) fn read(
     snapshot: &CallbackSnapshot,
     args: &Value,
     now: f64,
-    state_root: &std::path::Path,
+    payloads: &tool_requests::prepared::Payloads,
 ) -> Result<Value, CallbackError> {
     let key = text(args, "output_ref")?;
     if let Some(hash) = key.strip_prefix("studio-input:") {
-        return studio_input(tx, snapshot, key, hash, args, state_root);
+        return studio_input(tx, snapshot, key, hash, args, payloads);
     }
     if let Some(id) = key.strip_prefix("chat-message:") {
         let message = tx.query_row(
@@ -97,7 +97,7 @@ pub(super) fn read(
         return event(tx, snapshot, key, id, args);
     }
     let agent = snapshot.context().agent.as_str();
-    let mut receipt = receipt(tx, agent, key, now, state_root)?;
+    let mut receipt = receipt(tx, agent, key, now, payloads)?;
     // Native item ids start with the stable Studio agent id, also after an
     // account transfer. A caller-supplied thread id never authorizes a read.
     if receipt["stage"] == "not_found"
@@ -109,19 +109,9 @@ pub(super) fn read(
         match item.record["title"].as_str() {
             Some("commandExecution") => return command_output(tx, key, &item, args),
             Some("dynamicToolCall") => {
-                let aliases = tx
-                    .prepare_cached(
-                        "SELECT request FROM runtime_tool_request_aliases WHERE agent=?1 AND alias=?2 LIMIT 2",
-                    )?
-                    .query_map([agent, call], |row| row.get::<_, String>(0))?
-                    .collect::<Result<Vec<_>, _>>()?;
-                if aliases.len() > 1 {
-                    return Err(CallbackError::Invalid(
-                        "Output reference is ambiguous. Use the canonical request id.",
-                    ));
-                }
-                if let Some(request) = aliases.first() {
-                    receipt = self::receipt(tx, agent, request, now, state_root)?;
+                let request = native_request_alias(tx, agent, call)?;
+                if let Some(request) = request {
+                    receipt = self::receipt(tx, agent, &request, now, payloads)?;
                 }
             }
             _ => {}
@@ -139,8 +129,7 @@ pub(super) fn read(
             "Result is not available yet. Do not repeat the operation.",
         ))?;
     if studio_runtime_store::truthy(result.get("_payloadBlobs")) {
-        result = crate::payload_blobs::resolve_record(state_root, &result)
-            .map_err(|_| CallbackError::Stored(format!("runtime_tool_results/{id} payload")))?;
+        result = payloads.resolve(&result)?;
     }
     tool_requests::expire(&mut result, now);
     let body = result["contentItems"]
@@ -172,7 +161,7 @@ fn studio_input(
     key: &str,
     hash: &str,
     args: &Value,
-    state_root: &std::path::Path,
+    payloads: &tool_requests::prepared::Payloads,
 ) -> Result<Value, CallbackError> {
     let actor = snapshot.context().agent.as_str();
     let saved = tx.query_row(
@@ -191,17 +180,55 @@ fn studio_input(
         Some(&saved.3),
     )?;
     let metadata: Value = serde_json::from_str(&saved.3)?;
-    let bytes = crate::payload_blobs::load_blob(state_root, &metadata["studioInput"])
-        .map_err(|_| CallbackError::Stored("Studio input payload".into()))?;
-    let body =
-        String::from_utf8(bytes).map_err(|_| CallbackError::Stored("Studio input text".into()))?;
+    let body = payloads.studio_input(&metadata["studioInput"])?;
     excerpt(
         key,
-        &body,
+        body,
         args,
         json!({"source":"studio-input"}),
         Map::new(),
     )
+}
+
+pub(super) fn receipt_keys(
+    tx: &Transaction<'_>,
+    agent: &str,
+    args: &Value,
+) -> Result<Vec<String>, CallbackError> {
+    let key = text(args, "output_ref")?;
+    if key.starts_with("chat-message:") || key.starts_with("event:") {
+        return Ok(Vec::new());
+    }
+    let mut keys = vec![key.to_owned()];
+    if tool_requests::resolve(tx, agent, key)?.is_none()
+        && let Some(call) = key
+            .strip_prefix(agent)
+            .and_then(|rest| rest.strip_prefix(':'))
+        && let Some(item) = TranscriptRepository::item(tx, agent, key).map_err(transcript_error)?
+        && item.record["title"] == "dynamicToolCall"
+        && let Some(request) = native_request_alias(tx, agent, call)?
+    {
+        keys.push(request);
+    }
+    Ok(keys)
+}
+fn native_request_alias(
+    tx: &Transaction<'_>,
+    agent: &str,
+    call: &str,
+) -> Result<Option<String>, CallbackError> {
+    let aliases = tx
+        .prepare_cached(
+            "SELECT request FROM runtime_tool_request_aliases WHERE agent=?1 AND alias=?2 LIMIT 2",
+        )?
+        .query_map([agent, call], |row| row.get::<_, String>(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+    if aliases.len() > 1 {
+        return Err(CallbackError::Invalid(
+            "Output reference is ambiguous. Use the canonical request id.",
+        ));
+    }
+    Ok(aliases.into_iter().next())
 }
 
 /// The receipt service's canonical alias resolution, with saved payloads
@@ -211,15 +238,9 @@ fn receipt(
     agent: &str,
     key: &str,
     now: f64,
-    state_root: &std::path::Path,
+    payloads: &tool_requests::prepared::Payloads,
 ) -> Result<Value, CallbackError> {
-    Ok(tool_requests::execute_http(
-        tx,
-        agent,
-        tool_requests::Action::Get(key),
-        now,
-        state_root,
-    )?)
+    Ok(payloads.execute(tx, agent, tool_requests::Action::Get(key), now)?)
 }
 
 /// Python's `model_saved_message` for an `event:` reference: only the
@@ -520,6 +541,14 @@ mod studio_input_tests {
             .expect("input page loads")
         };
         let key = format!("studio-input:{hash}");
+        let payloads = tool_requests::prepared::Rows::read(
+            &tx,
+            "lead",
+            tool_requests::prepared::Selection::StudioInput(hash.clone()),
+        )
+        .expect("input selection")
+        .prepare(root.path(), 1.0)
+        .expect("input bytes prepare outside the store callback");
         let mut recovered = String::new();
         let mut offset = 0;
         loop {
@@ -528,7 +557,7 @@ mod studio_input_tests {
                 &snapshot("lead"),
                 &json!({"output_ref":key,"offset":offset}),
                 1.0,
-                root.path(),
+                &payloads,
             )
             .expect("input page recovers");
             recovered.push_str(page["text"].as_str().expect("page text is a string"));
@@ -539,13 +568,38 @@ mod studio_input_tests {
             offset = next;
         }
         assert_eq!(recovered, body);
+        payloads
+            .revalidate(
+                &tx,
+                "lead",
+                tool_requests::prepared::Selection::StudioInput(hash.clone()),
+            )
+            .expect("unchanged input reference revalidates");
+        tx.execute(
+            "UPDATE runtime_event_meta SET record=?1 WHERE id='wake'",
+            [json!({"studioInput":{"sha256":hash,"size":body.len()+1}}).to_string()],
+        )
+        .expect("change the selected reference");
+        assert!(matches!(
+            payloads.revalidate(
+                &tx,
+                "lead",
+                tool_requests::prepared::Selection::StudioInput(hash.clone())
+            ),
+            Err(CallbackError::Stale)
+        ));
+        tx.execute(
+            "UPDATE runtime_event_meta SET record=?1 WHERE id='wake'",
+            [json!({"studioInput":{"sha256":hash,"size":body.len()}}).to_string()],
+        )
+        .expect("restore the selected reference");
         assert!(
             read(
                 &tx,
                 &snapshot("other"),
                 &json!({"output_ref":key}),
                 1.0,
-                root.path()
+                &payloads
             )
             .is_err()
         );
@@ -554,7 +608,7 @@ mod studio_input_tests {
             &snapshot("lead"),
             &json!({"output_ref":key,"contains":"END"}),
             1.0,
-            root.path(),
+            &payloads,
         )
         .expect("tail page loads");
         assert!(

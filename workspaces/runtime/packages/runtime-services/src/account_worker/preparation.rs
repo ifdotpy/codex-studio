@@ -8,17 +8,20 @@ pub(super) use pipeline::prepare;
 pub(super) use pipeline::{
     Admission, CommitGuard, PreparedSteer, RequestPreparation, admit, commit, commit_claude,
     commit_steer, compiled_submission, persist_compilation, prepare_ready, prepare_steer,
-    refuse_idle, refuse_prepared_idle, refuse_prepared_steer, refuse_steer, workspace,
+    refuse_idle, refuse_prepared_idle, refuse_prepared_steer, refuse_steer, snapshot_changed,
+    workspace,
 };
 pub(crate) use pipeline::{CATALOG_PENDING_REASON, WORKSPACE_PENDING_REASON};
 pub use receipts::remember_delivered_manifests;
 pub(super) use receipts::{accept_thread, accept_turn};
+pub(crate) use snapshot::actor_tool_definitions;
+#[cfg(test)]
+pub(crate) use snapshot::ensure_context_tables;
 pub use snapshot::{
     PreparationFilesystem, PreparationResources, VmProviderAuthFuture, VmProviderLaunch,
     VmProviderLaunchFuture, VmProviderLaunchRequest, VmProviderLaunchResolver,
     VmProviderRefreshFuture,
 };
-pub(crate) use snapshot::{actor_tool_definitions, progress_context};
 
 fn refusal(reason: String) -> WorkerError {
     WorkerError::PreparationRefused(reason)
@@ -71,14 +74,6 @@ impl PreparedReviewThread {
     }
     pub(crate) fn attempt_id(&self) -> &str {
         &self.attempt.attempt_id
-    }
-}
-
-/// Filesystem observations of one review thread receipt reduction.
-pub(crate) struct ReviewThreadFilesystem(snapshot::FilesystemSnapshot);
-impl ReviewThreadFilesystem {
-    pub(crate) fn capture(store: &RuntimeStore, agent_id: &str) -> Result<Self, WorkerError> {
-        snapshot::FilesystemSnapshot::capture(store, agent_id).map(Self)
     }
 }
 

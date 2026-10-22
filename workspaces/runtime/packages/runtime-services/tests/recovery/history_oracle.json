@@ -1,0 +1,723 @@
+[
+  {
+    "name": "full",
+    "replies": [
+      {
+        "data": [
+          {
+            "id": "turn",
+            "status": "completed",
+            "items": [
+              {
+                "id": "item",
+                "type": "agentMessage",
+                "text": "Full text\nwith Unicode λ and spacing.  "
+              }
+            ],
+            "extra": {
+              "preserved": true
+            }
+          }
+        ],
+        "nextCursor": null
+      }
+    ],
+    "calls": [
+      {
+        "method": "thread/turns/list",
+        "params": {
+          "threadId": "thread",
+          "limit": 10,
+          "sortDirection": "desc",
+          "itemsView": "notLoaded"
+        }
+      }
+    ],
+    "result": {
+      "id": "turn",
+      "status": "completed",
+      "items": [
+        {
+          "id": "item",
+          "type": "agentMessage",
+          "text": "Full text\nwith Unicode λ and spacing.  "
+        }
+      ],
+      "extra": {
+        "preserved": true
+      }
+    },
+    "failed": false
+  },
+  {
+    "name": "absent",
+    "replies": [
+      {
+        "data": []
+      }
+    ],
+    "calls": [
+      {
+        "method": "thread/turns/list",
+        "params": {
+          "threadId": "thread",
+          "limit": 10,
+          "sortDirection": "desc",
+          "itemsView": "notLoaded"
+        }
+      }
+    ],
+    "result": null,
+    "failed": false
+  },
+  {
+    "name": "later-page",
+    "replies": [
+      {
+        "data": [],
+        "nextCursor": "next"
+      },
+      {
+        "data": [
+          {
+            "id": "turn",
+            "status": "completed",
+            "items": [
+              {
+                "id": "item",
+                "type": "agentMessage",
+                "text": "Full text\nwith Unicode λ and spacing.  "
+              }
+            ],
+            "extra": {
+              "preserved": true
+            }
+          }
+        ],
+        "nextCursor": null
+      }
+    ],
+    "calls": [
+      {
+        "method": "thread/turns/list",
+        "params": {
+          "threadId": "thread",
+          "limit": 10,
+          "sortDirection": "desc",
+          "itemsView": "notLoaded"
+        }
+      },
+      {
+        "method": "thread/turns/list",
+        "params": {
+          "threadId": "thread",
+          "limit": 10,
+          "sortDirection": "desc",
+          "itemsView": "notLoaded",
+          "cursor": "next"
+        }
+      }
+    ],
+    "result": {
+      "id": "turn",
+      "status": "completed",
+      "items": [
+        {
+          "id": "item",
+          "type": "agentMessage",
+          "text": "Full text\nwith Unicode λ and spacing.  "
+        }
+      ],
+      "extra": {
+        "preserved": true
+      }
+    },
+    "failed": false
+  },
+  {
+    "name": "coalesce",
+    "replies": [
+      {
+        "data": [
+          {
+            "id": "turn",
+            "status": "completed",
+            "items": [
+              {
+                "id": "item",
+                "type": "agentMessage",
+                "text": "Full text\nwith Unicode λ and spacing.  "
+              },
+              {
+                "id": "item",
+                "type": "agentMessage",
+                "text": "Full text\nwith Unicode λ and spacing.  "
+              }
+            ],
+            "extra": {
+              "preserved": true
+            }
+          }
+        ],
+        "nextCursor": null
+      }
+    ],
+    "calls": [
+      {
+        "method": "thread/turns/list",
+        "params": {
+          "threadId": "thread",
+          "limit": 10,
+          "sortDirection": "desc",
+          "itemsView": "notLoaded"
+        }
+      }
+    ],
+    "result": {
+      "id": "turn",
+      "status": "completed",
+      "items": [
+        {
+          "id": "item",
+          "type": "agentMessage",
+          "text": "Full text\nwith Unicode λ and spacing.  "
+        }
+      ],
+      "extra": {
+        "preserved": true
+      }
+    },
+    "failed": false
+  },
+  {
+    "name": "conflict",
+    "replies": [
+      {
+        "data": [
+          {
+            "id": "turn",
+            "status": "completed",
+            "items": [
+              {
+                "id": "item",
+                "type": "agentMessage",
+                "text": "Full text\nwith Unicode λ and spacing.  "
+              },
+              {
+                "id": "item",
+                "type": "agentMessage",
+                "text": "different"
+              }
+            ],
+            "extra": {
+              "preserved": true
+            }
+          }
+        ],
+        "nextCursor": null
+      }
+    ],
+    "calls": [
+      {
+        "method": "thread/turns/list",
+        "params": {
+          "threadId": "thread",
+          "limit": 10,
+          "sortDirection": "desc",
+          "itemsView": "notLoaded"
+        }
+      }
+    ],
+    "result": null,
+    "failed": true
+  },
+  {
+    "name": "summary",
+    "replies": [
+      {
+        "data": [
+          {
+            "id": "turn",
+            "status": "completed",
+            "items": [],
+            "extra": {
+              "preserved": true
+            },
+            "itemsView": "notLoaded"
+          }
+        ],
+        "nextCursor": null
+      },
+      {
+        "data": [
+          {
+            "id": "item",
+            "type": "agentMessage",
+            "text": "Full text\nwith Unicode λ and spacing.  "
+          }
+        ]
+      },
+      {
+        "data": [
+          {
+            "id": "turn",
+            "status": "completed",
+            "items": [],
+            "extra": {
+              "preserved": true
+            },
+            "itemsView": "notLoaded"
+          }
+        ],
+        "nextCursor": null
+      }
+    ],
+    "calls": [
+      {
+        "method": "thread/turns/list",
+        "params": {
+          "threadId": "thread",
+          "limit": 10,
+          "sortDirection": "desc",
+          "itemsView": "notLoaded"
+        }
+      },
+      {
+        "method": "thread/items/list",
+        "params": {
+          "threadId": "thread",
+          "turnId": "turn",
+          "limit": 100,
+          "sortDirection": "asc"
+        }
+      },
+      {
+        "method": "thread/turns/list",
+        "params": {
+          "threadId": "thread",
+          "limit": 10,
+          "sortDirection": "desc",
+          "itemsView": "notLoaded"
+        }
+      }
+    ],
+    "result": {
+      "id": "turn",
+      "status": "completed",
+      "items": [
+        {
+          "id": "item",
+          "type": "agentMessage",
+          "text": "Full text\nwith Unicode λ and spacing.  "
+        }
+      ],
+      "extra": {
+        "preserved": true
+      },
+      "itemsView": "full"
+    },
+    "failed": false
+  },
+  {
+    "name": "item-pages",
+    "replies": [
+      {
+        "data": [
+          {
+            "id": "turn",
+            "status": "completed",
+            "items": [],
+            "extra": {
+              "preserved": true
+            },
+            "itemsView": "notLoaded"
+          }
+        ],
+        "nextCursor": null
+      },
+      {
+        "data": [
+          {
+            "id": "item",
+            "type": "agentMessage",
+            "text": "Full text\nwith Unicode λ and spacing.  "
+          }
+        ],
+        "nextCursor": "next"
+      },
+      {
+        "data": [
+          {
+            "item": {
+              "id": "other",
+              "type": "agentMessage",
+              "text": "Full text\nwith Unicode λ and spacing.  "
+            },
+            "turnId": "turn"
+          }
+        ]
+      },
+      {
+        "data": [
+          {
+            "id": "turn",
+            "status": "completed",
+            "items": [],
+            "extra": {
+              "preserved": true
+            },
+            "itemsView": "notLoaded"
+          }
+        ],
+        "nextCursor": null
+      }
+    ],
+    "calls": [
+      {
+        "method": "thread/turns/list",
+        "params": {
+          "threadId": "thread",
+          "limit": 10,
+          "sortDirection": "desc",
+          "itemsView": "notLoaded"
+        }
+      },
+      {
+        "method": "thread/items/list",
+        "params": {
+          "threadId": "thread",
+          "turnId": "turn",
+          "limit": 100,
+          "sortDirection": "asc"
+        }
+      },
+      {
+        "method": "thread/items/list",
+        "params": {
+          "threadId": "thread",
+          "turnId": "turn",
+          "limit": 100,
+          "sortDirection": "asc",
+          "cursor": "next"
+        }
+      },
+      {
+        "method": "thread/turns/list",
+        "params": {
+          "threadId": "thread",
+          "limit": 10,
+          "sortDirection": "desc",
+          "itemsView": "notLoaded"
+        }
+      }
+    ],
+    "result": {
+      "id": "turn",
+      "status": "completed",
+      "items": [
+        {
+          "id": "item",
+          "type": "agentMessage",
+          "text": "Full text\nwith Unicode λ and spacing.  "
+        },
+        {
+          "id": "other",
+          "type": "agentMessage",
+          "text": "Full text\nwith Unicode λ and spacing.  "
+        }
+      ],
+      "extra": {
+        "preserved": true
+      },
+      "itemsView": "full"
+    },
+    "failed": false
+  },
+  {
+    "name": "unsupported",
+    "replies": [
+      {
+        "data": [
+          {
+            "id": "turn",
+            "status": "completed",
+            "items": [],
+            "extra": {
+              "preserved": true
+            },
+            "itemsView": "notLoaded"
+          }
+        ],
+        "nextCursor": null
+      },
+      {
+        "rpcError": {
+          "code": -32601
+        }
+      },
+      {
+        "data": [
+          {
+            "id": "turn",
+            "status": "completed",
+            "items": [
+              {
+                "id": "item",
+                "type": "agentMessage",
+                "text": "Full text\nwith Unicode λ and spacing.  "
+              }
+            ],
+            "extra": {
+              "preserved": true
+            }
+          }
+        ],
+        "nextCursor": null
+      }
+    ],
+    "calls": [
+      {
+        "method": "thread/turns/list",
+        "params": {
+          "threadId": "thread",
+          "limit": 10,
+          "sortDirection": "desc",
+          "itemsView": "notLoaded"
+        }
+      },
+      {
+        "method": "thread/items/list",
+        "params": {
+          "threadId": "thread",
+          "turnId": "turn",
+          "limit": 100,
+          "sortDirection": "asc"
+        }
+      },
+      {
+        "method": "thread/turns/list",
+        "params": {
+          "threadId": "thread",
+          "limit": 10,
+          "sortDirection": "desc",
+          "itemsView": "full"
+        }
+      }
+    ],
+    "result": {
+      "id": "turn",
+      "status": "completed",
+      "items": [
+        {
+          "id": "item",
+          "type": "agentMessage",
+          "text": "Full text\nwith Unicode λ and spacing.  "
+        }
+      ],
+      "extra": {
+        "preserved": true
+      }
+    },
+    "failed": false
+  },
+  {
+    "name": "changed",
+    "replies": [
+      {
+        "data": [
+          {
+            "id": "turn",
+            "status": "completed",
+            "items": [],
+            "extra": {
+              "preserved": true
+            },
+            "itemsView": "notLoaded"
+          }
+        ],
+        "nextCursor": null
+      },
+      {
+        "data": [
+          {
+            "id": "item",
+            "type": "agentMessage",
+            "text": "Full text\nwith Unicode λ and spacing.  "
+          }
+        ]
+      },
+      {
+        "data": [
+          {
+            "id": "turn",
+            "status": "failed",
+            "items": [],
+            "extra": {
+              "preserved": true
+            },
+            "itemsView": "notLoaded"
+          }
+        ],
+        "nextCursor": null
+      }
+    ],
+    "calls": [
+      {
+        "method": "thread/turns/list",
+        "params": {
+          "threadId": "thread",
+          "limit": 10,
+          "sortDirection": "desc",
+          "itemsView": "notLoaded"
+        }
+      },
+      {
+        "method": "thread/items/list",
+        "params": {
+          "threadId": "thread",
+          "turnId": "turn",
+          "limit": 100,
+          "sortDirection": "asc"
+        }
+      },
+      {
+        "method": "thread/turns/list",
+        "params": {
+          "threadId": "thread",
+          "limit": 10,
+          "sortDirection": "desc",
+          "itemsView": "notLoaded"
+        }
+      }
+    ],
+    "result": null,
+    "failed": true
+  },
+  {
+    "name": "foreign",
+    "replies": [
+      {
+        "data": [
+          {
+            "id": "turn",
+            "status": "completed",
+            "items": [
+              {
+                "id": "item",
+                "type": "agentMessage",
+                "text": "Full text\nwith Unicode λ and spacing.  ",
+                "threadId": "other"
+              }
+            ],
+            "extra": {
+              "preserved": true
+            }
+          }
+        ],
+        "nextCursor": null
+      }
+    ],
+    "calls": [
+      {
+        "method": "thread/turns/list",
+        "params": {
+          "threadId": "thread",
+          "limit": 10,
+          "sortDirection": "desc",
+          "itemsView": "notLoaded"
+        }
+      }
+    ],
+    "result": null,
+    "failed": true
+  },
+  {
+    "name": "cursor-cycle",
+    "replies": [
+      {
+        "data": [],
+        "nextCursor": "same"
+      },
+      {
+        "data": [],
+        "nextCursor": "same"
+      }
+    ],
+    "calls": [
+      {
+        "method": "thread/turns/list",
+        "params": {
+          "threadId": "thread",
+          "limit": 10,
+          "sortDirection": "desc",
+          "itemsView": "notLoaded"
+        }
+      },
+      {
+        "method": "thread/turns/list",
+        "params": {
+          "threadId": "thread",
+          "limit": 10,
+          "sortDirection": "desc",
+          "itemsView": "notLoaded",
+          "cursor": "same"
+        }
+      }
+    ],
+    "result": null,
+    "failed": true
+  },
+  {
+    "name": "wrapped-foreign",
+    "replies": [
+      {
+        "data": [
+          {
+            "id": "turn",
+            "status": "completed",
+            "items": [],
+            "extra": {
+              "preserved": true
+            },
+            "itemsView": "notLoaded"
+          }
+        ],
+        "nextCursor": null
+      },
+      {
+        "data": [
+          {
+            "item": {
+              "id": "item",
+              "type": "agentMessage",
+              "text": "Full text\nwith Unicode λ and spacing.  "
+            },
+            "turnId": "other"
+          }
+        ]
+      }
+    ],
+    "calls": [
+      {
+        "method": "thread/turns/list",
+        "params": {
+          "threadId": "thread",
+          "limit": 10,
+          "sortDirection": "desc",
+          "itemsView": "notLoaded"
+        }
+      },
+      {
+        "method": "thread/items/list",
+        "params": {
+          "threadId": "thread",
+          "turnId": "turn",
+          "limit": 100,
+          "sortDirection": "asc"
+        }
+      }
+    ],
+    "result": null,
+    "failed": true
+  }
+]

@@ -1,5 +1,9 @@
 # Backend caller inventory
 
+> Historical implementation record: Python backend paths and commands below
+> refer to the removed implementation. Use [testing](testing.md) and the
+> [CLI guide](cli.md) for current Rust commands.
+
 Inventory for issue #37 M-07.4 and M-02.5. Source references below were
 verified with `git grep` at base commit
 `c533f4fe203e77a0a1c551d4dcd66dffd878899f` (branch

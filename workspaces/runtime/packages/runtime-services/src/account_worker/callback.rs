@@ -147,7 +147,15 @@ pub(super) async fn managed_response(
             "Managed tool callback has no turn identity",
         ));
     };
-    let context = callback_context(store, account, generation, emitting_actor, thread, turn).await;
+    let context = callback_context(
+        store,
+        account,
+        generation,
+        emitting_actor,
+        thread,
+        Some(turn),
+    )
+    .await;
     let body = match context {
         Ok(Some(context)) => match crate::provider_callbacks::managed_tool_ports_with_bundle(
             store,
@@ -234,9 +242,16 @@ pub(super) async fn wait_for_managed_catalog(
     else {
         return Ok(());
     };
-    let Some(context) = callback_context(store, account, generation, emitting_actor, thread, turn)
-        .await
-        .map_err(|_| "Managed tool callback context is unavailable")?
+    let Some(context) = callback_context(
+        store,
+        account,
+        generation,
+        emitting_actor,
+        thread,
+        Some(turn),
+    )
+    .await
+    .map_err(|_| "Managed tool callback context is unavailable")?
     else {
         return Ok(());
     };
@@ -246,11 +261,100 @@ pub(super) async fn wait_for_managed_catalog(
         .map_err(|_| crate::model_catalog::MODEL_CATALOG_DEPENDENCY)
 }
 
+/// The one active turn of a callback. A turn that waits for a native card is in
+/// `approval` and still runs: its other tool calls and requests need it too.
+/// Without a turn id (an MCP elicitation may have none) the thread's active
+/// turn answers.
 const CALLBACK_CONTEXT_QUERY: &str = "SELECT id,record FROM runtime_agents
-WHERE account_key=?1 AND start_attempt_connection_generation=?2
-  AND thread_id=?3 AND turn_id=?4 AND status='running' AND auto_wake=1
+WHERE thread_id=?3 AND account_key=?1 AND start_attempt_connection_generation=?2
+  AND (?4 IS NULL OR turn_id=?4) AND status IN ('running','approval') AND auto_wake=1
   AND (?5 IS NULL OR id=?5)
 LIMIT 2";
+
+/// How a callback handler left its request record.
+pub(super) enum CallbackHandled {
+    /// Write this answer through the record.
+    Answer(Frame),
+    /// The record stays held by this worker (a managed tool still owes it).
+    Waiting,
+    /// A request card owns the answer, or the request is settled: retire the record.
+    Retire,
+}
+
+impl From<Option<Frame>> for CallbackHandled {
+    fn from(response: Option<Frame>) -> Self {
+        response.map_or(Self::Waiting, Self::Answer)
+    }
+}
+
+/// A native approval or question of the account session (not a VM actor).
+pub(super) fn is_native_request(frame: &Frame) -> bool {
+    matches!(frame, Frame::Request(request)
+        if crate::provider_callbacks::is_native_request(request.method.as_str()))
+}
+
+/// Admit a native approval or question as a request card for the user. Only
+/// a refusal is answered here; the user's answer goes out through the card.
+pub(super) async fn native_response(
+    store: &Arc<RuntimeStore>,
+    account: &str,
+    generation: u64,
+    cursor: u64,
+    frame: &Frame,
+    now: f64,
+) -> CallbackHandled {
+    let Frame::Request(request) = frame else {
+        return CallbackHandled::Retire;
+    };
+    let refuse = |message: &str| {
+        CallbackHandled::Answer(Frame::Response {
+            id: request.id.clone(),
+            body: ResponseBody::Error(json!({"code":-32000,"message":message})),
+            fields: Default::default(),
+        })
+    };
+    let field = |name: &str| {
+        request
+            .params
+            .as_ref()
+            .and_then(|params| params.get(name))
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+    };
+    let Some(thread) = field("threadId") else {
+        return refuse("Native provider request has no thread identity");
+    };
+    let turn = field("turnId");
+    let context = match callback_context(store, account, generation, None, thread, turn).await {
+        Ok(Some(context)) => context,
+        Ok(None) => {
+            return refuse(
+                "Native provider request has no unique active turn for this account generation",
+            );
+        }
+        Err(error) => {
+            return refuse(&format!(
+                "Native provider request context is unavailable: {error}"
+            ));
+        }
+    };
+    match crate::provider_callbacks::admit_native(Arc::clone(store), &context, frame, cursor, now)
+        .await
+    {
+        Ok(crate::provider_callbacks::NativeAdmission::Answer(body)) => {
+            CallbackHandled::Answer(Frame::Response {
+                id: request.id.clone(),
+                body,
+                fields: Default::default(),
+            })
+        }
+        Ok(
+            crate::provider_callbacks::NativeAdmission::Card(_)
+            | crate::provider_callbacks::NativeAdmission::Settled,
+        ) => CallbackHandled::Retire,
+        Err(error) => refuse(&error.to_string()),
+    }
+}
 
 async fn callback_context(
     store: &RuntimeStore,
@@ -258,10 +362,10 @@ async fn callback_context(
     generation: u64,
     emitting_actor: Option<&str>,
     thread: &str,
-    turn: &str,
+    turn: Option<&str>,
 ) -> Result<Option<crate::provider_callbacks::CallbackContext>, studio_runtime_store::StoreError> {
     let (account, emitting_actor) = (account.to_owned(), emitting_actor.map(str::to_owned));
-    let (thread, turn) = (thread.to_owned(), turn.to_owned());
+    let (thread, turn) = (thread.to_owned(), turn.map(str::to_owned));
     store
         .read_async("runtime-services/account_callback_context", move |db| {
             callback_context_in(
@@ -270,7 +374,7 @@ async fn callback_context(
                 generation,
                 emitting_actor.as_deref(),
                 &thread,
-                &turn,
+                turn.as_deref(),
             )
         })
         .await
@@ -282,7 +386,7 @@ fn callback_context_in(
     generation: u64,
     emitting_actor: Option<&str>,
     thread: &str,
-    turn: &str,
+    turn: Option<&str>,
 ) -> Result<Option<crate::provider_callbacks::CallbackContext>, studio_runtime_store::StoreError> {
     let Ok(generation_value) = i64::try_from(generation) else {
         return Ok(None);
@@ -404,8 +508,8 @@ mod tests {
         assert!(
             details
                 .iter()
-                .any(|detail| detail.contains("runtime_agent_callback_context_v2")),
-            "callback lookup must use its selective index: {details:?}"
+                .any(|detail| detail.contains("runtime_agent_thread")),
+            "callback lookup must use its selective thread index: {details:?}"
         );
         drop(connection);
 
@@ -429,7 +533,7 @@ mod tests {
             .await
             .expect("callback agents write");
         assert!(
-            callback_context(&store, "account-a", 7, None, "thread-a", "turn-a")
+            callback_context(&store, "account-a", 7, None, "thread-a", Some("turn-a"))
                 .await
                 .expect("callback lookup")
                 .is_none(),
@@ -442,19 +546,38 @@ mod tests {
             })
             .await
             .expect("remove ambiguous agent");
-        let context = callback_context(&store, "account-a", 7, None, "thread-a", "turn-a")
+        let context = callback_context(&store, "account-a", 7, None, "thread-a", Some("turn-a"))
             .await
             .expect("callback lookup")
             .expect("one matching context");
         assert_eq!(context.agent, "agent-a");
+        // A turn that waits for a native card still owns its callbacks.
+        store
+            .transaction(|transaction| {
+                transaction.execute(
+                    "UPDATE runtime_agents SET record=json_set(record,'$.status','approval') WHERE id='agent-a'",
+                    [],
+                )?;
+                Ok(())
+            })
+            .await
+            .expect("agent waits for approval");
+        assert_eq!(
+            callback_context(&store, "account-a", 7, None, "thread-a", Some("turn-a"))
+                .await
+                .expect("callback lookup")
+                .expect("the waiting turn")
+                .agent,
+            "agent-a"
+        );
         assert!(
-            callback_context(&store, "account-b", 7, None, "thread-a", "turn-a")
+            callback_context(&store, "account-b", 7, None, "thread-a", Some("turn-a"))
                 .await
                 .expect("account-scoped lookup")
                 .is_none()
         );
         assert!(
-            callback_context(&store, "account-a", 8, None, "thread-a", "turn-a")
+            callback_context(&store, "account-a", 8, None, "thread-a", Some("turn-a"))
                 .await
                 .expect("generation-scoped lookup")
                 .is_none()

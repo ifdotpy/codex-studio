@@ -1,21 +1,19 @@
 // The native package cycle in one command: `just package-native <out> [flags]`.
 //
-//   0. signing check and runtime interpreter: fail in seconds, before the build
+//   0. signing check: fail in seconds, before the build
 //   1. dev-profile native host check (skip: --hosted-ci-passed)
 //   2. Rust release binaries for HEAD, reused when the manifest verifies
 //   3. package.mjs (signs with the configured identity)
-//   4. check-package.mjs and check-package-start.py
+//   4. check-package.mjs and check-package-start.mjs
 //
 // Step 0 runs the same check as `just signing-check`. See the "Signing setup"
-// section of README.md. When CODEX_AGENTS_PYTHON is unset, the flow resolves the
-// prepared runtime interpreter with codex_python.py for the package checks.
+// section of README.md.
 //
 // --hosted-ci-passed states that hosted CI already passed on the exact HEAD commit,
 // so the dev-profile build of the native host (cargo build --features native-check)
 // and its hidden WebView scenarios are not repeated here. Without the flag the
 // check runs, as before.
 import { execFileSync } from "node:child_process";
-import { accessSync, constants } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
@@ -28,44 +26,6 @@ import {
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const repository = path.resolve(root, "../../../..");
-
-// The prepared runtime interpreter: CODEX_AGENTS_PYTHON, else the path that
-// codex_python.py prints. A failure names the cause and the manual override.
-export function resolveRuntimePython(
-  env = process.env,
-  run = execFileSync,
-  cwd = repository,
-) {
-  if (env.CODEX_AGENTS_PYTHON) return env.CODEX_AGENTS_PYTHON;
-  const script = path.join(
-    repository,
-    "workspaces/runtime/apps/server/src/codex_python.py",
-  );
-  const fail = (reason) =>
-    new Error(
-      `Could not resolve the prepared runtime interpreter with ${script}: ${reason} Set CODEX_AGENTS_PYTHON to the interpreter path.`,
-    );
-  let output;
-  try {
-    output = run("python3", [script], {
-      cwd,
-      env,
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "inherit"],
-    });
-  } catch (error) {
-    throw fail(`${String(error.message).split("\n")[0]}.`);
-  }
-  const interpreter = String(output).trim().split("\n").at(-1).trim();
-  if (!path.isAbsolute(interpreter))
-    throw fail(`it printed ${JSON.stringify(interpreter)}, not a path.`);
-  try {
-    accessSync(interpreter, constants.X_OK);
-  } catch {
-    throw fail(`${interpreter} is not executable.`);
-  }
-  return interpreter;
-}
 
 export function parseFlowArguments(argv) {
   const flags = new Set(["--hosted-ci-passed"]);
@@ -97,7 +57,6 @@ export function planFlow({ out, hostedCiPassed, directory, commit }) {
       command: "node",
       args: [path.join(root, "../desktop/signing-check.mjs")],
     },
-    { label: "runtime interpreter", resolvePython: true },
     hostedCiPassed
       ? {
           label: "native host check skipped",
@@ -107,7 +66,7 @@ export function planFlow({ out, hostedCiPassed, directory, commit }) {
           label: "native host check",
           command: "just",
           args: ["test-native-webview"],
-          // check-native.py reads target/debug; keep the dev build out of the
+          // The native check reads target/debug; keep the dev build out of the
           // shared release directory.
           withoutEnvironment: ["CARGO_TARGET_DIR", releaseTargetEnvironment],
         },
@@ -122,13 +81,11 @@ export function planFlow({ out, hostedCiPassed, directory, commit }) {
       label: "check package",
       command: "node",
       args: [path.join(root, "check-package.mjs"), application],
-      needsPython: true,
     },
     {
       label: "check package start",
-      command: "python3",
-      args: [path.join(root, "check-package-start.py"), application],
-      needsPython: true,
+      command: "node",
+      args: [path.join(root, "check-package-start.mjs"), application],
     },
   ];
 }
@@ -151,7 +108,6 @@ async function main(argv) {
       "Tracked files differ from HEAD. Commit them first: the package, the manifest and the CI claim name one commit.",
     );
   const directory = releaseTargetDirectory();
-  let python;
   for (const step of planFlow({ out, hostedCiPassed, directory, commit })) {
     console.log(`== ${step.label}${step.skipped ? `: ${step.skipped}` : ""}`);
     if (step.skipped) continue;
@@ -159,13 +115,7 @@ async function main(argv) {
       await ensureReleaseBinaries(directory, commit);
       continue;
     }
-    if (step.resolvePython) {
-      python = resolveRuntimePython();
-      console.log(`Runtime interpreter: ${python}`);
-      continue;
-    }
     const env = { ...process.env, ...step.environment };
-    if (step.needsPython) env.CODEX_AGENTS_PYTHON = python;
     for (const name of step.withoutEnvironment ?? []) delete env[name];
     execFileSync(step.command, step.args, {
       cwd: repository,

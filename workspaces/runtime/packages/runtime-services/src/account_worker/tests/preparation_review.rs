@@ -410,13 +410,13 @@ pub(super) async fn scenario_late_context_change_refuses_submission() {
     )
     .await
     .unwrap();
+    // Nothing was sent: the input returns to the queue, and the agent is
+    // queued to prepare its turn again from the current state.
     assert_eq!(state.event_status("input").await, "pending");
-    assert!(
-        state.record().await["error"]
-            .as_str()
-            .unwrap()
-            .contains("snapshot-changed")
-    );
+    let record = state.record().await;
+    assert_eq!(record["status"], "queued", "{record}");
+    assert!(record["error"].is_null(), "{record}");
+    assert!(record.get("startAttempt").is_none(), "{record}");
 }
 #[tokio::test]
 async fn late_context_change_refuses_submission() {

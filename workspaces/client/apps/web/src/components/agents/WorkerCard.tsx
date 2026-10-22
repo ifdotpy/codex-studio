@@ -197,7 +197,7 @@ const WorkerCardView = memo(function WorkerCardView({
         ? "The agent stopped with an error."
         : error;
   const statusDetail = agent.stall
-    ? "Stalled: assigned task not submitted"
+    ? "Waiting for lead: task not submitted"
     : ["waiting_on_monitor"].includes(agent.status ?? "")
       ? commandWaitLabel(agent)
       : (startWaitLabel(agent) ??

@@ -30,6 +30,7 @@ async fn start_counting(store: &RuntimeStore) {
     store
         .transaction(|_| {
             publication_work::start();
+            drop(studio_runtime_store::agent_volatile::publication_work::take());
             Ok(())
         })
         .await
@@ -193,4 +194,71 @@ async fn journal_projection_failure_rolls_back_sources_and_receipts() {
     start_counting(&store).await;
     journal(&store, NotificationStreamBuffer::default(), notifications()).await;
     assert_once(calls(&store).await);
+}
+
+#[tokio::test]
+async fn changed_agents_decode_once_through_final_publication() {
+    let store = fixture().await;
+    store
+        .transaction(|tx| {
+            let mut unrelated = AgentRepository::get(tx, &AgentId::from("agent"))?
+                .expect("source agent")
+                .value();
+            unrelated["id"] = json!("unrelated");
+            unrelated["threadId"] = json!("unrelated-thread");
+            unrelated["startAttempt"]["threadId"] = json!("unrelated-thread");
+            AgentRepository::put(tx, &AgentRecord::from_value(unrelated)?)
+        })
+        .await
+        .expect("unrelated agent");
+    store
+        .transaction(|tx| {
+            let changes = crate::sync_policy::EntityChanges {
+                agents: AGENTS
+                    .into_iter()
+                    .map(|(id, _)| id.to_owned())
+                    .chain(["unrelated".to_owned()])
+                    .collect(),
+                ..Default::default()
+            };
+            crate::sync_policy::publish_entity_changes(tx, &changes, None, &|_, _, _, _| true)
+        })
+        .await
+        .expect("initial projections");
+    start_counting(&store).await;
+    let streams = journal(&store, NotificationStreamBuffer::default(), notifications()).await;
+    assert_once(calls(&store).await);
+    let measured = store
+        .transaction(|_| Ok(studio_runtime_store::agent_volatile::publication_work::take()))
+        .await
+        .expect("decode accounting");
+    let expected = AGENTS
+        .into_iter()
+        .map(|(id, _)| {
+            (
+                id.to_owned(),
+                studio_runtime_store::agent_volatile::publication_work::Calls {
+                    decodes: 1,
+                    volatile_loads: 1,
+                    text_round_trips: 0,
+                },
+            )
+        })
+        .collect();
+    assert_eq!(
+        measured, expected,
+        "decode/merge once, no intermediate text, no unrelated agent"
+    );
+    start_counting(&store).await;
+    journal(&store, streams, notifications()).await;
+    assert!(calls(&store).await.is_empty());
+    assert!(
+        store
+            .transaction(|_| {
+                Ok(studio_runtime_store::agent_volatile::publication_work::take().is_empty())
+            })
+            .await
+            .expect("replay accounting"),
+        "replay does no decoding"
+    );
 }

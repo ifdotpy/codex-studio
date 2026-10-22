@@ -755,24 +755,14 @@ fn provider_frames_are_passed_to_dispatch_in_order_without_method_filtering() {
 #[test]
 fn all_recorded_replay_fixture_frames_parse_through_the_session() {
     const FIXTURES: &[&str] = &[
-        include_str!(
-            "../../../apps/server/tests/fixtures/provider-replay/background-output-after-completion.json"
-        ),
-        include_str!("../../../apps/server/tests/fixtures/provider-replay/codex-rpc-replies.json"),
-        include_str!(
-            "../../../apps/server/tests/fixtures/provider-replay/child-completion-before-parent.json"
-        ),
-        include_str!("../../../apps/server/tests/fixtures/provider-replay/claude-first-turn.json"),
-        include_str!(
-            "../../../apps/server/tests/fixtures/provider-replay/lost-turn-start-reply.json"
-        ),
-        include_str!(
-            "../../../apps/server/tests/fixtures/provider-replay/restart-mid-turn-supervisor-replay.json"
-        ),
-        include_str!(
-            "../../../apps/server/tests/fixtures/provider-replay/token-usage-reasoning.json"
-        ),
-        include_str!("../../../apps/server/tests/fixtures/provider-replay/tool-request-http.json"),
+        include_str!("fixtures/provider-replay/background-output-after-completion.json"),
+        include_str!("fixtures/provider-replay/codex-rpc-replies.json"),
+        include_str!("fixtures/provider-replay/child-completion-before-parent.json"),
+        include_str!("fixtures/provider-replay/claude-first-turn.json"),
+        include_str!("fixtures/provider-replay/lost-turn-start-reply.json"),
+        include_str!("fixtures/provider-replay/restart-mid-turn-supervisor-replay.json"),
+        include_str!("fixtures/provider-replay/token-usage-reasoning.json"),
+        include_str!("fixtures/provider-replay/tool-request-http.json"),
     ];
     for fixture in FIXTURES {
         let value: Value = serde_json::from_str(fixture).expect("scripted test operation");
@@ -803,7 +793,7 @@ fn all_recorded_replay_fixture_frames_parse_through_the_session() {
 #[test]
 fn recorded_rpc_reply_templates_match_session_request_ids_and_methods() {
     let fixture: Value = serde_json::from_str(include_str!(
-        "../../../apps/server/tests/fixtures/provider-replay/codex-rpc-replies.json"
+        "fixtures/provider-replay/codex-rpc-replies.json"
     ))
     .expect("scripted test operation");
     let mut session = state(false);
@@ -845,16 +835,12 @@ fn recorded_rpc_reply_templates_match_session_request_ids_and_methods() {
 fn missing_and_orphan_reply_assertions_are_exercised_by_session_state() {
     for (fixture, preceding, missing) in [
         (
-            include_str!(
-                "../../../apps/server/tests/fixtures/provider-replay/lost-turn-start-reply.json"
-            ),
+            include_str!("fixtures/provider-replay/lost-turn-start-reply.json"),
             &[Method::ThreadStart, Method::ThreadRead][..],
             Method::TurnStart,
         ),
         (
-            include_str!(
-                "../../../apps/server/tests/fixtures/provider-replay/restart-mid-turn-supervisor-replay.json"
-            ),
+            include_str!("fixtures/provider-replay/restart-mid-turn-supervisor-replay.json"),
             &[Method::ThreadStart][..],
             Method::TurnStart,
         ),

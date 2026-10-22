@@ -55,7 +55,7 @@ describe("agent-list progress", () => {
     const html = renderToStaticMarkup(
       createElement(AgentProgress, { agent: { stall } }),
     );
-    expect(html).toContain("Stalled · task task-14 unsubmitted");
+    expect(html).toContain("Waiting for lead · task task-14 not submitted");
     expect(
       workerState({ id: "worker", status: "completed", stall }, new Set()),
     ).toBe("stalled");

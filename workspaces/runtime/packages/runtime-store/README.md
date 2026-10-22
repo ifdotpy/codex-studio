@@ -32,10 +32,9 @@
   resolution; this crate mirrors its environment and platform rules. The
   committed `runtime-state-schema.json` describes SQLite catalog requirements;
   JSON-record schemas are committed source under `runtime-schema/src/schemas`.
-- **Focused check:** with the isolated Python environment prepared, run
-  `XDG_CACHE_HOME=/var/tmp/cs-rust-store/cache XDG_STATE_HOME=/var/tmp/cs-rust-store/state TMPDIR=/var/tmp/cs-rust-store/tests CARGO_TARGET_DIR=/var/tmp/cs-rust-store/target PYTHON="$(XDG_CACHE_HOME=/var/tmp/cs-rust-store/cache python3 workspaces/runtime/apps/server/src/codex_python.py)" cargo nextest run -p studio-runtime-store`.
-  Python subprocesses create disposable state under the system temporary
-  directory (the command sets it to `/var/tmp/cs-rust-store/tests`).
+- **Focused check:** run `CODEX_AGENTS_PYTHON=/nonexistent cargo test -p studio-runtime-store`.
+  Tests create disposable state through Rust; historical record data is frozen in
+  `tests/fixtures/record-round-trip.json` and decoded into typed records.
 
 ## Canvas writer actor
 
@@ -95,9 +94,8 @@ depend on Python's connection-local `sync_entity_payload` and
 `sync_entity_hash` functions; the writer registers compatible event projections
 and SHA-256 encoding before writes. The bundled SQLite is 3.53.2 (the version
 in `libsqlite3-sys`'s bundled header); this host's Python SQLite is 3.53.4.
-Cross-runtime tests exercise Python opening and writing databases after Rust
-writes, but the two SQLite patch versions remain a compatibility surface to
-recheck when either runtime upgrades.
+Historical Python database compatibility is covered by committed fixtures;
+tests execute only the Rust writer.
 
 The event triggers depend on Python's connection-local `sync_entity_payload`
 and `sync_entity_hash` functions (`codex_sync_entities.py:437-449`). The payload
@@ -138,18 +136,12 @@ changes (`codex_sync_entities.py:467`), and subsequent identical writes produce
 the same Rust payload/hash. `put()` likewise returns unchanged when the
 projected hash and deleted flag already match (`codex_sync_entities.py:485-499`).
 
-The cross-runtime test
-`python_fixture_round_trips_through_rust_and_python_write_rollback_gate`
-compares exact payload text and hash only for fixed values expected to render
-identically across SQLite versions (including `0.1`, `1e21`, `5.0`, an
-integer converted by REAL affinity, an integer-valued REAL, negative values,
-and exponent spelling). It separately
-checks that Rust preserves the binary64 values for `1791788985.5209818`, a
-17-significant-digit value, and the value rounded into REAL affinity above
-2^53; Python's numeric result may be rounded to 15 significant digits. The
-unit test `high_precision_event_projection_keeps_the_stored_binary64_value`
-pins the Rust output independently. No assertion uses the current time.
-Non-ASCII/control text and nested values are also covered.
+The record fixture round-trip test checks that Rust preserves adversarial
+binary64 event timestamps, extension fields, non-ASCII/control text, and nested
+values. Its fixed historical records are committed as JSON; Rust seeds the
+current schema and verifies writes and reopen behavior. The unit test
+`high_precision_event_projection_keeps_the_stored_binary64_value` pins the
+Rust output independently. No test launches the historical Python writer.
 
 Other record JSON has a semantic, not byte-level, compatibility contract.
 Python `Runtime._put` stores `json.dumps(record)` (`codex_runtime.py:3333-3350`);
@@ -282,12 +274,10 @@ inventory registrations too, each collected in stable name order.
 - No build-script scanner: explicit declarations keep modules visible to Rust tooling.
 - No `automod`: its upstream is archived, and rustfmt skips macro-declared modules.
 
-The fixture schema used by the Python drift guard is captured from a disposable
-state directory in real startup order: `Canvas(root)` initializes its schema,
-then `Runtime(root)` initializes the runtime schema on the same database files.
-The guard includes Canvas-created `graph_agents`, `graph_edges`, `groups`,
-`messages`, and `messages_room` objects. The explicit temporary root keeps this
-fixture separate from configured live state.
+The committed catalog snapshot is owned by this crate. Fresh-state tests create
+both databases through `RuntimeStore::open`, compare their complete catalogs
+across independent roots, and verify that reopening preserves them. The tests
+require no Python interpreter or backend source files.
 
 `RuntimeStore::open` verifies the Python-owned core schema, then prepares the
 sync schema family in one immediate transaction, and finally verifies the
@@ -353,9 +343,7 @@ This crate owns the fresh-start snapshot at
 `workspaces/runtime/packages/runtime-store/src/runtime-state-schema.json`.
 Fresh-state bootstrap and the crate tests read that file; the opener does not
 compare the entire catalog. See [the state-format inventory](../../../../docs/runtime-state-formats.md#feature-and-migration-schema-beyond-a-fresh-start)
-for optional creator families and observed migration differences. When the
-Python runtime is removed, move the snapshot under this crate and update the
-guard in that cutover; do not move it in this slice.
+for optional creator families and observed migration differences.
 
 The payload migration marker is optional. No table or no
 `payload-v1:tasks` row means `NotStarted`; `complete=0` means `InProgress`,

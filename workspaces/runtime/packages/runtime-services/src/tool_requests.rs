@@ -1,6 +1,7 @@
 //! Durable tool receipt actions shared by HTTP and future provider callback callers.
 pub(crate) mod admission;
 pub(crate) mod lifecycle;
+pub(crate) mod prepared;
 use crate::event_write::truthy;
 use rusqlite::{Transaction, params};
 use serde_json::{Value, json};
@@ -39,7 +40,7 @@ pub fn execute(
     action: Action<'_>,
     now: f64,
 ) -> Result<Value, ToolRequestError> {
-    execute_with_payload_recovery(tx, actor_id, action, now, false, None)
+    execute_with_payload_recovery(tx, actor_id, action, now, None)
 }
 
 /// HTTP caller variant. Resolve the full durable payload before settling, then
@@ -51,7 +52,7 @@ pub fn execute_http(
     now: f64,
     state_root: &std::path::Path,
 ) -> Result<Value, ToolRequestError> {
-    execute_with_payload_recovery(tx, actor_id, action, now, true, Some(state_root))
+    execute_with_payload_recovery(tx, actor_id, action, now, Some(&DiskPayloads(state_root)))
 }
 
 fn execute_with_payload_recovery(
@@ -59,8 +60,7 @@ fn execute_with_payload_recovery(
     actor_id: &str,
     action: Action<'_>,
     now: f64,
-    payload_recovery: bool,
-    payload_root: Option<&std::path::Path>,
+    payloads: Option<&dyn PayloadAccess>,
 ) -> Result<Value, ToolRequestError> {
     let actor = crate::event_write::checked_agent(tx, actor_id).map_err(|e| match e {
         crate::event_write::EventWriteError::Store(e) => ToolRequestError::Store(e),
@@ -71,22 +71,9 @@ fn execute_with_payload_recovery(
     })?;
     let actor = serde_json::to_value(actor).map_err(StoreError::from)?;
     if matches!(action, Action::List) {
-        let mut statement=tx.prepare_cached("SELECT id,record FROM runtime_tool_requests WHERE json_extract(record,'$.agent')=?1 ORDER BY json_extract(record,'$.updated') DESC LIMIT 50")?;
         let mut requests = Vec::new();
-        for row in statement.query_map([actor_id], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })? {
-            let (id, raw) = row?;
-            let mut record = records::decode(TABLE, &id, &raw)?;
-            refresh(
-                tx,
-                &mut record,
-                &actor,
-                now,
-                false,
-                payload_recovery,
-                payload_root,
-            )?;
+        for mut record in list_records(tx, actor_id)? {
+            refresh(tx, &mut record, &actor, now, false, payloads)?;
             strip(&mut record, &["result", "signature", "_payloadBlobs"]);
             requests.push(record);
         }
@@ -142,22 +129,14 @@ fn execute_with_payload_recovery(
         )
         .map_err(relocation_error)?;
     }
-    refresh(
-        tx,
-        &mut record,
-        &actor,
-        now,
-        true,
-        payload_recovery,
-        payload_root,
-    )?;
+    refresh(tx, &mut record, &actor, now, true, payloads)?;
     if cancel && lifecycle::cancel(&mut record)? {
         record["updated"] = json!(now);
         if record["stage"] == "cancelled" {
             record["finished"] = json!(now);
             record["result"] = json!({"success":false,"contentItems":[{"type":"inputText","text":json!({"requestId":record["id"],"stage":"cancelled","outcome":"not_applied","cancelRequested":true,"message":"Cancelled before execution"}).to_string()}]});
         }
-        save(tx, &record, &actor, payload_root)?;
+        save(tx, &record, &actor, payloads)?;
     }
     if !cancel {
         if !terminal(&record)
@@ -180,14 +159,49 @@ fn execute_with_payload_recovery(
             record["registryObservedAt"] = json!(now);
         }
     }
-    if !payload_recovery && let Some(result) = record.get_mut("result") {
+    if payloads.is_none()
+        && let Some(result) = record.get_mut("result")
+    {
         expire(result, now);
     }
     strip(&mut record, &["signature"]);
     Ok(record)
 }
 
-fn resolve(tx: &Transaction<'_>, actor: &str, id: &str) -> Result<Option<Value>, ToolRequestError> {
+/// Filesystem access belongs to HTTP's disk adapter or callback preparation.
+/// Callback settlement receives only the prepared in-memory implementation.
+trait PayloadAccess {
+    fn resolve(&self, raw: &Value) -> Result<Value, ToolRequestError>;
+    fn publish(&self, writes: &[crate::payload_blobs::BlobWrite]) -> Result<(), ToolRequestError>;
+}
+struct DiskPayloads<'a>(&'a std::path::Path);
+impl PayloadAccess for DiskPayloads<'_> {
+    fn resolve(&self, raw: &Value) -> Result<Value, ToolRequestError> {
+        Ok(crate::payload_blobs::resolve_record(self.0, raw)?)
+    }
+    fn publish(&self, writes: &[crate::payload_blobs::BlobWrite]) -> Result<(), ToolRequestError> {
+        Ok(crate::payload_blobs::write_blobs(self.0, writes)?)
+    }
+}
+/// Maximum requests in the recovery list, measured in receipt rows.
+const REQUEST_LIST_LIMIT: i64 = 50;
+fn list_records(tx: &Transaction<'_>, actor: &str) -> Result<Vec<Value>, ToolRequestError> {
+    let mut statement = tx.prepare_cached("SELECT id,record FROM runtime_tool_requests WHERE json_extract(record,'$.agent')=?1 ORDER BY json_extract(record,'$.updated') DESC LIMIT ?2")?;
+    let rows = statement.query_map(params![actor, REQUEST_LIST_LIMIT], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+    rows.map(|row| {
+        let (id, raw) = row?;
+        Ok(records::decode(TABLE, &id, &raw)?)
+    })
+    .collect()
+}
+
+pub(crate) fn resolve(
+    tx: &Transaction<'_>,
+    actor: &str,
+    id: &str,
+) -> Result<Option<Value>, ToolRequestError> {
     if let Some(record) = records::get(tx, TABLE, id)?.filter(|r| r["agent"] == actor) {
         return Ok(Some(record));
     }
@@ -223,40 +237,29 @@ fn refresh(
     actor: &Value,
     now: f64,
     specific: bool,
-    payload_recovery: bool,
-    payload_root: Option<&std::path::Path>,
+    payloads: Option<&dyn PayloadAccess>,
 ) -> Result<(), ToolRequestError> {
     let has_record_payload = truthy(record.get("_payloadBlobs"));
     if !specific && terminal(record) {
-        if payload_recovery
-            && has_record_payload
-            && matches!(
-                text(record, "tool"),
-                "orchestration_spawn" | "orchestration_review"
-            )
-            && record
-                .get("agentIds")
-                .and_then(Value::as_array)
-                .is_none_or(Vec::is_empty)
-        {
-            let root = payload_root.ok_or(ToolRequestError::RequiresDependency(PAYLOAD))?;
-            *record = crate::payload_blobs::resolve_record(root, record)?;
+        if payloads.is_some() && has_record_payload && terminal_payload_needed(record) {
+            let root = payloads.ok_or(ToolRequestError::RequiresDependency(PAYLOAD))?;
+            *record = root.resolve(record)?;
         }
         populate_spawned_agent_ids(record);
         return Ok(());
     }
-    if !payload_recovery && has_record_payload {
+    if payloads.is_none() && has_record_payload {
         return Err(ToolRequestError::RequiresDependency(PAYLOAD));
     }
-    if payload_recovery && has_record_payload {
-        let root = payload_root.ok_or(ToolRequestError::RequiresDependency(PAYLOAD))?;
-        *record = crate::payload_blobs::resolve_record(root, record)?;
+    if payloads.is_some() && has_record_payload {
+        let root = payloads.ok_or(ToolRequestError::RequiresDependency(PAYLOAD))?;
+        *record = root.resolve(record)?;
     }
     let saved = records::get(tx, "runtime_tool_results", text(record, "id"))?;
     let has_saved_payload = saved
         .as_ref()
         .is_some_and(|result| truthy(result.get("_payloadBlobs")));
-    if !payload_recovery && has_saved_payload {
+    if payloads.is_none() && has_saved_payload {
         return Err(ToolRequestError::RequiresDependency(PAYLOAD));
     }
     if !has_record_payload
@@ -277,11 +280,11 @@ fn refresh(
         return Ok(());
     };
     if truthy(result.get("_payloadBlobs")) {
-        if !payload_recovery {
+        if payloads.is_none() {
             return Err(ToolRequestError::RequiresDependency(PAYLOAD));
         }
-        let root = payload_root.ok_or(ToolRequestError::RequiresDependency(PAYLOAD))?;
-        result = crate::payload_blobs::resolve_record(root, &result)?;
+        let root = payloads.ok_or(ToolRequestError::RequiresDependency(PAYLOAD))?;
+        result = root.resolve(&result)?;
     }
     // Python's specific `tool_result` lookup expires saved results before it
     // settles them. Inline results on the request row are settled as stored;
@@ -312,7 +315,7 @@ fn refresh(
         ) {
             populate_spawned_agent_ids(record);
         }
-        save(tx, record, actor, payload_root)?;
+        save(tx, record, actor, payloads)?;
     }
     Ok(())
 }
@@ -428,9 +431,9 @@ fn save(
     tx: &Transaction<'_>,
     record: &Value,
     actor: &Value,
-    payload_root: Option<&std::path::Path>,
+    payloads: Option<&dyn PayloadAccess>,
 ) -> Result<(), ToolRequestError> {
-    let decision = payload_root
+    let decision = payloads
         // decide_externalize uses logical table names; the physical SQLite
         // table is runtime_tool_requests, but its payload contract is
         // tool_requests.
@@ -445,7 +448,7 @@ fn save(
     let id = text(persisted, "id");
     records::validate(TABLE, id, persisted.clone())?;
     if let Some((root, decision)) = decision.as_ref() {
-        crate::payload_blobs::write_blobs(root, &decision.writes)?;
+        root.publish(&decision.writes)?;
     }
     reconcile_effect(tx, "tool_requests", persisted, actor)?;
     tx.execute(
@@ -518,6 +521,15 @@ pub(crate) fn reconcile_effect(
         tx.execute("INSERT INTO runtime_execution_effects(id,run,kind,reference,record) VALUES(?1,?2,?3,?4,?5) ON CONFLICT(id) DO UPDATE SET record=excluded.record",params![key,run_id.as_str(),kind,record["id"].as_str(),value.to_string()])?;
     }
     Ok(())
+}
+fn terminal_payload_needed(record: &Value) -> bool {
+    matches!(
+        text(record, "tool"),
+        "orchestration_spawn" | "orchestration_review"
+    ) && record
+        .get("agentIds")
+        .and_then(Value::as_array)
+        .is_none_or(Vec::is_empty)
 }
 fn terminal(record: &Value) -> bool {
     matches!(text(record, "outcome"), "applied" | "not_applied")

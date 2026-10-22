@@ -16,8 +16,6 @@ import {
   parseSelection,
   pruneLogs,
   recipePlan,
-  serverRunDiagnostics,
-  serverShardRunOptions,
   unsafeRustFindings,
 } from "../facade.mjs";
 import {
@@ -35,51 +33,15 @@ import {
 import os from "node:os";
 import path from "node:path";
 
-test("server runner resolves the checkout native module before shared packages", () => {
-  const runnerWitnessTimeoutMilliseconds = 10_000;
-  const result = spawnSync(
-    process.platform === "win32" ? "python" : "python3",
-    [
-      path.join(
-        process.cwd(),
-        "workspaces/runtime/apps/server/tests/server/test_fast_suite_selection.py",
-      ),
-      "FastSuiteSelection.test_runner_resolves_checkout_native_module_before_shared_environment",
-    ],
-    { encoding: "utf8", timeout: runnerWitnessTimeoutMilliseconds },
-  );
-  assert.equal(result.status, 0, result.stderr || String(result.error));
-});
-
 test("short and comprehensive recipes preserve their owned test boundaries", () => {
   const fast = recipePlan(process.cwd(), "test-fast");
   const comprehensive = recipePlan(process.cwd(), "test-comprehensive");
 
-  assert.match(fast.command, /['"]--only['"]\s+['"]fast['"]/);
   assert.match(fast.command, /contracts-check/);
+  assert.match(fast.command, /native\/check-native\.test\.mjs/);
   for (const recipe of [fast, comprehensive]) {
     assert.match(recipe.command, /build-client-wasm\.mjs/);
-    assert.equal(
-      (recipe.command.match(/'studio-operations-python'/g) ?? []).length,
-      1,
-    );
-    assert.ok(
-      recipe.command.indexOf("studio-operations-python") <
-        recipe.command.indexOf("test-server.py"),
-    );
-    assert.ok(
-      recipe.command.indexOf("build-client-wasm.mjs") <
-        recipe.command.indexOf("test-server.py"),
-    );
   }
-  assert.match(
-    comprehensive.command,
-    /['"]build['"] ['"]--locked['"] ['"]--release['"] ['"]-p['"] ['"]studio-runtime-server['"]/,
-  );
-  assert.ok(
-    comprehensive.command.indexOf("studio-runtime-server") <
-      comprehensive.command.indexOf("test-server.py"),
-  );
   assert.match(comprehensive.command, /['"]just['"] ['"]clippy-runtime['"]/);
   assert.ok(
     comprehensive.command.indexOf("build:bundle") <
@@ -139,7 +101,6 @@ test("short and comprehensive recipes preserve their owned test boundaries", () 
     /test:browser:smoke|--workspace|test-server-load|mutations/,
   );
 
-  assert.match(comprehensive.command, /test-server\.py/);
   assert.match(comprehensive.command, /--workspace/);
   assert.match(comprehensive.command, /vitest\.unit\.config\.ts/);
   assert.match(comprehensive.command, /test:browser:smoke/);
@@ -149,10 +110,6 @@ test("short and comprehensive recipes preserve their owned test boundaries", () 
   assert.ok(
     fixture >= 0,
     "the comprehensive tier builds its Rust HTTP fixture",
-  );
-  assert.ok(
-    fixture < comprehensive.command.indexOf("test-server.py"),
-    "the Rust HTTP fixture is built before the server suites",
   );
   assert.ok(
     comprehensive.command.indexOf("'build:bundle'") >= 0 &&
@@ -325,6 +282,7 @@ test("pnpm Node test selection uses the native test-name filter", () => {
           "workspaces/tooling/apps/repository-checks/tests/facade.test.mjs",
           "workspaces/tooling/apps/repository-checks/tests/release-binaries.test.mjs",
           "workspaces/tooling/apps/repository-checks/tests/scale-verifier-teardown.test.mjs",
+          "workspaces/tooling/apps/repository-checks/tests/native-style-policy.test.mjs",
         ],
       ],
     ],
@@ -445,7 +403,6 @@ test("Cargo facade failures retain selection, test failure, install guidance and
     cargo,
     `#!/bin/sh
 printf '%s' "$CODEX_NODE" > "$FIXTURE_NODE_CAPTURE"
-printf '%s' "$CODEX_AGENTS_PYTHON" > "$FIXTURE_NODE_CAPTURE.python"
 case "$FIXTURE_CARGO_MODE" in
   fail) printf '%s\\n' '{"type":"suite","event":"failed","passed":0,"failed":1,"ignored":0}'; exit 100 ;;
   empty) echo 'error: no tests to run'; exit 4 ;;
@@ -454,12 +411,6 @@ esac
 `,
   );
   chmodSync(cargo, 0o755);
-  const resolver = path.join(
-    root,
-    "workspaces/runtime/apps/server/src/codex_python.py",
-  );
-  mkdirSync(path.dirname(resolver), { recursive: true });
-  writeFileSync(resolver, "print('/fixture/prepared-python')\n");
   const original = {
     PATH: process.env.PATH,
     CARGO_TARGET_DIR: process.env.CARGO_TARGET_DIR,
@@ -480,10 +431,6 @@ esac
     const empty = await execute(root, item, "missing_case", true);
     assert.equal(empty.exitCode, 1);
     assert.equal(readFileSync(nodeCapture, "utf8"), process.execPath);
-    assert.equal(
-      readFileSync(`${nodeCapture}.python`, "utf8"),
-      "/fixture/prepared-python",
-    );
     assert.deepEqual(empty.errors, [
       "nextest found no tests matching this selection",
     ]);
@@ -629,112 +576,15 @@ test("focused log cache prunes runs older than fourteen days and retains recent 
   }
 });
 
-test("server summaries count assertion scripts as executed suites and reject no runnable suite output", () => {
-  const item = { name: "server", ecosystem: "server" };
-  assert.equal(
-    parseCounts(
-      item,
-      "Server suites: 1 passed, 0 failed, 0 skipped (opt-in), 0 skipped (environment), 0.2s; plain assertion scripts are counted per suite; 0 runner errors",
-    ).executed,
-    1,
+test("hosted remaining checks prepare native dependencies for workspace Clippy", () => {
+  const workflow = readFileSync(".github/workflows/ci.yml", "utf8");
+  const remaining = workflow
+    .split("  fast-rest:\n")[1]
+    .split("  fast-rust:\n")[0];
+  assert.match(
+    remaining,
+    /uses: \.\/\.github\/actions\/client-build-setup\n\s+with:\n\s+native: "true"/,
   );
-  assert.equal(
-    parseCounts(item, "No runnable server suites: 1 skipped (opt-in).")
-      .executed,
-    0,
-  );
-});
-
-test("server shard facade options are zero-based and diagnostics report plan and ten slowest suites", () => {
-  assert.deepEqual(serverShardRunOptions("1", "4").serverArgs, [
-    "--shard-index",
-    "1",
-    "--shard-count",
-    "4",
-  ]);
-  assert.throws(
-    () => serverShardRunOptions("4", "4"),
-    /Usage: test-server-shard/,
-  );
-  const output = [
-    "Finished nested-fixture.py: passed, 900.00s",
-    `Server runner diagnostics: ${JSON.stringify({
-      workerPlan: { workers: 4 },
-      suiteDurations: Object.fromEntries(
-        Array.from({ length: 12 }, (_, index) => [`suite-${index}`, index + 1]),
-      ),
-    })}`,
-    ...Array.from(
-      { length: 12 },
-      (_, index) => `Finished suite-${index}: passed, ${index + 1}.00s`,
-    ),
-  ].join("\n");
-  const diagnostics = serverRunDiagnostics(output);
-  assert.equal(diagnostics.planLine, 'Selected worker plan: {"workers":4}');
-  assert.equal(diagnostics.durations.length, 10);
-  assert.deepEqual(diagnostics.durations.slice(0, 2), [
-    { suite: "suite-11", seconds: 12 },
-    { suite: "suite-10", seconds: 11 },
-  ]);
-});
-
-test("server failure counts do not double count structured failures or passing tracebacks", () => {
-  const item = { name: "server", ecosystem: "server" };
-  const output = [
-    "Exception in thread Thread-1 (serve_forever):",
-    "Traceback (most recent call last):",
-    "ValueError: Invalid file descriptor: -1",
-    "test_mobile_origin (__main__.MobileOriginContract.test_config_is_exact_https_origin) ... ok",
-    "Finished workspaces/runtime/apps/server/tests/mobile-origin-contract.py: passed, 0.02s",
-    "Server suites: 1 passed, 1 failed, 0 skipped (opt-in), 0 skipped (environment)",
-    'Test outcomes: {"error":0,"failed":1,"passed":8}',
-    "FAIL workspaces/runtime/apps/server/tests/tool-request-http-contract.py: test failure; failing IDs: ['ToolRequestHTTPContract.test_provider_tool_request']",
-  ].join("\n");
-  assert.equal(parseCounts(item, output).failed, 1);
-
-  const plainScriptFailure = [
-    "Server suites: 0 passed, 1 failed, 0 skipped (opt-in), 0 skipped (environment)",
-    "FAIL workspaces/runtime/apps/server/tests/assertion-script.py: exit 1",
-  ].join("\n");
-  assert.equal(parseCounts(item, plainScriptFailure).failed, 1);
-});
-
-test("server failure summaries print failing suite IDs", async () => {
-  const originalWrite = process.stdout.write;
-  let printed = "";
-  process.stdout.write = (chunk) => {
-    printed += chunk.toString();
-    return true;
-  };
-  try {
-    const output = [
-      "Server suites: 0 passed, 1 failed, 0 skipped (opt-in), 0 skipped (environment)",
-      'Test outcomes: {"error":1,"failed":0,"passed":3}',
-      "FAIL tests/example-contract.py: test failure; failing IDs: ['Example.test_reports_failure']",
-    ].join("\n");
-    const result = await execute(
-      process.cwd(),
-      { name: "server", ecosystem: "server" },
-      "",
-      false,
-      {
-        commands: [
-          [
-            "node",
-            [
-              "-e",
-              `process.stdout.write(${JSON.stringify(output)}); process.exit(1)`,
-            ],
-          ],
-        ],
-      },
-    );
-    assert.equal(result.exitCode, 1);
-    assert.match(printed, /Failing server suites:/);
-    assert.match(printed, /Example\.test_reports_failure/);
-  } finally {
-    process.stdout.write = originalWrite;
-  }
 });
 
 test("Vitest summaries count test cases rather than test files", () => {
@@ -1412,4 +1262,97 @@ test("tests retain temporary state ownership and follow the platform temp root",
     ),
     [],
   );
+});
+
+test("installer recipe preserves directory arguments as literal positional values", () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "studio-install-recipe-"));
+  try {
+    const tools = path.join(root, "tools");
+    const target = path.join(root, "target with spaces");
+    const binary = path.join(target, "debug/studio-runtime-server");
+    const capture = path.join(root, "arguments");
+    mkdirSync(tools);
+    mkdirSync(path.dirname(binary), { recursive: true });
+    writeFileSync(path.join(root, "justfile"), readFileSync("justfile"));
+    writeFileSync(path.join(tools, "cargo"), "#!/bin/sh\nexit 0\n");
+    chmodSync(path.join(tools, "cargo"), 0o755);
+    writeFileSync(binary, '#!/bin/sh\nprintf "%s\\0" "$@" > "$CAPTURE"\n');
+    chmodSync(binary, 0o755);
+    const destination = path.join(root, "commands with spaces $literal");
+    const result = spawnSync(
+      "just",
+      [
+        "--justfile",
+        path.join(root, "justfile"),
+        "install",
+        "--bin-dir",
+        destination,
+      ],
+      {
+        env: {
+          ...process.env,
+          PATH: `${tools}:${process.env.PATH}`,
+          CARGO_TARGET_DIR: target,
+          CAPTURE: capture,
+        },
+        encoding: "utf8",
+        timeout: 10000,
+      },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(readFileSync(capture, "utf8").split("\0").slice(0, -1), [
+      "install-cli",
+      "--project",
+      root,
+      "--bin-dir",
+      destination,
+    ]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("repository gates use manifest packages without the retired backend", () => {
+  assert.ok(
+    !discover(process.cwd()).some((item) => item.ecosystem === "server"),
+  );
+  for (const name of [
+    "test-fast",
+    "test-comprehensive",
+    "test-fast-rest",
+    "test-fast-rest-non-rust",
+    "test-heavy",
+  ]) {
+    const recipe = recipePlan(process.cwd(), name);
+    assert.doesNotMatch(
+      recipe.command,
+      /apps\/server|studio-operations-python|codex_python|test-server\.py/,
+    );
+  }
+  const scripts = JSON.parse(readFileSync("package.json", "utf8")).scripts;
+  assert.equal(scripts["typecheck:runtime"], undefined);
+  assert.equal(scripts["test:server:python"], undefined);
+  assert.match(scripts["test:server:bridge"], /studio-claude-bridge/);
+  const workflow = readFileSync(".github/workflows/ci.yml", "utf8");
+  assert.doesNotMatch(
+    workflow,
+    /setup-python|install-cli\.py|^  (?:python|fast-server):/m,
+  );
+  assert.match(workflow, /run: pnpm run contracts:check/);
+  for (const action of ["fast-tier-setup", "client-build-setup"]) {
+    assert.doesNotMatch(
+      readFileSync(`.github/actions/${action}/action.yml`, "utf8"),
+      /python3|setup-python|install-cli\.py|studio-operations-python/,
+    );
+  }
+  for (const job of [
+    "rust",
+    "rust-macos",
+    "rust-build-tests",
+    "fast-rest",
+    "fast-rust",
+    "fast-browser-smoke",
+  ]) {
+    assert.ok(workflow.includes(`  ${job}:`), job);
+  }
 });

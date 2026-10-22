@@ -197,56 +197,6 @@ fn multi_server_protocol_ts() -> String {
     )
 }
 
-/// Project the Rust-owned primitive progress schemas into strict Python DTOs.
-fn agent_progress_py() -> Result<String, String> {
-    #[derive(serde::Deserialize)]
-    struct ModelFields {
-        properties: std::collections::BTreeMap<String, ModelField>,
-    }
-    #[derive(serde::Deserialize)]
-    #[serde(deny_unknown_fields)]
-    struct ModelField {
-        #[serde(rename = "type")]
-        kind: FieldKind,
-        #[serde(rename = "title")]
-        _title: String,
-    }
-    #[derive(serde::Deserialize)]
-    #[serde(rename_all = "lowercase")]
-    enum FieldKind {
-        String,
-        Number,
-    }
-    let mut text = format!("# {HEADER}\nfrom studio_api.models import ContractModel\n");
-    for (name, schema) in crate::agent_progress::schemas() {
-        let fields: ModelFields =
-            serde_json::from_value(schema).map_err(|error| error.to_string())?;
-        // Formatting into this owned String is infallible.
-        writeln!(text, "\n\nclass {name}(ContractModel):").expect("writing to a String");
-        for (name, field) in fields.properties {
-            let kind = match field.kind {
-                FieldKind::String => "str",
-                FieldKind::Number => "float",
-            };
-            // Formatting into this owned String is infallible.
-            writeln!(text, "    {name}: {kind}").expect("writing to a String");
-        }
-    }
-    Ok(text)
-}
-
-/// The record model imports this leaf module without entering the sync package.
-fn start_wait_py() -> Result<String, String> {
-    let reasons = crate::agent_progress::StartWaitReason::ALL
-        .iter()
-        .map(|reason| serde_json::to_string(reason).map_err(|error| error.to_string()))
-        .collect::<Result<Vec<_>, _>>()?
-        .join(", ");
-    Ok(format!(
-        "# {HEADER}\nfrom typing import Literal\n\nStartWaitReason = Literal[{reasons}]\n"
-    ))
-}
-
 fn delivery_moment_ts() -> String {
     let mut text = format!("// {HEADER}\nexport const DeliveryMoment = {{\n");
     for moment in DeliveryMoment::ALL {
@@ -267,42 +217,6 @@ fn delivery_moment_ts() -> String {
         .expect("write string");
     }
     text.push_str("    default:\n      throw new Error(\"Invalid delivery moment\");\n  }\n}\n");
-    text
-}
-
-fn delivery_moment_py() -> String {
-    let mut text = format!(
-        "# {HEADER}\nfrom enum import StrEnum\nfrom typing import Literal\n\n\nclass DeliveryMoment(StrEnum):\n"
-    );
-    for moment in DeliveryMoment::ALL {
-        writeln!(
-            text,
-            "    {} = {}",
-            moment.as_str().to_uppercase(),
-            json_string(moment.as_str())
-        )
-        .expect("write string");
-    }
-    text.push_str("\n\nLEGACY_DELIVERY_MOMENTS: dict[str, DeliveryMoment] = {\n");
-    for (legacy, moment) in delivery::LEGACY_DELIVERY_MOMENTS {
-        writeln!(
-            text,
-            "    {}: DeliveryMoment.{},",
-            json_string(legacy),
-            moment.as_str().to_uppercase()
-        )
-        .expect("write string");
-    }
-    text.push_str("}\n");
-    text.push_str("\n\nDeliveryMomentInput = Literal[\n");
-    for name in DeliveryMoment::ALL
-        .map(DeliveryMoment::as_str)
-        .into_iter()
-        .chain(delivery::LEGACY_DELIVERY_MOMENTS.map(|(name, _)| name))
-    {
-        writeln!(text, "    {},", json_string(name)).expect("write string");
-    }
-    text.push_str("]\n");
     text
 }
 
@@ -650,36 +564,8 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
             ),
         },
         Rendered {
-            path: "workspaces/runtime/apps/server/src/codex_start_wait.py".into(),
-            text: start_wait_py()?,
-        },
-        Rendered {
-            path: "workspaces/runtime/apps/server/src/studio_api/sync/agent_progress_generated.py"
-                .into(),
-            text: agent_progress_py()?,
-        },
-        Rendered {
             path: web("deliveryMoment.ts"),
             text: delivery_moment_ts(),
-        },
-        Rendered {
-            path: "workspaces/runtime/apps/server/src/codex_delivery_moment.py".into(),
-            text: delivery_moment_py(),
-        },
-        Rendered {
-            path: "workspaces/runtime/apps/server/src/codex_turn_limits.py".into(),
-            text: format!(
-                "# {HEADER}\nMAX_TURN_ATTACHMENTS = {}\n",
-                values::MAX_TURN_ATTACHMENTS
-            ),
-        },
-        Rendered {
-            path: "workspaces/runtime/apps/server/src/codex_work_limits.py".into(),
-            text: format!(
-                "# {HEADER}\nTASK_SUBMISSION_MAX_FILES = {}\nTASK_SUBMISSION_PATH_MAX_CODEPOINTS = {}\n",
-                values::TASK_SUBMISSION_MAX_FILES,
-                values::TASK_SUBMISSION_PATH_MAX_CODEPOINTS,
-            ),
         },
         Rendered {
             path: web("sharedValues.ts"),
@@ -734,6 +620,22 @@ pub fn repository_root() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn generated_contracts_do_not_recreate_the_removed_backend() {
+        let rendered = render(&repository_root(), false).expect("contracts render");
+        assert!(
+            rendered
+                .iter()
+                .all(|file| !file.path.starts_with("workspaces/runtime/apps/server/"))
+        );
+        assert!(
+            rendered
+                .iter()
+                .any(|file| file.path
+                    == "workspaces/runtime/apps/vm-guest/shared_values_generated.py")
+        );
+    }
 
     #[test]
     fn committed_contract_copies_match_the_rust_owners() {

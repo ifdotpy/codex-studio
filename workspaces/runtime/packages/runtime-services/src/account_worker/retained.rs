@@ -300,6 +300,7 @@ fn validate(request: &SessionRequest) -> Result<(), PortError> {
                 | Method::ThreadItemsList
                 | Method::ThreadBackgroundTerminalsList
                 | Method::ThreadBackgroundTerminalsTerminate
+                | Method::ThreadBackgroundTerminalsClean
                 | Method::ThreadCommandExecutionBackground
                 | Method::ThreadStart
                 | Method::TurnStart
@@ -372,6 +373,8 @@ fn validate(request: &SessionRequest) -> Result<(), PortError> {
             && !valid_background_terminals_list(&request.params))
         || (request.method == Method::ThreadBackgroundTerminalsTerminate
             && !valid_background_terminals_terminate(&request.params))
+        || (request.method == Method::ThreadBackgroundTerminalsClean
+            && !valid_background_terminals_clean(&request.params))
         || (request.method == Method::ThreadCommandExecutionBackground
             && !valid_command_background(&request.params))
         || (request.method == Method::ThreadSettingsUpdate && !valid_settings_update(request))
@@ -435,6 +438,17 @@ fn valid_background_terminals_terminate(params: &Value) -> bool {
             .get("processId")
             .and_then(Value::as_str)
             .is_some_and(|id| !id.is_empty())
+}
+
+/// `thread/backgroundTerminals/clean` names exactly one thread.
+fn valid_background_terminals_clean(params: &Value) -> bool {
+    params.as_object().is_some_and(|params| {
+        params.len() == 1
+            && params
+                .get("threadId")
+                .and_then(Value::as_str)
+                .is_some_and(|id| !id.is_empty())
+    })
 }
 
 /// `thread/commandExecution/background` names exactly one item of one turn.
@@ -890,6 +904,27 @@ mod validation_tests {
             json!({"threadId":"thread","turnId":"turn"}),
             json!({"threadId":"thread","turnId":"turn","itemId":""}),
             json!({"threadId":"thread","turnId":"turn","itemId":"item","extra":1}),
+        ] {
+            assert_eq!(validate(&request(params, true)), Err(PortError::Invalid));
+        }
+    }
+
+    #[test]
+    fn background_terminal_clean_names_exactly_one_thread() {
+        let request = |params: Value, actor: bool| SessionRequest {
+            method: Method::ThreadBackgroundTerminalsClean,
+            params,
+            ..turns_request("full", 1, actor)
+        };
+        assert!(validate(&request(json!({"threadId":"thread"}), true)).is_ok());
+        assert_eq!(
+            validate(&request(json!({"threadId":"thread"}), false)),
+            Err(PortError::Invalid)
+        );
+        for params in [
+            json!({}),
+            json!({"threadId":""}),
+            json!({"threadId":"thread","processId":"process"}),
         ] {
             assert_eq!(validate(&request(params, true)), Err(PortError::Invalid));
         }

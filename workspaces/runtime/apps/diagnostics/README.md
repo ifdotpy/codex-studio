@@ -32,4 +32,9 @@ The integration test serves a loopback fixture and checks a committed golden out
 
 ## Installation and packaging
 
-`install-cli.py` installs the existing thirteen commands without requiring Rust. It additionally links `codex-diagnostics` when a release binary exists in `target/release`, the configured `CARGO_TARGET_DIR/release`, or a packaged `resources/workspace/bin`; otherwise it prints a one-line build instruction and exits successfully. The installer never invokes Cargo. In a development checkout, build with `cargo build --locked --release -p studio-diagnostics`; `cargo clean` removes that binary and a subsequent install will omit the diagnostics link until it is rebuilt. Desktop packaging builds with Cargo and includes the binary at `Resources/workspace/bin/codex-diagnostics`.
+`just install` builds the Rust server, process supervisor, and diagnostics CLI, then
+installs their command links in `~/.local/bin`. It accepts `--bin-dir DIRECTORY`,
+refuses unrelated executables, and removes only obsolete Python links belonging
+to the selected checkout. `codex-diagnostics` is required for this installation;
+the installer does not prepare Python or install an extension. Desktop packaging
+includes the binary at `Resources/workspace/bin/codex-diagnostics`.

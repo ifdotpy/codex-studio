@@ -306,6 +306,8 @@ pub struct RuntimeOrchestrationEffects {
     default_account: String,
     known_accounts: Vec<Value>,
     lifecycle_ports: Option<Arc<dyn crate::agent_lifecycle_runtime::LifecyclePorts>>,
+    /// The installed app that this server offers to paired servers (docs/peer-updates.md).
+    update_offer: Arc<crate::peer_updates::Offer>,
 }
 
 impl RuntimeOrchestrationEffects {
@@ -319,6 +321,7 @@ impl RuntimeOrchestrationEffects {
             default_account: "default".to_owned(),
             known_accounts: Vec::new(),
             lifecycle_ports: None,
+            update_offer: Arc::new(crate::peer_updates::Offer::installed()),
         }
     }
 
@@ -335,6 +338,7 @@ impl RuntimeOrchestrationEffects {
             store,
             browser_callback,
             lifecycle_ports: Some(lifecycle_ports),
+            update_offer: Arc::new(crate::peer_updates::Offer::installed()),
         }
     }
 
@@ -348,6 +352,7 @@ impl RuntimeOrchestrationEffects {
             default_account: "default".to_owned(),
             known_accounts: Vec::new(),
             lifecycle_ports: None,
+            update_offer: Arc::new(crate::peer_updates::Offer::installed()),
         }
     }
 
@@ -363,6 +368,7 @@ impl RuntimeOrchestrationEffects {
             default_account,
             known_accounts,
             lifecycle_ports: None,
+            update_offer: Arc::new(crate::peer_updates::Offer::installed()),
         }
     }
 
@@ -379,6 +385,41 @@ impl RuntimeOrchestrationEffects {
             default_account,
             known_accounts,
             lifecycle_ports: Some(lifecycle_ports),
+            update_offer: Arc::new(crate::peer_updates::Offer::installed()),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_update_offer(mut self, offer: crate::peer_updates::Offer) -> Self {
+        self.update_offer = Arc::new(offer);
+        self
+    }
+
+    /// Python `_receive` for the `update.*` actions: reads of the installed app.
+    /// A refusal is a not-applied receipt; a file failure leaves the outcome unknown.
+    async fn peer_update(
+        &self,
+        principal: &str,
+        envelope: &Value,
+    ) -> Result<ExchangeOutcome, AccessError> {
+        let result = Arc::clone(&self.update_offer)
+            .receive(
+                self.store.root().to_path_buf(),
+                principal.to_owned(),
+                text(envelope, "action").to_owned(),
+                envelope["payload"].clone(),
+            )
+            .await;
+        match result {
+            Ok(value) => Ok(ExchangeOutcome::Applied(value)),
+            Err(crate::peer_updates::UpdateError::Refused(message)) => {
+                Ok(ExchangeOutcome::NotApplied(message))
+            }
+            Err(crate::peer_updates::UpdateError::Failed(_)) => Err(refused(
+                503,
+                "update_unavailable",
+                "The update read could not run",
+            )),
         }
     }
 
@@ -1349,6 +1390,7 @@ impl OrchestrationEffects for RuntimeOrchestrationEffects {
         ) || GIT_CHANNEL_ACTIONS.contains(&action)
             || (cfg!(unix) && SERVER_COMMAND_ACTIONS.contains(&action))
             || action == "projects"
+            || crate::peer_updates::ACTIONS.contains(&action)
             || (action == "stop" && self.lifecycle_ports.is_some())
     }
 
@@ -1521,6 +1563,9 @@ impl RuntimeOrchestrationEffects {
         }
         if action == "projects" {
             return self.projects().await;
+        }
+        if crate::peer_updates::ACTIONS.contains(&action) {
+            return self.peer_update(principal, envelope).await;
         }
         if GIT_CHANNEL_ACTIONS.contains(&action) {
             return self.git_channel(envelope).await;
@@ -2276,11 +2321,16 @@ const PEER_REPLAY_SAFE_ACTIONS: &[&str] = &[
     "exec_read",
     // Removing a released bundle again has no further effect.
     "release",
+    // Reads of the installed app and its archive (Python `UPDATE_ACTIONS`).
+    "update.offer",
+    "update.export",
+    "update.chunk",
+    "update.release",
 ];
 
-/// Python `receive` and `deliver` never answer a bundle chunk from its saved
-/// receipt: that receipt keeps no data, so each delivery reads the chunk again.
-const REREAD_ACTIONS: &[&str] = &["chunk"];
+/// Python `receive` and `deliver` never answer a bundle or update chunk from its
+/// saved receipt: that receipt keeps no data, so each delivery reads the chunk again.
+const REREAD_ACTIONS: &[&str] = &["chunk", "update.chunk"];
 
 /// Python `compact_receipt`: a stored chunk receipt keeps no chunk data.
 fn compact_receipt(action: &str, result: &ExchangeOutcome, key: &str) -> Value {
@@ -3355,6 +3405,131 @@ mod tests {
             )
             .expect("peer identity"),
             ("https://peer.invalid".to_owned(), "public-key".to_owned())
+        );
+    }
+
+    /// The Python puller of a paired server (docs/peer-updates.md) asks this
+    /// server for its build and archive. Without these actions the paired server
+    /// never gets an offer, keeps another API schema, and its projects stay
+    /// hidden in the shared project list.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn paired_server_pulls_the_installed_app_and_chunk_receipts_keep_no_data() {
+        use super::{OrchestrationDriver, RuntimeOrchestrationEffects};
+        use base64::Engine;
+        use serde_json::json;
+
+        let directory = tempfile::tempdir().expect("temporary state directory");
+        let store = Arc::new(
+            RuntimeStore::open(Some(directory.path()))
+                .await
+                .expect("open store"),
+        );
+        let record = json!({
+            "id": "peer-a", "clientId": "peer-a", "kind": "server", "label": "Peer",
+            "created": 1, "publicKey": "public-key", "origin": "https://peer.invalid",
+            "status": "paired"
+        });
+        store
+            .transaction(move |tx| {
+                tx.execute(
+                    "INSERT INTO runtime_access_clients(id,record) VALUES (?1,?2)",
+                    params!["peer-a", record.to_string()],
+                )?;
+                Ok(())
+            })
+            .await
+            .expect("insert paired peer");
+        let tools = tempfile::tempdir().expect("fixture app folder");
+        let offer = crate::peer_updates::fixture::offer(tools.path(), b"app archive");
+        let driver = OrchestrationDriver::new(
+            Arc::clone(&store),
+            Arc::new(HttpsPairedTransport::new(Arc::clone(&store))),
+            Arc::new(RuntimeOrchestrationEffects::new(Arc::clone(&store)).with_update_offer(offer)),
+        );
+        let request = |key: &str, action: &str, payload: serde_json::Value| json!({"requestId": key, "action": action, "payload": payload});
+
+        let offered = driver
+            .receive(
+                "peer-a",
+                &request("offer-1", "update.offer", json!({})),
+                100,
+            )
+            .await
+            .expect("offer receipt");
+        assert_eq!(
+            offered,
+            ExchangeOutcome::Applied(json!({"build": crate::peer_updates::fixture::build()}))
+        );
+        let other = driver
+            .receive(
+                "peer-a",
+                &request("export-0", "update.export", json!({"builtAt": 1.5})),
+                100,
+            )
+            .await
+            .expect("refused export receipt");
+        assert_eq!(
+            other,
+            ExchangeOutcome::NotApplied("This server runs another build".into())
+        );
+        let ExchangeOutcome::Applied(meta) = driver
+            .receive(
+                "peer-a",
+                &request(
+                    "export-1",
+                    "update.export",
+                    json!({"builtAt": 1792647971.037}),
+                ),
+                101,
+            )
+            .await
+            .expect("export receipt")
+        else {
+            panic!("the export is applied");
+        };
+        assert_eq!(meta["size"], json!(b"app archive".len()));
+        let chunk = request(
+            "chunk-1",
+            "update.chunk",
+            json!({"export": meta["export"], "offset": 0}),
+        );
+        for now in [102, 103] {
+            let ExchangeOutcome::Applied(value) = driver
+                .receive("peer-a", &chunk, now)
+                .await
+                .expect("chunk receipt")
+            else {
+                panic!("the chunk is applied");
+            };
+            let data = base64::engine::general_purpose::STANDARD
+                .decode(value["data"].as_str().expect("chunk data"))
+                .expect("base64 chunk");
+            assert_eq!(data, b"app archive", "a replay reads the chunk again");
+        }
+        let saved: String = store
+            .test_reader()
+            .expect("test reader")
+            .query_row(
+                "SELECT result FROM runtime_server_inbox WHERE id='chunk-1'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("stored chunk receipt");
+        let saved: serde_json::Value = serde_json::from_str(&saved).expect("receipt JSON");
+        assert_eq!(saved["outcome"], "applied");
+        assert!(saved["value"].get("data").is_none());
+        assert_eq!(saved["value"]["nextOffset"], json!(b"app archive".len()));
+        assert!(
+            driver
+                .receive(
+                    "stranger",
+                    &request("offer-2", "update.offer", json!({})),
+                    104
+                )
+                .await
+                .is_err(),
+            "only a paired server gets an offer"
         );
     }
 }

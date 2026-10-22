@@ -411,6 +411,8 @@ fn decide_externalize_result_ordered(
 
 /// Publish each decision blob durably beneath `<state>/blobs`.
 pub fn write_blobs(state_root: &Path, writes: &[BlobWrite]) -> Result<(), PayloadBlobError> {
+    #[cfg(test)]
+    test_io_gate(state_root, TestIoOperation::Write);
     let root = state_root.join("blobs");
     ensure_directory(&root, state_root)?;
     for write in writes {
@@ -448,6 +450,8 @@ pub fn write_blobs(state_root: &Path, writes: &[BlobWrite]) -> Result<(), Payloa
 }
 
 pub fn load_blob(state_root: &Path, reference: &Value) -> Result<Vec<u8>, PayloadBlobError> {
+    #[cfg(test)]
+    test_io_gate(state_root, TestIoOperation::Read);
     let reference = BlobRef::parse(reference)?;
     let bytes = read_blob_without_symlinks(state_root, &reference)?;
     if bytes.len() as u64 != reference.size || hash_hex(&bytes) != reference.sha256 {
@@ -515,15 +519,24 @@ fn read_blob_without_symlinks(
 }
 
 pub fn resolve_record(state_root: &Path, input: &Value) -> Result<Value, PayloadBlobError> {
+    resolve_record_with(input, |reference| {
+        Ok(serde_json::from_slice(&load_blob(state_root, reference)?)?)
+    })
+}
+
+/// Resolve dynamic payload fields through the caller's verified payload owner.
+pub(crate) fn resolve_record_with(
+    input: &Value,
+    mut load: impl FnMut(&Value) -> Result<Value, PayloadBlobError>,
+) -> Result<Value, PayloadBlobError> {
     let mut record = input
         .as_object()
         .cloned()
         .ok_or(PayloadBlobError::InvalidRecord)?;
     if let Some(refs) = record.remove("_payloadBlobs") {
-        let refs = refs.as_object().ok_or(PayloadBlobError::InvalidReference)?;
+        let refs: std::collections::BTreeMap<String, Value> = serde_json::from_value(refs)?;
         for (field, reference) in refs {
-            let bytes = load_blob(state_root, reference)?;
-            record.insert(field.clone(), serde_json::from_slice(&bytes)?);
+            record.insert(field, load(&reference)?);
         }
     }
     Ok(Value::Object(record))
@@ -868,4 +881,36 @@ mod tests {
             absent
         );
     }
+}
+
+#[cfg(test)]
+pub(crate) struct TestIoGate {
+    pub entered: tokio::sync::oneshot::Sender<()>,
+    pub release: std::sync::mpsc::Receiver<()>,
+}
+#[cfg(test)]
+pub(crate) fn test_io_gates()
+-> &'static std::sync::Mutex<std::collections::BTreeMap<(PathBuf, TestIoOperation), TestIoGate>> {
+    static GATES: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::BTreeMap<(PathBuf, TestIoOperation), TestIoGate>>,
+    > = std::sync::OnceLock::new();
+    GATES.get_or_init(Default::default)
+}
+#[cfg(test)]
+fn test_io_gate(root: &Path, operation: TestIoOperation) {
+    let gate = test_io_gates()
+        .lock()
+        .expect("test gates")
+        .remove(&(root.to_path_buf(), operation));
+    if let Some(gate) = gate {
+        gate.entered.send(()).expect("read arrival");
+        gate.release.recv().expect("release file read");
+    }
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+pub(crate) enum TestIoOperation {
+    Read,
+    Write,
 }

@@ -127,9 +127,8 @@ The frozen runtime references are not documentation that can be revised.
 `upgrade-linux-vm-layr.py` updates the guest of an existing VM. Many VM agents can run at that
 time, so a change that the guest can take in place does not reboot the VM:
 
-```sh
-python3 workspaces/runtime/apps/server/src/upgrade-linux-vm-layr.py --state <vm-state> --helper <helper> --operation-id <id>
-```
+The former Python backend command has been removed. See [testing](testing.md)
+for current Rust checks.
 
 The root broker owns the rules (`vm-guest/guest_update.py`). The Mac
 (`codex_linux_vm_update.py`) asks it for a path with `update.plan`. The request has the SHA-256
@@ -372,14 +371,8 @@ no answer, without a restart. A dead kernel is restarted at the next check (at m
 
 Run checks one at a time:
 
-```sh
-python3 workspaces/runtime/apps/server/src/codex_python.py --exec workspaces/runtime/apps/server/tests/vm-agents-contract.py
-python3 workspaces/runtime/apps/server/src/codex_python.py --exec workspaces/runtime/apps/server/src/test_codex_linux_vm_watchdog.py
-python3 workspaces/runtime/apps/server/src/codex_python.py --exec workspaces/runtime/apps/server/src/test_codex_linux_vm_update.py
-python3 -B -m unittest discover -s workspaces/runtime/apps/vm-guest -p test_guest_update.py
-python3 workspaces/runtime/apps/server/src/codex_python.py --exec workspaces/runtime/apps/server/src/test_codex_linux_vm_rosetta.py
-python3 workspaces/runtime/apps/server/src/codex_python.py --exec workspaces/runtime/apps/server/tests/linux-vm-studio-native.py --state-dir <isolated-vm-state> --helper <native-helper>
-```
+The former Python backend command has been removed. See [testing](testing.md)
+for current Rust checks.
 
 The first suite uses a local native provider fixture. It sends no model request.
 The second suite checks the watchdog with a fake helper. It starts no VM.

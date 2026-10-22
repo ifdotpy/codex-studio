@@ -1,7 +1,6 @@
-use crate::prepared_python_support as prepared_python;
 use rusqlite::{Connection, Transaction};
 use serde_json::{Value, json};
-use std::{path::Path, process::Command, sync::OnceLock};
+use std::sync::OnceLock;
 use studio_runtime_providers::{Method, RequestId, RequestTicket};
 use studio_runtime_services::workspace_operations::ProviderTicket;
 use studio_runtime_services::{
@@ -11,21 +10,15 @@ use studio_runtime_services::{
     native_review::{self, ReviewPlan},
 };
 
-#[allow(clippy::disallowed_methods)]
 fn corpus() -> &'static Value {
     static CORPUS: OnceLock<Value> = OnceLock::new();
     CORPUS.get_or_init(|| {
-        let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src");
-        let output = Command::new(prepared_python::prepared_python(&source))
-            .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/wave7_p11_native/oracle.py"))
-            .output()
-            .expect("start real Python oracle");
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        serde_json::from_slice(&output.stdout).expect("corpus JSON")
+        let data = if std::env::var_os("STUDIO_RUNTIME_CORPUS_FULL").is_some() {
+            include_str!("wave7_p11_native/cases-full.json")
+        } else {
+            include_str!("wave7_p11_native/cases.json")
+        };
+        serde_json::from_str(data).expect("frozen native corpus")
     })
 }
 struct Gate;

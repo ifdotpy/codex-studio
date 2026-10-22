@@ -1,0 +1,14 @@
+[
+  {
+    "id": "086cc3e3-68a8-429f-9ec1-895aad72f181",
+    "kind": "userMessage",
+    "phase": null,
+    "text": "split-stream"
+  },
+  {
+    "id": "stream-blocks",
+    "kind": "agentMessage",
+    "phase": "final_answer",
+    "text": "First stream block.\nSecond stream block."
+  }
+]

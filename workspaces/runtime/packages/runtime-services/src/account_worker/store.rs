@@ -268,6 +268,14 @@ pub(super) async fn recover(
             at,
             restart,
         )?;
+        // A native question or approval of another provider generation can no
+        // longer reach its sender; its card must not wait for the user.
+        crate::provider_callbacks::expire_ended_generations(tx, &account, generation.0).map_err(
+            |error| match error {
+                crate::provider_callbacks::CallbackError::Store(error) => WorkerError::Store(error),
+                _ => invalid(&account),
+            },
+        )?;
         // A provider replacement in this backend is a disconnect. Actual backend
         // restarts keep their separate history-reconciliation notification path.
         if !restart {
@@ -803,6 +811,7 @@ pub(super) async fn submitted(
     } = evidence;
     let account = account.to_owned();
     let blocked_intent = context.intent.clone();
+    let blocked_method = context.method.clone();
     let result = scheduler::lifecycle_transaction_with(store, move |tx| {
         if receipt(tx, &context.operation, "submitted")?.is_some() {
             return Ok(false);
@@ -912,13 +921,59 @@ pub(super) async fn submitted(
     })
     .await;
     match result {
+        Err(WorkerError::Notification(
+            crate::notification_dispatch::NotificationDispatchError::ConflictingInput,
+        )) => {
+            let reason = "Submitted input conflicts with an earlier record".to_owned();
+            scheduler::settle_start_outcome(store, &blocked_intent, TurnStart::Blocked { reason })
+                .await?;
+            Ok(false)
+        }
         Err(WorkerError::PreparationRefused(reason)) => {
+            let reason = if preparation::snapshot_changed(&reason) {
+                let reason = changed_start_reason(&blocked_method, &reason);
+                if return_changed_start(store, &blocked_intent, &reason).await? {
+                    return Ok(false);
+                }
+                reason
+            } else {
+                reason
+            };
             scheduler::settle_start_outcome(store, &blocked_intent, TurnStart::Blocked { reason })
                 .await?;
             Ok(false)
         }
         result => result,
     }
+}
+
+/// Return the input batch of a start whose commit was refused because the
+/// agent state changed after its preparation. The refused commit rolled back
+/// and its request was never written, so a new preparation from the current
+/// state cannot repeat a message; the caller wakes the queued agent. Returns
+/// false when the start cannot return (see
+/// `SchedulerRepository::return_unstarted_input`, bounded per run).
+async fn return_changed_start(
+    store: &RuntimeStore,
+    intent: &TurnIntent,
+    reason: &str,
+) -> Result<bool, WorkerError> {
+    let identity = intent.identity();
+    let reason = reason.to_owned();
+    Ok(scheduler::lifecycle_transaction(store, move |tx| {
+        SchedulerRepository::return_unstarted_input(tx, &identity, &reason)
+    })
+    .await?)
+}
+
+/// The stored error of a start whose `method` request was refused at its
+/// commit because the agent state changed while Studio prepared it. `refusal`
+/// is the refusal code with the names of the changed fields.
+fn changed_start_reason(method: &str, refusal: &str) -> String {
+    format!(
+        "Provider did not send {method}: the agent state changed while Studio prepared it \
+         ({refusal}). The input is kept."
+    )
 }
 #[derive(Default)]
 pub(super) struct SettledOutcome {
@@ -1105,10 +1160,20 @@ fn settle_outcome(
             ..
         } => false,
         SessionOutcome::Write {
-            outcome, ticket, ..
+            outcome: WriteOutcome::NotSent,
+            ticket,
+            not_sent,
+            ..
         } => {
-            let not_sent = outcome == WriteOutcome::NotSent;
-            uncertain(tx, &context, ticket.as_ref(), not_sent, session_closed)? || not_sent
+            if let Some((agent, epoch)) =
+                settle_not_sent(tx, &context, ticket.as_ref(), not_sent, session_closed)?
+            {
+                effect = Some(Effect::Wake(agent, epoch));
+            }
+            true
+        }
+        SessionOutcome::Write { ticket, .. } => {
+            uncertain(tx, &context, ticket.as_ref(), false, session_closed)?
         }
         SessionOutcome::Resolved {
             outcome: RequestOutcome::Unknown,
@@ -1322,6 +1387,56 @@ fn start_settled(
             .is_some_and(|saved| saved.pointer("/receipts/startResult").is_some()),
     )
 }
+/// Settle a request proven not written to the provider. Returns the agent to
+/// wake when its exact input batch went back to the queue.
+///
+/// The provider never received the input, so a start request (thread or turn)
+/// returns its batch and the agent claims it again (for example after its
+/// reply deadline elapsed while Studio prepared it). The stored reason names
+/// the request and the cause. A batch that returned too often, or an attempt
+/// that is no longer current, settles failed with that reason; its input stays
+/// pending.
+fn settle_not_sent(
+    tx: &studio_runtime_store::Transaction<'_>,
+    context: &Pending,
+    ticket: Option<&studio_runtime_providers::RequestTicket>,
+    cause: Option<crate::provider_session_task::NotSentCause>,
+    session_closed: bool,
+) -> Result<Option<(String, i64)>, WorkerError> {
+    let method = context.method()?;
+    if method == Method::TurnInterrupt {
+        uncertain(tx, context, ticket, true, session_closed)?;
+        return Ok(None);
+    }
+    let identity = context.intent.identity();
+    // A thread request that died with its provider process never submitted the
+    // input; the attempt retries on the next session instead of holding it.
+    if method != Method::TurnStart
+        && session_closed
+        && SchedulerRepository::requeue_unsubmitted_attempt(tx, &identity)?
+    {
+        return Ok(None);
+    }
+    let reason = not_sent_reason(method, cause);
+    if SchedulerRepository::return_unstarted_input(tx, &identity, &reason)? {
+        return Ok(Some((identity.agent_id, identity.epoch)));
+    }
+    SchedulerRepository::settle_start_outcome(tx, &identity, "pending", Some(&reason))?;
+    Ok(None)
+}
+
+/// The stored error of a start whose `method` request was not sent.
+fn not_sent_reason(
+    method: Method,
+    cause: Option<crate::provider_session_task::NotSentCause>,
+) -> String {
+    format!(
+        "Provider did not send {}: {}. The input is kept.",
+        method.as_str(),
+        cause.map_or("Studio did not write it", |cause| cause.describe())
+    )
+}
+
 /// Settle a request whose provider outcome is unknown. Returns true when the
 /// request is retired because its attempt went back to the queue.
 fn uncertain(

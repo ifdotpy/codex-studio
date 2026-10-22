@@ -340,3 +340,54 @@ fn create_private_directory(path: &Path) {
             .expect("Python startup directory is owner-only");
     }
 }
+
+#[tokio::test]
+async fn rust_fresh_state_catalog_is_deterministic_and_survives_reopen() {
+    fn catalog(root: &Path) -> BTreeMap<String, Vec<(String, String, String)>> {
+        ["canvas.sqlite3", "analytics.sqlite3"]
+            .into_iter()
+            .map(|name| {
+                let db = Connection::open(root.join(name)).expect("fresh database opens");
+                let mut statement = db.prepare(
+                    "SELECT type,name,sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY type,name",
+                ).expect("fresh catalog query prepares");
+                let objects = statement.query_map([], |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+                }).expect("fresh catalog query runs")
+                  .collect::<Result<Vec<_>, _>>().expect("fresh catalog reads");
+                assert!(!objects.is_empty(), "{name} has a schema");
+                let journal: String = db.pragma_query_value(None, "journal_mode", |row| row.get(0))
+                    .expect("journal mode reads");
+                assert_eq!(journal, "wal");
+                (name.to_owned(), objects)
+            }).collect()
+    }
+    let first = temporary_state("catalog-first");
+    let second = temporary_state("catalog-second");
+    drop(
+        RuntimeStore::open(Some(first.path()))
+            .await
+            .expect("first fresh state opens"),
+    );
+    let snapshot = catalog(first.path());
+    drop(
+        RuntimeStore::open(Some(second.path()))
+            .await
+            .expect("second fresh state opens"),
+    );
+    assert_eq!(
+        catalog(second.path()),
+        snapshot,
+        "fresh roots have the same catalog"
+    );
+    drop(
+        RuntimeStore::open(Some(first.path()))
+            .await
+            .expect("fresh state reopens"),
+    );
+    assert_eq!(
+        catalog(first.path()),
+        snapshot,
+        "reopen preserves the full catalog"
+    );
+}

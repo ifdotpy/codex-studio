@@ -337,6 +337,15 @@ impl NotificationDispatchRepository {
     ) -> StoreResult<()> {
         EventWriteRepository::put_receipt(transaction, id, signature, result)
     }
+
+    pub fn replace_notification_receipt(
+        transaction: &Transaction<'_>,
+        id: &str,
+        signature: &str,
+        result: &str,
+    ) -> StoreResult<()> {
+        EventWriteRepository::replace_receipt(transaction, id, signature, result)
+    }
 }
 
 fn validate_item(item: &TranscriptItem, agent: &str, include_notices: bool) -> StoreResult<()> {

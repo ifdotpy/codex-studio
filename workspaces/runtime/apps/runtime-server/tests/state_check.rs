@@ -3,35 +3,20 @@ use std::process::Command;
 
 #[test]
 #[allow(clippy::disallowed_methods)]
-fn state_check_reads_python_written_rows_without_changing_or_disclosing_them() {
+fn state_check_reads_fixture_rows_without_changing_or_disclosing_them() {
     let directory = tempfile::tempdir().expect("owned test directory");
     let root = directory.path().to_path_buf();
     fs::create_dir_all(&root).expect("temporary state directory is created");
     let database = root.join("canvas.sqlite3");
-    let python = std::env::var("CODEX_AGENTS_PYTHON").unwrap_or_else(|_| "python3".to_owned());
-    let fixture = r#"
-import sqlite3, sys
-db = sqlite3.connect(sys.argv[1])
-db.executescript('CREATE TABLE runtime_agents(id TEXT PRIMARY KEY, record TEXT NOT NULL); CREATE TABLE runtime_tasks(id TEXT PRIMARY KEY, agent TEXT, record TEXT NOT NULL);')
-db.executemany('INSERT INTO runtime_agents VALUES (?, ?)', [
-    ('valid-secret-id', '{"id":"valid-secret-id","rootId":"root-secret","epoch":0,"status":"idle","sandbox":null}'),
-    ('invalid-secret-id', '{"id":"invalid-secret-id","rootId":"root-secret","epoch":"broken","status":"idle","private":"private-record-content"}')
-])
-db.execute('INSERT INTO runtime_tasks VALUES (?, ?, ?)', ('task-secret-id', 'valid-secret-id', '{"id":"task-secret-id","agent":"valid-secret-id","reattachRecovery":{"state":"pending"},"outputPreviewOnly":true}'))
-db.execute('CREATE TABLE runtime_execution_attempts(id TEXT PRIMARY KEY, record TEXT NOT NULL)')
-db.executemany('INSERT INTO runtime_execution_attempts VALUES (?, ?)', [('attempt-good', '{"id":"attempt-good","epoch":2}'), ('attempt-bad','{"id":"attempt-bad","epoch":"wrong"}')])
-db.commit()
-db.close()
-"#;
-    let created = Command::new(&python)
-        .args(["-B", "-c", fixture])
-        .arg(&database)
-        .status()
-        .expect("Python fixture writer starts");
-    assert!(created.success(), "Python fixture writer succeeds");
+    let db = rusqlite::Connection::open(&database).expect("fixture database opens");
+    db.execute_batch(include_str!("fixtures/state-check.sql"))
+        .expect("fixture rows insert");
+    drop(db);
     let before = fs::read(&database).expect("fixture database is readable");
 
     let result = Command::new(env!("CARGO_BIN_EXE_studio-runtime-server"))
+        .env("PATH", root.join("empty-path"))
+        .env("CODEX_AGENTS_PYTHON", root.join("missing-python"))
         .arg("state-check")
         .arg(&root)
         .output()

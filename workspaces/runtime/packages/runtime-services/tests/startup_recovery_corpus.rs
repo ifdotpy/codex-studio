@@ -1,86 +1,17 @@
-use crate::prepared_python_support as prepared_python;
-
 use serde_json::{Value, json};
-use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::path::PathBuf;
 use studio_runtime_services::{monitor_runtime, scheduler};
 use studio_runtime_store::RuntimeStore;
 
 const NOW: f64 = 2_000_000_000.0;
+// Permission bits keep the disposable identity private, as required by the store.
+#[cfg(unix)]
+const PRIVATE_DIRECTORY_MODE: u32 = 0o700;
+#[cfg(unix)]
+const PRIVATE_FILE_MODE: u32 = 0o600;
 
 fn state_root() -> tempfile::TempDir {
-    prepared_python::disposable_state_dir()
-}
-
-#[allow(clippy::disallowed_methods)]
-fn oracle(root: &Path, command: &str) -> Value {
-    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let source = manifest.join("../../apps/server/src");
-    let python = prepared_python::prepared_python(&source);
-    let isolation = tempfile::Builder::new()
-        .prefix("startup-recovery-oracle-")
-        .tempdir()
-        .expect("isolated Python environment");
-    let cache = isolation.path().join("cache");
-    for directory in ["home", "codex", "claude", "cache"] {
-        std::fs::create_dir_all(isolation.path().join(directory))
-            .expect("create isolated Python directory");
-    }
-    let output = Command::new(python)
-        .arg(manifest.join("tests/startup_recovery/oracle.py"))
-        .arg(command)
-        .arg(root)
-        .env_clear()
-        .env("HOME", isolation.path().join("home"))
-        .env("CODEX_HOME", isolation.path().join("codex"))
-        .env("CLAUDE_CONFIG_DIR", isolation.path().join("claude"))
-        .env("XDG_CACHE_HOME", cache)
-        .env("STUDIO_TEST_ISOLATION_ROOT", isolation.path())
-        .env("PATH", "/usr/local/bin:/usr/bin:/bin")
-        .env("TMPDIR", isolation.path())
-        .env(
-            "CODEX_NODE",
-            std::env::var_os("CODEX_NODE").unwrap_or_else(|| "node".into()),
-        )
-        .env("PYTHONDONTWRITEBYTECODE", "1")
-        .output()
-        .expect("start isolated Runtime oracle");
-    assert!(
-        output.status.success(),
-        "Runtime oracle failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    if command == "recover" {
-        serde_json::from_slice(&output.stdout).expect("Runtime recovery snapshot")
-    } else {
-        json!({})
-    }
-}
-
-fn copy_state(source: &Path, target: &Path) {
-    std::fs::create_dir_all(target).expect("create cloned state");
-    for entry in std::fs::read_dir(source).expect("read source state") {
-        let entry = entry.expect("state entry");
-        let path = entry.path();
-        let destination = target.join(entry.file_name());
-        if path.is_dir() {
-            copy_state(&path, &destination);
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                std::fs::set_permissions(&destination, std::fs::Permissions::from_mode(0o700))
-                    .expect("restrict copied state directory");
-            }
-        } else {
-            std::fs::copy(&path, &destination).expect("copy committed Python state");
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                std::fs::set_permissions(&destination, std::fs::Permissions::from_mode(0o600))
-                    .expect("restrict copied state file");
-            }
-        }
-    }
+    tempfile::tempdir().expect("startup state")
 }
 
 fn rust_snapshot(store: &RuntimeStore) -> Value {
@@ -283,12 +214,36 @@ fn collect_differences(path: &str, left: &Value, right: &Value, out: &mut Vec<St
 #[tokio::test]
 async fn python_constructor_and_rust_startup_match_requests_monitors_events_and_projections() {
     let root = state_root();
-    let python_state = root.path().join("python");
     let rust_state = root.path().join("rust");
-    std::fs::create_dir_all(&python_state).expect("seed state directory");
-    oracle(&python_state, "seed");
-    copy_state(&python_state, &rust_state);
-    let python = oracle(&python_state, "recover");
+    crate::recovery_fixtures::state(
+        &rust_state,
+        include_str!("startup_recovery/canvas.sql"),
+        include_str!("startup_recovery/analytics.sql"),
+    );
+    let identity_directory = rust_state.join("multi-server");
+    std::fs::create_dir(&identity_directory).expect("create identity directory");
+    let identity_path = identity_directory.join("identity.json");
+    std::fs::write(
+        &identity_path,
+        include_str!("startup_recovery/server-identity.json"),
+    )
+    .expect("restore frozen public server identity");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(
+            &identity_directory,
+            std::fs::Permissions::from_mode(PRIVATE_DIRECTORY_MODE),
+        )
+        .expect("private identity directory");
+        std::fs::set_permissions(
+            &identity_path,
+            std::fs::Permissions::from_mode(PRIVATE_FILE_MODE),
+        )
+        .expect("private identity file");
+    }
+    let python: Value = serde_json::from_str(include_str!("startup_recovery/oracle.json"))
+        .expect("frozen startup snapshot");
 
     let store = RuntimeStore::open(Some(&rust_state))
         .await

@@ -22,6 +22,7 @@ mod context_repair_corpus;
 mod continuation_corpus;
 mod continuation_recovery;
 mod image_workspace_corpus;
+mod media_auth_fixtures;
 mod monitor_flood_and_missed_rules;
 mod monitor_recovery;
 mod monitor_start_preparation;
@@ -41,7 +42,6 @@ mod recovery_corpus;
 mod recovery_history;
 mod recovery_store;
 mod relocation_corpus;
-mod restart_recovery_exclusion;
 mod rules_engine_corpus;
 mod rules_tick_atomic;
 mod scheduler_python_parity;
@@ -55,6 +55,7 @@ mod terminal_corpus;
 mod thread_prepare_corpus;
 mod title_generation_corpus;
 mod title_generation_effects;
+mod turn_fixtures;
 mod turn_lifecycle_corpus;
 mod turn_prepare_corpus;
 mod vm_macsync_corpus;
@@ -104,8 +105,8 @@ pub(crate) mod monitor_runtime_support;
 #[path = "multi_server/common.rs"]
 pub(crate) mod multi_server_fixtures;
 
-#[path = "support/prepared_python.rs"]
-pub(crate) mod prepared_python_support;
+#[path = "support/state_template.rs"]
+pub(crate) mod state_template;
 
 #[cfg(unix)]
 #[path = "../../runtime-process/tests/support/mod.rs"]
@@ -113,3 +114,5 @@ pub(crate) mod process_support;
 
 #[path = "support/projections.rs"]
 pub(crate) mod projection_fixtures;
+
+pub(crate) use callback_fixtures::frozen as recovery_fixtures;

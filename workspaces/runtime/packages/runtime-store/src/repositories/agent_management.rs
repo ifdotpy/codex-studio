@@ -260,6 +260,84 @@ pub fn settle_inputs(transaction: &Transaction<'_>, agent: &str) -> StoreResult<
     settle_deleted_inputs(transaction, Some(agent))
 }
 
+/// Stored on input that an archive settled before any turn claimed it.
+pub const ARCHIVED_INPUT_ERROR: &str = "Worker archived before delivery";
+
+/// Settle `ids`, the never-claimed input of a failed worker that is being
+/// archived, as `cancelled` with [`ARCHIVED_INPUT_ERROR`]. An earlier error on
+/// a row stays in its text. Every id must still be pending at `epoch`, the
+/// epoch before the archive; otherwise the transaction fails and nothing changes.
+pub fn settle_archived_inputs(
+    transaction: &Transaction<'_>,
+    agent: &str,
+    epoch: i64,
+    ids: &[String],
+) -> StoreResult<()> {
+    if ids.is_empty() {
+        return Ok(());
+    }
+    let changed = transaction.execute(
+        "UPDATE runtime_events SET status='cancelled',error=CASE WHEN COALESCE(error,'')='' \
+         THEN ?4 ELSE ?4||'; earlier error: '||error END \
+         WHERE agent=?1 AND epoch=?2 AND status='pending' \
+         AND id IN (SELECT value FROM json_each(?3))",
+        rusqlite::params![
+            agent,
+            epoch,
+            serde_json::to_string(ids)?,
+            ARCHIVED_INPUT_ERROR
+        ],
+    )?;
+    if changed != ids.len() {
+        return Err(StoreError::RecordContract(
+            "Archived worker input changed before it was settled",
+        ));
+    }
+    Ok(())
+}
+
+/// The workspace operation journals that `agents` name as their reservation
+/// (`workspaceReservationId`), read by primary key in id order.
+pub fn read_reserved_operations(
+    connection: &Connection,
+    agents: &[Value],
+) -> StoreResult<Vec<Value>> {
+    let ids = agents
+        .iter()
+        .filter_map(|agent| agent.get("workspaceReservationId").and_then(Value::as_str))
+        .collect::<BTreeSet<_>>();
+    let exists: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' \
+         AND name='runtime_workspace_operations')",
+        [],
+        |row| row.get(0),
+    )?;
+    if ids.is_empty() || !exists {
+        return Ok(Vec::new());
+    }
+    let mut statement =
+        connection.prepare_cached("SELECT record FROM runtime_workspace_operations WHERE id=?1")?;
+    let mut rows = Vec::new();
+    for id in ids {
+        let raw = statement
+            .query_row([id], |row| row.get::<_, String>(0))
+            .map(Some)
+            .or_else(|error| match error {
+                rusqlite::Error::QueryReturnedNoRows => Ok(None),
+                error => Err(error),
+            })?;
+        if let Some(raw) = raw {
+            rows.push(parse_record(
+                connection,
+                "runtime_workspace_operations",
+                id.to_owned(),
+                raw,
+            )?);
+        }
+    }
+    Ok(rows)
+}
+
 /// Startup sweep: apply the deleted-agent rule to rows left by earlier versions.
 /// Also cancels pending rows stamped with an epoch older than their agent's current
 /// epoch, which the scheduler can never select.

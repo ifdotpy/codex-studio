@@ -138,70 +138,35 @@ correct when the connection was actually lost and no same-child reattach has
 been confirmed. A later successful reattach clears this provisional state before
 replay; an unavailable, new, or mismatched child leaves it in place.
 
-### First cutover and restart
+### User service installation and updates
 
-Use `codex-supervisor enable` for a terminal-only installation. Run
-`python3 workspaces/runtime/apps/server/src/install-cli.py` first to install the command link. The command
-uses the existing state directory. It does not start a second backend.
+Install the Rust commands, then enable backend startup for the existing state:
 
 ```sh
-codex-supervisor enable --state ~/.local/state/codex-agents --port 4620
+just install
+studio-runtime-server service install --state ~/.local/state/codex-agents
+studio-runtime-server service status
 ```
 
-On macOS, the command preserves the saved recovery paths and environment. It
-sets `supervisorEnabled=true`, installs the independent supervisor LaunchAgent,
-and waits for protocol 1. It then signals only the idle backend. The recovery
-LaunchAgent starts its replacement with supervisor mode enabled. A registered
-supervisor or recovery job stays loaded. No desktop window is required.
-The LaunchAgents require a logged-in macOS user session.
+Installation writes and enables the user configuration without starting,
+restarting, or stopping a backend or supervisor. It does not open runtime state,
+probe a backend, transfer active pipes, or perform a first cutover. An identical
+retry is safe. A differing existing configuration is an error; resolve ownership
+at an authorized idle boundary instead of overwriting it.
 
-The first cutover refuses active turns, queued or uncertain input, monitors,
-terminals, server commands, and supervisor handles. With a running backend, it is
-a first cutover when that backend is not in supervisor mode. With no backend, it
-is a first cutover unless the saved configuration has `supervisorEnabled` and
-`supervisor.sqlite3` exists. Stop admission of new work
-before this command. The command checks activity again before the cutover.
-It preserves the state identity and checks the backend process identity.
-Do not send new work until the command completes. A repeat with an existing
-supervisor-mode backend does not restart it, including when handles are live.
+On Linux, the base unit uses the shared release root's `current` binary.
+`just deliver-server` owns release selection, restart, health checks, and
+rollback. See [Linux setup](linux-server-setup.md). Do not use a manual systemd
+binary-path edit or a second backend as a source-update mechanism.
 
-On Linux, the command installs two systemd user units. See
-[Linux and WSL server setup](linux-server-setup.md). The supervisor uses
-`Restart=always` and `KillMode=process`. The backend waits for supervisor health
-before startup. A planned `systemctl --user restart codex-studio` leaves the
-supervisor and its children alive. Do not restart the supervisor to update the
-backend. `codex-supervisor status --state <path>` reads supervisor health.
-`codex-supervisor wait --state <path>` waits up to 60 seconds for protocol 1.
+On macOS, installation writes a LaunchAgent and enables its label. It leaves
+registered jobs alone and does not bootstrap a backend. Prepare the release
+and bootstrap its printed plist path explicitly when the state has no competing
+backend. Desktop recovery configuration is separate and stays unchanged.
 
-1. Install the desktop build containing `workspaces/runtime/apps/server/src/codex_process_supervisor.py`.
-   Existing launchd recovery configuration remains off for supervisor mode by
-   default. When enabled, the desktop installs a dedicated
-   `local.codex.agents.supervisor.<state-hash>` LaunchAgent before launching or
-   attaching the backend. The recovery job uses a separate
-   `local.codex.agents.recovery.<state-hash>` label and only probes supervisor
-   health. A failed or timed out probe does not start a competing owner. The
-   supervisor service uses `KeepAlive` and `AbandonProcessGroup`; desktop quit,
-   backend restart, or recovery-job rewrite and kickstart do not unload or
-   restart it. The LaunchAgent starts its supervisor with `--wait-for-lease`.
-   If a legacy recovery-started owner still holds the lease, the new instance
-   stays alive, logs `supervisor waiting for owner <pid>` once, and takes over
-   after that owner exits. It then runs the normal identity-checked child cleanup
-   and single fallback-generation recovery.
-2. Choose one idle boundary: stop admitting new work and wait for turns, monitors,
-   background tasks, and user terminals to finish. The first installation cannot
-   transfer existing in-process pipes, so this is the one planned interruption.
-3. Set `CODEX_AGENTS_SUPERVISOR_MODE=1` in the environment used by the desktop,
-   then restart the desktop recovery configuration. `workspaces/client/apps/desktop/recovery.cjs` writes
-   the mode into the recovery config and installs the independent supervisor
-   LaunchAgent. `workspaces/client/apps/desktop/recover_backend.py` probes the supervisor before any
-   backend starts but never takes ownership of its lifecycle. Verify that
-   `/api/desktop` reports protocol 1 and an empty supervisor handle list.
-4. At the planned idle boundary, run
-   `restart-backend-v2.sh --initial-cutover` with the same state directory
-   and mode. This one-time option requires an empty supervisor handle journal,
-   signals only the old backend, and waits for a supervisor-mode replacement.
-   For later backend-only restarts, omit `--initial-cutover`. Do not unload the
-   recovery LaunchAgent or terminate the supervisor.
+`studio-runtime-server service uninstall --state DIRECTORY` disables startup
+and removes the matching configuration. Running work and independent supervisor
+jobs remain alive. Keep the same state and launch environment when removing it.
 
 ### Migrate an install with a legacy recovery-started owner
 
@@ -268,44 +233,42 @@ The journal does not constitute a backup of the complete state directory.
 
 ### Rust backend and Rust supervisor on macOS
 
-Python stays the default. An operator selects Rust explicitly. The Rust backend
-starts providers only through supervisor protocol 2, and only the Rust
-supervisor (`codex-process-supervisor`) serves it. The Rust supervisor also
-serves the protocol 1 health and `finishFallback` requests that recovery uses.
-A Rust backend therefore needs the Rust supervisor job, and a switch in either
-direction restarts provider processes.
+`just install` installs the Rust server, process supervisor, and diagnostics
+commands. The standalone service command manages backend startup:
 
-`background-recovery.json` holds the selection:
+```sh
+studio-runtime-server service install --state ~/.local/state/codex-agents
+studio-runtime-server service status --state ~/.local/state/codex-agents
+```
 
-| Field               | Meaning                                                                                                                                                |
-| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `backend`           | `python` (default when absent) or `rust`. Owner: `BACKEND_SELECTIONS` in [`recover_backend.py`](../workspaces/client/apps/desktop/recover_backend.py). |
-| `runtimeServer`     | Absolute path of `studio-runtime-server`. Required for `rust`.                                                                                         |
-| `processSupervisor` | Absolute path of `codex-process-supervisor`. Required for `rust` with `supervisorEnabled`.                                                             |
+The command writes a state-specific LaunchAgent under `~/Library/LaunchAgents`
+and enables its label. Its executable and working directory use the release
+root's `current` path from
+[the shared service layout](../workspaces/runtime/apps/runtime-server/service-layout.json).
+Set `CODEX_STUDIO_SERVER_ROOT` before installation for a different release root.
+It carries the selected state, `PATH`, and provider launch settings. It never
+loads, unloads, or restarts a job. After preparing the release, bootstrap the
+printed plist path explicitly at an authorized idle boundary:
 
-With `rust`, `recover_backend.py` keeps every Python rule:
+```sh
+launchctl bootstrap "gui/$(id -u)" /absolute/path/from-install-output.plist
+```
 
-- It attaches to any backend that `/api/desktop` reports for the state. When
-  `backendKind` differs from the selection, it reports
-  `attached to <kind> backend; <selection> selected` and never replaces it.
-- It starts nothing while `runtime.lock` is held.
-- It starts `<runtimeServer> --port N` only when that file is executable. The
-  Rust server finds its web assets next to its executable. Recovery does not
-  write `rust-state-owner.json`; the Rust server records it after it takes
-  `runtime.lock` (see
-  [Rust backend state compatibility](rust-backend-state-compatibility.md)).
-- Before a fallback signal, the reported PID must run the configured
-  executable (first launch argument), report `backendKind: rust` and a
-  `backendBuild` equal to the SHA-256 of that file, and own the listener.
-- The supervisor probe first sends a protocol 2 handshake with `probe: true` to
-  `supervisor.sock`. A probe takes no ownership. A refused connection reports
-  `supervisor starting`. A supervisor that answers without protocol 2 (the
-  Python supervisor) blocks the start with an error. The protocol 1 health
-  probe then reads the crash-recovery state as before. Recovery never starts or
-  stops the supervisor.
+A logged-in macOS user session is required. Confirm that no backend already owns
+the selected state before bootstrapping it. Leave any independent supervisor
+job in place. The CLI does not install or replace a supervisor job, rewrite
+`background-recovery.json`, or switch a desktop recovery configuration.
+The packaged desktop's recovery helper remains separately owned by
+[`recovery.cjs`](../workspaces/client/apps/desktop/recovery.cjs) and
+[`recover_backend.py`](../workspaces/client/apps/desktop/recover_backend.py).
 
-The swap ends the provider processes, so the Rust backend recovers the agents
-that Python wrote:
+The removed Python backend and `codex-supervisor enable` command have no rollback
+selection in the Rust installer. Preserve the existing state directory and
+release history. Any planned state restoration follows
+[Rust state compatibility](rust-backend-state-compatibility.md); installation
+alone never restores a backup or changes ownership records.
+
+After an authorized backend restart, Rust recovers stored agents as follows:
 
 - A restart marker counts only while it is `pending` or `superseded`. A
   disconnect receipt counts only while the agent is `interrupted`. A finished,
@@ -330,64 +293,6 @@ that Python wrote:
   are found.
 - A ready worktree needs only its Git registration. Its Git budget starts with
   the first Git command, and a failure names that command and the Git error.
-
-Install the selection with the service command. The Rust binaries come from
-`CODEX_RUNTIME_SERVER` and `CODEX_PROCESS_SUPERVISOR`, else `<resources>/bin`,
-else `<resources>/target/release`:
-
-```sh
-CODEX_DESKTOP_BACKEND=rust codex-supervisor enable --port 4620 --state ~/.local/state/codex-agents
-```
-
-When no job is registered, `enable` writes the selection, installs a supervisor
-job that runs `codex-process-supervisor --state <state> --wait-for-lease`,
-installs the unchanged recovery job (`recover_backend.py --config ...`), and
-waits up to 90 seconds for `/api/desktop` to report `backendKind: rust`. It
-refuses while a Python backend serves the state or another process holds
-`runtime.lock`. Registered jobs of the selected kind stay loaded.
-
-`enable` never unloads or restarts a registered supervisor or recovery job.
-The recovery job reads the selection on every tick, so a selection change is
-also a job change. When a registered supervisor runs the other backend, when a
-registered supervisor has arguments that `enable` cannot identify and Rust is
-selected, or when the recovery job is registered and the saved selection
-differs, `enable` changes nothing. It prints a report with `swapRequired: true`,
-the changed jobs, and the swap steps, and exits with status 75.
-
-Swap at a quiet moment:
-
-1. Confirm that no agent, monitor, terminal, or command runs.
-2. `launchctl bootout gui/<uid>/local.codex.agents.recovery.<state-hash>`.
-3. Send SIGTERM to the backend PID that `/api/desktop` reports for this state.
-4. `launchctl bootout gui/<uid>/local.codex.agents.supervisor.<state-hash>`.
-   This ends provider processes.
-5. Detach the image workspace volumes and record them. Follow
-   [Image workspace mounts](#image-workspace-mounts), steps 1 to 3. If one
-   detach fails, stop the cutover.
-6. Make the state backup that
-   [Rust backend state compatibility](rust-backend-state-compatibility.md)
-   requires before the first Rust start. Use step 4 of
-   [Image workspace mounts](#image-workspace-mounts).
-7. Run the same `enable` command again. With no registered job and no backend,
-   it installs and starts both jobs. Then attach the recorded volumes again
-   (step 6 of [Image workspace mounts](#image-workspace-mounts)), or let each
-   agent attach its volume when it starts.
-
-Rollback uses the same steps with the Python selection
-(`codex-supervisor enable` without `CODEX_DESKTOP_BACKEND`). The Rust backend can
-attach volumes, so step 5 is necessary again. In step 6, restore the pre-Rust
-backup instead (step 5 of [Image workspace mounts](#image-workspace-mounts)):
-Python refuses a state that the Rust server owns. When the Rust server never
-started (no `rust-state-owner.json`), there is nothing to restore. The rollback does not
-require idle agents: the saved `supervisorEnabled` and the existing
-`supervisor.sqlite3` show that this is not a first cutover, and the swap already
-ended the provider processes. `enable` then saves
-`backend: python`, removes `runtimeServer` and `processSupervisor`, and installs
-the Python supervisor job (`codex_process_supervisor.py --wait-for-lease`).
-
-The Electron desktop keeps a saved Rust selection when it rewrites the recovery
-configuration, and it does not write a Python supervisor job over it.
-`restart-backend-v2.sh` has no Rust-specific checks and has not been tested with the Rust backend.
 
 ### Image workspace mounts
 
@@ -488,16 +393,8 @@ SERVER=/absolute/path/to/studio-runtime-server
 
 Run the isolated recovery checks:
 
-```sh
-python3 -B workspaces/runtime/apps/server/tests/restart-recovery-contract.py
-python3 -B workspaces/runtime/apps/server/tests/monitor-restart-contract.py
-python3 -B workspaces/runtime/apps/server/tests/terminal-history-restart-contract.py
-pnpm --filter codex-agents-desktop run test
-pnpm --filter codex-agents-web run test:restart
-pnpm --filter codex-agents-web run test:rxdb-cache
-pnpm --filter codex-agents-web run test:display
-pnpm --filter codex-agents-web run test:diagnostics
-```
+The former Python backend command has been removed. See [testing](testing.md)
+for current Rust checks.
 
 These checks exercise abrupt process exit, backend and renderer failure, receipt
 recovery, duplicate prevention, and explicit pauses. A simulated crash does not

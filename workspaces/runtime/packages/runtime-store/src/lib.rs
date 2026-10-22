@@ -109,8 +109,9 @@ pub use repositories::rules::RulesRepository;
 pub use repositories::rules_tick;
 pub use repositories::scheduler::{
     AccountWakePage, AcknowledgedSteer, BACKEND_RESTARTED_TURN_ERROR, ClaimedEvents, ClaimedSteer,
-    NATIVE_ACTION_ATTEMPT_KINDS, PROVIDER_DISCONNECTED_TURN_ERROR, STEER_UNCONFIRMED_ERROR,
-    SchedulerRepository, TurnAttemptIdentity, VM_PROVIDER_DISCONNECTED_TURN_ERROR,
+    NATIVE_ACTION_ATTEMPT_KINDS, PROVIDER_DISCONNECTED_TURN_ERROR, START_RETURN_LIMIT,
+    STEER_UNCONFIRMED_ERROR, SchedulerRepository, TurnAttemptIdentity,
+    VM_PROVIDER_DISCONNECTED_TURN_ERROR,
 };
 pub use repositories::startup_recovery::{self, StartupRecoveryRepository};
 pub use repositories::sync_documents::{
@@ -1292,6 +1293,7 @@ impl RuntimeStore {
                 agent_volatile::prepare(transaction)?;
                 feature_schema::prepare(transaction)?;
                 StartupRecoveryRepository::prepare_indexes(transaction)?;
+                MonitorsRepository::prepare_indexes(transaction)?;
                 AgentIndexedReads::prepare_index(transaction)?;
                 schema::verify_bootstrap(transaction)?;
                 verify_observed_tables_are_rowid(transaction)

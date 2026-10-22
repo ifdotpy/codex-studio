@@ -19,7 +19,8 @@ runs:
       id: bindings
       shell: bash
       run: |
-        version="$(python3 -c 'import tomllib; print(tomllib.load(open("workspaces/client/packages/client-wasm/Cargo.toml", "rb"))["dependencies"]["wasm-bindgen"].removeprefix("="))')"
+        version="$(sed -n 's/^wasm-bindgen = "=\([^"]*\)"$/\1/p' workspaces/client/packages/client-wasm/Cargo.toml)"
+        test -n "$version"
         echo "version=$version" >> "$GITHUB_OUTPUT"
     - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:

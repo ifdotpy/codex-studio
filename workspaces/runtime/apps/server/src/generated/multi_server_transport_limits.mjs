@@ -1,3 +1,0 @@
-// Copy of runtime-services/src/multi_server_transport_limits.rs; removed with the Python server.
-export const MULTI_SERVER_MAX_REQUEST_BYTES = 262144;
-export const MULTI_SERVER_MAX_RESPONSE_BYTES = 1048576;

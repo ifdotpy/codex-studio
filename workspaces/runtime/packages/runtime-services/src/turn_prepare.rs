@@ -27,7 +27,9 @@ const EVENT_BYTES: usize = 22_000;
 pub const STUDIO_INPUT_BYTES: usize = 24_000;
 /// Maximum share reserved for the post-compaction roster. Unit: UTF-8 bytes.
 const TEAM_RESTORE_BYTES: usize = 8_000;
-use studio_runtime_schema::shared_values::MAX_TURN_ATTACHMENTS;
+use studio_runtime_schema::shared_values::{MAX_TURN_ATTACHMENTS, PROGRESS_FILE_RETIRED_NOTICE};
+/// Context-version key of the progress-file guidance that older leads received.
+const PROGRESS_FILE_KEY: &str = "progressFile";
 const RESULT_EXCERPT: usize = 600;
 /// File names retained in a bounded review excerpt; independent of the number
 /// of attached files admitted to a provider turn.
@@ -78,7 +80,6 @@ pub struct RootSettings {
 pub struct GuidanceBundle {
     /// Includes the frozen native role when one exists.
     pub role: String,
-    pub progress: String,
 }
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Plan {
@@ -393,7 +394,7 @@ fn context(s: &PreparationSnapshot) -> Result<(Vec<String>, ContextManifest), Pr
         && delivered.epoch == s.actor.epoch
         && delivered.version == mode_version
     {
-        known.insert("agentMode".into(), mode_version);
+        known.insert("agentMode".into(), mode_version.clone());
     }
     let mut versions = Versions::new();
     let mut blocks = Vec::new();
@@ -406,24 +407,26 @@ fn context(s: &PreparationSnapshot) -> Result<(Vec<String>, ContextManifest), Pr
             count("children"), count("monitors"), count("tasks"), count("pendingResults")
         ));
     }
-    for (key, text, prefix) in [
-        ("agentMode", &mode, ""),
-        (
-            "progressFile",
-            &s.guidance.progress,
-            "[Studio progress file]\n",
-        ),
-        ("roleSkill", &s.guidance.role, ""),
-    ] {
-        if key == "progressFile" && !s.actor.is_lead {
-            continue;
-        }
-        let version = context_version(&json!(text));
-        if known.get(key) != Some(&version) {
-            blocks.push(format!("{prefix}{text}"));
-        }
-        versions.insert(key.into(), version);
+    if known.get("agentMode") != Some(&mode_version) {
+        blocks.push(mode.clone());
     }
+    versions.insert("agentMode".into(), mode_version);
+    // A lead that received the old progress-file guidance learns once that
+    // Studio no longer uses the file; a lead without it never sees the notice.
+    if s.actor.is_lead && known.contains_key(PROGRESS_FILE_KEY) {
+        let version = context_version(&json!(PROGRESS_FILE_RETIRED_NOTICE));
+        if known.get(PROGRESS_FILE_KEY) != Some(&version) {
+            blocks.push(format!(
+                "[Studio progress file retired]\n{PROGRESS_FILE_RETIRED_NOTICE}"
+            ));
+        }
+        versions.insert(PROGRESS_FILE_KEY.into(), version);
+    }
+    let role_version = context_version(&json!(s.guidance.role));
+    if known.get("roleSkill") != Some(&role_version) {
+        blocks.push(s.guidance.role.clone());
+    }
+    versions.insert("roleSkill".into(), role_version);
     let plan = s.plan.as_ref().filter(|p| p.id == s.actor.root_id);
     if plan.is_some() || known.contains_key("plan") {
         let value = json!(plan);

@@ -61,7 +61,6 @@ fn aggregate_budget_covers_complaints_plan_decision_and_user_text() {
         explanation: "plan".repeat(20_000),
     });
     s.guidance.role = "role".repeat(10_000);
-    s.guidance.progress = "progress".repeat(10_000);
     let user = "USER EXACT ".repeat(6_000);
     let decision = event("decision", "work_decision", "rejection".repeat(4_000));
     let rows = [event("user", "user", user.clone()), decision];

@@ -5,11 +5,21 @@ This repository owns the application, command tools, and the project-local
 skill specific to this application. The application requires no external skill
 repository.
 
+## Stabilization freeze (from 2026-10-22)
+
+Until the owner lifts it, `main` takes bug fixes only, no new features or refactors.
+Each fix needs a failing test first and a passing `just test-fast` stated in the PR;
+a package for installation also needs `just test-comprehensive` on its exact commit.
+Keep test load low: run focused tests, use `cargo -j 4`, and run at most one full
+`just test-fast` or workspace nextest at a time per agent.
+
 Read README.md and the relevant source before editing. Use the engineering-protocol
 skill for substantive work when it is available. Match checks to the changed scope.
 
 Keep runtime state outside this checkout. Preserve the existing state directory identity. Never start a second backend against an occupied state directory.
 Do not stop active user agents, monitors, terminals, or waves for a source update.
+Change the live server of this host only with `just deliver-server`; never edit its
+systemd drop-ins or binary path by hand.
 
 The server owns SQLite and orchestration. The renderer uses its HTTP API. Native
 privileges belong to the isolated Electron main process. Preserve permission checks,
@@ -41,7 +51,7 @@ server, Rust, web, tooling, and browser-smoke checks in parallel jobs.
 Run `just test-comprehensive` locally on the exact commit before every push
 to `main`. A successful short tier does not replace this publication gate.
 The comprehensive command preserves the
-previous broad local gate, including the default server suites, workspace Rust
+previous broad local gate, including provider bridge tests, workspace Rust
 tests, web type and unit checks, tooling tests, and browser smoke. Run
 heavy-tier checks by hand as announced runs; they are not in hosted CI for now.
 Each heavy run has a Just command. A test that needs repeated runs to be trusted
@@ -59,11 +69,9 @@ work on the same machine. State its duration and resource budget before it
 starts. Its owner stops every load generator when the run ends or fails; do not
 leave detached generators. Results of ordinary checks taken while a load run was
 active are not valid evidence. See [docs/testing.md](docs/testing.md) for the
-single-suite Just entry.
+manual-run rules.
 
 ## Code checks
-
-Run `pnpm run typecheck:runtime` (or `python3 workspaces/runtime/apps/server/src/codex_python.py --mypy`) to run the strict mypy ratchet across the runtime. It is intentionally not part of the pre-commit hook.
 
 The repository root owns Oxlint and Oxfmt. Install their pinned dependencies with
 `pnpm install --frozen-lockfile`. Activate the required pre-commit hook once per clone with
