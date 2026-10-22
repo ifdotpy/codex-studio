@@ -65,6 +65,9 @@ test("short and comprehensive recipes preserve their owned test boundaries", () 
     fast.command,
     /migration_2026_10_21_removes_capacity_column_and_replaces_wake_index_once/,
   );
+  assert.match(fast.command, /server_exec::tests::snapshots_/);
+  assert.match(fast.command, /server_exec::tests::snapshot_write_failure_/);
+  assert.match(fast.command, /server_exec::tests::existing_start_fence_/);
   assert.match(fast.command, /account_worker::tests::callback_handoff::/);
   assert.match(fast.command, /callback_head_of_line/);
   assert.match(fast.command, /sync_policy::tests::monitor_/);

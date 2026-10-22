@@ -201,6 +201,17 @@ the conversation. It has no cross-team filter.
 The workspace API retains up to 100 completed task records and 100 completed
 monitor records within that chat. Active records remain available.
 
+Server command output snapshots follow one flow:
+
+1. The durable claim and start fence precede process creation.
+2. The command publishes its initial state, then coalesces changed output using
+   `SNAPSHOT_PUBLISH_INTERVAL` in
+   [server_exec.rs](../workspaces/runtime/packages/runtime-services/src/server_exec.rs).
+3. Idle commands keep their existing snapshot. Failed writes remain pending.
+4. Snapshot serialization, atomic replacement, and fsync run on the labeled
+   blocking pool. Each write finishes before another begins.
+5. The final snapshot finishes before the final record is saved and released.
+
 Inbox, workspace agent choices, and attention counts use the same lead tree.
 Two chats remain separate even when they use the same account or project folder.
 Switching chats clears open request forms, task details, and pending view responses.
@@ -709,6 +720,16 @@ consumes generated copies. Both backends use them:
   exact input to the queue.
 - Atomic file writes remove their temporary file on any failure and keep the
   previous file.
+
+### Capacity retry outcomes
+
+1. A temporary failure schedules one follow-up through the ordinary input queue.
+2. An accepted start binds the retry to that turn; its completion reports the result.
+3. A rejected start ends the retry as `failed` and sends one parent `child_result`.
+4. A lost start outcome, including across restart, ends the retry as `unknown`
+   and sends one parent recovery notice. The submitted input stays uncertain.
+5. Recovery never resends that input. A late acceptance can bind the same retry
+   to its existing turn; repeated recovery does not repeat the notice.
 
 ## Stop and recovery
 
