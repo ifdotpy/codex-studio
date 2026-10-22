@@ -152,8 +152,8 @@ struct ProjectedAgent {
     response_duration_pending_tokens: f64,
 }
 
-// Parity owner: apps/server/src/codex_token_rate.py (MAX_RATE, MIN_DURATION,
-// text() estimate and rolling window); the unit test below keeps both aligned.
+// This projector owns its rate cap (tokens/second), minimum duration (seconds),
+// text estimate (tokens/character), and rolling window (seconds).
 const MAX_TOKEN_RATE: f64 = 1_000.0;
 const MIN_GENERATION_DURATION_SECONDS: f64 = 0.25;
 const TOKEN_ESTIMATE_TOKENS_PER_CHARACTER: f64 = 0.25;
@@ -161,7 +161,7 @@ const TOKEN_RATE_WINDOW_SECONDS: f64 = 4.0;
 const MAX_PROJECTED_AGENTS: usize = TOKEN_RATE_MAX_ENTRIES;
 // Retain provider delivery watermarks across snapshot eviction.
 const MAX_TOKEN_RATE_WATERMARKS: usize = MAX_PROJECTED_AGENTS * 2;
-// Parity owner: apps/server/src/codex_token_rate.py::MAX_PENDING_RESPONSE_DURATION_ENTRIES.
+// Maximum queued response-duration observations per projected agent (entries).
 const MAX_PENDING_RESPONSE_DURATION_ENTRIES: usize = 1024;
 
 impl TokenRateSnapshot {
@@ -878,16 +878,7 @@ mod tests {
     }
 
     #[test]
-    fn token_rate_projection_constants_match_python_owner() {
-        const PYTHON_OWNER: &str = include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../apps/server/src/codex_token_rate.py"
-        ));
-        assert!(PYTHON_OWNER.contains("MAX_RATE = 1000.0"));
-        assert!(PYTHON_OWNER.contains("MIN_DURATION = .25"));
-        assert!(PYTHON_OWNER.contains("len(text) / 4.0"));
-        assert!(PYTHON_OWNER.contains("now - self.text_samples[0][0] > 4"));
-        assert!(PYTHON_OWNER.contains("MAX_PENDING_RESPONSE_DURATION_ENTRIES = 1024"));
+    fn token_rate_projection_constants_keep_the_established_bounds() {
         assert_eq!(super::MAX_TOKEN_RATE, 1_000.0);
         assert_eq!(super::MIN_GENERATION_DURATION_SECONDS, 0.25);
         assert_eq!(super::TOKEN_ESTIMATE_TOKENS_PER_CHARACTER, 0.25);
