@@ -70,14 +70,11 @@ commit, build them once with `just build-release-binaries` and set
 SHA-256 manifest and refuses anything else. See the
 [native package cycle](../native/README.md#package-cycle).
 
-Configure `CODEX_STUDIO_SIGNING_IDENTITY` with the certificate fingerprint from
-`security find-identity -p codesigning`. Alternatively, save
-`{"identity":"CERTIFICATE_FINGERPRINT"}` in `~/.config/codex-studio/signing.json`.
-For a dedicated keychain, add `keychain` and `passwordFile` paths to the JSON config.
-Keep the password file private (mode `0600`). The build unlocks only that keychain.
-An environment override can specify `CODEX_STUDIO_SIGNING_KEYCHAIN`; unlock it before the build.
-The build refuses ad hoc signing because it changes the application identity
-that macOS uses for saved permissions. Keep the same certificate for updates.
+Signing needs a persistent certificate. Follow the
+[signing setup](../native/README.md#signing-setup) and run `just signing-check`
+before you package. The build refuses ad hoc signing because it changes the
+application identity that macOS uses for saved permissions. Keep the same
+certificate for updates.
 After changing installed resources, run `node workspaces/client/apps/desktop/signing.mjs /path/to/Codex\ Studio.app`.
 Do not replace this signature with `codesign --sign -`.
 The signer makes the bundled Python cache directory read-only. This prevents

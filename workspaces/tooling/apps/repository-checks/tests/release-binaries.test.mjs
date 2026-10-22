@@ -217,6 +217,8 @@ test("the package flow runs the dev-profile host check unless CI is stated", () 
   assert.deepEqual(
     plan(false).map((step) => step.label),
     [
+      "signing check",
+      "runtime interpreter",
       "native host check",
       "release binaries",
       "package",
@@ -224,11 +226,12 @@ test("the package flow runs the dev-profile host check unless CI is stated", () 
       "check package start",
     ],
   );
-  assert.equal(plan(false)[0].args[0], "test-native-webview");
-  const skipped = plan(true)[0];
+  assert.match(plan(false)[0].args[0], /desktop\/signing-check\.mjs$/);
+  assert.equal(plan(false)[2].args[0], "test-native-webview");
+  const skipped = plan(true)[2];
   assert.equal(skipped.command, undefined);
   assert.match(skipped.skipped, new RegExp(commitA));
-  assert.equal(plan(true).length, 5);
+  assert.equal(plan(true).length, 7);
   assert.equal(
     parseFlowArguments(["/tmp/out", "--hosted-ci-passed"]).hostedCiPassed,
     true,

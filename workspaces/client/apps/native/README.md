@@ -95,6 +95,9 @@ the desktop runs is suitable for diagnostics, not a final migration snapshot.
 
 ## Package cycle
 
+Set up package signing first. See [Signing setup](#signing-setup) and run
+`just signing-check` before you package.
+
 `package.mjs` builds the Tauri client and the Rust runtime binaries, signs the
 bundle with the configured identity, and writes the app to
 `CODEX_NATIVE_PACKAGE_OUT`. `check-package.mjs` and `check-package-start.py`
@@ -116,6 +119,100 @@ just package-native /tmp/out --hosted-ci-passed
   build. It refuses binaries from another commit, a changed binary, or a dirty
   tree. A rehearsal can use the same directory (`just verify-release-binaries`
   checks it) instead of building a second copy in a private target.
-- `just package-native` runs the dev-profile host check first (`just
+- `just package-native` first runs the signing check (the same check as `just
+signing-check`) and resolves the prepared runtime interpreter. A signing
+  problem fails in seconds, before the long build. If `CODEX_AGENTS_PYTHON` is
+  not set, the command resolves it with
+  `python3 workspaces/runtime/apps/server/src/codex_python.py` and fails with a
+  clear message if that fails.
+- `just package-native` runs the dev-profile host check next (`just
 test-native-webview`). `--hosted-ci-passed` skips it; use the flag only
   when hosted CI passed on the exact commit. The default runs the check.
+
+## Signing setup
+
+Every package is signed with one persistent certificate. A new certificate
+changes the application identity, and macOS then asks again for the permissions
+that the user already gave. The build refuses ad hoc signing. The signer is
+[signing.mjs](../desktop/signing.mjs).
+
+Agents must run `just signing-check` before `just package-native`.
+
+### Canonical paths
+
+| Item              | Path                                                             |
+| ----------------- | ---------------------------------------------------------------- |
+| Configuration     | `~/.config/codex-studio/signing.json`                            |
+| Signing folder    | `~/.local/state/codex-studio-signing/current` (a symlink)        |
+| Keychain          | `~/.local/state/codex-studio-signing/current/Studio.keychain-db` |
+| Keychain password | `~/.local/state/codex-studio-signing/current/password`           |
+
+The `current` symlink points to the folder that holds a keychain and the
+password file that belongs to it. To change to another pair, change the symlink.
+Do not change the paths in `signing.json`.
+
+### signing.json
+
+```json
+{
+  "identity": "<40 hexadecimal characters: the certificate fingerprint>",
+  "keychain": "/Users/<you>/.local/state/codex-studio-signing/current/Studio.keychain-db",
+  "passwordFile": "/Users/<you>/.local/state/codex-studio-signing/current/password"
+}
+```
+
+- Use absolute paths. The file does not expand `~`.
+- `identity` is the SHA-1 fingerprint. Find it with
+  `security find-identity -p codesigning <keychain path>`.
+- `keychain` and `passwordFile` are optional. Without them, the build looks in
+  the default keychain search list and does not unlock anything.
+- `CODEX_STUDIO_SIGNING_IDENTITY` (and `CODEX_STUDIO_SIGNING_KEYCHAIN`) override
+  the file. An override cannot name a password file. Unlock that keychain
+  before the build.
+- The password file holds only the keychain password. The build sends it to
+  `security` through standard input. It never appears in arguments, logs or
+  errors.
+
+### File modes
+
+Set the mode to `0600` for `signing.json` and the password file, and `0700` for
+the signing folder:
+
+```sh
+chmod 600 ~/.config/codex-studio/signing.json ~/.local/state/codex-studio-signing/current/password
+chmod 700 ~/.local/state/codex-studio-signing/current/
+```
+
+Never commit, copy or print these files, the keychain or any exported key.
+
+### Check the setup
+
+```sh
+just signing-check
+```
+
+The check reads the same configuration, unlocks the keychain the same way and
+looks for the identity. It takes a few seconds. It never prints the password or
+key material. On success it prints one line:
+
+```text
+PASS: keychain <keychain path> identity <fingerprint>
+```
+
+On failure it prints `FAIL:` with the exact reason and exits with status 1.
+
+### Common failures
+
+| Message                                                                        | Meaning and fix                                                                                                                                                    |
+| ------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `Signing configuration ... does not exist`                                     | No `signing.json`. Create it as shown above.                                                                                                                       |
+| `... has mode 0644. Run: chmod 600 ...`                                        | Group or other can read the file. Run the `chmod` command in the message.                                                                                          |
+| `... is not valid JSON`                                                        | Fix the JSON syntax in `signing.json`.                                                                                                                             |
+| `"identity" ... must be a 40 character hexadecimal ...`                        | Copy the fingerprint from `security find-identity -p codesigning <keychain>`.                                                                                      |
+| `Keychain file ... does not exist`                                             | The path or the `current` symlink is wrong. Check `ls -l ~/.local/state/codex-studio-signing`.                                                                     |
+| `Password file ... does not exist`                                             | The path is wrong or the file is missing from the signing folder.                                                                                                  |
+| `Could not unlock ...: The user name or passphrase you entered is not correct` | The password file does not belong to this keychain (security status 51). Use the password file from the same folder as the keychain. Do not guess passwords.       |
+| `Could not unlock ...: The specified keychain could not be found`              | The keychain path is wrong, or the file moved.                                                                                                                     |
+| `Could not unlock ...: ETIMEDOUT`                                              | `security` did not answer in 10 seconds. Run the check again. Look for a keychain dialog on the screen.                                                            |
+| `The configured Studio signing certificate ... is not in keychain ...`         | The fingerprint is not in that keychain. Compare it with `security find-identity -p codesigning <keychain>`.                                                       |
+| `Set CODEX_AGENTS_PYTHON ...`                                                  | `just package-native` sets it for you. For a direct `check-package.mjs` run, set it to the output of `python3 workspaces/runtime/apps/server/src/codex_python.py`. |
