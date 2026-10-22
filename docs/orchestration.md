@@ -1508,3 +1508,9 @@ change with both options. Cross-machine Claude cache reuse remains unverified.
    inside the command transaction, preserving pending edits and newer master versions.
 2. The command commits its changes and returns one complete draft view; it does not
    scan every stored draft again for each incoming document.
+
+## Lost server identity warnings
+
+1. The access snapshot identifies references to a previous server identity.
+2. Server settings display these warnings without a replacement action.
+3. References keep their original identity; historical replacement records remain readable.

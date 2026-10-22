@@ -1408,6 +1408,19 @@ function fastTierCommands(root) {
           "Check zero idle timers, exact deadline recovery, and rearming on progress, results and Studio waits.",
       },
     },
+    {
+      item: tooling,
+      label: "retired server action witness",
+      commands: [
+        [
+          "node",
+          [
+            "--test",
+            "workspaces/tooling/apps/repository-checks/tests/retired-server-action.test.mjs",
+          ],
+        ],
+      ],
+    },
     { item: tooling, label: "tooling tests" },
   ];
 }
