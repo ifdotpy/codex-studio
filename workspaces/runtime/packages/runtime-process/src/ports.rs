@@ -21,16 +21,3 @@ pub trait PtyHost: Send + Sync {
     fn wait(&self, session: &mut Self::Session) -> Result<Option<i32>, Self::Error>;
     fn close(&self, session: Self::Session) -> Result<(), Self::Error>;
 }
-
-/// Progress-file watch port. Callbacks are delivered on the implementation's
-/// worker thread and must not block event delivery.
-pub trait ProgressWatch: Send + Sync {
-    type Watch: Send;
-    type Error: std::error::Error + Send + Sync + 'static;
-    fn watch(
-        &self,
-        path: &Path,
-        changed: Box<dyn Fn() + Send + Sync>,
-    ) -> Result<Self::Watch, Self::Error>;
-    fn unwatch(&self, watch: Self::Watch) -> Result<(), Self::Error>;
-}

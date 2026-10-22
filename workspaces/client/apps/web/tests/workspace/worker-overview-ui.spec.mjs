@@ -9,7 +9,7 @@ import {
 } from "../playwright.mjs";
 // Production renderer with an isolated fixture. No model calls or user state.
 
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -78,13 +78,6 @@ test("Worker Overview Ui", async ({
         (agent) => agent.name === `Worker ${String(n).padStart(2, "0")}`,
       );
     const resultPath = join(root, "results", "task-one", "result-one.md");
-    await mkdir(join(initial.stateDir, "progress", worker(25).id), {
-      recursive: true,
-    });
-    await writeFile(
-      join(initial.stateDir, "progress", worker(25).id, "PROGRESS.md"),
-      "This worker progress file must not appear in its chat.\n",
-    );
     const task =
       "Check the exact response receipt before any repeated mutation. " +
       "This is a long assignment with complete instructions. "
@@ -426,13 +419,6 @@ test("Worker Overview Ui", async ({
     assert.equal(
       await page.locator("#conversation-title").innerText(),
       worker(25).name,
-    );
-    assert.equal(await page.getByLabel("Agent progress").count(), 0);
-    assert.equal(
-      await page
-        .getByText("This worker progress file must not appear in its chat.")
-        .count(),
-      0,
     );
     await page.locator("#back-lead").click();
     await search.fill("");

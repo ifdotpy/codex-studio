@@ -365,7 +365,6 @@ class ApiContext:
             if self._resource_hub is None:
                 from codex_token_rate import token_rates
                 from studio_api.sync.resources.hub import (
-                    LazyProgressWatchdog,
                     ResourceHub,
                     register_resource_hub,
                 )
@@ -380,7 +379,6 @@ class ApiContext:
                 entity_sequence = self.entity_sequence() or 0
                 self._resource_hub = ResourceHub(
                     cast(str, identity["workspaceId"]),
-                    LazyProgressWatchdog(self.canvas.root),
                     initial_rates,
                     entity_sequence=entity_sequence,
                 )

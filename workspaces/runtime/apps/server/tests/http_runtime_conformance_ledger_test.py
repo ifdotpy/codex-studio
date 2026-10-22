@@ -1002,7 +1002,7 @@ Server suites: 0 passed, 1 failed, 0 skipped (opt-in), 0 skipped (environment), 
         fixture_keys = {
             "agent", "deleteAgent", "imageAgent", "task", "complaint", "room", "checkpoint", "item",
             "monitor", "terminal", "activeRule", "chat", "message", "filePath",
-            "layoutRevision", "emptyQueueRevision", "queueIds", "question", "toolReceipt", "toolCancel",
+            "emptyQueueRevision", "queueIds", "question", "toolReceipt", "toolCancel",
             "questionDelete", "answerQuestion", "projectPath", "claudeAccount",
             "disconnectedAccount",
             "voiceRecord", "voiceEndedSession", "voiceActiveSession",
@@ -1931,17 +1931,7 @@ Server suites: 0 passed, 1 failed, 0 skipped (opt-in), 0 skipped (environment), 
                     original,
                 )
 
-    def test_probe_inputs_match_exact_panel_and_live_queue_contracts(self) -> None:
-        panel = ledger.PROBE_CASES[("POST", "/api/panel/layout")]["primary"]["body"]
-        self.assertEqual(
-            set(panel),
-            {
-                "agent", "client", "sequence", "renderer", "revision", "width",
-                "height", "contentWidth", "contentHeight", "overflowX", "overflowY",
-                "totalLines", "visibleLines", "lastVisibleLine", "lastVisibleHeading",
-                "fits", "reason",
-            },
-        )
+    def test_probe_inputs_match_the_live_queue_contract(self) -> None:
         queue = ledger.PROBE_CASES[("POST", "/api/queue")]["primary"]["body"]
         self.assertTrue(ledger.PROBE_CASES[("POST", "/api/queue")]["primary"]["refresh_queue"])
         self.assertEqual(queue["expected_revision"], "$emptyQueueRevision")

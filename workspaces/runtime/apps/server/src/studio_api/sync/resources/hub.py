@@ -10,7 +10,7 @@ from pathlib import Path
 import sqlite3
 import threading
 import time
-from typing import Callable, Literal, Protocol
+from typing import Callable, Literal
 from uuid import uuid4
 
 from pydantic import ValidationError
@@ -31,7 +31,6 @@ from studio_api.sync.resources.models import (
     LimitsResource,
     ModelsResource,
     MultiServerResource,
-    PanelResource,
     QueueResource,
     ReceiptsResource,
     RoomResource,
@@ -66,41 +65,9 @@ _LOGGER = logging.getLogger(__name__)
 ResourceKey = tuple[str, str | None]
 
 
-class ProgressWatchdog(Protocol):
-    def subscribe(self, agent_id: str, on_change: Callable[[], None]) -> Callable[[], None]: ...
-
-
-class LazyProgressWatchdog:
-    """Load the native progress watcher only when a panel has a live subscriber."""
-
-    def __init__(self, state_dir: str | Path) -> None:
-        self._state_dir = Path(state_dir)
-        self._watchdog: ProgressWatchdog | None = None
-        self._lock = threading.Lock()
-
-    def subscribe(self, agent_id: str, on_change: Callable[[], None]) -> Callable[[], None]:
-        with self._lock:
-            if self._watchdog is None:
-                from codex_progress_watch import ProgressFileWatchdog
-
-                self._watchdog = ProgressFileWatchdog(self._state_dir)
-            watchdog = self._watchdog
-        return watchdog.subscribe(agent_id, on_change)
-
-    def close(self) -> None:
-        with self._lock:
-            watchdog = self._watchdog
-        if watchdog is not None:
-            close_watchdog = getattr(watchdog, "close", None)
-            if callable(close_watchdog):
-                close_watchdog()
-
-
 def _key(resource: ResourceRef) -> ResourceKey:
     value: ResourceRefValue = resource.root
     match value:
-        case PanelResource(agentId=identity):
-            return "panel", identity
         case QueueResource(agentId=identity):
             return "queue", identity
         case ReceiptsResource(agentId=identity):
@@ -128,11 +95,6 @@ def _key(resource: ResourceRef) -> ResourceKey:
         case TranscriptResource(agentId=identity):
             return "transcript", identity
     raise TypeError("Unsupported resource reference")
-
-
-def _panel_agent(key: ResourceKey) -> str | None:
-    kind, identity = key
-    return identity if kind == "panel" else None
 
 
 def _merge_entity_changes(
@@ -225,7 +187,6 @@ class ResourceSubscription:
         self._wake = asyncio.Event()
         self._wake_scheduled = False
         self._closed = False
-        self._watch_detach: list[Callable[[], None]] = []
         self.initial: ResourceChangeEvent
         self.initial_token_rates: ResourceTokenRatesEvent
 
@@ -301,7 +262,6 @@ class ResourceHub:
     def __init__(
         self,
         workspace_id: str,
-        progress_watchdog: ProgressWatchdog | None = None,
         token_rates: TokenRateSnapshot | None = None,
         entity_sequence: int = 0,
     ) -> None:
@@ -314,7 +274,6 @@ class ResourceHub:
         self._published_entity_sequence = entity_sequence
         self._entity_sequence_reset_pending = False
         self._resource_revisions: dict[ResourceKey, int] = {}
-        self._progress_watchdog = progress_watchdog
         self._token_rates = token_rates or TokenRateSnapshot(rates={}, teams={})
         self._token_rates_published = token_rates is not None
         self._lock = threading.RLock()
@@ -328,7 +287,6 @@ class ResourceHub:
         loop: asyncio.AbstractEventLoop,
         reconnect: bool = False,
         token_rates: TokenRateSnapshot | None = None,
-        progress_agent_ids: frozenset[str] | None = None,
     ) -> ResourceSubscription:
         keyed: dict[ResourceKey, ResourceRef] = {}
         for resource in resources:
@@ -351,35 +309,7 @@ class ResourceHub:
                 self._resource_revisions.pop(next(iter(self._resource_revisions)))
             self._subscriptions.add(subscription)
 
-        # Never enter the native watchdog while holding the hub lock. Its
-        # observer thread may be dispatching a progress callback concurrently.
-        try:
-            for key, resource in keyed.items():
-                agent_id = _panel_agent(key)
-                if agent_id is None or self._progress_watchdog is None:
-                    continue
-                if progress_agent_ids is not None and agent_id not in progress_agent_ids:
-                    continue
-                detach = self._progress_watchdog.subscribe(
-                    agent_id,
-                    lambda resource=resource: self.publish(resource),  # type: ignore[arg-type,misc]
-                )
-                if not callable(detach):
-                    raise RuntimeError("Progress watcher returned no detach callback")
-                subscription._watch_detach.append(detach)
-        except Exception:
-            with self._lock:
-                subscription._closed = True
-                self._subscriptions.discard(subscription)
-                detach_callbacks, subscription._watch_detach = subscription._watch_detach, []
-            self._detach_all(detach_callbacks)
-            raise
-
         with self._lock:
-            if subscription._closed:
-                detach_callbacks, subscription._watch_detach = subscription._watch_detach, []
-            else:
-                detach_callbacks = []
             if subscription._closed:
                 reason: Literal["initial", "change", "reconnect", "overflow", "workspace"] = "initial"
             else:
@@ -397,7 +327,7 @@ class ResourceHub:
                     self._token_rates = token_rates
                     self._token_rates_published = True
                 subscription.initial_token_rates = self._token_rates_event(self._token_rates)
-                # Watch callbacks during registration are covered by this full baseline.
+                # Publications during registration are covered by this full baseline.
                 subscription._pending.clear()
                 subscription._pending_entity_sequences.clear()
                 subscription._pending_entity_sequence_reset = False
@@ -405,17 +335,8 @@ class ResourceHub:
                 subscription._overflow = False
                 subscription._wake.clear()
         if subscription._closed:
-            self._detach_all(detach_callbacks)
             raise RuntimeError("Resource subscription closed during registration")
         return subscription
-
-    @staticmethod
-    def _detach_all(detach_callbacks: Sequence[Callable[[], None]]) -> None:
-        for detach in detach_callbacks:
-            try:
-                detach()
-            except Exception:
-                _LOGGER.exception("Unable to detach progress watcher")
 
     def publish(self, resource: ResourceRef) -> int:
         return self.publish_many((resource,))
@@ -504,15 +425,12 @@ class ResourceHub:
         return self._resource_revisions.get(key, self._revision)
 
     def close(self) -> None:
-        """Release all live subscriptions without entering watchers under lock."""
+        """Release all live subscriptions."""
         with self._lock:
             subscriptions = list(self._subscriptions | self._orphaned_subscriptions)
             self._orphaned_subscriptions.clear()
         for subscription in subscriptions:
             subscription.close()
-        close_watchdog = getattr(self._progress_watchdog, "close", None)
-        if callable(close_watchdog):
-            close_watchdog()
 
     def _close_orphaned_subscriptions(self) -> None:
         with self._lock:
@@ -675,8 +593,6 @@ class ResourceHub:
                 return
             subscription._closed = True
             self._subscriptions.discard(subscription)
-            detach_callbacks, subscription._watch_detach = subscription._watch_detach, []
-        self._detach_all(detach_callbacks)
 
 
 _registry_lock = threading.RLock()

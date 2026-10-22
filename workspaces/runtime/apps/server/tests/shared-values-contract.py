@@ -5,6 +5,7 @@ from test_isolation import isolate_supervisor_environment
 
 isolate_supervisor_environment()
 
+import json
 import sys
 from pathlib import Path
 
@@ -25,9 +26,7 @@ from codex_shared_values import (
     MAX_SYNC_RESOURCE_QUERY_BYTES,
     MAX_SUPERVISOR_FRAME_BYTES,
     PROCESS_SUPERVISOR_PROTOCOL_VERSION,
-    PROGRESS_LAYOUT_FRESH_SECONDS,
-    PROGRESS_LAYOUT_MAX_BYTES,
-    PROGRESS_LAYOUT_MAX_CLIENTS,
+    PROGRESS_FILE_RETIRED_NOTICE,
     SYNC_BATCH_LIMIT,
     SYNC_ENTITY_PAGE_LIMIT,
     SYNC_RESOURCE_HEARTBEAT_SECONDS,
@@ -94,7 +93,6 @@ class SharedValuesContract(unittest.TestCase):
             "workspaces/runtime/packages/runtime-services/src/change_notifications.rs",
             "workspaces/runtime/packages/runtime-services/src/workspace_views.rs",
             "workspaces/runtime/packages/runtime-services/src/agent_management.rs",
-            "workspaces/runtime/packages/runtime-services/src/progress_panel.rs",
             "workspaces/runtime/packages/runtime-services/src/voice.rs",
             "workspaces/runtime/packages/runtime-services/src/continuation.rs",
             "workspaces/runtime/packages/runtime-services/src/analytics_capture.rs",
@@ -111,7 +109,6 @@ class SharedValuesContract(unittest.TestCase):
             "workspaces/runtime/apps/server/src/studio_api/request_schema_audit.py",
             "workspaces/runtime/apps/server/src/studio_api/sync/preferences.py",
             "workspaces/runtime/apps/server/src/studio_api/sync/resources/models.py",
-            "workspaces/runtime/apps/server/src/codex_progress_layout.py",
         ):
             source = (REPOSITORY_ROOT / relative).read_text(encoding="utf-8")
             with self.subTest(source=relative):
@@ -261,23 +258,21 @@ class SharedValuesContract(unittest.TestCase):
         self.assertIn("MODEL_CATALOG_CACHE_TTL_SECONDS", python_cache)
         self.assertIn("MODEL_CATALOG_ITEMS_PER_PAGE", python_cache)
 
-    def test_progress_layout_contract_uses_generated_limits(self):
-        source_root = Path(__file__).resolve().parents[1] / "src"
-        python_source = (source_root / "codex_progress_layout.py").read_text(encoding="utf-8")
-        rust_source = (
-            REPOSITORY_ROOT / "workspaces/runtime/packages/runtime-services/src/progress_panel.rs"
+    def test_progress_file_retired_notice_has_one_rust_owner(self):
+        """Owner: PROGRESS_FILE_RETIRED_NOTICE in runtime-schema/src/shared_values.rs. Python keeps
+        a checked copy; orchestration_context and the lead turn context use only the named value."""
+        name, value = "PROGRESS_FILE_RETIRED_NOTICE", PROGRESS_FILE_RETIRED_NOTICE
+        self.assertEqual(value, "Studio no longer reads or shows PROGRESS.md. Do not create or update "
+                                "a progress file for Studio. Report status in the chat.")
+        owner = (
+            REPOSITORY_ROOT / "workspaces/runtime/packages/runtime-schema/src/shared_values.rs"
         ).read_text(encoding="utf-8")
-        self.assertEqual(
-            (PROGRESS_LAYOUT_FRESH_SECONDS, PROGRESS_LAYOUT_MAX_CLIENTS, PROGRESS_LAYOUT_MAX_BYTES),
-            (90, 32, 65_536),
-        )
-        for name in (
-            "PROGRESS_LAYOUT_FRESH_SECONDS",
-            "PROGRESS_LAYOUT_MAX_CLIENTS",
-            "PROGRESS_LAYOUT_MAX_BYTES",
-        ):
-            self.assertIn(name, python_source)
-            self.assertIn(name, rust_source)
+        self.assertIn(f"pub const {name}: &str = {json.dumps(value)};", owner.splitlines())
+        consumer = (
+            REPOSITORY_ROOT / "workspaces/runtime/apps/server/src/codex_efficiency.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn(name, consumer)
+        self.assertNotIn(value, consumer)
 
     def test_linux_vm_provider_handle_prefix_has_one_owner(self):
         """Owner: LINUX_VM_PROVIDER_HANDLE_PREFIX in runtime-schema/src/shared_values.rs. The VM

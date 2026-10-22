@@ -4999,26 +4999,6 @@
   },
   {
     "family": "guidance",
-    "name": "no-progress",
-    "snapshot": {
-      "workspace": {
-        "progress_directory": null
-      }
-    },
-    "fast": true
-  },
-  {
-    "family": "guidance",
-    "name": "empty-progress",
-    "snapshot": {
-      "guidance": {
-        "progress": ""
-      }
-    },
-    "fast": true
-  },
-  {
-    "family": "guidance",
     "name": "empty-model",
     "snapshot": {
       "settings": {

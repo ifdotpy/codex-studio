@@ -61,8 +61,8 @@ class ResourceContractTests(unittest.TestCase):
                 ResourceChangeEvent.model_validate(invalid)
 
     def test_resource_ref_is_a_closed_discriminated_union(self) -> None:
-        parsed = ResourceRef.model_validate({"kind": "panel", "agentId": "agent-a"})
-        self.assertEqual(parsed.model_dump(), {"kind": "panel", "agentId": "agent-a"})
+        parsed = ResourceRef.model_validate({"kind": "queue", "agentId": "agent-a"})
+        self.assertEqual(parsed.model_dump(), {"kind": "queue", "agentId": "agent-a"})
         transcript = ResourceRef(TranscriptResource(kind="transcript", agentId="agent-a"))
         self.assertEqual(transcript.model_dump(), {"kind": "transcript", "agentId": "agent-a"})
         multi_server = ResourceRef.model_validate({"kind": "multi-server"})
@@ -72,9 +72,11 @@ class ResourceContractTests(unittest.TestCase):
         with self.assertRaises(ValidationError):
             ResourceRef.model_validate({"kind": "worktree-disk", "agentId": "agent-a"})
         with self.assertRaises(ValidationError):
-            ResourceRef.model_validate({"kind": "panel", "agentId": "agent-a", "extra": True})
+            ResourceRef.model_validate({"kind": "panel", "agentId": "agent-a"})
         with self.assertRaises(ValidationError):
-            ResourceRef.model_validate({"kind": "panel", "agentId": ""})
+            ResourceRef.model_validate({"kind": "queue", "agentId": "agent-a", "extra": True})
+        with self.assertRaises(ValidationError):
+            ResourceRef.model_validate({"kind": "queue", "agentId": ""})
 
     def test_event_envelopes_validate_safe_revision_and_typed_refs(self) -> None:
         event = ResourceChangeEvent.model_validate({
@@ -83,15 +85,15 @@ class ResourceContractTests(unittest.TestCase):
             "epoch": "server-epoch",
             "revision": 0,
             "reason": "initial",
-            "resources": [{"kind": "panel", "agentId": "agent-a"}],
+            "resources": [{"kind": "queue", "agentId": "agent-a"}],
             "resourceVersions": [
                 {
-                    "resource": {"kind": "panel", "agentId": "agent-a"},
+                    "resource": {"kind": "queue", "agentId": "agent-a"},
                     "revision": 0,
                 }
             ],
         })
-        self.assertEqual(event.resources[0].root.kind, "panel")
+        self.assertEqual(event.resources[0].root.kind, "queue")
         heartbeat = ResourceHeartbeatEvent.model_validate({
             "protocol": 3,
             "workspaceId": "workspace-a",
@@ -166,7 +168,7 @@ class ResourceContractTests(unittest.TestCase):
                 "epoch": "server-epoch",
                 "revision": 0,
                 "reason": "change",
-                "resources": [{"kind": "panel"}],
+                "resources": [{"kind": "queue"}],
                 "resourceVersions": [],
             })
 

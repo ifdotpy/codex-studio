@@ -3636,8 +3636,8 @@ export default function App({ active = true }: { active?: boolean }) {
                             }
                           />
                           <small>
-                            Applies to messages, progress, and composer. Narrow
-                            screens use the full available width.
+                            Applies to messages and composer. Narrow screens use
+                            the full available width.
                           </small>
                         </div>
                       </SettingsRow>

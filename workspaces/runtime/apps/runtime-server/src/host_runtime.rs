@@ -2513,7 +2513,6 @@ mod voice_composition_tests {
         let bridge = StoreBridge::new(store.clone()).await.unwrap();
         let resources = PreparationResources {
             instructions: String::new(),
-            progress_template: String::new(),
             thread_config: Default::default(),
             tools: Vec::new(),
             legacy_tools: Vec::new(),

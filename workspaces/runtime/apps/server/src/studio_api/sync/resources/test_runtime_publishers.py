@@ -35,7 +35,6 @@ from studio_api.sync.resources.hub import (
 from studio_api.sync.resources.models import (
     DesktopResource,
     LimitsResource,
-    PanelResource,
     QueueResource,
     ReceiptsResource,
     ResourceRef,
@@ -942,7 +941,7 @@ class RuntimeResourcePublisherTests(unittest.IsolatedAsyncioTestCase):
             local.after_commit_resources = staged
             local.after_commit_resource_overflow = overflowed
             for index in range(MAX_STAGED_RESOURCE_CHANGES + 1):
-                resource = ResourceRef(PanelResource(kind="panel", agentId=f"agent-{index}"))
+                resource = ResourceRef(QueueResource(kind="queue", agentId=f"agent-{index}"))
                 runtime._stage_resource_change(connection, resource)
             runtime._queue_staged_resource_changes(staged, overflowed, connection)
             self.assertEqual(len(runtime._committed_resource_changes), MAX_STAGED_RESOURCE_CHANGES)

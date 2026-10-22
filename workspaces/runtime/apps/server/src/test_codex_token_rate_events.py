@@ -22,7 +22,7 @@ from codex_token_rate import TokenRates
 from studio_api.sync.resources import hub as resource_hub
 from studio_api.sync.resources.hub import ResourceHub, register_resource_hub, unregister_resource_hub
 from studio_api.sync.resources.models import (
-    PanelResource,
+    QueueResource,
     ResourceRef,
     ResourceTokenRatesEvent,
     TokenRateSnapshot,
@@ -36,7 +36,7 @@ class TokenRateEventContracts(unittest.IsolatedAsyncioTestCase):
             hub = ResourceHub("workspace-a", token_rates=TokenRateSnapshot(rates={}, teams={}))
             register_resource_hub(directory, hub)
             subscription = hub.subscribe(
-                [ResourceRef(PanelResource(kind="panel", agentId="agent-a"))],
+                [ResourceRef(QueueResource(kind="queue", agentId="agent-a"))],
                 loop=loop,
             )
             try:
@@ -63,7 +63,7 @@ class TokenRateEventContracts(unittest.IsolatedAsyncioTestCase):
             hub = ResourceHub("workspace-a", token_rates=TokenRateSnapshot(rates={}, teams={}))
             register_resource_hub(directory, hub)
             subscription = hub.subscribe(
-                [ResourceRef(PanelResource(kind="panel", agentId="agent-a"))],
+                [ResourceRef(QueueResource(kind="queue", agentId="agent-a"))],
                 loop=loop,
             )
             rates = TokenRates(clock=lambda: 100.0, state_dir=directory)
@@ -151,7 +151,7 @@ class TokenRateEventContracts(unittest.IsolatedAsyncioTestCase):
             hub = ResourceHub("workspace-a", token_rates=TokenRateSnapshot(rates={}, teams={}))
             register_resource_hub(directory, hub)
             subscription = hub.subscribe(
-                [ResourceRef(PanelResource(kind="panel", agentId="agent-a"))],
+                [ResourceRef(QueueResource(kind="queue", agentId="agent-a"))],
                 loop=loop,
             )
             rates = TokenRates(clock=lambda: 100.0, state_dir=directory)

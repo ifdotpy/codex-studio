@@ -28,8 +28,7 @@ spec = importlib.util.spec_from_file_location('vm_fixture', Path(__file__).with_
 fixture = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fixture)
 from codex_layout import REPOSITORY_ROOT
-from codex_shared_values import progress_file_limit_label
-from codex_vm_agents import flush_turns, prepare, progress_context, spawn_spec, workspace_mode
+from codex_vm_agents import flush_turns, prepare, spawn_spec, workspace_mode
 import codex_linux_vm_share as share
 from codex_linux_vm import LinuxVMError
 
@@ -163,14 +162,6 @@ class Guest(fixture.NativeGuest):
 
 
 class VmAgents(unittest.TestCase):
-    def test_vm_progress_prompt_uses_the_shared_file_byte_limit(self):
-        context = progress_context(None, {
-            "executionMode": "vm",
-            "id": "agent-a",
-            "layrHome": "/home/studio",
-        })
-        self.assertIn(f"Keep it at most {progress_file_limit_label()}", context)
-
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix='vm-agents-')
         self.addCleanup(self.temp.cleanup)
@@ -810,6 +801,10 @@ class VmAgents(unittest.TestCase):
             '.agents/skills/codex-workspace/references/native-tools.json').read_text())
         exec(compile(ast.Module(body=original_methods, type_ignores=[]), '<pre-vm-runtime>', 'exec'), namespace)
         before = namespace['new_thread_params']
+        # Studio retired PROGRESS.md: run the historical constructor without its
+        # progress text, so every other instruction byte must stay the same.
+        retired_progress = ModuleType('codex_progress')
+        retired_progress.progress_context = lambda _root, _agent_id: ''
         lead = self.runtime.new_lead({'cwd': str(self.project), 'workspaceMode': 'worktree'})
         worker = self.worker(lead)
         for provider in ('codex', 'claude'):
@@ -832,6 +827,8 @@ class VmAgents(unittest.TestCase):
                     def historical_text(path, *args, **kwargs):
                         return original_role if path == role_path else read_text(path, *args, **kwargs)
                     with patch.object(Path, 'read_text', historical_text), \
+                         patch.dict(sys.modules, {'codex_progress': retired_progress}), \
+                         patch.object(self.runtime, 'progress_file', lambda _actor: None, create=True), \
                          patch.object(self.runtime, 'role_guidance', namespace['role_guidance'].__func__), \
                          patch.object(self.runtime, 'tool_definitions', MethodType(namespace['tool_definitions'], self.runtime)):
                         original = before(self.runtime, copy.deepcopy(actor))

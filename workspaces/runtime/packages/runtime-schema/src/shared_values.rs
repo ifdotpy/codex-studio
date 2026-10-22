@@ -50,10 +50,11 @@ pub const PROJECT_SECRET_VALUE_LIMIT_LABEL: &str = "16 KiB";
 pub const PROJECT_SECRETS_GUEST_TIMEOUT_SECONDS: u64 = 30;
 /// Deadline of one `skills/extraRoots/set` call that registers the Chrome skill, in seconds.
 pub const BROWSER_SKILL_TIMEOUT_SECONDS: u64 = 20;
-/// Largest progress file, in bytes.
-pub const MAX_PROGRESS_FILE_BYTES: usize = 131072;
-/// Display label of `MAX_PROGRESS_FILE_BYTES`.
-pub const PROGRESS_FILE_LIMIT_LABEL: &str = "128 KiB";
+/// Text that tells a lead, once, that Studio no longer uses its old
+/// `PROGRESS.md` file. The `orchestration_context` topic `panel` returns it,
+/// and the turn context delivers it to a lead that received the old file
+/// guidance. Python's `codex_shared_values.py` holds a checked copy.
+pub const PROGRESS_FILE_RETIRED_NOTICE: &str = "Studio no longer reads or shows PROGRESS.md. Do not create or update a progress file for Studio. Report status in the chat.";
 /// Largest inline workspace preview, in bytes.
 pub const MAX_WORKSPACE_PREVIEW_BYTES: u64 = 20971520;
 /// Display label of `MAX_WORKSPACE_PREVIEW_BYTES`.
@@ -72,12 +73,6 @@ pub const SYNC_ENTITY_PAGE_LIMIT: i64 = 500;
 pub const SYNC_STREAM_BYTE_LIMIT: i64 = 1048576;
 /// Seconds between sync resource heartbeats.
 pub const SYNC_RESOURCE_HEARTBEAT_SECONDS: u64 = 15;
-/// Seconds a reported progress layout stays fresh.
-pub const PROGRESS_LAYOUT_FRESH_SECONDS: f64 = 90.0;
-/// Clients whose progress layouts are retained.
-pub const PROGRESS_LAYOUT_MAX_CLIENTS: usize = 32;
-/// Largest progress layout report, in bytes.
-pub const PROGRESS_LAYOUT_MAX_BYTES: usize = 65536;
 
 // Codex model/list catalog response contract; byte values count encoded UTF-8.
 /// Largest model catalog frame, in bytes.
@@ -294,7 +289,6 @@ mod tests {
                 MAX_PROJECT_SECRET_VALUE_BYTES as u64,
                 PROJECT_SECRET_VALUE_LIMIT_LABEL,
             ),
-            (MAX_PROGRESS_FILE_BYTES as u64, PROGRESS_FILE_LIMIT_LABEL),
             (MAX_WORKSPACE_PREVIEW_BYTES, WORKSPACE_PREVIEW_LIMIT_LABEL),
         ] {
             assert_eq!(byte_label(bytes), label);

@@ -32,11 +32,6 @@ NonNegativeFiniteNumber = SafeInt | Annotated[
 ]
 
 
-class PanelResource(ContractModel):
-    kind: Literal["panel"]
-    agentId: NonEmptyIdentifier
-
-
 class QueueResource(ContractModel):
     kind: Literal["queue"]
     agentId: NonEmptyIdentifier
@@ -131,8 +126,7 @@ class TranscriptResource(ContractModel):
 
 
 ResourceRefValue = Annotated[
-    PanelResource
-    | QueueResource
+    QueueResource
     | ReceiptsResource
     | TerminalResource
     | TerminalsResource

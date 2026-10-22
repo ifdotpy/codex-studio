@@ -4,7 +4,7 @@ import {
   test,
   spawnFixture as spawn,
 } from "../playwright.mjs";
-// Production workspace geometry with long labels and an active agent panel.
+// Production workspace geometry with long labels.
 // The fixture uses an isolated runtime. No model service or user state is used.
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
@@ -41,7 +41,6 @@ async function runWorkspaceLayout(
   const longAccount =
     "account-owner-with-a-very-long-email-address-for-layout@example.test";
   const longAccountLabel = "Account owner with a very long label";
-  const panelHeight = 150;
   const port = await new Promise((resolve, reject) => {
     fixture.stdout.once("data", (chunk) =>
       resolve(Number(String(chunk).trim())),
@@ -53,17 +52,6 @@ async function runWorkspaceLayout(
   const fixtureAccounts = await (await fetch(origin + "/api/accounts")).json();
   const lead = initial.threads.find((agent) => agent.name === "Release lead");
   assert.ok(lead, "fixture has a lead chat");
-
-  const panel = {
-    agent: lead.id,
-    format: "markdown",
-    markdown:
-      "Active agent progress\n\nPanel content stays inside the shared reading column.",
-    path: "/fixture/PROGRESS.md",
-    revision: "fixture-progress",
-    exists: true,
-    error: null,
-  };
 
   try {
     const page = runnerPage;
@@ -139,14 +127,10 @@ async function runWorkspaceLayout(
       account.label = "Account owner with a very long label";
       await route.fulfill({ json: data });
     });
-    await page.route("**/api/panel?**", (route) =>
-      route.fulfill({ json: panel }),
-    );
 
     await page.goto(origin);
     await page.locator("[data-chat]").filter({ hasText: longTitle }).click();
     await page.getByText("I assigned 40 workers", { exact: false }).waitFor();
-    await page.locator(".agent-panel[data-fit='yes']").waitFor();
 
     const measure = () =>
       page.evaluate(() => {
@@ -216,7 +200,6 @@ async function runWorkspaceLayout(
           settingsModal: box(".mantine-Modal-content"),
           messages,
           transcript,
-          panel: box(".agent-panel"),
           composer: box("#composer"),
           composerContext: box(".composer-context-row"),
           message: {
@@ -376,21 +359,6 @@ async function runWorkspaceLayout(
           `${prefix}: context, cost, and limits appear beneath the composer`,
         );
       }
-      assert.ok(current.panel, `${prefix}: active panel is present`);
-      assert.equal(
-        current.panel.marginTop,
-        "8px",
-        `${prefix}: progress panel starts 8px below its preceding content`,
-      );
-      assert.ok(
-        current.panel.height > 0 && current.panel.height <= panelHeight + 1,
-        `${prefix}: panel height ${current.panel.height}`,
-      );
-      assert.equal(
-        await page.locator(".agent-panel iframe").count(),
-        0,
-        `${prefix}: Markdown progress does not use a retired panel frame`,
-      );
       const transcriptWidth =
         current.transcript.right - current.transcript.left;
       const expectedTranscriptWidth =
@@ -409,11 +377,6 @@ async function runWorkspaceLayout(
             current.composer.right,
         ) <= 2,
         `${prefix}: text stays centered above the composer`,
-      );
-      assert.ok(
-        Math.abs(current.panel.x - current.composer.x) <= 1 &&
-          Math.abs(current.panel.right - current.composer.right) <= 1,
-        `${prefix}: panel and composer share their edges`,
       );
       const directSettings = page.getByRole("button", {
         name: "Chat settings",
@@ -621,7 +584,7 @@ async function runWorkspaceLayout(
     );
     assert.deepEqual(errors, []);
     console.log(
-      `PASS workspace layout: long title, project, account, capped panel, narrow text, aligned composer, blank composer, and team drawer for ${viewports.map(({ width }) => `${width}px`).join(", ")}. Evidence ${root}`,
+      `PASS workspace layout: long title, project, account, narrow text, aligned composer, blank composer, and team drawer for ${viewports.map(({ width }) => `${width}px`).join(", ")}. Evidence ${root}`,
     );
   } catch (error) {
     console.error("Layout evidence:", root);

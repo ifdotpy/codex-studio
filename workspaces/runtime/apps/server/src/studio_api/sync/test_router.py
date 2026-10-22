@@ -9,7 +9,6 @@ import re
 from pathlib import Path
 from contextlib import contextmanager
 import sqlite3
-import threading
 import tempfile
 import unittest
 from typing import cast
@@ -104,7 +103,6 @@ class RuntimeStub:
         self.hub: ResourceHub | None = None
         self.transcript_close_after = 2
         self.transcript_error: Exception | None = None
-        self.active_agents = {"agent-a"}
 
     @contextmanager
     def db(self):
@@ -113,11 +111,6 @@ class RuntimeStub:
             yield connection
         finally:
             connection.close()
-
-    def checked_actor(self, _db: sqlite3.Connection, agent_id: str) -> object:
-        if agent_id not in self.active_agents:
-            raise ValueError("Unknown managed agent")
-        return {"id": agent_id}
 
     def transcript(self, _agent_id: str) -> dict[str, object]:
         self.transcript_reads += 1
@@ -138,19 +131,6 @@ class TokenRatesStub:
         return {"rates": {"agent-a": {"rate": 8.5}}, "teams": {}}
 
 
-class ProgressWatchdogStub:
-    def __init__(self) -> None:
-        self.agents: list[str] = []
-
-    def subscribe(self, agent_id: str, _on_change: object):
-        self.agents.append(agent_id)
-
-        def detach() -> None:
-            self.agents.remove(agent_id)
-
-        return detach
-
-
 class ConnectedRequest(Request):
     async def is_disconnected(self) -> bool:
         return False
@@ -164,10 +144,8 @@ class ContextStub:
         self.runtime = RuntimeStub()
         self.runtime.closed = True
         self.store.runtime = self.runtime
-        self.watchdog = ProgressWatchdogStub()
         self.hub = ResourceHub(
             "workspace-a",
-            progress_watchdog=self.watchdog,
             token_rates=TokenRateSnapshot(
                 rates={"agent-a": TokenRateValue(
                     turnId="turn-a", active=True, estimated=False, rate=8.5, outputTokens=17,
@@ -223,7 +201,7 @@ def make_client(context: ContextStub, raise_server_exceptions: bool = True) -> T
 
 
 class SyncRouterTests(unittest.TestCase):
-    def test_cancelled_event_stream_send_closes_progress_subscription(self) -> None:
+    def test_cancelled_event_stream_send_closes_resource_subscription(self) -> None:
         context = ContextStub()
 
         class ShutdownEventStub:
@@ -236,7 +214,7 @@ class SyncRouterTests(unittest.TestCase):
         async def verify() -> None:
             event = ShutdownEventStub()
             path = "/api/sync/stream?protocol=3&resources=" + json.dumps(
-                [{"kind": "panel", "agentId": "agent-a"}], separators=(",", ":")
+                [{"kind": "queue", "agentId": "agent-a"}], separators=(",", ":")
             )
             scope: dict[str, object] = {
                 "type": "http",
@@ -289,7 +267,6 @@ class SyncRouterTests(unittest.TestCase):
 
             await response(scope, receive, send)
             self.assertIn("http.response.body", sent_types)
-            self.assertEqual(context.watchdog.agents, [])
             self.assertEqual(context.hub._subscriptions, set())
 
         asyncio.run(verify())
@@ -790,29 +767,7 @@ class SyncRouterTests(unittest.TestCase):
         self.assertIn('"turnId":"turn-a"', body)
         self.assertIn('"epoch":"', body)
 
-    def test_native_panel_subscribe_and_detach_stay_outside_http_event_loop(self) -> None:
-        context = ContextStub()
-        loop_thread = threading.get_ident()
-        calls: list[tuple[str, int]] = []
-
-        class NativeWatchdog:
-            def subscribe(self, _agent_id: str, _on_change: object):
-                calls.append(("subscribe", threading.get_ident()))
-
-                def detach() -> None:
-                    calls.append(("detach", threading.get_ident()))
-
-                return detach
-
-        context.hub = ResourceHub("workspace-a", progress_watchdog=NativeWatchdog())
-        resources = json.dumps([{"kind": "panel", "agentId": "agent-a"}])
-        self.read_stream(context, "/api/sync/stream?protocol=3&resources=" + resources)
-        self.assertEqual([name for name, _thread in calls], ["subscribe", "detach"])
-        for name, native_thread in calls:
-            with self.subTest(operation=name):
-                self.assertNotEqual(native_thread, loop_thread)
-
-    def test_cancelled_resource_stream_still_detaches_native_panel(self) -> None:
+    def test_cancelled_resource_stream_closes_its_subscription(self) -> None:
         context = ContextStub()
         context.runtime.closed = False
         router = create_router(cast(ApiContext, context))
@@ -820,7 +775,7 @@ class SyncRouterTests(unittest.TestCase):
             route for route in router.routes
             if getattr(route, "path", None) == "/api/sync/stream"
         ))
-        resources = json.dumps([{"kind": "panel", "agentId": "agent-a"}])
+        resources = json.dumps([{"kind": "queue", "agentId": "agent-a"}])
         request = ConnectedRequest({
             "type": "http", "method": "GET", "path": "/api/sync/stream",
             "query_string": ("protocol=3&resources=" + resources).encode(),
@@ -838,11 +793,11 @@ class SyncRouterTests(unittest.TestCase):
             iterator = response.body_iterator
             await anext(iterator)
             await anext(iterator)
-            self.assertEqual(context.watchdog.agents, ["agent-a"])
+            self.assertEqual(len(context.hub._subscriptions), 1)
             with anyio.CancelScope() as cancellation:
                 cancellation.cancel()
                 await iterator.aclose()
-            self.assertEqual(context.watchdog.agents, [])
+            self.assertEqual(context.hub._subscriptions, set())
 
         asyncio.run(cancel_stream())
 
@@ -893,27 +848,24 @@ class SyncRouterTests(unittest.TestCase):
         self.assertEqual(events[:3], ["api-schema", "resources", "token-rates"])
         self.assertEqual(subscribe.call_count, 1)
 
-    def test_panel_stream_without_runtime_logs_unavailable_reason(self) -> None:
+    def test_retired_panel_resource_is_an_invalid_subscription(self) -> None:
         context = ContextStub()
-        context.runtime = None
         resources = json.dumps([{"kind": "panel", "agentId": "agent-a"}])
-
-        with self.assertLogs("studio_api.sync.router", level="ERROR") as captured:
+        with patch.object(context.hub, "subscribe", wraps=context.hub.subscribe) as subscribe:
             response = make_client(context).get(
                 "/api/sync/stream",
                 params={"protocol": "3", "resources": resources},
             )
-
-        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.status_code, 400)
         self.assertEqual(
             response.json(),
-            {"error": "Resource stream is unavailable; reconnect to retry."},
+            {"error": "Invalid request", "location": ["query", "resources"]},
         )
-        self.assertIn("panel resources requested without a runtime", captured.output[0])
+        subscribe.assert_not_called()
 
-    def test_panel_stream_subscribe_failure_logs_exception_and_traceback(self) -> None:
+    def test_stream_subscribe_failure_logs_exception_and_traceback(self) -> None:
         context = ContextStub()
-        resources = json.dumps([{"kind": "panel", "agentId": "agent-a"}])
+        resources = json.dumps([{"kind": "queue", "agentId": "agent-a"}])
         with patch.object(
             context.hub,
             "subscribe",
@@ -931,21 +883,21 @@ class SyncRouterTests(unittest.TestCase):
             {"error": "Resource stream is unavailable; reconnect to retry."},
         )
         record = captured.records[0]
-        self.assertIn("resolving panel activity", record.getMessage())
+        self.assertIn("subscribing to the resource hub", record.getMessage())
         self.assertIsNotNone(record.exc_info)
         self.assertIs(record.exc_info[0], RuntimeError)
         self.assertEqual(str(record.exc_info[1]), "fixture hub failure")
 
     def test_protocol_three_reconnect_baselines_every_subscribed_resource(self) -> None:
         context = ContextStub()
-        resources = json.dumps([{"kind": "panel", "agentId": "agent-a"}], separators=(",", ":"))
+        resources = json.dumps([{"kind": "queue", "agentId": "agent-a"}], separators=(",", ":"))
         body = self.read_stream(
             context,
             "/api/sync/stream?protocol=3&resources=" + resources,
             headers=[(b"last-event-id", b"7")],
         )
         self.assertIn('"reason":"reconnect"', body)
-        self.assertIn('"kind":"panel","agentId":"agent-a"', body)
+        self.assertIn('"kind":"queue","agentId":"agent-a"', body)
 
     def test_protocol_three_entity_invalidation_keeps_tombstone_floor_reset_pull(self) -> None:
         context = ContextStub()
@@ -959,17 +911,6 @@ class SyncRouterTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["floor"], 4)
         self.assertTrue(response.json()["reset"])
-
-    def test_missing_panel_agent_does_not_block_or_watch_other_resources(self) -> None:
-        context = ContextStub()
-        resources = json.dumps([
-            {"kind": "panel", "agentId": "deleted-agent"},
-            {"kind": "state"},
-        ], separators=(",", ":"))
-        body = self.read_stream(context, "/api/sync/stream?protocol=3&resources=" + resources)
-        self.assertIn('"kind":"panel","agentId":"deleted-agent"', body)
-        self.assertIn('"kind":"state"', body)
-        self.assertEqual(context.watchdog.agents, [])
 
     def test_pull_uses_single_scalar_query_values(self) -> None:
         context = ContextStub()

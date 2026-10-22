@@ -142,9 +142,7 @@ async fn try_send_args_with(
         event_wake: std::sync::Arc::new(tokio::sync::Notify::new()),
         monitor_dispatch_wake: std::sync::Arc::new(tokio::sync::Notify::new()),
         runtime_ports: empty_runtime_ports(),
-        state_root: store.state_dir().to_path_buf(),
         preparation: None,
-        panel_guidance: None,
     });
     let raw: String = store
         .test_reader()
@@ -198,9 +196,7 @@ async fn production_release_notifies_the_registry_after_a_committed_send() {
         event_wake: wake.clone(),
         monitor_dispatch_wake: std::sync::Arc::new(tokio::sync::Notify::new()),
         runtime_ports: empty_runtime_ports(),
-        state_root: store.state_dir().to_path_buf(),
         preparation: None,
-        panel_guidance: None,
     });
     let mut notified = Box::pin(wake.notified());
     assert!(futures_util::FutureExt::now_or_never(notified.as_mut()).is_none());
@@ -266,9 +262,7 @@ async fn monitor_cancel_release_notifies_only_the_monitor_dispatcher() {
         event_wake: event_wake.clone(),
         monitor_dispatch_wake: monitor_wake.clone(),
         runtime_ports: empty_runtime_ports(),
-        state_root: store.state_dir().to_path_buf(),
         preparation: None,
-        panel_guidance: None,
     });
     let mut event_notified = Box::pin(event_wake.notified());
     let mut monitor_notified = Box::pin(monitor_wake.notified());
@@ -515,9 +509,7 @@ async fn an_ancestor_cancels_a_descendant_watch_and_others_are_refused_by_name()
             event_wake: std::sync::Arc::new(tokio::sync::Notify::new()),
             monitor_dispatch_wake: std::sync::Arc::new(tokio::sync::Notify::new()),
             runtime_ports: empty_runtime_ports(),
-            state_root: store.state_dir().to_path_buf(),
             preparation: None,
-            panel_guidance: None,
         });
         let args = json!({"action":"cancel","monitor_id":monitor});
         let request = request.to_owned();
@@ -1191,7 +1183,9 @@ async fn callback_blob_symlink_does_not_settle_recovery() {
 }
 
 #[tokio::test]
-async fn callback_panel_uses_one_file_snapshot_per_callback() {
+async fn callback_panel_returns_the_retired_progress_notice() {
+    // Threads saved with the old tool schema can still ask for topic=panel.
+    // The answer names the retired progress file and reads no skill file.
     use crate::provider_callbacks::{
         CallbackDecision, ManagedToolPortsConfig, dispatch_with_managed_tools,
     };
@@ -1213,11 +1207,8 @@ async fn callback_panel_uses_one_file_snapshot_per_callback() {
     )
     .unwrap();
     resources.skills_root = directory.path().join("skills");
-    let guide = resources.skills_root.join(context::PANEL_GUIDANCE);
-    std::fs::create_dir_all(guide.parent().unwrap()).unwrap();
     let resources = Arc::new(resources);
-    for content in ["first panel snapshot", "second panel snapshot"] {
-        std::fs::write(&guide, content).unwrap();
+    for content in ["first panel call", "second panel call"] {
         let frame = Frame::Request(RequestFrame {
             id: RequestId::String(content.into()),
             method: Method::ItemToolCall,
@@ -1240,7 +1231,6 @@ async fn callback_panel_uses_one_file_snapshot_per_callback() {
         )
         .await
         .unwrap();
-        std::fs::remove_file(&guide).unwrap();
         let reply = dispatch_with_managed_tools(
             Arc::clone(&store),
             &context,
@@ -1257,7 +1247,11 @@ async fn callback_panel_uses_one_file_snapshot_per_callback() {
             panic!("panel result")
         };
         assert_eq!(body["success"], true, "{body}");
-        assert!(body.to_string().contains(content), "{body}");
+        assert!(
+            body.to_string()
+                .contains(studio_runtime_schema::shared_values::PROGRESS_FILE_RETIRED_NOTICE),
+            "{body}"
+        );
     }
 }
 

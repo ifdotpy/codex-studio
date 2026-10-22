@@ -10,7 +10,7 @@
 - **Public interface:** `SupervisorClient<T>` and typed request/result/event
   models for each v1 action; `provider_seam::ProviderTaskFactory`,
   `provider_task::SupervisorProviderTaskFactory`, and the Unix temporary-child adapter
-  `provider_stdio::StdioProviderTaskFactory`; `PtyHost` and `ProgressWatch` ports;
+  `provider_stdio::StdioProviderTaskFactory`; the `PtyHost` port;
   [`stream_child`](src/stream_child.rs) for bounded local commands and sign-in;
   `child_priority::ChildPriority` for command wrappers and
   `child_priority::priority_diagnostics()` for nonblocking failure snapshots.
@@ -174,12 +174,6 @@ close operations in [`TerminalManager`](../../../apps/server/src/codex_terminals
 The intended adapter is `portable-pty` 0.9.0 (MIT); before enabling it, verify
 spawn/input/output/resize/exit and descendant cleanup on Linux, macOS, and each
 supported Windows/WSL entry point, including packaged server behavior.
-
-`ProgressWatch` follows the subscribe-before-baseline, coalesced notification,
-and unsubscribe lifecycle in [`ProgressFileWatchdog`](../../../apps/server/src/codex_progress_watch.py#L86).
-The intended adapter is `notify` 8.2.0 (CC0-1.0); verify exact-file detection,
-atomic replacement, teardown, and callback ordering on Linux inotify and macOS
-kqueue. Establish the Windows/WSL watcher requirement before promising support.
 
 The crate uses workspace `serde`, `serde_json`, and `thiserror` (`=2.0.17`,
 MIT OR Apache-2.0); this slice introduces no new dependency version. The

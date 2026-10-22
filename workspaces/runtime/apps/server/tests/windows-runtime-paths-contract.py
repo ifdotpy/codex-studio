@@ -10,7 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
 isolate_supervisor_environment()
-from runtime_test_environment import make_runtime
+from runtime_test_environment import make_runtime  # noqa: F401  # installs the home guard
 
 import os
 import json
@@ -19,20 +19,16 @@ import subprocess
 import sqlite3
 import sys
 import tempfile
-import threading
 import unittest
 from types import SimpleNamespace
-from contextlib import contextmanager
 from unittest.mock import patch
 
 ROOT = REPOSITORY_ROOT
 sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 
 from codex_native_input_projection import _open_rollout, accepted_turns
-from codex_progress import provision_progress, read_progress
 from codex_private_paths import reject_reparse_path
 import codex_private_paths
-import codex_progress_layout as layout
 
 tempfile.tempdir = str(Path.home() / "studio-dev" / "tmp")
 Path(tempfile.tempdir).mkdir(parents=True, exist_ok=True)
@@ -51,18 +47,6 @@ def _junction(link, target):
 
 @unittest.skipUnless(os.name == "nt", "Windows contract")
 class WindowsRuntimePathsContract(unittest.TestCase):
-    class Runtime:
-        def __init__(self, root):
-            self.root = root
-            self.lock = threading.RLock()
-
-        @contextmanager
-        def db(self):
-            yield object()
-
-        def checked_actor(self, _db, agent_id):
-            return {"id": agent_id}
-
     def test_native_rollout_path_opens_without_posix_directory_flags(self):
         with tempfile.TemporaryDirectory() as temporary:
             home = Path(temporary) / "Codex Profile Ω"
@@ -118,28 +102,6 @@ class WindowsRuntimePathsContract(unittest.TestCase):
                 "items": [item],
             }])
 
-    def test_progress_file_is_created_private_and_readable(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            state = Path(temporary) / "state with spaces"
-            state.mkdir()
-            path = provision_progress(state, "worker_1")
-            self.assertTrue(path.is_file())
-            self.assertEqual(read_progress(state, "worker_1")["error"], None)
-            self.assertEqual(path.read_text(encoding="utf-8"), "")
-
-    def test_progress_reparse_points_are_rejected(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            state = Path(temporary)
-            path = provision_progress(state, "worker_1")
-            target = state / "outside.md"
-            target.write_text("private", encoding="utf-8")
-            path.unlink()
-            try:
-                path.symlink_to(target)
-            except OSError as error:
-                self.skipTest("Windows does not allow this account to create a symlink: " + str(error))
-            self.assertIsNotNone(read_progress(state, "worker_1")["error"])
-
     def test_private_path_check_rejects_a_reparse_state_root(self):
         with tempfile.TemporaryDirectory() as temporary:
             outside = Path(temporary) / "outside"
@@ -149,40 +111,6 @@ class WindowsRuntimePathsContract(unittest.TestCase):
             with self.assertRaises(ValueError):
                 reject_reparse_path(root, root / "multi-server", allow_missing=True)
             os.rmdir(root)
-
-    def test_progress_handle_check_rejects_parent_junction_swap(self):
-        import codex_progress
-
-        with tempfile.TemporaryDirectory() as temporary:
-            state = Path(temporary) / "state"
-            state.mkdir()
-            path = provision_progress(state, "worker_1")
-            outside = Path(temporary) / "outside"
-            outside.mkdir()
-            (outside / "PROGRESS.md").write_text("outside content", encoding="utf-8")
-            agent = path.parent
-            moved = agent.with_name("agent-saved")
-            original_open = os.open
-            swapped = False
-
-            def swap(target, *args, **kwargs):
-                nonlocal swapped
-                if not swapped and Path(target) == path:
-                    agent.rename(moved)
-                    _junction(agent, outside)
-                    swapped = True
-                return original_open(target, *args, **kwargs)
-
-            try:
-                with patch.object(codex_progress.os, "open", side_effect=swap):
-                    result = read_progress(state, "worker_1")
-                self.assertTrue(swapped)
-                self.assertIsNotNone(result["error"])
-                self.assertEqual(result["markdown"], "")
-            finally:
-                if agent.exists():
-                    os.rmdir(agent)
-                moved.rename(agent)
 
     def test_rollout_handle_check_rejects_parent_junction_swap(self):
         import codex_native_input_projection as projection
@@ -217,58 +145,6 @@ class WindowsRuntimePathsContract(unittest.TestCase):
                 if sessions.exists():
                     os.rmdir(sessions)
                 moved.rename(sessions)
-
-    def test_layout_handle_check_rejects_parent_junction_swap(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            agent = Path(temporary) / "agent"
-            agent.mkdir()
-            target = agent / layout.LAYOUT_FILE
-            target.write_text("{}", encoding="utf-8")
-            outside = Path(temporary) / "outside"
-            outside.mkdir()
-            (outside / layout.LAYOUT_FILE).write_text('{"outside":true}', encoding="utf-8")
-            moved = agent.with_name("agent-saved")
-            original_open = os.open
-            swapped = False
-
-            def swap(path, *args, **kwargs):
-                nonlocal swapped
-                if not swapped and Path(path) == target:
-                    agent.rename(moved)
-                    _junction(agent, outside)
-                    swapped = True
-                return original_open(path, *args, **kwargs)
-
-            try:
-                with patch.object(layout.os, "open", side_effect=swap):
-                    with self.assertRaises(ValueError):
-                        layout._open_layout_file(agent, layout.LAYOUT_FILE, os.O_RDONLY)
-                self.assertTrue(swapped)
-            finally:
-                if agent.exists():
-                    os.rmdir(agent)
-                moved.rename(agent)
-
-    def test_progress_layout_measurement_round_trip(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            state = Path(temporary)
-            progress = provision_progress(state, "worker_1")
-            progress.write_text("Ready. Проверено.\n", encoding="utf-8")
-            current = read_progress(state, "worker_1")
-            body = {
-                "agent": "worker_1", "revision": current["revision"], "client": "win-test",
-                "sequence": 1, "renderer": layout.RENDERER, "width": 320, "height": 150,
-                "contentWidth": 100, "contentHeight": 40, "fits": True, "reason": None,
-                "overflowX": 0, "overflowY": 0, "totalLines": 1, "visibleLines": 1,
-                "lastVisibleLine": "Ready.", "lastVisibleHeading": None,
-            }
-            saved = layout.record_layout(make_runtime(self.Runtime, state), body)
-            self.assertEqual(saved["status"], "fits")
-            self.assertEqual(layout.layout_status(state, "worker_1")["status"], "fits")
-            feedback = layout.layout_path(state, "worker_1")
-            self.assertEqual(feedback.stat().st_mode & 0o222, 0)
-            self.assertEqual(read_progress(state, "worker_1")["revision"], current["revision"])
-
 
 class PrivatePathPosixMockContract(unittest.TestCase):
     def test_nested_components_are_checked_cumulatively(self):

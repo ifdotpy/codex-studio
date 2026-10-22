@@ -14,6 +14,7 @@ import time
 from typing import Protocol, TYPE_CHECKING
 
 from codex_records import RecordStore
+from codex_shared_values import PROGRESS_FILE_RETIRED_NOTICE
 
 if TYPE_CHECKING:
     import sqlite3
@@ -41,8 +42,6 @@ class _EfficiencyHost(RecordStore, Protocol):
     def unanswered_complaints(self: "_EfficiencyHost", db: "sqlite3.Connection", lead_id: str) -> list["ComplaintRecord"]: ...
     def complaint_message(self: "_EfficiencyHost", db: "sqlite3.Connection", complaints: list["ComplaintRecord"]) -> str: ...
     def role_guidance(self: "_EfficiencyHost", actor: "AgentRecord") -> str: ...
-    def panel_guidance(self: "_EfficiencyHost") -> str: ...
-    def progress_file(self: "_EfficiencyHost", actor: "AgentRecord") -> None: ...
     def tool_definitions(self: "_EfficiencyHost", actor: "AgentRecord") -> list["JsonObject"]: ...
     def model_peers_directory(self: "_EfficiencyHost", db: "sqlite3.Connection", actor_id: str, args: dict[str, "Any"], actor: "AgentRecord") -> dict[str, "Any"]: ...
     def model_page(self: "_EfficiencyHost", rows: list["Any"], args: dict[str, "Any"], scope: "Any", byte_limit: int | None = None, revision_rows: list["Any"] | None = None) -> dict[str, "Any"]: ...
@@ -566,9 +565,7 @@ class EfficiencyMixin:
                 'It is not a user message. ' + source + '\n' + diff + '[End Studio role skill update]')
 
     def preparation_context_versions(self: "_EfficiencyHost", actor: "AgentRecord", params: dict[str, "Any"]) -> "JsonObject":
-        from codex_vm_agents import progress_context
-        values = {'roleSkill': self.role_guidance(actor),
-                  'progressFile': progress_context(self, actor)}
+        values = {'roleSkill': self.role_guidance(actor)}
         if values['roleSkill'] in params.get('developerInstructions', ''):
             self.remember_role_text(values['roleSkill'])
         # Guidance can change between construction and capture. Only acknowledge
@@ -649,13 +646,10 @@ class EfficiencyMixin:
                 if value is None or self.agent(value['agent'], db)['rootId'] != actor['rootId']:
                     raise ValueError('Unknown monitor in this team')
             elif topic == 'panel' and actor.get('isLead'):
-                from codex_vm_agents import progress_context
-                value = progress_context(self, actor) + '\n\n' + self.panel_guidance()
+                value = PROGRESS_FILE_RETIRED_NOTICE
             elif topic == 'background' and actor.get('isLead'):
-                from codex_vm_agents import progress_context
-                value = {'workflow': progress_context(self, actor),
-                         'monitor': 'Use orchestration_monitor for commands needing a result. Every command exit wakes you regardless of wake_on. Quiet monitors wake after 1800 seconds by default; set stall_timeout_seconds to 0 to disable stall wakes.',
-                         'polling': 'Let a script write PROGRESS.md when its facts change. Do not poll unchanged status through model calls.'}
+                value = {'monitor': 'Use orchestration_monitor for commands needing a result. Every command exit wakes you regardless of wake_on. Quiet monitors wake after 1800 seconds by default; set stall_timeout_seconds to 0 to disable stall wakes.',
+                         'polling': 'Let a monitor or a script report changed facts. Do not poll unchanged status through model calls.'}
             elif topic == 'tools':
                 value = self.tool_definitions(actor)
             else:
@@ -670,13 +664,12 @@ class EfficiencyMixin:
         versions['agentMode'] = digest(mode)
         if known.get('agentMode') != versions['agentMode']:
             blocks.append(mode)
-        if actor.get('isLead'):
-            from codex_vm_agents import progress_context
-            progress = progress_context(self, actor)
-            versions['progressFile'] = digest(progress)
-            if known.get('progressFile') != versions['progressFile']:
-                self.progress_file(actor)
-                blocks.append('[Studio progress file]\n' + progress)
+        if actor.get('isLead') and 'progressFile' in known:
+            # Leads that received the former progress file guidance get one notice
+            # to stop. A lead that never received it gets no block.
+            versions['progressFile'] = digest(PROGRESS_FILE_RETIRED_NOTICE)
+            if known['progressFile'] != versions['progressFile']:
+                blocks.append('[Studio progress file retired]\n' + PROGRESS_FILE_RETIRED_NOTICE)
         role_skill = self.role_guidance(actor)
         versions['roleSkill'] = digest(role_skill)
         if known.get('roleSkill') != versions['roleSkill']:

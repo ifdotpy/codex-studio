@@ -129,8 +129,6 @@ pub mod peer_updates;
 pub mod portable_history;
 pub mod pricing;
 pub mod process_controls;
-pub mod progress_panel;
-pub mod progress_watch;
 pub mod project_locations;
 pub mod project_secrets;
 pub mod projects;

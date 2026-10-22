@@ -1,6 +1,6 @@
 ---
 name: codex-workspace
-description: Operate Codex Studio managed teams, monitors, agent chats, user messages, and the lead progress file. Use when the session exposes Studio orchestration tools or the user asks to control Studio. Native Codex CLI sessions are outside this skill.
+description: Operate Codex Studio managed teams, monitors, agent chats, and user messages. Use when the session exposes Studio orchestration tools or the user asks to control Studio. Native Codex CLI sessions are outside this skill.
 ---
 
 # Codex Studio workspace
@@ -181,7 +181,6 @@ after no file change for `stallTimeoutSeconds` (default 1800 seconds); set it
 to `0` to disable them. Set `liveness_command` on a monitor or
 `livenessCommand` on a file rule to run a sandboxed check at the stall point.
 The stall event includes its result. One stall event is sent per quiet period.
-Leads record verified status in their PROGRESS.md file. Workers do not use this file.
 
 For an optional low-worker alert, the orchestrator saves an `orchestration_watch`
 with `kind=low_workers`, a stable `id`, and a `name`. Set `minimumWorkers` (default 8)
@@ -302,26 +301,6 @@ when the task needs them, under the native permission settings.
 
 The chat renders fenced Mermaid diagrams and isolated static HTML/CSS/SVG.
 Scripts and remote resources do not run in these previews.
-
-## Lead progress file
-
-Only the lead has a Studio progress file and progress panel. Workers do not read,
-write, or check a PROGRESS.md file.
-
-Leads read and edit their `PROGRESS.md` with ordinary file tools. Studio supplies the exact
-path in your runtime instructions and through `orchestration_context topic=panel`.
-Each agent has a separate file outside the project, even when agents share a
-working directory. Do not substitute the project's own `PROGRESS.md`.
-
-Use plain UTF-8 Markdown for current status, verified results, and blockers.
-Keep the file at most 128 KiB. Studio displays it above the composer in an area
-with a viewport-based height budget, up to 280px. Put the current status first.
-Longer content stays visible with clipping and a fade. Users can expand it and scroll. An empty or missing file
-clears the display. Update it when the facts change. No special panel tool,
-command output feed, or model wake is required.
-
-Read [the progress guide](references/panel.md) for the file contract.
-Existing read-only permissions still apply.
 
 ## Worker cleanup
 

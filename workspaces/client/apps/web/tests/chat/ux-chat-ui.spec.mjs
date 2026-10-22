@@ -334,8 +334,6 @@ test("Ux Chat Ui", async ({
       }
       if (path === "/api/queue")
         return fulfillApi(route, { json: { items: [] } });
-      if (path === "/api/panel")
-        return fulfillApi(route, { json: { html: "", version: 0 } });
       return fulfillApi(route, { json: { ok: true } });
     });
     await page.goto(`http://127.0.0.1:${server.address().port}`);

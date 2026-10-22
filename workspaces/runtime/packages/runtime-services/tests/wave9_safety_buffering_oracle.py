@@ -189,9 +189,6 @@ class RuntimePort:
     def role_guidance(agent):
         return CodexRuntime.role_guidance(agent)
 
-    def progress_file(self, _agent):
-        return None
-
     def tool_definitions(self, _agent):
         return []
 

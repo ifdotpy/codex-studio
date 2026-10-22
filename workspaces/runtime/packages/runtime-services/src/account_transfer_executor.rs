@@ -1630,7 +1630,6 @@ mod retained_executor_tests {
         let catalog = ModelCatalogService::new();
         let resources = crate::account_worker::preparation::PreparationResources {
             instructions: String::new(),
-            progress_template: String::new(),
             thread_config: Default::default(),
             tools: vec![],
             legacy_tools: vec![],
@@ -1722,7 +1721,6 @@ mod retained_executor_tests {
         ]);
         let resources = crate::account_worker::preparation::PreparationResources {
             instructions: String::new(),
-            progress_template: String::new(),
             thread_config: Default::default(),
             tools: vec![],
             legacy_tools: vec![],
@@ -1862,7 +1860,6 @@ mod retained_executor_tests {
         });
         let resources = crate::account_worker::preparation::PreparationResources {
             instructions: String::new(),
-            progress_template: String::new(),
             thread_config: Default::default(),
             tools: vec![],
             legacy_tools: vec![],
@@ -2065,7 +2062,6 @@ mod retained_executor_tests {
         });
         let recovered_resources = crate::account_worker::preparation::PreparationResources {
             instructions: String::new(),
-            progress_template: String::new(),
             thread_config: Default::default(),
             tools: vec![],
             legacy_tools: vec![],

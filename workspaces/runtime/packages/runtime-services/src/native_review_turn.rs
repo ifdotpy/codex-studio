@@ -530,17 +530,6 @@ impl ReviewPreparation {
             },
             Err(_) => ("unknown", None),
         };
-        let filesystem_store = Arc::clone(&self.store);
-        let filesystem_agent = request.agent.clone();
-        let filesystem = studio_runtime_process::blocking_pool::spawn_blocking(
-            "runtime-services/native_review_turn_filesystem",
-            move || {
-                preparation::ReviewThreadFilesystem::capture(&filesystem_store, &filesystem_agent)
-            },
-        )
-        .await
-        .map_err(|_| NativeError::Unavailable("native-review/filesystem"))?
-        .map_err(|_| NativeError::Unavailable("native-review/filesystem"))?;
         let resources = self
             .resources
             .for_receipt(&self.store, &request.agent, Some(prepared.cwd()))
@@ -562,13 +551,7 @@ impl ReviewPreparation {
                 let mut status = status;
                 if let Some(reply) = reply.as_ref() {
                     match preparation::accept_review_thread(
-                        tx,
-                        &resources,
-                        &root,
-                        &filesystem,
-                        &current,
-                        &prepared,
-                        reply,
+                        tx, &resources, &root, &current, &prepared, reply,
                     )
                     .map_err(|_| NativeError::Invalid("native-review/thread-receipt"))?
                     {

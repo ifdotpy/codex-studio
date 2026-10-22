@@ -100,8 +100,8 @@ and context and bypass events are unbounded. An independent assertion preserves 
 
 ### What this corpus does not establish
 
-The host supplies agent lookup/naming, guidance acquisition, and progress-file
-provisioning; it replaces item indexing and UI publication. It does not establish
+The host supplies agent lookup/naming and guidance acquisition; it replaces
+item indexing and UI publication. It does not establish
 metadata merge preservation, item/fulltext overwrite or deletion, missing versus
 deleted owner behavior, real guidance origins, filesystem failure handling, search
 or UI effects, or durable receipt transaction atomicity. It checks archive create,

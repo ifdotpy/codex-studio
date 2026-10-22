@@ -18,7 +18,6 @@ spec = importlib.util.spec_from_file_location('payload_fixture', Path(__file__).
 f = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(f)
 from codex_efficiency import EfficiencyMixin, packed
-from codex_progress import progress_context
 
 
 class PayloadContract(unittest.TestCase):
@@ -46,9 +45,10 @@ class PayloadContract(unittest.TestCase):
         lead = self.start(self.lead())
         params = next(p for method, p in self.runtime.server.calls if method == 'thread/start')
         text = next(p['input'][0]['text'] for method, p in self.runtime.server.calls if method == 'turn/start')
-        for block in (self.runtime.role_guidance(lead), progress_context(self.runtime.root, lead['id'])):
-            self.assertIn(block, params['developerInstructions'])
-            self.assertNotIn(block, text)
+        role = self.runtime.role_guidance(lead)
+        self.assertIn(role, params['developerInstructions'])
+        self.assertNotIn(role, text)
+        self.assertNotIn('PROGRESS.md', params['developerInstructions'] + text)
         self.assertFalse(any(k.startswith('_studio') for k in params))
         with self.runtime.db() as db:
             actor = self.runtime.agent(lead['id'], db)

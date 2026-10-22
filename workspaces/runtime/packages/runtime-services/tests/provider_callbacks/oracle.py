@@ -534,7 +534,6 @@ for actor, topic in [(lead, "complaints"), (worker, "complaints"), (lead, "profi
                               "value": reads.model_context(actor["id"], {"topic": topic})})
     except ValueError as error:
         context_cases.append({"actor": actor["id"], "topic": topic, "success": False, "error": str(error)})
-model_reads = {"template": str(reads_root), "reads": model_read_cases, "contexts": context_cases,
-               "panelGuidance": reads.panel_guidance()}
+model_reads = {"template": str(reads_root), "reads": model_read_cases, "contexts": context_cases}
 reads.close()
 print(json.dumps({"modelReads":model_reads,"agents":[lead,worker,foreign],"answers":answers,"reservations":reservations,"chat":{"page":chat_page,"expected":chat_expected},"dynamic":dynamic_cases,"resolutions":resolutions,"legacyCard":legacy_card,"reviewCases":review_cases,"baseWork":base_work,"projections":projections,"preview":{"item":item,"request":preview_request,"expected":preview_expected},"resolved":resolved_cases,"chatVisibility":chat_visibility,"managedToolCases":managed_cases,"managedRootDeletedRefusal":managed_root_deleted_refusal,"template":str(root)},ensure_ascii=False))

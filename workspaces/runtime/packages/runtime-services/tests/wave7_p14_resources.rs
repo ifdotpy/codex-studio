@@ -79,7 +79,6 @@ fn python_corpus_matches_complete_notify_and_token_publication_results() {
         }
     }
     for kind in [
-        "panel",
         "queue",
         "receipts",
         "workspace",
@@ -204,7 +203,7 @@ fn closed_publisher_and_invalid_input_never_advance_cursor() {
     let publisher = ResourceNotifications::new(hub.clone());
     let large = request(
         "large",
-        json!([{"kind":"panel", "agentId":"x".repeat(MAX_PUBLICATION_BYTES)}]),
+        json!([{"kind":"queue", "agentId":"x".repeat(MAX_PUBLICATION_BYTES)}]),
     );
     assert_eq!(
         publisher.publish_once(&large),

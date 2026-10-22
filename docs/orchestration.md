@@ -288,54 +288,6 @@ Source and Save a copy retain the complete file within the file API limit.
    malformed edges and cycles refuse it, and other targets use authorized chat routing.
 6. The existing transaction saves effects and replay receipts together.
 
-### Agent progress file
-
-Each managed conversation displays its agent's plain `PROGRESS.md` between the
-transcript and composer. The file path is `<stateDir>/progress/<agentId>/PROGRESS.md`.
-Studio supplies the exact path in runtime instructions and through
-`orchestration_context topic=panel`, together with the bundled
-[progress guide](../.agents/skills/codex-workspace/references/panel.md).
-The file remains outside Git. Agents that share a working directory have separate
-files. A project's own `PROGRESS.md` does not control this display.
-
-Agents read and edit the file with ordinary file tools. Content must be UTF-8
-Markdown and no larger than the server-owned [progress byte limit](../workspaces/runtime/apps/server/src/codex_shared_values.py).
-The display has a maximum height of 150px.
-Its current width, font and available height determine fit. Studio uses passive
-Markdown and checks the complete rendered revision before display. Overflow or
-unsupported content produces a compact notice with access to the original file.
-The panel does not scroll, cut content or shrink the font.
-It does not execute scripts or provide agent callbacks. An update does not require command output or a model
-turn. Existing read-only permissions remain unchanged.
-
-The file persists across restarts. Provisioning creates an empty file only if it
-is absent; it never overwrites agent content. An empty or missing file clears the
-display. Read errors, invalid UTF-8, and oversized files produce a visible error.
-A read failure does not present an old revision as current. A later successful
-read checks the new revision. File reads occur outside the global runtime lock.
-Atomic file replacement is supported; the next read observes the new revision.
-
-The selected visible conversation refreshes `GET /api/panel?agent=<id>` in the
-background. The response contains `format=markdown`, `markdown`, `path`,
-`revision`, `updated`, `exists`, and `error`. Hidden and offline views pause these
-reads. Old responses from another chat cannot replace the current display.
-File content stays outside shared snapshots. File changes do not wake agents.
-
-On chat switch, Studio restores a bounded local copy before the file request
-finishes. The existing background chat scheduler also prepares likely switch
-targets. Cached content carries a Saved copy label until the server confirms it.
-Read failures retain this labelled copy and show an error. Empty or missing
-files clear it after a successful read. Cache entries use the state directory
-and agent ID; cache eviction does not remove drafts or source files. Cached
-content must still fit the current viewport. Layout reports wait for a live read.
-
-The visible client reports measured dimensions to `POST /api/panel/layout`.
-The server writes revision-specific, expiring feedback to `PROGRESS.layout.json`
-beside the source file. Separate clients retain separate results. Agents use the
-check command in their runtime instructions after edits. The
-[progress guide](../.agents/skills/codex-workspace/references/panel.md) defines this workflow.
-An absent or stale measurement means unmeasured, not success.
-
 `/compact`, `/review`, `/stop`, and `/stop-team` are local commands.
 Team capacity and token budgets remain available through `codex-control configure`.
 One lead can delegate a batch of work to dozens of agents.
@@ -1229,9 +1181,7 @@ Codex tools such as `exec_command` retain Codex's own output controls.
   Set `liveness_command` to run a sandboxed check at the stall point. The stall
   event includes its result. File watches support `stallTimeoutSeconds` and
   `livenessCommand` with the same defaults and behavior. One event is sent per
-  quiet period, and new output or a file change starts another period. Record
-  verified status in the per-agent `PROGRESS.md` file with ordinary file tools.
-  Its display updates without model turns.
+  quiet period, and new output or a file change starts another period.
 
 Existing native threads keep their original tool schemas. They can use new fields
 through `orchestration_send` with `agent_id="workspace"` and a JSON `text` value:

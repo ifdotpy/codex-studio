@@ -222,10 +222,6 @@ class Host:
     def connection_current(self, account, connection):
         return connection == self.snapshot["account"]["connection_id"]
 
-    def progress_file(self, actor):
-        directory = self.snapshot["workspace"].get("progress_directory")
-        return pathlib.Path(directory) / "PROGRESS.md" if directory else None
-
     def role_guidance(self, actor):
         return actor.get("nativeRoleGuidance") or self.snapshot["guidance"]["role"]
 
@@ -284,7 +280,6 @@ def run(command):
                     ("codex_runtime.THREAD_CONFIG", s["guidance"]["thread_config"]),
                     ("codex_runtime.INSTRUCTIONS", s["guidance"]["instructions"]),
                     ("codex_runtime.uid", lambda: command.get("attempt_id", "attempt")),
-                    ("codex_vm_agents.progress_context", lambda *a: s["guidance"]["progress"]),
                     ("codex_nested_delegation.can_delegate", lambda *a: s["root"]["can_delegate"]),
                     ("codex_browser.configure_browser", lambda _runtime, _actor, params: browser(s, params)),
                     ("codex_native_release.reconcile_unknown", lambda *a: None),

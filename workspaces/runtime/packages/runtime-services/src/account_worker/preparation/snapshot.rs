@@ -91,7 +91,6 @@ pub type VmProviderRefreshFuture<'a> =
 #[derive(Clone)]
 pub struct PreparationResources {
     pub instructions: String,
-    pub progress_template: String,
     pub thread_config: Map<String, Value>,
     pub tools: Vec<thread::ToolDefinition>,
     pub legacy_tools: Vec<thread::ToolDefinition>,
@@ -148,7 +147,6 @@ impl PreparationResources {
         #[derive(Deserialize)]
         struct Bundled {
             instructions: String,
-            progress_template: String,
             thread_config: Map<String, Value>,
             tools: Vec<thread::ToolDefinition>,
         }
@@ -192,7 +190,6 @@ impl PreparationResources {
         Ok(Self {
             role_guidance,
             instructions: data.instructions,
-            progress_template: data.progress_template,
             thread_config: data.thread_config,
             tools: data.tools,
             legacy_tools,
@@ -498,38 +495,17 @@ pub(in crate::account_worker) fn authorization_paths(
 #[derive(Clone)]
 pub(super) struct FilesystemSnapshot {
     resolved_paths: BTreeMap<String, String>,
-    pub thread_inputs: ThreadFilesystemInputs,
 }
 
-#[derive(Clone)]
-pub(super) struct ThreadFilesystemInputs {
-    pub progress_directory: Option<String>,
-}
 impl FilesystemSnapshot {
     /// Capture the observations of one admission: the resolved paths of the
-    /// rows its authorization decision reads, and the progress directory.
-    /// `rows` come from [`authorization_rows`].
+    /// rows its authorization decision reads. `rows` come from
+    /// [`authorization_rows`].
     pub fn capture_for_authorization(
-        store: &RuntimeStore,
-        intent: &TurnIntent,
         rows: &crate::submit_gates::AuthorizationRecords,
     ) -> Result<Self, WorkerError> {
-        let resolved_paths = authorization_paths(rows)?;
-        let mut snapshot = Self::capture(store, &intent.agent_id)?;
-        snapshot.resolved_paths = resolved_paths;
-        Ok(snapshot)
-    }
-
-    /// Capture the progress directory only; no row is read or resolved.
-    pub fn capture(store: &RuntimeStore, id: &str) -> Result<Self, WorkerError> {
-        let resolved_paths = BTreeMap::new();
-        let progress = store.root().join("progress").join(id);
-        let progress_directory = (progress.is_dir()
-            && CanonicalPath::existing(&progress).ok().as_deref() == Some(progress.as_path()))
-        .then(|| progress.to_string_lossy().into_owned());
         Ok(Self {
-            resolved_paths,
-            thread_inputs: ThreadFilesystemInputs { progress_directory },
+            resolved_paths: authorization_paths(rows)?,
         })
     }
 }
@@ -636,7 +612,7 @@ pub(super) fn guidance(
     record: &Value,
     state_root: &Path,
 ) -> Result<thread::GuidanceBundle, WorkerError> {
-    let (role, progress) = role_guidance(resources, record, state_root)?;
+    let role = role_guidance(resources, record)?;
     let mut thread_config = resources.thread_config.clone();
     // A managed worker (a child agent) runs without the user's MCP servers, so
     // none of them is spawned per thread. The lead and root chats keep them.
@@ -672,7 +648,6 @@ pub(super) fn guidance(
     Ok(thread::GuidanceBundle {
         instructions: resources.instructions.clone(),
         role,
-        progress,
         thread_config,
         browser,
     })
@@ -724,14 +699,9 @@ fn browser_guidance(
     })
 }
 
-/// The role skill text and the lead's progress guidance of `record`. A turn
-/// needs only these; the thread config (with its account MCP read) is the
-/// thread snapshot's.
-fn role_guidance(
-    resources: &PreparationResources,
-    record: &Value,
-    state_root: &Path,
-) -> Result<(String, String), WorkerError> {
+/// The role skill text of `record`. A turn needs only this; the thread config
+/// (with its account MCP read) is the thread snapshot's.
+fn role_guidance(resources: &PreparationResources, record: &Value) -> Result<String, WorkerError> {
     let lead = flag(record, "isLead")?;
     let name = if lead {
         "codex-orchestrator"
@@ -791,42 +761,7 @@ fn role_guidance(
             content
         )
     };
-    let progress = if lead && !resources.progress_template.is_empty() {
-        progress_context(resources, record, state_root)?
-    } else {
-        String::new()
-    };
-    Ok((role, progress))
-}
-
-/// The progress-file guidance of a host lead. Its role guidance and the
-/// `orchestration_context` topics `panel` and `background` use this text.
-pub(crate) fn progress_context(
-    resources: &PreparationResources,
-    record: &Value,
-    state_root: &Path,
-) -> Result<String, WorkerError> {
-    let id = record["id"].as_str().ok_or_else(|| invalid("agent/id"))?;
-    if id.is_empty()
-        || id.len() > 200
-        || !id
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
-    {
-        return Err(invalid("progress agent"));
-    }
-    let path = state_root.join("progress").join(id).join("PROGRESS.md");
-    let progress = resources
-        .progress_template
-        .replace("{progress_file}", &path.to_string_lossy())
-        .replace(
-            "{layout_file}",
-            &path
-                .with_file_name("PROGRESS.layout.json")
-                .to_string_lossy(),
-        );
-    let layout_guidance = progress_layout_guidance(std::env::current_exe().ok(), &path);
-    Ok(progress.replace("{progress_layout_check}", &layout_guidance))
+    Ok(role)
 }
 
 /// The catalog an agent's thread uses: its saved source, else legacy for an
@@ -904,15 +839,6 @@ pub(crate) fn actor_tool_definitions(
         .map_err(|_| invalid("tool catalog"))
 }
 
-fn progress_layout_guidance(server: Option<PathBuf>, progress_file: &Path) -> String {
-    server.map_or_else(String::new, |server| {
-        format!(
-            "After editing PROGRESS.md, run {} progress-layout {} --wait 3 once to check which top-level lines or list items are visible. Trim only when important lines are hidden. Exit 0 means the current revision is visible, including clipped content (or is empty); 1 means unsupported content or a file-read error; 2 means no current measurement exists. The hint describes the least visible current client. Exact revisions and recent clients remain separate. Do not loop or wake another agent. ",
-            shell_quote(&server.to_string_lossy()),
-            shell_quote(&progress_file.to_string_lossy()),
-        )
-    })
-}
 pub(super) fn native_thread_blocked(record: &Value) -> bool {
     let Some(thread) = record["threadId"].as_str().filter(|s| !s.is_empty()) else {
         return false;
@@ -1037,7 +963,6 @@ pub(super) fn thread_snapshot(
     record: &Value,
     connection: &str,
     state_root: &Path,
-    filesystem: &ThreadFilesystemInputs,
     account_transfer_owner: Option<&str>,
 ) -> Result<thread::Snapshot, WorkerError> {
     let id = record["id"].as_str().ok_or_else(|| invalid("agent/id"))?;
@@ -1057,9 +982,6 @@ pub(super) fn thread_snapshot(
     } else {
         thread::Role::Implementer
     });
-    let progress_directory = lead
-        .then_some(filesystem.progress_directory.clone())
-        .flatten();
     let owned_transfer = account_transfer_owner
         .map(|transfer_id| {
             crate::account_transfer_driver::owns_reading_member(tx, transfer_id, id)
@@ -1146,7 +1068,7 @@ pub(super) fn thread_snapshot(
                 .and_then(|v| v["digest"].as_str())
                 .map(str::to_owned),
         },
-        workspace: thread::WorkspaceReadiness::Ready { progress_directory },
+        workspace: thread::WorkspaceReadiness::Ready,
         unsupported,
         admission,
         pending: None,
@@ -1184,13 +1106,12 @@ pub(super) fn submission_snapshot(
     resources: &PreparationResources,
     record: &Value,
     intent: &TurnIntent,
-    state_root: &Path,
 ) -> Result<(turn::PreparationSnapshot, Vec<turn::Event>), WorkerError> {
     let root_id = record["rootId"]
         .as_str()
         .ok_or_else(|| invalid("agent/rootId"))?;
     let root = agent(tx, root_id)?.value();
-    let (role, progress) = role_guidance(resources, record, state_root)?;
+    let role = role_guidance(resources, record)?;
     let plan=record_by_id(tx, "runtime_plans", root_id)?.map(|s|serde_json::from_str::<Value>(&s).map_err(|_|invalid("plan"))).transpose()?.filter(|v|v["native"].is_object()).map(|v|decode(json!({"id":v["id"],"rootId":v["rootId"],"steps":v["native"].get("plan").cloned().unwrap_or_else(||json!([])),"explanation":v["native"].get("explanation").filter(|v|!v.is_null()).cloned().unwrap_or(json!(""))}),"plan")).transpose()?;
     let mut complaints = Vec::new();
     for raw in lead_complaints(tx, &intent.agent_id)? {
@@ -1371,7 +1292,7 @@ pub(super) fn submission_snapshot(
             workers,
             delivered_reminders,
             assets,
-            guidance: turn::GuidanceBundle { role, progress },
+            guidance: turn::GuidanceBundle { role },
             artifact_paths: BTreeMap::new(),
             prepared_at: now(),
             operation_id: String::new(),
@@ -1379,21 +1300,9 @@ pub(super) fn submission_snapshot(
         events,
     ))
 }
-pub(super) fn ensure_context_tables(tx: &Transaction<'_>) -> Result<(), WorkerError> {
+pub(crate) fn ensure_context_tables(tx: &Transaction<'_>) -> Result<(), WorkerError> {
     tx.execute_batch("CREATE TABLE IF NOT EXISTS runtime_context_manifests(agent TEXT NOT NULL,thread_id TEXT NOT NULL,compactions INTEGER NOT NULL,sequence INTEGER NOT NULL,event_id TEXT NOT NULL,record TEXT NOT NULL,PRIMARY KEY(agent,thread_id,compactions)); CREATE TABLE IF NOT EXISTS runtime_context_reminders(agent TEXT NOT NULL,version TEXT NOT NULL,event_id TEXT NOT NULL,PRIMARY KEY(agent,version));")?;
     Ok(())
-}
-
-fn shell_quote(value: &str) -> String {
-    if !value.is_empty()
-        && value
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b"_@%+=:,./-".contains(&b))
-    {
-        value.into()
-    } else {
-        format!("'{}'", value.replace('\'', "'\"'\"'"))
-    }
 }
 
 fn root_concurrency(root: &Value) -> Result<u16, WorkerError> {
@@ -1605,27 +1514,6 @@ mod resource_tests {
             })
             .await
             .expect("a review object is read as a review child");
-    }
-
-    #[test]
-    fn guidance_points_at_the_progress_layout_command() {
-        let resources = PreparationResources::bundled(String::new(), ModelCatalogService::new())
-            .expect("runtime resources");
-        let bundle = guidance(
-            &resources,
-            &json!({"id":"lead", "isLead":true}),
-            Path::new("/state"),
-        )
-        .expect("progress guidance");
-        let server = shell_quote(
-            &std::env::current_exe()
-                .expect("test executable path")
-                .to_string_lossy(),
-        );
-        assert!(bundle.progress.contains(&format!(
-            "run {server} progress-layout /state/progress/lead/PROGRESS.md --wait 3 once"
-        )));
-        assert!(!bundle.progress.contains(".py"));
     }
 
     #[test]
