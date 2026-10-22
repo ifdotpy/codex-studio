@@ -236,6 +236,17 @@ Table previews show at most 200 rows and 100 columns.
 Their text parser stops after 1,048,576 UTF-16 code units.
 Source and Save a copy retain the complete file within the file API limit.
 
+### Agent send routing
+
+1. The server checks the sender's current identity and epoch in the effect transaction.
+2. `parent`, `lead`, and `broadcast` use chat routing without ancestry reads.
+3. An agent ID or unique visible prefix resolves before descendant routing.
+4. The [shared ancestry check](../workspaces/runtime/packages/runtime-services/src/managed_host_tools.rs)
+   reads checked records by indexed ID along the target's parent chain, within the sender's root.
+5. A matching parent permits descendant input; a missing edge ends the check,
+   malformed edges and cycles refuse it, and other targets use authorized chat routing.
+6. The existing transaction saves effects and replay receipts together.
+
 ### Agent progress file
 
 Each managed conversation displays its agent's plain `PROGRESS.md` between the
