@@ -1,7 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { createRequire } from "node:module";
 import { join } from "node:path";
 
 function defaultBrowserPath() {
@@ -15,6 +14,22 @@ function defaultBrowserPath() {
   return join(homedir(), ".cache", "ms-playwright");
 }
 
+// Corepack's pnpm cache follows the caller's cache root, not the isolated
+// home below; without it pnpm would be downloaded on every run.
+function defaultCorepackHome() {
+  if (process.platform === "win32")
+    return join(
+      process.env.LOCALAPPDATA || join(homedir(), "AppData", "Local"),
+      "node",
+      "corepack",
+    );
+  return join(
+    process.env.XDG_CACHE_HOME || join(homedir(), ".cache"),
+    "node",
+    "corepack",
+  );
+}
+
 const args = process.argv.slice(2);
 const separatorIndex = args.indexOf("--");
 if (separatorIndex !== -1) args.splice(separatorIndex, 1);
@@ -22,6 +37,7 @@ if (separatorIndex !== -1) args.splice(separatorIndex, 1);
 const environment = { ...process.env };
 delete environment.BROWSER;
 environment.PLAYWRIGHT_BROWSERS_PATH ??= defaultBrowserPath();
+environment.COREPACK_HOME ??= defaultCorepackHome();
 const stateRoot = mkdtempSync(join(tmpdir(), "codex-playwright-"));
 const outputDirectory = join(stateRoot, "playwright-output");
 environment.PLAYWRIGHT_OUTPUT_DIR = outputDirectory;
@@ -43,12 +59,7 @@ try {
   mkdirSync(outputDirectory);
   mkdirSync(isolatedHome);
   for (const directory of Object.values(xdgDirectories)) mkdirSync(directory);
-  // Run the pinned CLI directly: pnpm through Corepack would look for its own
-  // cache under the isolated home and download pnpm on every run.
-  const playwrightCli = createRequire(import.meta.url).resolve(
-    "@playwright/test/cli",
-  );
-  const result = spawnSync(process.execPath, [playwrightCli, "test", ...args], {
+  const result = spawnSync("pnpm", ["exec", "playwright", "test", ...args], {
     stdio: "inherit",
     env: environment,
   });
