@@ -4443,7 +4443,11 @@ impl Worker {
 
         let written = tokio::time::timeout_at(deadline, async {
             while !self.callbacks.is_empty() {
-                let event = self.events.recv().await.ok_or(WorkerError::Closed)?;
+                let Some(event) = self.events.recv().await else {
+                    // SessionExit owns any final write receipts that could not
+                    // enter this lane. finish() settles them after the join.
+                    break;
+                };
                 self.event(event).await?;
             }
             Ok::<(), WorkerError>(())

@@ -444,6 +444,14 @@ idle deadline. Pending local requests park the deadline until their completion
 event. Queued commands prevent process shutdown without erasing its idle time.
 The worker loop owns this reconciliation; it does not start periodic scans.
 
+Account worker shutdown settles callback answers through the session owner:
+
+1. Drain completed handlers and callback write events while the event lane is open.
+2. If the lane closes, join the session and settle its retained final outcomes
+   through the same callback receipt path. A closed lane alone is not a failure.
+3. Report an unknown write or failed cleanup to the caller; never resend an
+   answer whose write outcome is unknown.
+
 ## Token accounting and saved context
 
 A finite team budget checks durable usage before each new submission.

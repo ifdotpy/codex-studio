@@ -86,6 +86,66 @@ async fn unsent(state: &State) -> Vec<callback_record::Accepted> {
         .expect("unsent records")
 }
 
+/// A cancelled session retains the in-flight answer's final outcome outside
+/// its event lane. The final receipt must determine shutdown's result.
+#[tokio::test]
+async fn shutdown_reads_the_final_callback_outcome_after_the_event_lane_closes() {
+    for outcome in [WriteOutcome::Written, WriteOutcome::Unknown] {
+        let state = State::new().await;
+        let mut peer = Peer::new();
+        let mut worker = peer.worker(state.bridge.clone()).await;
+        worker_barrier(&worker).await;
+        let cursor = peer.frame(request("shutdown-final-outcome")).await;
+        let answer = peer.next_write().await;
+        *state.bridge.faults.pause_operation.lock().unwrap() = Some("journal".into());
+        peer.frame(usage()).await;
+        tokio::time::timeout(SHUTDOWN_GRACE, state.bridge.faults.paused.notified())
+            .await
+            .expect("worker journals a provider event while the callback receipt is held");
+
+        // Both stops and the receipt become ready in this poll. The session
+        // must retain the receipt in SessionExit instead of its event lane.
+        worker.session_control.cancel();
+        answer
+            .receipt
+            .send(match outcome {
+                WriteOutcome::Written => CommandReceipt::Written {
+                    remote_id: None,
+                    duplicate: false,
+                },
+                WriteOutcome::Unknown => CommandReceipt::Unknown,
+                WriteOutcome::NotSent => unreachable!("only in-flight outcomes are tested"),
+            })
+            .ok()
+            .expect("adapter still owns the receipt");
+        worker.cancel();
+        let mut stopped = peer.stop.subscribe();
+        tokio::time::timeout(SHUTDOWN_GRACE, Shutdown::cancelled(&mut stopped))
+            .await
+            .expect("session cancels its adapter during the held store operation");
+        state.bridge.faults.release.notify_one();
+
+        let result = worker.completion().await;
+        match outcome {
+            WriteOutcome::Written => {
+                assert!(
+                    result.is_ok(),
+                    "written callback stops normally: {result:?}"
+                );
+                assert_eq!(phases(&state, GENERATION, cursor), [false, false, false]);
+            }
+            WriteOutcome::Unknown => {
+                assert!(
+                    matches!(result, Err(WorkerError::CallbackUnknown)),
+                    "the final receipt must determine the error: {result:?}"
+                );
+                assert_eq!(phases(&state, GENERATION, cursor), [true, true, true]);
+            }
+            WriteOutcome::NotSent => unreachable!("only in-flight outcomes are tested"),
+        }
+    }
+}
+
 #[tokio::test]
 async fn record_follows_the_answer_outcome_and_survives_journal_compaction() {
     let state = State::new().await;
