@@ -728,6 +728,31 @@ function fastTierCommands(root) {
       },
     },
     {
+      item: { name: "Mac sync chunk reads", ecosystem: "pnpm" },
+      label: "Mac sync chunk read witness",
+      commands: [
+        [
+          "python3",
+          [
+            "-B",
+            "-m",
+            "unittest",
+            "discover",
+            "-s",
+            "workspaces/runtime/apps/vm-guest",
+            "-p",
+            "test_mac_sync.py",
+            "-v",
+          ],
+        ],
+      ],
+      options: {
+        selector: "bounded guest Mac sync reads",
+        reason:
+          "Read at most one chunk under the project lock and preserve file and link responses.",
+      },
+    },
+    {
       item: { name: "native WebView fixture", ecosystem: "pnpm" },
       label: "native WebView fixture",
       commands: [
