@@ -111,14 +111,14 @@ pub(crate) fn page_in_transaction(
 struct PageRow {
     id: String,
     created: f64,
-    record: Value,
+    turn_id: Option<String>,
 }
 
 fn rows(
     connection: &Connection,
     agent: &str,
     request: &PageRequest,
-) -> Result<Vec<PageRow>, TranscriptError> {
+) -> Result<Vec<(PageRow, Value)>, TranscriptError> {
     let before = request.before.as_deref().filter(|v| !v.is_empty());
     let around = request.around.as_deref().filter(|v| !v.is_empty());
     let after = request.after.as_deref().filter(|v| !v.is_empty());
@@ -191,11 +191,15 @@ fn rows(
         .map(|row| {
             let (id, created, raw) = row?;
             let record = records::decode("runtime_items", &id, &raw)?;
-            Ok(PageRow {
-                id,
-                created,
+            let turn_id = record["turnId"].as_str().map(str::to_owned);
+            Ok((
+                PageRow {
+                    id,
+                    created,
+                    turn_id,
+                },
                 record,
-            })
+            ))
         })
         .collect::<Result<Vec<_>, TranscriptError>>()?;
     if after.is_none() {
@@ -216,7 +220,7 @@ pub(crate) fn project(
     if truthy(actor.get("deletedAt")) {
         return Err(TranscriptError::DeletedConversation);
     }
-    let rows = rows(connection, agent, request)?;
+    let (rows, mut items): (Vec<_>, Vec<_>) = rows(connection, agent, request)?.into_iter().unzip();
     let has_cursor = [&request.before, &request.around, &request.after]
         .into_iter()
         .any(|v| v.as_ref().is_some_and(|v| !v.is_empty()));
@@ -224,7 +228,6 @@ pub(crate) fn project(
     let mut next_after = None;
     if let Some(row) = rows.first() && connection.query_row("SELECT EXISTS(SELECT 1 FROM runtime_items WHERE agent=?1 AND json_extract(record,'$.afterRestore') IS NULL AND (created,id)<(?2,?3))",params![agent,row.created,row.id],|r|r.get::<_,bool>(0))? { next=Some(row.id.clone()); }
     if has_cursor && let Some(row)=rows.last() && connection.query_row("SELECT EXISTS(SELECT 1 FROM runtime_items WHERE agent=?1 AND json_extract(record,'$.afterRestore') IS NULL AND (created,id)>(?2,?3))",params![agent,row.created,row.id],|r|r.get::<_,bool>(0))? { next_after=Some(row.id.clone()); }
-    let mut items = rows.iter().map(|r| r.record.clone()).collect::<Vec<_>>();
     receipts(connection, agent, &mut items, !has_cursor)?;
     let live = matches!(
         actor["status"].as_str(),
@@ -664,7 +667,7 @@ fn reasoning(
             let next=analytics.query_row("SELECT at FROM analytics_items WHERE agent=?1 AND at>?2 AND at<?3 AND json_extract(record,'$.turnId')=?4 ORDER BY at LIMIT 1",params![actor["id"].as_str(),start,upper,turn],|r|r.get::<_,f64>(0)).optional()?;
             let message = rows
                 .iter()
-                .find(|r| r.created > start && r.record["turnId"] == turn)
+                .find(|r| r.created > start && r.turn_id.as_deref() == Some(turn))
                 .map(|r| r.created);
             end = next.into_iter().chain(message).min_by(f64::total_cmp);
             observed = end.is_some();

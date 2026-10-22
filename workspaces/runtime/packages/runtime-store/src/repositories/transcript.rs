@@ -1024,14 +1024,19 @@ fn transcript_pull_write(
     let items = payload
         .get("items")
         .and_then(Value::as_array)
-        .cloned()
+        .map(Vec::as_slice)
         .unwrap_or_default();
     let order = items
         .iter()
         .filter_map(|item| item.get("id").and_then(Value::as_str).map(str::to_owned))
         .collect::<Vec<_>>();
-    let mut metadata = payload.as_object().cloned().unwrap_or_default();
-    metadata.remove("items");
+    let metadata = payload
+        .as_object()
+        .into_iter()
+        .flatten()
+        .filter(|(key, _)| key.as_str() != "items")
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect::<serde_json::Map<_, _>>();
     let mut current = transaction
         .prepare_cached(
             "SELECT id,seq,hash,deleted FROM sync_entities WHERE collection=?1 ORDER BY rowid",
@@ -1071,7 +1076,7 @@ fn transcript_pull_write(
         }
     } else {
         let mut live = std::collections::BTreeSet::new();
-        for item in &items {
+        for item in items {
             let Some(id) = item.get("id").and_then(Value::as_str) else {
                 return Err(invalid_record("runtime_items", "pull"));
             };

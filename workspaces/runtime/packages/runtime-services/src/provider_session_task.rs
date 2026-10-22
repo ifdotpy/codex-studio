@@ -1,6 +1,11 @@
 //! A bounded Tokio session. Protocol decisions belong to the single SessionState;
 //! journal settlement belongs to the durable consumer, including initialization.
-use std::{collections::BTreeMap, future::Future, pin::Pin, sync::Arc};
+use std::{
+    collections::{BTreeMap, VecDeque},
+    future::Future,
+    pin::Pin,
+    sync::Arc,
+};
 
 use futures_util::FutureExt;
 use serde_json::{Map, Value};
@@ -607,7 +612,7 @@ struct SessionTask {
 struct Retained {
     pending: Option<SessionEvent>,
     control: Option<SessionEvent>,
-    actions: Vec<Action>,
+    actions: VecDeque<Action>,
     receipt: Option<(Flight, CommandReceipt)>,
     receipt_reported: bool,
     command: Option<Command>,
@@ -809,7 +814,7 @@ impl SessionTask {
                 } else if self.retained.control.is_none() {
                     // An old on-time reply may release a request that is expired
                     // now. Current time governs sending; arrival governs replies.
-                    self.retained.actions = self.state.expire(self.clock.now_ms()).1;
+                    self.retained.actions = self.state.expire(self.clock.now_ms()).1.into();
                     self.apply_actions(true)?;
                     let write = if self.retained.control.is_some() {
                         None
@@ -900,7 +905,7 @@ impl SessionTask {
                     if let Some((remaining, _)) = &mut barrier { *remaining = remaining.saturating_sub(1); }
                 }
                 _ = async { match due { Some(at) => tokio::time::sleep_until(at).await, None => std::future::pending().await } }, if due.is_some() && self.retained.pending.is_none() && self.retained.control.is_none() => {
-                    self.retained.actions = self.state.expire(self.clock.now_ms()).1;
+                    self.retained.actions = self.state.expire(self.clock.now_ms()).1.into();
                     self.apply_actions(true)?;
                 }
                 // The progress lane skips the barrier and the journal-slot gate: its
@@ -947,7 +952,7 @@ impl SessionTask {
                 current: generation.0 == self.state.generation(),
             },
         );
-        self.retained.actions = self.state.expire(at).1;
+        self.retained.actions = self.state.expire(at).1.into();
         #[cfg(test)]
         tests::panic_at(4);
         self.apply_actions(false)?;
@@ -965,7 +970,7 @@ impl SessionTask {
                     _ => None,
                 });
             if let Some(frame) = frame {
-                self.retained.actions = self.state.receive_at(frame, at)?;
+                self.retained.actions = self.state.receive_at(frame, at)?.into();
                 #[cfg(test)]
                 tests::panic_at(2);
                 self.apply_actions(false)?;
@@ -1114,15 +1119,15 @@ impl SessionTask {
                 ready: false,
             },
         );
-        self.retained.actions = actions;
+        self.retained.actions = actions.into();
         self.apply_actions(true)?;
         Ok(ticket)
     }
 
     fn apply_actions(&mut self, control: bool) -> Result<(), SessionTaskError> {
-        // Keep the entire bounded transition batch outside fallible processing.
+        // Keep the remaining transition batch owned across fallible processing.
         // Positive outcomes are retained before record removal or write release.
-        while let Some(action) = self.retained.actions.first().cloned() {
+        while let Some(action) = self.retained.actions.pop_front() {
             match action {
                 Action::Write(frame) => match frame {
                     Frame::Request(request) => {
@@ -1161,7 +1166,6 @@ impl SessionTask {
                 }
                 Action::Dispatch(_) | Action::ThreadReleased { .. } => {}
             }
-            self.retained.actions.remove(0);
         }
         Ok(())
     }
@@ -1317,14 +1321,17 @@ impl SessionTask {
                     if ticket.method != Method::Initialize {
                         return Err(SessionTaskError::Invalid);
                     }
-                    self.retained.actions = self.state.receive_at(
-                        Frame::Response {
-                            id: ticket.id,
-                            body: ResponseBody::Result(value),
-                            fields: Map::new(),
-                        },
-                        self.clock.now_ms(),
-                    )?;
+                    self.retained.actions = self
+                        .state
+                        .receive_at(
+                            Frame::Response {
+                                id: ticket.id,
+                                body: ResponseBody::Result(value),
+                                fields: Map::new(),
+                            },
+                            self.clock.now_ms(),
+                        )?
+                        .into();
                     self.apply_actions(true)?;
                     if let Some(event) = &mut self.retained.control {
                         event.outcomes.retain(|o| !matches!(o, SessionOutcome::Resolved { ticket, .. } if ticket.method == Method::Initialize));
@@ -1342,7 +1349,7 @@ impl SessionTask {
                 if matches!(receipt, CommandReceipt::NotSent)
                     && let Some(ticket) = &ticket
                 {
-                    self.retained.actions = self.state.reject_unsent(ticket)?;
+                    self.retained.actions = self.state.reject_unsent(ticket)?.into();
                     self.apply_actions(true)?;
                 }
                 if initialized && matches!(receipt, CommandReceipt::Written { .. }) {
