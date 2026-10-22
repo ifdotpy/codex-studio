@@ -1264,6 +1264,34 @@ function fastTierCommands(root) {
     },
     {
       item: { name: "studio-runtime-http", ecosystem: "cargo" },
+      label: "branch turn metadata lookup witnesses",
+      commands: [
+        [
+          "cargo",
+          [
+            "nextest",
+            "run",
+            "--locked",
+            "--no-tests",
+            "fail",
+            "--message-format",
+            "libtest-json-plus",
+            "-p",
+            "studio-runtime-http",
+            "--lib",
+            "-E",
+            "test(routes::branches::tests::branch_)",
+          ],
+        ],
+      ],
+      options: {
+        selector: "branch predecessor metadata and bounded history reads",
+        reason:
+          "Avoid decoding turn bodies and reading past the predecessor while preserving branch cutoffs and unknown fork outcomes.",
+      },
+    },
+    {
+      item: { name: "studio-runtime-http", ecosystem: "cargo" },
       label: "task page HTTP projection witness",
       commands: [
         [
