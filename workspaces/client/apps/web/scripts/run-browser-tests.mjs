@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
+import { createRequire } from "node:module";
 import { join } from "node:path";
 
 function defaultBrowserPath() {
@@ -42,7 +43,12 @@ try {
   mkdirSync(outputDirectory);
   mkdirSync(isolatedHome);
   for (const directory of Object.values(xdgDirectories)) mkdirSync(directory);
-  const result = spawnSync("pnpm", ["exec", "playwright", "test", ...args], {
+  // Run the pinned CLI directly: pnpm through Corepack would look for its own
+  // cache under the isolated home and download pnpm on every run.
+  const playwrightCli = createRequire(import.meta.url).resolve(
+    "@playwright/test/cli",
+  );
+  const result = spawnSync(process.execPath, [playwrightCli, "test", ...args], {
     stdio: "inherit",
     env: environment,
   });
