@@ -1021,7 +1021,8 @@ fn transcript_pull_write(
     deleted: bool,
     revision: Option<i64>,
 ) -> TranscriptStoreResult<Value> {
-    let items = payload
+    // Borrowed ownership prevents materializing a second item tree here.
+    let items: &[Value] = payload
         .get("items")
         .and_then(Value::as_array)
         .map(Vec::as_slice)
@@ -1030,6 +1031,7 @@ fn transcript_pull_write(
         .iter()
         .filter_map(|item| item.get("id").and_then(Value::as_str).map(str::to_owned))
         .collect::<Vec<_>>();
+    // Filter before cloning: metadata must never copy the items tree.
     let metadata = payload
         .as_object()
         .into_iter()

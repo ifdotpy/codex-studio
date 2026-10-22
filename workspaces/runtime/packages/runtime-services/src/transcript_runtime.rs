@@ -108,7 +108,8 @@ pub(crate) fn page_in_transaction(
     Ok(value)
 }
 
-struct PageRow {
+// Reasoning retains only row identity and timing; payloads move into items.
+struct PageRowMetadata {
     id: String,
     created: f64,
     turn_id: Option<String>,
@@ -118,7 +119,7 @@ fn rows(
     connection: &Connection,
     agent: &str,
     request: &PageRequest,
-) -> Result<Vec<(PageRow, Value)>, TranscriptError> {
+) -> Result<Vec<(PageRowMetadata, Value)>, TranscriptError> {
     let before = request.before.as_deref().filter(|v| !v.is_empty());
     let around = request.around.as_deref().filter(|v| !v.is_empty());
     let after = request.after.as_deref().filter(|v| !v.is_empty());
@@ -193,7 +194,7 @@ fn rows(
             let record = records::decode("runtime_items", &id, &raw)?;
             let turn_id = record["turnId"].as_str().map(str::to_owned);
             Ok((
-                PageRow {
+                PageRowMetadata {
                     id,
                     created,
                     turn_id,
@@ -625,7 +626,7 @@ fn reasoning(
     analytics: &Connection,
     connection: &Connection,
     actor: &Value,
-    rows: &[PageRow],
+    rows: &[PageRowMetadata],
     items: Vec<Value>,
     now: f64,
 ) -> Result<Vec<Value>, TranscriptError> {
