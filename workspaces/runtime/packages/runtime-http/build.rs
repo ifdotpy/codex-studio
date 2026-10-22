@@ -22,7 +22,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         .lines()
         .filter(|line| {
             !line.contains("HTTP-only blocking filesystem guards")
-                && !line.contains("HTTP handlers must use tokio::fs")
+                && !line.contains("HTTP handlers must use ")
         })
         .collect::<Vec<_>>()
         .join("\n")

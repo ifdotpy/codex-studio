@@ -275,7 +275,6 @@ pub(super) async fn recover(
                 crate::lifecycle_effects::notify_parent_of_disconnect(tx, &agent_id, at)?;
             }
         }
-        retire_generations(tx, &account, generation.0)?;
         pad_legacy_receipt_keys(tx, &account)?;
         for (id, attempt) in restore {
             let mut agent = stored_agent(tx, &id)?;
@@ -328,12 +327,7 @@ pub(super) async fn recover(
                 continue;
             }
             if context.method()? == Method::TurnStart {
-                SchedulerRepository::settle_start_outcome(
-                    tx,
-                    &context.intent.identity(),
-                    "uncertain",
-                    None,
-                )?;
+                uncertain(tx, &context, Some(&request.ticket), false, false)?;
             }
             if matches!(
                 context.method()?,
@@ -374,6 +368,9 @@ pub(super) async fn recover(
             }
             recovered.push((context, request));
         }
+        // Settle every old start's uncertainty before retiring its transport
+        // receipt: capacity state and parent notices belong to that same decision.
+        retire_generations(tx, &account, generation.0)?;
         Ok(recovered)
     })
     .await
@@ -1199,20 +1196,7 @@ fn settle_outcome(
                             }
                             preparation::accept_turn(tx, &context, &ticket, turn)?;
                         } else {
-                            stage_capacity_start(
-                                tx,
-                                i,
-                                CapacityStartOutcome::Failed {
-                                    reason: "The provider reply named no turn. The turn outcome is unknown.",
-                                    unknown: true,
-                                },
-                            )?;
-                            SchedulerRepository::settle_start_outcome(
-                                tx,
-                                &i.identity(),
-                                "uncertain",
-                                None,
-                            )?;
+                            uncertain(tx, &context, Some(&ticket), false, session_closed)?;
                             return Ok(SettledOutcome::default());
                         }
                     }
@@ -1221,14 +1205,6 @@ fn settle_outcome(
                             // Hold new starts for the recheck interval.
                             crate::disk_space::observe_full();
                         }
-                        stage_capacity_start(
-                            tx,
-                            i,
-                            CapacityStartOutcome::Failed {
-                                reason: "The provider rejected the turn start.",
-                                unknown: false,
-                            },
-                        )?;
                         SchedulerRepository::settle_start_rejected_provider(
                             tx,
                             &i.agent_id,
@@ -1239,6 +1215,14 @@ fn settle_outcome(
                             ticket.generation,
                             i.thread_id.as_deref().unwrap_or(""),
                             error,
+                        )?;
+                        stage_capacity_start(
+                            tx,
+                            i,
+                            CapacityStartOutcome::Failed {
+                                reason: "The provider rejected the turn start.",
+                                unknown: false,
+                            },
                         )?;
                     }
                 },
@@ -1369,6 +1353,16 @@ fn uncertain(
                 _ => None,
             },
         )?;
+        if matches!(outcome, TurnStart::Unknown) {
+            stage_capacity_start(
+                tx,
+                &context.intent,
+                CapacityStartOutcome::Failed {
+                    reason: "The provider turn start outcome is unknown. Check the existing request before continuing.",
+                    unknown: true,
+                },
+            )?;
+        }
     }
     Ok(false)
 }
@@ -3000,7 +2994,7 @@ pub(super) enum PreparationStep<T> {
 
 /// A pending preparation's reason and the agent rows whose change may clear it.
 pub(super) struct PendingWait {
-    pub reason: String,
+    pub reason: studio_runtime_schema::agent_progress::StartWaitReason,
     pub rows: super::agent_wakes::WakeRows,
 }
 
@@ -3022,7 +3016,7 @@ pub(super) async fn preparation_step<T: Send + 'static>(
     intent: &TurnIntent,
     action: impl Future<Output = Result<T, WorkerError>> + Send,
 ) -> Result<PreparationStep<T>, WorkerError> {
-    let (reason, own_row) = match action.await {
+    let (block, own_row) = match action.await {
         Ok(value) => return Ok(PreparationStep::Ready(value)),
         Err(WorkerError::PreparationPending(reason)) => (reason, false),
         Err(WorkerError::PreparationAwaitsAgent(reason)) => (reason, true),
@@ -3035,6 +3029,8 @@ pub(super) async fn preparation_step<T: Send + 'static>(
         }
         Err(error) => return Err(error),
     };
+    let owner = block.reason;
+    let reason = block.diagnostic;
     // A repeated attempt with the same blocker reads only: the writer opens
     // once per blocker change, so a woken but still blocked preparation
     // leaves the row and its observers untouched.
@@ -3055,18 +3051,21 @@ pub(super) async fn preparation_step<T: Send + 'static>(
                 .ok_or_else(|| invalid(&agent_id))?;
             Ok::<_, WorkerError>((
                 row_id,
-                pending_needs_record(&row, &blocker, &attempt_id, epoch),
+                pending_needs_record(&row, &blocker, owner, &attempt_id, epoch),
             ))
         })
         .await?;
     if needs_record {
-        record_pending(store, intent, reason.clone()).await?;
+        record_pending(store, intent, reason.clone(), owner).await?;
     }
     let rows = match row_id {
         Some(row) if own_row => super::agent_wakes::WakeRows::Own(row),
         _ => super::agent_wakes::WakeRows::Any,
     };
-    Ok(PreparationStep::Pending(PendingWait { reason, rows }))
+    Ok(PreparationStep::Pending(PendingWait {
+        reason: owner,
+        rows,
+    }))
 }
 
 /// Whether the unsubmitted attempt at `epoch` does not record `reason` as its
@@ -3074,13 +3073,19 @@ pub(super) async fn preparation_step<T: Send + 'static>(
 fn pending_needs_record(
     row: &studio_runtime_store::AgentRecord,
     reason: &str,
+    owner: studio_runtime_schema::agent_progress::StartWaitReason,
     attempt_id: &str,
     epoch: i64,
 ) -> bool {
     let Some(attempt) = row.extra.get("startAttempt") else {
         return false;
     };
-    let recorded = attempt.get("prepareError").and_then(Value::as_str) == Some(reason)
+    let wait = studio_runtime_schema::agent_progress::AgentStartWait::new(owner, epoch);
+    let recorded = row
+        .extra
+        .get(studio_runtime_schema::agent_progress::START_WAIT_FIELD)
+        == Some(&json!(wait))
+        && attempt.get("prepareError").and_then(Value::as_str) == Some(reason)
         && (reason != preparation::WORKSPACE_PENDING_REASON
             || row
                 .extra
@@ -3094,6 +3099,7 @@ async fn record_pending(
     store: &RuntimeStore,
     intent: &TurnIntent,
     reason: String,
+    owner: studio_runtime_schema::agent_progress::StartWaitReason,
 ) -> Result<(), WorkerError> {
     let agent_id = intent.agent_id.clone();
     let attempt_id = intent.attempt_id.clone();
@@ -3106,13 +3112,20 @@ async fn record_pending(
     scheduler::lifecycle_transaction_with(store, move |tx| {
         let mut row = AgentRepository::get(tx, &AgentId::from(agent_id.as_str()))?
             .ok_or_else(|| invalid(&agent_id))?;
-        if pending_needs_record(&row, &reason, &attempt_id, epoch)
+        if pending_needs_record(&row, &reason, owner, &attempt_id, epoch)
             && let Some(attempt) = row
                 .extra
                 .get_mut("startAttempt")
                 .and_then(Value::as_object_mut)
         {
             attempt.insert("prepareError".into(), json!(reason));
+            row.extra.insert(
+                studio_runtime_schema::agent_progress::START_WAIT_FIELD.into(),
+                serde_json::to_value(studio_runtime_schema::agent_progress::AgentStartWait::new(
+                    owner, epoch,
+                ))
+                .map_err(StoreError::from)?,
+            );
             if reason == preparation::WORKSPACE_PENDING_REASON {
                 // Python's WorkspaceWaitRecord uses these fields
                 // (codex_workspace_delivery.py:43-46).

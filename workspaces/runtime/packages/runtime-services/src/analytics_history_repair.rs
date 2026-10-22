@@ -8,6 +8,8 @@ use std::sync::Arc;
 use studio_runtime_store::analytics_capture::{AnalyticsCaptureRepository as Repo, CaptureTable};
 use studio_runtime_store::{AnalyticsRepository, RuntimeStore, truthy};
 const PAGE_SIZE: i64 = 64;
+/// Analytics metadata key owning the legacy terminal-error repair checkpoint.
+const TERMINAL_ERROR_REPAIR_KEY: &str = "terminalErrorRepairV1";
 fn metadata(db: &Connection, key: &str) -> Result<Option<Value>, HistoryError> {
     let raw: Option<String> = db
         .query_row("SELECT value FROM analytics_meta WHERE key=?", [key], |r| {
@@ -103,8 +105,31 @@ pub async fn migrate_budget(
 /// Repair exactly identified terminal errors; ambiguous old threadless notices
 /// advance the repair cursor but never replace a turn's error evidence.
 pub async fn repair_terminal_errors(store: &RuntimeStore) -> Result<(), HistoryError> {
+    let root = store.root().to_owned();
+    let completed = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/analytics_history_terminal_repair_check",
+        move || {
+            let db = AnalyticsRepository::new(&root)
+                .open_read_only()
+                .map_err(|_| HistoryError::read(crate::analytics_history::ANALYTICS_DATABASE))?;
+            let checkpoint = metadata(&db, TERMINAL_ERROR_REPAIR_KEY)?;
+            Ok::<_, HistoryError>(
+                checkpoint
+                    .as_ref()
+                    .map(cursor)
+                    .transpose()?
+                    .is_some_and(|(start, end)| start >= end),
+            )
+        },
+    )
+    .await
+    .map_err(|_| HistoryError::read(crate::analytics_history::BLOCKING_TASK))??;
+    if completed {
+        return Ok(());
+    }
     store.analytics_transaction(|tx, canvas| {
-        let key = "terminalErrorRepairV1";
+        // Another repair may have advanced the cursor before writer admission.
+        let key = TERMINAL_ERROR_REPAIR_KEY;
         let mut state = match metadata(tx, key)? {
             Some(v) => v,
             None => {

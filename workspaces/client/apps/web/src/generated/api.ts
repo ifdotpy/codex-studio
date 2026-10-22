@@ -4136,23 +4136,37 @@ export interface components {
     };
     /**
      * AgentEntityStartWaitDto
-     * @description A queued turn that waits for its account's start throttle (see AccountStartThrottle).
-     *
-     *     `slot`: the account already runs `maxRunningTurns` turns. `pause`: the pause after
-     *     a burst lasts until `until` (Unix seconds). Valid while the agent is queued at `epoch`.
+     * @description The epoch-scoped admission owner and minimal detail, owned by runtime-schema.
      */
     AgentEntityStartWaitDto: {
       /** Epoch */
       epoch: number;
-      /** Maxrunningturns */
-      maxRunningTurns: number;
+      /**
+       * Maxrunningturns
+       * @default null
+       */
+      maxRunningTurns?: number | null;
       /**
        * Reason
        * @enum {string}
        */
-      reason: "slot" | "pause";
-      /** Runningturns */
-      runningTurns: number;
+      reason:
+        | "slot"
+        | "pause"
+        | "start_queue"
+        | "disk"
+        | "model_catalog"
+        | "provider_session"
+        | "dependency"
+        | "dispatch_pending"
+        | "paused"
+        | "native_failure"
+        | "account_transfer";
+      /**
+       * Runningturns
+       * @default null
+       */
+      runningTurns?: number | null;
       /**
        * Until
        * @default null
@@ -22400,15 +22414,32 @@ export interface components {
       _syncEntitiesAfter?: number | null;
       /** Epoch */
       epoch: number;
-      /** Maxrunningturns */
-      maxRunningTurns: number;
+      /**
+       * Maxrunningturns
+       * @default null
+       */
+      maxRunningTurns?: number;
       /**
        * Reason
        * @enum {string}
        */
-      reason: "slot" | "pause";
-      /** Runningturns */
-      runningTurns: number;
+      reason:
+        | "slot"
+        | "pause"
+        | "start_queue"
+        | "disk"
+        | "model_catalog"
+        | "provider_session"
+        | "dependency"
+        | "dispatch_pending"
+        | "paused"
+        | "native_failure"
+        | "account_transfer";
+      /**
+       * Runningturns
+       * @default null
+       */
+      runningTurns?: number;
       /**
        * Until
        * @default null
