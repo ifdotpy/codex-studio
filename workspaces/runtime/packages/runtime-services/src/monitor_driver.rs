@@ -399,7 +399,7 @@ pub async fn pending_start_ids(store: &RuntimeStore) -> Result<Vec<String>, Moni
 fn pending_start_ids_in(connection: &rusqlite::Connection) -> Result<Vec<String>, MonitorError> {
     let mut statement = connection
         .prepare(
-            "SELECT id FROM runtime_monitors WHERE json_extract(record,'$.status')='starting' AND COALESCE(json_extract(record,'$.reattachRecovery.status'),'')!='running' AND json_extract(record,'$.operation') IS NULL AND json_extract(record,'$.ruleId') IS NULL ORDER BY json_extract(record,'$.created'),id LIMIT 64",
+            "SELECT m.id FROM runtime_monitors m WHERE json_extract(m.record,'$.status')='starting' AND COALESCE(json_extract(m.record,'$.reattachRecovery.status'),'')!='running' AND json_extract(m.record,'$.operation') IS NULL AND json_extract(m.record,'$.ruleId') IS NULL AND (json_extract(m.record,'$.restartAfter') IS NULL OR EXISTS (SELECT 1 FROM runtime_monitors old WHERE old.id=json_extract(m.record,'$.restartAfter') AND json_extract(old.record,'$.status') IN ('completed','failed','cancelled'))) ORDER BY json_extract(m.record,'$.created'),m.id LIMIT 64",
         )
         .map_err(studio_runtime_store::StoreError::from)?;
     let ids = statement

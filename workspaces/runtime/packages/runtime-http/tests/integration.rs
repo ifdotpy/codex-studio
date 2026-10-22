@@ -4,6 +4,7 @@ mod claude_login;
 mod multi_server_incoming;
 mod orchestration_settings;
 mod process_controls;
+mod task_output;
 mod project_preparation;
 mod recovery_http;
 mod remote_access_origin;

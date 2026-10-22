@@ -307,3 +307,4 @@ mod registration_tests {
     }
 }
 
+pub mod task_output;
