@@ -1519,3 +1519,10 @@ change with both options. Cross-machine Claude cache reuse remains unverified.
 6. The existing receipt owner atomically commits recovery and the callback result using prepared payloads only.
 7. Panel guidance is read once before its callback transaction; the transaction still checks lead authority.
 8. A lost response uses the saved request identity and existing uncertain-outcome recovery.
+
+## Desktop background recovery
+
+1. The installed desktop saves the Rust runtime and supervisor executable paths for its canonical state directory.
+2. Recovery probes the Rust supervisor socket with protocol 2 and takes no provider ownership; an unavailable owner makes recovery wait.
+3. Recovery attaches to an existing backend or starts the saved Rust server only when the runtime lease is free.
+4. Recovery restarts its own job without unloading the supervisor or its live provider children. Desktop Python helpers use only local desktop modules.
