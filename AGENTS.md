@@ -18,6 +18,8 @@ skill for substantive work when it is available. Match checks to the changed sco
 
 Keep runtime state outside this checkout. Preserve the existing state directory identity. Never start a second backend against an occupied state directory.
 Do not stop active user agents, monitors, terminals, or waves for a source update.
+Change the live server of this host only with `just deliver-server`; never edit its
+systemd drop-ins or binary path by hand.
 
 The server owns SQLite and orchestration. The renderer uses its HTTP API. Native
 privileges belong to the isolated Electron main process. Preserve permission checks,
