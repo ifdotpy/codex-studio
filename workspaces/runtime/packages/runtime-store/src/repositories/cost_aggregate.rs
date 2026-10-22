@@ -25,7 +25,7 @@ use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::Path;
 
-use rusqlite::{Connection, OpenFlags, OptionalExtension, Row, params};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, Row, Transaction, params};
 use serde::Deserialize;
 
 use crate::{CachedSql, StoreError, StoreResult};
@@ -51,17 +51,6 @@ CREATE INDEX analytics_cost_rows_response ON analytics_cost_rows(root, thread, r
 CREATE INDEX analytics_cost_groups_key ON analytics_cost_groups(
     root, model, account, input, cached, cache_write, output, uncached);
 ";
-
-/// Every schema object of the aggregate in analytics.sqlite3; the Python
-/// runtime creates none of them.
-pub const SCHEMA_OBJECTS: [&str; 6] = [
-    "analytics_cost_rows",
-    "analytics_cost_groups",
-    "analytics_cost_rows_scope",
-    "analytics_cost_rows_unmodeled",
-    "analytics_cost_rows_response",
-    "analytics_cost_groups_key",
-];
 
 const ROW_COLUMNS: &str = "id,agent,thread,turn,seq,at,model,account_key,response,\
     input,cached,cache_write,output,uncached,counted,counted_model";
@@ -293,8 +282,26 @@ fn contributions(
 pub(crate) fn ensure_cost_aggregate(path: &Path) -> StoreResult<()> {
     let mut db = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
     let tx = db.transaction()?;
+    migrate_2026_10_22_drop_python_cost_projection(&tx)?;
     install(&tx)?;
     tx.commit()?;
+    Ok(())
+}
+
+/// Retire the Python JSON projection after Rust took ownership of cost writes.
+/// The projection table owns its three triggers and index; the six usage
+/// triggers must go first because SQLite does not remove cross-table triggers.
+/// IF EXISTS makes a retry after a committed open perform no schema changes.
+fn migrate_2026_10_22_drop_python_cost_projection(db: &Transaction<'_>) -> StoreResult<()> {
+    db.execute_batch(
+        "DROP TRIGGER IF EXISTS analytics_cost_usage_before_insert_v1;
+         DROP TRIGGER IF EXISTS analytics_cost_usage_before_update_v1;
+         DROP TRIGGER IF EXISTS analytics_cost_usage_before_delete_v1;
+         DROP TRIGGER IF EXISTS analytics_cost_usage_insert_v1;
+         DROP TRIGGER IF EXISTS analytics_cost_usage_update_v1;
+         DROP TRIGGER IF EXISTS analytics_cost_usage_delete_v1;
+         DROP TABLE IF EXISTS analytics_cost_projection_v1;",
+    )?;
     Ok(())
 }
 

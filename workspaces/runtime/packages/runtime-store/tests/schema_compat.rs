@@ -15,7 +15,6 @@ async fn live_schema_opens_and_supported_repositories_preserve_the_catalog() {
     let state = state_directory.path();
     create_from_live_schema(state);
     seed_records(&state.join("canvas.sqlite3"));
-    let analytics_before = catalog(&state.join("analytics.sqlite3"));
     let derived_before_open = derived_catalog(&state.join("canvas.sqlite3"));
 
     let store = RuntimeStore::open(Some(state))
@@ -35,6 +34,7 @@ async fn live_schema_opens_and_supported_repositories_preserve_the_catalog() {
         "old event triggers upgrade to atomic portable window maintenance"
     );
     let before = catalog(&state.join("canvas.sqlite3"));
+    let analytics_before = catalog(&state.join("analytics.sqlite3"));
     let reader = store.test_reader().expect("reader opens");
     assert!(
         AgentRepository::get(&reader, &AgentId::from("fixture-agent"))
@@ -108,19 +108,10 @@ async fn live_schema_opens_and_supported_repositories_preserve_the_catalog() {
     drop(store);
 
     assert_eq!(before, catalog(&state.join("canvas.sqlite3")));
-    // Opening adds only the Rust-owned cost aggregate to analytics.
-    let analytics_after = catalog(&state.join("analytics.sqlite3"));
-    let (added, kept): (Vec<_>, Vec<_>) = analytics_after.into_iter().partition(|(_, name, _)| {
-        studio_runtime_store::cost_aggregate::SCHEMA_OBJECTS.contains(&name.as_str())
-    });
-    assert_eq!(analytics_before, kept);
-    assert_eq!(
-        added.len(),
-        studio_runtime_store::cost_aggregate::SCHEMA_OBJECTS.len()
-    );
+    assert_eq!(analytics_before, catalog(&state.join("analytics.sqlite3")));
     let reopened = RuntimeStore::open(Some(state))
         .await
-        .expect("Python-shaped schema remains openable");
+        .expect("migrated schema remains openable");
     let reader = reopened
         .test_reader()
         .expect("reader opens after Rust writes");
@@ -133,6 +124,132 @@ async fn live_schema_opens_and_supported_repositories_preserve_the_catalog() {
     );
     drop(reader);
     drop(reopened);
+}
+
+#[tokio::test]
+async fn migration_2026_10_22_drops_python_cost_projection_once() {
+    let state_directory = temporary_state();
+    let state = state_directory.path();
+    create_from_live_schema(state);
+    let analytics = state.join("analytics.sqlite3");
+    let retired_objects = |path: &Path| {
+        catalog(path)
+            .into_iter()
+            .filter(|(_, name, _)| {
+                name.starts_with("analytics_cost_projection_")
+                    || name.starts_with("analytics_cost_usage_")
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        retired_objects(&analytics).len(),
+        11,
+        "fixture has the projection table, index and nine triggers"
+    );
+    let existing_record = r#"{"id":"existing-usage","agentId":"agent","rootId":"root","at":0.5,"model":"gpt-5","last":{"inputTokens":5,"outputTokens":1}}"#;
+    Connection::open(&analytics).expect("analytics fixture opens")
+        .execute("INSERT INTO analytics_usage(id,agent,root,at,record) VALUES('existing-usage','agent','root',0.5,?1)", [existing_record])
+        .expect("usage fixture runs the original projection triggers");
+    let store = RuntimeStore::open(Some(state))
+        .await
+        .expect("fixture opens");
+    assert_eq!(
+        Connection::open(&analytics)
+            .expect("analytics opens")
+            .query_row(
+                "SELECT record FROM analytics_usage WHERE id='existing-usage'",
+                [],
+                |row| row.get::<_, String>(0)
+            )
+            .expect("original usage survives"),
+        existing_record
+    );
+    assert!(
+        retired_objects(&analytics).is_empty(),
+        "Python projection objects are removed"
+    );
+    let record = json!({
+        "id": "usage-after-migration", "agentId": "agent", "rootId": "root",
+        "threadId": "thread", "turnId": "turn", "at": 1.0, "model": "gpt-5",
+        "last": {"inputTokens": 10, "outputTokens": 2, "totalTokens": 12},
+        "total": {"inputTokens": 10, "outputTokens": 2, "totalTokens": 12}
+    });
+    for at in [1.0, 2.0] {
+        let mut record = record.clone();
+        record["at"] = json!(at);
+        store
+            .analytics_transaction::<_, StoreError>(move |tx, _| {
+                studio_runtime_store::analytics_capture::AnalyticsCaptureRepository::write(
+                    tx,
+                    studio_runtime_store::analytics_capture::CaptureTable::Usage,
+                    &record,
+                )
+            })
+            .await
+            .expect("usage insert and update still maintain the Rust aggregate");
+    }
+    let before = catalog(&analytics);
+    let cookie = schema_version(&analytics);
+    let aggregate = Connection::open(&analytics)
+        .expect("analytics opens")
+        .query_row("SELECT count(*) FROM analytics_cost_rows", [], |row| {
+            row.get::<_, i64>(0)
+        })
+        .expect("Rust aggregate reads");
+    assert_eq!(aggregate, 2, "existing usage backfills alongside new usage");
+    drop(store);
+    let store = RuntimeStore::open(Some(state))
+        .await
+        .expect("second open succeeds");
+    assert_eq!(
+        catalog(&analytics),
+        before,
+        "second open preserves every schema definition"
+    );
+    assert_eq!(
+        schema_version(&analytics),
+        cookie,
+        "second open performs no DDL"
+    );
+    store
+        .analytics_transaction::<_, StoreError>(|tx, _| {
+            tx.execute(
+                "DELETE FROM analytics_usage WHERE id='usage-after-migration'",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .expect("usage deletion has no retired trigger dependency");
+    drop(store);
+}
+
+#[tokio::test]
+async fn cost_projection_migration_rolls_back_if_rust_backfill_fails() {
+    let state_directory = temporary_state();
+    let state = state_directory.path();
+    create_from_live_schema(state);
+    let analytics = state.join("analytics.sqlite3");
+    Connection::open(&analytics).expect("analytics fixture opens")
+        .execute("INSERT INTO analytics_usage(id,agent,root,at,record) VALUES('invalid-cost','agent','root',1.0,?1)",
+            [r#"{"last":[]}"#])
+        .expect("valid JSON with an invalid token object inserts");
+    let before = catalog(&analytics);
+    let cookie = schema_version(&analytics);
+    assert!(
+        RuntimeStore::open(Some(state)).await.is_err(),
+        "invalid cost facts refuse open"
+    );
+    assert_eq!(
+        catalog(&analytics),
+        before,
+        "failed backfill rolls back every projection drop"
+    );
+    assert_eq!(
+        schema_version(&analytics),
+        cookie,
+        "failed migration commits no DDL"
+    );
 }
 
 #[tokio::test]
