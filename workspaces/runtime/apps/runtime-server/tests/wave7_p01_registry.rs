@@ -1896,7 +1896,7 @@ async fn every_launch_signature_field_matches_frozen_appserver_contract() {
         let environment: BTreeMap<String, String> =
             serde_json::from_value(open["env"].clone()).unwrap();
         // The frozen pre-unload-override command remains eligible for reattachment.
-        assert_eq!(reattach_commands, [oracle.command.clone()]);
+        assert_eq!(reattach_commands, std::slice::from_ref(&oracle.command));
         assert_eq!(
             studio_runtime_store::supervisor_journal::launch_signature(
                 &reattach_commands[0],
@@ -1938,7 +1938,10 @@ fn direct_launch_command_and_environment_match_frozen_contract() {
             root.path().into(),
         );
         assert_eq!(launch.command, with_unload_override(&oracle));
-        assert_eq!(launch.reattach_commands, [oracle.command.clone()]);
+        assert_eq!(
+            launch.reattach_commands,
+            std::slice::from_ref(&oracle.command)
+        );
         assert_eq!(
             serde_json::to_value(launch.environment).unwrap(),
             json!(oracle.env)
