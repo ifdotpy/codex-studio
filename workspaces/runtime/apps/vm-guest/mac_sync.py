@@ -479,13 +479,25 @@ class MacSync:
         owner, _main, _mac, view = await self.lines(project)
         async with self.locks.setdefault(project, asyncio.Lock()):
             await self.checkout(view, owner, state)
-            entry = _entry(inside(view, params.get("path")))
-        if entry is None or entry[0] == "directory":
-            return {"kind": "absent"}
-        kind, data, mode = entry
-        chunk = data[offset:offset + CHUNK]
-        return {"kind": kind, "mode": mode, "size": len(data), "offset": offset,
-                "data": base64.b64encode(chunk).decode(), "eof": offset + len(chunk) >= len(data)}
+            path = inside(view, params.get("path"))
+            try:
+                info = path.lstat()
+            except (FileNotFoundError, NotADirectoryError):
+                return {"kind": "absent"}
+            if stat.S_ISREG(info.st_mode):
+                kind, size, mode = "file", info.st_size, stat.S_IMODE(info.st_mode) & 0o777
+                with path.open("rb", buffering=0) as stream:
+                    stream.seek(min(offset, size))
+                    chunk = stream.read(CHUNK)
+            elif stat.S_ISLNK(info.st_mode):
+                kind, data, mode = "link", os.readlink(path).encode(), 0
+                size, chunk = len(data), data[offset:offset + CHUNK]
+            elif stat.S_ISDIR(info.st_mode):
+                return {"kind": "absent"}
+            else:
+                raise GuestError("unsupported_file", "A special file cannot sync: " + path.name)
+        return {"kind": kind, "mode": mode, "size": size, "offset": offset,
+                "data": base64.b64encode(chunk).decode(), "eof": offset + len(chunk) >= size}
 
     async def hashes(self, request_id: str, params: dict[str, Any]) -> dict[str, Any]:
         """Every synced path of a state, for the first round of an existing project."""

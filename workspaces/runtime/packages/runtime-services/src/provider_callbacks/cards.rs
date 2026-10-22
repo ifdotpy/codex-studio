@@ -435,14 +435,9 @@ fn answer_in(
     let mut outbox = storage::read(tx, &key)?.ok_or(CallbackError::Unknown)?;
     outbox["card"] = json!(id);
     outbox["unanswered"] = unanswered;
-    if let Some(admission) = storage::read(tx, &format!("{key}:card"))? {
-        if let Some(cursor) = admission.get("journalCursor") {
-            outbox["journalCursor"] = cursor.clone();
-        }
-    } else {
-        // Python already admitted this card without the Rust worker journal.
-        // Keep a replay tombstone, but its Written payload needs no Rust ACK.
-        outbox["legacyAdmission"] = json!(true);
+    let admission = storage::read(tx, &format!("{key}:card"))?.ok_or(CallbackError::Stale)?;
+    if let Some(cursor) = admission.get("journalCursor") {
+        outbox["journalCursor"] = cursor.clone();
     }
     storage::update(tx, &key, &outbox)?;
     save(tx, &card)?;

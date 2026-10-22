@@ -1172,7 +1172,7 @@
                 "type": "string"
               }
             ],
-            "description": "The Tailscale owner; null for the previous identity of this server after replace_server.",
+            "description": "The Tailscale owner; null for the previous identity of this server after a historical identity replacement.",
             "title": "Tailscaleuser"
           }
         },
@@ -1336,7 +1336,7 @@
           },
           "identityAlerts": {
             "default": [],
-            "description": "Fix each alert with the replace_server action.",
+            "description": "Warnings about references to previous server identities.",
             "items": {
               "$ref": "#/components/schemas/IdentityAlert"
             },
@@ -25053,7 +25053,7 @@
                 "type": "string"
               }
             ],
-            "description": "The Tailscale owner; null for the previous identity of this server after replace_server.",
+            "description": "The Tailscale owner; null for the previous identity of this server after a historical identity replacement.",
             "title": "Tailscaleuser"
           }
         },
@@ -42615,43 +42615,6 @@
           "requestId"
         ],
         "title": "RenameServer",
-        "type": "object"
-      },
-      "ReplaceServer": {
-        "additionalProperties": false,
-        "description": "Record that a paired server, or this server, succeeds a lost server identity.",
-        "properties": {
-          "action": {
-            "const": "replace_server",
-            "title": "Action",
-            "type": "string"
-          },
-          "newServerId": {
-            "maxLength": 128,
-            "minLength": 1,
-            "title": "Newserverid",
-            "type": "string"
-          },
-          "oldServerId": {
-            "maxLength": 128,
-            "minLength": 1,
-            "title": "Oldserverid",
-            "type": "string"
-          },
-          "requestId": {
-            "maxLength": 128,
-            "minLength": 1,
-            "title": "Requestid",
-            "type": "string"
-          }
-        },
-        "required": [
-          "action",
-          "oldServerId",
-          "newServerId",
-          "requestId"
-        ],
-        "title": "ReplaceServer",
         "type": "object"
       },
       "RequestAnswerRecordResponse": {
@@ -72123,7 +72086,6 @@
                     "create_invite": "#/components/schemas/CreateInvite",
                     "discover": "#/components/schemas/DiscoverServers",
                     "name": "#/components/schemas/SetServerName",
-                    "replace_server": "#/components/schemas/ReplaceServer",
                     "revoke": "#/components/schemas/RevokeClient",
                     "settings": "#/components/schemas/SetAccessSettings",
                     "ui_invite": "#/components/schemas/UiInvite",
@@ -72140,9 +72102,6 @@
                   },
                   {
                     "$ref": "#/components/schemas/DiscoverServers"
-                  },
-                  {
-                    "$ref": "#/components/schemas/ReplaceServer"
                   },
                   {
                     "$ref": "#/components/schemas/RevokeClient"

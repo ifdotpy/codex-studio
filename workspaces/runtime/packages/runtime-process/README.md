@@ -4,11 +4,11 @@
 
 - **Responsibility:** Process boundary ports, bounded Tokio provider attachments,
   owned asynchronous pipe children, advisory owned-child priorities, and the
-  typed client for supervisor v1 plus explicitly negotiated v2 event waits. This
+  typed client for supervisor v2 control actions and event waits. This
   crate does not start the production supervisor, make HTTP requests, or access
   SQLite.
 - **Public interface:** `SupervisorClient<T>` and typed request/result/event
-  models for each v1 action; `provider_seam::ProviderTaskFactory`,
+  models for each control action; `provider_seam::ProviderTaskFactory`,
   `provider_task::SupervisorProviderTaskFactory`, and the Unix temporary-child adapter
   `provider_stdio::StdioProviderTaskFactory`; the `PtyHost` port;
   [`stream_child`](src/stream_child.rs) for bounded local commands and sign-in;
@@ -41,21 +41,19 @@ command link. The backend user service uses
 stop the supervisor or restart active work. See the
 [operator commands](../../apps/runtime-server/README.md#command-and-user-service-installation).
 
-The compatibility handshake starts with
-`{protocol: PROCESS_SUPERVISOR_PROTOCOL_VERSION, stateDir, backendId}` and
-replies `{ok: true}`. The version is owned by
-[supervisor_contract.rs](src/supervisor_contract.rs). A wrong protocol or state
-directory is rejected before requests are accepted. Operator connections use
-the protocol field with `{stateDir, operator: true}`.
+Every client sends the typed v2 handshake and requires the daemon to echo the
+protocol version owned by [`supervisor_protocol.rs`](../runtime-providers/src/supervisor_protocol.rs).
+A wrong protocol or state directory is rejected before requests are accepted.
+Operator connections send `{stateDir, operator: true}` with that same version.
+The retained VM guest uses v2 too; its fast boundary test checks version parity
+against the Rust owner.
 
-The Rust provider factory uses a separate v2 handshake and requires the daemon
-to echo protocol 2. It does not fall back to v1. V2 `nextBatch` uses the shared
-request/result/event DTOs in [`protocol.rs`](src/protocol.rs), including the
-owned event-count limit. It waits on a dedicated event connection while the
-primary connection continues to carry ACK and other control actions. The
-existing generated frame-size contract remains the frame limit owner.
+V2 `nextBatch` uses the shared request/result/event DTOs in
+[`protocol.rs`](src/protocol.rs), including the owned event-count limit. It waits
+on a dedicated event connection while the primary connection carries ACK and
+other control actions. The shared frame-size contract remains the frame limit owner.
 
-The action DTOs and client methods cover the complete v1 inventory:
+The action DTOs and client methods cover the control inventory:
 
 | Action             | Typed method                                  | Purpose                                                  |
 | ------------------ | --------------------------------------------- | -------------------------------------------------------- |
@@ -97,7 +95,8 @@ the new acknowledged cursor. The journal uses SQLite `synchronous=FULL` for
 each accepted request/event transaction (`sqlite-full-sync-per-request`); the
 health response publishes this durability label. The backend may reconnect
 using the same `backendId` and `stateDir`; `open` with the same handle and launch
-settings resumes a live child and returns its generation. Replacing a child
+settings resumes a live child and returns its generation. Only the configured
+current command is eligible; a different launch signature is refused. Replacing a child
 advances its generation, so consumers can reject stale events.
 
 ## Native provider process adapter
@@ -115,19 +114,19 @@ Result and event models retain unrecognized fields in flattened extension maps.
 A remote `error` is a typed remote failure. Connection loss or an invalid reply
 after sending an action is `UnknownOutcome { action, request_id }`; callers
 resolve writes through `operationStatus` and retained output through
-`replay`/`next`. The disposable Rust integration suite covers every v1 action,
+`replay`/`next`. The disposable Rust integration suite covers every control action,
 including the privileged operator handshake.
 
 ## Integration checks
 
-`tests/supervisor_v1.rs` launches the Rust supervisor into a unique directory
+`tests/supervisor_v2.rs` launches the Rust supervisor into a unique directory
 below `std::env::temp_dir()`. The shared harness requires
 `STUDIO_SUPERVISOR_BINARY`, or Cargo's built supervisor path when run from the
 supervisor crate. It never falls back to an interpreter. Socket bounds, runtime
 state isolation, readiness handshakes, stderr diagnostics and child cleanup stay
 owned by [`tests/support`](tests/support/mod.rs).
 
-The suite exercises every v1 action, event replay, cursor/ACK boundaries,
+The suite exercises every control action, event replay, cursor/ACK boundaries,
 operator identity checks, response loss and same-child reattachment. V2 provider
 tests cover initialization recovery, exact write receipts and generation-scoped
 identities. Harmless `/bin/sh` children provide deterministic protocol replies;
@@ -174,9 +173,8 @@ watch, and cancellation-safe `completion()` / `shutdown()` futures. Both channel
 hold 16 entries with a 1 MiB serialized upper bound per entry (plus proportional
 JSON allocation overhead). One outstanding RPC and at most 32 numeric response
 mappings are retained. Startup replay uses the same channel and no deferred queue.
-A receive slot is reserved before reading events. The legacy v1 provider path
-uses immediate `next` calls with a cancellable 50 ms pause after an empty result.
-The production Rust provider factory negotiates v2 and waits for `nextBatch` on
+A receive slot is reserved before reading events.
+The Rust provider factory negotiates v2 and waits for `nextBatch` on
 its separate event connection; it does not periodically query an idle journal.
 Write/ACK receipts and shutdown never depend on journal capacity.
 
@@ -186,7 +184,7 @@ a frame before command admission. `AdapterCommand::write` and `::ack` return a
 command and `Receipt`; `Receipt::receive` distinguishes `Written`,
 `Acknowledged`, `CachedInitialize`, `NotSent`, and `Unknown`. Write operation IDs
 belong to the caller. Use `initialized_operation(&handle, generation)` for the shared
-Python-compatible initialized identity. A lost receipt terminates the attachment;
+generation-scoped initialized identity. A lost receipt terminates the attachment;
 there is no reconnect, flush, or automatic resend surface. A closed receipt is
 Unknown. Successful write receipts have an observation handshake: the adapter
 waits for Receipt.receive or shutdown before serving the next command; abandoning

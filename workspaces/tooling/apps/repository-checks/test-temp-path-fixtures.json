@@ -159,9 +159,6 @@
     "\"/var/tmp\".into(),",
     "\"/var/tmp\".into(),"
   ],
-  "workspaces/runtime/packages/runtime-services/src/terminal_driver.rs": [
-    "let record = TerminalRecord::from_value(serde_json::json!({\"id\":id,\"agent\":\"agent\",\"title\":\"old\",\"cwd\":\"/tmp\",\"status\":\"exited\",\"created\":now,\"updated\":now,\"exitCode\":0}))"
-  ],
   "workspaces/runtime/packages/runtime-services/src/terminal_pty.rs": [
     "(OsString::from(\"HOME\"), OsString::from(\"/tmp/terminal-home\")),",
     "OsString::from(\"/tmp/ssh-agent.sock\"),",

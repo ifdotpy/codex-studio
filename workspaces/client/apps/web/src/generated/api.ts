@@ -2693,7 +2693,7 @@ export interface components {
       status: "paired" | "revoked" | "discovered" | "unreachable";
       /**
        * Tailscaleuser
-       * @description The Tailscale owner; null for the previous identity of this server after replace_server.
+       * @description The Tailscale owner; null for the previous identity of this server after a historical identity replacement.
        */
       tailscaleUser: null | string;
     };
@@ -2756,7 +2756,7 @@ export interface components {
       identity: components["schemas"]["ServerIdentity"];
       /**
        * Identityalerts
-       * @description Fix each alert with the replace_server action.
+       * @description Warnings about references to previous server identities.
        * @default []
        */
       identityAlerts?: components["schemas"]["IdentityAlert"][];
@@ -12143,7 +12143,7 @@ export interface components {
       status: "paired" | "revoked" | "discovered" | "unreachable";
       /**
        * Tailscaleuser
-       * @description The Tailscale owner; null for the previous identity of this server after replace_server.
+       * @description The Tailscale owner; null for the previous identity of this server after a historical identity replacement.
        */
       tailscaleUser: null | string;
     } & {
@@ -19110,23 +19110,6 @@ export interface components {
     RenameServer: {
       /** Label */
       label: string;
-      /** Requestid */
-      requestId: string;
-    };
-    /**
-     * ReplaceServer
-     * @description Record that a paired server, or this server, succeeds a lost server identity.
-     */
-    ReplaceServer: {
-      /**
-       * @description discriminator enum property added by openapi-typescript
-       * @enum {string}
-       */
-      action: "replace_server";
-      /** Newserverid */
-      newServerId: string;
-      /** Oldserverid */
-      oldServerId: string;
       /** Requestid */
       requestId: string;
     };
@@ -32287,7 +32270,6 @@ export interface operations {
           | components["schemas"]["AcceptInvite"]
           | components["schemas"]["CreateInvite"]
           | components["schemas"]["DiscoverServers"]
-          | components["schemas"]["ReplaceServer"]
           | components["schemas"]["RevokeClient"]
           | components["schemas"]["SetAccessSettings"]
           | components["schemas"]["SetServerAlias"]

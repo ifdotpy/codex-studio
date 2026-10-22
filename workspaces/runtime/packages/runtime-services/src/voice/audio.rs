@@ -77,10 +77,8 @@ pub async fn save_audio(
 
             let name = audio_name(&agent_id, &session_id, &chunk_id);
             let path = directory.join(&name);
-            let legacy_file_name = legacy_audio_name(&agent_id, &session_id, &chunk_id);
-            let legacy_path = directory.join(&legacy_file_name);
-            let legacy_exists = legacy_path.exists();
-            let existing = read_existing_chunk(&path)?.or(read_existing_chunk(&legacy_path)?);
+            let event_identity = audio_event_identity(&agent_id, &session_id, &chunk_id);
+            let existing = read_existing_chunk(&path)?;
             let decision = match existing.as_deref() {
                 Some(bytes) => policy::decide_audio(request, session, Some(bytes))?,
                 None => validated,
@@ -113,13 +111,13 @@ pub async fn save_audio(
             Ok::<_, VoiceAudioError>(VoiceRecordInput {
                 agent_id,
                 session_id,
-                event_id: format!("audio:{legacy_file_name}"),
+                event_id: format!("audio:{event_identity}"),
                 kind: "event".to_owned(),
                 text: "audio saved".to_owned(),
                 item_id: String::new(),
                 previous_item_id: String::new(),
                 payload: Some(json!({
-                    "file": if legacy_exists { legacy_file_name } else { name },
+                    "file": name,
                     "mime": chunk.mime()
                 })),
                 internal: false,
@@ -140,7 +138,7 @@ fn audio_name(agent: &str, session: &str, chunk: &str) -> String {
     )
 }
 
-fn legacy_audio_name(agent: &str, session: &str, chunk: &str) -> String {
+fn audio_event_identity(agent: &str, session: &str, chunk: &str) -> String {
     studio_runtime_store::sha256_hex(format!("{agent}:{session}:{chunk}").as_bytes())
 }
 

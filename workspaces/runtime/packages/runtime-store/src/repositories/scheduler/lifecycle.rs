@@ -2208,23 +2208,12 @@ pub(super) fn disconnect_agent(
             .ok_or_else(|| invalid_agent(&agent.id.0))?
     };
     let paused = agent.status == AgentStatus::Paused;
-    // A turn that accepted this attempt makes its outcome provable from native
-    // history, whichever runtime submitted the input. Without an attempt (a
-    // turn that Python's supervisor restored) the agent's turn is that identity.
-    // An observed turn is activity, not a receipt for the input batch, so an
-    // attempt without an accepted turn stays unknown.
-    let turn = if attempt.is_null() {
-        agent.extra.get("turnId").and_then(Value::as_str)
-    } else {
-        attempt["turnId"].as_str()
-    }
-    .filter(|turn| !turn.is_empty())
-    .map(str::to_owned);
+    // Only the accepted attempt identifies the submitted turn.
+    let turn = attempt["turnId"]
+        .as_str()
+        .filter(|turn| !turn.is_empty())
+        .map(str::to_owned);
     let unknown = turn.is_none();
-    // Without a turn, only a Rust receipt can still identify the request.
-    let legacy = unknown
-        && (attempt["connectionGeneration"].as_u64().is_none()
-            || attempt["requestTicket"].as_str().is_none());
     let restart_input_wait = restart
         && auto_reconcile_unknown
         && !paused
@@ -2286,7 +2275,7 @@ pub(super) fn disconnect_agent(
                 .get("disconnectRecovery")
                 .unwrap_or(&Value::Null)
                 .clone();
-            marker["stage"] = json!(if unknown || legacy { "held" } else { "pending" });
+            marker["stage"] = json!(if unknown { "held" } else { "pending" });
             // The same recovery keeps the record of its one automatic history check.
             if let Some(check) = agent
                 .extra
@@ -2302,12 +2291,8 @@ pub(super) fn disconnect_agent(
             {
                 marker["automaticCheck"] = check;
             }
-            if unknown || legacy {
-                marker["reason"] = json!(if legacy {
-                    LEGACY_RECOVERY
-                } else {
-                    "Native input submission has no confirmed turn identity."
-                });
+            if unknown {
+                marker["reason"] = json!("Native input submission has no confirmed turn identity.");
             }
             agent.extra.insert("restartRecovery".into(), marker);
         }
@@ -2329,13 +2314,6 @@ pub(super) fn disconnect_agent(
         let wait_error = agent.extra["contextRepairWait"]["error"].clone();
         agent.extra.insert("error".into(), wait_error);
         agent.extra.remove("startAttempt");
-    } else if legacy {
-        agent.extra.insert("nativeFailureHold".into(), json!(true));
-        agent.extra.insert(
-            "startOutcomeHold".into(),
-            json!({"stage":"recovery","epoch":epoch,"reason":LEGACY_RECOVERY}),
-        );
-        agent.extra.insert("error".into(), json!(LEGACY_RECOVERY));
     } else if !paused
         && agent
             .extra
@@ -2356,7 +2334,7 @@ pub(super) fn disconnect_agent(
     if restart_input_wait {
         transaction.execute_cached("UPDATE runtime_events SET status='uncertain' WHERE agent=?1 AND epoch=?2 AND id IN (SELECT value FROM json_each(?3)) AND status IN ('reserved','dispatching','uncertain')", params![agent.id.0,epoch,attempt["events"].to_string()])?;
     }
-    if !restart && !legacy {
+    if !restart {
         agent.extra.remove("startAttempt");
     }
     publish_agent(transaction, agent)?;
@@ -2392,7 +2370,6 @@ fn restart_input_events_valid(
     Ok(true)
 }
 
-const LEGACY_RECOVERY: &str = "Python submission identity requires native history reconciliation; input will not be replayed.";
 pub(super) fn interrupt_uncertain(attempt: &Value, thread: &str, turn: &str) -> bool {
     let receipt = &attempt["interrupt"];
     receipt["threadId"] == thread

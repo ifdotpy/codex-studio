@@ -88,6 +88,12 @@ Normal responses contain at most 500 recent usage samples and 100 recent
 non-tool item records. Exports include the full selected history.
 Analytics adds no messages or tool definitions to model input.
 
+The Rust [cost aggregate](../workspaces/runtime/packages/runtime-store/src/repositories/cost_aggregate.rs)
+maintains session costs with usage writes. On store open, its dated migration
+removes the retired Python JSON cost projection and usage triggers in the same
+transaction that prepares the Rust aggregate. Usage records are preserved;
+reopening an updated database leaves its schema unchanged.
+
 ## Checks
 
 The former Python backend command has been removed. See [testing](testing.md)

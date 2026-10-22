@@ -223,11 +223,10 @@ async fn shutdown_detaches_and_supervised_child_reattaches_at_same_generation() 
     .unwrap();
 }
 
-// A changed launch command reattaches a running child started with an earlier
-// command it lists, and still refuses one started with any other command.
+// Only the configured current launch command can reattach a running child.
 #[cfg(target_os = "linux")]
 #[tokio::test]
-async fn running_child_started_with_a_previous_command_reattaches() {
+async fn running_child_reattaches_only_with_the_current_command() {
     let (state, mut supervisor) = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-process/tests/wave7_p01_factory",
         || {
@@ -245,24 +244,23 @@ async fn running_child_started_with_a_previous_command_reattaches() {
         command.extend(extra.iter().map(|arg| (*arg).to_owned()));
         command
     };
-    let launch = |command: Vec<String>, reattach_commands: Vec<Vec<String>>| {
-        let mut launch = ProviderLaunchSpec::new(
+    let launch = |command: Vec<String>| {
+        let launch = ProviderLaunchSpec::new(
             command,
             support::child_environment(&state.0),
             state.0.clone(),
         );
-        launch.reattach_commands = reattach_commands;
         OpenOptions {
             clock: SessionClock::default(),
             launch,
             expected_generation: None,
         }
     };
-    let attach = |command: Vec<String>, reattach_commands: Vec<Vec<String>>| {
+    let attach = |command: Vec<String>| {
         let factory = &factory;
         let handle = handle.clone();
-        let options = launch(command.clone(), reattach_commands.clone());
-        let mut reopened = launch(command, reattach_commands);
+        let options = launch(command.clone());
+        let mut reopened = launch(command);
         async move {
             let prepared = factory
                 .prepare(handle.clone(), options, Shutdown::default())
@@ -272,16 +270,16 @@ async fn running_child_started_with_a_previous_command_reattaches() {
         }
     };
     let previous = command(&[]);
-    let mut attachment = attach(previous.clone(), Vec::new()).await.unwrap();
+    let mut attachment = attach(previous.clone()).await.unwrap();
     let pid = attachment.status.borrow().info.as_ref().unwrap().pid;
     supervisor.own_child(pid);
     let _exit = attachment.shutdown().await;
 
     assert!(
-        attach(command(&["unlisted"]), Vec::new()).await.is_err(),
-        "a running child started with an unlisted command is refused"
+        attach(command(&["changed"])).await.is_err(),
+        "a changed command cannot adopt a running child"
     );
-    let mut attachment = attach(command(&["current"]), vec![previous]).await.unwrap();
+    let mut attachment = attach(previous).await.unwrap();
     let info = attachment.status.borrow().info.clone().unwrap();
     assert!(info.resumed);
     assert_eq!(info.pid, pid);

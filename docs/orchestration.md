@@ -1,5 +1,20 @@
 # Managed Codex teams
 
+Server command output follows this flow:
+
+1. Retain the first and last bytes within the command's output limit.
+2. Evict old tail bytes without shifting retained bytes on every output block.
+3. Copy only the requested page on read; keep the same offsets, gap reporting,
+   UTF-8 decoding, and durable snapshot format.
+
+Large checkpoint and tool payloads keep their existing blob format. The server
+moves ordinary fields into the stored record and inserts only the preview for
+an externalized field; it does not copy the discarded payload into that record.
+
+Streaming analytics appends each delta to its existing text and updates retained
+JSON bytes from that fragment's escaped size. Command-output trimming subtracts
+the escaped size of the removed prefix, preserving the existing character limit.
+
 Use the [Electron desktop app](../workspaces/client/apps/desktop/README.md), or build the [React interface](../workspaces/client/apps/web/README.md), start `codex-canvas`, and open <http://127.0.0.1:4620>.
 Use the new-chat action inside a project. The server creates an empty lead conversation immediately.
 If the current lead chat is empty, it reuses that chat and preserves the draft.
@@ -190,6 +205,13 @@ and generated names in SQLite and copies them to Codex with `thread/name/set`.
 The copy uses the session's account and thread. It starts no model turn. A native
 failure preserves the Studio name and retries with backoff. Drafts sync when they
 have a native thread; existing sessions and transferred threads sync as well.
+Native composer draft synchronization follows this flow:
+
+1. Recover committed local text and queued writes before the first server refresh.
+2. Refresh on draft notifications, connection recovery, resume, and completed local writes.
+3. Combine simultaneous triggers and retain one follow-up when notified during a refresh.
+4. Keep idle windows quiet; closing the view removes listeners and pending refreshes.
+
 Deleting an agent chat removes it from the user list until the next agent message. Its participants retain their history.
 Deletion stops the selected agent and its descendants and removes them from the interface.
 Stored transcripts and project files remain on disk. Deleted agents cannot resume from late events or message retries.
@@ -199,6 +221,20 @@ Monitor projection updates follow this flow:
 2. Output, byte counts, and activity changes publish only that monitor's projection.
 3. Terminal monitors outside the window stay retired; owner deletion maintains the window.
 4. Source changes, projections, and tombstones commit in the same transaction.
+
+The retained monitor port installs its startup resources once:
+
+1. Startup installs the dispatch notifier and command preparation resources.
+2. A second installation returns an error and preserves the original resource.
+3. Monitor requests read those resources without taking a read lock.
+
+Monitor processing follows this flow:
+
+1. Stall and orphan scans each advance through bounded pages.
+2. A finished monitor scan stays finished while other scans and queued results continue.
+3. Staged orphan recovery requests reattach for the saved operation on the next pass.
+4. When a cycle finishes, even with an error, cursors reset. Wake notifications
+   received during scanning remain pending and start that next cycle.
 
 Agents use `orchestration_monitor` for all long commands, checks, and watchers.
 A settled turn with active owned commands stays in `waiting_on_monitor`. Each
@@ -234,6 +270,9 @@ Server command output snapshots follow one flow:
 4. Snapshot serialization, atomic replacement, and fsync run on the labeled
    blocking pool. Each write finishes before another begins.
 5. The final snapshot finishes before the final record is saved and released.
+6. A short synchronous request waits for that Job to finish, then reads output once.
+   Its bounded wait or a lost response leaves the Job running; cancellation remains
+   an explicit control request.
 
 Inbox, workspace agent choices, and attention counts use the same lead tree.
 Two chats remain separate even when they use the same account or project folder.
@@ -427,10 +466,7 @@ so provider memory follows running workers: a Claude thread's CLI exits, and the
 Codex app-server frees the thread at once, because Studio launches it with
 `thread_unload_delay_secs=0` (`CODEX_THREAD_UNLOAD_DELAY` in
 [provider_adapter.rs](../workspaces/runtime/packages/runtime-services/src/provider_adapter.rs);
-Codex's own default keeps it loaded for 30 minutes). An app-server started
-before that override is reattached with its own command
-(`ProviderLaunchSpec::reattach_commands`) and keeps Codex's default until it
-exits. The next turn resumes the thread. A deleted agent's thread unloads at once in the same way; deleting a
+Codex's own default keeps it loaded for 30 minutes). The next turn resumes the thread. A deleted agent's thread unloads at once in the same way; deleting a
 team re-evaluates its members' idle clocks as soon as the deletion commits. A
 live lead's, ordinary chat's, or waiting worker's thread
 unloads after `idleSessionUnloadMinutes` of the same idleness, because each resume costs a
@@ -490,6 +526,14 @@ Authenticated `POST /api/context-repair` with `id` requests the same repair for 
 Its receipt retains source and copy hashes, event IDs, and the resulting native thread.
 The operation requires free space for the source copy and native fork.
 Unsupported or ambiguous history remains unchanged.
+
+Supervisor connection and reattachment follow one path:
+
+1. Runtime, operator and VM guest clients request the current supervisor protocol and require its version in the reply.
+2. The supervisor rejects retired versions before admitting a backend.
+3. Open reuses a running child only when its launch signature matches the configured current command, environment and working directory.
+4. Changed launch signatures are refused; no older command is adopted and no duplicate child starts.
+5. Recovery signals only an exact native kernel identity; retired Python identities never authorize a signal or an identity upgrade.
 
 A supervisor event sequence is meaningful only inside one journal epoch.
 A new supervisor journal and a recreated handle row both number their events from one again.
@@ -781,6 +825,14 @@ The interrupt goes to the provider process that runs the turn, also after Studio
 reconnects to that process. A Codex interrupt leaves the thread's background
 terminals running, so Stop and delete then send `thread/backgroundTerminals/clean`.
 The Claude bridge stops its background tasks as part of the interrupt.
+
+Claude tool stall recovery follows the [bridge watchdog](../workspaces/providers/apps/claude-bridge/stall-watch.mjs):
+
+1. An unfinished tool call arms one timer for the earliest eligible deadline.
+2. CLI progress moves the silence deadline; tool results remove their deadline.
+3. Studio approvals, questions and tool waits pause detection; answering restarts the tool budget.
+4. A deadline starts the existing interrupt and close recovery once. Idle queries have no watchdog timer.
+
 A late result from an earlier generation cannot resume that agent.
 A new user message explicitly resumes the target. Other stopped agents stay stopped
 until the user or a resumed lead sends them a new task.
@@ -1473,3 +1525,31 @@ change with both options. Cross-machine Claude cache reuse remains unverified.
 2. After a confirmed connection refusal, the client starts `studio-runtime-server` and verifies its executable build identity.
 3. Recovery owns the independent Rust process supervisor; quitting the client leaves runtime work active.
 4. A timeout or incompatible owner fails visibly without starting a replacement.
+
+## Rust state recovery
+
+1. Open the current Rust database layouts; Python marker and journal layouts are no longer upgraded.
+2. Restore account limits from `rateLimitsByAccount` and transcript text from its current full-text owner.
+3. Reconcile uncertain input with the accepted native attempt and current native history. Missing evidence stays held.
+4. Answer provider cards only with their Rust journal admission; retire replies after the worker checkpoint.
+5. Keep the Rust receipt upgrades and dated Rust agent migrations for already written Rust state.
+
+### Local draft synchronization
+
+1. Import, receive, and acknowledge look up each stored draft by workspace and ID
+   inside the command transaction, preserving pending edits and newer master versions.
+2. The command commits its changes and returns one complete draft view; it does not
+   scan every stored draft again for each incoming document.
+
+## Lost server identity warnings
+
+1. The access snapshot identifies references to a previous server identity.
+2. Server settings display these warnings without a replacement action.
+3. References keep their original identity; historical replacement records remain readable.
+
+## Task history reads
+
+1. The server reads the workspace agents and their volatile fields together.
+2. It selects task IDs and records for the requested page in one query.
+3. It validates only the served records; the extra row indicates more history.
+4. Current and older-page cursors retain their timestamp and ID ordering.

@@ -728,6 +728,27 @@ function fastTierCommands(root) {
       },
     },
     {
+      item: { name: "Mac sync chunk reads", ecosystem: "pnpm" },
+      label: "Mac sync chunk read witness",
+      commands: [
+        [
+          "node",
+          [
+            "--test",
+            path.join(
+              root,
+              "workspaces/runtime/apps/vm-guest/mac-sync-witness.test.mjs",
+            ),
+          ],
+        ],
+      ],
+      options: {
+        selector: "bounded guest Mac sync reads",
+        reason:
+          "Read at most one chunk under the project lock and preserve file and link responses.",
+      },
+    },
+    {
       item: { name: "native WebView fixture", ecosystem: "pnpm" },
       label: "native WebView fixture",
       commands: [
@@ -772,6 +793,87 @@ function fastTierCommands(root) {
           "Rust recovery lease, identity and supervisor socket boundaries",
         reason:
           "Check desktop recovery without Python backend imports or supervisor scripts.",
+      },
+    },
+    ...(process.platform === "linux"
+      ? [
+          {
+            item: {
+              name: "supervisor protocol boundaries",
+              ecosystem: "cargo",
+            },
+            label: "supervisor protocol and identity witnesses",
+            commands: [
+              [
+                "cargo",
+                [
+                  "nextest",
+                  "run",
+                  "--locked",
+                  "--no-tests",
+                  "fail",
+                  "--message-format",
+                  "libtest-json-plus",
+                  "-p",
+                  "studio-process-supervisor",
+                  "--test",
+                  "clients",
+                  "-E",
+                  "test(supervisor_rejects_retired_protocol_before_admission)",
+                ],
+              ],
+              [
+                "cargo",
+                [
+                  "nextest",
+                  "run",
+                  "--locked",
+                  "--no-tests",
+                  "fail",
+                  "--message-format",
+                  "libtest-json-plus",
+                  "-p",
+                  "studio-runtime-providers",
+                  "--lib",
+                  "-E",
+                  "test(supervisor_rejects_python_identity_adoption)",
+                ],
+              ],
+            ],
+            options: {
+              selector: "current supervisor protocol and kernel identity",
+              reason:
+                "Reject retired protocol and Python identity adoption before ownership changes.",
+            },
+          },
+        ]
+      : []),
+    {
+      item: { name: "studio-client-core", ecosystem: "cargo" },
+      label: "keyed draft synchronization witness",
+      commands: [
+        [
+          "cargo",
+          [
+            "nextest",
+            "run",
+            "--locked",
+            "--no-tests",
+            "fail",
+            "--message-format",
+            "libtest-json-plus",
+            "-p",
+            "studio-client-core",
+            "--lib",
+            "-E",
+            "test(draft_store::tests::synchronization_decodes_only_the_keyed_draft_per_incoming_document)",
+          ],
+        ],
+      ],
+      options: {
+        selector: "draft synchronization keyed decode count",
+        reason:
+          "Check one stored draft decode per incoming document, workspace isolation, and a single final response view scan.",
       },
     },
     {
@@ -862,6 +964,37 @@ function fastTierCommands(root) {
       },
     },
     {
+      item: { name: "studio-runtime-services", ecosystem: "cargo" },
+      label: "transaction diagnostics ownership witnesses",
+      commands: [
+        [
+          "cargo",
+          [
+            "nextest",
+            "run",
+            "--locked",
+            "--no-tests",
+            "fail",
+            "--message-format",
+            "libtest-json-plus",
+            "-p",
+            "studio-runtime-services",
+            "--lib",
+            "-E",
+            nextestAnyOf([
+              "test(writer_transaction_acquires_one_diagnostics_lock)",
+              "test(writer_transaction_views_preserve_)",
+            ]),
+          ],
+        ],
+      ],
+      options: {
+        selector: "writer transaction diagnostics lock count and output parity",
+        reason:
+          "Check one collector lock per writer transaction while preserving all waits, caller sites, thresholds and sample windows.",
+      },
+    },
+    {
       item: { name: "studio-runtime-store", ecosystem: "cargo" },
       label: "Rust state migration and SQL callback witnesses",
       commands: [
@@ -883,11 +1016,16 @@ function fastTierCommands(root) {
             "-E",
             nextestAnyOf([
               "test(agent_columns::tests::migration_2026_10_20_columns_round_trips_an_old_state_once)",
+              "test(schema_compat::migration_2026_10_22_drops_python_cost_projection_once)",
+              "test(schema_compat::cost_projection_migration_rolls_back_if_rust_backfill_fails)",
               "test(agent_columns::tests::migration_2026_10_21_removes_capacity_column_and_replaces_wake_index_once)",
               "test(/^sql_callback_guard::/)",
               "test(fresh_state::rust_fresh_state_catalog_is_deterministic_and_survives_reopen)",
               "test(cross_runtime::fixture_records_are_readable_and_writable_in_rust)",
               "test(sql_guard_tests::)",
+              "test(account_limits_ignore_python_single_account_fallback)",
+              "test(python_payload_marker_layout_is_refused_without_upgrade)",
+              "test(repositories::workspace_views::bulk_read_tests::)",
             ]),
           ],
         ],
@@ -922,6 +1060,10 @@ function fastTierCommands(root) {
               "test(server_exec::tests::snapshots_)",
               "test(server_exec::tests::snapshot_write_failure_)",
               "test(server_exec::tests::existing_start_fence_)",
+              "test(server_exec::tests::synchronous_start_)",
+              "test(server_exec::tests::output_tail_append_does_not_move_retained_bytes)",
+              "test(payload_blobs::tests::payload_preview_projects_only_retained_string_bytes)",
+              "test(notification_dispatch::stream::tests::analytics_delta_size_)",
             ]),
           ],
         ],
@@ -1002,6 +1144,7 @@ function fastTierCommands(root) {
             "-E",
             nextestAnyOf([
               "test(/^provider_session_task::active_barrier_holds_new_requests_but_not_callback_answers_or_interrupts$/)",
+              "test(provider_callbacks_unjournaled_card_is_refused_without_writes)",
               "test(/^provider_session_task::expiry_batch_preserves_all_queued_request_outcomes_in_order$/)",
               "test(/^turn_lifecycle_corpus::fast_witnesses_cover_transitions_states_and_review_findings$/)",
               "test(/^wave9_safety_buffering_executor::comparison_normalizes_only_generated_identity_and_role_source_roots$/)",
@@ -1043,6 +1186,7 @@ function fastTierCommands(root) {
                   "-E",
                   nextestAnyOf([
                     "test(/^provider_stdio::killed_provider_is_reaped_with_full_journal_and_unobserved_write$/)",
+                    "test(running_child_reattaches_only_with_the_current_command)",
                     "test(/^wave7_p01_registry::direct_child_sigkill_settles_unknown_without_resend$/)",
                     "test(/^state_check::state_check_reads_fixture_rows_without_changing_or_disclosing_them$/)",
                   ]),
@@ -1119,6 +1263,34 @@ function fastTierCommands(root) {
       },
     },
     {
+      item: { name: "studio-runtime-http", ecosystem: "cargo" },
+      label: "task page HTTP projection witness",
+      commands: [
+        [
+          "cargo",
+          [
+            "nextest",
+            "run",
+            "--locked",
+            "--no-tests",
+            "fail",
+            "--message-format",
+            "libtest-json-plus",
+            "-p",
+            "studio-runtime-http",
+            "--lib",
+            "-E",
+            "test(task_page_http_keeps_summary_and_ignores_invalid_lookahead)",
+          ],
+        ],
+      ],
+      options: {
+        selector: "task page summary and lookahead validation",
+        reason:
+          "Keep task summaries and pagination unchanged while selecting records once per page.",
+      },
+    },
+    {
       item: { name: "studio-runtime-services", ecosystem: "cargo" },
       label:
         "monitor ownership, history lock boundaries, and recovery witnesses",
@@ -1150,7 +1322,11 @@ function fastTierCommands(root) {
               "test(/^analytics_history_checkpoint::terminal_error_repair_is_idempotent_for_exact_and_ambiguous_notices$/)",
               "test(/^analytics_history_schedule::tests::/)",
               "test(/^monitor_start_preparation::/)",
+              "test(monitor_port::tests::startup_resources_refuse_replacement)",
+              "test(model_catalog::tests::)",
               "test(/^monitor_wake_guarantees::/)",
+              "test(/^monitor_runtime_wiring::tests::monitor_scan_checks_each_unchanged_monitor_once_per_cycle$/)",
+              "test(/^monitor_runtime_wiring::tests::monitor_scan_restarts_after_persistent_probe_failure$/)",
               "(not binary(integration) & (test(monitor_completion_) | test(reattached_exit_)))",
             ]),
           ],
@@ -1261,6 +1437,30 @@ function fastTierCommands(root) {
       options: { script: "test:unit:fast" },
     },
     {
+      item: web,
+      label: "Native draft notification witnesses",
+      commands: [
+        [
+          "pnpm",
+          [
+            "--filter",
+            "codex-agents-web",
+            "exec",
+            "vitest",
+            "run",
+            "--config",
+            "vitest.unit.config.ts",
+            "src/native/useNativeDrafts.test.ts",
+          ],
+        ],
+      ],
+      options: {
+        selector: "Native drafts idle and refresh work counts",
+        reason:
+          "Prevent idle polling and lost draft notifications during a refresh.",
+      },
+    },
+    {
       item: { name: "codex-agents-desktop", ecosystem: "pnpm" },
       label: "Rust-only desktop startup witnesses",
       commands: [
@@ -1284,6 +1484,43 @@ function fastTierCommands(root) {
         reason:
           "Check startup without Python, binary build identity, existing-owner attachment, and uncertain connection refusals.",
       },
+    },
+    {
+      item: packageTarget(packages, "studio-claude-bridge"),
+      label: "Claude watchdog deadline witnesses",
+      commands: [
+        [
+          "pnpm",
+          [
+            "--filter",
+            "studio-claude-bridge",
+            "exec",
+            "vitest",
+            "run",
+            "--config",
+            "vitest.config.mjs",
+            "stall-watch.test.mjs",
+          ],
+        ],
+      ],
+      options: {
+        selector: "idle watchdog and nearest tool deadline",
+        reason:
+          "Check zero idle timers, exact deadline recovery, and rearming on progress, results and Studio waits.",
+      },
+    },
+    {
+      item: tooling,
+      label: "retired server action witness",
+      commands: [
+        [
+          "node",
+          [
+            "--test",
+            "workspaces/tooling/apps/repository-checks/tests/retired-server-action.test.mjs",
+          ],
+        ],
+      ],
     },
     { item: tooling, label: "tooling tests" },
   ];

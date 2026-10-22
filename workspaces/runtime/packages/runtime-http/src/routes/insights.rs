@@ -16,10 +16,7 @@ use super::manifest::{Dependency, OperationStatus, RouteGroup, get};
 use crate::error::{ApiError, InternalErrorKind};
 use crate::router::HttpState;
 
-const SESSION_COST_DEPENDENCIES: [Dependency; 2] = [
-    Dependency::new("store-bootstrap/analytics-usage-schema"),
-    Dependency::new("costs/pricing-refresh"),
-];
+const SESSION_COST_DEPENDENCIES: [Dependency; 1] = [Dependency::new("costs/pricing-refresh")];
 
 pub(crate) fn routes() -> RouteGroup {
     RouteGroup::new(vec![
@@ -202,9 +199,6 @@ inventory::submit! {
     crate::routes::manifest::RouteModuleRegistration {
         name: "insights",
         routes: Some(routes),
-        dependencies: &[
-        "store-bootstrap/analytics-usage-schema",
-        "costs/pricing-refresh",
-        ],
+        dependencies: &["costs/pricing-refresh"],
     }
 }

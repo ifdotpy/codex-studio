@@ -65,7 +65,7 @@ import { createCatalogCache, loadCatalog } from "./catalog-cache.mjs";
 import {
   declaredTimeoutMs,
   durationText,
-  findStall,
+  watchStalls,
   recordedInputIds,
   stallLimits,
   stallMessage,
@@ -315,6 +315,7 @@ const studioWaits = new Map();
 function studioWait(threadId) {
   if (!threadId) return () => {};
   studioWaits.set(threadId, (studioWaits.get(threadId) || 0) + 1);
+  armStallWatch();
   let open = true;
   return () => {
     if (!open) return;
@@ -329,6 +330,7 @@ function studioWait(threadId) {
     active.lastEventAt = now;
     for (const clock of active.toolClocks.values())
       clock.startedAt = Math.max(clock.startedAt, now);
+    armStallWatch();
   };
 }
 const request = (method, params, signal, onSent) =>
@@ -1023,6 +1025,8 @@ async function finishTurn(s, active, result, error) {
   if (active.turn !== turn || finishingTurns.has(turn)) return;
   let finished;
   finishingTurns.set(turn, new Promise((resolve) => (finished = resolve)));
+  active.toolClocks.clear();
+  armStallWatch();
   if (
     (error?.preparationTimedOut === true ||
       error?.claudeAccountValidationFailed === true ||
@@ -1201,7 +1205,6 @@ async function finishTurn(s, active, result, error) {
     finished();
   }
   active.turn = null;
-  active.toolClocks.clear();
   if (stall) {
     active.stall = null;
     stall.ended();
@@ -1349,29 +1352,7 @@ async function recoverStall(s, active, found) {
     new Error("Claude did not stop after Studio closed it"),
   );
 }
-const stallSweep = setInterval(
-  () => {
-    const now = Date.now();
-    for (const [id, active] of queries) {
-      if (
-        !active.turn ||
-        active.stall ||
-        !active.session ||
-        studioWaits.get(id)
-      )
-        continue;
-      const found = findStall(
-        active.toolClocks,
-        now,
-        active.lastEventAt,
-        limits,
-      );
-      if (found) void recoverStall(active.session, active, found);
-    }
-  },
-  Math.max(50, Math.min(5_000, limits.graceMs / 4)),
-);
-stallSweep.unref();
+const armStallWatch = watchStalls(queries, studioWaits, limits, recoverStall);
 async function startSession(s, active, p) {
   const initial = active.turn;
   const startedAt = Date.now();
@@ -1573,6 +1554,7 @@ async function startSession(s, active, p) {
       const room = stdoutRoom();
       if (room) await room;
       active.lastEventAt = Date.now();
+      armStallWatch();
       if (m.type === "system" && m.subtype === "init") {
         s.started = true;
         s.claudeVersion = m.claude_code_version;
@@ -1976,6 +1958,7 @@ async function startSession(s, active, p) {
             startedAt: Date.now(),
             timeoutMs: declaredTimeoutMs(b),
           });
+          armStallWatch();
           turn.items.push(item);
           turnEvent(s, turn, "item/started", item, tokenRateUsage);
           if (b.name === "TodoWrite")
@@ -1995,6 +1978,7 @@ async function startSession(s, active, p) {
           (b) => b.type === "tool_result",
         )) {
           active.toolClocks.delete(b.tool_use_id);
+          armStallWatch();
           const old = active.tools.get(b.tool_use_id);
           if (!old) continue;
           const text =
@@ -2061,6 +2045,7 @@ async function startSession(s, active, p) {
     active.q?.close();
     if (queries.get(s.id) === active) {
       queries.delete(s.id);
+      armStallWatch();
       catalogCache.activityChanged();
       void sessionStore.evict(s.id);
     }
@@ -2075,7 +2060,10 @@ function deadQuery(error) {
 function discardQuery(s, active) {
   active.input.close();
   active.q?.close();
-  if (queries.get(s.id) === active) queries.delete(s.id);
+  if (queries.get(s.id) === active) {
+    queries.delete(s.id);
+    armStallWatch();
+  }
   catalogCache.activityChanged();
 }
 function newActive(turn) {
@@ -2318,6 +2306,7 @@ async function handle(method, p) {
     active?.input.close();
     active?.q?.close();
     queries.delete(p.session.id);
+    armStallWatch();
     await publishNative(
       p.path,
       nativeDestination(s.nativeId || s.id, p.cwd),
@@ -2378,6 +2367,7 @@ async function handle(method, p) {
     active?.input.close();
     active?.q?.close();
     queries.delete(s.id);
+    armStallWatch();
     catalogCache.activityChanged();
     s.claude = p.settings;
     await persist(s);
@@ -2391,6 +2381,7 @@ async function handle(method, p) {
     active?.input.close();
     active?.q?.close();
     queries.delete(s.id);
+    armStallWatch();
     catalogCache.activityChanged();
     return rollbackSession(s, p, {
       persist,
@@ -2504,6 +2495,7 @@ async function handle(method, p) {
         active?.input.close();
         active?.q?.close();
         queries.delete(s.id);
+        armStallWatch();
         catalogCache.activityChanged();
         Object.assign(
           s,
@@ -2545,6 +2537,7 @@ async function handle(method, p) {
     active?.input.close();
     active?.q?.close();
     queries.delete(p.threadId);
+    armStallWatch();
     if (active) studioUnloaded.add(p.threadId);
     catalogCache.activityChanged();
     await sessionStore.evict(p.threadId);

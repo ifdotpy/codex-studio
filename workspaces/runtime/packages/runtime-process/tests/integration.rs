@@ -3,7 +3,7 @@ mod child_priority;
 mod provider_stdio;
 mod provider_task;
 mod supervisor_receipt_loss;
-mod supervisor_v1;
+mod supervisor_v2;
 mod wave7_p01_factory;
 
 #[cfg(unix)]
