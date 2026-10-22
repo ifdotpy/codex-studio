@@ -25,10 +25,6 @@ const UNIX_SOCKET_PATH_LIMIT: usize = 104;
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 const UNIX_SOCKET_PATH_LIMIT: usize = 104;
 const SOURCE: &str = env!("CARGO_MANIFEST_DIR");
-const SUPERVISOR: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../apps/server/src/codex_process_supervisor.py"
-);
 
 pub(crate) struct DisposableState(pub(crate) PathBuf, tempfile::TempDir);
 
@@ -96,35 +92,15 @@ pub(crate) struct SupervisorProcess {
 }
 
 impl SupervisorProcess {
-    pub(crate) fn start(state: &DisposableState, python: &str) -> Self {
-        assert!(
-            Path::new(SUPERVISOR).is_file(),
-            "Rust supervisor integration test requires the checked-out supervisor script at {SUPERVISOR}"
-        );
-        // The Rust daemon has native process identity on Linux and macOS. A
-        // crate without the built binary and without STUDIO_SUPERVISOR_BINARY
-        // keeps its v1 compatibility tests on the Python daemon.
-        let binary = std::env::var_os("STUDIO_SUPERVISOR_BINARY")
-            .or_else(|| option_env!("CARGO_BIN_EXE_codex-process-supervisor").map(Into::into));
-        let (command, description) = if let Some(binary) = binary {
-            (Command::new(binary), "configured supervisor")
-        } else {
-            let mut command = Command::new(python);
-            command.arg(SUPERVISOR);
-            (command, "Python supervisor")
-        };
-        Self::start_command(state, command, description)
-    }
-
-    pub(crate) fn start_v2(state: &DisposableState) -> Self {
+    pub(crate) fn start(state: &DisposableState) -> Self {
         let binary = std::env::var_os("STUDIO_SUPERVISOR_BINARY")
             .or_else(|| option_env!("CARGO_BIN_EXE_codex-process-supervisor").map(Into::into))
             .unwrap_or_else(|| {
                 panic!(
-                    "v2 provider integration requires the built codex-process-supervisor; run the fast Rust test recipe so STUDIO_SUPERVISOR_BINARY is set"
+                    "supervisor integration requires the built codex-process-supervisor; run the fast Rust test recipe so STUDIO_SUPERVISOR_BINARY is set"
                 )
             });
-        Self::start_command(state, Command::new(binary), "Rust v2 supervisor")
+        Self::start_command(state, Command::new(binary), "Rust supervisor")
     }
 
     fn start_command(state: &DisposableState, mut command: Command, description: &str) -> Self {
@@ -135,7 +111,6 @@ impl SupervisorProcess {
             .arg(&state.0)
             .envs(child_environment(&state.0))
             .env("XDG_CACHE_HOME", state.0.join("cache"))
-            .env("PYTHONDONTWRITEBYTECODE", "1")
             .current_dir(SOURCE)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -164,25 +139,19 @@ impl SupervisorProcess {
     }
 }
 
-#[allow(clippy::disallowed_methods)]
-pub(crate) fn python_executable() -> String {
-    let output = Command::new("python3")
-        .args(["-c", "import sys; print(sys.executable)"])
-        .output()
-        .unwrap_or_else(|error| {
-            panic!(
-                "Rust supervisor integration test requires `python3` in PATH (CI jobs that run this test must provide Python 3): {error}"
-            )
-        });
-    assert!(
-        output.status.success(),
-        "Rust supervisor integration test requires a working Python 3 interpreter (`python3 -c ...` failed): {}",
-        String::from_utf8_lossy(&output.stderr).trim()
-    );
-    String::from_utf8(output.stdout)
-        .expect("python3 executable path must be UTF-8")
-        .trim()
-        .to_owned()
+/// Minimal replies for the compact JSON inputs used by these shell fixtures.
+/// IDs are the fixtures' plain strings or nonnegative integers, without escapes.
+pub(crate) fn shell_command(script: &str) -> Vec<String> {
+    const RPC_ID_FUNCTION: &str = r#"
+rpc_id() {
+ printf '%s\n' "$1" | sed -E 's/.*"id":("[^"]*"|[0-9]+).*/\1/'
+}
+"#;
+    vec![
+        "/bin/sh".into(),
+        "-c".into(),
+        format!("{RPC_ID_FUNCTION}\n{script}"),
+    ]
 }
 
 impl Drop for SupervisorProcess {
@@ -297,10 +266,7 @@ pub(crate) fn pid_exists(pid: u32) -> bool {
 }
 
 pub(crate) fn child_environment(root: &Path) -> BTreeMap<String, String> {
-    let mut env = BTreeMap::from([
-        ("PYTHONUNBUFFERED".into(), "1".into()),
-        ("PATH".into(), "/usr/bin:/bin".into()),
-    ]);
+    let mut env = BTreeMap::from([("PATH".into(), "/usr/bin:/bin".into())]);
     for (name, dir) in [
         ("HOME", "home"),
         ("CODEX_HOME", "codex"),

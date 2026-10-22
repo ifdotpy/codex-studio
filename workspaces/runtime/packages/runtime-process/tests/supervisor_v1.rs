@@ -90,25 +90,22 @@ impl Write for DropOpenResponse {
 }
 
 #[test]
-fn disposable_python_supervisor_v1_actions_events_replay_and_reattach() {
+fn disposable_rust_supervisor_v1_actions_events_replay_and_reattach() {
     let state = DisposableState::new();
     let workspace = state.0.join("workspace");
     fs::create_dir_all(&workspace).unwrap();
-    let python = python_executable();
-    let mut supervisor = SupervisorProcess::start(&state, &python);
+    let mut supervisor = SupervisorProcess::start(&state);
     let supervisor_pid = supervisor.id();
 
     let wait_script = r#"
-import json, sys
-print(json.dumps({'ready': True}), flush=True)
-message = json.loads(sys.stdin.readline())
-text = message['params']['text']
-for chunk in ('stderr:', text[:5], text[5:]):
-    sys.stderr.write(chunk)
-    sys.stderr.flush()
-print(json.dumps({'id': message['id'], 'result': {'echo': text}}), flush=True)
+printf '{"ready":true}\n'
+IFS= read -r line
+id=$(rpc_id "$line")
+text=$(printf '%s\n' "$line" | sed -E 's/.*"text":"([^"]*)".*/\1/')
+printf 'stderr:%s' "$text" >&2
+printf '{"id":%s,"result":{"echo":"%s"}}\n' "$id" "$text"
 "#;
-    let command = vec![python.clone(), "-u".into(), "-c".into(), wait_script.into()];
+    let command = shell_command(wait_script);
     let handle = SupervisorHandle("rust-v1-main".into());
 
     let mut client = connect_client(&state);
@@ -299,15 +296,9 @@ print(json.dumps({'id': message['id'], 'result': {'echo': text}}), flush=True)
     );
 
     let command_handle = SupervisorHandle(format!("server-command:retire-{}", std::process::id()));
-    let quick_script = "import json; print(json.dumps({'done':True}),flush=True)";
     let mut quick = open_request(
         &command_handle.0,
-        vec![
-            python.clone(),
-            "-u".into(),
-            "-c".into(),
-            quick_script.into(),
-        ],
+        shell_command(r#"printf '{"done":true}\n'"#),
         &workspace,
     );
     quick.env.clear();
@@ -355,11 +346,11 @@ print(json.dumps({'id': message['id'], 'result': {'echo': text}}), flush=True)
     );
 
     let admin_handle = SupervisorHandle(format!("rust-admin-{}", std::process::id()));
-    let blocking_script = "import sys; print('waiting',flush=True); sys.stdin.readline()";
+    let blocking_script = "printf 'waiting\\n'; IFS= read -r line";
     let admin_open = client
         .open(open_request(
             &admin_handle.0,
-            vec![python, "-u".into(), "-c".into(), blocking_script.into()],
+            shell_command(blocking_script),
             &workspace,
         ))
         .unwrap();

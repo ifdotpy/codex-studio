@@ -160,13 +160,12 @@ use crate::process_support as support;
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn shutdown_detaches_and_supervised_child_reattaches_at_same_generation() {
-    let (state, mut supervisor, python) = studio_runtime_process::blocking_pool::spawn_blocking(
+    let (state, mut supervisor) = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-process/tests/wave7_p01_factory",
         || {
             let state = support::DisposableState::new();
-            let python = support::python_executable();
-            let supervisor = support::SupervisorProcess::start(&state, &python);
-            (state, supervisor, python)
+            let supervisor = support::SupervisorProcess::start(&state);
+            (state, supervisor)
         },
     )
     .await
@@ -176,12 +175,7 @@ async fn shutdown_detaches_and_supervised_child_reattaches_at_same_generation() 
     let launch = || OpenOptions {
         clock: SessionClock::default(),
         launch: ProviderLaunchSpec::new(
-            vec![
-                python.clone(),
-                "-u".into(),
-                "-c".into(),
-                "import sys\nfor line in sys.stdin: pass".into(),
-            ],
+            support::shell_command("while IFS= read -r line; do :; done"),
             support::child_environment(&state.0),
             state.0.clone(),
         ),
@@ -234,13 +228,12 @@ async fn shutdown_detaches_and_supervised_child_reattaches_at_same_generation() 
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn running_child_started_with_a_previous_command_reattaches() {
-    let (state, mut supervisor, python) = studio_runtime_process::blocking_pool::spawn_blocking(
+    let (state, mut supervisor) = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-process/tests/wave7_p01_factory",
         || {
             let state = support::DisposableState::new();
-            let python = support::python_executable();
-            let supervisor = support::SupervisorProcess::start(&state, &python);
-            (state, supervisor, python)
+            let supervisor = support::SupervisorProcess::start(&state);
+            (state, supervisor)
         },
     )
     .await
@@ -248,12 +241,7 @@ async fn running_child_started_with_a_previous_command_reattaches() {
     let factory = SupervisorProviderTaskFactory::new(state.identity());
     let handle = ProviderHandle::for_account("retained");
     let command = |extra: &[&str]| {
-        let mut command = vec![
-            python.clone(),
-            "-u".into(),
-            "-c".into(),
-            "import sys\nfor line in sys.stdin: pass".into(),
-        ];
+        let mut command = support::shell_command("while IFS= read -r line; do :; done");
         command.extend(extra.iter().map(|arg| (*arg).to_owned()));
         command
     };
