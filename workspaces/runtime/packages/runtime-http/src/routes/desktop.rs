@@ -149,7 +149,7 @@ mod tests {
     use super::{backend_build_from, is_sha256_hex, sha256_reader};
     use axum::{body::to_bytes, extract::ConnectInfo, http::Request};
     use serde_json::Value;
-    use std::{io::Cursor, path::Path, sync::Arc, time::Instant};
+    use std::{io::Cursor, sync::Arc, time::Instant};
     use studio_runtime_services::provider_versions::{
         ActiveProviderConnections, Clock, ProviderPortError, ProviderProfile,
         ProviderVersionMonitor, ProviderVersionStore, SystemVersionProbe, UpstreamFetch,
@@ -175,26 +175,6 @@ mod tests {
             backend_build_from(Some(&"ab".repeat(32)), &actual),
             Err("CODEX_BACKEND_BUILD does not match this executable")
         );
-    }
-
-    fn prepared_python(source: &Path) -> std::path::PathBuf {
-        std::env::var_os("CODEX_AGENTS_PYTHON")
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(|| {
-                let output = std::process::Command::new("python3")
-                    .arg(source.join("codex_python.py"))
-                    .output()
-                    .expect("prepared Python interpreter resolves");
-                assert!(
-                    output.status.success(),
-                    "{}",
-                    String::from_utf8_lossy(&output.stderr)
-                );
-                String::from_utf8(output.stdout)
-                    .expect("Python interpreter path is UTF-8")
-                    .trim()
-                    .into()
-            })
     }
 
     struct LiveSessions {
@@ -361,7 +341,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn desktop_http_projects_only_live_connection_like_python() {
+    async fn desktop_http_projects_only_live_connections() {
         let temporary = tempfile::tempdir().expect("isolated cache directory");
         let claude_binary = temporary.path().join("claude-version-fixture");
         std::fs::write(&claude_binary, "#!/bin/sh\nprintf '2.1.279\\n'\n")
@@ -432,20 +412,10 @@ mod tests {
             .expect("bounded response body");
         let actual: Value = serde_json::from_slice(&body).expect("JSON response");
 
-        let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src");
-        let python = prepared_python(&source);
-        let oracle = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../runtime-services/tests/provider_versions/projection_oracle.py");
-        let expected = std::process::Command::new(python)
-            .arg(oracle)
-            .output()
-            .expect("Python projection oracle launches");
-        assert!(
-            expected.status.success(),
-            "{}",
-            String::from_utf8_lossy(&expected.stderr)
-        );
-        let expected: Value = serde_json::from_slice(&expected.stdout).expect("Python oracle JSON");
+        let expected: Value = serde_json::from_str(include_str!(
+            "../../../runtime-services/tests/provider_versions/projection.json"
+        ))
+        .expect("frozen provider projection");
         assert_eq!(actual["providerVersions"], expected);
         assert_eq!(
             actual["providerVersions"]["providers"]
