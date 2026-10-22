@@ -745,7 +745,9 @@ with [`CODEX_WORKER_BUILD_ROOTS`](product-guide.md#state).
 
 Before claiming queued implementer input, the gate checks every watched workspace
 and build-output filesystem against
-[`WORKER_STORAGE_MIN_FREE_BYTES`](../workspaces/runtime/packages/runtime-services/src/disk_space.rs).
+[`WORKER_STORAGE_MIN_FREE_BYTES`](../workspaces/runtime/packages/runtime-services/src/disk_space.rs),
+which equals the disk-full floor of the state volume. Studio does not keep a
+larger reserve for agent builds: work waits only when a volume is really full.
 A low or unreadable filesystem leaves the input queued with the original identity
 and publishes a storage-hold reason on the agent. The account worker rechecks
 using the existing disk recheck interval. The hold ends at the same floor;
