@@ -248,6 +248,28 @@ struct CatalogInner {
 pub struct ModelCatalogService(Arc<CatalogInner>);
 
 impl ModelCatalogService {
+    /// Content already available to model reads, without starting a provider or
+    /// including refresh generations and expiration timestamps in resource versions.
+    pub fn cached_resource_content(&self) -> Option<Value> {
+        let cache = self.0.state.lock().ok()?;
+        let mut entries = cache.entries.iter().collect::<Vec<_>>();
+        entries.sort_by_key(|(key, _)| *key);
+        serde_json::to_value(
+            entries
+                .into_iter()
+                .map(|(key, entry)| {
+                    (
+                        key,
+                        &entry.value,
+                        entry.error && !entry.pending,
+                        entry.value.is_none() && entry.pending,
+                    )
+                })
+                .collect::<Vec<_>>(),
+        )
+        .ok()
+    }
+
     /// Observe only an already refreshed catalog. This never starts a provider;
     /// use `read` outside admission to request/coalesce the asynchronous refresh.
     #[must_use]
@@ -809,6 +831,36 @@ pub(crate) mod tests {
     use super::*;
 
     use std::sync::Mutex as StdMutex;
+
+    #[test]
+    fn cached_resource_content_ignores_refresh_metadata() {
+        let service = ModelCatalogService::new();
+        let payload = json!({"data":[{"model":"fixture"}]});
+        service.seed_test_admission_catalog("account", "home", "codex", payload);
+        let before = service.cached_resource_content().expect("content");
+        {
+            let mut cache = service.0.state.lock().expect("cache");
+            let entry = cache.entries.values_mut().next().expect("entry");
+            entry.generation += 1;
+            entry.expires_at = None;
+            entry.pending = true;
+            entry.error = true;
+        }
+        assert_eq!(service.cached_resource_content(), Some(before.clone()));
+        {
+            let mut cache = service.0.state.lock().expect("cache");
+            let entry = cache.entries.values_mut().next().expect("entry");
+            entry.pending = false;
+            entry.expires_at = Some(Instant::now() + CATALOG_FAILURE_RETRY);
+        }
+        assert_ne!(
+            service.cached_resource_content(),
+            Some(before.clone()),
+            "a failed worker catalog is unavailable even while display reads retain the old payload"
+        );
+        service.seed_test_admission_catalog("account", "home", "codex", json!({"data":[]}));
+        assert_ne!(service.cached_resource_content(), Some(before));
+    }
 
     /// Retained-session fake that answers each `model/list` with the next page.
     /// A gated fake holds every reply until `release` grants it.

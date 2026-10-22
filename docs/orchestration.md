@@ -1561,3 +1561,14 @@ change with both options. Cross-machine Claude cache reuse remains unverified.
 2. It selects task IDs and records for the requested page in one query.
 3. It validates only the served records; the extra row indicates more history.
 4. Current and older-page cursors retain their timestamp and ID ordering.
+
+## Resource refreshes
+
+1. After commit, the writer compares SQLite's update count with its receipt and entity-table hook counts.
+2. Receipt-only commits need no resource wake; entity-only commits carry `Entities`; unknown, mixed, and uncertain commits carry `All`.
+3. `Entities` advances state, transcript, room, task, and workspace refs without moving the broad resource cursor; it never forces an entity reset.
+4. A connected stream asks the resource notification owner about its subscribed keys.
+5. After a coalesced wake, the owner reads each affected projection once per revision, shared across streams.
+6. A resource version advances when its content digest changes; unchanged content causes no client re-read.
+7. Unknown, unavailable, evicted, or racing projections retain the safe refresh.
+8. Initial connections still receive every subscribed resource; publication receipts and retry identities stay unchanged.
