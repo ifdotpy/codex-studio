@@ -9,6 +9,7 @@ import sys
 MAX_LAUNCH_BYTES = 4 * 1024 * 1024
 MAX_LAUNCH_ARGUMENTS = 4096
 
+
 def process_launch_command(pid: int) -> list[str]:
     """Read bounded OS arguments without executing or changing the process."""
     if sys.platform == 'darwin':

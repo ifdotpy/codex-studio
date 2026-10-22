@@ -1,6 +1,6 @@
 """Local owner of the desktop installer's staged-update files and signature checks.
 
-The Rust peer-update service stages the update; this helper only verifies and installs it.
+The installer reads staged update files and uses these local signature checks.
 """
 from __future__ import annotations
 
@@ -16,6 +16,8 @@ from typing import TypedDict, cast
 
 APP_NAME = 'Codex Studio.app'
 BUNDLE_ID = 'local.codex.agents'
+# Owner: runtime-services/src/peer_updates.rs; desktop_installer_contract_matches_rust_owner
+# checks the build-stamp path, tool paths and deadlines against this consumer.
 BUILD_STAMP = Path('Contents/Resources/studio-build.json')
 # State directory filenames shared with the Rust peer-update writer.
 PENDING_FILE = 'pending-update.json'
@@ -39,12 +41,15 @@ PendingUpdate = TypedDict('PendingUpdate', {
     'id': str, 'app': str, 'build': Build, 'from': str,
 })
 
+
 class UpdateError(Exception):
     """A step failed. The puller records the reason and skips the build for an hour."""
+
 
 def run_tool(argv: list[str], timeout: float) -> subprocess.CompletedProcess[str]:
     return subprocess.run(argv, capture_output=True, text=True, timeout=timeout, check=False,
                           stdin=subprocess.DEVNULL)
+
 
 def valid_build(value: object) -> Build | None:
     """The build stamp, or None when the value is not a complete stamp."""
@@ -61,14 +66,17 @@ def valid_build(value: object) -> Build | None:
         return None
     return {'version': 1, 'builtAt': built, 'commit': commit, 'commitTime': commit_time, 'branch': branch}
 
+
 def read_build(app: Path) -> Build | None:
     try:
         return valid_build(json.loads((app / BUILD_STAMP).read_text()))
     except (OSError, ValueError):
         return None
 
+
 def build_folder(root: Path, build: Build) -> Path:
     return root / UPDATES_DIR / str(build['builtAt'])
+
 
 def write_json(path: Path, value: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -82,12 +90,14 @@ def write_json(path: Path, value: object) -> None:
     finally:
         Path(name).unlink(missing_ok=True)
 
+
 def read_json(path: Path) -> dict[str, object] | None:
     try:
         value = json.loads(path.read_text())
     except (OSError, ValueError):
         return None
     return cast(dict[str, object], value) if isinstance(value, dict) else None
+
 
 def read_pending(root: Path) -> PendingUpdate | None:
     """The staged update, or None. The app must be a staged copy in this state directory."""
@@ -102,15 +112,18 @@ def read_pending(root: Path) -> PendingUpdate | None:
         return None
     return {'id': key, 'app': app, 'build': build, 'from': source}
 
+
 def remove_tree(path: Path) -> None:
     if path.is_symlink() or path.is_file():
         path.unlink(missing_ok=True)
     elif path.exists():
         shutil.rmtree(path, ignore_errors=True)
 
+
 def _tail(result: subprocess.CompletedProcess[str]) -> str:
     text = ((result.stderr or '') + (result.stdout or '')).strip()
     return text[-300:]
+
 
 def requirement(app: Path, run: Runner = run_tool) -> str:
     """The designated requirement of a signed app: it names the signing certificate."""
@@ -120,6 +133,7 @@ def requirement(app: Path, run: Runner = run_tool) -> str:
             if line.startswith('designated => '):
                 return line.removeprefix('designated => ').strip()
     raise UpdateError(f'The designated requirement of {app.name} is unavailable')
+
 
 def verify_app(app: Path, installed: Path, build: Build, run: Runner = run_tool) -> None:
     """Accept only a complete app signed by the certificate of the installed app, with the

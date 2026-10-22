@@ -1519,3 +1519,10 @@ change with both options. Cross-machine Claude cache reuse remains unverified.
 6. The existing receipt owner atomically commits recovery and the callback result using prepared payloads only.
 7. Panel guidance is read once before its callback transaction; the transaction still checks lead authority.
 8. A lost response uses the saved request identity and existing uncertain-outcome recovery.
+
+### Retained guest and desktop helpers
+
+1. Desktop recovery reads process arguments and pending updates from its local helpers.
+2. The installer verifies the staged app and waits for the VM maintenance lock.
+3. The guest relays native provider requests to the Rust process supervisor.
+4. Guest restarts reuse the supervisor socket and journal; an uncertain owner stays blocked.
