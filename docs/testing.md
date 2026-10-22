@@ -40,6 +40,13 @@ bin directory, or in Studio's versioned UI cache. If absent, it fails with the
 matching Cargo install command. Cold compilation is outside the warm target.
 The warm target is 30 seconds. A prepared local run at `62b7076d` on 2026-10-18
 passed in 23.759 seconds; cold setup was excluded.
+Both local gates first build `studio-operations-python` in the debug profile.
+The server runner links that checkout artifact into each suite's private import
+path before shared site-packages. Artifact paths are owned by
+[`codex_operations_artifact.py`](../workspaces/runtime/apps/server/src/codex_operations_artifact.py);
+use the same `CARGO_TARGET_DIR` for a focused build and runner invocation.
+A missing checkout build fails with its build command; no shared Python install
+is updated or used as a fallback for tests.
 The short tier does not build the browser or contact a model provider.
 The tooling tests also check the prebuilt release binary contract of the native
 packagers (`release-binaries.test.mjs`): the same commit is accepted; another

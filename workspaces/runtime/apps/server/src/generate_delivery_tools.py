@@ -1,4 +1,4 @@
-"""Keep current Rust-hosted delivery and monitor tools aligned with their Python owner.
+"""Keep current Rust-hosted delivery, monitor, and task tools aligned with their Python owner.
 
 Only these current tool entries are refreshed. Historical native-tools snapshots
 and all other bundled preparation resources retain their existing contents.
@@ -16,7 +16,7 @@ from codex_runtime import TOOLS
 
 # Current tools owned by codex_runtime.TOOLS; historical snapshots remain frozen.
 DELIVERY_TOOL_NAMES = ("orchestration_message", "orchestration_send")
-CURRENT_TOOL_NAMES = (*DELIVERY_TOOL_NAMES, "orchestration_monitor")
+CURRENT_TOOL_NAMES = (*DELIVERY_TOOL_NAMES, "orchestration_monitor", "orchestration_task")
 BUNDLED_RESOURCES = REPOSITORY_ROOT / "workspaces/runtime/packages/runtime-services/src/account_worker/preparation-resources.json"
 
 

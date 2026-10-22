@@ -35,6 +35,8 @@ from codex_layout import (  # noqa: E402
     SERVER_TESTS_ROOT,
 )
 
+from codex_operations_artifact import operations_extension
+
 ROOT = REPOSITORY_ROOT
 TESTS = SERVER_TESTS_ROOT
 TESTS_REL = TESTS.relative_to(ROOT).as_posix()
@@ -1078,7 +1080,12 @@ def _suite_environment(root, temp_root, audit_home=False, relative=None):
     environment["CODEX_WORKSPACE_STORE"] = str(workspace_store)
     source_path = str(root / SOURCE_REL)
     tests_path = str(root / TESTS_REL)
-    python_paths = [source_path, tests_path]
+    # Use the current checkout build, never the shared interpreter's installed copy.
+    extension, module_name = operations_extension(root, profile="debug")
+    native_path = _runner_artifact_root(temp_root) / "native"
+    native_path.mkdir()
+    (native_path / module_name).symlink_to(extension.resolve())
+    python_paths = [str(native_path), source_path, tests_path]
     if audit_home:
         audit_path = str(Path(root) / TESTS_REL / "server" / "audit-home")
         python_paths.insert(0, audit_path)

@@ -10,6 +10,9 @@ use std::sync::{
     Arc,
     atomic::{AtomicU64, Ordering},
 };
+use studio_runtime_schema::shared_values::{
+    TASK_SUBMISSION_MAX_FILES, TASK_SUBMISSION_PATH_MAX_CODEPOINTS,
+};
 use studio_runtime_store::path_identity::CanonicalPath;
 
 use rusqlite::OptionalExtension;
@@ -1069,9 +1072,6 @@ pub async fn prepare_vm_submission(
         text(&input.result, false)?;
         text(&input.checks, false)?;
         let revision = python_bounded_text(&input.revision, 200)?;
-        if input.files.len() > 50 || input.files.iter().any(|path| path.chars().count() > 4096) {
-            return Err(Error::InvalidRequest("Supply up to 50 file paths").into());
-        }
         let owner_id = work["owner"].as_str().unwrap_or(&agent.id.0);
         let owner = event_write::checked_agent(tx, owner_id)?;
         validate_submission_files(&owner, &input.files, input.prepared_files.as_ref())?;
@@ -2542,9 +2542,6 @@ fn submit(
     request_id: Option<&str>,
     signature: &str,
 ) -> Result<WorkWriteResult, WorkWriteError> {
-    if input.files.len() > 50 || input.files.iter().any(|path| path.chars().count() > 4096) {
-        return Err(Error::InvalidRequest("Supply up to 50 file paths").into());
-    }
     let work = load_work(tx, &agent.root_id.0, &input.task_id, input.version)?;
     if actor_id.is_some_and(|actor| work["owner"].as_str() != Some(actor)) {
         return Err(Error::InvalidRequest("Only the assigned worker can submit its result").into());
@@ -3009,14 +3006,25 @@ fn text(value: &str, empty: bool) -> Result<String, Error> {
     Ok(value.to_owned())
 }
 
+fn validate_submission_manifest(files: &[String]) -> Result<(), Error> {
+    if files.len() > TASK_SUBMISSION_MAX_FILES
+        || files
+            .iter()
+            .any(|path| path.chars().count() > TASK_SUBMISSION_PATH_MAX_CODEPOINTS)
+    {
+        return Err(Error::InvalidRequest(
+            "Submission files exceed shared count or path-length limits",
+        ));
+    }
+    Ok(())
+}
+
 fn validate_submission_files(
     agent: &AgentRecord,
     files: &[String],
     prepared: Option<&PreparedSubmissionFiles>,
 ) -> Result<(), Error> {
-    if files.len() > 50 || files.iter().any(|path| path.chars().count() > 4096) {
-        return Err(Error::InvalidRequest("Supply up to 50 file paths"));
-    }
+    validate_submission_manifest(files)?;
     if files.is_empty() {
         return Ok(());
     }
@@ -3049,9 +3057,7 @@ fn resolve_submission_files(
     agent: &AgentRecord,
     files: &[String],
 ) -> Result<Vec<CanonicalPath>, Error> {
-    if files.len() > 50 || files.iter().any(|path| path.chars().count() > 4096) {
-        return Err(Error::InvalidRequest("Supply up to 50 file paths"));
-    }
+    validate_submission_manifest(files)?;
     if files.is_empty() {
         return Ok(Vec::new());
     }
@@ -3063,7 +3069,7 @@ fn resolve_submission_files(
         .ok_or_else(|| invalid("runtime_agents", &agent.id.0))?;
     let mut resolved = Vec::with_capacity(files.len());
     for raw_path in files {
-        let path = python_bounded_text(raw_path, 4096)?;
+        let path = python_bounded_text(raw_path, TASK_SUBMISSION_PATH_MAX_CODEPOINTS)?;
         let expanded = if path == "~" || path.starts_with("~/") {
             let home = std::env::var_os("HOME").ok_or(Error::InvalidRequest("Invalid request"))?;
             PathBuf::from(home).join(
@@ -3253,6 +3259,30 @@ mod actor_tests {
                 .expect("agent row inserts");
         }
         connection
+    }
+
+    #[test]
+    fn submission_manifest_boundaries_use_shared_limits() {
+        use studio_runtime_schema::shared_values::{
+            TASK_SUBMISSION_MAX_FILES, TASK_SUBMISSION_PATH_MAX_CODEPOINTS,
+        };
+        for count in [0, 51, 73, TASK_SUBMISSION_MAX_FILES] {
+            assert!(
+                super::validate_submission_manifest(&vec!["src/file.rs".into(); count]).is_ok()
+            );
+        }
+        assert!(
+            super::validate_submission_manifest(&vec![
+                "src/file.rs".into();
+                TASK_SUBMISSION_MAX_FILES + 1
+            ])
+            .is_err()
+        );
+        // Non-ASCII paths prove this limit counts Unicode code points, not bytes.
+        let mut path = "🦀".repeat(TASK_SUBMISSION_PATH_MAX_CODEPOINTS);
+        assert!(super::validate_submission_manifest(&[path.clone()]).is_ok());
+        path.push('x');
+        assert!(super::validate_submission_manifest(&[path]).is_err());
     }
 
     #[cfg(not(unix))]
@@ -4255,7 +4285,9 @@ mod actor_tests {
             result: "done".into(),
             checks: "checked".into(),
             revision: "abc1234".into(),
-            files: vec!["src/new.rs".into()],
+            files: (0..studio_runtime_schema::shared_values::TASK_SUBMISSION_MAX_FILES)
+                .map(|index| format!("src/file-{index}.rs"))
+                .collect(),
             prepared_files: None,
             state_dir: state.path().into(),
             vm_evidence: None,
@@ -4308,7 +4340,7 @@ mod actor_tests {
             })
             .await
             .expect("nonempty non-VM submission");
-        assert_eq!(result.record["results"][0]["files"], json!(["src/new.rs"]));
+        assert_eq!(result.record["results"][0]["files"], json!(input.files));
         input.prepared_files = None;
         let replay = store
             .transaction_with(move |tx| {

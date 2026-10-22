@@ -635,6 +635,14 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
             ),
         },
         Rendered {
+            path: "workspaces/runtime/apps/server/src/codex_work_limits.py".into(),
+            text: format!(
+                "# {HEADER}\nTASK_SUBMISSION_MAX_FILES = {}\nTASK_SUBMISSION_PATH_MAX_CODEPOINTS = {}\n",
+                values::TASK_SUBMISSION_MAX_FILES,
+                values::TASK_SUBMISSION_PATH_MAX_CODEPOINTS,
+            ),
+        },
+        Rendered {
             path: web("sharedValues.ts"),
             text: shared_values_ts(),
         },
