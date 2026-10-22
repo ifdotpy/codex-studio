@@ -90,3 +90,24 @@ async fn repair_report_read_is_scoped_bounded_and_does_not_expose_provider_text(
     assert_eq!(native.calls.lock().unwrap().len(), 1);
     worker.shutdown().await.unwrap();
 }
+
+#[tokio::test]
+async fn repair_report_refuses_invalid_evidence_without_exposing_provider_values() {
+    let (_root, _store, app, mut worker, native) = super::claude_file_backups::fixture().await;
+    let report = json!({"status":"needs_repair","skippedRows":3,"invalidSequence":true,"scopeConfirmed":true,"nativeHistoryConfirmed":false});
+    for (field, value) in [
+        ("status", json!("private-provider-text")),
+        ("skippedRows", json!(-1)),
+        ("skippedRows", json!(9007199254740992_u64)),
+        ("invalidSequence", json!("private-provider-text")),
+        ("scopeConfirmed", json!("private-provider-text")),
+    ] {
+        let mut invalid = report.clone();
+        invalid[field] = value;
+        *native.repair_report.lock().unwrap() = Some(invalid);
+        let (status, body) = get(&app, "/api/claude/repair-report?id=agent", "fixture-token").await;
+        assert_eq!(status, 500, "{field}: {body}");
+        assert!(!body.to_string().contains("private-provider-text"));
+    }
+    worker.shutdown().await.unwrap();
+}

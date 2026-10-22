@@ -1338,6 +1338,29 @@ async fn restart_continues_only_a_confirmed_interruption() {
         .await
         .expect("restart reconciliation");
         let after = snapshot(&store).record().clone();
+        if status == "uncertain" {
+            assert!(matches!(result, RecoveryOutcome::Applied(_)));
+            assert_eq!(after["status"], "paused");
+            assert_eq!(after["autoWake"], false);
+            assert_eq!(after["nativeFailureHold"], true);
+            assert_eq!(after["lastCompletedTurnStatus"], "uncertain");
+            assert_eq!(after["nativeTurnError"]["error"], error);
+            let page = studio_runtime_services::transcript_runtime::page_at(
+                &store,
+                "agent".into(),
+                Default::default(),
+                100.0,
+            )
+            .await
+            .expect("unconfirmed transcript");
+            assert!(
+                page["items"]
+                    .as_array()
+                    .expect("items")
+                    .iter()
+                    .any(|item| item["turnStatus"] == "uncertain" && item["turnError"] == error)
+            );
+        }
         assert_eq!(
             after["status"] == "queued",
             should_continue,

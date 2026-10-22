@@ -34,6 +34,7 @@ use tower::ServiceExt;
 pub(crate) struct Native {
     full: AtomicBool,
     pub(crate) calls: Mutex<Vec<Value>>,
+    pub(crate) repair_report: Mutex<Option<Value>>,
     ready: Notify,
 }
 impl Native {
@@ -42,7 +43,7 @@ impl Native {
         let p = &request["params"];
         let result = match request["method"].as_str().unwrap() {
             "claude/repairReport" => {
-                json!({"status":"needs_repair","skippedRows":3,"invalidSequence":true,"scopeConfirmed":true,"nativeHistoryConfirmed":false,"secret":"must-not-escape","transcript":"private transcript content","path":"/private/account"})
+                self.repair_report.lock().unwrap().clone().unwrap_or_else(|| json!({"status":"needs_repair","skippedRows":3,"invalidSequence":true,"scopeConfirmed":true,"nativeHistoryConfirmed":false,"secret":"must-not-escape","transcript":"private transcript content","path":"/private/account"}))
             }
             "claude/state" => {
                 json!({"tasks":[],"turns":[{"id":"one","status":"completed","canRestoreFiles":true},{"id":"two","status":"completed","canRestoreFiles":true}]})

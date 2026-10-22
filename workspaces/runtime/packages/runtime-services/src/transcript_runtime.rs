@@ -284,7 +284,12 @@ pub(crate) fn project(
             .as_str()
             .filter(|v| failed_turns.contains(*v))
         {
-            item["turnError"] = turn_errors.get(turn).cloned().unwrap_or(Value::Null);
+            // Recovery can save the native reason before analytics catches up.
+            if let Some(error) = turn_errors.get(turn) {
+                item["turnError"] = error.clone();
+            } else if item["turnError"].is_null() && actor["nativeTurnError"]["turnId"] == turn {
+                item["turnError"] = actor["nativeTurnError"]["error"].clone();
+            }
             item["turnErrorResolved"] = json!(true);
         }
         // Inline receipts are projected within the snapshot. Local blobs are
