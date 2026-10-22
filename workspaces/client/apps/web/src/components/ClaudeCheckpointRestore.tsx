@@ -1,3 +1,4 @@
+import ClaudeFileBackups from "./ClaudeFileBackups";
 import { Button, NativeSelect } from "@mantine/core";
 import { useEffect, useState } from "react";
 import { errorText, type PostResult } from "../api";
@@ -74,6 +75,9 @@ export default function ClaudeCheckpointRestore({
       />
       {reason && <p className="workspace-muted">{reason}</p>}
       {error && <p role="alert">{error}</p>}
+      {error.includes("backup limit") && (
+        <ClaudeFileBackups agentId={agent.id} onReleased={() => setError("")} />
+      )}
       <Button
         color="orange"
         disabled={!!reason}

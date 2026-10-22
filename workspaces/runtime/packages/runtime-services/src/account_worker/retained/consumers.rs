@@ -72,6 +72,8 @@ impl ClaudeSessionPort for ClaudePort {
             );
             let restoring_files = call.identity.method == Method::ThreadRollback
                 && call.params["restoreFiles"] == true;
+            let rewind_request = call.params.get("requestId").cloned();
+            let rewind_turn = call.params.get("turnId").cloned();
             let timeout_seconds = if restoring_files {
                 crate::claude_controls::FILE_RESTORE_TIMEOUT_SECONDS
             } else {
@@ -117,9 +119,20 @@ impl ClaudeSessionPort for ClaudePort {
                         .get("message")
                         .and_then(Value::as_str)
                         .unwrap_or("The bridge rejected the file restore");
-                    Err(ControlError::RewindRejected(
-                        reason.chars().take(MAX_REWIND_ERROR_CHARACTERS).collect(),
-                    ))
+                    let reason = reason.chars().take(MAX_REWIND_ERROR_CHARACTERS).collect();
+                    let data = &error["data"];
+                    if data["fileRestoreOutcome"] == "not_applied"
+                        && rewind_request
+                            .as_ref()
+                            .is_some_and(|id| id.is_string() && data.get("requestId") == Some(id))
+                        && rewind_turn
+                            .as_ref()
+                            .is_some_and(|id| id.is_string() && data.get("turnId") == Some(id))
+                    {
+                        Err(ControlError::RewindNotApplied(reason))
+                    } else {
+                        Err(ControlError::RewindRejected(reason))
+                    }
                 }
                 RequestResult::Rejected(_) => Err(ControlError::Request),
                 RequestResult::NotSent => Err(ControlError::NotSent),

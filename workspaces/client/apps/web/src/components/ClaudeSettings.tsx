@@ -1,3 +1,4 @@
+import ClaudeFileBackups from "./ClaudeFileBackups";
 import { useServerStorage } from "../servers/ServerServicesContext";
 import { useServerApi } from "../servers/ServerServicesContext";
 import { accountCanStart } from "../accountName";
@@ -568,6 +569,9 @@ export function ClaudeSettings({
         <p role="alert" className="claude-setting-error">
           {error}
         </p>
+      )}
+      {error.includes("backup limit") && (
+        <ClaudeFileBackups agentId={agent.id} onReleased={() => setError("")} />
       )}
       {onSignIn && (
         <AccountSignInNotice

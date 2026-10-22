@@ -585,6 +585,7 @@ async fn stale_failure_cannot_clear_a_newer_durable_submission() {
 }
 
 struct NotSentOnce {
+    pre_effect: bool,
     inner: RewindNative,
     attempts: std::sync::atomic::AtomicUsize,
 }
@@ -599,7 +600,16 @@ impl ControlSession for NotSentOnce {
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
                 == 0
         {
-            return Box::pin(async { Err(ControlError::NotSent) });
+            let pre_effect = self.pre_effect;
+            return Box::pin(async move {
+                Err(if pre_effect {
+                    ControlError::RewindNotApplied(
+                        "The before-restore backup limit is reached.".into(),
+                    )
+                } else {
+                    ControlError::NotSent
+                })
+            });
         }
         self.inner.call(method, params)
     }
@@ -614,6 +624,7 @@ async fn definite_not_sent_releases_and_retries_the_same_request_after_fresh_idl
     seed_state(&state, &cwd).await;
     let store = Arc::new(RuntimeStore::open(Some(&state)).await.unwrap());
     let native = Arc::new(NotSentOnce {
+        pre_effect: false,
         inner: RewindNative(Mutex::new(vec![]), false),
         attempts: std::sync::atomic::AtomicUsize::new(0),
     });
@@ -679,6 +690,82 @@ async fn definite_not_sent_releases_and_retries_the_same_request_after_fresh_idl
     );
 }
 
+#[tokio::test]
+async fn quota_preparation_refusal_releases_and_retries_after_fresh_idle_proof() {
+    let root = tempfile::tempdir().unwrap();
+    let cwd = root.path().join("workspace");
+    let state = root.path().join("state");
+    std::fs::create_dir(&cwd).unwrap();
+    std::fs::create_dir(&state).unwrap();
+    seed_state(&state, &cwd).await;
+    let store = Arc::new(RuntimeStore::open(Some(&state)).await.unwrap());
+    let native = Arc::new(NotSentOnce {
+        pre_effect: true,
+        inner: RewindNative(Mutex::new(vec![]), false),
+        attempts: std::sync::atomic::AtomicUsize::new(0),
+    });
+    let controls = Controls::new(
+        Arc::new(StoredControls::new(store.clone(), Arc::new(|_| {}))),
+        native.clone(),
+    );
+    let request = || {
+        ControlRequest::from_value(&json!({"id":"agent","action":"rollback","turn_id":"two","request_id":"quota-refusal","restore_files":true})).unwrap()
+    };
+    assert!(matches!(
+        controls.execute(request()).await,
+        Err(ControlError::RewindNotApplied(_))
+    ));
+    let agent = AgentRepository::get(&store.test_reader().unwrap(), &AgentId("agent".into()))
+        .unwrap()
+        .unwrap()
+        .value();
+    assert!(agent["workspaceOperation"].is_null());
+    assert!(agent["workspaceReservationId"].is_null());
+    let monitor = json!({"id":"busy","cwd":cwd,"status":"running"});
+    store
+        .transaction(move |tx| {
+            tx.execute(
+                "INSERT INTO runtime_monitors VALUES('busy',?1)",
+                [monitor.to_string()],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    assert!(matches!(
+        controls.execute(request()).await,
+        Err(ControlError::Busy)
+    ));
+    assert_eq!(native.attempts.load(std::sync::atomic::Ordering::SeqCst), 1);
+    store
+        .transaction(|tx| {
+            tx.execute("DELETE FROM runtime_monitors WHERE id='busy'", [])?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        controls.execute(request()).await.unwrap()["filesRestored"],
+        true
+    );
+    assert_eq!(
+        controls.execute(request()).await.unwrap()["filesRestored"],
+        true
+    );
+    assert_eq!(native.attempts.load(std::sync::atomic::Ordering::SeqCst), 2);
+    assert_eq!(
+        native
+            .inner
+            .0
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|call| call["method"] == "thread/rollback")
+            .count(),
+        1
+    );
+}
+
 struct RejectedRewind(RewindNative);
 impl ControlSession for RejectedRewind {
     fn binding(&self) -> ControlBinding {
@@ -688,7 +775,7 @@ impl ControlSession for RejectedRewind {
         if method == "thread/rollback" {
             return Box::pin(async {
                 Err(ControlError::RewindRejected(
-                    "The before-restore backup limit is reached.".into(),
+                    "Claude restored only one file.".into(),
                 ))
             });
         }
@@ -711,7 +798,7 @@ async fn rewind_rejection_preserves_the_reason_without_claiming_no_file_effects(
     let request = ControlRequest::from_value(&json!({"id":"agent","action":"rollback","turn_id":"two","request_id":"quota","restore_files":true})).unwrap();
     let result = controls.execute(request).await;
     assert!(
-        matches!(&result, Err(ControlError::RewindRejected(message)) if message.contains("backup limit"))
+        matches!(&result, Err(ControlError::RewindRejected(message)) if message.contains("only one file"))
     );
     let agent = AgentRepository::get(&store.test_reader().unwrap(), &AgentId("agent".into()))
         .unwrap()

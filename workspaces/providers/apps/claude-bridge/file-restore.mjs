@@ -206,54 +206,128 @@ async function nativeBackups(session, messages, messageId, configDir) {
 export const MAX_BEFORE_RESTORE_BYTES = 1024 ** 3;
 export const MAX_BEFORE_RESTORE_COPIES = 100;
 const preparations = new Map();
-async function admitBackup(parent, current, requiredBytes) {
-  const entries = await fs.readdir(parent, { withFileTypes: true });
-  let bytes = requiredBytes;
-  const full = () =>
-    new Error(
-      "The before-restore backup limit is reached. Review saved backups before another restore.",
-    );
-  if (entries.length > MAX_BEFORE_RESTORE_COPIES) throw full();
-  for (const entry of entries) {
-    if (!entry.isDirectory() || entry.isSymbolicLink()) throw invalid();
-    const directory = path.join(parent, entry.name);
-    if (directory === current) continue;
-    for (const name of await fs.readdir(directory)) {
-      const stat = await fs.lstat(path.join(directory, name));
-      if (!stat.isFile() || stat.isSymbolicLink()) throw invalid();
-      bytes += stat.size;
-      if (bytes > MAX_BEFORE_RESTORE_BYTES) throw full();
-    }
-  }
-  if (bytes > MAX_BEFORE_RESTORE_BYTES) throw full();
-}
-export async function prepareFileRestore(
-  session,
-  messages,
-  messageId,
-  stateDir,
-  configDir,
-) {
-  // One serving bridge owns this state root. Serialize local admissions so two
-  // sessions cannot both consume the same remaining backup budget.
+async function withBackupOwner(stateDir, action) {
   const key = path.resolve(stateDir);
   const work = (preparations.get(key) || Promise.resolve())
     .catch(() => {})
-    .then(() =>
-      prepareFileRestoreOwned(
-        session,
-        messages,
-        messageId,
-        stateDir,
-        configDir,
-      ),
-    );
+    .then(action);
   preparations.set(key, work);
   try {
     return await work;
   } finally {
     if (preparations.get(key) === work) preparations.delete(key);
   }
+}
+async function backupUsage(stateDir, skip = null) {
+  const parent = path.join(stateDir, "file-rewinds");
+  await fs.mkdir(parent, { recursive: true, mode: 0o700 });
+  if ((await fs.realpath(parent)) !== path.resolve(parent)) throw invalid();
+  const entries = await fs.readdir(parent, { withFileTypes: true });
+  let bytes = 0;
+  for (const entry of entries) {
+    if (!entry.isDirectory() || entry.isSymbolicLink()) throw invalid();
+    const directory = path.join(parent, entry.name);
+    if (directory === skip) continue;
+    for (const name of await fs.readdir(directory)) {
+      const stat = await fs.lstat(path.join(directory, name));
+      if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink > 1)
+        throw invalid();
+      bytes += stat.size;
+    }
+  }
+  return {
+    count: entries.length,
+    bytes,
+    maxCount: MAX_BEFORE_RESTORE_COPIES,
+    maxBytes: MAX_BEFORE_RESTORE_BYTES,
+  };
+}
+async function admitBackup(parent, current, requiredBytes) {
+  const usage = await backupUsage(path.dirname(parent), current);
+  if (
+    usage.count > usage.maxCount ||
+    usage.bytes + requiredBytes > usage.maxBytes
+  )
+    throw new Error(
+      "The before-restore backup limit is reached. Release completed backups before another restore.",
+    );
+}
+export function prepareFileRestore(
+  session,
+  messages,
+  messageId,
+  stateDir,
+  configDir,
+) {
+  return withBackupOwner(stateDir, () =>
+    prepareFileRestoreOwned(session, messages, messageId, stateDir, configDir),
+  );
+}
+
+// Runtime supplies only durable completed operation identities for this chat.
+// The bridge also checks every descriptor reference before deleting a directory.
+export function fileBackups(session, settledRequestIds, stateDir, persist) {
+  return withBackupOwner(stateDir, async () => {
+    const before = await backupUsage(stateDir);
+    if (settledRequestIds === null) return { ...before, released: 0 };
+    if (
+      !Array.isArray(settledRequestIds) ||
+      !settledRequestIds.every((id) => typeof id === "string")
+    )
+      throw invalid();
+    const settled = new Set(settledRequestIds);
+    const references = new Map();
+    for (const [id, receipt] of Object.entries(session.controlRequests || {})) {
+      const directory = receipt.filePlan?.directory;
+      if (!directory) continue;
+      const refs = references.get(directory) || [];
+      refs.push({ id, receipt });
+      references.set(directory, refs);
+    }
+    let released = 0;
+    for (const [directory, refs] of references) {
+      if (
+        !refs.every(
+          ({ id, receipt }) =>
+            settled.has(id) &&
+            receipt.status === "completed" &&
+            receipt.result?.filesRestored === true,
+        )
+      )
+        continue;
+      const parent = path.resolve(stateDir, "file-rewinds");
+      if (
+        path.dirname(directory) !== parent ||
+        !/^before-[A-Za-z0-9]+$/.test(path.basename(directory))
+      )
+        throw invalid();
+      try {
+        const stat = await fs.lstat(directory);
+        if (!stat.isDirectory() || stat.isSymbolicLink()) throw invalid();
+        if (
+          !refs.every(
+            ({ receipt }) => receipt.fileBackupReleaseAuthorized === true,
+          )
+        ) {
+          const manifest = path.join(directory, "manifest.json");
+          if (!(await identity(manifest))) throw invalid();
+          const plan = JSON.parse(await fs.readFile(manifest, "utf8"));
+          if (!refs.every(({ receipt }) => same(receipt.filePlan, plan)))
+            throw invalid();
+          for (const { receipt } of refs)
+            receipt.fileBackupReleaseAuthorized = true;
+          await persist(session);
+        }
+        await fs.rm(directory, { recursive: true });
+        released++;
+      } catch (error) {
+        if (error.code !== "ENOENT") throw error;
+      }
+      for (const { receipt } of refs) receipt.fileBackupReleased = true;
+    }
+    await persist(session);
+    return { ...(await backupUsage(stateDir)), released };
+  });
 }
 
 async function prepareFileRestoreOwned(

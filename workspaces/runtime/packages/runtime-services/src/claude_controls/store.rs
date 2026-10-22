@@ -235,10 +235,11 @@ impl ControlStorage for StoredControls {
                     if Some(&operation) != expected.saved.as_ref() {
                         return Err(ControlError::Changed);
                     }
+                    let no_effects = matches!(evidence, FailureEvidence::NotSent | FailureEvidence::NotApplied);
                     let unknown = evidence == FailureEvidence::Uncertain
                         || truthy(operation.get("provider"))
-                        || (truthy(operation.get("submitted")) && evidence != FailureEvidence::NotSent);
-                    if !unknown && evidence == FailureEvidence::NotSent {
+                        || (truthy(operation.get("submitted")) && !no_effects);
+                    if !unknown && no_effects {
                         operation["submitted"] = json!(false);
                     }
                     operation["phase"] = json!(if unknown {
@@ -248,6 +249,8 @@ impl ControlStorage for StoredControls {
                     });
                     operation["error"] = json!(if unknown {
                         "Claude control outcome is unknown; inspect workspace recovery"
+                    } else if evidence == FailureEvidence::NotApplied {
+                        "Claude file restore failed before native effects"
                     } else {
                         "Claude action was not submitted"
                     });

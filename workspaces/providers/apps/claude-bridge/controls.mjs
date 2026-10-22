@@ -127,11 +127,18 @@ export async function rollbackSession(session, request, deps) {
         throw new Error(
           preview?.error || "The SDK file checkpoint is unavailable",
         );
-      filePlan = await deps.prepareFileRestore(
-        session,
-        messages,
-        fileMessageId,
-      );
+      try {
+        filePlan = await deps.prepareFileRestore(
+          session,
+          messages,
+          fileMessageId,
+        );
+      } catch (error) {
+        // This phase has no native fork or file effects and no durable receipt.
+        throw Object.assign(new Error(error.message, { cause: error }), {
+          data: { fileRestoreOutcome: "not_applied", requestId, turnId },
+        });
+      }
     }
     receipt = {
       ...(restoreFiles ? { filePlan } : {}),

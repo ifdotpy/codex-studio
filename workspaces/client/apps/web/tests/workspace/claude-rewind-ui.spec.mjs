@@ -55,9 +55,23 @@ test("Claude checkpoints show the reason and send one combined restore identity"
   });
   const writes = [];
   const errors = [];
+  const releases = [];
   page.on("pageerror", (error) => errors.push(error.message));
   try {
     await server.listen();
+    await page.route("**/api/claude/file-backups", async (route) => {
+      const body = route.request().postDataJSON();
+      if (body.release) releases.push(body);
+      return route.fulfill({
+        json: {
+          count: body.release ? 99 : 100,
+          bytes: 1000,
+          maxCount: 100,
+          maxBytes: 1073741824,
+          released: body.release ? 1 : 0,
+        },
+      });
+    });
     await page.route("**/api/claude/session", async (route) => {
       const body = route.request().postDataJSON();
       if (body.action === "state")
@@ -86,18 +100,26 @@ test("Claude checkpoints show the reason and send one combined restore identity"
       return route.fulfill(
         writes.length === 1
           ? {
-              status: 409,
+              status: 400,
               json: {
-                error: "The restore reply was lost. Retry the same request.",
+                error:
+                  "The before-restore backup limit is reached. Release completed backups before another restore.",
               },
             }
-          : {
-              json: {
-                threadId: "thread",
-                nativeId: "rewound",
-                filesRestored: true,
+          : writes.length === 2
+            ? {
+                status: 409,
+                json: {
+                  error: "The restore reply was lost. Retry the same request.",
+                },
+              }
+            : {
+                json: {
+                  threadId: "thread",
+                  nativeId: "rewound",
+                  filesRestored: true,
+                },
               },
-            },
       );
     });
     await page.setViewportSize({ width: 320, height: 800 });
@@ -125,13 +147,28 @@ test("Claude checkpoints show the reason and send one combined restore identity"
       ),
     ).toBe(true);
     await button.click();
+    await expect(page.getByRole("alert")).toContainText("backup limit");
+    await expect(
+      page.getByText("Backup usage: 100 of 100 copies", { exact: false }),
+    ).toBeVisible();
+    await page.screenshot({
+      path: testInfo.outputPath("claude-backup-quota-320.png"),
+      fullPage: true,
+    });
+    await page
+      .getByRole("button", { name: "Release completed backups" })
+      .click();
+    await expect(page.getByRole("alert")).toHaveCount(0);
+    expect(releases).toHaveLength(1);
+    await button.click();
     await expect(page.getByRole("alert")).toContainText(
       "The restore reply was lost.",
     );
     await expect(button).toBeEnabled();
     await button.click();
     await expect(select).toHaveValue("");
-    expect(writes).toHaveLength(2);
+    expect(writes).toHaveLength(3);
+    expect(writes[2]).toEqual(writes[0]);
     expect(writes[1]).toEqual(writes[0]);
     expect(writes[0]).toMatchObject({
       id: "worker",

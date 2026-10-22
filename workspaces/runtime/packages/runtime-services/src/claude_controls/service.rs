@@ -57,6 +57,8 @@ pub enum FailureEvidence {
     BeforeSubmission,
     // The retained transport proves that this exact native request was not sent.
     NotSent,
+    // The bridge proves this exact preparation failed before any native effects.
+    NotApplied,
 }
 pub trait ControlStorage: Send + Sync {
     fn execution_key(&self, request: &ControlRequest) -> String {
@@ -119,6 +121,8 @@ impl Controls {
         if result.is_err() {
             let evidence = if matches!(&result, Err(ControlError::NotSent)) {
                 FailureEvidence::NotSent
+            } else if matches!(&result, Err(ControlError::RewindNotApplied(_))) {
+                FailureEvidence::NotApplied
             } else if uncertain {
                 FailureEvidence::Uncertain
             } else {
@@ -135,10 +139,24 @@ impl Controls {
         snapshot: &mut ControlSnapshot,
         uncertain: &mut bool,
     ) -> Result<Value> {
+        let attempt = snapshot
+            .saved
+            .as_ref()
+            .and_then(|op| op.get("controlAttempt"))
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        let transport_request = if attempt == 0 {
+            request.request_id.clone()
+        } else {
+            format!(
+                "claude-retry:{}",
+                request_signature(&json!([request.request_id, attempt]))
+            )
+        };
         let scope = ControlScope {
             agent: snapshot.agent.id.clone(),
             epoch: snapshot.epoch(),
-            request_id: Some(request.request_id.clone()),
+            request_id: Some(transport_request),
         };
         if snapshot
             .saved
@@ -243,7 +261,12 @@ impl Controls {
         if &self.session.binding() != binding {
             return Err(ControlError::Changed);
         }
-        let result = self.call(scope.clone(), method, params, seconds).await?;
+        let mut scope = scope.clone();
+        // Idle reads must be fresh and must not consume the mutation's receipt identity.
+        if matches!(method, "claude/state" | "thread/queue/list") {
+            scope.request_id = None;
+        }
+        let result = self.call(scope, method, params, seconds).await?;
         if &self.session.binding() != binding {
             return Err(ControlError::Unknown);
         }

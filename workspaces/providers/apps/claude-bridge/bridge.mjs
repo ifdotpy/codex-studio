@@ -1,4 +1,8 @@
-import { prepareFileRestore, verifyFileRestore } from "./file-restore.mjs";
+import {
+  prepareFileRestore,
+  verifyFileRestore,
+  fileBackups,
+} from "./file-restore.mjs";
 import {
   fileCheckpointOptions,
   fileRestoreReason,
@@ -2325,6 +2329,10 @@ async function handle(method, p) {
     await persist(s);
     return { thread: wireThread(s, await sessionStore.metadata(s.id), false) };
   }
+  if (method === "claude/fileBackups") {
+    const s = await session(p.threadId);
+    return fileBackups(s, p.settledRequestIds ?? null, root, persist);
+  }
   if (method === "claude/state") {
     const s = await session(p.threadId),
       active = queries.get(s.id);
@@ -3034,6 +3042,7 @@ lines.on("line", (line) => {
       "thread/rollback",
       "claude/settings",
       "claude/state",
+      "claude/fileBackups",
       "thread/compact/start",
     ].includes(message.method);
   const before = ordered

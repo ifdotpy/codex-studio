@@ -79,6 +79,30 @@ test("bridge enables SDK checkpoints and rewinds the exact echoed message with c
     0,
   );
   assert.deepEqual(await bridge.call("thread/rollback", request), result);
+  const usage = await bridge.call("claude/fileBackups", {
+    threadId: bridge.thread,
+  });
+  assert.equal(usage.count, 1);
+  assert.equal(
+    (
+      await bridge.call("claude/fileBackups", {
+        threadId: bridge.thread,
+        settledRequestIds: [],
+      })
+    ).released,
+    0,
+  );
+  const released = await bridge.call("claude/fileBackups", {
+    threadId: bridge.thread,
+    settledRequestIds: ["rewind"],
+  });
+  assert.equal(released.released, 1);
+  assert.equal(released.count, 0);
+  assert.deepEqual(await bridge.call("thread/rollback", request), result);
+  assert.equal(
+    await fs.readFile(path.join(bridge.root, "file.txt"), "utf8"),
+    "checkpoint",
+  );
   const calls = (
     await fs.readFile(path.join(bridge.root, "sdk-calls.jsonl"), "utf8")
   )

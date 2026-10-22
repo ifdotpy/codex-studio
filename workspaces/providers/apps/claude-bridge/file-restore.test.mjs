@@ -368,3 +368,132 @@ test("backup admission refuses new copies without deleting retained recovery dat
       stat.mockRestore();
     }
   }));
+
+test("full quota releases settled copies, preserves unresolved copies and retries the same rewind", async () =>
+  fixture(async (f) => {
+    const { fileBackups, MAX_BEFORE_RESTORE_COPIES } =
+      await import("./file-restore.mjs");
+    const completed = await f.deps.prepareFileRestore(
+      f.session,
+      f.messages,
+      f.request.turnId,
+    );
+    const unresolved = await f.deps.prepareFileRestore(
+      f.session,
+      f.messages,
+      f.request.turnId,
+    );
+    f.session.controlRequests = {
+      settled: {
+        status: "completed",
+        filePlan: completed,
+        result: { filesRestored: true },
+      },
+      uncertain: { status: "rewind_submitted", filePlan: unresolved },
+    };
+    // The unresolved receipt belongs to another saved chat and is never in the release proof.
+    const owner = { controlRequests: f.session.controlRequests };
+    delete f.session.controlRequests;
+    for (let i = 2; i < MAX_BEFORE_RESTORE_COPIES; i++)
+      await fs.mkdir(path.join(f.state, "file-rewinds", `before-retained${i}`));
+    await assert.rejects(
+      rollbackSession(f.session, f.request, f.deps),
+      (error) => {
+        assert.match(error.message, /backup limit/);
+        assert.deepEqual(error.data, {
+          fileRestoreOutcome: "not_applied",
+          requestId: f.request.requestId,
+          turnId: f.request.turnId,
+        });
+        return true;
+      },
+    );
+    assert.equal(f.session.controlRequests.restore, undefined);
+    assert.equal(
+      (await fileBackups(owner, null, f.state, f.deps.persist)).count,
+      MAX_BEFORE_RESTORE_COPIES,
+    );
+    const usage = await fileBackups(
+      owner,
+      ["settled", "uncertain"],
+      f.state,
+      f.deps.persist,
+    );
+    assert.equal(usage.released, 1);
+    assert.equal(usage.count, MAX_BEFORE_RESTORE_COPIES - 1);
+    assert.equal(
+      await fs.readFile(unresolved.files[0].backup, "utf8"),
+      "user a.txt",
+    );
+    assert.equal(
+      (await fileBackups(owner, ["settled"], f.state, f.deps.persist)).released,
+      0,
+    );
+    assert.equal(
+      (await rollbackSession(f.session, f.request, f.deps)).filesRestored,
+      true,
+    );
+  }));
+
+test("release refuses a completed receipt without durable settlement or with an unresolved alias", async () =>
+  fixture(async (f) => {
+    const { fileBackups } = await import("./file-restore.mjs");
+    const plan = await f.deps.prepareFileRestore(
+      f.session,
+      f.messages,
+      f.request.turnId,
+    );
+    f.session.controlRequests = {
+      done: {
+        status: "completed",
+        filePlan: plan,
+        result: { filesRestored: true },
+      },
+    };
+    assert.equal(
+      (await fileBackups(f.session, [], f.state, f.deps.persist)).released,
+      0,
+    );
+    f.session.controlRequests.unknown = {
+      status: "rewind_submitted",
+      filePlan: plan,
+    };
+    assert.equal(
+      (
+        await fileBackups(
+          f.session,
+          ["done", "unknown"],
+          f.state,
+          f.deps.persist,
+        )
+      ).released,
+      0,
+    );
+    assert.equal(await fs.readFile(plan.files[0].backup, "utf8"), "user a.txt");
+  }));
+
+test("concurrent admissions respect the count bound and refuse symbolic backup paths", async () =>
+  fixture(async (f) => {
+    const { MAX_BEFORE_RESTORE_COPIES, fileBackups } =
+      await import("./file-restore.mjs");
+    const parent = path.join(f.state, "file-rewinds");
+    await fs.mkdir(parent, { recursive: true });
+    for (let i = 1; i < MAX_BEFORE_RESTORE_COPIES; i++)
+      await fs.mkdir(path.join(parent, `before-retained${i}`));
+    const results = await Promise.allSettled(
+      [1, 2].map(() =>
+        f.deps.prepareFileRestore(f.session, f.messages, f.request.turnId),
+      ),
+    );
+    assert.equal(results.filter((r) => r.status === "fulfilled").length, 1);
+    assert.equal((await fs.readdir(parent)).length, MAX_BEFORE_RESTORE_COPIES);
+    await fs.symlink(f.cwd, path.join(parent, "before-link"));
+    await assert.rejects(
+      fileBackups(f.session, [], f.state, f.deps.persist),
+      /cannot be verified/,
+    );
+    assert.equal(
+      await fs.readFile(path.join(f.cwd, "a.txt"), "utf8"),
+      "user a.txt",
+    );
+  }));
