@@ -24,11 +24,11 @@ async fn killed_provider_is_reaped_with_full_journal_and_unobserved_write() {
     // Emit one known reply and enough frames to block journal delivery, then
     // stop reading or answering. This is a bounded fixture, not an output flood.
     let script = format!(
-        "import signal; print('{{\"id\":7,\"result\":{{}}}}',flush=True);\nfor _ in range({LANE_CAPACITY}): print('{{\"method\":\"ready\"}}',flush=True)\nsignal.pause()"
+        r#"printf '{{"id":7,"result":{{}}}}\n'; remaining={LANE_CAPACITY}; while [ "$remaining" -gt 0 ]; do printf '{{"method":"ready"}}\n'; remaining=$((remaining - 1)); done; while IFS= read -r line; do :; done"#
     );
     let handle = ProviderHandle::for_account("exit-with-full-lanes");
     let launch = ProviderLaunchSpec::new(
-        vec!["python3".into(), "-c".into(), script],
+        crate::process_support::shell_command(&script),
         BTreeMap::from([("PATH".into(), "/usr/bin:/bin".into())]),
         root.path().to_path_buf(),
     );
@@ -272,22 +272,23 @@ async fn oversized_stdout_stops_and_reaps_child() {
 async fn stalled_stdin_is_interrupted_by_the_exchange_deadline() {
     use studio_runtime_process::OperationId;
     use studio_runtime_providers::{Frame, Method, RequestFrame, RequestId};
-    let mut attachment = child(r#"exec python3 -c 'import os,signal,fcntl,json; print(json.dumps({"method":"pipe-ready","params":{"capacity":fcntl.fcntl(0,fcntl.F_GETPIPE_SZ)}}),flush=True); os.read(0,1); print("{\"method\":\"stdin-progress\"}",flush=True); signal.pause()'"#).await;
+    // The shell reads exactly one byte, announces progress, then waits on
+    // a timer rather than consuming the rest of stdin.
+    let mut attachment = child(r#"printf '{"method":"pipe-ready"}\n'; dd bs=1 count=1 of=/dev/null 2>/dev/null; printf '{"method":"stdin-progress"}\n'; exec sleep infinity"#).await;
     let pid = pid(&attachment);
-    let ready = tokio::time::timeout(Duration::from_secs(10), attachment.journal.recv())
+    tokio::time::timeout(Duration::from_secs(10), attachment.journal.recv())
         .await
         .expect("journal deadline")
         .expect("child ready");
-    let JournalPayload::Frame(Frame::UnknownMethod(ready)) = ready.payload else {
-        panic!("child reports its pipe capacity");
-    };
-    let capacity = ready.fields["params"]["capacity"]
-        .as_u64()
-        .expect("pipe capacity") as usize;
+    let stdin = std::fs::File::open(format!("/proc/{pid}/fd/0")).expect("owned child stdin");
+    let capacity = rustix::pipe::fcntl_getpipe_size(&stdin).expect("pipe capacity");
+    const BLOCKED_WRITE_OVERFLOW_BYTES: usize = 4096;
     let frame = Frame::Request(RequestFrame {
         id: RequestId::Number(1),
         method: Method::ModelList,
-        params: Some(serde_json::json!({"padding":"x".repeat(capacity + 4096)})),
+        params: Some(
+            serde_json::json!({"padding":"x".repeat(capacity + BLOCKED_WRITE_OVERFLOW_BYTES)}),
+        ),
         fields: Default::default(),
     });
     let write =
@@ -319,20 +320,40 @@ async fn stalled_stdin_is_interrupted_by_the_exchange_deadline() {
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn cancellation_stops_the_entire_owned_process_group() {
-    use tokio::{io::AsyncReadExt, net::UnixListener};
-    let socket_path =
-        std::env::temp_dir().join(format!("catalog-group-{}.sock", std::process::id()));
-    let listener = UnixListener::bind(&socket_path).expect("test socket");
-    let code = format!(
-        "import os,json,signal,socket; connection=socket.socket(socket.AF_UNIX); connection.connect({:?}); child=os.fork(); print(json.dumps({{\"method\":\"ready\",\"pid\":os.getpid(),\"group\":os.getpgrp()}}),flush=True) if child else None; signal.pause()",
-        socket_path
-    );
+    // Every descendant inherits the lifetime descriptor. EOF after cancellation proves that
+    // the whole group exited, including the child announced by its parent.
+    let root = tempfile::tempdir().expect("isolated group fixture");
+    let code = r#"
+        sleep infinity &
+        descendant=$!
+        printf '{"method":"ready","pid":%s,"group":%s,"descendant":%s}\n' "$$" "$$" "$descendant"
+        wait "$descendant"
+    "#;
     let factory = StdioProviderTaskFactory {
         deadline: Some(Instant::now() + Duration::from_secs(30)),
         max_frame_bytes: 1024,
         max_output_bytes: Some(4096),
         stderr_log: None,
     };
+    // A FIFO carries the lifetime witness independently from the provider
+    // journal, so EOF proves every inherited descriptor was closed.
+    let fifo = root.path().join("lifetime");
+    rustix::fs::mknodat(
+        rustix::fs::CWD,
+        &fifo,
+        rustix::fs::FileType::Fifo,
+        rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR,
+        0,
+    )
+    .expect("lifetime FIFO");
+    let reader = rustix::fs::open(
+        &fifo,
+        rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::NONBLOCK,
+        rustix::fs::Mode::empty(),
+    )
+    .expect("nonblocking lifetime reader");
+    let lifetime = tokio::io::unix::AsyncFd::new(reader).expect("observe lifetime EOF");
+    let script = format!("exec 3>\"{}\"; {code}", fifo.display());
     let mut attachment = factory
         .open(
             ProviderHandle::for_account("group-test"),
@@ -340,41 +361,62 @@ async fn cancellation_stops_the_entire_owned_process_group() {
                 clock: SessionClock::default(),
                 expected_generation: Some(Generation(1)),
                 launch: ProviderLaunchSpec::new(
-                    vec!["python3".into(), "-c".into(), code],
+                    crate::process_support::shell_command(&script),
                     BTreeMap::new(),
-                    "/var/tmp".into(),
+                    root.path().to_path_buf(),
                 ),
             },
             Shutdown::default(),
         )
         .await
         .expect("group starts");
-    let (mut connection, _) = tokio::time::timeout(Duration::from_secs(10), listener.accept())
-        .await
-        .expect("connect deadline")
-        .expect("child connected");
     let parent = pid(&attachment);
-    let entry = tokio::time::timeout(Duration::from_secs(10), attachment.journal.recv())
-        .await
-        .expect("journal deadline")
-        .expect("group ready");
-    let JournalPayload::Frame(studio_runtime_providers::Frame::UnknownMethod(frame)) =
-        entry.payload
-    else {
-        panic!("ready frame");
-    };
-    assert_eq!(frame.fields["pid"], parent);
-    assert_eq!(frame.fields["group"], parent);
+    let mut descendant = None;
+    while descendant.is_none() {
+        let entry = tokio::time::timeout(Duration::from_secs(10), attachment.journal.recv())
+            .await
+            .expect("journal deadline")
+            .expect("group ready");
+        if let JournalPayload::Frame(studio_runtime_providers::Frame::UnknownMethod(frame)) =
+            entry.payload
+        {
+            #[derive(serde::Deserialize)]
+            enum ReadyMethod {
+                #[serde(rename = "ready")]
+                Ready,
+            }
+            #[derive(serde::Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct GroupReady {
+                #[serde(rename = "method")]
+                _method: ReadyMethod,
+                pid: u32,
+                group: u32,
+                descendant: u32,
+            }
+            let ready: GroupReady =
+                serde_json::from_value(serde_json::to_value(frame.fields).expect("ready fields"))
+                    .expect("group ready frame");
+            assert_eq!(ready.pid, parent);
+            assert_eq!(ready.group, parent);
+            descendant = Some(ready.descendant);
+        }
+    }
+    assert!(crate::process_support::pid_exists(
+        descendant.expect("descendant pid")
+    ));
     assert!(attachment.shutdown().await.result.is_ok());
     assert_reaped(parent);
-    // Both processes keep this connection open until exit. EOF observes the
-    // descendant's termination without racing /proc's transient process state.
-    assert_eq!(
-        tokio::time::timeout(Duration::from_secs(10), connection.read(&mut [0_u8; 1]))
-            .await
-            .expect("group exit deadline")
-            .expect("group EOF"),
-        0
-    );
-    std::fs::remove_file(socket_path).expect("remove test socket");
+    let eof = tokio::time::timeout(Duration::from_secs(10), async {
+        let mut ready = lifetime.readable().await.expect("group EOF readiness");
+        ready
+            .try_io(|fd| {
+                rustix::io::read(fd.get_ref(), &mut [0_u8; 1]).map_err(std::io::Error::from)
+            })
+            .expect("lifetime readiness")
+            .expect("group EOF")
+    })
+    .await
+    .expect("group exit deadline");
+    assert_eq!(eof, 0);
 }

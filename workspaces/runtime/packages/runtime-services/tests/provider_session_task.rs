@@ -721,22 +721,23 @@ use crate::process_support as support;
 async fn disposable_supervisor_session_preserves_replay_and_settlement_across_reattach() {
     use support::*;
     let root = DisposableState::new();
-    let python = python_executable();
     // Startup completes by handshake, before the session's clock/guard starts.
-    let mut supervisor = SupervisorProcess::start(&root, &python);
+    let mut supervisor = SupervisorProcess::start(&root);
     tokio::time::timeout(HANG_GUARD, async {
         let script = r#"
-import json,sys
-for line in sys.stdin:
- m=json.loads(line)
- if m.get('method')=='initialize': print(json.dumps({'id':m['id'],'result':{}}),flush=True)
- elif m.get('method')=='initialized':
-  print('raw stdout',flush=True)
-  print('stderr entry',file=sys.stderr,flush=True)
-  print(json.dumps({'method':'observed/initialized'}),flush=True)
- elif m.get('method')=='model/list': print(json.dumps({'id':m['id'],'result':{'models':[]}}),flush=True)
+while IFS= read -r line; do
+ id=$(rpc_id "$line")
+ case "$line" in
+  *'"method":"initialize"'*) printf '{"id":%s,"result":{}}\n' "$id";;
+  *'"method":"initialized"'*)
+   printf 'raw stdout\n'
+   printf 'stderr entry\n' >&2
+   printf '{"method":"observed/initialized"}\n';;
+  *'"method":"model/list"'*) printf '{"id":%s,"result":{"models":[]}}\n' "$id";;
+ esac
+done
 "#;
-        let launch = ProviderLaunchSpec::new(vec![python, "-u".into(), "-c".into(), script.into()], support::child_environment(&root.0), root.0.clone());
+        let launch = ProviderLaunchSpec::new(shell_command(script), support::child_environment(&root.0), root.0.clone());
         let factory: Arc<dyn ProviderTaskFactory> = Arc::new(studio_runtime_process::provider_task::SupervisorProviderTaskFactory::new(root.identity()));
         let mut opts = options();
         opts.launch = launch.clone();
@@ -1241,21 +1242,21 @@ async fn review_full_callback_queue_retains_taken_response_and_resolution() {
 async fn review_numeric_request_recovery_needs_hidden_receipt_mapping() {
     use support::*;
     let root = DisposableState::new();
-    let python = python_executable();
     // Startup completes by handshake, before the session's clock/guard starts.
-    let mut supervisor = SupervisorProcess::start(&root, &python);
+    let mut supervisor = SupervisorProcess::start(&root);
     tokio::time::timeout(HANG_GUARD, async {
         let script = r#"
-import json,sys
-saved=None
-for line in sys.stdin:
- m=json.loads(line)
- if m.get('method')=='initialize': print(json.dumps({'id':m['id'],'result':{}}),flush=True)
- elif m.get('method')=='model/list': saved=m
- elif m.get('method')=='thread/unsubscribe' and saved:
-  print(json.dumps({'id':saved['id'],'result':{'models':[]}}),flush=True)
+saved=
+while IFS= read -r line; do
+ id=$(rpc_id "$line")
+ case "$line" in
+  *'"method":"initialize"'*) printf '{"id":%s,"result":{}}\n' "$id";;
+  *'"method":"model/list"'*) saved=$id;;
+  *'"method":"thread/unsubscribe"'*) [ -z "$saved" ] || printf '{"id":%s,"result":{"models":[]}}\n' "$saved";;
+ esac
+done
 "#;
-        let launch = ProviderLaunchSpec::new(vec![python, "-u".into(), "-c".into(), script.into()], child_environment(&root.0), root.0.clone());
+        let launch = ProviderLaunchSpec::new(shell_command(script), child_environment(&root.0), root.0.clone());
         let factory: Arc<dyn ProviderTaskFactory> = Arc::new(studio_runtime_process::provider_task::SupervisorProviderTaskFactory::new(root.identity()));
         let mut opts = options(); opts.launch=launch.clone();
         let mut cfg=config(); cfg.timeout_ms=HANG_GUARD.as_millis() as u64;
@@ -1542,24 +1543,22 @@ async fn written_correlation_survives_reply_resolving_before_receipt() {
 async fn closure_crash_before_written_persistence_keeps_unknown_without_resend() {
     use support::*;
     let root = DisposableState::new();
-    let python = python_executable();
     // Startup completes by handshake, before the session's clock/guard starts.
-    let mut supervisor = SupervisorProcess::start(&root, &python);
+    let mut supervisor = SupervisorProcess::start(&root);
     tokio::time::timeout(HANG_GUARD, async {
         let script = r#"
-import json,sys
-saved=None
+saved=
 count=0
-for line in sys.stdin:
- m=json.loads(line)
- if m.get('method')=='initialize': print(json.dumps({'id':m['id'],'result':{}}),flush=True)
- elif m.get('method')=='model/list':
-  saved=m
-  count+=1
- elif m.get('method')=='thread/unsubscribe' and saved:
-  print(json.dumps({'id':saved['id'],'result':{'models':[], 'receivedCount':count}}),flush=True)
+while IFS= read -r line; do
+ id=$(rpc_id "$line")
+ case "$line" in
+  *'"method":"initialize"'*) printf '{"id":%s,"result":{}}\n' "$id";;
+  *'"method":"model/list"'*) saved=$id; count=$((count + 1));;
+  *'"method":"thread/unsubscribe"'*) [ -z "$saved" ] || printf '{"id":%s,"result":{"models":[],"receivedCount":%s}}\n' "$saved" "$count";;
+ esac
+done
 "#;
-        let launch = ProviderLaunchSpec::new(vec![python, "-u".into(), "-c".into(), script.into()], child_environment(&root.0), root.0.clone());
+        let launch = ProviderLaunchSpec::new(shell_command(script), child_environment(&root.0), root.0.clone());
         let factory: Arc<dyn ProviderTaskFactory> = Arc::new(studio_runtime_process::provider_task::SupervisorProviderTaskFactory::new(root.identity()));
         let mut opts = options(); opts.launch=launch.clone();
         let mut cfg=config(); cfg.timeout_ms=HANG_GUARD.as_millis() as u64;
