@@ -1,14 +1,5 @@
-use crate::prepared_python_support;
-
 use serde_json::{Value, json};
-use std::{
-    path::Path,
-    process::Command,
-    sync::{
-        OnceLock,
-        atomic::{AtomicUsize, Ordering},
-    },
-};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use studio_runtime_services::{
     account_session_runtime::{ConnectionScope, RequestCertainty},
     account_transfer::{Ticket, TransferError},
@@ -21,38 +12,8 @@ use studio_runtime_store::{AccountTransferRepository, RuntimeStore};
 
 const OPERATION: &str = "41e0b552-0b0c-4c5c-9c37-2e7483cd05c9";
 
-#[allow(clippy::disallowed_methods)]
-fn template() -> &'static [Vec<u8>; 2] {
-    static ROOT: OnceLock<[Vec<u8>; 2]> = OnceLock::new();
-    ROOT.get_or_init(|| {
-        let directory = prepared_python_support::disposable_state_dir();
-        let root = directory.path();
-        let source = Path::new(env!("CARGO_MANIFEST_DIR"));
-        let output = Command::new(prepared_python_support::prepared_python(
-            &source.join("../../apps/server/src"),
-        ))
-        .arg(source.join("tests/account_transfer/template.py"))
-        .arg(root)
-        .output()
-        .expect("template process");
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        ["canvas.sqlite3", "analytics.sqlite3"]
-            .map(|file| std::fs::read(root.join(file)).expect("template database bytes"))
-    })
-}
-fn fixture() -> tempfile::TempDir {
-    let root = tempfile::tempdir().expect("isolated state");
-    for (file, bytes) in ["canvas.sqlite3", "analytics.sqlite3"]
-        .into_iter()
-        .zip(template())
-    {
-        std::fs::write(root.path().join(file), bytes).expect("clone Python state");
-    }
-    root
+async fn fixture() -> tempfile::TempDir {
+    crate::account_transfer_driver::state().await
 }
 fn operation(store: &RuntimeStore) -> Value {
     serde_json::from_str(
@@ -182,7 +143,7 @@ impl TransferExecutor for Executor<'_> {
 #[tokio::test]
 async fn executor_commits_intent_before_effect_and_never_resends_after_restart() {
     for behavior in [Behavior::Success, Behavior::LostResponse] {
-        let root = fixture();
+        let root = fixture().await;
         let store = RuntimeStore::open(Some(root.path())).await.expect("open");
         let executor = Executor {
             store: &store,
@@ -294,7 +255,7 @@ async fn preparation_failures_do_not_send_or_strand_reading_members() {
         Behavior::BusyDuringPreparation,
         Behavior::ForeignTicket,
     ] {
-        let root = fixture();
+        let root = fixture().await;
         let store = RuntimeStore::open(Some(root.path())).await.expect("open");
         let before = operation(&store);
         let executor = Executor {
@@ -320,7 +281,7 @@ async fn preparation_failures_do_not_send_or_strand_reading_members() {
 async fn failpoints_around_each_transfer_write_preserve_restart_uncertainty() {
     for phase in ["reading", "submitted", "ready"] {
         for timing in ["BEFORE", "AFTER"] {
-            let root = fixture();
+            let root = fixture().await;
             let store = RuntimeStore::open(Some(root.path())).await.expect("open");
             let phase = phase.to_owned();
             let failpoint_phase = phase.clone();
