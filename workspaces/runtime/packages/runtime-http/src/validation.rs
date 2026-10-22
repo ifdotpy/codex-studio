@@ -10,9 +10,7 @@ use std::sync::Arc;
 use axum::body::Bytes;
 use jsonschema::{Draft, Registry as SchemaRegistry, Validator};
 use serde_json::{Map, Value, json};
-use studio_runtime_schema::shared_values::MAX_SAFE_INTEGER;
-
-const OPENAPI_URI: &str = "https://codex-studio.invalid/openapi.json";
+use studio_runtime_schema::{OPENAPI_URI, shared_values::MAX_SAFE_INTEGER};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct LocatedError {
@@ -106,13 +104,11 @@ impl Registry {
                     message: "OpenAPI components/schemas is missing".to_owned(),
                 })?,
         );
-        let preference_field = jsonschema::options()
-            .with_registry(&schema_registry)
-            .with_pattern_options(jsonschema::PatternOptions::regex())
-            .build(&json!({"$ref": format!("{OPENAPI_URI}#/components/schemas/PreferenceField")}))
-            .map_err(|error| CompileError {
+        let preference_field = studio_runtime_schema::compiled_validator("PreferenceField")
+            .cloned()
+            .map_err(|message| CompileError {
                 operation_id: "push_preferences_api_sync_preferences_post".to_owned(),
-                message: error.to_string(),
+                message,
             })?;
         let mut stored_schemas = BTreeMap::new();
         for name in [
@@ -171,13 +167,11 @@ impl Registry {
             "WorkEntityDto",
             "WorkspaceEntityDto",
         ] {
-            let validator = jsonschema::options()
-                .with_registry(&schema_registry)
-                .with_pattern_options(jsonschema::PatternOptions::regex())
-                .build(&json!({"$ref": format!("{OPENAPI_URI}#/components/schemas/{name}")}))
-                .map_err(|error| CompileError {
+            let validator = studio_runtime_schema::compiled_validator(name)
+                .cloned()
+                .map_err(|message| CompileError {
                     operation_id: name.to_owned(),
-                    message: error.to_string(),
+                    message,
                 })?;
             stored_schemas.insert(name.to_owned(), validator);
         }
@@ -188,6 +182,10 @@ impl Registry {
             operation_id: "DraftPayload".to_owned(),
             message: error.to_string(),
         })?;
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "DraftPayload is an HTTP-only inline document with an explicit draft, not a shared OpenAPI component"
+        )]
         let draft_payload_validator = jsonschema::options()
             .with_draft(Draft::Draft202012)
             .build(&draft_payload)
@@ -872,6 +870,10 @@ fn compile_part(
     schema_registry: &SchemaRegistry<'_>,
     definitions: &Arc<Map<String, Value>>,
 ) -> Result<Part, String> {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "operation-specific request parts preserve their own schema and located-error boundary"
+    )]
     let validator = jsonschema::options()
         .with_registry(schema_registry)
         .with_pattern_options(jsonschema::PatternOptions::regex())
@@ -1299,6 +1301,102 @@ mod tests {
     };
     use axum::http::{HeaderMap, HeaderValue};
     use serde_json::{Map, Value, json};
+
+    #[test]
+    fn named_schema_startup_witness() {
+        // Run this test alone in a fresh process to measure cold OnceLock startup.
+        // Timing is reported as evidence, never used as a pass/fail threshold.
+        let started = std::time::Instant::now();
+        studio_runtime_schema::initialize().expect("persisted schemas compile");
+        let persisted_elapsed = started.elapsed();
+        let registry = Registry::compile(&[]).expect("HTTP named schemas compile");
+        eprintln!(
+            "named schema startup: persisted_us={} total_us={} http_named_count={}",
+            persisted_elapsed.as_micros(),
+            started.elapsed().as_micros(),
+            registry.stored_schemas.len(),
+        );
+        assert!(registry.validate_stored(
+            "CheckpointSummary",
+            &json!({"id":"p","agent":"lead","created":1})
+        ));
+    }
+
+    #[test]
+    fn named_schema_validators_preserve_existing_invalid_fixture_errors() {
+        let registry = Registry::compile(&[]).expect("HTTP schemas compile");
+        let document = crate::schema::openapi_document();
+        let independent_registry = schema_registry(document).expect("OpenAPI registry prepares");
+        // The malformed complaint, task payload, and workspace extension come from
+        // the existing stored-value validation and stripping witnesses below and
+        // runtime-schema's stored_sync_payload_selects_generated_branch_before_stripping.
+        let fixtures = [
+            json!(null),
+            json!([]),
+            json!({}),
+            json!({"id":"c","leadId":"lead","author":"user","text":"review","status":"open","created":1,"version":9_007_199_254_740_992_i64}),
+            json!({"collection":"task","id":"task-invalid","value":{"id":17,"legacyField":true}}),
+            json!({"nativeNotices":[{"id":"notice-1","accountKey":"default","connectionId":"connection-1","message":"provider notice","details":{"code":"temporary"},"at":1.0,"legacyExtension":true}],"unknownWorkspaceField":true}),
+            json!({"id":"p","agent":"lead","created":1,"extension":9_007_199_254_740_993_i64}),
+        ];
+        for (name, shared) in registry
+            .stored_schemas
+            .iter()
+            .filter(|(name, _)| *name != "DraftPayload")
+            .map(|(name, validator)| (name.as_str(), validator))
+            .chain([(
+                "PreferenceField",
+                registry
+                    .preference_field
+                    .as_ref()
+                    .expect("preference schema"),
+            )])
+        {
+            let independent = jsonschema::options()
+                .with_registry(&independent_registry)
+                .with_pattern_options(jsonschema::PatternOptions::regex())
+                .build(
+                    &json!({"$ref":format!("{}#/components/schemas/{name}", super::OPENAPI_URI)}),
+                )
+                .expect("original HTTP component compiles");
+            for fixture in &fixtures {
+                let errors = |validator: &jsonschema::Validator| {
+                    validator
+                        .iter_errors(fixture)
+                        .map(|error| {
+                            (
+                                error.instance_path().to_string(),
+                                error.schema_path().to_string(),
+                                error.kind().keyword().to_owned(),
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                };
+                assert_eq!(errors(shared), errors(&independent), "{name}: {fixture}");
+                assert_eq!(
+                    shared.is_valid(fixture),
+                    independent.is_valid(fixture),
+                    "{name}: {fixture}"
+                );
+                let mut shared_value = fixture.clone();
+                let mut independent_value = fixture.clone();
+                studio_runtime_schema::strip_extra_fields_with_validator(shared, &mut shared_value);
+                studio_runtime_schema::strip_extra_fields_with_validator(
+                    &independent,
+                    &mut independent_value,
+                );
+                assert_eq!(
+                    shared_value, independent_value,
+                    "{name}: extra-field boundary"
+                );
+            }
+        }
+        assert!(
+            !registry.validate_stored("AgentRequest", &json!({})),
+            "HTTP retains its named-schema allowlist"
+        );
+        assert!(!registry.validate_stored("MissingSchema", &json!({})));
+    }
 
     fn compile_for_test(
         document: &Value,

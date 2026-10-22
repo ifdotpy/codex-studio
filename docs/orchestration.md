@@ -74,6 +74,14 @@ an uncertain delivery for recovery, not permission to resend it. Historical
 spellings are read through the shared compatibility parser; new callers should
 use the canonical enum values.
 
+Provider session expiry keeps request order:
+
+1. The session collects the actions from one protocol transition in a FIFO queue.
+2. It consumes each action once and appends newly released actions to the queue.
+3. Expired unsent requests report `NotSent`; a live successor can run after its
+   predecessor releases the thread. Written requests retain uncertain identities.
+4. Pending outcomes and remaining actions stay owned by the session for shutdown.
+
 Workers appear on the right. Select a worker to read its conversation, then select **Lead** to return.
 On a narrow screen, **Team** opens the worker panel.
 Worker cards show the original assignment and the last report from a completed
@@ -254,6 +262,17 @@ Table previews show at most 200 rows and 100 columns.
 Their text parser stops after 1,048,576 UTF-16 code units.
 Source and Save a copy retain the complete file within the file API limit.
 
+### Agent send routing
+
+1. The server checks the sender's current identity and epoch in the effect transaction.
+2. `parent`, `lead`, and `broadcast` use chat routing without ancestry reads.
+3. An agent ID or unique visible prefix resolves before descendant routing.
+4. The [shared ancestry check](../workspaces/runtime/packages/runtime-services/src/managed_host_tools.rs)
+   reads checked records by indexed ID along the target's parent chain, within the sender's root.
+5. A matching parent permits descendant input; a missing edge ends the check,
+   malformed edges and cycles refuse it, and other targets use authorized chat routing.
+6. The existing transaction saves effects and replay receipts together.
+
 ### Agent progress file
 
 Each managed conversation displays its agent's plain `PROGRESS.md` between the
@@ -389,6 +408,17 @@ Recovery reads and coordination use separate execution pools from model startup,
 slow tools, and monitor waits. Native response reads continue while ordered
 notification callbacks run. A command completion waits for its preceding output
 callbacks before the runtime records its final result.
+
+Task submission evidence follows one flow:
+
+1. Submit `files`, `revision`, `result`, and `checks` with the task ID.
+2. The server checks the file count and each path's Unicode code-point length
+   against `TASK_SUBMISSION_MAX_FILES` and `TASK_SUBMISSION_PATH_MAX_CODEPOINTS`
+   in the [shared value owner](../workspaces/runtime/packages/runtime-schema/src/shared_values.rs).
+3. The server resolves paths for the task owner and checks the same owner,
+   workspace, and complete file list before saving evidence. An exact replay
+   returns the saved result without resolving the files again.
+
 Work-board actions and result submissions use the coordination pool, including
 the workspace fallback for older threads.
 

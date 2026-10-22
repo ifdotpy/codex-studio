@@ -818,6 +818,17 @@ function webWasmPreparation(root) {
   };
 }
 
+function operationsModulePreparation() {
+  return {
+    item: { name: "native operations preparation", ecosystem: "cargo" },
+    label: "native operations preparation",
+    commands: [
+      ["cargo", ["build", "--locked", "-p", "studio-operations-python"]],
+    ],
+    options: { allowZeroTests: true, buildOnly: true },
+  };
+}
+
 function fastTierCommands(root) {
   const packages = discover(root);
   const server = serverPackage();
@@ -828,6 +839,7 @@ function fastTierCommands(root) {
     "workspaces/tooling/apps/repository-checks/facade.mjs",
   );
   return [
+    operationsModulePreparation(),
     webWasmPreparation(root),
     {
       item: { name: "schema and dependency guards", ecosystem: "pnpm" },
@@ -909,7 +921,8 @@ function fastTierCommands(root) {
     },
     {
       item: { name: "studio-runtime-services", ecosystem: "cargo" },
-      label: "provider callback and monitor projection witnesses",
+      label:
+        "provider callback, task submission and monitor projection witnesses",
       commands: [
         [
           "cargo",
@@ -925,7 +938,7 @@ function fastTierCommands(root) {
             "studio-runtime-services",
             "--lib",
             "-E",
-            "test(account_worker::tests::callback_handoff::) | test(account_worker::tests::callback_head_of_line) | test(stale_stamp_of_an_undelivered_steer_batch_does_not_block_the_next_turn) | test(stamp_tests::) | test(sync_policy::tests::monitor_)",
+            "test(account_worker::tests::callback_handoff::) | test(account_worker::tests::callback_head_of_line) | test(stale_stamp_of_an_undelivered_steer_batch_does_not_block_the_next_turn) | test(stamp_tests::) | test(sync_policy::tests::monitor_) | test(work_write::actor_tests::submission_manifest_boundaries_use_shared_limits) | test(work_write::actor_tests::nonempty_file_submission_rechecks_cwd_and_replays_without_filesystem_work) | test(ancestry_reads_only_the_checked_parent_chain) | test(send_to_descendant_is_followup_input_while_parent_and_broadcast_are_chat)",
           ],
         ],
         [
@@ -943,15 +956,15 @@ function fastTierCommands(root) {
             "--test",
             "integration",
             "-E",
-            "test(/^provider_session_task::active_barrier_holds_new_requests_but_not_callback_answers_or_interrupts$/)",
+            "test(/^provider_session_task::active_barrier_holds_new_requests_but_not_callback_answers_or_interrupts$/) | test(/^provider_session_task::expiry_batch_preserves_all_queued_request_outcomes_in_order$/)",
           ],
         ],
       ],
       options: {
         selector:
-          "account_worker::tests::callback_handoff, callback_head_of_line, stale batch stamp recovery, the session callback lane and monitor publication work",
+          "account_worker::tests::callback_handoff, callback_head_of_line, stale batch stamp recovery, the session callback lane, monitor publication work and work_write submission boundaries",
         reason:
-          "Check that a provider request is durably accepted with its journal batch, that its record owns the answer through every crash point without a repeated answer, and that an unanswered request never stops provider events or new work, and that a stamp left by an undelivered steer batch is replaced instead of holding the agent. Monitor output must publish exactly one monitor projection while preserving window membership and rollback.",
+          "Check that a provider request is durably accepted with its journal batch, that its record owns the answer through every crash point without a repeated answer, and that an unanswered request never stops provider events or new work, and that a stamp left by an undelivered steer batch is replaced instead of holding the agent. Monitor output must publish exactly one monitor projection while preserving window membership and rollback. Task submissions keep limits, workspace ownership and replay at the shared manifest bound.",
       },
     },
     {
@@ -1015,6 +1028,35 @@ function fastTierCommands(root) {
           "project preparation structural conflicts and idle async answer",
         reason:
           "Check project writes across agent execution changes and real structural conflicts.",
+      },
+    },
+    {
+      item: { name: "studio-runtime-http", ecosystem: "cargo" },
+      label: "shared named schema validation witnesses",
+      commands: [
+        [
+          "cargo",
+          [
+            "nextest",
+            "run",
+            "--locked",
+            "--no-tests",
+            "fail",
+            "--message-format",
+            "libtest-json-plus",
+            "-p",
+            "studio-runtime-http",
+            "--lib",
+            "-E",
+            "test(validation::tests::named_schema_)",
+          ],
+        ],
+      ],
+      options: {
+        selector:
+          "shared named validator startup and invalid-value error parity",
+        reason:
+          "Preserve named-schema validation and error locations while HTTP reuses the compiled schema owner.",
       },
     },
     {
@@ -1110,6 +1152,7 @@ function comprehensiveTierCommands(root) {
   const bridge = packageTarget(packages, "studio-claude-bridge");
   const tooling = packageTarget(packages, "codex-studio-tooling");
   return [
+    operationsModulePreparation(),
     webWasmPreparation(root),
     {
       item: { name: "Rust HTTP fixture preparation", ecosystem: "cargo" },
