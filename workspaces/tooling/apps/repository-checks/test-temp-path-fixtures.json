@@ -218,7 +218,6 @@
     "state_dir: PathBuf::from(\"/tmp/state\"),"
   ],
   "workspaces/runtime/packages/runtime-process/tests/provider_stdio.rs": [
-    "\"/var/tmp\".into(),",
     "\"/var/tmp\".into(),"
   ],
   "workspaces/runtime/packages/runtime-process/tests/wave7_p01_factory.rs": [

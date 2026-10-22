@@ -12,6 +12,7 @@ mod monitor_port;
 mod multi_server_discovery;
 mod multi_server_owner;
 mod native_probe;
+mod operator_cli;
 #[cfg(unix)]
 mod peer_link;
 mod provider_ports;
@@ -43,7 +44,6 @@ use studio_runtime_store::{ObservedTable, RuntimeStore, account_state};
 use tokio::net::TcpListener;
 use tokio::sync::{Notify, watch};
 
-const DEFAULT_PORT: u16 = 4620;
 const SERVER_SHUTDOWN_GRACE: Duration = Duration::from_secs(20);
 /// Default ceiling for Tokio's async executor workers, measured in threads.
 const DEFAULT_ASYNC_EXECUTOR_MAX_WORKER_THREADS: usize = 4;
@@ -106,11 +106,14 @@ fn async_executor_worker_threads(
     }
 }
 
-fn main() {
+fn main() -> std::process::ExitCode {
     // The launcher of agent sign-in links runs this binary (`browser_host::write_launcher`).
     #[cfg(unix)]
     if let Some(code) = studio_runtime_services::browser_host::shim_main(env::args_os()) {
         std::process::exit(code);
+    }
+    if let Some(code) = operator_cli::dispatch() {
+        return code;
     }
     std::panic::set_hook(Box::new(|panic| {
         log_stderr(format_args!("{}", panic_observed_log(panic.location())));
@@ -1743,7 +1746,7 @@ fn native_platform() -> Option<studio_runtime_services::provider_binaries::Nativ
 }
 
 fn parse_port(mut args: impl Iterator<Item = String>) -> Result<u16, Box<dyn std::error::Error>> {
-    let mut port = DEFAULT_PORT;
+    let mut port = operator_cli::service_layout()?.port;
     while let Some(argument) = args.next() {
         if argument == "--port" {
             port = args.next().ok_or("--port requires a number")?.parse()?;

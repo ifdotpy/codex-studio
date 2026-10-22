@@ -558,53 +558,62 @@ mod tests {
         let codex = bundle.join("codex");
         write_executable(
             &codex,
-            r##"#!/usr/bin/env python3
-import json, os, pathlib, sys
-assert 'OPENAI_API_KEY' not in os.environ
-assert 'CODEX_API_KEY' not in os.environ
-assert os.environ['HOME'] == os.environ['CODEX_HOME']
-if '--version' in sys.argv:
-    print('codex-cli 1.2.3')
-elif 'generate-json-schema' in sys.argv:
-    root = pathlib.Path(sys.argv[sys.argv.index('--out') + 1])
-    schemas = {
-        'ClientRequest.json': {'oneOf': [
-            {'properties': {'method': {'enum': [method]}}} for method in [
-                'initialize', 'config/read', 'thread/loaded/list', 'turn/start',
-                'thread/metadata/update', 'thread/queue/list',
-                'thread/backgroundTerminals/list', 'thread/settings/update', 'model/list']]},
-        'v2/TurnStartParams.json': {'properties': {'cyberAccessProgram': {}},
-            'definitions': {'CyberAccessProgram': {'enum': ['standard', 'daybreakBlue', 'daybreakRed']}}},
-        'v2/ModelListResponse.json': {'definitions': {'Model': {'properties': {'availableAccessPrograms': {}}}}},
+            r##"#!/usr/bin/env node
+const fs = require('node:fs');
+const path = require('node:path');
+const assert = require('node:assert/strict');
+assert.equal(process.env.OPENAI_API_KEY, undefined);
+assert.equal(process.env.CODEX_API_KEY, undefined);
+assert.equal(process.env.HOME, process.env.CODEX_HOME);
+if (process.argv.includes('--version')) {
+    console.log('codex-cli 1.2.3');
+} else if (process.argv.includes('generate-json-schema')) {
+    const root = process.argv[process.argv.indexOf('--out') + 1];
+    const methods = ['initialize', 'config/read', 'thread/loaded/list', 'turn/start',
+        'thread/metadata/update', 'thread/queue/list', 'thread/backgroundTerminals/list',
+        'thread/settings/update', 'model/list'];
+    const schemas = {
+        'ClientRequest.json': {oneOf: methods.map(method => ({properties: {method: {enum: [method]}}}))},
+        'v2/TurnStartParams.json': {properties: {cyberAccessProgram: {}},
+            definitions: {CyberAccessProgram: {enum: ['standard', 'daybreakBlue', 'daybreakRed']}}},
+        'v2/ModelListResponse.json': {definitions: {Model: {properties: {availableAccessPrograms: {}}}}},
+    };
+    for (const [name, value] of Object.entries(schemas)) {
+        const file = path.join(root, name);
+        fs.mkdirSync(path.dirname(file), {recursive: true});
+        fs.writeFileSync(file, JSON.stringify(value));
     }
-    for name, value in schemas.items():
-        path = root / name
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(value))
-else:
-    for line in sys.stdin:
-        frame = json.loads(line)
-        if frame.get('method') == 'initialized':
-            continue
-        result = {'initialize': {'userAgent': 'fixture'},
-                  'config/read': {'config': {}}, 'thread/loaded/list': {'data': []}}[frame['method']]
-        print(json.dumps({'id': frame['id'], 'result': result}), flush=True)
+} else {
+    const readline = require('node:readline');
+    readline.createInterface({input: process.stdin}).on('line', line => {
+        const frame = JSON.parse(line);
+        if (frame.method === 'initialized') return;
+        const result = {'initialize': {userAgent: 'fixture'},
+            'config/read': {config: {}}, 'thread/loaded/list': {data: []}}[frame.method];
+        console.log(JSON.stringify({id: frame.id, result}));
+    });
+}
 "##,
         );
         let companion = bundle.join("codex-code-mode-host");
         write_executable(
             &companion,
-            r##"#!/usr/bin/env python3
-import json, struct, sys
-if '--help' in sys.argv:
-    print('Usage: codex-code-mode-host --listen ADDRESS')
-else:
-    stream = sys.stdin.buffer
-    size = struct.unpack('<I', stream.read(4))[0]
-    hello = json.loads(stream.read(size))
-    assert hello['type'] == 'connection/hello'
-    reply = json.dumps({'type': 'connection/ready', 'selectedVersion': 1, 'capabilities': []}).encode()
-    sys.stdout.buffer.write(struct.pack('<I', len(reply)) + reply)
+            r##"#!/usr/bin/env node
+const fs = require('node:fs');
+const assert = require('node:assert/strict');
+if (process.argv.includes('--help')) {
+    console.log('Usage: codex-code-mode-host --listen ADDRESS');
+} else {
+    const LENGTH_PREFIX_BYTES = 4;
+    const prefix = Buffer.alloc(LENGTH_PREFIX_BYTES);
+    fs.readSync(0, prefix);
+    const input = Buffer.alloc(prefix.readUInt32LE());
+    fs.readSync(0, input);
+    assert.equal(JSON.parse(input).type, 'connection/hello');
+    const reply = Buffer.from(JSON.stringify({type: 'connection/ready', selectedVersion: 1, capabilities: []}));
+    prefix.writeUInt32LE(reply.length);
+    fs.writeSync(1, Buffer.concat([prefix, reply]));
+}
 "##,
         );
         let runtime = tokio::runtime::Builder::new_multi_thread()
