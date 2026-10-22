@@ -1,12 +1,8 @@
-use crate::prepared_python_support as prepared_python;
-
 use futures_util::FutureExt;
-use rusqlite::Connection;
 use serde_json::{Value, json};
 use sha2::Digest;
 use std::{
     path::Path,
-    process::Command,
     sync::{
         Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
@@ -20,71 +16,15 @@ use studio_runtime_services::title_generation::{
 use studio_runtime_store::{AgentRecord, AgentRepository, RuntimeStore};
 use tokio::sync::{mpsc, oneshot};
 
-fn template(root: &Path) {
-    let schema: Value = serde_json::from_str(include_str!(
-        "../../runtime-store/tests/fixtures/live-state-schema.json"
-    ))
-    .expect("schema fixture");
-    for filename in ["canvas.sqlite3", "analytics.sqlite3"] {
-        let database = Connection::open(root.join(filename)).expect("template database");
-        database
-            .execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; BEGIN;")
-            .expect("template durability");
-        let mut objects = schema[filename]["sqlite_master"]
-            .as_array()
-            .expect("schema objects")
-            .iter()
-            .filter(|object| {
-                ![
-                    "runtime_search_next_config",
-                    "runtime_search_next_data",
-                    "runtime_search_next_docsize",
-                    "runtime_search_next_idx",
-                ]
-                .contains(&object["name"].as_str().expect("object name"))
-            })
-            .collect::<Vec<_>>();
-        objects.sort_by_key(|object| {
-            (
-                match object["type"].as_str() {
-                    Some("table") => 0,
-                    Some("index") => 1,
-                    Some("view") => 2,
-                    _ => 3,
-                },
-                object["name"].as_str(),
-            )
-        });
-        for object in objects {
-            database
-                .execute_batch(object["sql"].as_str().expect("object DDL"))
-                .expect("template DDL");
-        }
-        database.execute_batch("COMMIT").expect("template commit");
-    }
-}
-
-#[allow(clippy::disallowed_methods)]
 async fn fixture() -> (tempfile::TempDir, RuntimeStore) {
-    let root = tempfile::tempdir().expect("tmpfs state directory");
-    template(root.path());
-    let canvas = root.path().join("canvas.sqlite3");
-    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src");
-    let python = prepared_python::prepared_python(&source);
-    let output = Command::new(python)
-        .arg("-B")
-        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/title_generation/write_state.py"))
-        .arg(canvas)
-        .output()
-        .expect("Python writes fixture records");
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
+    let root = tempfile::tempdir().expect("title state directory");
+    crate::media_auth_fixtures::write_state(
+        root.path(),
+        include_str!("title_generation/initial-state.json"),
     );
     let store = RuntimeStore::open(Some(root.path()))
         .await
-        .expect("Python-written state opens");
+        .expect("fixture state opens");
     (root, store)
 }
 
@@ -477,26 +417,35 @@ async fn python_pending_without_internal_effect_remains_unchanged_and_is_not_res
     assert_eq!(port.calls.load(Ordering::SeqCst), 0);
 }
 
-#[allow(clippy::disallowed_methods)]
-fn python_persisted_snapshot(root: &Path, scenario: &str) -> Value {
-    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src");
-    let python = prepared_python::prepared_python(&source);
-    let output = Command::new(python)
-        .arg("-B")
-        .arg(
-            Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("tests/title_generation/persistence_oracle.py"),
-        )
-        .arg(root.join("canvas.sqlite3"))
-        .arg(scenario)
-        .output()
-        .expect("run Python persisted-state oracle");
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    serde_json::from_slice(&output.stdout).expect("Python persisted snapshot JSON")
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TitleScenario {
+    Apply,
+    Manual,
+    Tool,
+    Refusal,
+}
+
+fn python_persisted_snapshot(root: &Path, scenario: TitleScenario) -> Value {
+    let (state, expected) = match scenario {
+        TitleScenario::Apply => (
+            include_str!("title_generation/apply-state.json"),
+            include_str!("title_generation/apply-expected.json"),
+        ),
+        TitleScenario::Manual => (
+            include_str!("title_generation/manual-state.json"),
+            include_str!("title_generation/manual-expected.json"),
+        ),
+        TitleScenario::Tool => (
+            include_str!("title_generation/tool-state.json"),
+            include_str!("title_generation/tool-expected.json"),
+        ),
+        TitleScenario::Refusal => (
+            include_str!("title_generation/refusal-state.json"),
+            include_str!("title_generation/refusal-expected.json"),
+        ),
+    };
+    crate::media_auth_fixtures::write_state(root, state);
+    serde_json::from_str(expected).expect("frozen title snapshot")
 }
 
 async fn write_concurrent_title(store: &RuntimeStore, name: &str, manual: bool) {
@@ -549,10 +498,10 @@ async fn write_deleted(store: &RuntimeStore) {
 #[tokio::test]
 async fn persisted_python_results_match_apply_late_writers_and_refusal() {
     for (scenario, concurrent) in [
-        ("apply", None),
-        ("manual", Some(("Manual title", true))),
-        ("tool", Some(("Tool title", false))),
-        ("refusal", None),
+        (TitleScenario::Apply, None),
+        (TitleScenario::Manual, Some(("Manual title", true))),
+        (TitleScenario::Tool, Some(("Tool title", false))),
+        (TitleScenario::Refusal, None),
     ] {
         let (_root, store) = fixture().await;
         let (started_tx, mut started_rx) = mpsc::unbounded_channel();
@@ -578,7 +527,7 @@ async fn persisted_python_results_match_apply_late_writers_and_refusal() {
         let request = started_rx.recv().await.expect("provider request pending");
         match concurrent {
             Some((name, manual)) => write_concurrent_title(&task_store, name, manual).await,
-            None if scenario == "refusal" => write_deleted(&task_store).await,
+            None if scenario == TitleScenario::Refusal => write_deleted(&task_store).await,
             None => {}
         }
         reply_tx
@@ -629,7 +578,7 @@ async fn persisted_python_results_match_apply_late_writers_and_refusal() {
             .remove("receipts");
         assert_eq!(
             rust_without_receipts, python_without_receipts,
-            "agent, events, and projection for {scenario}"
+            "agent, events, and projection for {scenario:?}"
         );
     }
 }
@@ -715,7 +664,7 @@ async fn applied_request_replays_after_restart_and_rejects_changed_content_witho
 async fn completed_python_receipt_replays_without_request_or_persisted_writes() {
     let (root, store) = fixture().await;
     drop(store);
-    let python = python_persisted_snapshot(root.path(), "apply");
+    let python = python_persisted_snapshot(root.path(), TitleScenario::Apply);
     let reopened = RuntimeStore::open(Some(root.path()))
         .await
         .expect("open Python-completed receipt");

@@ -1,10 +1,8 @@
-use crate::prepared_python_support;
-
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::{
-    path::Path,
-    process::Command,
     sync::{
         Mutex, OnceLock,
         atomic::{AtomicUsize, Ordering},
@@ -36,31 +34,14 @@ fn test_resources() -> Arc<PreparationResources> {
     )
 }
 
-#[allow(clippy::disallowed_methods)]
 fn python_corpus() -> ([Vec<u8>; 2], Value) {
     static CORPUS: OnceLock<([Vec<u8>; 2], Value)> = OnceLock::new();
     CORPUS
         .get_or_init(|| {
-            let directory = prepared_python_support::disposable_state_dir();
-            let root = directory.path();
-            let source = Path::new(env!("CARGO_MANIFEST_DIR"));
-            let output = Command::new(prepared_python_support::prepared_python(
-                &source.join("../../apps/server/src"),
-            ))
-            .arg(source.join("tests/wave9_safety_buffering_oracle.py"))
-            .arg(root)
-            .output()
-            .expect("Python safety corpus");
-            assert!(
-                output.status.success(),
-                "{}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-            let corpus: Value = serde_json::from_slice(&output.stdout).expect("Python corpus JSON");
             (
-                ["canvas.sqlite3", "analytics.sqlite3"]
-                    .map(|file| std::fs::read(root.join(file)).expect("template database bytes")),
-                corpus,
+                crate::media_auth_fixtures::state_bytes(include_str!("wave9_safety_state.json")),
+                serde_json::from_str(include_str!("wave9_safety_expected.json"))
+                    .expect("frozen safety corpus"),
             )
         })
         .clone()
@@ -476,8 +457,8 @@ async fn action_runs_python_corpus_stage_path_and_commits_each_intent_before_dis
             Some("thread/fork" | "turn/start")
         ) {
             assert_eq!(
-                without_generated_client_id(actual["params"].clone()),
-                without_generated_client_id(expected["params"].clone()),
+                normalized_provider_params(actual["params"].clone()),
+                normalized_provider_params(expected["params"].clone()),
                 "complete normalized params at stage {index}"
             );
         } else {
@@ -519,12 +500,111 @@ async fn action_runs_python_corpus_stage_path_and_commits_each_intent_before_dis
     );
 }
 
-fn without_generated_client_id(mut params: Value) -> Value {
-    params
-        .as_object_mut()
-        .expect("provider params object")
-        .remove("clientUserMessageId");
-    params
+// Decode volatile envelope fields once; retain every method-specific parameter
+// in the complete equality check below.
+#[derive(Deserialize, Serialize)]
+struct ComparedProviderParams {
+    #[serde(rename = "clientUserMessageId", skip_serializing)]
+    _client_user_message_id: Option<String>,
+    #[serde(
+        rename = "developerInstructions",
+        default,
+        deserialize_with = "present_instructions",
+        skip_serializing_if = "Option::is_none"
+    )]
+    developer_instructions: Option<String>,
+    #[serde(flatten)]
+    method_params: BTreeMap<String, Value>,
+}
+
+fn present_instructions<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error> {
+    String::deserialize(deserializer).map(Some)
+}
+
+fn normalized_provider_params(params: Value) -> Value {
+    let mut params: ComparedProviderParams =
+        serde_json::from_value(params).expect("provider comparison params");
+    if let Some(instructions) = &mut params.developer_instructions {
+        // Source headers carry the checkout's absolute path. Their skill identity
+        // and the complete guidance body remain part of the assertion.
+        *instructions = instructions
+            .split_inclusive('\n')
+            .map(|line| {
+                for (prefix, skill) in [
+                    ("Source: ", "codex-subagent"),
+                    ("Shared tool guidance: ", "codex-workspace"),
+                ] {
+                    if let Some(source) = line.trim_end_matches('\n').strip_prefix(prefix) {
+                        let relative = std::path::Path::new(".agents")
+                            .join("skills")
+                            .join(skill)
+                            .join("SKILL.md");
+                        if std::path::Path::new(source).ends_with(relative) {
+                            let newline = if line.ends_with('\n') { "\n" } else { "" };
+                            return format!(
+                                "{prefix}$REPOSITORY_ROOT/.agents/skills/{skill}/SKILL.md{newline}"
+                            );
+                        }
+                    }
+                }
+                line.to_owned()
+            })
+            .collect();
+    }
+    serde_json::to_value(params).expect("normalized provider comparison params")
+}
+
+#[test]
+fn comparison_normalizes_only_generated_identity_and_role_source_roots() {
+    let params = |root: &str, client: &str, skill: &str, body: &str| {
+        json!({
+            "threadId": "thread",
+            "clientUserMessageId": client,
+            "config": {"model_reasoning_effort": "low"},
+            "developerInstructions": format!(
+                "Source: {root}/.agents/skills/{skill}/SKILL.md\nShared tool guidance: {root}/.agents/skills/codex-workspace/SKILL.md\n{body}\n"
+            ),
+        })
+    };
+    let baseline = normalized_provider_params(params(
+        "/first-checkout",
+        "first",
+        "codex-subagent",
+        "guidance",
+    ));
+    assert_eq!(
+        baseline,
+        normalized_provider_params(params(
+            "/other-checkout",
+            "second",
+            "codex-subagent",
+            "guidance"
+        ))
+    );
+    assert_ne!(
+        baseline,
+        normalized_provider_params(params(
+            "/other-checkout",
+            "second",
+            "other-skill",
+            "guidance"
+        ))
+    );
+    assert_ne!(
+        baseline,
+        normalized_provider_params(params(
+            "/other-checkout",
+            "second",
+            "codex-subagent",
+            "changed guidance"
+        ))
+    );
+    let mut changed_method_params =
+        params("/other-checkout", "second", "codex-subagent", "guidance");
+    changed_method_params["threadId"] = json!("different-thread");
+    assert_ne!(baseline, normalized_provider_params(changed_method_params));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

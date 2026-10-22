@@ -292,30 +292,3 @@
   ],
   "workspaces/runtime/packages/runtime-services/tests/title_generation/oracle.py": [
     "return \"/tmp/title-oracle-home\""
-  ],
-  "workspaces/runtime/packages/runtime-services/tests/voice_provider_corpus.rs": [
-    "\"params\":{\"command\":\"printf safe\", \"cwd\":\"/tmp\"}"
-  ],
-  "workspaces/runtime/packages/runtime-services/tests/workspace_ready/effects.rs": [
-    "(\"cwd\", json!(\"/var/tmp/changed\")),"
-  ],
-  "workspaces/runtime/packages/runtime-store/src/path.rs": [
-    "expand_home(Path::new(\"/tmp/~studio\")).expect(\"absolute path is unchanged\"),",
-    "Path::new(\"/tmp/~studio\")"
-  ],
-  "workspaces/runtime/packages/runtime-store/src/repositories/terminals.rs": [
-    "let record = json!({\"id\":\"terminal\",\"agent\":\"a\",\"title\":\"Terminal\",\"cwd\":\"/tmp\",\"status\":\"running\",\"created\":1});"
-  ],
-  "workspaces/runtime/packages/runtime-store/src/repositories/usage.rs": [
-    "\"cause\":\"serverOverloaded\",\"attempt\":1,\"maxAttempts\":3,\"cwd\":\"/tmp\","
-  ],
-  "workspaces/runtime/packages/runtime-store/src/repositories/workspace_files.rs": [
-    "INSERT INTO runtime_assets VALUES('asset','{\\\"id\\\":\\\"asset\\\",\\\"agent\\\":\\\"agent\\\",\\\"name\\\":\\\"a.txt\\\",\\\"path\\\":\\\"/tmp/a.txt\\\",\\\"mime\\\":\\\"text/plain\\\",\\\"image\\\":false,\\\"size\\\":1,\\\"hash\\\":\\\"h\\\",\\\"created\\\":0}');\",",
-    "\"path\": \"/tmp/a.txt\","
-  ],
-  "workspaces/tooling/apps/repository-checks/tests/release-binaries.test.mjs": [
-    "const { out, hostedCiPassed } = parseFlowArguments([\"/tmp/out\"]);",
-    "parseFlowArguments([\"/tmp/out\", \"--hosted-ci-passed\"]).hostedCiPassed,",
-    "() => parseFlowArguments([\"/tmp/out\", \"--skip\"]),"
-  ]
-}
