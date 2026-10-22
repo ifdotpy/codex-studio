@@ -315,7 +315,7 @@ pub(super) fn valid_start(value: &str) -> bool {
 #[allow(clippy::disallowed_methods)]
 mod tests {
     use super::*;
-    use std::process::Command;
+    use std::process::{Command, Stdio};
 
     #[test]
     #[cfg(target_os = "linux")]
