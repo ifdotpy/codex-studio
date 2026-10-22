@@ -294,6 +294,17 @@ It uses the existing Codex account and configuration selected by `CODEX_HOME`.
 It does not replace the Codex model loop or require a Codex fork.
 The tested protocol version is Codex CLI 0.153.4.
 
+## Continuation cursor retries
+
+1. The existing continuation scheduler rotates through ready usage, capacity,
+   and authentication proof agents in bounded batches, advancing past failures.
+2. A staging failure preserves the cursor and applies the scheduler's existing
+   [failure backoff](../workspaces/runtime/apps/runtime-server/src/main.rs).
+   Commit notifications cannot bypass that cooldown; shutdown can interrupt it.
+3. Successful agents in the same batch still publish their changes. Each agent's
+   error is logged on first failure and when it changes, then cleared on success.
+   Later agents progress on subsequent batches even when earlier cursors fail.
+
 ## Agent and command lifecycle
 
 The lead receives these additional tools:

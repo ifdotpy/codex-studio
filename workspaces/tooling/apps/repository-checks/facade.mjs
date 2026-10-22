@@ -981,7 +981,7 @@ function fastTierCommands(root) {
             "integration",
             "--lib",
             "-E",
-            "test(/^monitor_start_preparation::/) | test(/^monitor_wake_guarantees::/) | (not binary(integration) & (test(monitor_completion_) | test(reattached_exit_)))",
+            "test(exit_logging_tests::continuation_) | test(/^monitor_start_preparation::/) | test(/^monitor_wake_guarantees::/) | (not binary(integration) & (test(monitor_completion_) | test(reattached_exit_)))",
           ],
         ],
       ],
@@ -989,7 +989,7 @@ function fastTierCommands(root) {
         selector:
           "monitor start ownership and exactly-once terminal continuation",
         reason:
-          "Check monitor starts across actor progress and turn boundaries while preserving permission and ownership checks.",
+          "Check monitor starts across actor progress and turn boundaries, and bounded fair continuation retries, while preserving permission and ownership checks.",
       },
     },
     {
