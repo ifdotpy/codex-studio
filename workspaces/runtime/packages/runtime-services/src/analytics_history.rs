@@ -1210,20 +1210,25 @@ impl HistoryCollector {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .invalidate(profile);
     }
-    pub async fn step(
+    pub async fn step<'a>(
         &mut self,
         store: &RuntimeStore,
-        actors: &[Value],
+        lookup: impl FnOnce(i64) -> Option<&'a Value>,
         profile: impl FnOnce(&str) -> Result<PathBuf, HistoryError> + Send + 'static,
         clock: HistoryClock,
         cancel: Arc<AtomicBool>,
         budget: &dyn HistoryBudgetSink,
     ) -> Result<bool, HistoryError> {
-        let Some(agent) = self.schedule.next(actors, clock.monotonic)?.cloned() else {
+        let Some(row) = self.schedule.next(clock.monotonic)? else {
             self.begin_round();
             return Ok(false);
         };
-        if self.visited.len() >= actors.len() || self.visited.contains(text(&agent["id"])) {
+        let agent = lookup(row)
+            .ok_or(CaptureError::Invalid("/history/roster"))?
+            .clone();
+        if self.visited.len() >= self.schedule.roster_len()
+            || self.visited.contains(text(&agent["id"]))
+        {
             self.begin_round();
         }
         self.visited.insert(text(&agent["id"]).to_owned());

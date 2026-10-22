@@ -1198,6 +1198,7 @@ function fastTierCommands(root) {
               "test(child_result_release_consumes_)",
               "test(/^history_runtime::tests::slow_filesystem_metadata_does_not_block_a_store_observer$/)",
               "test(/^analytics_history_checkpoint::terminal_error_repair_is_idempotent_for_exact_and_ambiguous_notices$/)",
+              "test(/^analytics_history_schedule::tests::/)",
               "test(/^monitor_start_preparation::/)",
               "test(/^monitor_wake_guarantees::/)",
               "(not binary(integration) & (test(monitor_completion_) | test(reattached_exit_)))",

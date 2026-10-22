@@ -1498,3 +1498,13 @@ change with both options. Cross-machine Claude cache reuse remains unverified.
    read admission or completion consumes the hold; an elapsed hold wakes at once.
 3. A failed read keeps the existing registry retry delay. The next wake remains
    the earliest child-result release, archive, checkpoint, or worker retry.
+
+### History scheduling
+
+1. The history runner ingests the initial roster in store row order.
+2. Store notifications validate changed rows and update the retained ready order.
+3. Each step selects one checked actor, preserving active priority, the active quota,
+   checked-time order and store-row ties; it does not rescan the roster.
+4. Partial imports remain ready; current imports wait for a notification.
+5. Input failures wait for relevant input, budget or profile changes; deletion
+   and retirement remove the actor and its scheduling state.
