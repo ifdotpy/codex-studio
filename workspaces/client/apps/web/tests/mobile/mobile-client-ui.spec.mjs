@@ -246,9 +246,7 @@ test("Mobile client ui", async ({
       exact: true,
     });
     const rolePicker = mainSettings.getByRole("group", { name: "Agent role" });
-    await rolePicker
-      .getByRole("button", { name: "Worker", exact: true })
-      .click();
+    await rolePicker.getByText("Worker", { exact: true }).click();
     const subagentSettings = page.getByRole("dialog", {
       name: "Subagent defaults",
       exact: true,

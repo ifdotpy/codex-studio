@@ -40,8 +40,9 @@ import {createRoot} from 'react-dom/client';
 import {MantineProvider,Stack,Paper,Button} from '@mantine/core';
 import '@mantine/core/styles.css';
 import {AgentSetupPicker} from '/src/components/agents/AgentSetupPicker.tsx';
+import {ModelField} from '/src/components/models/ModelField.tsx';
 import '/src/components/agents/execution-settings.css';
-function Fixture(){const[model,onModel]=useState('astra');return <MantineProvider forceColorScheme={new URLSearchParams(location.search).get('theme')||'light'}><Paper p="sm"><Stack gap="xs"><Button id="before">Before models</Button><AgentSetupPicker role="orchestrator" roles={[]} onRole={()=>{}} provider="codex" providers={[]} onProvider={()=>{}} accounts={[]} accountKey="" onAccount={()=>{}} models={[{value:'astra',label:'Astra 6',provider:'codex',badges:['default']},{value:'unavailable',label:'Unavailable model',provider:'codex',badges:[],disabled:true,disabledReason:'Unavailable on this account'},{value:'sol',label:'Sol 6.1',provider:'codex',badges:[]},{value:'opus',label:'Opus 4.6',provider:'claude',badges:[]}]} model={model} onModel={onModel} modelLabel="Model" efforts={[]} effort="" onEffort={()=>{}} effortLabel="Reasoning" disabled={false} fastAvailable={false} fast={false} onFast={()=>{}} daybreakAvailable={false} daybreak={false} onDaybreak={()=>{}}/><Button id="after">After models</Button></Stack></Paper></MantineProvider>};createRoot(document.getElementById('root')).render(<Fixture/>);`;
+function Fixture(){const[model,onModel]=useState('astra');return <MantineProvider forceColorScheme={new URLSearchParams(location.search).get('theme')||'light'}><Paper p="sm"><Stack gap="xs"><Button id="before">Before models</Button><AgentSetupPicker role="orchestrator" roles={[]} onRole={()=>{}} provider="codex" providers={[]} onProvider={()=>{}} accounts={[]} accountKey="" onAccount={()=>{}} models={[{value:'astra',label:'Astra 6',provider:'codex',badges:['default']},{value:'unavailable',label:'Unavailable model',provider:'codex',badges:[],disabled:true,disabledReason:'Unavailable on this account'},{value:'sol',label:'Sol 6.1',provider:'codex',badges:[]},{value:'opus',label:'Opus 4.6',provider:'claude',badges:[]}]} model={model} onModel={onModel} modelLabel="Model" efforts={[]} effort="" onEffort={()=>{}} effortLabel="Reasoning" disabled={false} fastAvailable={false} fast={false} onFast={()=>{}} daybreakAvailable={false} daybreak={false} onDaybreak={()=>{}}/><Button id="after">After models</Button><ModelField presentation="select" label="Compact model" value={model} onChange={onModel} options={[{value:'__model_default__',label:'Same as main agent',provider:'codex',badges:[]},{value:'astra',label:'Astra 6',provider:'codex',description:'General coding',badges:['default','current']},{value:'unavailable',label:'Unavailable model',provider:'codex',badges:[],disabledReason:'Unavailable on this account'},{value:'opus',label:'Opus 4.6',provider:'claude',description:'Careful reasoning',badges:[]}]}/></Stack></Paper></MantineProvider>};createRoot(document.getElementById('root')).render(<Fixture/>);`;
         },
       },
     ],
@@ -79,6 +80,23 @@ function Fixture(){const[model,onModel]=useState('astra');return <MantineProvide
     await page.keyboard.press("ArrowDown");
     await expect(page.locator('#model [data-value="sol"]')).toBeFocused();
     await expect(page.locator("#model")).toHaveAttribute("data-value", "sol");
+    const compact = page.getByRole("combobox", { name: "Compact model" });
+    await expect(compact.locator("optgroup")).toHaveCount(2);
+    await expect(compact.locator('optgroup[label="Claude"] option')).toHaveText(
+      "Opus 4.6",
+    );
+    await expect(compact.locator('option[value="unavailable"]')).toBeDisabled();
+    await expect(compact.locator('option[value="astra"]')).toHaveText(
+      "Astra 6 (default, current)",
+    );
+    await compact.selectOption("__model_default__");
+    await expect(compact).toHaveValue("__model_default__");
+    await compact.selectOption("opus");
+    await expect(
+      page.getByText("Careful reasoning", { exact: true }),
+    ).toBeVisible();
+    await page.locator('#model [data-value="sol"]').click();
+    await page.locator('#model [data-value="sol"]').focus();
     // Home/End follow the browser's native radio behavior; do not emulate it.
     await page.keyboard.press("Home");
     await page.keyboard.press("End");

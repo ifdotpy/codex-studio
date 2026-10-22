@@ -1,0 +1,38 @@
+.model-fieldset {
+  min-inline-size: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.model-fieldset > legend {
+  padding: 0;
+  margin-bottom: var(--mantine-spacing-xs);
+  font-size: var(--mantine-font-size-sm);
+  font-weight: 500;
+}
+.model-options {
+  max-block-size: 40dvh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.model-radio {
+  padding: var(--mantine-spacing-xs);
+  border: 1px solid var(--mantine-color-default-border);
+  border-radius: var(--mantine-radius-sm);
+}
+.model-radio:has(:checked) {
+  border-color: var(--mantine-primary-color-filled);
+  background: var(--mantine-primary-color-light);
+}
+.model-radio:has(:focus-visible) {
+  outline: auto;
+}
+.model-radio .mantine-Radio-labelWrapper,
+.model-select {
+  min-width: 0;
+  flex: 1;
+  overflow-wrap: anywhere;
+}
+.model-radio .mantine-Radio-body {
+  align-items: center;
+}

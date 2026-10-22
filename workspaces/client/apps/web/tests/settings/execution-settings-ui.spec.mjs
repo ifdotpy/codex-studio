@@ -202,25 +202,22 @@ test("execution settings ui", async ({ browser: _browser }) => {
       await rows.evaluateAll((nodes) =>
         nodes.map((node) => [
           node.getAttribute("data-value"),
-          node.querySelector(".setup-model-name").textContent,
-          !!node.querySelector("small"),
+          node.labels[0].textContent,
+          node.labels[0].textContent.includes("(default)"),
         ]),
       ),
       [
         ["gpt-6-astra", "Astra 6", false],
-        ["gpt-5.6-sol", "Sol 5.6", true],
+        ["gpt-5.6-sol", "Sol 5.6 (default)", true],
         ["gpt-6-luna", "Luna 6", false],
         ["gpt-5.6-luna", "Luna 5.6", false],
         ["test-slow", "Standard only", false],
       ],
     );
-    assert.equal(
-      await page
-        .locator(`[role="option"][data-value="${lead.model}"]`)
-        .getAttribute("aria-selected"),
-      "true",
-    );
-    const listBox = page.locator('[role="listbox"]:visible');
+    await expect(
+      page.locator(`input[type="radio"][data-value="${lead.model}"]`),
+    ).toBeChecked();
+    const listBox = leadModel;
     assert.ok(
       await listBox.evaluate(
         (node) => node.getBoundingClientRect().right <= innerWidth,
@@ -231,10 +228,8 @@ test("execution settings ui", async ({ browser: _browser }) => {
       lead.id,
       (body) => typeof body.model === "string" && body.model !== lead.model,
     );
-    await leadModel.focus();
-    await leadModel.press("ArrowDown");
+    await leadModel.getByRole("radio", { checked: true }).focus();
     await page.keyboard.press("ArrowDown");
-    await page.keyboard.press("Enter");
     assert.ok(
       (await alternateModelSaved).ok(),
       "keyboard selection is acknowledged",
@@ -306,7 +301,7 @@ test("execution settings ui", async ({ browser: _browser }) => {
     await waitFor(() => yolo.isEnabled());
     await openSettings("Main agent settings");
     const leadFastMode = setupToggle(
-      page.getByRole("button", { name: "Fast mode", exact: true }),
+      page.getByRole("switch", { name: "Fast mode", exact: true }),
     );
     const leadFastModeSaved = settingsResponse(
       lead.id,
@@ -335,8 +330,8 @@ test("execution settings ui", async ({ browser: _browser }) => {
       exact: true,
     });
     await dialog
-      .getByRole("group", { name: "Agent role", exact: true })
-      .getByRole("button", { name: "Review", exact: true })
+      .getByRole("radiogroup", { name: "Agent role", exact: true })
+      .getByText("Review", { exact: true })
       .click();
     const reviewDialog = page.getByRole("dialog", {
       name: "Review settings",
@@ -344,14 +339,14 @@ test("execution settings ui", async ({ browser: _browser }) => {
     });
     await expect(reviewDialog).toBeVisible();
     await expect(
-      reviewDialog.getByRole("listbox", {
+      reviewDialog.getByRole("group", {
         name: "Default review model",
         exact: true,
       }),
     ).toBeVisible();
     await reviewDialog
-      .getByRole("group", { name: "Agent role", exact: true })
-      .getByRole("button", { name: "Worker", exact: true })
+      .getByRole("radiogroup", { name: "Agent role", exact: true })
+      .getByText("Worker", { exact: true })
       .click();
     await dialog.waitFor({ state: "visible" });
     const delegationDepth = dialog.getByRole("combobox", {
@@ -412,7 +407,7 @@ test("execution settings ui", async ({ browser: _browser }) => {
     assert.ok((await inheritedReasoningSaved).ok());
     await waitFor(() => defaultReasoning.isEnabled());
     const defaultFastMode = setupToggle(
-      dialog.getByRole("button", { name: "Fast mode", exact: true }),
+      dialog.getByRole("switch", { name: "Fast mode", exact: true }),
     );
     const inheritedFastModeSaved = settingsResponse(
       lead.id,
@@ -488,7 +483,7 @@ test("execution settings ui", async ({ browser: _browser }) => {
     await selectModel(defaultModel, "test-slow");
     assert.ok((await slowModelSaved).ok());
     await dialog
-      .getByRole("button", { name: "Fast mode", exact: true })
+      .getByRole("switch", { name: "Fast mode", exact: true })
       .waitFor({ state: "hidden" });
     await dialog
       .getByRole("status")
@@ -547,12 +542,9 @@ test("execution settings ui", async ({ browser: _browser }) => {
       return defaults.model === "gpt-5.6-sol" && defaults.effort === "low";
     });
     await waitFor(() => defaultReasoning.isEnabled());
-    assert.equal(
-      (await dialog
-        .getByRole("button", { name: "Fast mode", exact: true })
-        .getAttribute("aria-pressed")) === "true",
-      false,
-    );
+    await expect(
+      dialog.getByRole("switch", { name: "Fast mode", exact: true }),
+    ).not.toBeChecked();
     await waitFor(async () => {
       const defaults = (await state()).find(
         (a) => a.id === lead.id,

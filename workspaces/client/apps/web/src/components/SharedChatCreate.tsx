@@ -7,7 +7,8 @@ import { ApiError, errorText, type PostBody } from "../api";
 import type { Snapshot } from "../types";
 import type { AccountsState } from "./Accounts";
 import { useWorkerModels } from "./agents/WorkerModelPicker";
-import { AgentSetupPicker, setupModelName } from "./agents/AgentSetupPicker";
+import { AgentSetupPicker } from "./agents/AgentSetupPicker";
+import { modelDisplayName, toModelOptions } from "./models/modelOption";
 import "./agents/execution-settings.css";
 import "./shared-chat-create.css";
 
@@ -84,7 +85,7 @@ function ParticipantFields({
   ]);
   const effort = value.effort || info?.defaultReasoningEffort || "Default";
   const summary = [
-    setupModelName(info, value.model) ||
+    modelDisplayName(info, value.model) ||
       (catalog.loading ? "Loading models…" : "Select a model"),
     effort[0].toUpperCase() + effort.slice(1),
     setupAccountName(account),
@@ -104,7 +105,6 @@ function ParticipantFields({
         opened={opened && !frozen}
         onChange={onOpenedChange}
         position={index === 0 ? "top-end" : "bottom-end"}
-        width={360}
         closeOnEscape
         trapFocus
         returnFocus
@@ -134,11 +134,7 @@ function ParticipantFields({
             accountKey={value.account_key}
             accountLabel={`Account for agent ${index + 1}`}
             onAccount={chooseAccount}
-            models={catalog.models.map((row) => ({
-              value: row.model,
-              label: setupModelName(row),
-              isDefault: row.isDefault,
-            }))}
+            models={toModelOptions(catalog.models, { provider })}
             model={value.model}
             modelLabel={`Model for agent ${index + 1}`}
             onModel={(model) => change({ ...value, model, effort: undefined })}

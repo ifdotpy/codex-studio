@@ -72,8 +72,8 @@ test("new chat chips open each role, save settings and disappear after send", as
     );
     await main.click();
     await expect(
-      page.getByRole("button", { name: "Orchestrator", exact: true }),
-    ).toHaveAttribute("aria-pressed", "true");
+      page.getByRole("radio", { name: "Orchestrator", exact: true }),
+    ).toBeChecked();
     const mainSave = page.waitForResponse(
       (response) =>
         response.url().endsWith("/api/conversation") &&
@@ -91,8 +91,8 @@ test("new chat chips open each role, save settings and disappear after send", as
     await expect(main).toContainText(" · High · ");
     await workers.click();
     await expect(
-      page.getByRole("button", { name: "Worker", exact: true }),
-    ).toHaveAttribute("aria-pressed", "true");
+      page.getByRole("radio", { name: "Worker", exact: true }),
+    ).toBeChecked();
     const workerSave = page.waitForResponse(
       (response) =>
         response.url().endsWith("/api/conversation") &&
