@@ -2405,6 +2405,7 @@ mod daybreak_tests {
             pending: None,
             loaded: None,
             closed: false,
+            frozen: None,
         }
     }
 

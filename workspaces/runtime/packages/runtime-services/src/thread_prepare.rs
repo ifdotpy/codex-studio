@@ -264,6 +264,28 @@ pub struct Snapshot {
     pub pending: Option<PendingPreparation>,
     pub loaded: Option<LoadedIdentity>,
     pub closed: bool,
+    /// The native parameters an imported agent keeps (Python `frozenNativeParams`).
+    #[serde(default)]
+    pub frozen: Option<FrozenParams>,
+}
+
+/// The saved native thread parameters of an agent that another server moved here
+/// (Python `codex_agent_move` writes `frozenNativeParams`). The thread keeps the
+/// instructions, model and tools it was started with; Python's
+/// `Runtime.new_thread_params` and `Runtime.tool_definitions` apply them in place
+/// of this server's guidance and catalog.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FrozenParams {
+    pub base_instructions: Value,
+    pub developer_instructions: Value,
+    pub model: Value,
+    pub dynamic_tools: Vec<ToolDefinition>,
+    /// Codex reasoning effort; `None` keeps the thread's config value.
+    #[serde(default)]
+    pub effort: Option<Value>,
+    /// Codex reasoning summary; `None` keeps the thread's config value.
+    #[serde(default)]
+    pub summary: Option<Value>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -338,7 +360,16 @@ pub struct CatalogFilter<'a> {
 
 /// Uses the immutable selected catalog, never a newly discovered live catalog.
 pub fn tool_definitions(s: &Snapshot) -> Result<Vec<ToolDefinition>, Refusal> {
-    // Python `Runtime.tool_definitions`: a native reviewer gets no Studio tools.
+    // Python `Runtime.tool_definitions`: an imported agent keeps its saved tools,
+    // without spawn when its root may not delegate.
+    if let Some(frozen) = &s.frozen {
+        let mut definitions = frozen.dynamic_tools.clone();
+        if !s.root.can_delegate {
+            definitions.retain(|tool| tool.name != "orchestration_spawn");
+        }
+        return Ok(definitions);
+    }
+    // A native reviewer gets no Studio tools.
     if s.actor.native_review {
         return Ok(Vec::new());
     }
@@ -566,13 +597,34 @@ pub fn plan(s: &Snapshot, next_attempt_id: &str, transport_ticket: &str) -> Outc
         instructions.push('\n');
         instructions.push_str(text);
     }
+    let mut developer_instructions = json!(instructions);
+    if let Some(frozen) = &s.frozen {
+        // Python `Runtime.new_thread_params` applies the saved values last.
+        params.insert("baseInstructions".into(), frozen.base_instructions.clone());
+        developer_instructions = frozen.developer_instructions.clone();
+        params.insert("model".into(), frozen.model.clone());
+        if s.account.provider != ProviderKind::Claude
+            && let Some(config) = params.get_mut("config").and_then(Value::as_object_mut)
+        {
+            for (key, value) in [
+                ("model_reasoning_effort", &frozen.effort),
+                ("model_reasoning_summary", &frozen.summary),
+            ] {
+                if let Some(value) = value.as_ref().filter(|value| !value.is_null()) {
+                    config.insert(key.into(), value.clone());
+                }
+            }
+        }
+    }
+    // Python `preparation_context_versions` reads the submitted instructions.
+    let submitted = developer_instructions.as_str().unwrap_or_default();
     let mut context_versions = Map::new();
     let mut artifacts = Vec::new();
     for (key, text) in [
         ("roleSkill", role_text(s)),
         ("progressFile", s.guidance.progress.as_str()),
     ] {
-        if !text.is_empty() && instructions.contains(text) {
+        if !text.is_empty() && submitted.contains(text) {
             let version = sha256_hex(json!(text).to_string().as_bytes())[..24].to_owned();
             context_versions.insert(key.into(), json!(version));
             if key == "roleSkill" {
@@ -583,7 +635,7 @@ pub fn plan(s: &Snapshot, next_attempt_id: &str, transport_ticket: &str) -> Outc
             }
         }
     }
-    params.insert("developerInstructions".into(), json!(instructions));
+    params.insert("developerInstructions".into(), developer_instructions);
     let tool_catalog = if method == Method::Start || provider.capabilities().tools_on_every_turn {
         params.insert("dynamicTools".into(), json!(tools));
         Some(tools)
