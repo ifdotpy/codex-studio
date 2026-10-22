@@ -3345,11 +3345,18 @@ async fn ancestry_reads_only_the_checked_parent_chain() {
         .await
         .unwrap();
     let mut reader = store.test_reader().unwrap();
-    reader.trace(Some(|sql| {
-        if sql.starts_with("SELECT record FROM runtime_agents WHERE id=") {
-            ANCESTRY_READS.with(|count| count.set(count.get() + 1));
-        }
-    }));
+    reader.trace_v2(
+        rusqlite::trace::TraceEventCodes::SQLITE_TRACE_STMT,
+        Some(|event| {
+            if let rusqlite::trace::TraceEvent::Stmt(statement, _) = event
+                && statement
+                    .sql()
+                    .starts_with("SELECT record FROM runtime_agents WHERE id=")
+            {
+                ANCESTRY_READS.with(|count| count.set(count.get() + 1));
+            }
+        }),
+    );
     let check = |reader: &mut rusqlite::Connection| {
         ANCESTRY_READS.with(|count| count.set(0));
         let tx = reader.transaction().unwrap();
