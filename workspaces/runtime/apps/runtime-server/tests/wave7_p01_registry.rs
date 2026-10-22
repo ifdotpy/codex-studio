@@ -433,7 +433,7 @@ impl AccountLauncher for Scripted {
     fn launch(&self, account: String) -> LaunchFuture<'_> {
         Box::pin(async move {
             if let Some(attempts) = self.launch_attempts.get() {
-                let _ = attempts.send(account.clone());
+                drop(attempts.send(account.clone()));
             }
             if self
                 .unavailable

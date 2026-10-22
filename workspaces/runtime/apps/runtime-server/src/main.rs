@@ -2091,7 +2091,7 @@ mod exit_logging_tests {
                 if let Some(store) = &self.newer_rejection {
                     store.transaction_with(|tx| {
                         studio_runtime_store::SyncDocumentsRepository::put_entity(tx,"workspace","current",serde_json::json!({"rateLimitsByAccount":{"default":{"accountKey":"default","at":1001.0,"data":{"rateLimits":{"primary":{"usedPercent":100.0,"resetsAt":2000.0}}}}}}),false)
-                    }).await.unwrap();
+                    }).await.expect("rate-limit fixture writes");
                 }
                 Ok(
                     serde_json::json!({"accountKey":account,"at":1000.0,"data":{"rateLimits":{"primary":{"usedPercent":10.0,"resetsAt":2000.0}}}}),
@@ -2103,11 +2103,11 @@ mod exit_logging_tests {
     #[tokio::test]
     async fn continuation_tick_reads_fresh_limits_once_per_account_and_fails_closed() {
         for (allowed, newer_rejection) in [(true, false), (false, false), (true, true)] {
-            let directory = tempfile::tempdir().unwrap();
+            let directory = tempfile::tempdir().expect("temporary state directory creates");
             let store = Arc::new(
                 studio_runtime_store::RuntimeStore::open(Some(directory.path()))
                     .await
-                    .unwrap(),
+                    .expect("runtime store opens"),
             );
             store.transaction_with(move |tx| {
                 for id in ["a", "b"] {
@@ -2119,25 +2119,31 @@ mod exit_logging_tests {
                 // A recent cache entry cannot replace the provider read at the due time.
                 studio_runtime_store::SyncDocumentsRepository::put_entity(tx,"workspace","current",serde_json::json!({"rateLimitsByAccount":{"default":{"accountKey":"default","at":999.0,"data":{"rateLimits":{"primary":{"usedPercent":0.0}}}}}}),false)?;
                 Ok::<_,studio_runtime_store::StoreError>(())
-            }).await.unwrap();
+            }).await.expect("usage resume fixture writes");
             let port = TickLimits {
                 calls: std::sync::atomic::AtomicUsize::new(0),
                 allowed,
                 newer_rejection: newer_rejection.then(|| store.clone()),
             };
-            run_continuation_tick(store.clone(), 1000.0, Some(&port), &mut ContinuationTickState::default())
-                .await
-                .unwrap();
+            run_continuation_tick(
+                store.clone(),
+                1000.0,
+                Some(&port),
+                &mut ContinuationTickState::default(),
+            )
+            .await
+            .expect("continuation tick completes");
             assert_eq!(port.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
-            let db = store.test_reader().unwrap();
+            let db = store.test_reader().expect("test reader opens");
             let record: String = db
                 .query_row(
                     "SELECT record FROM runtime_usage_resumes WHERE id='a'",
                     [],
                     |row| row.get(0),
                 )
-                .unwrap();
-            let record: serde_json::Value = serde_json::from_str(&record).unwrap();
+                .expect("usage resume record loads");
+            let record: serde_json::Value =
+                serde_json::from_str(&record).expect("usage resume JSON parses");
             assert_eq!(
                 record["status"],
                 if allowed && !newer_rejection {
@@ -2147,14 +2153,24 @@ mod exit_logging_tests {
                 }
             );
             if !allowed || newer_rejection {
-                assert!(record["dueAt"].as_f64().unwrap() > 1000.0);
+                assert!(
+                    record["dueAt"]
+                        .as_f64()
+                        .expect("resume deadline is numeric")
+                        > 1000.0
+                );
             }
             drop(db);
-            run_continuation_tick(store.clone(), 1000.0, Some(&port), &mut ContinuationTickState::default())
-                .await
-                .unwrap();
+            run_continuation_tick(
+                store.clone(),
+                1000.0,
+                Some(&port),
+                &mut ContinuationTickState::default(),
+            )
+            .await
+            .expect("replayed continuation tick completes");
             assert_eq!(port.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
-            let count:i64=store.test_reader().unwrap().query_row("SELECT count(*) FROM runtime_events WHERE id IN ('usage-resume:a','usage-resume:b')",[],|row|row.get(0)).unwrap();
+            let count:i64=store.test_reader().expect("test reader opens").query_row("SELECT count(*) FROM runtime_events WHERE id IN ('usage-resume:a','usage-resume:b')",[],|row|row.get(0)).expect("resume event count loads");
             assert_eq!(count, if allowed && !newer_rejection { 2 } else { 0 });
         }
     }
@@ -2167,9 +2183,10 @@ mod exit_logging_tests {
                 .await
                 .expect("runtime store"),
         );
-        let changed = run_continuation_tick(store, 0.0, None, &mut ContinuationTickState::default())
-            .await
-            .expect("a tick with nothing due succeeds");
+        let changed =
+            run_continuation_tick(store, 0.0, None, &mut ContinuationTickState::default())
+                .await
+                .expect("a tick with nothing due succeeds");
         assert!(!changed.changed);
     }
 
@@ -2319,10 +2336,14 @@ mod exit_logging_tests {
             state.errors.len(),
             usize::try_from(super::CONTINUATION_TICK_AGENT_LIMIT).expect("positive batch limit")
         );
-        let second =
-            run_continuation_tick(store, 2.0 + CONTINUATION_FAILURE_RETRY_SECONDS, None, &mut state)
-                .await
-                .expect("next batch");
+        let second = run_continuation_tick(
+            store,
+            2.0 + CONTINUATION_FAILURE_RETRY_SECONDS,
+            None,
+            &mut state,
+        )
+        .await
+        .expect("next batch");
         assert!(second.failed);
         assert_eq!(
             state.errors.len(),
@@ -2376,10 +2397,14 @@ mod exit_logging_tests {
             )?;
             Ok::<_, studio_runtime_store::StoreError>(())
         }).await.expect("repair cursor");
-        let recovered =
-            run_continuation_tick(store, 2.0 + CONTINUATION_FAILURE_RETRY_SECONDS, None, &mut state)
-                .await
-                .expect("repaired cursor tick");
+        let recovered = run_continuation_tick(
+            store,
+            2.0 + CONTINUATION_FAILURE_RETRY_SECONDS,
+            None,
+            &mut state,
+        )
+        .await
+        .expect("repaired cursor tick");
         assert!(!recovered.failed);
         assert!(recovered.changed);
         assert!(
