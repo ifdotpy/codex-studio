@@ -1,11 +1,27 @@
-use crate::prepared_python_support;
-
 use serde_json::{Value, json};
-use std::{path::Path, process::Command, sync::Mutex};
+use std::{path::Path, sync::Mutex};
 use studio_runtime_services::account_session_runtime::{
     AccountSessionError, AccountSessionFuture, AccountSessionPort, LimitsSnapshot, LoginRequest,
     limits,
 };
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LimitsCase {
+    record: Value,
+    fresh: Value,
+    cached: bool,
+    result: Value,
+    calls: Vec<[String; 2]>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProfileCase {
+    options: serde_json::Map<String, Value>,
+    home: String,
+    result: Value,
+}
 
 struct Session {
     record: Value,
@@ -37,38 +53,26 @@ impl AccountSessionPort for Session {
 }
 
 #[tokio::test]
-#[allow(clippy::disallowed_methods)]
 async fn limits_match_real_python_route_for_missing_null_empty_and_present_fields() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let python = prepared_python_support::prepared_python(&root.join("../../apps/server/src"));
-    let output = Command::new(python)
-        .arg(root.join("tests/wave7_p18_limits_oracle.py"))
-        .output()
-        .expect("Python oracle");
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let cases: Vec<Value> = serde_json::from_slice(&output.stdout).expect("Python-written corpus");
+    let cases: Vec<LimitsCase> = serde_json::from_str(include_str!("wave7_p18_limits_corpus.json"))
+        .expect("frozen limits corpus");
     assert_eq!(cases.len(), 32);
     for (index, case) in cases.into_iter().enumerate() {
         let session = Session {
-            record: case["record"].clone(),
-            fresh: case["fresh"].clone(),
+            record: case.record,
+            fresh: case.fresh,
             calls: Mutex::default(),
         };
-        let response = limits(
-            &session,
-            "fixture",
-            case["cached"].as_bool().expect("cached"),
-        )
-        .await
-        .expect("valid limits response");
-        assert_eq!(response, case["result"], "case {index}");
+        let response = limits(&session, "fixture", case.cached)
+            .await
+            .expect("valid limits response");
+        assert_eq!(response, case.result, "case {index}");
         assert_eq!(
-            json!(*session.calls.lock().expect("calls")),
-            case["calls"],
+            *session.calls.lock().expect("calls"),
+            case.calls
+                .iter()
+                .map(|call| json!(call))
+                .collect::<Vec<_>>(),
             "case {index}"
         );
     }
@@ -130,26 +134,15 @@ async fn absent_consumers_are_named_refusals() {
 }
 
 #[test]
-#[allow(clippy::disallowed_methods)]
 fn profile_normalization_matches_python() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let output = Command::new(prepared_python_support::prepared_python(
-        &root.join("../../apps/server/src"),
-    ))
-    .arg(root.join("tests/wave7_p18_profile_oracle.py"))
-    .output()
-    .expect("oracle");
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let cases: Vec<Value> = serde_json::from_slice(&output.stdout).expect("corpus");
+    let cases: Vec<ProfileCase> =
+        serde_json::from_str(include_str!("wave7_p18_profile_corpus.json"))
+            .expect("frozen profile corpus");
     assert_eq!(cases.len(), 27);
     for case in cases {
         let result = studio_runtime_services::account_session_runtime::normalize_profile(
-            case["options"].as_object().expect("options").clone(),
-            Path::new(case["home"].as_str().expect("home")),
+            case.options.clone(),
+            Path::new(&case.home),
         );
         let normalized = result
             .as_ref()
@@ -159,9 +152,9 @@ fn profile_normalization_matches_python() {
             .unwrap_or(Value::Null);
         assert_eq!(
             normalized,
-            case["result"],
-            "{}; normalization error: {:?}",
-            case["options"],
+            case.result,
+            "{:?}; normalization error: {:?}",
+            case.options,
             result.err()
         );
     }

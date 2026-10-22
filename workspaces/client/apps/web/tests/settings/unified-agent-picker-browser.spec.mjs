@@ -8,7 +8,7 @@ import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, expect } from "../playwright.mjs";
-import { chooseSetupValue } from "../../../../../runtime/apps/server/tests/setup-controls.mjs";
+import { chooseSetupValue } from "../fixtures/setup-controls.mjs";
 
 // Production components with isolated HTTP responses. No live account or model request.
 test("unified agent picker roles, accounts and project/shared flows", async ({

@@ -13,7 +13,6 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { signingCheckReport } from "../../../../client/apps/desktop/signing-check.mjs";
-import { resolveRuntimePython } from "../../../../client/apps/native/package-flow.mjs";
 
 const identity = "0123456789ABCDEF0123456789ABCDEF01234567";
 const password = "fixture-password-that-must-never-appear";
@@ -219,28 +218,4 @@ test("the unlock error names the security cause and hides the password", () => {
     { encoding: "utf8" },
   );
   assert.match(output, /^PASS: /);
-});
-
-test("the package flow resolves the runtime interpreter", () => {
-  assert.equal(
-    resolveRuntimePython({ CODEX_AGENTS_PYTHON: "/chosen/python" }, () => {
-      throw new Error("must not run");
-    }),
-    "/chosen/python",
-  );
-  assert.equal(
-    resolveRuntimePython({}, () => `warm up\n${process.execPath}\n`),
-    process.execPath,
-  );
-  for (const run of [
-    () => {
-      throw new Error("Command failed: python3 codex_python.py\nstderr text");
-    },
-    () => "not-a-path\n",
-    () => "/does/not/exist/python\n",
-  ])
-    assert.throws(
-      () => resolveRuntimePython({}, run),
-      /Could not resolve the prepared runtime interpreter .*Set CODEX_AGENTS_PYTHON/,
-    );
 });

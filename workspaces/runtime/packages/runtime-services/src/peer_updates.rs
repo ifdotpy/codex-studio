@@ -6,9 +6,8 @@
 //! (`update.release`). Every action is a read of the installed app. The archive
 //! is a cache file in `<state>/server-exports/`.
 //!
-//! The Python backend (`apps/server/src/codex_peer_updates.py`) owns the
-//! puller and the wire limits below until that backend is removed.
-//! `wire_contract_matches_the_python_owner` keeps both sides equal.
+//! This module owns the wire limits and shared installer values.
+//! `desktop_installer_contract_matches_rust_owner` checks the retained desktop helper.
 
 use std::collections::{HashMap, HashSet};
 use std::io::{Read, Seek, SeekFrom};
@@ -23,46 +22,41 @@ use sha2::{Digest, Sha256};
 use crate::bounded_child::{self, ChildError};
 use crate::multi_server_transport_limits::MAX_RESPONSE_BYTES;
 
-/// The orchestration actions of this module. Owner: `ACTIONS` in codex_peer_updates.py.
+/// The orchestration actions of this module.
 pub const ACTIONS: [&str; 4] = [
     "update.offer",
     "update.export",
     "update.chunk",
     "update.release",
 ];
-/// The only app that offers its build. Owner: `INSTALLED_APP` in codex_peer_updates.py.
+/// The only app that offers its build.
 pub const INSTALLED_APP: &str = "/Applications/Codex Studio.app";
 /// The build stamp that package.mjs writes, relative to the app bundle.
-/// Owner: `BUILD_STAMP` in codex_peer_updates.py.
+/// Owner of the path consumed by desktop/desktop_updates.py.
 const BUILD_STAMP: &str = "Contents/Resources/studio-build.json";
 /// Raw archive bytes in one `update.chunk` answer. Unit: bytes.
-/// Owner: `CHUNK_BYTES` in codex_peer_updates.py (the puller refuses a longer chunk).
+/// The offering service owns this chunk limit.
 pub const CHUNK_BYTES: usize = 512 * 1024;
 /// Largest app archive that this server offers. Unit: bytes.
-/// Owner: `MAX_ARCHIVE_BYTES` in codex_peer_updates.py.
+/// The offering service owns this archive limit.
 pub const MAX_ARCHIVE_BYTES: u64 = 1024 * 1024 * 1024;
 /// Time that one `update.export` request waits for the archive before it
-/// answers `preparing`. The puller waits for an answer up to
-/// `EXPORT_WAIT_SECONDS` (90, codex_peer_updates.py) plus 30 seconds and asks
-/// again 10 seconds after `preparing`, so any shorter wait is valid. The wait is
-/// short so that a request does not hold the 20-second shutdown grace of the
-/// runtime server.
+/// answers `preparing`. The wait is short so that a request does not hold
+/// the runtime server's shutdown grace.
 pub const EXPORT_WAIT: Duration = Duration::from_secs(5);
-/// Time for the ditto run that archives the app. Owner: `DITTO_SECONDS` in codex_peer_updates.py.
+/// Time for one ditto archive or install copy, in seconds; shared with the desktop installer.
 const DITTO_TIMEOUT: Duration = Duration::from_secs(1800);
-/// Time for one codesign run. Owner: `CODESIGN_SECONDS` in codex_peer_updates.py.
+/// Time for one codesign run, in seconds; shared with the desktop installer.
 const CODESIGN_TIMEOUT: Duration = Duration::from_secs(300);
 /// Age after which an update archive is removed although no puller released it.
-/// Owner: `EXPORT_AGE` in codex_multi_server_orchestration.py.
 const EXPORT_AGE: Duration = Duration::from_secs(86_400);
 /// The folder of the archive files; Git bundles of the same channel use it too.
 const EXPORTS_DIR: &str = crate::server_git::EXPORT_FOLDER;
-/// File name suffixes of one export. Owner: `EXPORT_SUFFIX` and
-/// `EXPORT_METADATA_SUFFIX` in codex_peer_updates.py.
+/// File name suffixes of one export.
 const EXPORT_SUFFIX: &str = ".zip";
 const PARTIAL_SUFFIX: &str = ".zip.partial";
 const METADATA_SUFFIX: &str = ".json";
-/// Characters of a tool error that a refusal keeps (Python `_tail`).
+/// Characters of a tool error that a refusal keeps.
 const ERROR_TAIL_CHARS: usize = 300;
 const CODESIGN: &str = "/usr/bin/codesign";
 const DITTO: &str = "/usr/bin/ditto";
@@ -1041,34 +1035,24 @@ mod tests {
     }
 
     #[test]
-    fn wire_contract_matches_the_python_owner() {
-        const PEER_UPDATES: &str = include_str!(concat!(
+    fn desktop_installer_contract_matches_rust_owner() {
+        const INSTALLER: &str = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../apps/server/src/codex_peer_updates.py"
+            "/../../../client/apps/desktop/desktop_updates.py"
         ));
-        const ORCHESTRATION: &str = include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../apps/server/src/codex_multi_server_orchestration.py"
-        ));
+        // Rust owns the shared values; the retained Python helper is the consumer.
         for line in [
-            "INSTALLED_APP = Path('/Applications/Codex Studio.app')",
-            "BUILD_STAMP = Path('Contents/Resources/studio-build.json')",
-            "CHUNK_BYTES = 512 * 1024",
-            "MAX_ARCHIVE_BYTES = 1024 * 1024 * 1024",
-            "EXPORT_WAIT_SECONDS = 90",
-            "meta = self._call(server, 'update.export', {'builtAt': build['builtAt']}, EXPORT_WAIT_SECONDS + 30)",
-            "EXPORT_POLL_SECONDS = 10",
-            "folder / (name + EXPORT_SUFFIX + '.partial')",
-            "DITTO_SECONDS = 1800",
-            "CODESIGN_SECONDS = 300",
-            "EXPORTS_DIR = 'server-exports'",
-            "EXPORT_SUFFIX = '.zip'",
-            "EXPORT_METADATA_SUFFIX = '.json'",
-            "ACTIONS = frozenset({'update.offer', 'update.export', 'update.chunk', 'update.release'})",
+            format!("BUILD_STAMP = Path('{}')", super::BUILD_STAMP),
+            format!("DITTO_SECONDS = {}", super::DITTO_TIMEOUT.as_secs()),
+            format!("CODESIGN_SECONDS = {}", super::CODESIGN_TIMEOUT.as_secs()),
+            format!("DITTO = '{}'", super::DITTO),
+            format!("CODESIGN = '{}'", super::CODESIGN),
         ] {
-            assert!(PEER_UPDATES.contains(line), "codex_peer_updates.py: {line}");
+            assert!(
+                INSTALLER.lines().any(|actual| actual == line),
+                "desktop_updates.py must consume peer_updates.rs owner: {line}"
+            );
         }
-        assert!(ORCHESTRATION.contains("EXPORT_AGE = 86400"));
         assert_eq!(super::INSTALLED_APP, "/Applications/Codex Studio.app");
         assert_eq!(super::BUILD_STAMP, "Contents/Resources/studio-build.json");
         assert_eq!(CHUNK_BYTES, 512 * 1024);
