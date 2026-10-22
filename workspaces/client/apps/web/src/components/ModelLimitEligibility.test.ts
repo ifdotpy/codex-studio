@@ -70,6 +70,8 @@ const account: Account = {
   label: "Claude",
   status: "changed",
   provider: "claude",
+  home: "/fixture",
+  source: "Fixture",
   organization: expected,
   organizationMismatch: { expected, observed },
 };

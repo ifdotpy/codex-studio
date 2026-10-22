@@ -2864,6 +2864,8 @@ export interface components {
       id: string;
       /** Label */
       label: string;
+      organization?: components["schemas"]["ClaudeOrganization"];
+      organizationMismatch?: components["schemas"]["ClaudeOrganizationMismatch"];
       /**
        * Plan
        * @default null
@@ -9935,6 +9937,14 @@ export interface components {
       launchArgs?: null | string;
     } & {
       [key: string]: components["schemas"]["JsonValue"];
+    };
+    ClaudeOrganization: {
+      idSuffix: string;
+      name: string | null;
+    };
+    ClaudeOrganizationMismatch: {
+      expected: components["schemas"]["ClaudeOrganization"];
+      observed: components["schemas"]["ClaudeOrganization"];
     };
     /** ClaudePreInputRetryRecordResponse */
     ClaudePreInputRetryRecordResponse: {
@@ -25189,6 +25199,24 @@ export interface components {
       /** Requestid */
       requestId: string;
     };
+    UsageEligibility: {
+      accountKey: string;
+      agentId: string;
+      allowed: boolean;
+      buckets: {
+        id: string;
+        overageAllowed: boolean;
+      }[];
+      canRun: boolean;
+      checkedAt: number;
+      fresh: boolean;
+      model: string;
+      /** @enum {string} */
+      overage: "allowed" | "in_use" | "rejected" | "unavailable";
+      provider: string;
+      resetAt: number | null;
+      validUntil: number | null;
+    };
     /**
      * UsageLimitsData
      * @description Known usage projection plus account-service fields passed through unchanged.
@@ -25261,6 +25289,7 @@ export interface components {
       checkedAt?: null | number;
       /** @default null */
       data?: components["schemas"]["UsageLimitsData"] | null;
+      eligibility?: components["schemas"]["UsageEligibility"];
       /**
        * Error
        * @default null
@@ -31623,6 +31652,7 @@ export interface operations {
     parameters: {
       query?: {
         account_key?: string;
+        agent?: string;
         cached?: "1";
       };
       header?: never;

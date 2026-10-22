@@ -31,7 +31,7 @@ export function useLimitEligibility(agent: Agent, limits: Json | null) {
       },
     })
       .then((value) => {
-        if (active) setResult({ key, limits: value });
+        if (active && value) setResult({ key, limits: value });
       })
       .catch(() => {
         if (active) setResult(null);
