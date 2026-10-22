@@ -247,6 +247,10 @@ struct Core {
     entries: Mutex<HashMap<CredentialLocation, Arc<Entry>>>,
     /// Advanced when any location's status may have changed.
     changes: watch::Sender<u64>,
+    #[cfg(test)]
+    publications: Mutex<HashMap<CredentialLocation, watch::Sender<Option<u64>>>>,
+    #[cfg(test)]
+    invalidation_gates: Mutex<HashMap<CredentialLocation, InvalidationGate>>,
 }
 
 impl Default for AuthCache {
@@ -255,6 +259,10 @@ impl Default for AuthCache {
             core: Arc::new(Core {
                 entries: Mutex::default(),
                 changes: watch::channel(0).0,
+                #[cfg(test)]
+                publications: Mutex::default(),
+                #[cfg(test)]
+                invalidation_gates: Mutex::default(),
             }),
             watcher: Mutex::new(None),
         }
@@ -341,7 +349,13 @@ impl CredentialWatcher {
                             .unwrap_or_else(PoisonError::into_inner)
                             .insert(location.clone(), digest);
                         if previous != Some(digest) {
+                            #[cfg(test)]
+                            core.wait_for_invalidation_gate(&location);
                             core.invalidate(&location);
+                        }
+                        #[cfg(test)]
+                        {
+                            let _previous = core.publication(&location).send_replace(Some(digest));
                         }
                     }
                 }
@@ -484,6 +498,92 @@ impl AuthCache {
         }
         if let Some(watcher) = slot.as_mut() {
             watcher.set(locations);
+        }
+    }
+}
+
+/// A deterministic watcher boundary for tests, scoped to one credential location.
+#[cfg(test)]
+struct InvalidationGate {
+    reached: tokio::sync::oneshot::Sender<()>,
+    resume: mpsc::Receiver<()>,
+}
+
+#[cfg(test)]
+pub(crate) struct HeldInvalidation {
+    pub(crate) reached: tokio::sync::oneshot::Receiver<()>,
+    resume: mpsc::Sender<()>,
+}
+
+#[cfg(test)]
+impl Drop for HeldInvalidation {
+    fn drop(&mut self) {
+        // A failed test must never leave the shared watcher blocked.
+        self.resume.send(()).ok();
+    }
+}
+
+#[cfg(test)]
+impl AuthCache {
+    pub(crate) fn hold_invalidation(&self, location: &CredentialLocation) -> HeldInvalidation {
+        let (reached, received) = tokio::sync::oneshot::channel();
+        let (resume, wait) = mpsc::channel();
+        assert!(
+            self.core
+                .invalidation_gates
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .insert(
+                    location.clone(),
+                    InvalidationGate {
+                        reached,
+                        resume: wait
+                    }
+                )
+                .is_none()
+        );
+        HeldInvalidation {
+            reached: received,
+            resume,
+        }
+    }
+
+    pub(crate) fn watch_is_published(&self, location: &CredentialLocation) -> bool {
+        *self.core.publication(location).borrow() == Some(location.identity_digest())
+    }
+
+    /// Wait for this location's current identity to be published by the watcher,
+    /// ignoring status-read and unrelated process-wide auth signals.
+    pub(crate) async fn watch_published(&self, location: &CredentialLocation) {
+        let expected = location.identity_digest();
+        let mut published = self.core.publication(location).subscribe();
+        published
+            .wait_for(|digest| *digest == Some(expected))
+            .await
+            .expect("publication sender remains in the cache");
+    }
+}
+
+#[cfg(test)]
+impl Core {
+    fn publication(&self, location: &CredentialLocation) -> watch::Sender<Option<u64>> {
+        self.publications
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .entry(location.clone())
+            .or_insert_with(|| watch::channel(None).0)
+            .clone()
+    }
+
+    fn wait_for_invalidation_gate(&self, location: &CredentialLocation) {
+        let gate = self
+            .invalidation_gates
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(location);
+        if let Some(gate) = gate {
+            gate.reached.send(()).ok();
+            gate.resume.recv().ok();
         }
     }
 }

@@ -1101,7 +1101,9 @@ pub(crate) async fn prepare_with_connection_id(
     }
     let selection = admit(Arc::clone(&store), resources, intent).await?;
     let token = workspace(Arc::clone(&store), resources, intent).await?;
-    prepare_ready(
+    // The ready stage exceeds the workspace future-size limit; box it at its
+    // single owner so every caller awaits a small future.
+    Box::pin(prepare_ready(
         store,
         resources,
         intent,
@@ -1111,7 +1113,7 @@ pub(crate) async fn prepare_with_connection_id(
         Some(selection),
         token,
         None,
-    )
+    ))
     .await
 }
 
