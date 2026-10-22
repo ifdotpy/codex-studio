@@ -7,6 +7,8 @@ use studio_runtime_providers::ProviderKind;
 
 /// Bounds each wait for a held turn; unit: wall time.
 const HOLD_DEADLINE: std::time::Duration = std::time::Duration::from_secs(120);
+/// Virtual interval that would expose a polling wake; unit: Tokio time.
+const NO_WAKE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(7 * 24 * 3600);
 const SIGNED_IN: &str = "fixture@example.test";
 const OTHER: &str = "other@example.test";
 
@@ -74,7 +76,12 @@ impl Account {
                 std::fs::write(&binary, format!("#!/bin/sh\nprintf '%s' '{status}'\n")).unwrap();
                 use std::os::unix::fs::PermissionsExt;
                 std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
-                std::fs::write(self.home.join(".credentials.json"), state).unwrap();
+                let credentials = email.map_or_else(
+                    || json!({}),
+                    |_| json!({"claudeAiOauth": {"accessToken": state}}),
+                );
+                std::fs::write(self.home.join(".credentials.json"), credentials.to_string())
+                    .unwrap();
             }
         }
     }
@@ -464,9 +471,29 @@ async fn held_start_wakes_nothing_until_an_account_change() {
         let state = State::new().await;
         agents(&state, kind, 0).await;
         let account = Account::new(&state, kind);
+        let profile = crate::account_driver::AuthProfile {
+            provider: kind,
+            home: account.home.clone(),
+            claude_options: (kind == ProviderKind::Claude).then(|| {
+                json!({
+                    "binaryPath": account.home.join("fake-claude"),
+                    "configDir": account.home, "customModels": []
+                })
+            }),
+        };
+        let location = crate::provider_adapter::adapter(kind).credential_location(&profile);
+        let cache = crate::account_driver::auth_cache::shared();
+        // Finish the initial sign-in before changing the identity again.
+        tokio::time::resume();
+        cache.watch_published(&location).await;
+        let mut invalidation = cache.hold_invalidation(&location);
         account.sign_out();
-        // Settle the signed-out status, so its own change is already published.
+        (&mut invalidation.reached).await.unwrap();
+        // A synchronous read settles status, but cannot finish the held watcher.
         account.driver.get("default").unwrap();
+        // Settle the actual publication before the release loop subscribes.
+        drop(invalidation);
+        cache.watch_published(&location).await;
         let agent = state.agent.clone();
         let reason = account.sign_in_message();
         state
@@ -493,7 +520,12 @@ async fn held_start_wakes_nothing_until_an_account_change() {
         ));
         assert_eq!(seen.recv().await, Some(None));
         assert_eq!(seen.recv().await, Some(Some(0)), "signed out: stays held");
-        tokio::time::sleep(std::time::Duration::from_secs(7 * 24 * 3600)).await;
+        assert!(
+            cache.watch_is_published(&location),
+            "the signed-out credential invalidation must be published before measuring no wakes"
+        );
+        tokio::time::pause();
+        tokio::time::advance(NO_WAKE_INTERVAL).await;
         assert!(
             seen.try_recv().is_err(),
             "a held start woke the release loop"
@@ -506,5 +538,10 @@ async fn held_start_wakes_nothing_until_an_account_change() {
         stop.send(true).unwrap();
         task.await.unwrap();
         assert_eq!(state.record().await["status"], "queued");
+        // The global auth signal also carries the login invalidation; finish it
+        // before the next provider's no-wake interval.
+        tokio::time::resume();
+        cache.watch_published(&location).await;
+        tokio::time::pause();
     }
 }

@@ -441,7 +441,7 @@ async fn ready(
     let connection_id = run.connection_id.clone();
     let loaded = run.loaded.clone();
     let ready = run.bridge.prepare_run("preparation", move |s| async move {
-        preparation::prepare_ready(
+        Box::pin(preparation::prepare_ready(
             Arc::clone(&s),
             &r,
             &i,
@@ -451,7 +451,7 @@ async fn ready(
             selection,
             token,
             loaded,
-        )
+        ))
         .await
     });
     Box::pin(stage("turn_preparation.ready", ready)).await

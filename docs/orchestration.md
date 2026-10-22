@@ -82,12 +82,27 @@ Provider session expiry keeps request order:
    predecessor releases the thread. Written requests retain uncertain identities.
 4. Pending outcomes and remaining actions stay owned by the session for shutdown.
 
-Workers appear on the right. Select a worker to read its conversation, then select **Lead** to return.
-On a narrow screen, **Team** opens the worker panel.
-Worker cards show the original assignment and the last report from a completed
-turn. Open each excerpt to read more. Reports do not imply acceptance by the lead.
-The team summary counts workers who are active, need your answer, or have finished.
-Deferred questions remain unanswered and leave the attention count.
+Transcript reasoning projection follows the stored row order:
+
+1. Read one reasoning record from the page's time interval.
+2. Decode and validate it, including records for turns absent from the page.
+3. Add its timing to the existing groups and drop the raw record before reading
+   the next. Group intervals remain retained until the page is assembled.
+
+Provider payload ownership follows readiness and delivery:
+
+1. Write readiness borrows the front action; errors leave that action retained.
+2. A retained result moves into its database transaction and back to its request.
+3. Before checkpoint, only a committed reply with a waiter is copied for delivery;
+   its correlation stays retained until checkpoint, including after waiter loss.
+4. At checkpoint the result moves to its waiter. Unknown correlation stays
+   available for exact late evidence without resending the request.
+   Workers appear on the right. Select a worker to read its conversation, then select **Lead** to return.
+   On a narrow screen, **Team** opens the worker panel.
+   Worker cards show the original assignment and the last report from a completed
+   turn. Open each excerpt to read more. Reports do not imply acceptance by the lead.
+   The team summary counts workers who are active, need your answer, or have finished.
+   Deferred questions remain unanswered and leave the attention count.
 
 Assistant text stays visible in chronological order, outside tool disclosures.
 Only consecutive tool calls share a group. Groups start closed and retain the
@@ -797,6 +812,16 @@ consumes generated copies. Both backends use them:
 5. Recovery never resends that input. A late acceptance can bind the same retry
    to its existing turn; repeated recovery does not repeat the notice.
 
+## Starts held for authentication
+
+1. A turn whose account is signed out or changed keeps its input pending and
+   records the authentication reason on the agent.
+2. Account changes and published auth invalidations wake the release loop;
+   elapsed time alone does not wake it.
+3. When the account is ready again, the loop requeues the held input once.
+   Its paused-time witness waits for credential-watch publication before
+   measuring the interval without a wake, including process-wide auth signals.
+
 ## Stop and recovery
 
 **Stop agent** stops only the selected agent. **Stop team** stops its lead and all
@@ -1269,6 +1294,14 @@ the archive receipt. Repeated calls keep the same request result.
 `archive_finished` checks completed, failed, interrupted, and stopped paused
 descendants. It archives workers with safe workspaces or no workspace. The result reports
 the archive count, measured freed bytes, and a reason for each worker kept.
+The optional `reason` follows this flow:
+
+1. The tool accepts a string reason and rejects unrelated fields.
+2. If omitted, the [batch owner](../workspaces/runtime/packages/runtime-services/src/agent_management_store.rs)
+   supplies its default audit reason.
+3. Each archived worker stores that reason through the existing archive owner.
+4. Repeating the same request returns its receipt without rewriting the reason.
+
 The Rust backend runs the existing archive owner deepest-first. Safe Git cleanup
 removes the entire worktree, including ignored `target/` output, after preserving
 its commit under an archive ref. Dirty or unverified worktrees remain intact.
@@ -1279,6 +1312,16 @@ Set `unassign_work=true` on `archive` or `archive_finished` to return open assig
 tasks to the unassigned ready backlog. The archive and task changes commit in one
 transaction. Task results and decisions remain. The default keeps the
 `assigned_work` blocker. Active work and all other blockers still prevent archive.
+
+Archive commit and workspace cleanup follow one flow:
+
+1. Commit the authorized archive and retain its original receipt.
+2. Run cleanup for that worker only; unrelated pending workspaces stay separate.
+3. If cleanup fails, report the worker as archived with cleanup pending and the
+   original error as the workspace reason. Batch results count the archive and
+   include that reason among kept workspaces.
+4. Recover through the saved tool receipt after a lost response. A later archive
+   call preserves the original archive identity; uncertain effects stay held.
 
 After an image detach interruption, make a new `archive` call to finish detaching. After partial Git removal, make a new `archive` call to retry cleanup. Studio
 preserves the failed cleanup record and Git error. It can repair the exact saved
@@ -1442,6 +1485,16 @@ change with both options. Cross-machine Claude cache reuse remains unverified.
 
 1. The account worker applies a notification batch or stream flush in the existing lifecycle transaction.
 2. Dispatch stores normalized agent state, transcript changes, stream state and exact replay receipts.
-3. The lifecycle owner validates each final changed agent row and publishes its canonical renderer view once.
-4. Source state, receipts and renderer views commit together; a projection failure rolls them all back.
-5. Replaying committed journal identities returns the saved outcomes without publishing agents again.
+3. The lifecycle owner decodes, merges volatile fields and validates each final changed agent row once.
+4. Liveness, context and the canonical renderer view borrow that checked value in source row order; only storage and wire boundaries serialize it.
+5. Source state, receipts and renderer views commit together; a projection failure rolls them all back.
+6. Replaying committed journal identities returns the saved outcomes without decoding or publishing agents again.
+
+### Held child-result release
+
+1. The account registry captures wall time and monotonic time together before
+   reading the earliest held child-result deadline from SQLite.
+2. It converts the stored deadline using that same clock anchor, so waiting for
+   read admission or completion consumes the hold; an elapsed hold wakes at once.
+3. A failed read keeps the existing registry retry delay. The next wake remains
+   the earliest child-result release, archive, checkpoint, or worker retry.

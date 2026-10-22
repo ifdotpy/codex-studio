@@ -902,6 +902,36 @@ function fastTierCommands(root) {
       },
     },
     {
+      item: { name: "studio-runtime-services", ecosystem: "cargo" },
+      label: "agent decode ownership witness",
+      commands: [
+        [
+          "cargo",
+          [
+            "nextest",
+            "run",
+            "--locked",
+            "--no-tests",
+            "fail",
+            "--message-format",
+            "libtest-json-plus",
+            "-p",
+            "studio-runtime-services",
+            "--lib",
+            "-E",
+            nextestAnyOf([
+              "test(account_worker::tests::journal_publication::changed_agents_decode_once_through_final_publication)",
+            ]),
+          ],
+        ],
+      ],
+      options: {
+        selector: "journal final publication decode ownership",
+        reason:
+          "Check one decode and volatile merge per changed agent, no intermediate text round trip, no unrelated reads, and no replay work.",
+      },
+    },
+    {
       item: { name: "studio-runtime-store", ecosystem: "cargo" },
       label: "Rust state migration and SQL callback witnesses",
       commands: [
@@ -991,14 +1021,18 @@ function fastTierCommands(root) {
             "-E",
             nextestAnyOf([
               "test(account_worker::tests::callback_handoff::)",
+              "test(account_worker::tests::auth_hold::held_start_wakes_nothing_until_an_account_change)",
               "test(account_worker::tests::callback_head_of_line)",
               "test(stale_stamp_of_an_undelivered_steer_batch_does_not_block_the_next_turn)",
               "test(stamp_tests::)",
+              "test(transcript_reasoning_decodes_each_row_before_fetching_the_next)",
               "test(sync_policy::tests::monitor_)",
               "test(work_write::actor_tests::submission_manifest_boundaries_use_shared_limits)",
               "test(work_write::actor_tests::nonempty_file_submission_rechecks_cwd_and_replays_without_filesystem_work)",
               "test(ancestry_reads_only_the_checked_parent_chain)",
               "test(send_to_descendant_is_followup_input_while_parent_and_broadcast_are_chat)",
+              "test(provider_session_task::tests::payload_readiness_and_retained_delivery_do_not_clone_before_eligibility)",
+              "test(account_worker::retained::runtime::tests::payload_delivery_)",
               "test(account_worker::tests::retained::automatic_recovery_)",
               "test(account_worker::tests::retained::startup_first_pass_reconciles_exact_history_without_replaying_unknown_input)",
             ]),
@@ -1161,6 +1195,7 @@ function fastTierCommands(root) {
             "-E",
             nextestAnyOf([
               "test(exit_logging_tests::continuation_)",
+              "test(child_result_release_consumes_)",
               "test(/^history_runtime::tests::slow_filesystem_metadata_does_not_block_a_store_observer$/)",
               "test(/^analytics_history_checkpoint::terminal_error_repair_is_idempotent_for_exact_and_ambiguous_notices$/)",
               "test(/^monitor_start_preparation::/)",
@@ -1208,6 +1243,8 @@ function fastTierCommands(root) {
               "test(agent_progress_schema_matches_strict_serde_contract)",
               "test(disk_space::tests::)",
               "test(archive_finished_)",
+              "test(archive_finished_reason_survives_dispatch_and_receipt_replay)",
+              "test(committed_archive_)",
               "test(lead_archive_and_restore_run_through_the_lifecycle_owner)",
               "test(status_snapshot_tracks_capacity_finished_pages_and_revision_replay)",
               "test(workspace_pending_reuses_reserved_attempt)",

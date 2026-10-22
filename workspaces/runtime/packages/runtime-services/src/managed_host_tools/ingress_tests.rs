@@ -3372,6 +3372,83 @@ async fn archive_finished_runs_for_codex_and_claude_leads_through_tool_dispatch(
     }
 }
 
+#[tokio::test]
+async fn archive_finished_reason_survives_dispatch_and_receipt_replay() {
+    const SUPPLIED_REASON: &str = "Reviewed and integrated";
+    for (args, expected_reason) in [
+        (json!({"reason": SUPPLIED_REASON}), Some(SUPPLIED_REASON)),
+        (json!({}), Some("Finished worker cleanup")),
+        (json!({"reason": ""}), None),
+        (json!({"reason": null}), None),
+        (json!({"reason": true}), None),
+        (json!({"reason": SUPPLIED_REASON, "unexpected": true}), None),
+    ] {
+        let (_root, store, context) = fixture_arc().await;
+        store.transaction_with::<_, StoreError>(|tx| {
+            tx.execute(
+                "UPDATE runtime_agents SET record=json_set(record,'$.status','completed','$.turnId',NULL,\
+                 '$.inFlight',json('false'),'$.lastCompletedTurn','turn-1','$.lastCompletedTurnStatus','completed') \
+                 WHERE id=?1",
+                [WORKER],
+            )?;
+            Ok(())
+        }).await.expect("finished worker");
+        let mut args = args;
+        args["action"] = json!("archive_finished");
+        args["request_id"] = json!("archive-with-reason");
+        let frame = call(
+            &context,
+            "archive-with-reason",
+            "orchestration_agent_manage",
+            args,
+        );
+        let ports = shared_ports(
+            crate::provider_callbacks::managed_tool_ports(
+                &store,
+                &context,
+                &frame,
+                Arc::new(tokio::sync::Notify::new()),
+            )
+            .await
+            .expect("managed ports"),
+        );
+        let reply =
+            dispatch_with_managed_tools(Arc::clone(&store), &context, &frame, 30.0, ports.clone())
+                .await
+                .expect("dispatch");
+        let (success, value) = tool_reply(reply);
+        assert_eq!(success, expected_reason.is_some(), "{value}");
+        let worker_record = || {
+            studio_runtime_store::AgentRepository::get(
+                &store.test_reader().expect("reader"),
+                &studio_runtime_store::AgentId::from(WORKER),
+            )
+            .expect("worker lookup")
+            .expect("worker")
+            .value()
+        };
+        let before_replay = worker_record();
+        if let Some(reason) = expected_reason {
+            let report: crate::agent_management_store::ArchiveFinishedResult =
+                serde_json::from_value(value.clone()).expect("archive summary");
+            assert_eq!(report.archived, 1);
+            assert_eq!(before_replay["agentArchive"]["reason"], reason);
+            let replay =
+                dispatch_with_managed_tools(Arc::clone(&store), &context, &frame, 31.0, ports)
+                    .await
+                    .expect("replay");
+            assert_eq!(tool_reply(replay), (success, value));
+            assert_eq!(worker_record(), before_replay);
+        } else {
+            assert!(
+                before_replay.get("agentArchive").is_none(),
+                "{before_replay}"
+            );
+            assert!(before_replay.get("deletedAt").is_none(), "{before_replay}");
+        }
+    }
+}
+
 // Count ancestry SQL separately from fixture setup and unrelated routing work.
 thread_local! {
     static ANCESTRY_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
