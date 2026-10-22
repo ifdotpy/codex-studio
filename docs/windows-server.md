@@ -1,5 +1,9 @@
 # Windows server and worker environments
 
+> Historical implementation record: Python backend paths and commands below
+> refer to the removed implementation. Use [testing](testing.md) and the
+> [CLI guide](cli.md) for current Rust commands.
+
 Status: implementation record, 2026-10-08. The Windows machine is
 `kukuka-win`. It runs a native Windows Studio server beside a separate Studio
 Linux server inside Windows Subsystem for Linux 2 (WSL2).

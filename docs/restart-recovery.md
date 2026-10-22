@@ -393,16 +393,8 @@ SERVER=/absolute/path/to/studio-runtime-server
 
 Run the isolated recovery checks:
 
-```sh
-python3 -B workspaces/runtime/apps/server/tests/restart-recovery-contract.py
-python3 -B workspaces/runtime/apps/server/tests/monitor-restart-contract.py
-python3 -B workspaces/runtime/apps/server/tests/terminal-history-restart-contract.py
-pnpm --filter codex-agents-desktop run test
-pnpm --filter codex-agents-web run test:restart
-pnpm --filter codex-agents-web run test:rxdb-cache
-pnpm --filter codex-agents-web run test:display
-pnpm --filter codex-agents-web run test:diagnostics
-```
+The former Python backend command has been removed. See [testing](testing.md)
+for current Rust checks.
 
 These checks exercise abrupt process exit, backend and renderer failure, receipt
 recovery, duplicate prevention, and explicit pauses. A simulated crash does not

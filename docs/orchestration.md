@@ -271,7 +271,7 @@ On iPhone, Save a copy uses the system share sheet when file sharing is availabl
 Other browsers use an explicit download fallback.
 
 The file API limits inline previews to the server-owned
-[workspace preview byte cap](../workspaces/runtime/apps/server/src/codex_shared_values.py).
+[workspace preview byte cap](../workspaces/runtime/packages/runtime-schema/src/shared_values.rs).
 Native file actions remain available when that limit prevents a preview.
 Table previews show at most 200 rows and 100 columns.
 Their text parser stops after 1,048,576 UTF-16 code units.
@@ -329,12 +329,10 @@ The lead receives these additional tools:
 | `orchestration_request`        | List, recover, or cancel your own durable tool requests.                                                                     |
 | `orchestration_sign_in`        | Show the person a sign-in card for a link to open. Every agent has it. See docs/vm-browser-bridge.md, section 7.             |
 
-Current sender tool declarations in the Rust preparation bundle are checked against
-[`codex_runtime.TOOLS`](../workspaces/runtime/apps/server/src/codex_runtime.py).
-After changing those declarations, refresh the current bundle with
-`python3 workspaces/runtime/apps/server/src/codex_python.py --exec -B workspaces/runtime/apps/server/src/generate_delivery_tools.py --write`.
-The fast delivery contract checks this production bundle. Historical native tool
-snapshots remain frozen for existing sessions.
+Current sender tool declarations and generated delivery bundles are owned by the
+Rust runtime schema. Use `pnpm run contracts:generate` after changing the owner,
+and `just contracts-check` to check drift. Historical native tool snapshots stay
+frozen for existing sessions.
 
 After delegation, the lead can finish its turn. The runtime sends each child
 result into an active lead turn or starts a turn when idle, including after a final answer.
@@ -1022,7 +1020,7 @@ The settings are stored with the account and edited under "Turn start limits"
 on its account card; a change applies to waiting turns at once. A new account
 takes its provider's defaults. The bounds, the defaults, and the measurements
 behind them belong to the
-[shared values](../workspaces/runtime/apps/server/src/codex_shared_values.py)
+[shared values](../workspaces/runtime/packages/runtime-schema/src/shared_values.rs)
 (`ACCOUNT_START_*`, `ACCOUNT_RUNNING_TURNS_*`); the gate is
 [`account_start_gate`](../workspaces/runtime/packages/runtime-services/src/account_start_gate.rs).
 A worker spawned without an account prefers an account below its running-turn
@@ -1054,35 +1052,11 @@ do not run a fresh save to discover whether the previous one applied.
 
 ## Verification
 
-```bash
-pnpm install --frozen-lockfile
-pnpm --filter codex-agents-web test
-pnpm --filter codex-agents-web run format:check
-python3 workspaces/runtime/apps/server/tests/runtime-contract.py
-python3 workspaces/runtime/apps/server/tests/turn-start-contract.py
-python3 workspaces/runtime/apps/server/tests/prepare-steer-contract.py
-python3 workspaces/runtime/apps/server/tests/monitor-lifecycle-contract.py
-python3 workspaces/runtime/apps/server/tests/harness-response-contract.py
-python3 workspaces/runtime/apps/server/tests/canvas-contract.py
-node workspaces/runtime/apps/server/tests/portable-smoke.mjs
-```
-
-`runtime-contract.py` exercises a 40-worker team, bounded concurrency, parent wakeup,
-Monitor exit delivery without model polling, stop races, duplicate events, budgets,
-worktree isolation and restart behavior against a protocol fixture.
-The browser test checks the production React bundle in headless Chrome with an isolated
-HTTP server and SQLite database. It covers complaints, agent chats, sidebar actions,
-context, limits, a lost creation response, and command monitoring. The model protocol
-is a fixture; this test does not call a live model.
-
-The optional live check uses the configured account and model:
-
-```bash
-python3 workspaces/runtime/apps/server/tests/runtime-live.py --run
-```
-
-It requires one lead, two reviewers, one successful command watch and all three
-completion events delivered to the lead. The test prints its evidence directory.
+1. Run `pnpm install --frozen-lockfile` for the locked tools.
+2. Run `just check studio-runtime-services` for runtime changes and
+   `pnpm --filter codex-agents-web test` for renderer changes.
+3. Run `just test-fast` before a PR and `just test-comprehensive` on the
+   publication commit. See [testing](testing.md) for manual/live evidence rules.
 
 See [UI and tool evidence](ui-and-tools.md) for the interface decisions and Codex tool checks.
 

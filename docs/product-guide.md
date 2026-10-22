@@ -301,18 +301,9 @@ The mobile layout shows orchestrator chats, team agents, existing projects, acco
 and chat settings. Add the page to the iPhone home screen for a standalone window.
 The Mac remains the server. SQLite remains the authoritative store.
 
-After the source update, restart Studio when active tasks and monitors finish.
-Do not stop active work for this update. Then run:
+The former mobile setup command was removed with the Python backend and has no
+Rust replacement in this change. Preserve existing Tailscale Serve configuration.
 
-```sh
-python3 workspaces/runtime/apps/server/src/codex-mobile.py
-```
-
-The command checks the server version and enables private HTTPS through
-[Tailscale Serve](https://tailscale.com/docs/features/tailscale-serve).
-It prints the address for Safari. Connect Tailscale on both devices first.
-If Tailscale requests HTTPS setup, complete that setup and run the command again.
-Existing unrelated Serve configurations require manual setup.
 The server accepts the exact origin in `remote-access.json` in its state directory.
 Set `enabled` to `false` there to revoke remote access without a restart.
 Tailscale access rules control who can open Studio. The phone uses the existing
@@ -545,4 +536,4 @@ messages. New broadcasts use the destination's broadcast room.
 The action saves one receipt with the exact request body. A retry with the same
 request ID returns that receipt. A different body with that ID is refused.
 
-Runtime typing is checked with `pnpm run typecheck:runtime` (equivalent to `python3 workspaces/runtime/apps/server/src/codex_python.py --mypy`). The strict mypy ratchet is not part of the pre-commit hook.
+Runtime checks use `just check studio-runtime-services`; see [testing](testing.md).
