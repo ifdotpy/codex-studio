@@ -199,7 +199,9 @@ pub fn compatibility_hold(
     let capabilities = initialize.get("capabilities").unwrap_or(&Value::Null);
     (capabilities.get("claudeVersion")!=Some(&json!(23)) || capabilities.get("claudeBuild").and_then(Value::as_str)!=Some(source_build) || started_options!=current_options).then_some("Claude bridge compatibility changed; preserve the retained process until verified idle retirement")
 }
-/// Same filename/content digest as the bridge. No provider state is opened.
+/// Owner of the bridge filename/content and installed SDK version digest.
+/// The bridge initialize response mirrors this contract; the parity witness checks it.
+/// No provider state is opened.
 pub fn bridge_build(directory: &std::path::Path) -> std::io::Result<String> {
     use std::io::Read;
     let mut paths = std::fs::read_dir(directory)?
@@ -233,5 +235,15 @@ pub fn bridge_build(directory: &std::path::Path) -> std::io::Result<String> {
         }
         body.push(b'\n');
     }
+    #[derive(Deserialize)]
+    struct InstalledSdk {
+        version: String,
+    }
+    let sdk: InstalledSdk = serde_json::from_slice(&std::fs::read(
+        directory.join("node_modules/@anthropic-ai/claude-agent-sdk/package.json"),
+    )?)?;
+    body.extend_from_slice(b"@anthropic-ai/claude-agent-sdk\n");
+    body.extend_from_slice(sdk.version.as_bytes());
+    body.push(b'\n');
     Ok(studio_runtime_store::sha256_hex(&body))
 }

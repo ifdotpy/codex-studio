@@ -77,9 +77,9 @@ import {
   canonicalJson,
 } from "./move-external.mjs";
 
-// The hash of this bridge's own sources. The server retires an idle bridge whose sources an
-// update replaced on disk (codex_claude_controls.retire_idle_bridge), since a running bridge
-// keeps the code it started with.
+// Sources and installed SDK version identify the code retained by this process.
+// claude_bridge::bridge_build owns the matching server digest; its parity witness
+// checks this initialize response. Active work stays held until verified idle retirement.
 const bridgeBuild = (async () => {
   const folder = path.dirname(fileURLToPath(import.meta.url));
   const names = (await fs.readdir(folder))
@@ -91,6 +91,23 @@ const bridgeBuild = (async () => {
     hash.update(await fs.readFile(path.join(folder, name)));
     hash.update("\n");
   }
+  const { version } = z
+    .object({ version: z.string() })
+    .parse(
+      JSON.parse(
+        await fs.readFile(
+          path.join(
+            folder,
+            "node_modules",
+            "@anthropic-ai",
+            "claude-agent-sdk",
+            "package.json",
+          ),
+          "utf8",
+        ),
+      ),
+    );
+  hash.update("@anthropic-ai/claude-agent-sdk\n" + version + "\n");
   return hash.digest("hex");
 })();
 const externalConfigs = new Map();

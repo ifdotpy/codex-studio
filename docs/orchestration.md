@@ -824,6 +824,13 @@ cancels pending events and requests interruption of active turns and commands.
 The interrupt goes to the provider process that runs the turn, also after Studio
 reconnects to that process. A Codex interrupt leaves the thread's background
 terminals running, so Stop and delete then send `thread/backgroundTerminals/clean`.
+Claude bridge compatibility follows the [identity owner](../workspaces/runtime/packages/runtime-services/src/claude_bridge.rs):
+
+1. At startup, the bridge hashes its production sources and installed SDK package version.
+2. Its initialize response keeps that startup identity for the retained process.
+3. A source or SDK version change makes the current disk identity differ.
+4. Compatibility holds preserve active work until the owner verifies idle retirement.
+
 The Claude bridge stops its background tasks as part of the interrupt.
 
 Claude tool stall recovery follows the [bridge watchdog](../workspaces/providers/apps/claude-bridge/stall-watch.mjs):
