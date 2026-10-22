@@ -307,6 +307,7 @@ fn validate(request: &SessionRequest) -> Result<(), PortError> {
                 | Method::ThreadCompactStart
                 | Method::ReviewStart
                 | Method::ThreadSettingsUpdate
+                | Method::McpServerReconnect
                 | Method::ClaudeState
                 | Method::ClaudeCommands
                 | Method::ClaudeFileBackups
@@ -350,6 +351,13 @@ fn validate(request: &SessionRequest) -> Result<(), PortError> {
         || request.operation.len() > 1024
         || request.params.to_string().len() > 2 * 1024 * 1024
         || !request.params.is_object()
+        || (request.method == Method::McpServerReconnect
+            && (request.expected_scope.as_ref() != Some(&request.scope)
+                || !request.operation.starts_with("mcp-reconnect:")
+                || request.params.as_object().is_none_or(|params| {
+                    params.len() != 2 || !["threadId", "name"].iter().all(|key|
+                        params.get(*key).and_then(Value::as_str).is_some_and(|v| !v.trim().is_empty()))
+                })))
         || (request.method == Method::ThreadRead
             && request
                 .params
@@ -587,7 +595,8 @@ pub(super) fn valid_actorless_request_shape(
                 && params.get("forceReload").is_some_and(Value::is_boolean)
         }
         Method::McpServerStatusList => {
-            only(&["threadId", "limit"], &[])
+            only(&["threadId", "limit"], &["cursor"])
+                && params.get("cursor").is_none_or(|v| v.as_str().is_some_and(|v| !v.is_empty()))
                 && params.get("limit") == Some(&json!(100))
                 && params.get("threadId").is_some_and(|thread_id| {
                     thread_id.is_null()
@@ -874,6 +883,25 @@ mod validation_tests {
             }),
             deadline: std::time::Instant::now() + std::time::Duration::from_secs(1),
         }
+    }
+
+    #[test]
+    fn mcp_reconnect_requires_actor_scope_and_exact_server_shape() {
+        let mut request = turns_request("full", 1, true);
+        request.method = Method::McpServerReconnect;
+        request.operation = "mcp-reconnect:request".into();
+        request.expected_scope = Some(request.scope.clone());
+        request.params = json!({"threadId":"thread","name":"server"});
+        assert!(validate(&request).is_ok());
+        for params in [json!({"threadId":"thread","name":""}), json!({"threadId":"thread","name":"server","all":true})] {
+            let mut invalid = request.clone(); invalid.params = params;
+            assert_eq!(validate(&invalid), Err(PortError::Invalid));
+        }
+        let mut invalid = request.clone(); invalid.actor = None;
+        assert_eq!(validate(&invalid), Err(PortError::Invalid));
+        let mut invalid = request; invalid.expected_scope = None;
+        assert_eq!(validate(&invalid), Err(PortError::Invalid));
+        assert!(valid_actorless_request_shape(Method::McpServerStatusList, &json!({"threadId":"thread","limit":100,"cursor":"next"}), "catalog"));
     }
 
     #[test]

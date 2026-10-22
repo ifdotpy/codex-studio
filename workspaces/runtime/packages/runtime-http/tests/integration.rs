@@ -1,3 +1,4 @@
+mod mcp_reconnect;
 mod checkpoint_rewind;
 mod claude_file_backups;
 mod claude_login;

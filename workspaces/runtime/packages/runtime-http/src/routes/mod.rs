@@ -27,6 +27,7 @@ mod linux_vm_settings;
 mod mac_sync;
 pub(crate) mod manifest;
 mod messages;
+mod mcp_reconnect;
 mod models;
 mod monitor_runtime;
 mod monitors;

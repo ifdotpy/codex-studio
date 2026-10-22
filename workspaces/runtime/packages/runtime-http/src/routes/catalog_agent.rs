@@ -165,7 +165,9 @@ async fn capabilities(
         .get("cwd")
         .and_then(Value::as_str)
         .ok_or_else(invalid_stored_agent)?;
-    if let Some(cached) = state.capabilities_cache.get(agent_id, Instant::now()) {
+    let cursor = params.nonempty_str("serversCursor").map(str::to_owned);
+    let fresh = cursor.is_some() || params.typed_value("fresh").and_then(Value::as_bool) == Some(true);
+    if !fresh && let Some(cached) = state.capabilities_cache.get(agent_id, Instant::now()) {
         return Ok(Json(super::generated_json::<
             crate::generated::CapabilitiesResponse,
         >(cached)?));
@@ -196,11 +198,17 @@ async fn capabilities(
     let session = state.account_session.clone();
     let cwd = cwd.to_owned();
     let thread_id = agent.get("threadId").cloned();
-    let result = cache
-        .get_or_fetch(agent_id, || async move {
+    let fetch = || async move {
+            let scope = match &session {
+                Some(port) => port.ensure_session(&account.key).await.ok(),
+                None => None,
+            };
+            result["mcpSession"] = scope.as_ref().and_then(|scope| super::mcp_reconnect::binding(&agent, scope)).unwrap_or(Value::Null);
+            let mut server_params = json!({"threadId":thread_id,"limit":NATIVE_TERMINAL_ITEMS_PER_PAGE});
+            if let Some(cursor) = cursor { server_params["cursor"] = json!(cursor); }
             let responses = account_provider_exchange(
-                session,
-                account,
+                session.clone(),
+                account.clone(),
                 vec![
                     ProviderRequest {
                         method: "skills/list".to_owned(),
@@ -208,7 +216,7 @@ async fn capabilities(
                     },
                     ProviderRequest {
                         method: "mcpServerStatus/list".to_owned(),
-                        params: json!({"threadId":thread_id,"limit":NATIVE_TERMINAL_ITEMS_PER_PAGE}),
+                        params: server_params,
                     },
                 ],
                 DISCOVERY_TIMEOUT,
@@ -234,10 +242,12 @@ async fn capabilities(
                     append_capability_error(&mut result, "servers", "Provider request failed");
                 }
             }
+            if scope.as_ref() != session.as_ref().and_then(|port| port.current_scope(&account.key)).as_ref() {
+                result["mcpSession"] = Value::Null;
+            }
             result
-        })
-        .await
-        .map_err(|_| ApiError::internal())?;
+        };
+    let result = if fresh { fetch().await } else { cache.get_or_fetch(agent_id, fetch).await.map_err(|_| ApiError::internal())? };
     Ok(Json(super::generated_json::<
         crate::generated::CapabilitiesResponse,
     >(result)?))

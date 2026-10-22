@@ -162,6 +162,7 @@ define_methods! {
     ClaudeStopTask => "claude/stopTask",
     ClaudeDiagnostics => "claude/diagnostics",
     ClaudeMoveVersions => "claude/moveVersions",
+    McpServerReconnect => "mcpServer/reconnect",
     McpServerStatusList => "mcpServerStatus/list",
     SkillsList => "skills/list",
     OperationStatus => "operationStatus",
