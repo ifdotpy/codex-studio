@@ -2074,56 +2074,59 @@ mod tests {
         let root = tempfile::tempdir().expect("isolated state");
         let store = RuntimeStore::open(Some(root.path())).await.expect("store");
         let cwd = root.path().to_string_lossy().into_owned();
-        let id = store
-            .transaction_with(move |tx| {
-                let actor = AgentRecord::from_value(json!({
-                    "id":"agent", "rootId":"agent", "epoch":1, "autoWake":true,
-                    "status":"idle", "cwd":cwd, "accountKey":"default"
-                }))?;
-                AgentRepository::put(tx, &actor)?;
-                let mut monitor = monitor_policy::create_record(
-                    &actor.value(),
-                    &json!({"command":"printf output"}),
-                    "output-watch",
-                    &cwd,
-                    1.0,
-                )?;
-                monitor["status"] = json!("running");
-                monitor["operation"] = json!({"agent":"agent", "epoch":1,
+        let id =
+            store
+                .transaction_with(move |tx| {
+                    let actor = AgentRecord::from_value(json!({
+                        "id":"agent", "rootId":"agent", "epoch":1, "autoWake":true,
+                        "status":"idle", "cwd":cwd, "accountKey":"default"
+                    }))
+                    .map_err(StoreError::from)?;
+                    AgentRepository::put(tx, &actor)?;
+                    let mut monitor = monitor_policy::create_record(
+                        &actor.value(),
+                        &json!({"command":"printf output"}),
+                        "output-watch",
+                        &cwd,
+                        1.0,
+                    )?;
+                    monitor["status"] = json!("running");
+                    monitor["operation"] = json!({"agent":"agent", "epoch":1,
                 "accountKey":"default", "connectionId":"connection"});
-                let id = monitor["id"].as_str().expect("monitor id").to_owned();
-                repository::put(tx, monitor.clone())?;
-                // Equal timestamps exercise the existing index tie order. Include
-                // an evicted terminal row so content updates cannot resurrect it.
-                for index in 0..=MONITOR_TERMINAL_WINDOW {
-                    let mut terminal = monitor.clone();
-                    terminal["id"] = json!(format!("terminal-{index}"));
-                    terminal["status"] = json!("completed");
-                    repository::put(tx, terminal)?;
-                }
-                maintain_monitor_window(tx, &|_, _, _, _| true)?;
-                let retired: String = tx.query_row(
+                    let id = monitor["id"].as_str().expect("monitor id").to_owned();
+                    repository::put(tx, monitor.clone())?;
+                    // Equal timestamps exercise the existing index tie order. Include
+                    // an evicted terminal row so content updates cannot resurrect it.
+                    for index in 0..=MONITOR_TERMINAL_WINDOW {
+                        let mut terminal = monitor.clone();
+                        terminal["id"] = json!(format!("terminal-{index}"));
+                        terminal["status"] = json!("completed");
+                        repository::put(tx, terminal)?;
+                    }
+                    maintain_monitor_window(tx, &|_, _, _, _| true)?;
+                    let retired: String = tx.query_row(
                     "SELECT id FROM runtime_monitors WHERE id LIKE 'terminal-%' AND id NOT IN \
                      (SELECT id FROM sync_entities WHERE collection='monitor' AND deleted=0)",
                     [],
                     |row| row.get(0),
-                )?;
-                SyncDocumentsRepository::put_entity(tx, "monitor", &retired, json!({}), true)?;
-                tx.execute(
-                    "INSERT INTO runtime_monitors(id,record) VALUES('invalid-monitor','[]')",
-                    [],
-                )?;
-                SyncDocumentsRepository::put_entity(
-                    tx,
-                    "monitor",
-                    "invalid-monitor",
-                    json!({"preserve":"prior"}),
-                    false,
-                )?;
-                Ok::<_, monitor_policy::MonitorError>(id)
-            })
-            .await
-            .expect("seed canonical monitor window");
+                ).map_err(StoreError::from)?;
+                    SyncDocumentsRepository::put_entity(tx, "monitor", &retired, json!({}), true)?;
+                    tx.execute(
+                        "INSERT INTO runtime_monitors(id,record) VALUES('invalid-monitor','[]')",
+                        [],
+                    )
+                    .map_err(StoreError::from)?;
+                    SyncDocumentsRepository::put_entity(
+                        tx,
+                        "monitor",
+                        "invalid-monitor",
+                        json!({"preserve":"prior"}),
+                        false,
+                    )?;
+                    Ok::<_, monitor_policy::MonitorError>(id)
+                })
+                .await
+                .expect("seed canonical monitor window");
 
         let output_id = id.clone();
         store
@@ -2200,7 +2203,7 @@ mod tests {
                     |row| row.get(0),
                 )?;
                 assert_eq!(serde_json::from_str::<Value>(&raw)?["tail"], "fragment");
-                Ok(())
+                Ok::<_, StoreError>(())
             })
             .await
             .expect("source and projection roll back together");
@@ -2209,12 +2212,14 @@ mod tests {
         // field must run the canonical selector and admit it instead.
         store
             .transaction_with(move |tx| {
-                let excluded: String = tx.query_row(
-                    "SELECT id FROM runtime_monitors WHERE id LIKE 'terminal-%' AND id NOT IN \
+                let excluded: String = tx
+                    .query_row(
+                        "SELECT id FROM runtime_monitors WHERE id LIKE 'terminal-%' AND id NOT IN \
                  (SELECT id FROM sync_entities WHERE collection='monitor' AND deleted=0)",
-                    [],
-                    |row| row.get(0),
-                )?;
+                        [],
+                        |row| row.get(0),
+                    )
+                    .map_err(StoreError::from)?;
                 let (before, actor) = monitor_runtime::snapshot(tx, &excluded)?;
                 let mut decision = before.decision();
                 decision.record["tail"] = json!("late metadata");
