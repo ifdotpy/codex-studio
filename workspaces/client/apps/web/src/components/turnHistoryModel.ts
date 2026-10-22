@@ -110,12 +110,17 @@ export function historyGroups(
   const replyTurns = new Set(
     items.filter((item) => item.role !== "user").map((item) => item.turnId),
   );
+  const unconfirmed = new Set(
+    items
+      .filter((item) => item.turnStatus === "uncertain")
+      .map((item) => item.turnId),
+  );
   for (const group of groups) {
     const first = group.items[0];
     if (
       first.role === "user" &&
       first.turnId &&
-      first.turnStatus === "uncertain" &&
+      unconfirmed.has(first.turnId) &&
       !replyTurns.has(first.turnId)
     ) {
       group.outcome = "uncertain";
@@ -130,9 +135,7 @@ export function historyGroups(
           !isEmptyAssistantMessage(item),
       )
       .at(-1);
-    const uncertain = group.items.some(
-      (item) => item.turnStatus === "uncertain",
-    );
+    const uncertain = unconfirmed.has(first.turnId);
     if (first.turnId && first.role !== "user" && uncertain) {
       group.outcome = "uncertain";
       continue;
@@ -197,12 +200,8 @@ export function incrementalHistoryGroups(
 ): HistoryGroup[] {
   if (!prior || prior.currentTurn !== currentTurn)
     return historyGroups(items, currentTurn);
-  // A user-only unconfirmed outcome depends on replies outside its own group.
-  if (
-    items.some(
-      (item) => item.role === "user" && item.turnStatus === "uncertain",
-    )
-  )
+  // Unconfirmed outcomes depend on records outside their own presentation group.
+  if (items.some((item) => item.turnStatus === "uncertain"))
     return historyGroups(items, currentTurn);
   let shared = 0;
   while (

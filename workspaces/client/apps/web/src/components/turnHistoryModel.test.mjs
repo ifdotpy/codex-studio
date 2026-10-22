@@ -95,6 +95,30 @@ it("keeps uncertainty despite a stale in-progress record", () => {
   assert.equal(group.outcome, "uncertain");
 });
 
+it("keeps a reply unconfirmed when only its user row has the terminal status", () => {
+  const groups = historyGroups(
+    [
+      {
+        id: "input",
+        role: "user",
+        text: "Run",
+        turnId: "turn",
+        turnStatus: "uncertain",
+      },
+      {
+        id: "answer",
+        role: "assistant",
+        text: "Partial reply",
+        turnId: "turn",
+        turnStatus: "inProgress",
+      },
+    ],
+    "turn",
+  );
+  assert.equal(groups[0].outcome, undefined);
+  assert.equal(groups[1].outcome, "uncertain");
+});
+
 it("moves a user-only outcome to a later reply without a duplicate notice", () => {
   const items = [
     {
