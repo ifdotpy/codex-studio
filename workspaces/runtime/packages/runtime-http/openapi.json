@@ -18823,6 +18823,13 @@
           "truncated": {
             "title": "Truncated",
             "type": "boolean"
+          },
+          "restoreUnavailableReason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
           }
         },
         "required": [
@@ -19406,7 +19413,8 @@
               "provider_pending",
               "provider_ready",
               "completed",
-              "failed"
+              "failed",
+              "recovery_required"
             ],
             "title": "Phase",
             "type": "string"
@@ -19426,6 +19434,10 @@
             ],
             "default": null,
             "title": "Turnid"
+          },
+          "restoreFiles": {
+            "type": "boolean",
+            "default": false
           }
         },
         "required": [
@@ -19942,6 +19954,14 @@
           "threadId": {
             "title": "Threadid",
             "type": "string"
+          },
+          "filesRestored": {
+            "type": "boolean",
+            "default": false
+          },
+          "fileResult": {
+            "type": "object",
+            "additionalProperties": true
           }
         },
         "required": [
@@ -20003,6 +20023,10 @@
           "turn_id": {
             "title": "Turn Id",
             "type": "string"
+          },
+          "restore_files": {
+            "type": "boolean",
+            "default": false
           }
         },
         "required": [
@@ -20491,6 +20515,17 @@
           "text": {
             "title": "Text",
             "type": "string"
+          },
+          "canRestoreFiles": {
+            "type": "boolean",
+            "default": false
+          },
+          "restoreFilesUnavailableReason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
           }
         },
         "required": [
@@ -63368,6 +63403,63 @@
           "id",
           "defaultGate"
         ]
+      },
+      "ClaudeFileBackupsRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024
+          },
+          "release": {
+            "type": "boolean"
+          },
+          "request_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024
+          }
+        },
+        "required": [
+          "id",
+          "release",
+          "request_id"
+        ]
+      },
+      "ClaudeFileBackupsResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "bytes": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "maxCount": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "maxBytes": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "released": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "count",
+          "bytes",
+          "maxCount",
+          "maxBytes",
+          "released"
+        ]
       }
     }
   },
@@ -82435,6 +82527,131 @@
           }
         },
         "summary": "Workspace Tasks"
+      }
+    },
+    "/api/claude/file-backups": {
+      "post": {
+        "operationId": "claude_file_backups_api_claude_file_backups_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClaudeFileBackupsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClaudeFileBackupsResponse"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Access-Control-Allow-Origin": {
+                "$ref": "#/components/headers/AccessControlAllowOrigin"
+              },
+              "Access-Control-Expose-Headers": {
+                "$ref": "#/components/headers/AccessControlExposeHeaders"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/CacheControl"
+              },
+              "Content-Encoding": {
+                "$ref": "#/components/headers/ContentEncoding"
+              },
+              "Content-Length": {
+                "$ref": "#/components/headers/ContentLength"
+              },
+              "Content-Security-Policy": {
+                "$ref": "#/components/headers/ContentSecurityPolicy"
+              },
+              "Content-Type": {
+                "$ref": "#/components/headers/ContentType"
+              },
+              "Referrer-Policy": {
+                "$ref": "#/components/headers/ReferrerPolicy"
+              },
+              "Server-Timing": {
+                "$ref": "#/components/headers/ServerTiming"
+              },
+              "Vary": {
+                "$ref": "#/components/headers/Vary"
+              },
+              "X-Content-Type-Options": {
+                "$ref": "#/components/headers/XContentTypeOptions"
+              },
+              "X-Studio-API-Schema": {
+                "$ref": "#/components/headers/StudioApiSchema"
+              },
+              "X-Studio-Server": {
+                "$ref": "#/components/headers/StudioServer"
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ApiError400",
+            "description": "Bad Request"
+          },
+          "401": {
+            "$ref": "#/components/responses/ApiError401",
+            "description": "Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/ApiError403",
+            "description": "Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/ApiError404",
+            "description": "Not Found"
+          },
+          "408": {
+            "$ref": "#/components/responses/ApiError408",
+            "description": "Request Timeout"
+          },
+          "409": {
+            "$ref": "#/components/responses/ApiError409",
+            "description": "Conflict"
+          },
+          "410": {
+            "$ref": "#/components/responses/ApiError410",
+            "description": "Gone"
+          },
+          "413": {
+            "$ref": "#/components/responses/ApiError413",
+            "description": "Content Too Large"
+          },
+          "415": {
+            "$ref": "#/components/responses/ApiError415",
+            "description": "Unsupported Media Type"
+          },
+          "426": {
+            "$ref": "#/components/responses/ApiError426",
+            "description": "Upgrade Required"
+          },
+          "429": {
+            "$ref": "#/components/responses/ApiError429",
+            "description": "Too Many Requests"
+          },
+          "500": {
+            "$ref": "#/components/responses/ApiError500",
+            "description": "Internal Server Error"
+          },
+          "502": {
+            "$ref": "#/components/responses/ApiError502",
+            "description": "Bad Gateway"
+          },
+          "503": {
+            "$ref": "#/components/responses/ApiError503",
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Inspect or release settled Claude file backups"
       }
     }
   },

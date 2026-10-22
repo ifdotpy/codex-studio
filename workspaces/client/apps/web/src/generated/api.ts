@@ -603,6 +603,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/claude/file-backups": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Inspect or release settled Claude file backups */
+    post: operations["claude_file_backups_api_claude_file_backups_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/claude/profiles": {
     parameters: {
       query?: never;
@@ -9457,6 +9474,8 @@ export interface components {
       expectedTree: string;
       /** Patch */
       patch: string;
+      /** @default null */
+      restoreUnavailableReason?: string | null;
       /** Truncated */
       truncated: boolean;
     };
@@ -9684,9 +9703,16 @@ export interface components {
        * Phase
        * @enum {string}
        */
-      phase: "provider_pending" | "provider_ready" | "completed" | "failed";
+      phase:
+        | "provider_pending"
+        | "provider_ready"
+        | "completed"
+        | "failed"
+        | "recovery_required";
       /** Requestid */
       requestId: string;
+      /** @default false */
+      restoreFiles?: boolean;
       /**
        * Turnid
        * @default null
@@ -9738,6 +9764,18 @@ export interface components {
         | "stored_only"
         | "cancelled"
         | "failed";
+    };
+    ClaudeFileBackupsRequest: {
+      id: string;
+      release: boolean;
+      request_id: string;
+    };
+    ClaudeFileBackupsResponse: {
+      bytes: number;
+      count: number;
+      maxBytes: number;
+      maxCount: number;
+      released: number;
     };
     /**
      * ClaudeLoginResponse
@@ -9931,6 +9969,11 @@ export interface components {
        * @default null
        */
       _syncEntitiesAfter?: number | null;
+      fileResult?: {
+        [key: string]: unknown;
+      };
+      /** @default false */
+      filesRestored?: boolean;
       /** Nativeid */
       nativeId: string;
       /** Removedturns */
@@ -9963,6 +10006,8 @@ export interface components {
       id: string;
       /** Request Id */
       request_id: string;
+      /** @default false */
+      restore_files?: boolean;
       /** Turn Id */
       turn_id: string;
     };
@@ -10134,8 +10179,12 @@ export interface components {
     };
     /** ClaudeTurn */
     ClaudeTurn: {
+      /** @default false */
+      canRestoreFiles?: boolean;
       /** Id */
       id: string;
+      /** @default null */
+      restoreFilesUnavailableReason?: string | null;
       /**
        * Status
        * @enum {string}
@@ -29790,6 +29839,71 @@ export interface operations {
           "application/json": components["schemas"]["ErrorResponse"];
         };
       };
+    };
+  };
+  claude_file_backups_api_claude_file_backups_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["ClaudeFileBackupsRequest"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
+          "Access-Control-Expose-Headers": components["headers"]["AccessControlExposeHeaders"];
+          "Cache-Control": components["headers"]["CacheControl"];
+          "Content-Encoding": components["headers"]["ContentEncoding"];
+          "Content-Length": components["headers"]["ContentLength"];
+          "Content-Security-Policy": components["headers"]["ContentSecurityPolicy"];
+          "Content-Type": components["headers"]["ContentType"];
+          "Referrer-Policy": components["headers"]["ReferrerPolicy"];
+          "Server-Timing": components["headers"]["ServerTiming"];
+          Vary: components["headers"]["Vary"];
+          "X-Content-Type-Options": components["headers"]["XContentTypeOptions"];
+          "X-Studio-API-Schema": components["headers"]["StudioApiSchema"];
+          "X-Studio-Server": components["headers"]["StudioServer"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ClaudeFileBackupsResponse"];
+        };
+      };
+      /** @description Bad Request */
+      400: components["responses"]["ApiError400"];
+      /** @description Unauthorized */
+      401: components["responses"]["ApiError401"];
+      /** @description Forbidden */
+      403: components["responses"]["ApiError403"];
+      /** @description Not Found */
+      404: components["responses"]["ApiError404"];
+      /** @description Request Timeout */
+      408: components["responses"]["ApiError408"];
+      /** @description Conflict */
+      409: components["responses"]["ApiError409"];
+      /** @description Gone */
+      410: components["responses"]["ApiError410"];
+      /** @description Content Too Large */
+      413: components["responses"]["ApiError413"];
+      /** @description Unsupported Media Type */
+      415: components["responses"]["ApiError415"];
+      /** @description Upgrade Required */
+      426: components["responses"]["ApiError426"];
+      /** @description Too Many Requests */
+      429: components["responses"]["ApiError429"];
+      /** @description Internal Server Error */
+      500: components["responses"]["ApiError500"];
+      /** @description Bad Gateway */
+      502: components["responses"]["ApiError502"];
+      /** @description Service Unavailable */
+      503: components["responses"]["ApiError503"];
     };
   };
   claude_profile_api_claude_profiles_post: {

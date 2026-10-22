@@ -137,6 +137,9 @@
       "title": "Requestid",
       "type": "string"
     },
+    "restoreFiles": {
+      "type": "boolean"
+    },
     "result": {
       "$ref": "#/$defs/JsonValue"
     },
@@ -199,6 +202,12 @@
         }
       ],
       "title": "Updated"
+    },
+    "controlAttempt": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 4294967295,
+      "description": "Durable transport attempt count after a proven no-effect failure."
     }
   },
   "required": [

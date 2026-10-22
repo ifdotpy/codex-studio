@@ -1,3 +1,13 @@
+import {
+  prepareFileRestore,
+  verifyFileRestore,
+  fileBackups,
+} from "./file-restore.mjs";
+import {
+  fileCheckpointOptions,
+  fileRestoreReason,
+  rewindSessionFiles,
+} from "./file-checkpoints.mjs";
 import { createAccountCheck } from "./account-identity.mjs";
 import { inputGroups, sdkInputMessages } from "./input-messages.mjs";
 // Claude Agent SDK adapter for Studio's existing local session protocol.
@@ -392,49 +402,50 @@ function diskFullInputError(error) {
 async function session(id) {
   return sessionStore.get(id);
 }
-const settings = (s) => ({
-  cwd: s.cwd,
-  pathToClaudeCodeExecutable: process.env.STUDIO_CLAUDE_BIN || "claude",
-  settingSources: s.moveProof ? [] : ["user", "project", "local"],
-  ...(s.moveProof
-    ? { strictMcpConfig: true, tools: s.moveProof.options.tools }
-    : {}),
-  // A managed worker runs without the user's MCP servers (Studio sends userMcp: false).
-  ...(s.userMcp === false || s.capabilityProfile?.mcpServers != null
-    ? { strictMcpConfig: true }
-    : {}),
-  includePartialMessages: true,
-  env: {
-    ...process.env,
-    // Per-thread host declarations must reach the CLI process, not settings.json.
-    ...Object.fromEntries(
-      ["CLAUDE_CODE_HOST_WORKTREE", "CLAUDE_CODE_HOST_WORKTREE_FENCE"]
-        .filter((key) => typeof s.claude?.env?.[key] === "string")
-        .map((key) => [key, s.claude.env[key]]),
-    ),
-    ...browserEnvironment(root, s.id),
+const settings = (s) =>
+  fileCheckpointOptions({
+    cwd: s.cwd,
+    pathToClaudeCodeExecutable: process.env.STUDIO_CLAUDE_BIN || "claude",
+    settingSources: s.moveProof ? [] : ["user", "project", "local"],
     ...(s.moveProof
-      ? {
-          ENABLE_CLAUDEAI_MCP_SERVERS: s.moveProof.externalCatalog?.some(
-            (server) => server.claudeAI,
-          )
-            ? "true"
-            : "false",
-          CLAUDE_CODE_AUTO_CONNECT_IDE: "0",
-        }
+      ? { strictMcpConfig: true, tools: s.moveProof.options.tools }
       : {}),
+    // A managed worker runs without the user's MCP servers (Studio sends userMcp: false).
     ...(s.userMcp === false || s.capabilityProfile?.mcpServers != null
-      ? {
-          ENABLE_CLAUDEAI_MCP_SERVERS: "false",
-          CLAUDE_CODE_AUTO_CONNECT_IDE: "0",
-        }
+      ? { strictMcpConfig: true }
       : {}),
-    ...(typeof s.studioImageWorkspaceTempDir === "string"
-      ? { TMPDIR: s.studioImageWorkspaceTempDir }
-      : {}),
-  },
-  stderr: (line) => process.stderr.write(line),
-});
+    includePartialMessages: true,
+    env: {
+      ...process.env,
+      // Per-thread host declarations must reach the CLI process, not settings.json.
+      ...Object.fromEntries(
+        ["CLAUDE_CODE_HOST_WORKTREE", "CLAUDE_CODE_HOST_WORKTREE_FENCE"]
+          .filter((key) => typeof s.claude?.env?.[key] === "string")
+          .map((key) => [key, s.claude.env[key]]),
+      ),
+      ...browserEnvironment(root, s.id),
+      ...(s.moveProof
+        ? {
+            ENABLE_CLAUDEAI_MCP_SERVERS: s.moveProof.externalCatalog?.some(
+              (server) => server.claudeAI,
+            )
+              ? "true"
+              : "false",
+            CLAUDE_CODE_AUTO_CONNECT_IDE: "0",
+          }
+        : {}),
+      ...(s.userMcp === false || s.capabilityProfile?.mcpServers != null
+        ? {
+            ENABLE_CLAUDEAI_MCP_SERVERS: "false",
+            CLAUDE_CODE_AUTO_CONNECT_IDE: "0",
+          }
+        : {}),
+      ...(typeof s.studioImageWorkspaceTempDir === "string"
+        ? { TMPDIR: s.studioImageWorkspaceTempDir }
+        : {}),
+    },
+    stderr: (line) => process.stderr.write(line),
+  });
 const checkAccount = createAccountCheck({
   expectedEmail: process.env.STUDIO_CLAUDE_ACCOUNT,
   expectedIdentity: process.env.STUDIO_CLAUDE_CREDENTIAL_IDENTITY,
@@ -1581,6 +1592,18 @@ async function startSession(s, active, p) {
         );
         if (item) {
           item.nativeId = m.uuid;
+          if (
+            item === active.turn.items[0] &&
+            !process.env.CLAUDE_CODE_DISABLE_FILE_CHECKPOINTING
+          ) {
+            active.turn.nativeMessageId = m.uuid;
+            active.turn.fileCheckpointMessageId = m.uuid;
+            active.turn.fileCheckpointSource = {
+              nativeId: s.nativeId || s.id,
+              cwd: s.cwd,
+            };
+            persistLater(s, active);
+          }
           active.pendingSteers.delete(item.id);
           active.deferredResult = null;
         }
@@ -2306,6 +2329,10 @@ async function handle(method, p) {
     await persist(s);
     return { thread: wireThread(s, await sessionStore.metadata(s.id), false) };
   }
+  if (method === "claude/fileBackups") {
+    const s = await session(p.threadId);
+    return fileBackups(s, p.settledRequestIds ?? null, root, persist);
+  }
   if (method === "claude/state") {
     const s = await session(p.threadId),
       active = queries.get(s.id);
@@ -2314,6 +2341,8 @@ async function handle(method, p) {
       turns: s.turns.map((t) => ({
         id: t.id,
         status: t.status,
+        canRestoreFiles: fileRestoreReason(s, t, active) === null,
+        restoreFilesUnavailableReason: fileRestoreReason(s, t, active),
         text:
           t.items
             .find((i) => i.type === "userMessage")
@@ -2360,7 +2389,16 @@ async function handle(method, p) {
     active?.q?.close();
     queries.delete(s.id);
     catalogCache.activityChanged();
-    return rollbackSession(s, p, { persist, getSessionMessages, forkSession });
+    return rollbackSession(s, p, {
+      persist,
+      getSessionMessages,
+      forkSession,
+      prepareFileRestore: (session, messages, messageId) =>
+        prepareFileRestore(session, messages, messageId, root),
+      verifyFileRestore,
+      rewindFiles: (nativeId, messageId, options) =>
+        rewindSessionFiles(query, settings(s), nativeId, messageId, options),
+    });
   }
   if (method === "thread/start") {
     const s = {
@@ -3004,6 +3042,7 @@ lines.on("line", (line) => {
       "thread/rollback",
       "claude/settings",
       "claude/state",
+      "claude/fileBackups",
       "thread/compact/start",
     ].includes(message.method);
   const before = ordered

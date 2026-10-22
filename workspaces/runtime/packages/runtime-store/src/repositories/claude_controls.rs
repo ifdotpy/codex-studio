@@ -31,6 +31,30 @@ impl ClaudeControlRepository {
         }
         Ok(Some((agent.value(), operation)))
     }
+    /// Only settled file rewinds in this exact account, thread and workspace may release backups.
+    pub fn settled_file_rewinds(tx: &Transaction<'_>, agent: &Value) -> StoreResult<Vec<String>> {
+        let id = agent
+            .get("id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| invalid("agent"))?;
+        let source = crate::CheckpointsRepository::workspace_source(agent);
+        let mut query = tx.prepare_cached("SELECT record FROM runtime_workspace_operations WHERE json_extract(record,'$.agent')=?1 AND json_extract(record,'$.kind')='claude_rollback' AND json_extract(record,'$.phase')='completed' AND json_extract(record,'$.restoreFiles')=1")?;
+        let mut ids = Vec::new();
+        for raw in query.query_map([id], |r| r.get::<_, String>(0))? {
+            let op: Value = serde_json::from_str(&raw?)?;
+            validate(&op)?;
+            if op.get("source") == Some(&source) && op["result"]["filesRestored"] == true {
+                ids.push(
+                    op["requestId"]
+                        .as_str()
+                        .ok_or_else(|| invalid("requestId"))?
+                        .to_owned(),
+                );
+            }
+        }
+        ids.sort();
+        Ok(ids)
+    }
     pub fn pending(tx: &Transaction<'_>, agent: &str) -> StoreResult<bool> {
         Ok(tx.query_row("SELECT EXISTS(SELECT 1 FROM runtime_events WHERE agent=?1 AND status IN ('pending','reserved','dispatching','uncertain'))",[agent],|r|r.get(0))?)
     }

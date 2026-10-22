@@ -1,3 +1,4 @@
+import { checkpointSourceMatches } from "./file-checkpoints.mjs";
 import { randomUUID } from "node:crypto";
 
 // Initialization is the CLI's authoritative list after native skill policy.
@@ -33,7 +34,11 @@ export function explicitNativeCommand(text, commands) {
 }
 
 function nativeBoundary(turn) {
-  return turn.nativeMessageId || turn.id;
+  return (
+    turn.nativeMessageId ||
+    turn.items?.find((item) => item.type === "userMessage")?.nativeId ||
+    turn.id
+  );
 }
 function comparable(message) {
   return JSON.stringify({ type: message.type, message: message.message });
@@ -68,6 +73,7 @@ export function rollbackBoundary(turns, messages, turnId) {
 // persist must atomically save the whole descriptor. Never retry an unknown fork.
 export async function rollbackSession(session, request, deps) {
   const { requestId, turnId } = request;
+  const restoreFiles = request.restoreFiles === true;
   if (typeof requestId !== "string" || !requestId.trim())
     throw new Error("A rollback request identity is required");
   if (typeof turnId !== "string" || !turnId)
@@ -76,15 +82,20 @@ export async function rollbackSession(session, request, deps) {
   let receipt = Object.hasOwn(session.controlRequests, requestId)
     ? session.controlRequests[requestId]
     : undefined;
-  if (receipt && (receipt.kind !== "rollback" || receipt.turnId !== turnId))
+  if (
+    receipt &&
+    (receipt.kind !== "rollback" ||
+      receipt.turnId !== turnId ||
+      !!receipt.restoreFiles !== restoreFiles)
+  )
     throw new Error("This request identity has different content");
   if (receipt?.status === "completed") {
     await deps.persist(session);
     return receipt.result;
   }
-  if (receipt?.status === "submitted")
+  if (["submitted", "rewind_submitted"].includes(receipt?.status))
     throw new Error(
-      "The Claude fork outcome is unknown; this request cannot repeat the fork",
+      "The Claude history operation outcome is unknown; this request cannot repeat it",
     );
   if (session.turns.some((turn) => turn.status === "inProgress"))
     throw new Error("Pause Claude before rollback");
@@ -100,9 +111,41 @@ export async function rollbackSession(session, request, deps) {
       dir: session.nativeHistoryCwd || session.cwd,
     });
     const boundary = rollbackBoundary(session.turns, messages, turnId);
+    const fileMessageId = session.turns[boundary.index].fileCheckpointMessageId;
+    let filePlan;
+    if (restoreFiles) {
+      if (
+        !fileMessageId ||
+        fileMessageId !== nativeBoundary(session.turns[boundary.index]) ||
+        !checkpointSourceMatches(session, session.turns[boundary.index])
+      )
+        throw new Error("This message has no SDK file checkpoint");
+      const preview = await deps.rewindFiles(sourceNativeId, fileMessageId, {
+        dryRun: true,
+      });
+      if (!preview?.canRewind)
+        throw new Error(
+          preview?.error || "The SDK file checkpoint is unavailable",
+        );
+      try {
+        filePlan = await deps.prepareFileRestore(
+          session,
+          messages,
+          fileMessageId,
+        );
+      } catch (error) {
+        // This phase has no native fork or file effects and no durable receipt.
+        throw Object.assign(new Error(error.message, { cause: error }), {
+          data: { fileRestoreOutcome: "not_applied", requestId, turnId },
+        });
+      }
+    }
     receipt = {
+      ...(restoreFiles ? { filePlan } : {}),
       kind: "rollback",
       turnId,
+      restoreFiles,
+      fileMessageId,
       status: "submitted",
       sourceNativeId,
       createdAt: new Date().toISOString(),
@@ -130,7 +173,7 @@ export async function rollbackSession(session, request, deps) {
     receipt.status = "forked";
     await deps.persist(session);
   }
-  if (receipt.status !== "forked")
+  if (!["forked", "rewound"].includes(receipt.status))
     throw new Error("Unsupported Claude rollback receipt");
   const retained = structuredClone(
     receipt.previousTurns.slice(0, receipt.retainedCount),
@@ -156,7 +199,31 @@ export async function rollbackSession(session, request, deps) {
       if (index < 0 || !forkMessages[index]?.uuid)
         throw new Error("Claude fork lost a retained turn boundary");
       turn.nativeMessageId = forkMessages[index].uuid;
+      // A fork remaps message IDs. Its SDK backups have not been verified.
+      delete turn.fileCheckpointMessageId;
+      delete turn.fileCheckpointSource;
     }
+  }
+  if (restoreFiles && receipt.status === "rewound")
+    await deps.verifyFileRestore(receipt.filePlan, "expected");
+  if (restoreFiles && receipt.status !== "rewound") {
+    await deps.verifyFileRestore(receipt.filePlan, "before");
+    receipt.status = "rewind_submitted";
+    await deps.persist(session);
+    const result = await deps.rewindFiles(
+      receipt.sourceNativeId,
+      receipt.fileMessageId,
+      { dryRun: false },
+    );
+    if (!result?.canRewind || result.skippedLinks > 0)
+      throw new Error(
+        result?.error ||
+          "Claude could not restore every tracked file; inspect workspace recovery",
+      );
+    await deps.verifyFileRestore(receipt.filePlan, "expected");
+    receipt.fileResult = result;
+    receipt.status = "rewound";
+    await deps.persist(session);
   }
   session.historyBranches ||= [];
   session.historyBranches.push({
@@ -173,6 +240,9 @@ export async function rollbackSession(session, request, deps) {
     threadId: session.id,
     nativeId: session.nativeId,
     removedTurns: receipt.previousTurns.length - retained.length,
+    ...(restoreFiles
+      ? { filesRestored: true, fileResult: receipt.fileResult }
+      : {}),
   };
   delete receipt.sourceMessages;
   delete receipt.previousTurns;
@@ -257,8 +327,11 @@ export async function forkAtTurn(source, params, deps) {
       throw new Error(
         "Claude fork history did not preserve the selected messages",
       );
-    for (let i = 0; i < retained.length; i++)
+    for (let i = 0; i < retained.length; i++) {
       retained[i].nativeMessageId = forkMessages[positions[i]].uuid;
+      delete retained[i].fileCheckpointMessageId;
+      delete retained[i].fileCheckpointSource;
+    }
   }
   const {
     controlRequests: _controlRequests,

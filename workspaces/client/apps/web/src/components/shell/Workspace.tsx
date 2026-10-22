@@ -1,3 +1,4 @@
+import ClaudeCheckpointRestore from "../ClaudeCheckpointRestore";
 import { useServerApi } from "../../servers/ServerServicesContext";
 import { SearchContent } from "./SearchOverlay";
 import { EmptyState, PanelHeader } from "../ui/primitives";
@@ -726,6 +727,25 @@ function Plan(c: Context) {
 }
 
 function Checkpoints(c: Context) {
+  if (
+    c.selected?.provider === "claude" &&
+    (c.selected.imageWorkspace ||
+      c.selected.workspaceMode === "shared" ||
+      (!c.selected.worktree && c.selected.workspaceMode !== "worktree"))
+  ) {
+    return (
+      <ClaudeCheckpointRestore
+        key={c.selected.id}
+        agent={c.selected}
+        revision={c.revision}
+        onRestored={c.reload}
+      />
+    );
+  }
+  return <GitCheckpoints {...c} />;
+}
+
+function GitCheckpoints(c: Context) {
   const state = useResource("/api/checkpoints", c.revision, {
       query: c.selected ? { agent: c.selected.id } : {},
     }),
@@ -824,7 +844,8 @@ function Checkpoints(c: Context) {
             </pre>
             {!preview.canRestore && (
               <p className="workspace-muted">
-                A restore requires an idle agent with an isolated worktree.
+                {preview.restoreUnavailableReason ||
+                  "A restore requires an idle agent with an isolated worktree."}
               </p>
             )}
             <Button
