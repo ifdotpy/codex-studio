@@ -1960,14 +1960,16 @@ async fn registry_drains_strict_account_pages_after_one_global_wake() {
         Arc::new(Notify::new()),
         stop.clone(),
     ));
-    let (account, request) = tokio::time::timeout(SATURATED_WAKE_TIMEOUT, writes.recv())
+    // This checks account-page correctness, not latency. The pass visits 130
+    // accounts; use the shared hang guard under concurrent suite execution.
+    let (account, request) = tokio::time::timeout(TEST_HANG_GUARD, writes.recv())
         .await
         .expect("strict account continuation reaches the eligible tail")
         .unwrap();
     assert_eq!(account, "account:page-000129");
     assert_eq!(request["method"], "turn/start");
     stop.cancel();
-    tokio::time::timeout(SATURATED_WAKE_TIMEOUT, task)
+    tokio::time::timeout(TEST_HANG_GUARD, task)
         .await
         .expect("registry shutdown completes after strict account paging")
         .unwrap()
