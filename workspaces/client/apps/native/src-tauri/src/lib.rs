@@ -113,6 +113,31 @@ mod tests {
             assert!(!packaged_shell(&value.parse().unwrap()), "{value}");
         }
     }
+
+    // A style nonce makes the WebView ignore 'unsafe-inline' in style-src.
+    // Srcdoc previews inherit that policy and lose their styles; see
+    // repository-checks/tests/native-style-policy.test.mjs.
+    #[test]
+    fn bundled_documents_keep_the_configured_inline_style_policy() {
+        let context = super::context();
+        let modification = &context
+            .config()
+            .app
+            .security
+            .dangerous_disable_asset_csp_modification;
+        assert!(!modification.can_modify("style-src"));
+        assert!(modification.can_modify("script-src"));
+        let key = "index.html".into();
+        let index = context.assets().get(&key).expect("bundled index.html");
+        let index = String::from_utf8_lossy(&index);
+        assert!(!index.contains(tauri::utils::assets::STYLE_NONCE_TOKEN));
+        assert!(
+            context
+                .assets()
+                .csp_hashes(&key)
+                .all(|hash| hash.directive() != "style-src")
+        );
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -471,6 +496,11 @@ async fn client_request(
     Ok(response)
 }
 
+// One expansion embeds the bundled renderer; tests read the same context.
+fn context() -> tauri::Context<tauri::Wry> {
+    tauri::generate_context!()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     #[cfg(feature = "native-check")]
@@ -605,7 +635,7 @@ pub fn run() {
             window_state::install(&window, &directory, hidden)?;
             Ok(())
         })
-        .build(tauri::generate_context!())
+        .build(context())
         .expect("The native Studio host could not start")
         .run(|app, event| {
             #[cfg(desktop)]
