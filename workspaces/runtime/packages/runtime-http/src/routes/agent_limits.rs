@@ -69,7 +69,10 @@ async fn continue_worker(
             )?;
             if worker.id == root.id
                 || root.extra.get("isLead") != Some(&json!(true))
-                || worker.extra.contains_key("remoteWorker")
+                || worker
+                    .extra
+                    .get("remoteWorker")
+                    .is_some_and(|value| !value.is_null())
             {
                 return Err(coordination::CoordinationError::InvalidRequest(
                     "Select a local worker of the root lead",

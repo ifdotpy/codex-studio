@@ -6,10 +6,15 @@ use axum::{
     http::Request,
 };
 use serde_json::{Value, json};
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
 use studio_runtime_http::{HttpState, router};
 use studio_runtime_services::{coordination, message_admission::PreparedAdmission, sync_views};
-use studio_runtime_store::{AgentId, AgentRecord, AgentRepository, RuntimeStore};
+use studio_runtime_store::{
+    AgentId, AgentRecord, AgentRepository, QueueWriteRepository, RuntimeStore,
+};
 use tower::ServiceExt;
 
 async fn call(
@@ -109,7 +114,9 @@ async fn continue_worker_http_requires_user_token_and_replays_without_resetting_
         for value in [
             json!({"id":"lead","rootId":"lead","isLead":true,"epoch":1,"status":"completed","autoWake":true,"cwd":"/work","concurrency":2}),
             json!({"id":"manager","rootId":"lead","parentId":"lead","epoch":1,"status":"completed","autoWake":true,"cwd":"/work"}),
-            json!({"id":"worker","rootId":"lead","parentId":"manager","epoch":1,"status":"completed","autoWake":false,"cwd":"/work","capabilityProfile":{"maxTurns":2},"completedWorkerTurns":2,"terminalReason":"worker_max_turns"}),
+            json!({"id":"worker","rootId":"lead","parentId":"manager","epoch":1,"status":"completed","autoWake":false,"cwd":"/work","remoteWorker":null,"capabilityProfile":{"maxTurns":2},"completedWorkerTurns":2,"terminalReason":"worker_max_turns"}),
+            json!({"id":"other","rootId":"lead","parentId":"lead","epoch":1,"status":"completed","autoWake":false,"cwd":"/work","capabilityProfile":{"maxTurns":2},"completedWorkerTurns":2,"terminalReason":"worker_max_turns"}),
+            json!({"id":"remote","rootId":"lead","parentId":"lead","epoch":1,"status":"completed","autoWake":false,"cwd":"/work","remoteWorker":{"server":"remote-host","link":"remote-link"},"capabilityProfile":{"maxTurns":2},"completedWorkerTurns":2,"terminalReason":"worker_max_turns"}),
         ] { AgentRepository::put(tx, &AgentRecord::from_value(value).unwrap())?; }
         Ok(())
     }).await.unwrap();
@@ -175,7 +182,7 @@ async fn continue_worker_http_requires_user_token_and_replays_without_resetting_
     assert_eq!(status, 200, "{replay}");
     assert_eq!(receipt["id"], replay["id"]);
     store
-        .read_async("test/continue", |db| {
+        .transaction(|db| {
             let worker = AgentRepository::get(db, &AgentId::from("worker"))?.unwrap();
             assert_eq!(worker.extra["completedWorkerTurns"], 1);
             let events: i64 = db.query_row(
@@ -184,6 +191,8 @@ async fn continue_worker_http_requires_user_token_and_replays_without_resetting_
                 |r| r.get(0),
             )?;
             assert_eq!(events, 1);
+            let metadata = QueueWriteRepository::metadata(db, "continue-once")?.unwrap();
+            assert_eq!(metadata["senderId"], "lead");
             Ok::<_, studio_runtime_store::StoreError>(())
         })
         .await
@@ -191,12 +200,26 @@ async fn continue_worker_http_requires_user_token_and_replays_without_resetting_
     for body in [
         json!({"id":"lead","request_id":"invalid"}),
         json!({"id":"manager","request_id":"invalid"}),
+        json!({"id":"remote","request_id":"invalid"}),
+        json!({"id":"other","request_id":"continue-once"}),
         json!({"id":"worker","request_id":"invalid","sender_id":"lead"}),
     ] {
         let (status, result) =
             call(&app, "POST", "/api/agents/continue", body, "fixture-token").await;
         assert!((400..500).contains(&status), "{result}");
     }
+    store
+        .read_async("test/continue-refusals", |db| {
+            for id in ["other", "remote"] {
+                let worker = AgentRepository::get(db, &AgentId::from(id))?.unwrap();
+                assert_eq!(worker.extra["completedWorkerTurns"], 2);
+                assert_eq!(worker.extra["terminalReason"], "worker_max_turns");
+                assert_eq!(worker.extra["autoWake"], false);
+            }
+            Ok::<_, studio_runtime_store::StoreError>(())
+        })
+        .await
+        .unwrap();
 }
 
 #[tokio::test]
@@ -217,7 +240,7 @@ async fn team_budget_http_includes_deleted_members_and_reports_incomplete_usage(
         store.root().to_string_lossy().into(),
         49171,
         None,
-        Some(store),
+        Some(store.clone()),
         None,
     ))
     .unwrap();
@@ -240,4 +263,26 @@ async fn team_budget_http_includes_deleted_members_and_reports_incomplete_usage(
     );
     assert!(!summary.to_string().contains("private"));
     assert_eq!(summary["incomplete"].as_array().unwrap().len(), 3);
+    assert!(
+        studio_runtime_schema::first_error("TeamBudgetSummary", &summary)
+            .unwrap()
+            .is_none()
+    );
+    // Resource-triggered reads must settle without publishing another update.
+    let updates = Arc::new(AtomicUsize::new(0));
+    let observed = Arc::clone(&updates);
+    store.add_resource_change_observer(move || {
+        observed.fetch_add(1, Ordering::SeqCst);
+    });
+    let (status, repeated) = call(
+        &app,
+        "GET",
+        "/api/team-budget?agent=worker",
+        Value::Null,
+        "fixture-token",
+    )
+    .await;
+    assert_eq!(status, 200, "{repeated}");
+    assert_eq!(repeated, summary);
+    assert_eq!(updates.load(Ordering::SeqCst), 0);
 }
