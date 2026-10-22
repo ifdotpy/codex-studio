@@ -236,7 +236,7 @@ pub(crate) fn project(
     ) && truthy(actor.get("autoWake"));
     let failed_turns = items
         .iter()
-        .filter(|i| i["turnStatus"] == "failed")
+        .filter(|i| matches!(i["turnStatus"].as_str(), Some("failed" | "uncertain")))
         .filter_map(|i| {
             i["turnId"]
                 .as_str()
@@ -259,7 +259,9 @@ pub(crate) fn project(
                 {
                     return Err(invalid("analytics_turns", &identity));
                 }
-                if record["status"] == "failed" && truthy(record.get("error")) {
+                if matches!(record["status"].as_str(), Some("failed" | "uncertain"))
+                    && truthy(record.get("error"))
+                {
                     turn_errors.insert(turn.clone(), record["error"].clone());
                 }
             }

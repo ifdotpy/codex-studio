@@ -103,6 +103,7 @@ import PromptInput from "./prompt-composer/PromptInput";
 import { reportPromptComposerRender } from "./prompt-composer/renderProbe";
 import Requests from "./questions/Requests";
 import MessageDate from "./conversation/transcript/MessageDate";
+import ClaudeRepairNotice from "./ClaudeRepairNotice";
 import TurnHistory from "./conversation/transcript/TurnHistory";
 import {
   resetHistoryWindowAnchor,
@@ -1349,6 +1350,7 @@ export default function Conversation(p: {
           m.role === "assistant" &&
           m.turnId &&
           m.turnId !== agent?.turnId &&
+          m.turnStatus !== "uncertain" &&
           lastAssistantByTurn.get(m.turnId) === m.id
             ? () => void branch(m)
             : undefined
@@ -1376,29 +1378,34 @@ export default function Conversation(p: {
   );
   const transcript = useMemo(
     () => (
-      <TurnHistory
-        key={`${p.data.stateDir}:${p.id}`}
-        items={transcriptItems}
-        scrollContainer={scroll}
-        rememberScroll={remember}
-        hasRecentScrollInput={hasRecentScrollInput}
-        agent={managed && !p.room ? agent : undefined}
-        currentTurn={agent?.turnId || undefined}
-        enabled={managed && !p.room}
-        storageKey={`studio-turns:${p.data.stateDir}:${p.id}`}
-        renderMessage={(item) =>
-          item.nativeNotice ? (
-            isNonBlockingWarning(item) ? null : (
-              <NativeNotice key={item.id} item={item} planType={planType} />
+      <>
+        {managed && !p.room && agent?.provider === "claude" && (
+          <ClaudeRepairNotice agent={agent} />
+        )}
+        <TurnHistory
+          key={`${p.data.stateDir}:${p.id}`}
+          items={transcriptItems}
+          scrollContainer={scroll}
+          rememberScroll={remember}
+          hasRecentScrollInput={hasRecentScrollInput}
+          agent={managed && !p.room ? agent : undefined}
+          currentTurn={agent?.turnId || undefined}
+          enabled={managed && !p.room}
+          storageKey={`studio-turns:${p.data.stateDir}:${p.id}`}
+          renderMessage={(item) =>
+            item.nativeNotice ? (
+              isNonBlockingWarning(item) ? null : (
+                <NativeNotice key={item.id} item={item} planType={planType} />
+              )
+            ) : (
+              renderMessage(item)
             )
-          ) : (
-            renderMessage(item)
-          )
-        }
-        agentId={managed ? agent?.id : undefined}
-        onJump={jumpToPrompt}
-        requests={pendingQuestions}
-      />
+          }
+          agentId={managed ? agent?.id : undefined}
+          onJump={jumpToPrompt}
+          requests={pendingQuestions}
+        />
+      </>
     ),
     [
       items,

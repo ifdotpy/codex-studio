@@ -20568,6 +20568,47 @@
         "title": "ClaudeStopTaskResponse",
         "type": "object"
       },
+      "ClaudeRepairReport": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "status",
+          "skippedRows",
+          "invalidSequence",
+          "scopeConfirmed",
+          "nativeHistoryConfirmed"
+        ],
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "none",
+              "needs_repair",
+              "repaired"
+            ]
+          },
+          "skippedRows": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "invalidSequence": {
+            "type": "boolean"
+          },
+          "scopeConfirmed": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "nativeHistoryConfirmed": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          }
+        }
+      },
       "ClaudeTurn": {
         "additionalProperties": false,
         "properties": {
@@ -20580,7 +20621,8 @@
               "inProgress",
               "completed",
               "failed",
-              "interrupted"
+              "interrupted",
+              "uncertain"
             ],
             "title": "Status",
             "type": "string"
@@ -68308,6 +68350,45 @@
           }
         },
         "summary": "Claude Profile"
+      }
+    },
+    "/api/claude/repair-report": {
+      "get": {
+        "operationId": "claude_repair_report",
+        "summary": "Read saved Claude journal repair evidence without repair or replay",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Safe saved repair evidence; no transcript text or paths",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClaudeRepairReport"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/api/claude/session": {

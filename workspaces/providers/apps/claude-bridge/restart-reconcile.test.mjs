@@ -305,3 +305,50 @@ test("restart replaces a partial mirror reply with all native text blocks", asyn
     assert.equal(answers[0].phase, "final_answer");
   });
 });
+
+test("bridge reads retain the unconfirmed outcome and reason without a model query", async () => {
+  const bridge = await startBridge(
+    `
+    export const tool = () => ({});
+    export const createSdkMcpServer = value => value;
+    export const forkSession = () => { throw new Error("No fork expected"); };
+    export const getSessionMessages = () => { throw new Error("No SDK history read expected"); };
+    export const query = () => { throw new Error("No model query expected"); };
+  `,
+    "claude-uncertain-wire-",
+  );
+  try {
+    await createSessionStore(path.join(bridge.root, "state")).persist({
+      id: sessionId,
+      cwd: bridge.root,
+      turns: [
+        {
+          id: "turn",
+          status: "inProgress",
+          items: [
+            {
+              id: "input",
+              nativeId: userId,
+              type: "userMessage",
+              content: [{ type: "text", text: "Run the command" }],
+            },
+          ],
+        },
+      ],
+    });
+    const result = await bridge.call("thread/read", {
+      threadId: sessionId,
+      includeTurns: true,
+    });
+    assert.equal(result.thread.turns[0].status, "uncertain");
+    assert.match(result.thread.turns[0].error.message, /could not confirm/);
+    const state = await bridge.call("claude/state", { threadId: sessionId });
+    assert.equal(state.turns[0].status, "uncertain");
+    assert.equal(
+      bridge.notes.some((entry) => entry.method === "turn/started"),
+      false,
+    );
+  } finally {
+    await bridge.close();
+  }
+});

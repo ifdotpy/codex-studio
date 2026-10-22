@@ -31,9 +31,9 @@ use tokio::sync::{Notify, mpsc, watch};
 use tower::ServiceExt;
 
 #[derive(Default)]
-struct Native {
+pub(crate) struct Native {
     full: AtomicBool,
-    calls: Mutex<Vec<Value>>,
+    pub(crate) calls: Mutex<Vec<Value>>,
     ready: Notify,
 }
 impl Native {
@@ -41,6 +41,9 @@ impl Native {
         self.calls.lock().unwrap().push(request.clone());
         let p = &request["params"];
         let result = match request["method"].as_str().unwrap() {
+            "claude/repairReport" => {
+                json!({"status":"needs_repair","skippedRows":3,"invalidSequence":true,"scopeConfirmed":true,"nativeHistoryConfirmed":false,"secret":"must-not-escape","transcript":"private transcript content","path":"/private/account"})
+            }
             "claude/state" => {
                 json!({"tasks":[],"turns":[{"id":"one","status":"completed","canRestoreFiles":true},{"id":"two","status":"completed","canRestoreFiles":true}]})
             }
@@ -190,7 +193,7 @@ async fn post(app: &axum::Router, path: &str, body: Value) -> (u16, Value) {
             .unwrap(),
     )
 }
-async fn fixture() -> (
+pub(crate) async fn fixture() -> (
     tempfile::TempDir,
     Arc<RuntimeStore>,
     axum::Router,

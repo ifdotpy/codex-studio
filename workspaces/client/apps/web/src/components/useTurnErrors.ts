@@ -13,7 +13,7 @@ export function failedTurnsNeedingLookup(
   return [
     ...new Set(
       items.flatMap((item) =>
-        item.turnStatus === "failed" &&
+        ["failed", "uncertain"].includes(item.turnStatus || "") &&
         item.turnId &&
         typeof item.turnId === "string" &&
         !existing.has(item.turnId)
@@ -115,7 +115,7 @@ export function useTurnErrors(items: Message[], agent?: Agent, workspace = "") {
             turn.threadId === threadId &&
             typeof turn.turnId === "string" &&
             requested.includes(turn.turnId) &&
-            turn.status === "failed" &&
+            ["failed", "uncertain"].includes(turn.status || "") &&
             turn.error
           )
             recovered[turn.turnId] = turn.error;
@@ -184,7 +184,7 @@ export function useTurnErrors(items: Message[], agent?: Agent, workspace = "") {
           role: "system",
           text: "",
           turnId,
-          turnStatus: "failed",
+          turnStatus: item.turnStatus === "uncertain" ? "uncertain" : "failed",
           nativeNotice: "error",
           nativeError: error,
         },
