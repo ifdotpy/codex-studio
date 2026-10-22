@@ -1,0 +1,30 @@
+{
+  "agents": [
+    {
+      "id": "4d75e49b-d287-45e9-8479-2789f33592d8",
+      "epoch": 0
+    },
+    {
+      "id": "09bd9756-bd2c-4f98-ae53-9468a0e063cf",
+      "epoch": 0
+    }
+  ],
+  "tables": {
+    "runtime_agents": [
+      {
+        "id": "4d75e49b-d287-45e9-8479-2789f33592d8",
+        "record": "{\"id\": \"4d75e49b-d287-45e9-8479-2789f33592d8\", \"threadId\": \"fake-thread-0\", \"accountKey\": \"default\", \"executionSettingsAccountKey\": \"default\", \"provider\": \"codex\", \"yoloMode\": true, \"name\": \"Registry fixture\", \"prompt\": \"temporary\", \"cwd\": \"/fixture/state\", \"role\": \"orchestrator\", \"isLead\": true, \"needsTitle\": false, \"parentId\": null, \"rootId\": \"4d75e49b-d287-45e9-8479-2789f33592d8\", \"subagentConcurrencyVersion\": 2, \"maxAgentsExplicit\": false, \"model\": \"fake-model\", \"effort\": \"medium\", \"fastMode\": false, \"daybreakEnabled\": false, \"cyberAccessProgram\": \"standard\", \"concurrency\": 32, \"maxAgents\": 64, \"tokenBudget\": null, \"status\": \"queued\", \"autoWake\": true, \"epoch\": 0, \"turnId\": null, \"inFlight\": false, \"turnEpoch\": 0, \"usageResumeEnabled\": true, \"tokensUsed\": 0, \"compactions\": 0, \"compactionsObservedOnly\": false, \"contextUsage\": null, \"events\": 0, \"created\": 1792684202.1026266, \"error\": null, \"profileId\": null, \"profileInstructions\": \"\", \"tail\": \"\", \"worktree\": false, \"workspaceMode\": \"shared\", \"executionMode\": \"native\", \"hostProjectPath\": \"/fixture/state\", \"layrReady\": false, \"workspaceBackend\": null, \"workspaceModeExplicit\": false, \"workspaceInGit\": false, \"worktreeReady\": false, \"environment\": \"host\", \"imageWorkspace\": false, \"imageWorkspaceReady\": false, \"imageWorkspacePhase\": null, \"imageWorkspaceRepo\": null, \"imageWorkspaceSubpath\": \".\", \"imageWorkspaceBaseRef\": null, \"imageWorkspaceHasGit\": false, \"imageWorkspaceCreatedAt\": null, \"imageWorkspaceError\": null, \"worktreeWarning\": null, \"workerBaseRef\": null, \"workerBaseCommit\": null, \"workerBaseBehindMain\": null, \"workerBaseMainRef\": null, \"workerDefaults\": {\"model\": \"gpt-6-luna\", \"effort\": \"high\", \"fastMode\": false, \"daybreakEnabled\": false, \"delegationDepth\": 1}, \"reviewDefaults\": {\"model\": null, \"effort\": null}, \"agentMode\": \"multi\", \"agentModeRevision\": 0, \"agentModeSupported\": true, \"nativeEffort\": null}"
+      },
+      {
+        "id": "09bd9756-bd2c-4f98-ae53-9468a0e063cf",
+        "record": "{\"id\": \"09bd9756-bd2c-4f98-ae53-9468a0e063cf\", \"threadId\": \"fake-thread-1\", \"accountKey\": \"second\", \"executionSettingsAccountKey\": \"second\", \"provider\": \"codex\", \"yoloMode\": true, \"name\": \"Registry fixture\", \"prompt\": \"temporary\", \"cwd\": \"/fixture/state\", \"role\": \"orchestrator\", \"isLead\": true, \"needsTitle\": false, \"parentId\": null, \"rootId\": \"09bd9756-bd2c-4f98-ae53-9468a0e063cf\", \"subagentConcurrencyVersion\": 2, \"maxAgentsExplicit\": false, \"model\": \"fake-model\", \"effort\": \"medium\", \"fastMode\": false, \"daybreakEnabled\": false, \"cyberAccessProgram\": \"standard\", \"concurrency\": 32, \"maxAgents\": 64, \"tokenBudget\": null, \"status\": \"queued\", \"autoWake\": true, \"epoch\": 0, \"turnId\": null, \"inFlight\": false, \"turnEpoch\": 0, \"usageResumeEnabled\": true, \"tokensUsed\": 0, \"compactions\": 0, \"compactionsObservedOnly\": false, \"contextUsage\": null, \"events\": 0, \"created\": 1792684202.1077597, \"error\": null, \"profileId\": null, \"profileInstructions\": \"\", \"tail\": \"\", \"worktree\": false, \"workspaceMode\": \"shared\", \"executionMode\": \"native\", \"hostProjectPath\": \"/fixture/state\", \"layrReady\": false, \"workspaceBackend\": null, \"workspaceModeExplicit\": false, \"workspaceInGit\": false, \"worktreeReady\": false, \"environment\": \"host\", \"imageWorkspace\": false, \"imageWorkspaceReady\": false, \"imageWorkspacePhase\": null, \"imageWorkspaceRepo\": null, \"imageWorkspaceSubpath\": \".\", \"imageWorkspaceBaseRef\": null, \"imageWorkspaceHasGit\": false, \"imageWorkspaceCreatedAt\": null, \"imageWorkspaceError\": null, \"worktreeWarning\": null, \"workerBaseRef\": null, \"workerBaseCommit\": null, \"workerBaseBehindMain\": null, \"workerBaseMainRef\": null, \"workerDefaults\": {\"model\": \"gpt-6-luna\", \"effort\": \"high\", \"fastMode\": false, \"daybreakEnabled\": false, \"delegationDepth\": 1}, \"reviewDefaults\": {\"model\": null, \"effort\": null}, \"agentMode\": \"multi\", \"agentModeRevision\": 0, \"agentModeSupported\": true, \"nativeEffort\": null}"
+      }
+    ],
+    "runtime_projects": [
+      {
+        "id": "/fixture/state",
+        "record": "{\"id\": \"/fixture/state\", \"path\": \"/fixture/state\", \"name\": \"tmptyr0axwh\", \"created\": 1792684202.1027343, \"accountKey\": \"default\", \"accountRevision\": 1, \"homeServerId\": \"5d2499a8dd714b99b5e5b7e4bd64527e\", \"locations\": [{\"serverId\": \"5d2499a8dd714b99b5e5b7e4bd64527e\", \"path\": \"/fixture/state\", \"projectId\": \"/fixture/state\"}], \"locationsRevision\": 0}"
+      }
+    ]
+  }
+}

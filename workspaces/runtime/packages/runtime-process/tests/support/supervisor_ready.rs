@@ -33,7 +33,7 @@ pub fn wait(child: &mut Child, identity: BackendIdentity, stderr: &Path) {
                     .set_write_timeout(Some(remaining))
                     .expect("write timeout");
                 // Existence alone precedes listen/chmod/serve_forever. A protocol
-                // reply proves initialization completed, for Python and Rust alike.
+                // reply proves initialization completed.
                 break SupervisorClient::from_transport(stream, identity)
                     .map(drop)
                     .map_err(|error| format!("supervisor readiness handshake failed: {error}"));

@@ -1528,3 +1528,51 @@ test("tests retain temporary state ownership and follow the platform temp root",
     [],
   );
 });
+
+test("installer recipe preserves directory arguments as literal positional values", () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "studio-install-recipe-"));
+  try {
+    const tools = path.join(root, "tools");
+    const target = path.join(root, "target with spaces");
+    const binary = path.join(target, "debug/studio-runtime-server");
+    const capture = path.join(root, "arguments");
+    mkdirSync(tools);
+    mkdirSync(path.dirname(binary), { recursive: true });
+    writeFileSync(path.join(root, "justfile"), readFileSync("justfile"));
+    writeFileSync(path.join(tools, "cargo"), "#!/bin/sh\nexit 0\n");
+    chmodSync(path.join(tools, "cargo"), 0o755);
+    writeFileSync(binary, '#!/bin/sh\nprintf "%s\\0" "$@" > "$CAPTURE"\n');
+    chmodSync(binary, 0o755);
+    const destination = path.join(root, "commands with spaces $literal");
+    const result = spawnSync(
+      "just",
+      [
+        "--justfile",
+        path.join(root, "justfile"),
+        "install",
+        "--bin-dir",
+        destination,
+      ],
+      {
+        env: {
+          ...process.env,
+          PATH: `${tools}:${process.env.PATH}`,
+          CARGO_TARGET_DIR: target,
+          CAPTURE: capture,
+        },
+        encoding: "utf8",
+        timeout: 10000,
+      },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(readFileSync(capture, "utf8").split("\0").slice(0, -1), [
+      "install-cli",
+      "--project",
+      root,
+      "--bin-dir",
+      destination,
+    ]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

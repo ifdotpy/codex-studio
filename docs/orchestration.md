@@ -1469,3 +1469,12 @@ change with both options. Cross-machine Claude cache reuse remains unverified.
 6. The existing receipt owner atomically commits recovery and the callback result using prepared payloads only.
 7. Panel guidance is read once before its callback transaction; the transaction still checks lead authority.
 8. A lost response uses the saved request identity and existing uncertain-outcome recovery.
+
+### Rust command installation
+
+1. Run `just install` to build and link the Rust server, supervisor, and diagnostics.
+2. The installer removes only obsolete Python links belonging to that checkout and reports them.
+3. Use managed orchestration tools for agent commands; the removed Python CLIs have no aliases.
+4. `studio-runtime-server service install` enables user startup without restarting work.
+5. `service status` reads the manager; `service uninstall` disables startup and leaves running work alone.
+6. On Linux, only `just deliver-server` selects and restarts a server release.

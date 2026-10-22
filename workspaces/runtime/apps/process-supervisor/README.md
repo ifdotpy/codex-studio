@@ -16,10 +16,9 @@ socket effects in `runtime-process::supervisor_daemon`, and the independent
 application database is never opened. No provider credentials are discovered;
 the caller supplies the complete child environment.
 
-The focused checks are the existing `runtime-process` supervisor v1 client suite
-with `STUDIO_SUPERVISOR_BINARY` set to the built binary, the existing Python
-client contract adapter at `runtime-process/tests/python_supervisor_clients.py`,
-and `runtime-services/tests/supervisor_journal.rs`.
+The focused checks are the Rust client, receipt-loss, recovery, reattach and
+failed-start integration tests in this crate, plus the `runtime-process` suite
+with `STUDIO_SUPERVISOR_BINARY` set to the built binary.
 
 ## Running and ownership
 
@@ -41,8 +40,8 @@ waits for a committed event or terminal reader completion on a separate
 same-backend connection, leaving the control connection available for ACK and
 other actions. Its ordered event payloads are raw JSON and batches are bounded
 by the shared limit in [`runtime-process/src/protocol.rs`](../../packages/runtime-process/src/protocol.rs).
-The frame-size limit remains owned by [`codex_shared_values.py`](../../server/src/codex_shared_values.py)
-and its generated Rust contract. A
+The frame-size limit is consumed through the
+[`runtime-process` supervisor contract](../../packages/runtime-process/src/supervisor_contract.rs). A
 disconnected event-wait connection does not stop the child. Only one backend
 identity may own connections at a time; probes do not acquire ownership.
 Operator-close requests require the operator handshake and exact
@@ -140,3 +139,11 @@ available. It does not run a periodic empty query. The separate event-wait
 connection can be cancelled by disconnect without affecting the child or the
 control connection. Other v2 control actions retain their existing action
 shapes; v1 responses remain unchanged.
+
+## Focused tests
+
+`cargo test -p studio-process-supervisor` uses Cargo's built Rust supervisor.
+Each fixture creates disposable state, launches harmless shell children and
+cleans up its owned processes. Recovery setup uses `SupervisorJournal`; SQLite
+triggers inject failed identity upgrades without an interpreter. Failed-start
+checks read typed journal rows. No Python backend or Python test client runs.
