@@ -728,6 +728,27 @@ function fastTierCommands(root) {
       },
     },
     {
+      item: { name: "Mac sync chunk reads", ecosystem: "pnpm" },
+      label: "Mac sync chunk read witness",
+      commands: [
+        [
+          "node",
+          [
+            "--test",
+            path.join(
+              root,
+              "workspaces/runtime/apps/vm-guest/mac-sync-witness.test.mjs",
+            ),
+          ],
+        ],
+      ],
+      options: {
+        selector: "bounded guest Mac sync reads",
+        reason:
+          "Read at most one chunk under the project lock and preserve file and link responses.",
+      },
+    },
+    {
       item: { name: "native WebView fixture", ecosystem: "pnpm" },
       label: "native WebView fixture",
       commands: [
