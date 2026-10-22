@@ -74,12 +74,7 @@ pub(crate) fn agent_view_contexts(
     // each unrelated lifecycle write.
     let mut monitor_agents = std::collections::HashSet::new();
     if !lead_ids.is_empty() && table_exists(transaction, "runtime_monitors")? {
-        let has_owner_index = transaction.query_row_cached(
-            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='index' AND name='runtime_monitor_agent_status')",
-            [],
-            |row| row.get::<_, bool>(0),
-        )?;
-        if has_owner_index {
+        if crate::sync_policy::monitor_owner_index_exists(transaction)? {
             // The indexed JSON expression rejects malformed rows at write
             // time, so this bounded owner lookup is safe and index-backed.
             for chunk in lead_ids.chunks(LEAD_LOOKUP_CHUNK_ROWS) {
