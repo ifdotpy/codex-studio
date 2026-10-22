@@ -242,7 +242,7 @@ async fn resource_content(state: HttpState, resource: Value) -> Option<Vec<u8>> 
                         .duration_since(std::time::UNIX_EPOCH)
                         .ok()?
                         .as_secs_f64();
-                    let costs = policy
+                    let mut costs = policy
                         .accounts()
                         .accounts
                         .into_iter()
@@ -261,6 +261,7 @@ async fn resource_content(state: HttpState, resource: Value) -> Option<Vec<u8>> 
                                 .ok()
                         })
                         .collect::<Option<Vec<_>>>()?;
+                    costs.sort_by(|left, right| left.account_key.cmp(&right.account_key));
                     serde_json::to_vec(&costs).ok()
                 },
             )
@@ -597,6 +598,50 @@ mod tests {
             env!("CARGO_MANIFEST_DIR"),
             "/../runtime-services/tests/support/token_rate_difference.rs"
         ));
+    }
+
+    #[tokio::test]
+    async fn cost_content_ignores_account_listing_order() {
+        use studio_runtime_services::account_policy::AccountPolicyState;
+        fn policy(order: [&str; 2], root: &std::path::Path) -> AccountPolicyState {
+            let entries = order
+                .map(|id| {
+                    format!(
+                        "\"{id}\":{}",
+                        json!({
+                            "id":id, "home":root, "provider":"codex", "label":id,
+                            "source":"Fixture", "status":"ready"
+                        })
+                    )
+                })
+                .join(",");
+            let registry = format!(
+                r#"{{"version":1,"defaultAccountKey":"first","accounts":{{{entries}}},"logins":{{}}}}"#
+            );
+            AccountPolicyState::from_startup(Some(registry.as_bytes()), []).expect("policy")
+        }
+        let root = tempfile::tempdir().expect("isolated state");
+        let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
+        let mut state = HttpState::new(
+            "token".into(),
+            "workspace".into(),
+            root.path().display().to_string(),
+            4321,
+            None,
+            Some(store),
+            Some(Arc::new(policy(["first", "second"], root.path()))),
+        );
+        let before = resource_content(state.clone(), json!({"kind":"costs"}))
+            .await
+            .expect("cost content");
+        state.account_policy = Some(Arc::new(policy(["second", "first"], root.path())));
+        let after = resource_content(state, json!({"kind":"costs"}))
+            .await
+            .expect("cost content");
+        assert_eq!(
+            before, after,
+            "account order does not change either account's served costs"
+        );
     }
 
     #[tokio::test(start_paused = true)]
