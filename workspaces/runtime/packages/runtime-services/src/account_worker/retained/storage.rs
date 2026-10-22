@@ -105,11 +105,17 @@ pub(super) fn authorize(tx: &rusqlite::Transaction<'_>, call: &Call) -> Result<b
     } else {
         false
     };
-    // Stop commits the next epoch before asking the retained provider session
-    // to interrupt the previous turn. Permit only that exact prior epoch for
-    // turn/interrupt, while the agent is no longer eligible to wake.
-    let stopped_turn_interrupt = common_identity
-        && call.method == "turn/interrupt"
+    // Stop and delete commit the next epoch before asking the retained provider
+    // session to end the previous turn's work: turn/interrupt, then the
+    // thread's command processes that outlive an interrupt. Permit only these
+    // requests from that exact prior epoch, while the agent can no longer wake.
+    // A delete tombstone keeps this authority, so deletion cannot leave the
+    // turn and its commands running; it grants nothing else to a deleted actor.
+    let stopped_turn_cleanup = agent_account == call.scope.account
+        && matches!(
+            call.method.as_str(),
+            "turn/interrupt" | "thread/backgroundTerminals/clean"
+        )
         && actor.epoch.checked_add(1) == Some(agent_record.epoch)
         && agent_record.extra.get("autoWake") == Some(&json!(false));
     let thread_matches = call.params["threadId"].as_str().is_some_and(|thread| {
@@ -225,7 +231,7 @@ pub(super) fn authorize(tx: &rusqlite::Transaction<'_>, call: &Call) -> Result<b
         false
     };
     Ok(authorize_recovered_monitor_cancel(tx, call, actor)?
-        || (actor_identity || stopped_turn_interrupt || deleted_voice_stop)
+        || (actor_identity || stopped_turn_cleanup || deleted_voice_stop)
             && (thread_matches
                 || (actor_identity && repair_fork)
                 || thread_start
@@ -590,6 +596,92 @@ mod replay_identity_tests {
             method: "thread/read".into(),
             params: json!({"threadId":"thread-1","includeTurns":false}),
         }
+    }
+
+    #[tokio::test]
+    async fn stopped_and_deleted_prior_epoch_may_only_end_its_turn_work() {
+        let root = tempfile::tempdir().expect("root");
+        let store = RuntimeStore::open(Some(root.path())).await.expect("store");
+        store
+            .transaction(|tx| {
+                for record in [
+                    json!({"id":"stopped","rootId":"stopped","epoch":8,"status":"paused","autoWake":false,"threadId":"thread-1"}),
+                    json!({"id":"deleted","rootId":"deleted","epoch":8,"deletedAt":1,"status":"paused","autoWake":false,"threadId":"thread-1"}),
+                    json!({"id":"woken","rootId":"woken","epoch":8,"status":"queued","autoWake":true,"threadId":"thread-1"}),
+                ] {
+                    AgentRepository::put(
+                        tx,
+                        &studio_runtime_store::AgentRecord::from_value(record)?,
+                    )?;
+                }
+                Ok::<_, studio_runtime_store::StoreError>(())
+            })
+            .await
+            .expect("seed stopped, deleted and woken owners");
+        store
+            .read_async("test/stopped-turn-authority", |tx| {
+                let work = [
+                    (
+                        "turn/interrupt",
+                        json!({"threadId":"thread-1","turnId":"turn-1"}),
+                    ),
+                    (
+                        "thread/backgroundTerminals/clean",
+                        json!({"threadId":"thread-1"}),
+                    ),
+                ];
+                for agent in ["stopped", "deleted"] {
+                    for (method, params) in &work {
+                        let mut exact = call();
+                        exact.actor = Some(RequestActor {
+                            agent: agent.into(),
+                            epoch: 7,
+                        });
+                        exact.method = (*method).into();
+                        exact.params = params.clone();
+                        assert!(authorize(tx, &exact)?, "{agent} ends {method}");
+                        let mut invalid = exact.clone();
+                        invalid.params["threadId"] = json!("thread-2");
+                        assert!(!authorize(tx, &invalid)?, "{agent} {method} other thread");
+                        let mut invalid = exact.clone();
+                        invalid.actor.as_mut().expect("actor").epoch = 6;
+                        assert!(!authorize(tx, &invalid)?, "{agent} {method} older epoch");
+                        let mut invalid = exact.clone();
+                        invalid.scope.account = "other".into();
+                        assert!(!authorize(tx, &invalid)?, "{agent} {method} other account");
+                    }
+                    let mut read = call();
+                    read.actor = Some(RequestActor {
+                        agent: agent.into(),
+                        epoch: 7,
+                    });
+                    assert!(!authorize(tx, &read)?, "{agent} gets no other request");
+                }
+                let mut deleted_current = call();
+                deleted_current.actor = Some(RequestActor {
+                    agent: "deleted".into(),
+                    epoch: 8,
+                });
+                deleted_current.method = "turn/interrupt".into();
+                deleted_current.params = json!({"threadId":"thread-1","turnId":"turn-1"});
+                assert!(!authorize(tx, &deleted_current)?);
+                for (method, params) in &work {
+                    let mut woken = call();
+                    woken.actor = Some(RequestActor {
+                        agent: "woken".into(),
+                        epoch: 7,
+                    });
+                    woken.method = (*method).into();
+                    woken.params = params.clone();
+                    assert!(
+                        !authorize(tx, &woken)?,
+                        "a woken agent keeps no stop authority"
+                    );
+                }
+                Ok::<_, WorkerError>(())
+            })
+            .await
+            .expect("stop authority witnesses");
     }
 
     #[tokio::test]
