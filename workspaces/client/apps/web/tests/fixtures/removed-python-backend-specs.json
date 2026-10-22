@@ -1,0 +1,404 @@
+[
+  {
+    "file": "tests/playwright-fixture-account.browser.spec.mjs",
+    "tests": [
+      "\"spawnFixture defaults to a synthetic account and supports signed-out opt-out\"",
+      "\"global setup resolves an equipped fixture Python without caller variables\""
+    ],
+    "reason": "Dynamic Python backend fixture removed; independent Rust and renderer specs remain."
+  },
+  {
+    "file": "tests/accounts/account-limit-dots-ui.spec.mjs",
+    "tests": ["\"account limit dots ui\""],
+    "reason": "Dynamic Python backend fixture removed; independent Rust and renderer specs remain."
+  },
+  {
+    "file": "tests/background/background-ui.spec.mjs",
+    "tests": ["\"background-ui\""],
+    "reason": "Dynamic Python backend fixture removed; independent Rust and renderer specs remain."
+  },
+  {
+    "file": "tests/background/capacity-retry-ui.spec.mjs",
+    "tests": ["\"capacity retry ui\""],
+    "reason": "Dynamic Python backend fixture removed; independent Rust and renderer specs remain."
+  },
+  {
+    "file": "tests/chat/agent-chat-scope-ui.spec.mjs",
+    "tests": ["\"Agent chat scope ui\""],
+    "reason": "Dynamic Python backend fixture removed; independent Rust and renderer specs remain."
+  },
+  {
+    "file": "tests/chat/chat-scope-ui.spec.mjs",
+    "tests": ["\"Chat scope\""],
+    "reason": "Dynamic Python backend fixture removed; independent Rust and renderer specs remain."
+  },
+  {
+    "file": "tests/chat/chat-status-ui.spec.mjs",
+    "tests": ["\"chat-status-ui\""],
+    "reason": "Dynamic Python backend fixture removed; independent Rust and renderer specs remain."
+  },
+  {
+    "file": "tests/chat/prompt-navigation-ui.spec.mjs",
+    "tests": ["\"prompt navigation ui\""],
+    "reason": "Dynamic Python backend fixture removed; independent Rust and renderer specs remain."
+  },
+  {
+    "file": "tests/chat/read-activity-ui.spec.mjs",
+    "tests": ["\"read activity ui\""],
+    "reason": "Dynamic Python backend fixture removed; independent Rust and renderer specs remain."
+  },
+  {
+    "file": "tests/composer/rename-command-ui.spec.mjs",
+    "tests": ["\"/rename updates the sidebar without sending a message\""],
+    "reason": "Dynamic Python backend fixture removed; independent Rust and renderer specs remain."
+  },
+  {
+    "file": "tests/conversation/conversation-motion-ui.spec.mjs",
+    "tests": ["\"conversation motion ui @performance\""],
+    "reason": "Dynamic Python backend fixture removed; independent Rust and renderer specs remain."
+  },
+  {
+    "file": "tests/drafts/draft-idle-poll-browser.spec.mjs",
+    "tests": ["\"draft idle poll browser\""],
+    "reason": "Dynamic Python backend fixture removed; independent Rust and renderer specs remain."
+  },
+  {
+    "file": "tests/errors/policy-refusal-ui.spec.mjs",
+    "tests": [
+      "\"cyber policy refusal settles and leaves a warning before send\""
+    ],
+    "reason": "Dynamic Python backend fixture removed; independent Rust and renderer specs remain."
+  },
+  {
+    "file": "tests/errors/tool-limit-history-ui.spec.mjs",
+    "tests": ["\"tool limit history ui\""],
+    "reason": "Dynamic Python backend fixture removed; independent Rust and renderer specs remain."
+  },
+  {
+    "file": "tests/files/file-change-ui.spec.mjs",
+    "tests": ["\"File change\""],
+    "reason": "Dynamic Python backend fixture removed; independent Rust and renderer specs remain."
+  },
+  {
+    "file": "tests/files/file-links-ui.spec.mjs",
+    "tests": ["\"File Links Ui\""],
+    "reason": "Dynamic Python backend fixture removed; independent Rust and renderer specs remain."
+  },
+  {
+    "file": "tests/files/tool-images-ui.spec.mjs",
+    "tests": ["\"tool images ui\""],
+    "reason": "Dynamic Python backend fixture removed; independent Rust and renderer specs remain."
+  },
+  {
+    "file": "tests/limits/limits-cache-ui.spec.mjs",
+    "tests": [
+      "\"cached limits appear before a slow read on open and restart\""
+    ],
+    "reason": "Dynamic Python backend fixture removed; independent Rust and renderer specs remain."
+  },
+  {
+    "file": "tests/limits/limits-ui.spec.mjs",
+    "tests": ["\"limits-ui\""],
+    "reason": "Dynamic Python backend fixture removed; independent Rust and renderer specs remain."
+  },
+  {
+    "file": "tests/markdown/markdown-image-http-ui.spec.mjs",
+    "tests": ["\"markdown image http ui\""],
+    "reason": "Dynamic Python backend fixture removed; independent Rust and renderer specs remain."
+  },
+  {
+    "file": "tests/messages/installed-queue-display-ui.spec.mjs",
+    "tests": ["\"installed queue display ui\""],
+    "reason": "Dynamic Python backend fixture removed; independent Rust and renderer specs remain."
+  },
+  {
+    "file": "tests/messages/message-info-ui.spec.mjs",
+    "tests": ["\"Message info\""],
+    "reason": "Dynamic Python backend fixture removed; independent Rust and renderer specs remain."
+  },
+  {
+    "file": "tests/messages/reasoning-history-ui.spec.mjs",
+    "tests": ["\"Reasoning History Ui\""],
+    "reason": "Dynamic Python backend fixture removed; independent Rust and renderer specs remain."
+  },
+  {
+    "file": "tests/messages/rich-preview-ui.spec.mjs",
+    "tests": ["\"rich preview ui\""],
+    "reason": "Dynamic Python backend fixture removed; independent Rust and renderer specs remain."
+  },
+  {
+    "file": "tests/messages/selection-quote-ui.spec.mjs",
+    "tests": ["\"Selection Quote Ui\""],
+    "reason": "Dynamic Python backend fixture removed; independent Rust and renderer specs remain."
+  },
+  {
+    "file": "tests/messages/sentence-stream-ui.spec.mjs",
+    "tests": ["\"sentence stream ui\""],
+    "reason": "Dynamic Python backend fixture removed; independent Rust and renderer specs remain."
+  },
+  {
+    "file": "tests/messages/simple-messages-ui.spec.mjs",
+    "tests": ["\"simple messages ui\""],
+    "reason": "Dynamic Python backend fixture removed; independent Rust and renderer specs remain."
+  },
+  {
+    "file": "tests/mobile/mobile-startup-performance.spec.mjs",
+    "tests": [
+      "\"Mobile startup transcript scope cap\"",
+      "true",
+      "\"Mobile history boundary returns to latest\"",
+      "\"Mobile startup performance\""
+    ],
+    "reason": "Dynamic Python backend fixture removed; independent Rust and renderer specs remain."
+  },
+  {
+    "file": "tests/mobile/mobile-usability-ui.spec.mjs",
+    "tests": ["\"Mobile usability\"", "!existsSync(webkitPath)"],
+    "reason": "Dynamic Python backend fixture removed; independent Rust and renderer specs remain."
+  },
+  {
+    "file": "tests/models/model-command-ui.spec.mjs",
+    "tests": [
+      "\"main settings dialog closes after chat switch\"",
+      "true",
+      "\"model-command-ui\""
+    ],
+    "reason": "Dynamic Python backend fixture removed; independent Rust and renderer specs remain."
+  },
+  {
+    "file": "tests/models/subagent-defaults-latency-browser.spec.mjs",
+    "tests": ["\"Subagent defaults latency @performance\""],
+    "reason": "Dynamic Python backend fixture removed; independent Rust and renderer specs remain."
+  },
+  {
+    "file": "tests/models/worker-model-ui.spec.mjs",
+    "tests": ["\"Worker model\""],
+    "reason": "Dynamic Python backend fixture removed; independent Rust and renderer specs remain."
+  },
+  {
+    "file": "tests/native-actions/native-action-retry-browser.spec.mjs",
+    "tests": ["\"Native action retry browser\""],
+    "reason": "Dynamic Python backend fixture removed; independent Rust and renderer specs remain."
+  },
+  {
+    "file": "tests/navigation/chat-navigation-ui.spec.mjs",
+    "tests": ["\"chat-navigation-ui\""],
+    "reason": "Dynamic Python backend fixture removed; independent Rust and renderer specs remain."
+  },
+  {
+    "file": "tests/navigation/ux-navigation-ui.spec.mjs",
+    "tests": ["\"ux-navigation-ui\""],
+    "reason": "Dynamic Python backend fixture removed; independent Rust and renderer specs remain."
+  },
+  {
+    "file": "tests/notifications/desktop-notifications-ui.spec.mjs",
+    "tests": [
+      "\"Desktop Notifications Ui\"",
+      "\"completion notification navigation selects its project chat\"",
+      "\"question notification navigation opens its question\""
+    ],
+    "reason": "Dynamic Python backend fixture removed; independent Rust and renderer specs remain."
+  },
+  {
+    "file": "tests/performance/perf-renderer-memory.spec.mjs",
+    "tests": ["\"perf renderer memory @performance\""],
+    "reason": "Dynamic Python backend fixture removed; independent Rust and renderer specs remain."
+  },
+  {
+    "file": "tests/progress/progress-cache-ui.spec.mjs",
+    "tests": [
+      "\"Progress Cache Ui\"",
+      "\"compact progress panel measurement setup reaches a hidden panel\"",
+      "\"desktop compact progress panel matches its height budget\""
+    ],
+    "reason": "Dynamic Python backend fixture removed; independent Rust and renderer specs remain."
+  },
+  {
+    "file": "tests/projects/project-folders-ui.spec.mjs",
+    "tests": ["\"project folders create, move, rename and persist\""],
+    "reason": "Dynamic Python backend fixture removed; independent Rust and renderer specs remain."
+  },
+  {
+    "file": "tests/questions/questions-overflow-ui.spec.mjs",
+    "tests": ["\"Questions overflow\""],
+    "reason": "Dynamic Python backend fixture removed; independent Rust and renderer specs remain."
+  },
+  {
+    "file": "tests/settings/preferences-sync-browser.spec.mjs",
+    "tests": [
+      "\"visual preferences update across contexts and seed a fresh first render\""
+    ],
+    "reason": "Dynamic Python backend fixture removed; independent Rust and renderer specs remain."
+  },
+  {
+    "file": "tests/settings/settings-ux-ui.spec.mjs",
+    "tests": ["\"settings-ux-ui\""],
+    "reason": "Dynamic Python backend fixture removed; independent Rust and renderer specs remain."
+  },
+  {
+    "file": "tests/settings/studio-settings-browser-ui.spec.mjs",
+    "tests": ["\"studio settings browser ui\""],
+    "reason": "Dynamic Python backend fixture removed; independent Rust and renderer specs remain."
+  },
+  {
+    "file": "tests/shell/shell-ux-ui.spec.mjs",
+    "tests": [
+      "\"Conversation tools menu displays compact prompt navigation\"",
+      "\"Search messages opens from the button and Ctrl+K\"",
+      "\"Search messages focuses its query input when opened\"",
+      "\"320px workspace setup keeps other header controls in view\"",
+      "\"Conversation toggle remains in view at 320px\"",
+      "\"Shell ux ui\""
+    ],
+    "reason": "Dynamic Python backend fixture removed; independent Rust and renderer specs remain."
+  },
+  {
+    "file": "tests/sidebar/sidebar-drag-browser.spec.mjs",
+    "tests": [
+      "\"sidebar drag browser\"",
+      "\"sidebar reorder setup holds the first save after its optimistic move\"",
+      "true",
+      "\"sidebar queues a second reorder while the first save is pending\"",
+      "true"
+    ],
+    "reason": "Dynamic Python backend fixture removed; independent Rust and renderer specs remain."
+  },
+  {
+    "file": "tests/sidebar/sidebar-status-browser.spec.mjs",
+    "tests": ["\"sidebar status, alias validation, and compact choices\""],
+    "reason": "Dynamic Python backend fixture removed; independent Rust and renderer specs remain."
+  },
+  {
+    "file": "tests/sync/entity-cache-persistence-latency-browser.spec.mjs",
+    "tests": [
+      "\"mutation response persistence completes before its UI update\""
+    ],
+    "reason": "Dynamic Python backend fixture removed; independent Rust and renderer specs remain."
+  },
+  {
+    "file": "tests/sync/progress-stream-reload-browser.spec.mjs",
+    "tests": [
+      "\"active panel resource stream reconnects promptly after repeated reloads\"",
+      "true"
+    ],
+    "reason": "Dynamic Python backend fixture removed; independent Rust and renderer specs remain."
+  },
+  {
+    "file": "tests/sync/sync-stream-measure.spec.mjs",
+    "tests": ["\"Sync stream measure @performance\""],
+    "reason": "Dynamic Python backend fixture removed; independent Rust and renderer specs remain."
+  },
+  {
+    "file": "tests/teams/team-motion-ui.spec.mjs",
+    "tests": ["\"Team Motion Ui\""],
+    "reason": "Dynamic Python backend fixture removed; independent Rust and renderer specs remain."
+  },
+  {
+    "file": "tests/typography/original-typography-browser.spec.mjs",
+    "tests": ["\"Original Typography Browser\""],
+    "reason": "Dynamic Python backend fixture removed; independent Rust and renderer specs remain."
+  },
+  {
+    "file": "tests/usage/analytics-ui.spec.mjs",
+    "tests": ["\"analytics ui\""],
+    "reason": "Dynamic Python backend fixture removed; independent Rust and renderer specs remain."
+  },
+  {
+    "file": "tests/usage/team-token-rate-ui.spec.mjs",
+    "tests": ["\"team token rate ui\""],
+    "reason": "Dynamic Python backend fixture removed; independent Rust and renderer specs remain."
+  },
+  {
+    "file": "tests/usage/token-rate-ui.spec.mjs",
+    "tests": ["\"Token rate ui\""],
+    "reason": "Dynamic Python backend fixture removed; independent Rust and renderer specs remain."
+  },
+  {
+    "file": "tests/workspace/product-ui.spec.mjs",
+    "tests": [
+      "\"product ui\"",
+      "\"320px long-draft composer setup keeps Send vertically visible\"",
+      "\"320px long-draft send control stays inside the viewport\""
+    ],
+    "reason": "Dynamic Python backend fixture removed; independent Rust and renderer specs remain."
+  },
+  {
+    "file": "tests/workspace/session-activity-integration-ui.spec.mjs",
+    "tests": ["\"Session activity integration\""],
+    "reason": "Dynamic Python backend fixture removed; independent Rust and renderer specs remain."
+  },
+  {
+    "file": "tests/workspace/work-log-ui.spec.mjs",
+    "tests": [
+      "\"work log ui\"",
+      "\"reload converges after an in-flight transcript pull\""
+    ],
+    "reason": "Dynamic Python backend fixture removed; independent Rust and renderer specs remain."
+  },
+  {
+    "file": "tests/workspace/worker-overview-ui.spec.mjs",
+    "tests": ["\"Worker Overview Ui\""],
+    "reason": "Dynamic Python backend fixture removed; independent Rust and renderer specs remain."
+  },
+  {
+    "file": "tests/workspace/workspace-inbox-ui.spec.mjs",
+    "tests": ["\"workspace-inbox-ui\""],
+    "reason": "Dynamic Python backend fixture removed; independent Rust and renderer specs remain."
+  },
+  {
+    "file": "tests/workspace/workspace-layout-ui.spec.mjs",
+    "tests": [
+      "\"Workspace layout ui\"",
+      "\"workspace transcript retains 48% at 1024×768\"",
+      "\"mobile workspace composer setup reaches compact geometry\"",
+      "\"mobile workspace composer body fits its compact height budget\""
+    ],
+    "reason": "Dynamic Python backend fixture removed; independent Rust and renderer specs remain."
+  },
+  {
+    "file": "tests/workspace/workspace-mode-badge-ui.spec.mjs",
+    "tests": [
+      "\"worker workspace badge fits light, dark, and mobile chat headers\""
+    ],
+    "reason": "Dynamic Python backend fixture removed; independent Rust and renderer specs remain."
+  },
+  {
+    "file": "tests/workspace/workspace-task-feed-ui.spec.mjs",
+    "tests": ["\"workspace task feed ui\""],
+    "reason": "Dynamic Python backend fixture removed; independent Rust and renderer specs remain."
+  },
+  {
+    "file": "src/components/agents/AgentPanel.browser.spec.mjs",
+    "tests": [
+      "\"an active AgentPanel follows native progress without panel polling\"",
+      "true"
+    ],
+    "reason": "Dynamic Python backend fixture removed; independent Rust and renderer specs remain."
+  },
+  {
+    "file": "tests/progress/progress-fit-browser.spec.mjs",
+    "tests": [
+      "progress-fit-browser: Python codex_progress_layout._report validator comparison only"
+    ],
+    "reason": "Renderer assertions retained; removed Python validator is no longer a supported backend."
+  },
+  {
+    "file": "src/servers/sidebarReviewRegressions.test.ts",
+    "tests": [
+      "a reorder with 4000 chats on each server passes the real backend validator: Python reorder_sidebar validation only"
+    ],
+    "reason": "Sidebar merge and reorder round-trip assertions remain."
+  },
+  {
+    "file": "package.json",
+    "tests": [
+      "test:token-rate: token-rate-contract.py; claude-bridge-contract.py Bridge.test_rate_uses_assistant_output_and_subtracts_persistent_query_total",
+      "test:ux: voice-validation-contract.py",
+      "test:ux-audit: ux-history-contract.py; account-disconnect-contract.py",
+      "test:mobile: mobile-state-contract.py",
+      "test:ux-recovery: sync-entities-contract.py",
+      "benchmark:prompt-composer:paired: historical Python baseline comparison"
+    ],
+    "reason": "Removed scripts invoke the retired Python backend; retained browser selectors use Rust or standalone renderer fixtures."
+  }
+]

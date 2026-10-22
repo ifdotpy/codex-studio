@@ -4,20 +4,14 @@ import {
   apiSchemaHeaders,
   apiSchemaHandshakeSse,
 } from "../playwright.mjs";
-import {
-  setupControl,
-  chooseSetupValue,
-} from "../../../../../runtime/apps/server/tests/setup-controls.mjs";
+import { setupControl, chooseSetupValue } from "../fixtures/setup-controls.mjs";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-  modelValue,
-  selectModel,
-} from "../../../../../runtime/apps/server/tests/model-picker.mjs";
+import { modelValue, selectModel } from "../fixtures/model-picker.mjs";
 import { test, expect } from "../playwright.mjs";
 
 test("execution settings canonical browser", async ({ page }) => {
