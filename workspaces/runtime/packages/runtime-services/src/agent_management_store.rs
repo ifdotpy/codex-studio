@@ -141,6 +141,11 @@ struct CleanupReply {
     reason: Option<String>,
 }
 
+/// Default audit reason for a finished-worker batch whose caller omitted it.
+pub(crate) fn finished_archive_reason() -> String {
+    "Finished worker cleanup".into()
+}
+
 /// Batch archive is orchestration of the existing per-worker owner, never a
 /// second deletion path. Partial progress is discoverable on archived records;
 /// a tool retry uses the caller's durable tool receipt rather than rerunning it.
@@ -148,6 +153,7 @@ pub async fn archive_finished(
     store: std::sync::Arc<RuntimeStore>,
     actor: &str,
     epoch: i64,
+    reason: &str,
     unassign_work: bool,
     now: f64,
 ) -> Result<ArchiveFinishedResult, ManagementError> {
@@ -193,7 +199,7 @@ pub async fn archive_finished(
                 actor: actor.to_owned(),
                 epoch,
                 target: id.clone(),
-                reason: "Finished worker cleanup".into(),
+                reason: reason.to_owned(),
                 unassign_work,
             },
             now,
@@ -776,9 +782,16 @@ mod archive_finished_tests {
             ] { Table::<WorkItemRecord>::new(tx).put(&serde_json::from_value(row)?)?; }
             Ok::<_, studio_runtime_store::StoreError>(())
         }).await.expect("agents and tasks");
-        let result = archive_finished(Arc::clone(&store), "lead", 1, false, 20.0)
-            .await
-            .expect("archive batch");
+        let result = archive_finished(
+            Arc::clone(&store),
+            "lead",
+            1,
+            &finished_archive_reason(),
+            false,
+            20.0,
+        )
+        .await
+        .expect("archive batch");
         assert_eq!(result.archived, 1);
         assert_eq!(
             result.unknown_bytes, 1,
@@ -801,9 +814,16 @@ mod archive_finished_tests {
         );
         let archived_head = git(&["rev-parse", "refs/codex-agents/archive/clean"]);
         assert_eq!(archived_head, git(&["rev-parse", "clean"]));
-        let repeat = archive_finished(Arc::clone(&store), "lead", 1, true, 21.0)
-            .await
-            .expect("next batch");
+        let repeat = archive_finished(
+            Arc::clone(&store),
+            "lead",
+            1,
+            &finished_archive_reason(),
+            true,
+            21.0,
+        )
+        .await
+        .expect("next batch");
         assert_eq!(repeat.archived, 1, "only newly unassigned worker archives");
         assert_eq!(repeat.unassigned_work, vec!["open"]);
         let active = store
@@ -815,13 +835,20 @@ mod archive_finished_tests {
             .expect("active");
         assert!(!active.extra.contains_key("deletedAt"));
         assert!(
-            archive_finished(Arc::clone(&store), "lead", 0, false, 22.0)
-                .await
-                .is_err(),
+            archive_finished(
+                Arc::clone(&store),
+                "lead",
+                0,
+                &finished_archive_reason(),
+                false,
+                22.0
+            )
+            .await
+            .is_err(),
             "stale lead epoch cannot manage workers"
         );
         assert!(
-            archive_finished(store, "dirty", 1, false, 22.0)
+            archive_finished(store, "dirty", 1, &finished_archive_reason(), false, 22.0)
                 .await
                 .is_err(),
             "worker cannot archive team"
@@ -1170,7 +1197,7 @@ mod archive_finished_tests {
             ] { AgentRepository::put(tx, &AgentRecord::from_value(row)?)?; }
             Ok::<_, studio_runtime_store::StoreError>(())
         }).await.expect("team");
-        let result = archive_finished(store, "lead", 1, false, 20.0)
+        let result = archive_finished(store, "lead", 1, &finished_archive_reason(), false, 20.0)
             .await
             .expect("nested cleanup");
         assert_eq!(result.archived, 2);
