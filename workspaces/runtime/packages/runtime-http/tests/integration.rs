@@ -1,4 +1,5 @@
 mod checkpoint_rewind;
+mod child_permissions;
 mod claude_file_backups;
 mod claude_login;
 mod claude_repair_report;

@@ -4191,6 +4191,30 @@
               }
             ]
           },
+          "claudeOptions": {
+            "anyOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "permissionMode": {
+                    "enum": [
+                      "default",
+                      "acceptEdits",
+                      "auto",
+                      "plan",
+                      "bypassPermissions"
+                    ],
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Claude permission mode for the worker launch preview. Other session options remain private."
+          },
           "commandProgress": {
             "default": [],
             "items": {
@@ -23592,6 +23616,17 @@
             ],
             "default": null,
             "title": "Parent"
+          },
+          "permission_mode": {
+            "description": "Claude child permission mode. Omit to inherit. Reviewers use plan. Bypass requires a bypass parent.",
+            "enum": [
+              "default",
+              "acceptEdits",
+              "auto",
+              "plan",
+              "bypassPermissions"
+            ],
+            "type": "string"
           },
           "profile_id": {
             "anyOf": [

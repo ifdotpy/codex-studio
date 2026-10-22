@@ -3917,6 +3917,16 @@ export interface components {
       capacityRetry?:
         | components["schemas"]["AgentEntityCapacityRetryDto"]
         | null;
+      /** @description Claude permission mode for the worker launch preview. Other session options remain private. */
+      claudeOptions?: {
+        /** @enum {string} */
+        permissionMode?:
+          | "default"
+          | "acceptEdits"
+          | "auto"
+          | "plan"
+          | "bypassPermissions";
+      } | null;
       /**
        * Commandprogress
        * @default []
@@ -11574,6 +11584,16 @@ export interface components {
        * @default null
        */
       parent?: string | null;
+      /**
+       * @description Claude child permission mode. Omit to inherit. Reviewers use plan. Bypass requires a bypass parent.
+       * @enum {string}
+       */
+      permission_mode?:
+        | "default"
+        | "acceptEdits"
+        | "auto"
+        | "plan"
+        | "bypassPermissions";
       /**
        * Profile Id
        * @default null

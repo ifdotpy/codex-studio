@@ -1291,3 +1291,5 @@ mod tests {
 }
 
 pub mod task_gate;
+
+pub mod claude_permissions;

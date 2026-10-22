@@ -400,6 +400,19 @@ pub fn check_schema_parity(openapi: &Value, account_transfer: &Value) -> Result<
         values::SYNC_TRANSCRIPT_STREAM_MAX_ITEMS as i64,
     )?;
     check_delivery_parity(openapi)?;
+    let modes = serde_json::json!(crate::claude_permissions::PERMISSION_MODES);
+    for path in [
+        "/components/schemas/CreateAgentRequest/properties/permission_mode/enum",
+        "/components/schemas/AgentEntityDto/properties/claudeOptions/anyOf/0/properties/permissionMode/enum",
+        "/components/schemas/ClaudeSettings/properties/permissionMode/anyOf/0/enum",
+        "/components/schemas/ClaudeSessionSettings/properties/permissionMode/anyOf/0/enum",
+    ] {
+        if openapi.pointer(path) != Some(&modes) {
+            return Err(format!(
+                "{path} differs from claude_permissions::PERMISSION_MODES"
+            ));
+        }
+    }
     crate::task_results::check_schema_parity(openapi)?;
     check_account_group_parity(openapi)?;
     crate::agent_progress::check_schema_parity(openapi)?;
@@ -634,6 +647,16 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
             ),
         },
         Rendered {
+            path: web("claudePermissions.ts"),
+            text: format!(
+                "// {HEADER}\nexport const CLAUDE_PERMISSION_MODES = [\n{}] as const;\nexport type ClaudePermissionMode = (typeof CLAUDE_PERMISSION_MODES)[number];\n",
+                crate::claude_permissions::PERMISSION_MODES
+                    .iter()
+                    .map(|mode| format!("  {},\n", json_string(mode)))
+                    .collect::<String>()
+            ),
+        },
+        Rendered {
             path: "workspaces/providers/apps/claude-bridge/input-origin.generated.mjs".into(),
             text: format!(
                 "// {HEADER}\nexport const HUMAN_INPUT = {};\nexport const STUDIO_EVENT_INPUT = {};\n",
@@ -791,6 +814,30 @@ mod tests {
         let error = check_schema_parity(&openapi, &account_transfer)
             .expect_err("a changed team limit is rejected");
         assert!(error.contains("maxAgents/maximum"), "{error}");
+    }
+
+    #[test]
+    fn claude_permission_parity_rejects_drift_in_each_consumer() {
+        let root = repository_root();
+        let openapi = read_json(&root, OPENAPI_PATH).expect("OpenAPI document");
+        let account_transfer =
+            read_json(&root, ACCOUNT_TRANSFER_SCHEMA_PATH).expect("account transfer schema");
+        for path in [
+            "/components/schemas/CreateAgentRequest/properties/permission_mode/enum",
+            "/components/schemas/AgentEntityDto/properties/claudeOptions/anyOf/0/properties/permissionMode/enum",
+            "/components/schemas/ClaudeSettings/properties/permissionMode/anyOf/0/enum",
+            "/components/schemas/ClaudeSessionSettings/properties/permissionMode/anyOf/0/enum",
+        ] {
+            let mut drifted = openapi.clone();
+            *drifted.pointer_mut(path).expect("permission modes") = serde_json::json!(["unknown"]);
+            let error =
+                check_schema_parity(&drifted, &account_transfer).expect_err("drift must fail");
+            assert!(error.contains(path), "{error}");
+            assert!(
+                error.contains("claude_permissions::PERMISSION_MODES"),
+                "{error}"
+            );
+        }
     }
 
     #[test]
