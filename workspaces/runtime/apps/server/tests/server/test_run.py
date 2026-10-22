@@ -181,7 +181,7 @@ class ServerSuiteRunner(unittest.TestCase):
             self.assertTrue(global_config.is_file())
             self.assertEqual(global_config.stat().st_size, 0)
             self.assertEqual(
-                environment["PYTHONPATH"].split(os.pathsep)[:2],
+                environment["PYTHONPATH"].split(os.pathsep)[1:3],
                 [str(SERVER_SOURCE_ROOT), str(SERVER_TESTS_ROOT)],
             )
             self.assertEqual(environment["GIT_CONFIG_COUNT"], "4")
@@ -213,6 +213,8 @@ class ServerSuiteRunner(unittest.TestCase):
                     suite_root = root / str(explicit)
                     suite_root.mkdir()
                     inherited = {"PATH": str(tools)}
+                    if "CARGO_TARGET_DIR" in os.environ:
+                        inherited["CARGO_TARGET_DIR"] = os.environ["CARGO_TARGET_DIR"]
                     if explicit:
                         inherited.update(CODEX_NODE=str(tools / "node"), PATH="/missing")
                     with mock.patch.dict(os.environ, inherited, clear=True):
@@ -248,11 +250,10 @@ class ServerSuiteRunner(unittest.TestCase):
             inherited_path = os.pathsep.join(
                 (str(protected_package_path), str(protected_arg0_path), safe_path)
             )
-            with mock.patch.dict(
-                os.environ,
-                {"PATH": inherited_path, "CODEX_NODE": str(protected_node)},
-                clear=True,
-            ):
+            inherited = {"PATH": inherited_path, "CODEX_NODE": str(protected_node)}
+            if "CARGO_TARGET_DIR" in os.environ:
+                inherited["CARGO_TARGET_DIR"] = os.environ["CARGO_TARGET_DIR"]
+            with mock.patch.dict(os.environ, inherited, clear=True):
                 environment = RUNNER._suite_environment(ROOT, suite_root)
 
             self.assertEqual(environment["CODEX_NODE"], safe_node)

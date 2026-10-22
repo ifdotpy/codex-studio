@@ -1066,7 +1066,47 @@ pub(crate) fn maintain_task_window_after_write(
     maintain_task_window(transaction, validate)
 }
 
-pub fn maintain_monitor_window(
+/// Checked content updates retain membership and publish only their own row.
+/// The canonical selector stays private so runtime writers cannot rebuild it
+/// without comparing checked membership fields. Owner liveness and cold sync
+/// maintenance remain in this module.
+pub(crate) fn publish_monitor_change(
+    transaction: &Transaction<'_>,
+    previous: Option<&crate::monitor_policy::MonitorSnapshot>,
+    monitor: &crate::monitor_policy::MonitorSnapshot,
+) -> StoreResult<()> {
+    let validate = &|_: &str, _: &str, view: &Value, deleted| {
+        deleted || studio_runtime_schema::validate("MonitorEntityDto", view).unwrap_or(false)
+    };
+    if previous.is_none_or(|previous| !previous.same_window_position(monitor)) {
+        return maintain_monitor_window(transaction, validate);
+    }
+    let retained: bool = transaction.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sync_entities \
+         WHERE collection='monitor' AND id=?1 AND deleted=0)",
+        [monitor.id()],
+        |row| row.get(0),
+    )?;
+    if !monitor.live_window_owner() {
+        if retained {
+            put_projection(
+                transaction,
+                "monitor",
+                monitor.id(),
+                json!({}),
+                true,
+                validate,
+            )?;
+        }
+    } else if (monitor.active() || retained)
+        && let Some(view) = project_persisted_record("monitor", monitor.record())
+    {
+        put_projection(transaction, "monitor", monitor.id(), view, false, validate)?;
+    }
+    Ok(())
+}
+
+fn maintain_monitor_window(
     transaction: &Transaction<'_>,
     validate: &impl Fn(&str, &str, &Value, bool) -> bool,
 ) -> StoreResult<()> {
@@ -1997,6 +2037,225 @@ mod tests {
                 statements.push(statement.sql().into_owned());
             });
         }
+    }
+
+    fn trace_expanded_sql(event: TraceEvent<'_>) {
+        if let TraceEvent::Stmt(statement, _) = event {
+            TRACED_SQL.with_borrow_mut(|statements| {
+                statements.push(statement.expanded_sql().expect("bound statement"));
+            });
+        }
+    }
+
+    fn monitor_entity(connection: &Connection, id: &str) -> StoreResult<Option<Value>> {
+        let payload: Option<String> = connection.query_row(
+            "SELECT payload FROM sync_entities WHERE collection='monitor' AND id=?1 AND deleted=0",
+            [id], |row| row.get(0),
+        ).optional()?;
+        payload
+            .map(|raw| Ok(serde_json::from_str::<Value>(&raw)?["value"].clone()))
+            .transpose()
+    }
+
+    fn monitor_entities(connection: &Connection) -> StoreResult<Vec<(String, String, bool)>> {
+        let mut statement = connection.prepare(
+            "SELECT id,payload,deleted FROM sync_entities WHERE collection='monitor' ORDER BY id",
+        )?;
+        Ok(statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+            .collect::<Result<_, _>>()?)
+    }
+
+    #[tokio::test]
+    async fn monitor_output_projects_exactly_one_row_and_keeps_window_membership() {
+        use crate::{monitor_policy, monitor_runtime};
+        use studio_runtime_store::{AgentRecord, AgentRepository, monitor_runtime as repository};
+
+        let root = tempfile::tempdir().expect("isolated state");
+        let store = RuntimeStore::open(Some(root.path())).await.expect("store");
+        let cwd = root.path().to_string_lossy().into_owned();
+        let id =
+            store
+                .transaction_with(move |tx| {
+                    let actor = AgentRecord::from_value(json!({
+                        "id":"agent", "rootId":"agent", "epoch":1, "autoWake":true,
+                        "status":"idle", "cwd":cwd, "accountKey":"default"
+                    }))
+                    .map_err(StoreError::from)?;
+                    AgentRepository::put(tx, &actor)?;
+                    let mut monitor = monitor_policy::create_record(
+                        &actor.value(),
+                        &json!({"command":"printf output"}),
+                        "output-watch",
+                        &cwd,
+                        1.0,
+                    )?;
+                    monitor["status"] = json!("running");
+                    monitor["operation"] = json!({"agent":"agent", "epoch":1,
+                "accountKey":"default", "connectionId":"connection"});
+                    let id = monitor["id"].as_str().expect("monitor id").to_owned();
+                    repository::put(tx, monitor.clone())?;
+                    // Equal timestamps exercise the existing index tie order. Include
+                    // an evicted terminal row so content updates cannot resurrect it.
+                    for index in 0..=MONITOR_TERMINAL_WINDOW {
+                        let mut terminal = monitor.clone();
+                        terminal["id"] = json!(format!("terminal-{index}"));
+                        terminal["status"] = json!("completed");
+                        repository::put(tx, terminal)?;
+                    }
+                    maintain_monitor_window(tx, &|_, _, _, _| true)?;
+                    let retired: String = tx.query_row(
+                    "SELECT id FROM runtime_monitors WHERE id LIKE 'terminal-%' AND id NOT IN \
+                     (SELECT id FROM sync_entities WHERE collection='monitor' AND deleted=0)",
+                    [],
+                    |row| row.get(0),
+                ).map_err(StoreError::from)?;
+                    SyncDocumentsRepository::put_entity(tx, "monitor", &retired, json!({}), true)?;
+                    tx.execute(
+                        "INSERT INTO runtime_monitors(id,record) VALUES('invalid-monitor','[]')",
+                        [],
+                    )
+                    .map_err(StoreError::from)?;
+                    SyncDocumentsRepository::put_entity(
+                        tx,
+                        "monitor",
+                        "invalid-monitor",
+                        json!({"preserve":"prior"}),
+                        false,
+                    )?;
+                    Ok::<_, monitor_policy::MonitorError>(id)
+                })
+                .await
+                .expect("seed canonical monitor window");
+
+        let output_id = id.clone();
+        store
+            .transaction_with(move |tx| {
+                let (before, actor) = monitor_runtime::snapshot(tx, &output_id)?;
+                let decision = monitor_policy::output(
+                    &before,
+                    before.operation().expect("operation"),
+                    b"fragment",
+                    2.0,
+                )?;
+                TRACED_SQL.with_borrow_mut(Vec::clear);
+                tx.trace_v2(TraceEventCodes::SQLITE_TRACE_STMT, Some(trace_expanded_sql));
+                monitor_runtime::apply(tx, &before, &actor, &decision, 2.0)?;
+                tx.trace_v2(TraceEventCodes::SQLITE_TRACE_STMT, None);
+                let statements = TRACED_SQL.with_borrow_mut(std::mem::take);
+                // Count attempted publication, including unchanged entities that
+                // put_entity would suppress after hashing and validation.
+                let publications = statements
+                    .iter()
+                    .filter(|sql| {
+                        sql.starts_with("SELECT hash,deleted FROM sync_entities")
+                            && sql.contains("collection='monitor'")
+                    })
+                    .collect::<Vec<_>>();
+                assert_eq!(publications.len(), 1, "{publications:?}");
+                assert!(publications[0].contains(&output_id));
+                assert!(
+                    !statements
+                        .iter()
+                        .any(|sql| sql.starts_with("SELECT record FROM runtime_monitors")),
+                    "output must not run the window selector: {statements:?}"
+                );
+                let projected = monitor_entity(tx, &output_id)?.expect("updated projection");
+                assert_eq!(projected["tail"], "fragment");
+                assert_eq!(projected["bytes"], b"fragment".len());
+                assert_eq!(
+                    monitor_entity(tx, "invalid-monitor")?,
+                    Some(json!({"preserve":"prior"}))
+                );
+                Ok::<_, monitor_policy::MonitorError>(())
+            })
+            .await
+            .expect("one output fragment publishes only its own monitor");
+
+        let rollback_id = id.clone();
+        let rollback = store
+            .transaction_with(move |tx| {
+                let (before, actor) = monitor_runtime::snapshot(tx, &rollback_id)?;
+                let decision = monitor_policy::output(
+                    &before,
+                    before.operation().expect("operation"),
+                    b"rolled back",
+                    3.0,
+                )?;
+                monitor_runtime::apply(tx, &before, &actor, &decision, 3.0)?;
+                Err::<(), _>(monitor_policy::MonitorError::Refused("rollback witness"))
+            })
+            .await;
+        assert!(matches!(
+            rollback,
+            Err(monitor_policy::MonitorError::Refused("rollback witness"))
+        ));
+        let read_id = id.clone();
+        store
+            .read_async("test/monitor-rollback", move |tx| {
+                assert_eq!(
+                    monitor_entity(tx, &read_id)?.expect("projection")["tail"],
+                    "fragment"
+                );
+                let raw: String = tx.query_row(
+                    "SELECT record FROM runtime_monitors WHERE id=?1",
+                    [&read_id],
+                    |row| row.get(0),
+                )?;
+                assert_eq!(serde_json::from_str::<Value>(&raw)?["tail"], "fragment");
+                Ok::<_, StoreError>(())
+            })
+            .await
+            .expect("source and projection roll back together");
+
+        // An unretained terminal gets no publication; changing its ordering
+        // field must run the canonical selector and admit it instead.
+        store
+            .transaction_with(move |tx| {
+                let excluded: String = tx
+                    .query_row(
+                        "SELECT id FROM runtime_monitors WHERE id LIKE 'terminal-%' AND id NOT IN \
+                 (SELECT id FROM sync_entities WHERE collection='monitor' AND deleted=0)",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .map_err(StoreError::from)?;
+                let (before, actor) = monitor_runtime::snapshot(tx, &excluded)?;
+                let mut decision = before.decision();
+                decision.record["tail"] = json!("late metadata");
+                monitor_runtime::apply(tx, &before, &actor, &decision, 3.0)?;
+                assert!(monitor_entity(tx, &excluded)?.is_none());
+                let (before, actor) = monitor_runtime::snapshot(tx, &excluded)?;
+                let mut decision = before.decision();
+                decision.record["created"] = json!(4.0);
+                monitor_runtime::apply(tx, &before, &actor, &decision, 4.0)?;
+                assert!(monitor_entity(tx, &excluded)?.is_some());
+                // The full selector remains an oracle for exact tie membership.
+                let before = monitor_entities(tx)?;
+                maintain_monitor_window(tx, &|_, _, _, _| true)?;
+                assert_eq!(before, monitor_entities(tx)?);
+                Ok::<_, monitor_policy::MonitorError>(())
+            })
+            .await
+            .expect("terminal membership and ordering");
+
+        store
+            .transaction_with(move |tx| {
+                let (before, actor) = monitor_runtime::snapshot(tx, &id)?;
+                let decision =
+                    monitor_policy::finish(&before, before.operation(), Some(0), None, 5.0)?;
+                monitor_runtime::apply(tx, &before, &actor, &decision, 5.0)?;
+                let after_transition = monitor_entities(tx)?;
+                maintain_monitor_window(tx, &|_, _, _, _| true)?;
+                assert_eq!(after_transition, monitor_entities(tx)?);
+                assert_eq!(
+                    monitor_entity(tx, "invalid-monitor")?,
+                    Some(json!({"preserve":"prior"}))
+                );
+                Ok::<_, monitor_policy::MonitorError>(())
+            })
+            .await
+            .expect("status transition preserves canonical membership and invalid rows");
     }
 
     #[test]

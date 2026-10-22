@@ -818,6 +818,17 @@ function webWasmPreparation(root) {
   };
 }
 
+function operationsModulePreparation() {
+  return {
+    item: { name: "native operations preparation", ecosystem: "cargo" },
+    label: "native operations preparation",
+    commands: [
+      ["cargo", ["build", "--locked", "-p", "studio-operations-python"]],
+    ],
+    options: { allowZeroTests: true, buildOnly: true },
+  };
+}
+
 function fastTierCommands(root) {
   const packages = discover(root);
   const server = serverPackage();
@@ -828,6 +839,7 @@ function fastTierCommands(root) {
     "workspaces/tooling/apps/repository-checks/facade.mjs",
   );
   return [
+    operationsModulePreparation(),
     webWasmPreparation(root),
     {
       item: { name: "schema and dependency guards", ecosystem: "pnpm" },
@@ -880,7 +892,7 @@ function fastTierCommands(root) {
     },
     {
       item: { name: "studio-runtime-services", ecosystem: "cargo" },
-      label: "provider callback acceptance witnesses",
+      label: "server command snapshot witnesses",
       commands: [
         [
           "cargo",
@@ -896,7 +908,37 @@ function fastTierCommands(root) {
             "studio-runtime-services",
             "--lib",
             "-E",
-            "test(account_worker::tests::callback_handoff::) | test(account_worker::tests::callback_head_of_line) | test(stale_stamp_of_an_undelivered_steer_batch_does_not_block_the_next_turn) | test(stamp_tests::)",
+            "test(server_exec::tests::snapshots_) | test(server_exec::tests::snapshot_write_failure_) | test(server_exec::tests::existing_start_fence_)",
+          ],
+        ],
+      ],
+      options: {
+        selector:
+          "server_exec snapshot coalescing, write retry and start fence",
+        reason:
+          "Check that idle commands do not rewrite snapshots, changed output coalesces, failed writes retry, and an existing start fence prevents another process.",
+      },
+    },
+    {
+      item: { name: "studio-runtime-services", ecosystem: "cargo" },
+      label:
+        "provider callback, task submission and monitor projection witnesses",
+      commands: [
+        [
+          "cargo",
+          [
+            "nextest",
+            "run",
+            "--locked",
+            "--no-tests",
+            "fail",
+            "--message-format",
+            "libtest-json-plus",
+            "-p",
+            "studio-runtime-services",
+            "--lib",
+            "-E",
+            "test(account_worker::tests::callback_handoff::) | test(account_worker::tests::callback_head_of_line) | test(stale_stamp_of_an_undelivered_steer_batch_does_not_block_the_next_turn) | test(stamp_tests::) | test(sync_policy::tests::monitor_) | test(work_write::actor_tests::submission_manifest_boundaries_use_shared_limits) | test(work_write::actor_tests::nonempty_file_submission_rechecks_cwd_and_replays_without_filesystem_work)",
           ],
         ],
         [
@@ -914,15 +956,46 @@ function fastTierCommands(root) {
             "--test",
             "integration",
             "-E",
-            "test(/^provider_session_task::active_barrier_holds_new_requests_but_not_callback_answers_or_interrupts$/)",
+            "test(/^provider_session_task::active_barrier_holds_new_requests_but_not_callback_answers_or_interrupts$/) | test(/^provider_session_task::expiry_batch_preserves_all_queued_request_outcomes_in_order$/)",
           ],
         ],
       ],
       options: {
         selector:
-          "account_worker::tests::callback_handoff, callback_head_of_line, stale batch stamp recovery and the session callback lane",
+          "account_worker::tests::callback_handoff, callback_head_of_line, stale batch stamp recovery, the session callback lane, monitor publication work and work_write submission boundaries",
         reason:
-          "Check that a provider request is durably accepted with its journal batch, that its record owns the answer through every crash point without a repeated answer, and that an unanswered request never stops provider events or new work, and that a stamp left by an undelivered steer batch is replaced instead of holding the agent.",
+          "Check that a provider request is durably accepted with its journal batch, that its record owns the answer through every crash point without a repeated answer, and that an unanswered request never stops provider events or new work, and that a stamp left by an undelivered steer batch is replaced instead of holding the agent. Monitor output must publish exactly one monitor projection while preserving window membership and rollback. Task submissions keep limits, workspace ownership and replay at the shared manifest bound.",
+      },
+    },
+    {
+      item: { name: "provider process exit", ecosystem: "cargo" },
+      label: "independent provider reaping witnesses",
+      commands: [
+        [
+          "cargo",
+          [
+            "nextest",
+            "run",
+            "--locked",
+            "--no-tests",
+            "fail",
+            "--message-format",
+            "libtest-json-plus",
+            "-p",
+            "studio-runtime-process",
+            "-p",
+            "studio-runtime-server",
+            "--test",
+            "integration",
+            "-E",
+            "test(/^provider_stdio::killed_provider_is_reaped_with_full_journal_and_unobserved_write$/) | test(/^wave7_p01_registry::direct_child_sigkill_settles_unknown_without_resend$/)",
+          ],
+        ],
+      ],
+      options: {
+        selector: "full stdio lanes and direct provider SIGKILL recovery",
+        reason:
+          "Check that child reaping and account session loss do not wait for blocked I/O, and that the registry starts a new generation without resending an uncertain turn.",
       },
     },
     {
@@ -958,8 +1031,38 @@ function fastTierCommands(root) {
       },
     },
     {
+      item: { name: "studio-runtime-http", ecosystem: "cargo" },
+      label: "shared named schema validation witnesses",
+      commands: [
+        [
+          "cargo",
+          [
+            "nextest",
+            "run",
+            "--locked",
+            "--no-tests",
+            "fail",
+            "--message-format",
+            "libtest-json-plus",
+            "-p",
+            "studio-runtime-http",
+            "--lib",
+            "-E",
+            "test(validation::tests::named_schema_)",
+          ],
+        ],
+      ],
+      options: {
+        selector:
+          "shared named validator startup and invalid-value error parity",
+        reason:
+          "Preserve named-schema validation and error locations while HTTP reuses the compiled schema owner.",
+      },
+    },
+    {
       item: { name: "studio-runtime-services", ecosystem: "cargo" },
-      label: "monitor ownership, terminal wake, and recovery witnesses",
+      label:
+        "monitor ownership, history lock boundaries, and recovery witnesses",
       commands: [
         [
           "cargo",
@@ -981,15 +1084,15 @@ function fastTierCommands(root) {
             "integration",
             "--lib",
             "-E",
-            "test(/^monitor_start_preparation::/) | test(/^monitor_wake_guarantees::/) | (not binary(integration) & (test(monitor_completion_) | test(reattached_exit_)))",
+            "test(/^history_runtime::tests::slow_filesystem_metadata_does_not_block_a_store_observer$/) | test(/^analytics_history_checkpoint::terminal_error_repair_is_idempotent_for_exact_and_ambiguous_notices$/) | test(/^monitor_start_preparation::/) | test(/^monitor_wake_guarantees::/) | (not binary(integration) & (test(monitor_completion_) | test(reattached_exit_)))",
           ],
         ],
       ],
       options: {
         selector:
-          "monitor start ownership and exactly-once terminal continuation",
+          "monitor start ownership, exactly-once terminal continuation, and history lock boundaries",
         reason:
-          "Check monitor starts across actor progress and turn boundaries while preserving permission and ownership checks.",
+          "Check monitor starts across actor progress and turn boundaries while preserving permission and ownership checks, and keep history metadata and completed repairs outside writer admission.",
       },
     },
     {
@@ -1012,7 +1115,7 @@ function fastTierCommands(root) {
             "studio-runtime-schema",
             "--lib",
             "-E",
-            "test(journal_fixture_directory_is_removed_on_return_and_unwind) | test(nonempty_file_submission_rechecks_cwd_and_replays_without_filesystem_work) | test(unrelated_reservation_started_after_path_capture_does_not_refuse_ready_token) | test(room_membership_uses_symlink_paths_resolved_by_the_creation_owner) | test(agent_progress::tests::) | test(completed_child_turn_reports_unsubmitted_assignment_once_with_final_text) | test(agent_progress_schema_matches_strict_serde_contract) | test(disk_space::tests::) | test(archive_finished_) | test(lead_archive_and_restore_run_through_the_lifecycle_owner) | test(status_snapshot_tracks_capacity_finished_pages_and_revision_replay)",
+            "test(journal_fixture_directory_is_removed_on_return_and_unwind) | test(nonempty_file_submission_rechecks_cwd_and_replays_without_filesystem_work) | test(unrelated_reservation_started_after_path_capture_does_not_refuse_ready_token) | test(room_membership_uses_symlink_paths_resolved_by_the_creation_owner) | test(agent_progress::tests::) | test(completed_child_turn_reports_unsubmitted_assignment_once_with_final_text) | test(account_worker::tests::continuation_start::capacity_retry_restart_unknown_reports_once_without_resending) | test(agent_progress_schema_matches_strict_serde_contract) | test(disk_space::tests::) | test(archive_finished_) | test(lead_archive_and_restore_run_through_the_lifecycle_owner) | test(status_snapshot_tracks_capacity_finished_pages_and_revision_replay) | test(workspace_pending_reuses_reserved_attempt) | test(long_answers_use_canonical_bounded_agent_sync_projection)",
           ],
         ],
       ],
@@ -1049,6 +1152,7 @@ function comprehensiveTierCommands(root) {
   const bridge = packageTarget(packages, "studio-claude-bridge");
   const tooling = packageTarget(packages, "codex-studio-tooling");
   return [
+    operationsModulePreparation(),
     webWasmPreparation(root),
     {
       item: { name: "Rust HTTP fixture preparation", ecosystem: "cargo" },
@@ -1070,6 +1174,14 @@ function comprehensiveTierCommands(root) {
       commands: [
         ["pnpm", ["--filter", "codex-agents-web", "run", "build:bundle"]],
       ],
+      options: { allowZeroTests: true, buildOnly: true },
+    },
+    {
+      // The publication gate owns the same lint the CI Clippy job runs; the
+      // justfile recipe is its single command owner.
+      item: { name: "Rust Clippy", ecosystem: "cargo" },
+      label: "Rust Clippy",
+      commands: [["just", ["clippy-runtime"]]],
       options: { allowZeroTests: true, buildOnly: true },
     },
     {

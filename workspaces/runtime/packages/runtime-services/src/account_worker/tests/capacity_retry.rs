@@ -96,7 +96,7 @@ async fn claim_retry(state: &State) -> String {
         .unwrap()
 }
 
-async fn retry_of(state: &State, id: &str) -> Value {
+pub(super) async fn retry_of(state: &State, id: &str) -> Value {
     let (agent, id) = (state.agent.clone(), id.to_owned());
     state
         .bridge

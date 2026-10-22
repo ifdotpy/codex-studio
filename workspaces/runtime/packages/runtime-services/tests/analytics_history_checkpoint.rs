@@ -1024,7 +1024,13 @@ async fn terminal_error_repair_is_idempotent_for_exact_and_ambiguous_notices() {
         };
         repair_terminal_errors(&store).await.expect("Rust repair");
         let repaired = snapshot(&store);
+        let admissions = store.writer_admissions();
         repair_terminal_errors(&store).await.expect("second repair");
+        assert_eq!(
+            store.writer_admissions(),
+            admissions,
+            "completed repair must not enter the Canvas writer"
+        );
         assert_eq!(snapshot(&store), repaired, "{thread:?}");
     }
 }

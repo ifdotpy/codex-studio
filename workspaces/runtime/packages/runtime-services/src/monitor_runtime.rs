@@ -239,12 +239,10 @@ fn recover_active_monitors(tx: &Transaction<'_>, now: f64) -> Result<usize, Moni
                 return Ok(false);
             }
             let decision = policy::restart_recovery(&snapshot, now)?;
+            let after = MonitorSnapshot::checked(decision.record.clone(), actor.value())?;
             repository::put(tx, decision.record)?;
             crate::agent_progress::publish_owner(tx, &actor.id.0)?;
-            crate::sync_policy::maintain_monitor_window(tx, &|_, _, view, deleted| {
-                deleted
-                    || studio_runtime_schema::validate("MonitorEntityDto", view).unwrap_or(false)
-            })?;
+            crate::sync_policy::publish_monitor_change(tx, Some(&snapshot), &after)?;
             Ok::<bool, MonitorError>(true)
         })();
         if let Err(error) = result {
@@ -464,12 +462,10 @@ pub async fn answer_approval(
                     )?;
                 }
             }
+            let after = MonitorSnapshot::checked(monitor.clone(), actor.value())?;
             repository::put(tx, monitor)?;
             crate::agent_progress::publish_owner(tx, &actor.id.0)?;
-            crate::sync_policy::maintain_monitor_window(tx, &|_, _, view, deleted| {
-                deleted
-                    || studio_runtime_schema::validate("MonitorEntityDto", view).unwrap_or(false)
-            })?;
+            crate::sync_policy::publish_monitor_change(tx, Some(&snapshot), &after)?;
             request["status"] = json!("answered");
             request["answerDecision"] = json!(decision);
             request["answerSignature"] = json!(event_write::request_signature(
@@ -717,7 +713,7 @@ pub fn apply_with_rule(
 ) -> Result<(), MonitorError> {
     event_write::refuse_remote(actor)?;
     // Validate before any write, including all optional fields preserved from Python.
-    MonitorSnapshot::checked(
+    let after = MonitorSnapshot::checked(
         decision.record.clone(),
         serde_json::to_value(actor).map_err(studio_runtime_store::StoreError::from)?,
     )?;
@@ -767,9 +763,7 @@ pub fn apply_with_rule(
     if before.record() != &decision.record {
         repository::put(tx, decision.record.clone())?;
         crate::agent_progress::publish_owner(tx, &actor.id.0)?;
-        crate::sync_policy::maintain_monitor_window(tx, &|_, _, view, deleted| {
-            deleted || studio_runtime_schema::validate("MonitorEntityDto", view).unwrap_or(false)
-        })?;
+        crate::sync_policy::publish_monitor_change(tx, Some(before), &after)?;
     }
     Ok(())
 }
@@ -1188,9 +1182,8 @@ pub fn create_in_transaction(
             .ok_or_else(|| invalid(id, "request"))?;
         SyncDocumentsRepository::put_entity(tx, "request", approval.id(), view, false)?;
     }
-    crate::sync_policy::maintain_monitor_window(tx, &|_, _, view, deleted| {
-        deleted || studio_runtime_schema::validate("MonitorEntityDto", view).unwrap_or(false)
-    })?;
+    let after = MonitorSnapshot::checked(record.clone(), actor_value)?;
+    crate::sync_policy::publish_monitor_change(tx, None, &after)?;
     Ok(record)
 }
 
@@ -1203,9 +1196,8 @@ pub fn bind_rule_in_transaction(
     rule_id: &str,
     account_key: &str,
 ) -> Result<Value, MonitorError> {
-    let record = MonitorsRepository::get(tx, monitor_id)?
-        .ok_or(MonitorError::Refused("Unknown command watch"))?;
-    let mut value = record.value().clone();
+    let (before, actor) = snapshot(tx, monitor_id)?;
+    let mut value = before.record().clone();
     if !matches!(value["status"].as_str(), Some("starting" | "approval"))
         || (value
             .get("ruleId")
@@ -1222,10 +1214,9 @@ pub fn bind_rule_in_transaction(
     }
     value["ruleId"] = json!(rule_id);
     value["accountKey"] = json!(account_key);
+    let after = MonitorSnapshot::checked(value.clone(), actor.value())?;
     repository::put(tx, value.clone())?;
-    crate::sync_policy::maintain_monitor_window(tx, &|_, _, view, deleted| {
-        deleted || studio_runtime_schema::validate("MonitorEntityDto", view).unwrap_or(false)
-    })?;
+    crate::sync_policy::publish_monitor_change(tx, Some(&before), &after)?;
     Ok(value)
 }
 
