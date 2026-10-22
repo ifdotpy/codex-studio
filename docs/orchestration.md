@@ -1574,3 +1574,9 @@ change with both options. Cross-machine Claude cache reuse remains unverified.
 2. It selects task IDs and records for the requested page in one query.
 3. It validates only the served records; the extra row indicates more history.
 4. Current and older-page cursors retain their timestamp and ID ordering.
+
+Progress contract generation follows this flow:
+
+1. Derive command progress and stall schemas from the Rust structs in [agent_progress.rs](../workspaces/runtime/packages/runtime-schema/src/agent_progress.rs).
+2. Refresh their OpenAPI components and the renderer types with `pnpm run contracts:generate`.
+3. Run `pnpm run contracts:check` to reject drift; HTTP routes continue to consume OpenAPI.

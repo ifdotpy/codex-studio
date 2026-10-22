@@ -67,14 +67,18 @@ function entityAliases(document) {
 }
 
 const input = process.argv[2];
-if (!input) throw new Error("usage: generate-api-types.mjs <openapi.json>");
+if (!input)
+  throw new Error(
+    "usage: generate-api-types.mjs <openapi.json | - | --rust-owned>",
+  );
 const rustOwned = input === "--rust-owned";
-const document = JSON.parse(readFileSync(rustOwned ? 0 : input, "utf8"));
+const fromStdin = rustOwned || input === "-";
+const document = JSON.parse(readFileSync(fromStdin ? 0 : input, "utf8"));
 const temp = mkdtempSync(join(tmpdir(), "studio-api-types-"));
 try {
   const output = join(temp, "api.ts");
-  const schemaInput = rustOwned ? join(temp, "openapi.json") : input;
-  if (rustOwned) writeFileSync(schemaInput, JSON.stringify(document));
+  const schemaInput = fromStdin ? join(temp, "openapi.json") : input;
+  if (fromStdin) writeFileSync(schemaInput, JSON.stringify(document));
   run("openapi-typescript", [
     schemaInput,
     "--output",
