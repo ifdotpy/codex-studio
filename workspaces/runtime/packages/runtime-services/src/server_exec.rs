@@ -87,9 +87,20 @@ fn job_path(folder: &Path, key: &str, suffix: &str) -> PathBuf {
     ))
 }
 
-fn atomic_json(path: &Path, value: &Value) -> Result<(), ExecError> {
-    crate::atomic_file::replace(path, value.to_string().as_bytes(), Some(0o600), true)
-        .map_err(|error| ExecError::Failed(error.to_string()))
+/// The sole JSON snapshot/config writer: build, serialize and fsync on the pool.
+async fn atomic_json(
+    path: PathBuf,
+    value: impl FnOnce() -> Value + Send + 'static,
+) -> Result<(), ExecError> {
+    studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/server_exec/json",
+        move || {
+            crate::atomic_file::replace(&path, value().to_string().as_bytes(), Some(0o600), true)
+                .map_err(|error| ExecError::Failed(error.to_string()))
+        },
+    )
+    .await
+    .map_err(|error| ExecError::Failed(error.to_string()))?
 }
 
 /// Python `Buffer`: the first and last bytes of one output stream.
@@ -656,13 +667,7 @@ impl ServerExec {
         let written = match claim {
             Ok(()) => {
                 let path = job_path(&self.folder, key, ".config.json");
-                studio_runtime_process::blocking_pool::spawn_blocking(
-                    "runtime-services/server_exec/config",
-                    move || atomic_json(&path, &config),
-                )
-                .await
-                .map_err(|error| ExecError::Failed(error.to_string()))
-                .and_then(|result| result)
+                atomic_json(path, move || config).await
             }
             Err(error) => Err(error),
         };
@@ -1094,22 +1099,14 @@ impl Job {
         );
         // Serialize, replace and fsync only on the labeled blocking worker.
         // Await each write so initial/final snapshots cannot overtake each other.
-        let result = studio_runtime_process::blocking_pool::spawn_blocking(
-            "runtime-services/server_exec/snapshot",
-            move || {
-                atomic_json(
-                    &path,
-                    &json!({
-                        "record": record,
-                        "stdout": stdout.snapshot(),
-                        "stderr": stderr.snapshot(),
-                    }),
-                )
-            },
-        )
-        .await
-        .map_err(|error| ExecError::Failed(error.to_string()))
-        .and_then(|result| result);
+        let result = atomic_json(path, move || {
+            json!({
+                "record": record,
+                "stdout": stdout.snapshot(),
+                "stderr": stderr.snapshot(),
+            })
+        })
+        .await;
         self.last_publish = tokio::time::Instant::now();
         match result {
             Ok(()) => self.snapshot_dirty = false,
