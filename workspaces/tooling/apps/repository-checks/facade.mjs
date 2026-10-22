@@ -873,6 +873,34 @@ function fastTierCommands(root) {
       options: serverCategoryOptions("fast"),
     },
     {
+      item: { name: "studio-runtime-providers", ecosystem: "cargo" },
+      label: "provider request body ownership witnesses",
+      commands: [
+        [
+          "cargo",
+          [
+            "nextest",
+            "run",
+            "--locked",
+            "--no-tests",
+            "fail",
+            "--message-format",
+            "libtest-json-plus",
+            "-p",
+            "studio-runtime-providers",
+            "--lib",
+            "-E",
+            "test(/^connection::request_body_tests::/)",
+          ],
+        ],
+      ],
+      options: {
+        selector: "connection request body allocation transfer and retention",
+        reason:
+          "Check that emitted requests retain only metadata, queued bodies move on first emission, and uncertainty, late replies and unsent cancellation preserve correlation.",
+      },
+    },
+    {
       item: { name: "studio-runtime-services", ecosystem: "cargo" },
       label: "journal agent publication witnesses",
       commands: [
