@@ -8,7 +8,7 @@ rust-http-server := rust-target / "debug/studio-runtime-server"
 [doc("Build and install the Rust command links, migrating same-checkout Python links. Does not install or restart services.")]
 install *args:
     cargo build --locked -p studio-runtime-server -p studio-process-supervisor -p studio-diagnostics
-    {{quote(rust-http-server)}} install-cli --project {{quote(justfile_directory())}} {{args}}
+    {{quote(rust-http-server)}} install-cli --project {{quote(justfile_directory())}} "$@"
 
 [doc("Build the web UI and release Rust runtime server for service installation and delivery.")]
 build-server:

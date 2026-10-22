@@ -32,13 +32,21 @@
 
 ## Process supervisor handshake contract
 
-Source of truth: [`supervisor_daemon`](src/supervisor_daemon.rs), its
-[`SupervisorClient`](src/client.rs), and the wire DTOs in
-[`protocol.rs`](src/protocol.rs). The separate long-lived Rust supervisor
-retains child ownership across backend restarts. Clients send the protocol,
-state directory and backend identity before requests; operator connections
-require an explicit operator handshake. Wrong protocol versions or state
-directories fail before an action is accepted.
+Source of truth: [the supervisor daemon](src/supervisor_daemon.rs) and
+[its shared contract](src/supervisor_contract.rs). The wire uses
+newline-delimited JSON over a Unix domain socket. The independent Rust process
+retains child ownership across backend restarts. `just install` installs its
+command link. The backend user service uses
+`studio-runtime-server service install|status|uninstall`; those commands never
+stop the supervisor or restart active work. See the
+[operator commands](../../apps/runtime-server/README.md#command-and-user-service-installation).
+
+The compatibility handshake starts with
+`{protocol: PROCESS_SUPERVISOR_PROTOCOL_VERSION, stateDir, backendId}` and
+replies `{ok: true}`. The version is owned by
+[supervisor_contract.rs](src/supervisor_contract.rs). A wrong protocol or state
+directory is rejected before requests are accepted. Operator connections use
+the protocol field with `{stateDir, operator: true}`.
 
 The Rust provider factory uses a separate v2 handshake and requires the daemon
 to echo protocol 2. It does not fall back to v1. V2 `nextBatch` uses the shared
