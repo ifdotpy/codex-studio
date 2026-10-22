@@ -752,9 +752,16 @@ mod archive_finished_tests {
             })
             .await
             .expect("deterministic cleanup failure");
-        let result = archive_finished(Arc::clone(&store), "lead", EPOCH, false, ARCHIVE_TIME)
-            .await
-            .expect("committed archive remains an applied result");
+        let result = archive_finished(
+            Arc::clone(&store),
+            "lead",
+            EPOCH,
+            &finished_archive_reason(),
+            false,
+            ARCHIVE_TIME,
+        )
+        .await
+        .expect("committed archive remains an applied result");
         assert_eq!(result.archived, 1);
         assert!(result.kept.iter().any(|worker| {
             worker.id == "worker"
@@ -847,9 +854,16 @@ mod archive_finished_tests {
                 BEGIN SELECT RAISE(ABORT, 'unrelated cleanup persistence failure'); END;")?;
             Ok(())
         }).await.expect("unrelated cleanup failure");
-        let result = archive_finished(Arc::clone(&store), "lead", 1, false, 20.0)
-            .await
-            .expect("unrelated cleanup cannot fail committed archive");
+        let result = archive_finished(
+            Arc::clone(&store),
+            "lead",
+            1,
+            &finished_archive_reason(),
+            false,
+            20.0,
+        )
+        .await
+        .expect("unrelated cleanup cannot fail committed archive");
         assert_eq!(result.archived, 1);
         assert!(result.kept.is_empty());
         let current = store
