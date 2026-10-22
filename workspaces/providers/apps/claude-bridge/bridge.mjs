@@ -2913,7 +2913,8 @@ async function handle(method, p) {
       throw new Error("The interrupt belongs to a different Claude turn");
     const s = sessions.get(p.threadId);
     active.turn.interrupted = true;
-    if (active.reservingInput) {
+    const reservingInput = active.reservingInput;
+    if (reservingInput) {
       // An interrupt can race the durable pre-input receipt. Invalidate only
       // that reservation so the queued background work and query stay open.
       active.turn = null;
@@ -2937,7 +2938,9 @@ async function handle(method, p) {
           }
         : undefined,
     );
-    await persistLive(s);
+    // The pending start owns the reservation's durable rejection. Do not
+    // wait for its blocked save before the caller can observe the interrupt.
+    if (!reservingInput) await persistLive(s);
     const failure = results.find((result) => result.status === "rejected");
     if (failure?.status === "rejected")
       throw Object.assign(
