@@ -71,6 +71,13 @@ enum Answer {
 /// One guest request: method, parameters, request ID and wait.
 type GuestCall = (String, Value, Option<String>, Duration);
 
+/// A running command: `host.exec` tells the test that it started, then
+/// waits for the release.
+type Hold = (
+    tokio::sync::oneshot::Sender<()>,
+    std::sync::mpsc::Receiver<()>,
+);
+
 /// The guest side: it records every request and checks that the tool receipt
 /// holds the exact guest request before `host.exec` arrives.
 struct FakeGuest {
@@ -78,6 +85,7 @@ struct FakeGuest {
     answer: Answer,
     calls: Mutex<Vec<GuestCall>>,
     saved_before_exec: Mutex<Vec<Option<Value>>>,
+    hold: Mutex<Option<Hold>>,
 }
 
 impl FakeGuest {
@@ -87,7 +95,21 @@ impl FakeGuest {
             answer,
             calls: Mutex::new(Vec::new()),
             saved_before_exec: Mutex::new(Vec::new()),
+            hold: Mutex::new(None),
         })
+    }
+
+    /// Keep the next `host.exec` running until the returned sender releases it.
+    fn hold(
+        &self,
+    ) -> (
+        tokio::sync::oneshot::Receiver<()>,
+        std::sync::mpsc::Sender<()>,
+    ) {
+        let (started, on_start) = tokio::sync::oneshot::channel();
+        let (release, on_release) = std::sync::mpsc::channel();
+        *self.hold.lock().unwrap() = Some((started, on_release));
+        (on_start, release)
     }
 
     fn calls(&self, method: &str) -> Vec<(Value, Option<String>, Duration)> {
@@ -132,6 +154,10 @@ impl GuestRpc for FakeGuest {
             .flatten()
             .map(|raw| serde_json::from_str(&raw).unwrap());
         self.saved_before_exec.lock().unwrap().push(saved);
+        if let Some((started, release)) = self.hold.lock().unwrap().take() {
+            started.send(()).unwrap();
+            release.recv_timeout(Duration::from_secs(60)).unwrap();
+        }
         let id = request_id.unwrap().to_owned();
         match &self.answer {
             Answer::Result { frames, result } => {
@@ -356,6 +382,53 @@ async fn vm_agent_runs_one_command_with_the_python_guest_request() {
     let replay = fixture.call(LEAD, "call-1", args).await;
     assert_eq!(text(&replay), text(&first));
     assert_eq!(fixture.guest.calls("host.exec").len(), 1);
+}
+
+/// A command can run for hours. Its guest call has its own thread, so the
+/// runtime's blocking pool stays free for store reads
+/// (`browser_cards::guest_call` follows the same rule).
+#[test]
+fn a_running_command_leaves_the_blocking_pool_free() {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .max_blocking_threads(1)
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let fixture = Arc::new(
+            Fixture::new(Answer::Result {
+                frames: Vec::new(),
+                result: json!({"state": "exited", "exitCode": 0}),
+            })
+            .await,
+        );
+        let (started, release) = fixture.guest.hold();
+        let call = tokio::spawn({
+            let fixture = Arc::clone(&fixture);
+            async move {
+                fixture
+                    .call(LEAD, "call-1", json!({"command": "make"}))
+                    .await
+            }
+        });
+        started.await.unwrap();
+        let read = tokio::time::timeout(
+            Duration::from_secs(10),
+            fixture.store.read_async("test", |tx| {
+                tx.query_row("SELECT 1", [], |row| row.get::<_, i64>(0))
+                    .map_err(studio_runtime_store::StoreError::from)
+            }),
+        )
+        .await;
+        release.send(()).unwrap();
+        let result = call.await.unwrap();
+        assert!(
+            matches!(read, Ok(Ok(1))),
+            "a store read waited for the running command"
+        );
+        assert_eq!(result["success"], true, "{result}");
+    });
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

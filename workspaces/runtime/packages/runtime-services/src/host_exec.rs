@@ -351,21 +351,34 @@ pub(crate) async fn run(
     }
     let guest = Arc::clone(&runtime.guest);
     let sent = request.clone();
-    let (outcome, output) = studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-services/host-exec-guest",
-        move || stream(guest.as_ref(), &sent),
-    )
-    .await
-    .unwrap_or_else(|_| {
-        (
-            Err(GuestError::Transport {
-                message: "the guest task ended without a result".into(),
-                uncertain: true,
-            }),
-            String::new(),
-        )
-    });
+    let (outcome, output) = on_guest_thread(move || stream(guest.as_ref(), &sent))
+        .await
+        .unwrap_or_else(|error| (Err(error), String::new()));
     settle(&request, outcome, output)
+}
+
+/// Run one guest exchange on its own thread. A command can run for hours, so
+/// it must not hold a thread of the runtime's blocking pool, which serves
+/// store reads (`browser_cards::guest_call` follows the same rule).
+async fn on_guest_thread<T: Send + 'static>(
+    work: impl FnOnce() -> T + Send + 'static,
+) -> Result<T, GuestError> {
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    if std::thread::Builder::new()
+        .name("studio-host-exec".into())
+        .spawn(move || drop(sender.send(work())))
+        .is_err()
+    {
+        // Nothing reached the guest.
+        return Err(GuestError::Transport {
+            message: "could not start the guest call".into(),
+            uncertain: false,
+        });
+    }
+    receiver.await.map_err(|_| GuestError::Transport {
+        message: "the guest task ended without a result".into(),
+        uncertain: true,
+    })
 }
 
 /// Python `remember_request`: save the exact guest request on its running
@@ -395,30 +408,21 @@ async fn remember(
 
 /// Python `configure_guest`: give the guest the channel token.
 async fn configure(guest: Arc<dyn GuestRpc>, token: String) -> Result<(), GuestError> {
-    studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-services/host-exec-configure",
-        move || {
-            let identity = format!(
-                "{CONFIGURE_ID_PREFIX}{}",
-                studio_runtime_store::sha256_hex(token.as_bytes())
-            );
-            guest
-                .call(
-                    "host.configure",
-                    &json!({"token": token}),
-                    Some(&identity),
-                    Duration::from_secs_f64(CONFIGURE_TIMEOUT_SECONDS),
-                )
-                .map(drop)
-        },
-    )
-    .await
-    .unwrap_or_else(|_| {
-        Err(GuestError::Transport {
-            message: "the guest task ended without a result".into(),
-            uncertain: true,
-        })
+    on_guest_thread(move || {
+        let identity = format!(
+            "{CONFIGURE_ID_PREFIX}{}",
+            studio_runtime_store::sha256_hex(token.as_bytes())
+        );
+        guest
+            .call(
+                "host.configure",
+                &json!({"token": token}),
+                Some(&identity),
+                Duration::from_secs_f64(CONFIGURE_TIMEOUT_SECONDS),
+            )
+            .map(drop)
     })
+    .await?
 }
 
 /// Send the request and keep up to [`OUTPUT_LIMIT_CHARS`] of its output frames.
