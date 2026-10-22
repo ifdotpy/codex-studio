@@ -959,7 +959,8 @@ function fastTierCommands(root) {
     },
     {
       item: { name: "studio-runtime-services", ecosystem: "cargo" },
-      label: "monitor ownership, terminal wake, and recovery witnesses",
+      label:
+        "monitor ownership, history lock boundaries, and recovery witnesses",
       commands: [
         [
           "cargo",
@@ -981,15 +982,15 @@ function fastTierCommands(root) {
             "integration",
             "--lib",
             "-E",
-            "test(/^monitor_start_preparation::/) | test(/^monitor_wake_guarantees::/) | (not binary(integration) & (test(monitor_completion_) | test(reattached_exit_)))",
+            "test(/^history_runtime::tests::slow_filesystem_metadata_does_not_block_a_store_observer$/) | test(/^analytics_history_checkpoint::terminal_error_repair_is_idempotent_for_exact_and_ambiguous_notices$/) | test(/^monitor_start_preparation::/) | test(/^monitor_wake_guarantees::/) | (not binary(integration) & (test(monitor_completion_) | test(reattached_exit_)))",
           ],
         ],
       ],
       options: {
         selector:
-          "monitor start ownership and exactly-once terminal continuation",
+          "monitor start ownership, exactly-once terminal continuation, and history lock boundaries",
         reason:
-          "Check monitor starts across actor progress and turn boundaries while preserving permission and ownership checks.",
+          "Check monitor starts across actor progress and turn boundaries while preserving permission and ownership checks, and keep history metadata and completed repairs outside writer admission.",
       },
     },
     {
