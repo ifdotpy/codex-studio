@@ -12,6 +12,10 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 const EXTERNALIZE_THRESHOLD: usize = 64 * 1024;
+#[cfg(test)]
+thread_local! {
+    static PROJECTED_STRING_BYTES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
 /// Finished task output kept as the preview of a trimmed tail. Unit: UTF-8 bytes.
 pub const TASK_PREVIEW_BYTES: usize = 512;
 
@@ -47,7 +51,11 @@ impl OrderedValue {
             Self::Null => Value::Null,
             Self::Bool(value) => Value::Bool(value),
             Self::Number(value) => Value::Number(value),
-            Self::String(value) => Value::String(value),
+            Self::String(value) => {
+                #[cfg(test)]
+                PROJECTED_STRING_BYTES.update(|bytes| bytes + value.len());
+                Value::String(value)
+            }
             Self::Array(values) => Value::Array(values.into_iter().map(Self::into_value).collect()),
             Self::Object(values) => Value::Object(
                 values
@@ -259,13 +267,14 @@ fn decide_externalize_ordered(
     table: &str,
     input: OrderedValue,
 ) -> Result<ExternalizeDecision, PayloadBlobError> {
-    let OrderedValue::Object(entries) = input else {
+    let OrderedValue::Object(mut entries) = input else {
         return Err(PayloadBlobError::InvalidRecord);
     };
-    let mut record: Map<String, Value> = entries
-        .iter()
-        .map(|(key, value)| (key.clone(), value.clone().into_value()))
-        .collect();
+    let mut record = Map::new();
+    if let Some(index) = entries.iter().position(|(key, _)| key == "_payloadBlobs") {
+        let (key, value) = entries.remove(index);
+        record.insert(key, value.into_value());
+    }
     let fields: &[&str] = match table {
         "checkpoints" => &["items"],
         "tool_requests" => &["result"],
@@ -273,16 +282,15 @@ fn decide_externalize_ordered(
     };
     let mut refs = payload_refs(&record)?;
     let mut writes = Vec::new();
-    for field in fields {
-        let Some(value) = entries
-            .iter()
-            .find_map(|(key, value)| (key == field).then_some(value))
-        else {
+    for (field, value) in entries {
+        if !fields.contains(&field.as_str()) {
+            record.insert(field, value.into_value());
             continue;
-        };
+        }
         let bytes = serde_json::to_vec(&value)?;
         if bytes.len() <= EXTERNALIZE_THRESHOLD {
-            refs.remove(*field);
+            refs.remove(&field);
+            record.insert(field, value.into_value());
             continue;
         }
         let preview = match &value {
@@ -322,8 +330,8 @@ fn decide_externalize_ordered(
             sha256: hash.clone(),
             size: bytes.len() as u64,
         };
-        refs.insert((*field).to_owned(), reference.value(preview.clone()));
-        record.insert((*field).to_owned(), preview.clone());
+        refs.insert(field.clone(), reference.value(preview.clone()));
+        record.insert(field, preview.clone());
         writes.push(BlobWrite {
             sha256: hash,
             bytes,
@@ -356,17 +364,18 @@ pub fn decide_externalize_result_json(
 fn decide_externalize_result_ordered(
     input: OrderedValue,
 ) -> Result<ExternalizeDecision, PayloadBlobError> {
-    let OrderedValue::Object(entries) = input else {
+    let OrderedValue::Object(mut entries) = input else {
         return Err(PayloadBlobError::InvalidRecord);
     };
+    let contents = entries
+        .iter()
+        .position(|(key, _)| key == "contentItems")
+        .map(|index| entries.remove(index).1);
     let mut record: Map<String, Value> = entries
-        .iter()
-        .map(|(key, value)| (key.clone(), value.clone().into_value()))
+        .into_iter()
+        .map(|(key, value)| (key, value.into_value()))
         .collect();
-    let Some(contents) = entries
-        .iter()
-        .find_map(|(key, value)| (key == "contentItems").then_some(value))
-    else {
+    let Some(contents) = contents else {
         return Ok(ExternalizeDecision {
             record: Value::Object(record),
             writes: Vec::new(),
@@ -374,6 +383,7 @@ fn decide_externalize_result_ordered(
     };
     let bytes = serde_json::to_vec(&contents)?;
     if bytes.len() <= EXTERNALIZE_THRESHOLD {
+        record.insert("contentItems".into(), contents.into_value());
         return Ok(ExternalizeDecision {
             record: Value::Object(record),
             writes: Vec::new(),
@@ -662,6 +672,25 @@ fn hash_hex(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn payload_preview_projects_only_retained_string_bytes() {
+        for (table, field) in [("checkpoints", "items"), ("tool_requests", "result")] {
+            let source = serde_json::json!({"id":"record", field:[{"text":"x".repeat(70_000)}]});
+            super::PROJECTED_STRING_BYTES.set(0);
+            let decision = super::decide_externalize(table, &source).expect("decision");
+            assert_eq!(decision.writes.len(), 1);
+            assert!(
+                super::PROJECTED_STRING_BYTES.get() < 2_000,
+                "the discarded payload must not be projected into the record"
+            );
+        }
+        let source = serde_json::json!({"contentItems":[{"text":"x".repeat(70_000)}]});
+        super::PROJECTED_STRING_BYTES.set(0);
+        let decision = super::decide_externalize_result(&source).expect("result decision");
+        assert_eq!(decision.writes.len(), 1);
+        assert!(super::PROJECTED_STRING_BYTES.get() < 2_000);
+    }
+
     use super::{
         PayloadBlobError, decide_externalize, decide_externalize_result, load_blob, resolve_record,
         task_preview, trim_task, write_blobs,

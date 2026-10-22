@@ -1,5 +1,6 @@
 //! Pure, bounded connection stream state. Cloned buffers share immutable entries;
 //! staged writes detach only the touched entry, and SQLite commit controls apply.
+use super::items::TOOL_OUTPUT_CHARS;
 use super::{
     NotificationDispatchError, NotificationHourMetrics, NotificationObservation,
     NotificationPostCommit, NotificationPublicationBatch, NotificationStreamMetrics,
@@ -26,6 +27,10 @@ const MAX_POST_COMMIT_STREAM_EFFECTS: usize = 64;
 const MAX_POST_COMMIT_STREAM_BYTES: usize = 8 * 1024 * 1024;
 /// Retained bytes of stream captures awaiting their flush.
 const MAX_STAGED_ANALYTICS_BYTES: usize = 8 * 1024 * 1024;
+#[cfg(test)]
+thread_local! {
+    static DELTA_SIZE_INPUT_BYTES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(super) struct StreamKey {
@@ -479,19 +484,37 @@ impl NotificationStreamBuffer {
                 let old_size = capture.retained_bytes;
                 let saved = &mut capture.observation;
                 let metrics = &mut capture.metrics;
-                let old_delta = saved.params["delta"]
-                    .as_str()
-                    .unwrap_or_default()
-                    .to_owned();
-                let old_encoded_delta =
-                    serde_json::to_string(&saved.params["delta"]).map_or(usize::MAX, |v| v.len());
-                let mut text = old_delta.clone();
+                let mut removed_bytes = 0;
+                let mut added_bytes = serde_json::to_string(&delta)
+                    .map_or(usize::MAX, |value| value.len())
+                    .saturating_sub(2);
+                let mut text = match std::mem::take(&mut saved.params["delta"]) {
+                    Value::String(text) => text,
+                    other => {
+                        removed_bytes =
+                            serde_json::to_string(&other).map_or(usize::MAX, |value| value.len());
+                        added_bytes = added_bytes.saturating_add(2);
+                        String::new()
+                    }
+                };
+                #[cfg(test)]
+                DELTA_SIZE_INPUT_BYTES.update(|bytes| bytes + delta.len());
                 text.push_str(&delta);
                 if key.method == "item/commandExecution/outputDelta" {
-                    text = super::suffix(&text, 12_000);
+                    let start = text
+                        .char_indices()
+                        .rev()
+                        .nth(TOOL_OUTPUT_CHARS - 1)
+                        .map_or(0, |(index, _)| index);
+                    removed_bytes = removed_bytes.saturating_add(
+                        serde_json::to_string(&text[..start])
+                            .map_or(usize::MAX, |value| value.len())
+                            .saturating_sub(2),
+                    );
+                    #[cfg(test)]
+                    DELTA_SIZE_INPUT_BYTES.update(|bytes| bytes + start);
+                    text.drain(..start);
                 }
-                let new_encoded_delta =
-                    serde_json::to_string(&text).map_or(usize::MAX, |v| v.len());
                 saved.params["delta"] = Value::String(text);
                 // Preserve the last included cursor while observed_at remains first-event time.
                 saved.delivery = observation.delivery.clone();
@@ -517,8 +540,8 @@ impl NotificationStreamBuffer {
                     true
                 };
                 let size = old_size
-                    .saturating_sub(old_encoded_delta)
-                    .saturating_add(new_encoded_delta)
+                    .saturating_add(added_bytes)
+                    .saturating_sub(removed_bytes)
                     .saturating_add(if new_hour {
                         std::mem::size_of::<NotificationHourMetrics>()
                     } else {
@@ -533,7 +556,8 @@ impl NotificationStreamBuffer {
                 .saturating_add(size);
         } else {
             if key.method == "item/commandExecution/outputDelta" {
-                observation.params["delta"] = Value::String(super::suffix(&delta, 12_000));
+                observation.params["delta"] =
+                    Value::String(super::suffix(&delta, TOOL_OUTPUT_CHARS));
             }
             let metrics = NotificationStreamMetrics {
                 hours: vec![NotificationHourMetrics {
@@ -733,7 +757,7 @@ impl NotificationStreamBuffer {
         }
         entry.pending.push_str(delta);
         if entry.key.method == "item/commandExecution/outputDelta" {
-            entry.pending = super::suffix(&entry.pending, 12_000);
+            entry.pending = super::suffix(&entry.pending, TOOL_OUTPUT_CHARS);
         }
         let pending_after = entry.pending.len().max(usize::from(entry.count > 0));
         self.pending_bytes = self
@@ -789,7 +813,7 @@ impl NotificationStreamBuffer {
             text.push_str(delta);
         }
         if key.method == "item/commandExecution/outputDelta" {
-            text = super::suffix(&text, 12_000);
+            text = super::suffix(&text, TOOL_OUTPUT_CHARS);
         }
         let count = std::mem::take(&mut entry.count);
         let mut params = std::mem::take(&mut entry.params);
@@ -884,6 +908,71 @@ impl NotificationStreamBuffer {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn analytics_delta_size_work_counts_only_the_new_fragment() {
+        let key = turn_key(0, 0);
+        let mut streams = NotificationStreamBuffer::default();
+        let mut observation = analytics_observation(&key.method, 1);
+        observation.params = super::super::SharedJson::new(json!({"delta":"a".repeat(64_000)}));
+        streams.stage_analytics(key.clone(), observation).unwrap();
+        DELTA_SIZE_INPUT_BYTES.set(0);
+        let fragment = "\"\\\n\u{0001}é";
+        let text = &mut streams.analytics[0].value_mut().observation.params["delta"];
+        let Value::String(text) = text else {
+            panic!("string delta")
+        };
+        text.reserve(fragment.len());
+        let allocation = text.as_ptr();
+        let mut observation = analytics_observation(&key.method, 2);
+        observation.params = super::super::SharedJson::new(json!({"delta":fragment}));
+        streams.stage_analytics(key, observation).unwrap();
+        assert_eq!(DELTA_SIZE_INPUT_BYTES.get(), fragment.len());
+        let capture = &streams.analytics[0];
+        assert_eq!(
+            capture.observation.params["delta"]
+                .as_str()
+                .unwrap()
+                .as_ptr(),
+            allocation
+        );
+        assert_eq!(
+            capture.retained_bytes,
+            NotificationStreamBuffer::capture_size(&capture.observation, &capture.metrics)
+        );
+    }
+
+    #[test]
+    fn analytics_delta_size_matches_json_after_escaped_unicode_tail_trimming() {
+        let mut streams = NotificationStreamBuffer::default();
+        let mut key = turn_key(0, 0);
+        key.method = "item/commandExecution/outputDelta".into();
+        let mut expected = String::new();
+        for (cursor, fragment) in [
+            "界\"\\\n\u{0001}".repeat(3_000),
+            "é".into(),
+            "z".repeat(13_000),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut observation = analytics_observation(&key.method, cursor as u64);
+            observation.observed_at = (cursor + 1) as f64 * 3600.0;
+            observation.params = super::super::SharedJson::new(json!({"delta":fragment}));
+            expected.push_str(&fragment);
+            expected = super::super::suffix(&expected, TOOL_OUTPUT_CHARS);
+            streams.stage_analytics(key.clone(), observation).unwrap();
+            let capture = &streams.analytics[0];
+            assert_eq!(capture.observation.params["delta"], expected);
+            assert_eq!(
+                capture.retained_bytes,
+                NotificationStreamBuffer::capture_size(&capture.observation, &capture.metrics)
+            );
+            let restored: NotificationStreamBuffer =
+                serde_json::from_value(serde_json::to_value(&streams).unwrap()).unwrap();
+            assert_eq!(restored.analytics_bytes, streams.analytics_bytes);
+        }
+    }
 
     #[test]
     fn completed_streams_release_capacity_over_a_worker_lifetime() {
@@ -1148,9 +1237,9 @@ mod tests {
             streams.enqueue_delta(key.clone(), &text, &Value::Null),
             EnqueueResult::Buffered
         ));
-        assert_eq!(streams.pending_bytes(), 12_000 * 3);
+        assert_eq!(streams.pending_bytes(), TOOL_OUTPUT_CHARS * 3);
         let (text, _, _) = streams.flush(&key, "older").expect("buffered output");
-        assert_eq!(text, "界".repeat(12_000));
+        assert_eq!(text, "界".repeat(TOOL_OUTPUT_CHARS));
     }
 
     #[test]

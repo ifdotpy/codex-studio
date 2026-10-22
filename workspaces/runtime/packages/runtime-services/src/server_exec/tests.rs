@@ -2,6 +2,25 @@
 
 use super::*;
 
+#[test]
+fn output_tail_append_does_not_move_retained_bytes() {
+    let mut buffer = Buffer::new(16);
+    buffer.append(b"0123456789abcdef");
+    buffer.tail.reserve(1);
+    let retained: Vec<_> = (1..buffer.tail.len())
+        .map(|index| &buffer.tail[index] as *const u8)
+        .collect();
+    buffer.append(b"g");
+    let moved_bytes = retained
+        .iter()
+        .enumerate()
+        .filter(|(index, address)| !std::ptr::eq(**address, &buffer.tail[*index]))
+        .count();
+    assert_eq!(moved_bytes, 0, "appending must not shift the retained tail");
+    assert_eq!(buffer.read(8, 8, true)["text"], "9abcdefg");
+    assert_eq!(Buffer::from_snapshot(Some(&buffer.snapshot())), buffer);
+}
+
 /// Frozen results from the former backend for the same buffer and request inputs.
 fn oracle() -> Value {
     serde_json::from_str(include_str!("../../tests/server_exec/expected.json")).unwrap()
