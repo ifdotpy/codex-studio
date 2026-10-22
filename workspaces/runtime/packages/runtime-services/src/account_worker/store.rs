@@ -268,6 +268,14 @@ pub(super) async fn recover(
             at,
             restart,
         )?;
+        // A native question or approval of another provider generation can no
+        // longer reach its sender; its card must not wait for the user.
+        crate::provider_callbacks::expire_ended_generations(tx, &account, generation.0).map_err(
+            |error| match error {
+                crate::provider_callbacks::CallbackError::Store(error) => WorkerError::Store(error),
+                _ => invalid(&account),
+            },
+        )?;
         // A provider replacement in this backend is a disconnect. Actual backend
         // restarts keep their separate history-reconciliation notification path.
         if !restart {
