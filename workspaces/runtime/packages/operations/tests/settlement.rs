@@ -262,6 +262,10 @@ fn exact_rejection_messages_are_tool_scoped_and_near_misses_stay_unknown() {
         (RequestTool::OrchestrationTask, "Supply up to 50 file paths"),
         (
             RequestTool::OrchestrationTask,
+            "Submission files exceed shared count or path-length limits",
+        ),
+        (
+            RequestTool::OrchestrationTask,
             "Another agent owns this work item",
         ),
         (

@@ -17,6 +17,7 @@ from typing import Protocol, TYPE_CHECKING, overload, cast
 
 from codex_delivery import DeliveryMoment, normalize_delivery
 from codex_records import RecordStore
+from codex_work_limits import TASK_SUBMISSION_MAX_FILES, TASK_SUBMISSION_PATH_MAX_CODEPOINTS
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Mapping
@@ -184,7 +185,8 @@ def work_tools(tool: "Callable[..., JsonObject]", text: "JsonObject") -> list["J
                 "reason": {"type": "string", "minLength": 1, "maxLength": 32000},
                 "checks": text,
                 "revision": text,
-                "files": {"type": "array", "items": text},
+                "files": {"type": "array", "maxItems": TASK_SUBMISSION_MAX_FILES,
+                          "items": {"type": "string", "maxLength": TASK_SUBMISSION_PATH_MAX_CODEPOINTS}},
                 "version": {"type": "integer"},
             },
             ["action"],
@@ -1188,10 +1190,10 @@ class WorkMixin:
                 files = data.get("files", [])
                 if (
                     not isinstance(files, list)
-                    or len(files) > 50
-                    or any(not isinstance(f, str) or len(f) > 4096 for f in files)
+                    or len(files) > TASK_SUBMISSION_MAX_FILES
+                    or any(not isinstance(f, str) or len(f) > TASK_SUBMISSION_PATH_MAX_CODEPOINTS for f in files)
                 ):
-                    raise ValueError("Supply up to 50 file paths")
+                    raise ValueError("Submission files exceed shared count or path-length limits")
                 submitter = w.get("owner") or a["id"]
                 for path in files:
                     self.workspace_path(submitter, path)

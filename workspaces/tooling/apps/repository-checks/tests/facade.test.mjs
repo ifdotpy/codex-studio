@@ -35,6 +35,22 @@ import {
 import os from "node:os";
 import path from "node:path";
 
+test("server runner resolves the checkout native module before shared packages", () => {
+  const runnerWitnessTimeoutMilliseconds = 10_000;
+  const result = spawnSync(
+    process.platform === "win32" ? "python" : "python3",
+    [
+      path.join(
+        process.cwd(),
+        "workspaces/runtime/apps/server/tests/server/test_fast_suite_selection.py",
+      ),
+      "FastSuiteSelection.test_runner_resolves_checkout_native_module_before_shared_environment",
+    ],
+    { encoding: "utf8", timeout: runnerWitnessTimeoutMilliseconds },
+  );
+  assert.equal(result.status, 0, result.stderr || String(result.error));
+});
+
 test("short and comprehensive recipes preserve their owned test boundaries", () => {
   const fast = recipePlan(process.cwd(), "test-fast");
   const comprehensive = recipePlan(process.cwd(), "test-comprehensive");
@@ -43,6 +59,14 @@ test("short and comprehensive recipes preserve their owned test boundaries", () 
   assert.match(fast.command, /contracts-check/);
   for (const recipe of [fast, comprehensive]) {
     assert.match(recipe.command, /build-client-wasm\.mjs/);
+    assert.equal(
+      (recipe.command.match(/'studio-operations-python'/g) ?? []).length,
+      1,
+    );
+    assert.ok(
+      recipe.command.indexOf("studio-operations-python") <
+        recipe.command.indexOf("test-server.py"),
+    );
     assert.ok(
       recipe.command.indexOf("build-client-wasm.mjs") <
         recipe.command.indexOf("test-server.py"),
@@ -55,6 +79,11 @@ test("short and comprehensive recipes preserve their owned test boundaries", () 
   assert.ok(
     comprehensive.command.indexOf("studio-runtime-server") <
       comprehensive.command.indexOf("test-server.py"),
+  );
+  assert.match(comprehensive.command, /['"]just['"] ['"]clippy-runtime['"]/);
+  assert.ok(
+    comprehensive.command.indexOf("build:bundle") <
+      comprehensive.command.indexOf("clippy-runtime"),
   );
   assert.match(fast.command, /boundaries-check/);
   assert.match(
@@ -70,12 +99,29 @@ test("short and comprehensive recipes preserve their owned test boundaries", () 
   assert.match(fast.command, /server_exec::tests::existing_start_fence_/);
   assert.match(fast.command, /account_worker::tests::callback_handoff::/);
   assert.match(fast.command, /callback_head_of_line/);
+  assert.match(fast.command, /sync_policy::tests::monitor_/);
+  assert.match(
+    fast.command,
+    /submission_manifest_boundaries_use_shared_limits/,
+  );
+  assert.match(
+    fast.command,
+    /nonempty_file_submission_rechecks_cwd_and_replays_without_filesystem_work/,
+  );
   assert.match(
     fast.command,
     /active_barrier_holds_new_requests_but_not_callback_answers/,
   );
   assert.match(fast.command, /test:unit:fast/);
-  assert.equal((fast.command.match(/'--test' 'integration'/g) ?? []).length, 4);
+  assert.equal((fast.command.match(/'--test' 'integration'/g) ?? []).length, 5);
+  assert.match(
+    fast.command,
+    /killed_provider_is_reaped_with_full_journal_and_unobserved_write/,
+  );
+  assert.match(
+    fast.command,
+    /direct_child_sigkill_settles_unknown_without_resend/,
+  );
   assert.match(fast.command, /test\(\/\^sql_callback_guard::\/\)/);
   assert.match(fast.command, /test\(\/\^project_preparation::\/\)/);
   assert.match(fast.command, /test\(\/\^monitor_start_preparation::\/\)/);

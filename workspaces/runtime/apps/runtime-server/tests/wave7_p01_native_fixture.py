@@ -3,6 +3,7 @@
 import json
 import os
 import pathlib
+import signal
 import socket
 import sys
 
@@ -45,8 +46,8 @@ for line in sys.stdin:
         (root / "turn-count").write_text(str(turn_count), encoding="utf-8")
         report("turn", {"pid": os.getpid(), "cwd": os.getcwd(), "count": turn_count,
                          "priority": os.getpriority(os.PRIO_PROCESS, 0), "request": request})
-        if turn_count == 1 and (root / "crash-first-turn").exists():
-            os._exit(17)
+        if turn_count == 1 and (root / "hang-first-turn").exists():
+            signal.pause()
         result = {"turn": {"id": "fixture-turn"}}
     elif method == "fixture/barrier":
         with socket.socket(socket.AF_UNIX) as observer:
