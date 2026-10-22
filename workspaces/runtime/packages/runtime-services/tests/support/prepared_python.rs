@@ -6,21 +6,9 @@ use std::{
 
 pub(crate) const PYTHON_ORACLE_TIMEOUT: Duration = Duration::from_secs(60);
 
-/// Parent directory for disposable SQLite test state and Python oracle scratch.
-/// SQLite syncs every commit, so on a disk-backed TMPDIR these fixtures spend
-/// most of their time in fsync and slow down sharply under shared I/O load.
-/// Prefer a memory filesystem: `STUDIO_RUNTIME_CORPUS_TMP` when set, else the
-/// Linux `/dev/shm` mount, else the process temporary directory.
+/// Parent directory for disposable test state; follows the platform TMPDIR contract.
 #[allow(dead_code)]
-#[allow(clippy::disallowed_methods)]
 pub(crate) fn disposable_state_parent() -> std::path::PathBuf {
-    if let Some(directory) = std::env::var_os("STUDIO_RUNTIME_CORPUS_TMP") {
-        return directory.into();
-    }
-    let shared_memory = std::path::Path::new("/dev/shm");
-    if cfg!(target_os = "linux") && shared_memory.is_dir() {
-        return shared_memory.to_owned();
-    }
     std::env::temp_dir()
 }
 
@@ -83,6 +71,25 @@ pub(crate) fn output_with_timeout(
     label: &std::path::Path,
     timeout: Duration,
 ) -> Result<Output, String> {
+    let parent = command
+        .get_envs()
+        .find_map(|(name, value)| {
+            (name == "TMPDIR")
+                .then_some(value)
+                .flatten()
+                .map(std::path::PathBuf::from)
+        })
+        .unwrap_or_else(std::env::temp_dir);
+    let fixture = label
+        .parent()
+        .and_then(std::path::Path::file_name)
+        .unwrap_or_default()
+        .to_string_lossy();
+    let scratch = tempfile::Builder::new()
+        .prefix(&format!("oracle-output-{fixture}-"))
+        .tempdir_in(parent)
+        .map_err(|error| format!("{}: oracle scratch: {error}", label.display()))?;
+    command.env("TMPDIR", scratch.path());
     let path = label;
     let label = path.display();
     let mut stdout = tempfile::tempfile().map_err(|error| format!("{label}: {error}"))?;
@@ -164,4 +171,33 @@ pub(crate) fn prepared_python(source: &std::path::Path) -> std::path::PathBuf {
                     .trim(),
             )
         })
+}
+
+/// Closed SQLite seed files retained in memory; a static cache must never own a TempDir.
+#[derive(Clone)]
+#[allow(dead_code)]
+pub(crate) struct StateTemplate {
+    files: [Vec<u8>; 2],
+}
+
+#[allow(dead_code)]
+impl StateTemplate {
+    const DATABASES: [&'static str; 2] = ["canvas.sqlite3", "analytics.sqlite3"];
+
+    // Synchronous test seed preparation; this helper never runs in an HTTP handler.
+    #[allow(clippy::disallowed_methods)]
+    pub(crate) fn capture(root: &std::path::Path) -> Self {
+        Self {
+            files: Self::DATABASES
+                .map(|name| std::fs::read(root.join(name)).expect("closed fixture database bytes")),
+        }
+    }
+
+    // Synchronous test seed preparation; this helper never runs in an HTTP handler.
+    #[allow(clippy::disallowed_methods)]
+    pub(crate) fn write(&self, root: &std::path::Path) {
+        for (name, bytes) in Self::DATABASES.into_iter().zip(&self.files) {
+            std::fs::write(root.join(name), bytes).expect("clone cached fixture database");
+        }
+    }
 }

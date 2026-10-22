@@ -35,6 +35,7 @@ def batch(after: int, through: int, identity: str = "a", payload_size: int = 0) 
 class EntityChangesTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
         self.path = self.root / "canvas.sqlite3"
         self.database = sqlite3.connect(self.path)

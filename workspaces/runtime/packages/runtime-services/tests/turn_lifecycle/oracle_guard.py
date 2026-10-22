@@ -135,6 +135,7 @@ class OracleGuard:
 
 
 _INSTALLED_GUARD = None
+_ISOLATED_ORACLE_ENV = None
 
 
 def install_guard(*, block_processes=False, allow_loopback=False):
@@ -193,3 +194,9 @@ def install_guard(*, block_processes=False, allow_loopback=False):
     os.lstat = lambda path, *a, **kw: guard.metadata(guard.lstat, path, *a, **kw)
     _INSTALLED_GUARD = guard
     return guard
+
+
+def close_environment():
+    """Release the pre-exec interpreter's isolated homes before it is replaced."""
+    if _ISOLATED_ORACLE_ENV is not None:
+        _ISOLATED_ORACLE_ENV.cleanup()

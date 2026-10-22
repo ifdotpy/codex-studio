@@ -883,6 +883,8 @@ mod tests {
 
     #[tokio::test]
     async fn unknown_title_start_is_never_followed_by_another_write() {
+        let _cleanup =
+            super::TitleHome::new("title-request-unknown").expect("owned retained title fixture");
         let session = Arc::new(Session {
             requests: Mutex::new(Vec::new()),
             unknown_start: true,

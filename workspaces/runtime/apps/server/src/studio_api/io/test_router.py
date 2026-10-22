@@ -156,6 +156,7 @@ def make_api_context_app(runtime: RuntimeFixture) -> tuple[FastAPI, "ApiContext"
 class IORouterTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
         self.log = Path(self.temp.name) / "watch.log"
         self.log.write_bytes(b"0123456789")
         self.runtime = RuntimeFixture(self.log)

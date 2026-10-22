@@ -27,6 +27,7 @@ from studio_api.testing import read_runtime_state
 class ComplaintRouting(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
         self.runtime = make_runtime(f.ControlledRuntime, self.root, f.f.FakeServer)
         self.lead = self.runtime.create({'name':'Lead', 'prompt':'', 'cwd':str(self.root)}, draft=True)

@@ -28,6 +28,7 @@ from studio_api.testing import read_runtime_state
 class WorkerBase(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix='worker-base-')
+        self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
         self.repo = self.root / 'repo'
         self.repo.mkdir()

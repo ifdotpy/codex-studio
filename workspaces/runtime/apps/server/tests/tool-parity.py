@@ -38,7 +38,8 @@ class Model(BaseHTTPRequestHandler):
                     'usage':{'input_tokens':1,'output_tokens':1,'total_tokens':2}}}]
         body=''.join('data: '+json.dumps(e)+'\n\n' for e in events).encode()
         self.send_response(200);self.send_header('Content-Type','text/event-stream');self.send_header('Content-Length',str(len(body)));self.end_headers();self.wfile.write(body)
-root=Path(tempfile.mkdtemp(prefix='codex-tool-parity-'))
+temporary=tempfile.TemporaryDirectory(prefix='codex-tool-parity-')
+root=Path(temporary.name)
 model=ThreadingHTTPServer(('127.0.0.1',0),Model)
 threading.Thread(target=model.serve_forever,daemon=True).start()
 home=root/'profile';home.mkdir()
@@ -99,3 +100,4 @@ try:
     assert all(any(part in n for part in ('spawn_agent','send_input','send_message','followup_task','wait_agent','list_agents','interrupt_agent','resume_agent','close_agent','collaboration')) for n in native-managed), 'An unrelated Codex tool was removed'
 finally:
     server.close();model.shutdown()
+    temporary.cleanup()

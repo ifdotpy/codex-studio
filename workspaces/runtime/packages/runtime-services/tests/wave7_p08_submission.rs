@@ -23,8 +23,8 @@ fn open_state(path: impl AsRef<std::path::Path>) -> rusqlite::Connection {
 }
 
 fn corpus(root: &std::path::Path) -> Vec<Value> {
-    static TEMPLATE: OnceLock<(tempfile::TempDir, Vec<Value>)> = OnceLock::new();
-    let (_template_root, cases) = TEMPLATE.get_or_init(|| {
+    static TEMPLATE: OnceLock<Vec<(Value, Vec<u8>)>> = OnceLock::new();
+    let cases = TEMPLATE.get_or_init(|| {
         let template_root = tempfile::tempdir().expect("submission Python template");
         let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/wave7_p08_submission_oracle.py");
@@ -48,15 +48,22 @@ fn corpus(root: &std::path::Path) -> Vec<Value> {
             .as_array()
             .expect("cases")
             .clone();
-        (template_root, cases)
+        cases
+            .into_iter()
+            .map(|case| {
+                let bytes = std::fs::read(case["path"].as_str().expect("template path"))
+                    .expect("submission database bytes");
+                (case, bytes)
+            })
+            .collect()
     });
     cases
         .iter()
-        .map(|case| {
+        .map(|(case, bytes)| {
             let source = std::path::Path::new(case["path"].as_str().expect("template path"));
             let file_name = source.file_name().expect("template filename");
             let destination = root.join(file_name);
-            std::fs::copy(source, &destination).expect("copy Python-written submission state");
+            std::fs::write(&destination, bytes).expect("copy Python-written submission state");
             let mut case = case.clone();
             case["path"] = json!(destination);
             case

@@ -25,6 +25,7 @@ Runtime, FakeServer, eventually = fixture.Runtime, fixture.FakeServer, fixture.e
 class QuestionHistoryContract(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
         self.runtime = make_runtime(Runtime, self.root, FakeServer)
         self.lead = self.runtime.create({"name": "Lead", "cwd": str(self.root), "prompt": "Coordinate"})

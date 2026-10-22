@@ -70,7 +70,7 @@ class ScannerTests(unittest.TestCase):
         cls.tmp.cleanup()
 
     def setUp(self):
-        self.case = Path(tempfile.mkdtemp(prefix="case-", dir=self.root))
+        self.case = Path(self.enterContext(tempfile.TemporaryDirectory(prefix="case-", dir=self.root)))
         self.timestamp = (datetime.now(timezone.utc) - timedelta(minutes=1)).replace(
             microsecond=0
         )

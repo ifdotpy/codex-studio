@@ -165,6 +165,7 @@ class RuleFixture(RulesMixin):
 class OwnerCacheContract(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix="studio-rule-owner-cache-")
+        self.addCleanup(self.tmp.cleanup)
         self.runtime = RuleFixture(self.tmp.name)
 
     def tearDown(self):

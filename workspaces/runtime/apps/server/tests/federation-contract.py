@@ -83,6 +83,7 @@ class PrivateFederationHTTP:
 class FederationContract(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
         base = Path(self.temp.name)
         self.roots = [base / "igor", base / "sasha"]
         self.runtimes = [make_runtime(Runtime, root, runtime_contract.FakeServer) for root in self.roots]

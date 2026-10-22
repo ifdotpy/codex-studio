@@ -119,6 +119,7 @@ class QuietRecoveryRuntime(Runtime):
 class TurnRecoveryContract(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
         self.runtime = make_runtime(QuietRecoveryRuntime, Path(self.temp.name), RecoveryServer)
         self.server = self.runtime.connect()
         self.runtime.start_receipt_finished.clear()

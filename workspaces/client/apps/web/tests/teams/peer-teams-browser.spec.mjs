@@ -259,7 +259,8 @@ test("Peer teams browser", async ({
     );
     await page.screenshot({
       path:
-        process.env.PEER_TEAMS_DRAG_SCREENSHOT || "/tmp/studio-team-drag.png",
+        process.env.PEER_TEAMS_DRAG_SCREENSHOT ||
+        join(cacheDir, "studio-team-drag.png"),
     });
     state.runtime.peerTeams = [];
     // Only explicitly authorized peer rooms involving this chat appear.

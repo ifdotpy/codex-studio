@@ -59,6 +59,7 @@ def reply(main: str = 'm2', **values: Any) -> dict[str, Any]:
 class RulesAndScan(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
 
     def tearDown(self) -> None:
@@ -98,7 +99,7 @@ class RulesAndScan(unittest.TestCase):
         self.assertEqual(notices, ['pipe: a special file does not sync'])
 
     def test_writes_never_cross_a_symbolic_link_or_leave_the_folder(self) -> None:
-        outside = Path(tempfile.mkdtemp())
+        outside = Path(self.enterContext(tempfile.TemporaryDirectory()))
         self.addCleanup(lambda: __import__('shutil').rmtree(outside, True))
         (self.root / 'escape').symlink_to(outside)
         for rel in ('escape/x.txt', '../x.txt'):
@@ -114,6 +115,7 @@ class RulesAndScan(unittest.TestCase):
 class Rounds(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
         base = Path(self.temp.name)
         self.root, self.state = base / 'project', base / 'state'
         self.root.mkdir()
@@ -234,6 +236,7 @@ class ReviewRegressions(unittest.TestCase):
 
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
         base = Path(self.temp.name)
         self.root, self.state = base / 'project', base / 'state'
         self.root.mkdir()
@@ -396,6 +399,7 @@ class Choices(unittest.TestCase):
 
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
         base = Path(self.temp.name)
         self.root, self.state = base / 'project', base / 'state'
         self.root.mkdir()
@@ -608,6 +612,7 @@ class Scheduling(unittest.TestCase):
 class FileEvents(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name).resolve()
 
     def tearDown(self) -> None:
@@ -633,7 +638,7 @@ class FileEvents(unittest.TestCase):
         self.assertEqual(set(nothing), set(manifest))
 
     def test_the_watcher_collects_paths_per_folder_and_asks_for_rescans(self) -> None:
-        other = Path(tempfile.mkdtemp()).resolve()
+        other = Path(self.enterContext(tempfile.TemporaryDirectory())).resolve()
         self.addCleanup(lambda: __import__('shutil').rmtree(other, True))
         helper = self.root / 'helper'
         helper.write_text('#!/bin/sh\n'

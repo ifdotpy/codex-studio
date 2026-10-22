@@ -287,6 +287,7 @@ class DelayedServer(fixture.FakeServer):
 class CatalogRuntimeContract(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
         self.runtime = make_runtime(ControlledRuntime, Path(self.temp.name), DelayedServer)
         self.runtime._catalog_cache = ModelCatalogCache(wait_seconds=.03)
         self.lead = self.runtime.create({"name": "Lead", "prompt": "Plan", "cwd": self.temp.name}, defer=True)

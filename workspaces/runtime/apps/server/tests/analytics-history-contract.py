@@ -140,6 +140,7 @@ class InheritedUsageTests(unittest.TestCase):
 class ImportTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
         self.f = Fixture(self.temp.name)
         self.header = line("session_meta", {"id": THREAD})
 

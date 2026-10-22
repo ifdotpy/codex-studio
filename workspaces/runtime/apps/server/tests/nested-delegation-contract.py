@@ -27,6 +27,7 @@ spec.loader.exec_module(fixture)
 class NestedDelegationContract(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="nested-delegation-")
+        self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name).resolve()
         self.state = self.root / "state"
         self.runtime = self.open_runtime()

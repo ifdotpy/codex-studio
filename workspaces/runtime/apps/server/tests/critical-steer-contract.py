@@ -34,6 +34,7 @@ spec.loader.exec_module(fixture)
 class CriticalDelivery(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
         self.runtime = make_runtime(Runtime, Path(self.temp.name), fixture.FakeServer)
         self.agent = self.runtime.create({'name': 'Lead', 'cwd': self.temp.name, 'prompt': 'First'})['id']
         fixture.eventually(lambda: self.runtime.agent(self.agent)['status'] == 'running')

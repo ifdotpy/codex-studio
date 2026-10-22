@@ -10,7 +10,7 @@ use studio_runtime_services::multi_server_pairing::{MultiServerBoundary, OwnerLo
 use studio_runtime_store::RuntimeStore;
 
 pub struct Fixture {
-    pub root: tempfile::TempDir,
+    files: python_oracle::StateTemplate,
     pub data: Value,
 }
 static FIXTURE: OnceLock<Fixture> = OnceLock::new();
@@ -56,17 +56,17 @@ pub fn fixture() -> &'static Fixture {
             String::from_utf8_lossy(&output.stderr)
         );
         let data = serde_json::from_slice(&output.stdout).expect("oracle JSON");
-        Fixture { root, data }
+        Fixture {
+            files: python_oracle::StateTemplate::capture(root.path()),
+            data,
+        }
     })
 }
 #[allow(clippy::disallowed_methods)]
 pub async fn store() -> (tempfile::TempDir, Arc<RuntimeStore>) {
     let template = fixture();
     let root = test_directory();
-    for name in ["canvas.sqlite3", "analytics.sqlite3"] {
-        std::fs::copy(template.root.path().join(name), root.path().join(name))
-            .expect("clone prepared Python state");
-    }
+    template.files.write(root.path());
     let store = Arc::new(
         RuntimeStore::open(Some(root.path()))
             .await

@@ -1,17 +1,12 @@
 """Exercise radio authorization against records produced by the Python runtime."""
 import json
-import os
 from pathlib import Path
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "turn_lifecycle"))
-from oracle_guard import assert_isolated_path, install_guard
+from oracle_guard import install_guard
 
 GUARD = install_guard(block_processes=True)
-radio_tmp = os.environ.get("STUDIO_RADIO_TMPDIR")
-if radio_tmp:
-    radio_tmp_path = assert_isolated_path(radio_tmp, "STUDIO_RADIO_TMPDIR")
-    os.environ["TMPDIR"] = str(radio_tmp_path)
 
 SERVER_TESTS = Path(__file__).resolve().parents[6] / "workspaces/runtime/apps/server/tests"
 sys.path.insert(0, str(SERVER_TESTS))

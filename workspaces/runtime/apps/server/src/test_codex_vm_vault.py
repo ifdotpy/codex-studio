@@ -46,6 +46,7 @@ def project(state: Path, name: str) -> Path:
 class Reports(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
         self.state = Path(self.temp.name)
 
     def tearDown(self) -> None:
@@ -147,6 +148,7 @@ class Runtime:
 class Pulls(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
         self.state = Path(self.temp.name) / 'state'
         self.downloads = Path(self.temp.name) / 'Downloads'
         self.downloads.mkdir()
@@ -248,6 +250,7 @@ elif args[0] == "unlock":
 class ThisMac(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
         root = Path(self.temp.name)
         self.state, self.desk_state = root / "state", root / "desk"
         self.desk_state.mkdir()
@@ -341,6 +344,7 @@ elif args[0] == "aws-login":
 class Setup(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
         root = Path(self.temp.name)
         self.state, self.desk_state, self.home = root / "state", root / "desk", root / "home"
         self.desk_state.mkdir()

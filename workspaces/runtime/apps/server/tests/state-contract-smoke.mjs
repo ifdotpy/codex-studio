@@ -41,7 +41,6 @@ function run(name, args, extra = {}, status = 0) {
   return result.stdout + result.stderr;
 }
 
-let passed = false;
 try {
   for (const wave of ["old.wave", "new"]) {
     json(join(state, "codex-swarm-status." + wave + ".json"), [
@@ -168,9 +167,9 @@ try {
   }
   assert.deepEqual(readdirSync(forbidden), []);
   assert.equal(existsSync(join(linked, "missing")), false);
-  passed = true;
   console.log("state contract smoke: PASS");
 } finally {
-  if (passed) rmSync(root, { recursive: true });
+  if (!process.env.KEEP_TEST_ARTIFACTS)
+    rmSync(root, { recursive: true, force: true });
   else console.error("fixture retained: " + root);
 }

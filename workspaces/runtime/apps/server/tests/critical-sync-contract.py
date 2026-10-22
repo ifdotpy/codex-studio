@@ -211,6 +211,7 @@ class CanvasDeliveryContract(unittest.TestCase):
 class RealRuntimeDeliveryContract(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="critical-runtime-")
+        self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         self.runtime = make_runtime(Runtime, self.root, runtime_fixture.FakeServer)
         self.canvas = Canvas(self.root)

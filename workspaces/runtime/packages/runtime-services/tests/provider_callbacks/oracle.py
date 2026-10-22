@@ -17,7 +17,10 @@ if "--isolated" not in sys.argv:
     binary.write_text("#!/bin/sh\nexit 99\n")
     binary.chmod(0o700)
     owner._provider_executable = binary
-    os.execve(sys.executable, [sys.executable, "-B", str(HERE), "--isolated", str(scratch)], owner._environment())
+    environment = owner._environment()
+    from oracle_guard import close_environment
+    close_environment()
+    os.execve(sys.executable, [sys.executable, "-B", str(HERE), "--isolated", str(scratch)], environment)
 
 import json
 import sqlite3

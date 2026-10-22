@@ -30,6 +30,7 @@ class Guest:
 class Remount(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
         self.state = Path(self.temp.name)
         folder = self.state / 'layr-projects' / 'p'
         folder.mkdir(parents=True)

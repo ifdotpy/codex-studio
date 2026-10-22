@@ -357,13 +357,14 @@ def main():
             conflicts.append({"type": type(error).__name__, "message": str(error)})
         for value in list(conflict_runtime.__dict__.get("_browser_remote_forwards", {}).values()):
             value.close("oracle-cleanup")
-    root = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(tempfile.mkdtemp(prefix="browser-oracle-"))
-    root.mkdir(parents=True, exist_ok=True)
-    output = {"forward": forward, "expired": expiry, "replay": replay,
-              "conflict": conflicts, "pairedExchange": paired_exchange_cases(),
-              "lifecycle": listener_lifecycle_witnesses(),
-              "config": config_corpus(root), "fixtureRoot": str(root)}
-    print(json.dumps(output, sort_keys=True, separators=(",", ":")))
+    with tempfile.TemporaryDirectory(prefix="browser-oracle-") as temporary:
+        root = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(temporary)
+        root.mkdir(parents=True, exist_ok=True)
+        output = {"forward": forward, "expired": expiry, "replay": replay,
+                  "conflict": conflicts, "pairedExchange": paired_exchange_cases(),
+                  "lifecycle": listener_lifecycle_witnesses(),
+                  "config": config_corpus(root), "fixtureRoot": str(root)}
+        print(json.dumps(output, sort_keys=True, separators=(",", ":")))
 
 
 if __name__ == "__main__":

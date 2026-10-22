@@ -45,7 +45,7 @@ class PeerLinkFixture(unittest.TestCase):
             self.skipTest("Build studio-peer-link first: cargo build --release -p studio-peer-link")
         self.executable = executable
         # A short folder: a Unix socket path has at most 104 bytes on macOS.
-        self.folder = Path(tempfile.mkdtemp(prefix="pl", dir="/tmp"))
+        self.folder = Path(self.enterContext(tempfile.TemporaryDirectory(prefix="pl")))
         self.addCleanup(shutil.rmtree, self.folder, True)
         crypto = CryptoProcess()
         self.addCleanup(crypto.shutdown)

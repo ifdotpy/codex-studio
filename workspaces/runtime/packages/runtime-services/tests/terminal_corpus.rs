@@ -81,7 +81,7 @@ fn assert_python_rows(store: &RuntimeStore, expected: &Value) {
 async fn run_corpus(full: bool) {
     let temp_root = std::env::var_os("CS_TERMINAL_TEST_STATE_DIR")
         .map(PathBuf::from)
-        .unwrap_or_else(|| std::env::temp_dir().join("cs-terminals-test-state"));
+        .unwrap_or_else(std::env::temp_dir);
     std::fs::create_dir_all(&temp_root).expect("tmpfs test state directory");
     let root = tempfile::Builder::new()
         .prefix("terminal-corpus-")

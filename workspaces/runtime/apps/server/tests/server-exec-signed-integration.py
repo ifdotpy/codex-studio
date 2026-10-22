@@ -57,10 +57,6 @@ class Commands(unittest.TestCase):
         cls.addClassCleanup(fixture.install_shared_crypto_process())
 
     def setUp(self):
-        if os.name != 'nt':
-            short_root = patch('tempfile.tempdir', '/tmp')
-            short_root.start()
-            self.addCleanup(short_root.stop)
         fixture.SignedIntegration.setUp(self)
         invitation = self.a.local({'action': 'create_invite', 'requestId': 'exec-invite'})['invitation']
         self.b.local({'action': 'accept_invite', 'invitation': invitation, 'requestId': 'exec-accept'})

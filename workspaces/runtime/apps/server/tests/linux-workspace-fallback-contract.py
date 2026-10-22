@@ -23,6 +23,7 @@ spec.loader.exec_module(f)
 class LinuxFallback(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix='linux-fallback-')
+        self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name).resolve()
         self.repo = self.root / 'repo'
         self.repo.mkdir()

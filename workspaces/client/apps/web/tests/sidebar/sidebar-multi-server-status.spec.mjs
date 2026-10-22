@@ -4,9 +4,6 @@ import { test, expect } from "../playwright.mjs";
 import { fixture } from "../servers/multi-server-fixture.mjs";
 import { sidebarParityFixture } from "./sidebar-parity-fixture.mjs";
 
-const screenshotRoot =
-  process.env.SIDEBAR_SCREENSHOTS || "/var/tmp/sidebar-multi-server-status";
-
 test("paired sidebar shows the chat provider and server alias", async ({
   page,
   context,
@@ -129,7 +126,9 @@ test("paired sidebar shows the chat provider and server alias", async ({
 test("combined sidebar marks unreachable server rows until reconnect", async ({
   page,
   context,
-}) => {
+}, testInfo) => {
+  const screenshotRoot =
+    process.env.SIDEBAR_SCREENSHOTS || testInfo.outputPath("sidebar-status");
   const servers = await sidebarParityFixture(context);
   try {
     await mkdir(screenshotRoot, { recursive: true });

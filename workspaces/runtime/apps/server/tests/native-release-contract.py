@@ -93,6 +93,7 @@ class ReleaseServer(fixture.FakeServer):
 class NativeReleaseContract(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
         self.rt = make_runtime(Runtime, Path(self.tmp.name), ReleaseServer)
 
     def tearDown(self):

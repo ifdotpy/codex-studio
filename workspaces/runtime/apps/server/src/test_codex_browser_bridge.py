@@ -135,7 +135,7 @@ class FlowBase(unittest.TestCase):
     """The real guest bridge, the real shim, a fake provider and fake tools (see the module text)."""
 
     def setUp(self) -> None:
-        self.root = Path(tempfile.mkdtemp(prefix="sbb-", dir="/tmp"))
+        self.root = Path(self.enterContext(tempfile.TemporaryDirectory(prefix="sbb-")))
         self.provider = FakeProvider()
         self.tools: list[FakeTool] = []
         self.agent_id = str(uuid.uuid4())
@@ -501,7 +501,7 @@ class PhoneWindow(FlowBase):
 
 class Refusals(unittest.TestCase):
     def setUp(self) -> None:
-        self.root = Path(tempfile.mkdtemp())
+        self.root = Path(self.enterContext(tempfile.TemporaryDirectory()))
         self.runtime = Runtime(self.root / "runtime.sqlite3")
         self.closed: list[str] = []
         owner = self
@@ -698,7 +698,7 @@ class Binds(unittest.TestCase):
 class Wiring(unittest.TestCase):
     def test_runtime_answer_sends_sign_in_cards_to_the_bridge_with_the_window_flag(self) -> None:
         from codex_runtime import Runtime as Real
-        root = Path(tempfile.mkdtemp())
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
         self.addCleanup(shutil.rmtree, root)
         runtime = Runtime(root / "runtime.sqlite3")
         with runtime.db() as db:
@@ -825,7 +825,7 @@ class NativeChats(unittest.TestCase):
     """A native chat of this server: the launcher in its session, the host queue and card."""
 
     def setUp(self) -> None:
-        self.root = Path(tempfile.mkdtemp(prefix="sbh-", dir="/tmp"))
+        self.root = Path(self.enterContext(tempfile.TemporaryDirectory(prefix="sbh-")))
         self.provider = FakeProvider()
         self.tools: list[FakeTool] = []
         self.agent_id, self.thread = str(uuid.uuid4()), str(uuid.uuid4())
@@ -1084,7 +1084,7 @@ class HostParts(unittest.TestCase):
 
             def multi_server(self) -> Any:
                 return self.service
-        runtime = Owner(Path(tempfile.mkdtemp(prefix="sbx-", dir="/tmp")) / "r.sqlite3")
+        runtime = Owner(Path(self.enterContext(tempfile.TemporaryDirectory(prefix="sbx-"))) / "r.sqlite3")
         runtime.service = Service({"outcome": "applied", "value": {"status": 200}})
         exchange = bridge_module.paired_exchange(runtime)
         self.assertEqual(exchange("srv-b", "browser_callback", {}), {"status": 200})
@@ -1102,7 +1102,7 @@ class HostParts(unittest.TestCase):
         shutil.rmtree(runtime.path.parent)
 
     def test_a_client_forward_refuses_bad_shapes_and_a_closed_request(self) -> None:
-        runtime = Runtime(Path(tempfile.mkdtemp(prefix="sbx-", dir="/tmp")) / "r.sqlite3")
+        runtime = Runtime(Path(self.enterContext(tempfile.TemporaryDirectory(prefix="sbx-"))) / "r.sqlite3")
         good = {"server": "srv-b", "bridgeId": "a" * 32, "host": "127.0.0.1", "port": free_port(),
                 "path": "/oauth/callback", "expiresAt": time.time() + 60, "token": "t" * 43}
         for change in ({"host": "example.com"}, {"port": 80}, {"path": "x"}, {"bridgeId": "../x"}, {"token": ""}):

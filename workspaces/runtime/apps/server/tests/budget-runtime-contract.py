@@ -66,6 +66,7 @@ class Server(f.FakeServer):
 class BudgetRuntimeTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         self.home, self.other = self.root / 'native', self.root / 'other-native'
         for home in (self.home, self.other):

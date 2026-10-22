@@ -328,7 +328,6 @@ impl TerminalsRepository {
 mod tests {
     use rusqlite::{Connection, functions::FunctionFlags};
     use serde_json::json;
-    use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::TerminalsRepository;
 
@@ -353,14 +352,8 @@ mod tests {
 
     #[test]
     fn terminal_record_and_output_are_read_from_one_snapshot() {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system clock is after epoch")
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!(
-            "runtime-terminal-snapshot-{}-{nonce}.sqlite3",
-            std::process::id()
-        ));
+        let directory = tempfile::tempdir().expect("owned test directory");
+        let path = directory.path().join("snapshot.sqlite3");
         let database = Connection::open(&path).expect("temporary SQLite database opens");
         database
             .execute_batch(
@@ -403,9 +396,6 @@ mod tests {
         assert_eq!((row.output.as_str(), row.offset), ("old", 0));
 
         drop(database);
-        drop(std::fs::remove_file(&path));
-        drop(std::fs::remove_file(path.with_extension("sqlite3-wal")));
-        drop(std::fs::remove_file(path.with_extension("sqlite3-shm")));
     }
 }
 inventory::submit! {

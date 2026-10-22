@@ -32,6 +32,7 @@ spec.loader.exec_module(fixture)
 class SchedulerDecode(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
         self.runtime = make_runtime(Runtime, Path(self.tmp.name), fixture.FakeServer)
         self.lead = self.runtime.create({"name": "Lead", "cwd": self.tmp.name,
                                          "prompt": "Work"}, defer=True)
