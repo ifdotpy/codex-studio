@@ -915,6 +915,37 @@ function fastTierCommands(root) {
       },
     },
     {
+      item: { name: "studio-runtime-services", ecosystem: "cargo" },
+      label: "transaction diagnostics ownership witnesses",
+      commands: [
+        [
+          "cargo",
+          [
+            "nextest",
+            "run",
+            "--locked",
+            "--no-tests",
+            "fail",
+            "--message-format",
+            "libtest-json-plus",
+            "-p",
+            "studio-runtime-services",
+            "--lib",
+            "-E",
+            nextestAnyOf([
+              "test(writer_transaction_acquires_one_diagnostics_lock)",
+              "test(writer_transaction_views_preserve_)",
+            ]),
+          ],
+        ],
+      ],
+      options: {
+        selector: "writer transaction diagnostics lock count and output parity",
+        reason:
+          "Check one collector lock per writer transaction while preserving all waits, caller sites, thresholds and sample windows.",
+      },
+    },
+    {
       item: { name: "studio-runtime-store", ecosystem: "cargo" },
       label: "Rust state migration and SQL callback witnesses",
       commands: [
