@@ -1,6 +1,7 @@
 //! Closed local service table. Every entry checks actor authority in the same
 //! transaction as its effects. No HTTP adapters and no user-authored substitutes.
 mod context;
+pub(crate) use context::PanelGuidance;
 pub(crate) mod manage;
 pub(crate) mod messages;
 mod reads;
@@ -25,6 +26,7 @@ pub(crate) struct ProductionPorts {
     runtime_ports: super::ManagedToolRuntimePorts,
     state_root: std::path::PathBuf,
     preparation: Option<std::sync::Arc<crate::account_worker::preparation::PreparationResources>>,
+    panel_guidance: Option<PanelGuidance>,
 }
 
 pub(crate) struct ProductionPortsConfig {
@@ -36,6 +38,7 @@ pub(crate) struct ProductionPortsConfig {
     pub(crate) runtime_ports: super::ManagedToolRuntimePorts,
     /// The store's state directory, which owns progress files.
     pub(crate) state_root: std::path::PathBuf,
+    pub(crate) panel_guidance: Option<PanelGuidance>,
     pub(crate) preparation:
         Option<std::sync::Arc<crate::account_worker::preparation::PreparationResources>>,
 }
@@ -51,6 +54,7 @@ impl ProductionPorts {
             runtime_ports: config.runtime_ports,
             state_root: config.state_root,
             preparation: config.preparation,
+            panel_guidance: config.panel_guidance,
         }
     }
 }
@@ -340,6 +344,7 @@ impl crate::managed_host_tools::ContextPort for ProductionPorts {
                 topic,
                 &self.state_root,
                 self.preparation.as_deref(),
+                self.panel_guidance.as_ref(),
             )?
         };
         let version = studio_runtime_store::sha256_hex(
@@ -684,7 +689,7 @@ pub(super) fn execute(
     args: &Value,
     id: &str,
     now: f64,
-    state_root: &std::path::Path,
+    payloads: Option<&tool_requests::prepared::Payloads>,
     ports: &(impl crate::managed_host_tools::Ports<Prepared = ()> + ?Sized),
 ) -> Result<crate::managed_host_tools::Staged, CallbackError> {
     let actor = snapshot.actor();
@@ -793,22 +798,20 @@ pub(super) fn execute(
         _ => {}
     }
     let value = match kind {
-        ToolKind::Request => Ok(tool_requests::execute(
-            tx,
-            &snapshot.context().agent,
-            match args["action"].as_str().unwrap_or("list") {
-                "list" => tool_requests::Action::List,
-                "get" => tool_requests::Action::Get(text(args, "request_id")?),
-                "cancel" => tool_requests::Action::Cancel(text(args, "request_id")?),
-                _ => return Err(CallbackError::Invalid("Invalid request action")),
-            },
-            now,
-        )?),
+        ToolKind::Request => Ok(payloads
+            .ok_or(CallbackError::Dependency("tool-request/prepared-payloads"))?
+            .execute(tx, &snapshot.context().agent, request_action(args)?, now)?),
         ToolKind::Task => work::execute(tx, snapshot, args, id),
         ToolKind::Message => messages::send(tx, snapshot, args, id, now),
         ToolKind::ChatRead => reads::chat(tx, snapshot, args),
         ToolKind::Peers => messages::peers(tx, snapshot, args),
-        ToolKind::Read => reads::read(tx, snapshot, args, now, state_root),
+        ToolKind::Read => reads::read(
+            tx,
+            snapshot,
+            args,
+            now,
+            payloads.ok_or(CallbackError::Dependency("tool-request/prepared-payloads"))?,
+        ),
         ToolKind::Status
         | ToolKind::Search
         | ToolKind::Context
@@ -1024,4 +1027,35 @@ fn paginate(
     Ok(
         json!({"apiVersion":2,"items":rows[offset..end],"total":rows.len(),"revision":revision,"nextCursor":cursor}),
     )
+}
+
+pub(super) fn payload_selection(
+    tx: &Transaction<'_>,
+    snapshot: &CallbackSnapshot,
+    kind: ToolKind,
+    args: &Value,
+) -> Result<Option<tool_requests::prepared::Selection>, CallbackError> {
+    use tool_requests::prepared::Selection;
+    Ok(match kind {
+        ToolKind::Request => Some(match request_action(args)? {
+            tool_requests::Action::List => Selection::List,
+            tool_requests::Action::Get(key) | tool_requests::Action::Cancel(key) => {
+                Selection::Receipt(key.into())
+            }
+        }),
+        ToolKind::Read => Some(Selection::Output(reads::receipt_keys(
+            tx,
+            &snapshot.context().agent,
+            args,
+        )?)),
+        _ => None,
+    })
+}
+fn request_action(args: &Value) -> Result<tool_requests::Action<'_>, CallbackError> {
+    Ok(match args["action"].as_str().unwrap_or("list") {
+        "list" => tool_requests::Action::List,
+        "get" => tool_requests::Action::Get(text(args, "request_id")?),
+        "cancel" => tool_requests::Action::Cancel(text(args, "request_id")?),
+        _ => return Err(CallbackError::Invalid("Invalid request action")),
+    })
 }

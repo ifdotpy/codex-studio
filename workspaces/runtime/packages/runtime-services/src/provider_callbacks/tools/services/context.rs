@@ -8,7 +8,7 @@ use std::path::Path;
 use studio_runtime_schema::shared_values::PROGRESS_FILE_LIMIT_LABEL;
 
 /// The skill file whose text the `panel` topic returns, relative to the skills root.
-const PANEL_GUIDANCE: &str = "codex-workspace/references/panel.md";
+pub(super) const PANEL_GUIDANCE: &str = "codex-workspace/references/panel.md";
 
 pub(super) fn topic(
     tx: &Transaction<'_>,
@@ -16,6 +16,7 @@ pub(super) fn topic(
     topic: &str,
     state_root: &Path,
     preparation: Option<&PreparationResources>,
+    panel_guidance: Option<&PanelGuidance>,
 ) -> Result<Value, Error> {
     let record = actor.record().value();
     let lead = studio_runtime_store::truthy(record.get("isLead"));
@@ -40,7 +41,9 @@ pub(super) fn topic(
             Ok(json!(format!(
                 "{}\n\n{}",
                 progress(resources, &record, state_root)?,
-                panel_guidance(resources)?
+                panel_guidance
+                    .ok_or(Error::Unavailable("model-context/prepared-panel-guidance"))?
+                    .text()?
             )))
         }
         "background" if lead => Ok(json!({
@@ -90,22 +93,46 @@ fn progress(
     ))
 }
 
-/// Python's `Runtime.panel_guidance`: the installed skill file, read on each request.
-fn panel_guidance(resources: &PreparationResources) -> Result<String, Error> {
-    let guide = resources.skills_root.join(PANEL_GUIDANCE);
-    let content = std::fs::read_to_string(&guide).map_err(|_| {
-        Error::Invalid("Studio panel guidance is missing. Update the installed Studio workspace")
-    })?;
-    let content = content.trim();
-    if content.is_empty() {
-        return Err(Error::Invalid(
-            "Studio panel guidance is empty. Update the installed Studio workspace",
-        ));
+/// One file snapshot per panel callback, prepared before entering SQL.
+pub(crate) struct PanelGuidance(Result<String, PanelGuidanceError>);
+enum PanelGuidanceError {
+    Resources,
+    Missing,
+    Empty,
+}
+impl PanelGuidance {
+    pub(crate) fn read(resources: Option<&PreparationResources>) -> Self {
+        studio_runtime_store::debug_assert_outside_sql();
+        let Some(resources) = resources else {
+            return Self(Err(PanelGuidanceError::Resources));
+        };
+        let guide = resources.skills_root.join(PANEL_GUIDANCE);
+        let content = match std::fs::read_to_string(&guide) {
+            Ok(content) => content,
+            Err(_) => return Self(Err(PanelGuidanceError::Missing)),
+        };
+        let content = content.trim();
+        if content.is_empty() {
+            return Self(Err(PanelGuidanceError::Empty));
+        }
+        Self(Ok(format!(
+            "[Studio panel guidance: {}]\n{content}",
+            guide.display()
+        )))
     }
-    Ok(format!(
-        "[Studio panel guidance: {}]\n{content}",
-        guide.display()
-    ))
+    fn text(&self) -> Result<&str, Error> {
+        self.0.as_deref().map_err(|error| match error {
+            PanelGuidanceError::Resources => {
+                Error::Unavailable("model-context/preparation-resources")
+            }
+            PanelGuidanceError::Missing => Error::Invalid(
+                "Studio panel guidance is missing. Update the installed Studio workspace",
+            ),
+            PanelGuidanceError::Empty => Error::Invalid(
+                "Studio panel guidance is empty. Update the installed Studio workspace",
+            ),
+        })
+    }
 }
 
 fn worker_error(error: WorkerError) -> Error {

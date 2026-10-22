@@ -1508,3 +1508,14 @@ change with both options. Cross-machine Claude cache reuse remains unverified.
 4. Partial imports remain ready; current imports wait for a notification.
 5. Input failures wait for relevant input, budget or profile changes; deletion
    and retirement remove the actor and its scheduling state.
+
+### Callback saved-output reads
+
+1. The callback claims its exact request identity before reading saved output.
+2. A pooled SQL reader snapshots the selected receipts, results and blob references.
+3. Outside SQL, the payload owner reads and verifies blobs and durably writes any recovered output.
+4. The Canvas writer rechecks the active actor, claim owner, selection and complete raw rows.
+5. Changed epochs, references or late results refuse stale settlement without repeating the operation.
+6. The existing receipt owner atomically commits recovery and the callback result using prepared payloads only.
+7. Panel guidance is read once before its callback transaction; the transaction still checks lead authority.
+8. A lost response uses the saved request identity and existing uncertain-outcome recovery.
