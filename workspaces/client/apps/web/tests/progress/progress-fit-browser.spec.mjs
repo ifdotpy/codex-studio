@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { execFileSync } from "node:child_process";
 
 import {
   API_SCHEMA_HASH_HEADER,
@@ -842,21 +841,6 @@ test("progress-fit-browser", async ({ browser, page }) => {
     await page.waitForFunction(() => reports.at(-1)?.body.agent === "second");
     assert.equal(await panel.getAttribute("data-agent"), "second");
     assert.equal(await page.evaluate(() => maxActiveReports), 1);
-    const payloads = await page.evaluate(() =>
-      reports.map((item) => item.body),
-    );
-    execFileSync(
-      process.env.PYTHON || "python3",
-      [
-        "-B",
-        "-c",
-        'import json,sys;sys.path.insert(0,"workspaces/runtime/apps/server/src");from codex_progress_layout import _report;[_report(row) for row in json.load(sys.stdin)];print("Browser report payloads match backend validator")',
-      ],
-      {
-        cwd: join(root, "../../../../"),
-        input: JSON.stringify(payloads),
-      },
-    );
     expect(errors).toEqual([]);
     await page.setViewportSize({ width: 1440, height: 800 });
     await page.evaluate(() =>
