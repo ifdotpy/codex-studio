@@ -24,3 +24,16 @@ test("a wait of another epoch or a started turn shows nothing", () => {
   expect(startWaitLabel({ ...queued, status: "running" })).toBeNull();
   expect(startWaitLabel({ ...queued, startWait: null })).toBeNull();
 });
+
+test("the owner reason remains visible without invented account gate details", () => {
+  for (const [reason, label] of [
+    ["disk", "Waiting for free disk space"],
+    ["model_catalog", "Waiting for the model catalog"],
+    ["provider_session", "Waiting for the provider session"],
+    ["dependency", "Waiting for a preparation dependency"],
+  ] as const) {
+    expect(startWaitLabel({ ...queued, startWait: { reason, epoch: 3 } })).toBe(
+      label,
+    );
+  }
+});

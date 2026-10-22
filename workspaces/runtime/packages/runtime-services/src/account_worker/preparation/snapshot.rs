@@ -64,7 +64,10 @@ pub trait VmProviderLaunchResolver: Send + Sync {
     ) -> VmProviderAuthFuture<'_> {
         Box::pin(async {
             Err(WorkerError::PreparationPending(
-                "provider-session/vm-token-refresh".into(),
+                crate::account_worker::PreparationBlock::new(
+                    studio_runtime_schema::agent_progress::StartWaitReason::ProviderSession,
+                    "provider-session/vm-token-refresh",
+                ),
             ))
         })
     }

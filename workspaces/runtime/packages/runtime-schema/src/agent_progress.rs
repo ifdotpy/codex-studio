@@ -1,6 +1,68 @@
 //! Agent-list progress contract. Timestamps use Unix seconds.
 use serde::{Deserialize, Serialize};
 
+/// Persisted wait field shared by admission owners, status, and sync.
+pub const START_WAIT_FIELD: &str = "startWait";
+
+/// The owner currently preventing a turn from starting.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StartWaitReason {
+    Slot,
+    Pause,
+    StartQueue,
+    Disk,
+    ModelCatalog,
+    ProviderSession,
+    Dependency,
+    DispatchPending,
+    Paused,
+    NativeFailure,
+    AccountTransfer,
+}
+
+impl StartWaitReason {
+    pub const ALL: &[Self] = &[
+        Self::Slot,
+        Self::Pause,
+        Self::StartQueue,
+        Self::Disk,
+        Self::ModelCatalog,
+        Self::ProviderSession,
+        Self::Dependency,
+        Self::DispatchPending,
+        Self::Paused,
+        Self::NativeFailure,
+        Self::AccountTransfer,
+    ];
+}
+
+/// One epoch-scoped wait. `until` is a retry deadline in Unix seconds.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentStartWait {
+    pub reason: StartWaitReason,
+    pub epoch: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub running_turns: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_running_turns: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub until: Option<f64>,
+}
+
+impl AgentStartWait {
+    pub fn new(reason: StartWaitReason, epoch: i64) -> Self {
+        Self {
+            reason,
+            epoch,
+            running_turns: None,
+            max_running_turns: None,
+            until: None,
+        }
+    }
+}
+
 /// A managed command currently starting or running for this agent.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -88,6 +150,22 @@ mod tests {
     use super::*;
     #[test]
     fn agent_progress_schema_matches_strict_serde_contract() {
+        for reason in StartWaitReason::ALL {
+            let wait = AgentStartWait::new(*reason, 3);
+            let value = serde_json::to_value(&wait).expect("typed wait");
+            assert_eq!(
+                serde_json::from_value::<AgentStartWait>(value).expect("wait round trip"),
+                wait
+            );
+        }
+        assert!(
+            serde_json::from_str::<AgentStartWait>(r#"{"reason":"unknown","epoch":3}"#).is_err()
+        );
+        assert!(
+            serde_json::from_str::<AgentStartWait>(r#"{"reason":"disk","epoch":3,"guess":true}"#)
+                .is_err()
+        );
+
         let examples = [
             serde_json::to_value(AgentCommandProgress {
                 monitor_id: "m".into(),

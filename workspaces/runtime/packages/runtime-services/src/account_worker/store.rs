@@ -2994,7 +2994,7 @@ pub(super) enum PreparationStep<T> {
 
 /// A pending preparation's reason and the agent rows whose change may clear it.
 pub(super) struct PendingWait {
-    pub reason: String,
+    pub reason: studio_runtime_schema::agent_progress::StartWaitReason,
     pub rows: super::agent_wakes::WakeRows,
 }
 
@@ -3016,7 +3016,7 @@ pub(super) async fn preparation_step<T: Send + 'static>(
     intent: &TurnIntent,
     action: impl Future<Output = Result<T, WorkerError>> + Send,
 ) -> Result<PreparationStep<T>, WorkerError> {
-    let (reason, own_row) = match action.await {
+    let (block, own_row) = match action.await {
         Ok(value) => return Ok(PreparationStep::Ready(value)),
         Err(WorkerError::PreparationPending(reason)) => (reason, false),
         Err(WorkerError::PreparationAwaitsAgent(reason)) => (reason, true),
@@ -3029,6 +3029,8 @@ pub(super) async fn preparation_step<T: Send + 'static>(
         }
         Err(error) => return Err(error),
     };
+    let owner = block.reason;
+    let reason = block.diagnostic;
     // A repeated attempt with the same blocker reads only: the writer opens
     // once per blocker change, so a woken but still blocked preparation
     // leaves the row and its observers untouched.
@@ -3049,18 +3051,21 @@ pub(super) async fn preparation_step<T: Send + 'static>(
                 .ok_or_else(|| invalid(&agent_id))?;
             Ok::<_, WorkerError>((
                 row_id,
-                pending_needs_record(&row, &blocker, &attempt_id, epoch),
+                pending_needs_record(&row, &blocker, owner, &attempt_id, epoch),
             ))
         })
         .await?;
     if needs_record {
-        record_pending(store, intent, reason.clone()).await?;
+        record_pending(store, intent, reason.clone(), owner).await?;
     }
     let rows = match row_id {
         Some(row) if own_row => super::agent_wakes::WakeRows::Own(row),
         _ => super::agent_wakes::WakeRows::Any,
     };
-    Ok(PreparationStep::Pending(PendingWait { reason, rows }))
+    Ok(PreparationStep::Pending(PendingWait {
+        reason: owner,
+        rows,
+    }))
 }
 
 /// Whether the unsubmitted attempt at `epoch` does not record `reason` as its
@@ -3068,13 +3073,19 @@ pub(super) async fn preparation_step<T: Send + 'static>(
 fn pending_needs_record(
     row: &studio_runtime_store::AgentRecord,
     reason: &str,
+    owner: studio_runtime_schema::agent_progress::StartWaitReason,
     attempt_id: &str,
     epoch: i64,
 ) -> bool {
     let Some(attempt) = row.extra.get("startAttempt") else {
         return false;
     };
-    let recorded = attempt.get("prepareError").and_then(Value::as_str) == Some(reason)
+    let wait = studio_runtime_schema::agent_progress::AgentStartWait::new(owner, epoch);
+    let recorded = row
+        .extra
+        .get(studio_runtime_schema::agent_progress::START_WAIT_FIELD)
+        == Some(&json!(wait))
+        && attempt.get("prepareError").and_then(Value::as_str) == Some(reason)
         && (reason != preparation::WORKSPACE_PENDING_REASON
             || row
                 .extra
@@ -3088,6 +3099,7 @@ async fn record_pending(
     store: &RuntimeStore,
     intent: &TurnIntent,
     reason: String,
+    owner: studio_runtime_schema::agent_progress::StartWaitReason,
 ) -> Result<(), WorkerError> {
     let agent_id = intent.agent_id.clone();
     let attempt_id = intent.attempt_id.clone();
@@ -3100,13 +3112,20 @@ async fn record_pending(
     scheduler::lifecycle_transaction_with(store, move |tx| {
         let mut row = AgentRepository::get(tx, &AgentId::from(agent_id.as_str()))?
             .ok_or_else(|| invalid(&agent_id))?;
-        if pending_needs_record(&row, &reason, &attempt_id, epoch)
+        if pending_needs_record(&row, &reason, owner, &attempt_id, epoch)
             && let Some(attempt) = row
                 .extra
                 .get_mut("startAttempt")
                 .and_then(Value::as_object_mut)
         {
             attempt.insert("prepareError".into(), json!(reason));
+            row.extra.insert(
+                studio_runtime_schema::agent_progress::START_WAIT_FIELD.into(),
+                serde_json::to_value(studio_runtime_schema::agent_progress::AgentStartWait::new(
+                    owner, epoch,
+                ))
+                .map_err(StoreError::from)?,
+            );
             if reason == preparation::WORKSPACE_PENDING_REASON {
                 // Python's WorkspaceWaitRecord uses these fields
                 // (codex_workspace_delivery.py:43-46).

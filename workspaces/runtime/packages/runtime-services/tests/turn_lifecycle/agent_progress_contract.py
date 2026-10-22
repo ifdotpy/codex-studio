@@ -35,7 +35,20 @@ def expected_progress(db, agent):
             turns = [turn for turn in records(db, "runtime_execution_runs") if turn.get("agent") == agent["id"]]
             latest = max(turns, key=lambda turn: turn.get("created", 0), default={})
             stall = AgentStall(taskId=task["id"], since=max(task.get("updated", 0), latest.get("finished") or 0)).model_dump()
-    return {"commandProgress": commands, "stall": stall}
+    # The Python oracle predates typed admission waits. Derive the documented
+    # view contract from its independent seed records, preserving hash comparisons.
+    wait = None
+    if agent.get("status") in {"queued", "starting"}:
+        persisted = agent.get("startWait")
+        if persisted and persisted["epoch"] == agent.get("epoch", 0):
+            wait = persisted
+        if agent.get("status") == "queued":
+            reason = ("paused" if not agent.get("autoWake") else
+                      "native_failure" if agent.get("nativeFailureHold") else
+                      "account_transfer" if agent.get("accountTransferId") is not None else None)
+            if reason or wait is None:
+                wait = {"reason": reason or "dispatch_pending", "epoch": agent.get("epoch", 0)}
+    return {"commandProgress": commands, "stall": stall, "startWait": wait}
 
 
 def install_projection_contract(runtime_class):

@@ -511,7 +511,33 @@ async fn hold_agent_turn_with_gate(
                 }
                 _ => false,
             };
-            if changed {
+            use studio_runtime_schema::agent_progress::{
+                AgentStartWait, START_WAIT_FIELD, StartWaitReason,
+            };
+            let previous_wait = agent
+                .extra
+                .get(START_WAIT_FIELD)
+                .cloned()
+                .map(serde_json::from_value::<AgentStartWait>)
+                .transpose()?;
+            let wait_changed = if held {
+                let value =
+                    serde_json::to_value(AgentStartWait::new(StartWaitReason::Disk, epoch))?;
+                if agent.extra.get(START_WAIT_FIELD) != Some(&value) {
+                    agent.extra.insert(START_WAIT_FIELD.into(), value);
+                    true
+                } else {
+                    false
+                }
+            } else if previous_wait
+                .is_some_and(|wait| wait.epoch == epoch && wait.reason == StartWaitReason::Disk)
+            {
+                agent.extra.remove(START_WAIT_FIELD);
+                true
+            } else {
+                false
+            };
+            if changed || wait_changed {
                 studio_runtime_store::AgentRepository::put(tx, &agent)?;
                 crate::agents_create::publish_agent(tx, &agent.value())?;
             }
@@ -720,6 +746,7 @@ mod tests {
             .expect("worker");
         assert_eq!(agent.status, studio_runtime_store::AgentStatus::Queued);
         assert_eq!(agent.epoch, 1);
+        assert_eq!(agent.extra["startWait"], json!({"reason":"disk","epoch":1}));
         assert!(
             agent.extra["error"]
                 .as_str()
@@ -740,6 +767,7 @@ mod tests {
             .expect("read")
             .expect("worker");
         assert!(!agent.extra.contains_key("error"));
+        assert!(!agent.extra.contains_key("startWait"));
         assert_eq!(agent.status, studio_runtime_store::AgentStatus::Queued);
         let after = store
             .read_async("test/storage-queue-after", |tx| {
