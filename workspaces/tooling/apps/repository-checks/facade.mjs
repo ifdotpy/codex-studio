@@ -1224,7 +1224,7 @@ function fastTierCommands(root) {
             "--test",
             "integration",
             "-E",
-            "test(/^project_preparation::/)",
+            "test(/^project_preparation::/) | test(committed_delete_route_succeeds_with_unrelated_failing_cleanup)",
           ],
         ],
       ],
@@ -1233,36 +1233,6 @@ function fastTierCommands(root) {
           "project preparation structural conflicts and idle async answer",
         reason:
           "Check project writes across agent execution changes and real structural conflicts.",
-      },
-    },
-    {
-      item: { name: "studio-runtime-http", ecosystem: "cargo" },
-      label: "Committed delete response witness",
-      commands: [
-        [
-          "cargo",
-          [
-            "nextest",
-            "run",
-            "--locked",
-            "--no-tests",
-            "fail",
-            "--message-format",
-            "libtest-json-plus",
-            "-p",
-            "studio-runtime-http",
-            "--test",
-            "integration",
-            "-E",
-            "test(committed_delete_route_succeeds_with_unrelated_failing_cleanup)",
-          ],
-        ],
-      ],
-      options: {
-        selector:
-          "Committed delete with an unrelated failing workspace cleanup intent",
-        reason:
-          "Return the committed delete result and drain its cleanup without losing another intent's retry state.",
       },
     },
     {
