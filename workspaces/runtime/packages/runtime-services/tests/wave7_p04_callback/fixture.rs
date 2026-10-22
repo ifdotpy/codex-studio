@@ -295,11 +295,40 @@ pub fn assert_writes(before: &Value, store: &RuntimeStore, expected: &Value) {
     }
 }
 
+pub async fn seed_admission(store: &RuntimeStore, before: &Value) {
+    // Current Rust cards always carry a durable admission receipt. Keep the
+    // frozen failure corpus focused on answer delivery rather than Python cutover.
+    let context = CallbackContext {
+        agent: before["agent"].as_str().unwrap().into(),
+        account: before["accountKey"].as_str().unwrap().into(),
+        connection: before["connectionId"].as_str().unwrap().into(),
+        generation: before["supervisor"]["generation"].as_u64().unwrap(),
+        epoch: before["epoch"].as_u64().unwrap(),
+        thread: before["params"]["threadId"].as_str().unwrap().into(),
+        turn: before["params"]["turnId"]
+            .as_str()
+            .unwrap_or_default()
+            .into(),
+    };
+    let identity = ReplyIdentity {
+        context,
+        rpc_id: serde_json::from_value(before["rpcId"].clone()).unwrap(),
+        attempt: String::new(),
+    };
+    let admission_key = format!("{}card", identity.operation_id());
+    let admission = json!({"identity":identity,"card":before["id"],"journalCursor":1});
+    store.transaction(move |tx| {
+        tx.execute("INSERT OR REPLACE INTO runtime_operation_receipts(id,signature,result) VALUES(?1,'provider-callback',?2)", rusqlite::params![admission_key, admission.to_string()])?;
+        Ok(())
+    }).await.unwrap();
+}
+
 /// Import the exact Python-observed before rows for each logical write. The
 /// template contains all corpus identities; each case restores its own baseline.
 pub async fn seed_case(store: &RuntimeStore, case: &Value) {
     put_actor(store, &case["actor"]).await;
     card(store, &case["before"]).await;
+    seed_admission(store, &case["before"]).await;
     let case = case.clone();
     store
         .transaction_with::<_, studio_runtime_store::StoreError>(move |tx| {

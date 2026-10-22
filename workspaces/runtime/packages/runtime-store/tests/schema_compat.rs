@@ -655,7 +655,7 @@ fn sync_seed_rows(path: &Path) -> Vec<String> {
 }
 
 #[tokio::test]
-async fn legacy_event_windows_remain_atomic_when_reopened_by_rust() {
+async fn current_event_windows_remain_atomic_when_reopened_by_rust() {
     let state_directory = temporary_state();
     let state = state_directory.path();
     create_from_live_schema(state);
@@ -664,16 +664,9 @@ async fn legacy_event_windows_remain_atomic_when_reopened_by_rust() {
             .await
             .expect("initial store opens"),
     );
-    let canvas = state.join("canvas.sqlite3");
-    // Simulate a development state that briefly had the Python-only trigger.
-    let database = Connection::open(&canvas).expect("legacy state opens");
-    database
-        .execute_batch("CREATE TRIGGER sync_entity_event_window_v2_INSERT AFTER INSERT ON runtime_events BEGIN SELECT sync_entity_event_window(); END;")
-        .expect("intermediate trigger fixture creates");
-    drop(database);
     let store = RuntimeStore::open(Some(state))
         .await
-        .expect("Rust upgrades the legacy trigger");
+        .expect("Rust reopens the current event-window schema");
     let window = include_str!("../src/sync_schema.sql")
         .lines()
         .find_map(|line| line.strip_prefix("-- event-window-size: "))
@@ -816,7 +809,6 @@ async fn sync_bootstrap_repairs_missing_objects_in_the_committed_live_fixture() 
         "DROP INDEX sync_entities_tombstone_order;
          DROP TABLE sync_versions;
          DROP TRIGGER sync_entity_event_UPDATE;
-         CREATE TRIGGER sync_watch_legacy AFTER INSERT ON runtime_events BEGIN SELECT 1; END;
          CREATE TRIGGER syncXwatchYprotect_rows BEFORE DELETE ON runtime_tasks BEGIN SELECT RAISE(ABORT,'retain task'); END;
          INSERT INTO runtime_tasks(id,record) VALUES('protected-task','{}');
          DELETE FROM sync_entity_meta WHERE key='entity_tombstone_count';
@@ -830,16 +822,6 @@ async fn sync_bootstrap_repairs_missing_objects_in_the_committed_live_fixture() 
     let store = RuntimeStore::open(Some(state))
         .await
         .expect("partially prepared fixture opens");
-    let legacy_watch: i64 = store
-        .test_reader()
-        .expect("reader opens")
-        .query_row(
-            "SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name GLOB 'sync_watch_*'",
-            [],
-            |row| row.get(0),
-        )
-        .expect("legacy watch trigger count reads");
-    assert_eq!(legacy_watch, 0);
     let protected_trigger: i64 = store
         .test_reader()
         .expect("reader opens")
@@ -973,7 +955,6 @@ async fn sync_bootstrap_failure_rolls_back_earlier_ddl_and_seed_rows() {
     let db = Connection::open(&canvas).expect("fixture DB opens");
     db.execute_batch(
         "CREATE TABLE sync_identity (id TEXT PRIMARY KEY);
-         CREATE TRIGGER sync_watch_legacy AFTER INSERT ON runtime_events BEGIN SELECT 1; END;
          CREATE TRIGGER reject_sync_identity BEFORE INSERT ON sync_identity BEGIN SELECT RAISE(ABORT,'fixture failure'); END;",
     )
     .expect("failing seed trigger is created");

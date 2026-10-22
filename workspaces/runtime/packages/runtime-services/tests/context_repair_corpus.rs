@@ -1,11 +1,8 @@
 use serde_json::{Value, json};
 use std::fs;
-use studio_runtime_services::{
-    context_repair::{
-        self, ConnectionIdentity, DeliveredManifestWriter, HistoryReadFuture, HistoryReader,
-        InputDecision, ManifestWriterUnavailable, NativeHistory, RecoverySnapshot, RepairError,
-    },
-    historical_input_receipts::HistoricalBatch,
+use studio_runtime_services::context_repair::{
+    self, ConnectionIdentity, DeliveredManifestWriter, HistoryReadFuture, HistoryReader,
+    InputDecision, ManifestWriterUnavailable, NativeHistory, RecoverySnapshot, RepairError,
 };
 use studio_runtime_store::{ContextRepairRepository, RuntimeStore, Transaction};
 
@@ -32,50 +29,10 @@ fn base_event() -> Value {
 fn recurring_case() -> Value {
     json!({"agent":base_agent(),"events":[base_event()],
         "turns":[{"id":"native-turn","startOutcome":null,"clientUserMessageId":"event","items":[]}],
-        "state":"idle","operations":[],"batches":[]})
-}
-/// A delivered primary input and an uncertain secondary input merged in one
-/// transcript item, with the native turn and journal row that prove delivery.
-fn exact_batch_case() -> Value {
-    let agent = base_agent();
-    let primary = json!({"id":"primary","agent":"agent","epoch":1,"kind":"user","text":"hello",
-        "status":"delivered","created":1.0,"turn_id":"native-turn","error":null});
-    let secondary = json!({"id":"event","agent":"agent","epoch":1,"kind":"work_review",
-        "text":"secondary","status":"uncertain","created":2.0,"turn_id":null,"error":"unknown"});
-    let inputs: Vec<Value> = [&primary, &secondary]
-        .iter()
-        .map(
-            |row| json!({"id":row["id"],"text":row["text"],"at":row["created"],"kind":row["kind"]}),
-        )
-        .collect();
-    let item = json!({"id":"agent:primary","role":"user","text":"hello\nsecondary",
-        "inputs":inputs,"assets":[]});
-    let members: Vec<Value> = [primary, secondary]
-        .into_iter()
-        .map(|mut row| {
-            let mut metadata = json!({"transcriptItemId":"agent:primary","modelEventProjection":1,
-                "contextManifest":{"epoch":["thread",0],"sequence":1,"versions":{}}});
-            if row["id"] == "primary" {
-                metadata["acceptedAt"] = json!(1.5);
-            }
-            row["metadata"] = metadata;
-            row
-        })
-        .collect();
-    let source = json!({"item":item,"row":{"id":"agent:primary","agent":"agent","record":item.to_string()},
-        "fulltext":null,"members":members});
-    let batch = HistoricalBatch::from_records(&agent, &source)
-        .expect("valid synthetic fixture")
-        .expect("captured batch");
-    let turns = json!([{"id":"native-turn","startOutcome":"accepted","clientUserMessageId":"primary",
-        "items":[{"id":"item","type":"userMessage","clientId":"primary","content":batch.params()["input"]}]}]);
-    let operations = json!([{"handle":"account:default",
-        "operation_id":"turn:agent:primary:attempt:00000000-0000-4000-8000-000000000001",
-        "digest":batch.digest(),"native_id":17,"accepted":2.0}]);
-    json!({"agent":agent,"source":source,"turns":turns,"operations":operations,"handle":"account:default"})
+        "state":"idle"})
 }
 fn corpus() -> Value {
-    json!({"recurring":[recurring_case()],"batches":[exact_batch_case()]})
+    json!({"recurring":[recurring_case()]})
 }
 /// Write the single-agent state the adapter tests clone.
 async fn seed_template(root: &std::path::Path) {
@@ -104,10 +61,6 @@ fn snapshot(case: &Value) -> RecoverySnapshot {
             .expect("valid synthetic fixture")
             .clone(),
         identity(),
-        case["batches"]
-            .as_array()
-            .expect("valid synthetic fixture")
-            .clone(),
         None,
     )
     .expect("fixture records validate")
@@ -121,10 +74,6 @@ fn history(case: &Value) -> NativeHistory {
             .expect("valid synthetic fixture")
             .clone(),
         case["state"].as_str().map(str::to_owned),
-        case["operations"]
-            .as_array()
-            .expect("valid synthetic fixture")
-            .clone(),
     )
     .expect("native fixture validates")
 }
@@ -148,7 +97,6 @@ fn context_repair_unwritten_start_outcomes_are_located() {
             "thread".into(),
             case["turns"].as_array().expect("turns").clone(),
             Some("idle".into()),
-            vec![],
         );
         assert!(
             matches!(
@@ -166,8 +114,7 @@ fn context_repair_unwritten_start_outcomes_are_located() {
                 identity(),
                 "thread".into(),
                 vec![turn],
-                Some("idle".into()),
-                vec![]
+                Some("idle".into())
             ),
             Err(RepairError::Invalid("history.turn.startOutcome"))
         ));
@@ -217,7 +164,6 @@ fn context_repair_refuses_changed_scope_and_ambiguous_receipts() {
                 .expect("valid synthetic fixture")
                 .clone(),
             Some("idle".into()),
-            vec![],
         )
         .expect("valid synthetic fixture");
         assert!(
@@ -260,7 +206,6 @@ fn context_repair_malformed_capture_is_located() {
                         .expect("valid synthetic fixture")
                         .clone(),
                     identity(),
-                    vec![],
                     None
                 ),
                 Err(RepairError::Invalid(_))
@@ -493,60 +438,6 @@ async fn context_repair_changed_snapshot_never_acknowledges() {
         assert_eq!(state(&store)["event"]["status"], "uncertain");
         assert!(state(&store)["agent"]["contextRepairWait"].is_object());
     }
-}
-
-#[test]
-fn context_repair_historical_secondary_preserves_newer_pending_input() {
-    let data = corpus();
-    let batch = &data["batches"][0];
-    let mut agent = batch["agent"].clone();
-    agent["startAttempt"]["events"] = json!(["newer"]);
-    agent["startAttempt"]["submitted"] = json!(false);
-    agent["contextRepairWait"]["source"]["attemptId"] = json!("attempt");
-    agent["contextRepairWait"]["events"] = json!(["newer"]);
-    let members = batch["source"]["members"].as_array().expect("members");
-    let events = vec![
-        members
-            .iter()
-            .find(|row| row["id"] == "event")
-            .expect("secondary")
-            .clone(),
-    ];
-    let pending = vec![
-        json!({"id":"newer","agent":"agent","epoch":1,"status":"pending","turn_id":null,"text":"new input"}),
-    ];
-    let snapshot = RecoverySnapshot::from_records(
-        agent.clone(),
-        events.clone(),
-        identity(),
-        vec![batch["source"].clone()],
-        Some(pending),
-    )
-    .expect("legacy checked capture");
-    let history = NativeHistory::from_records(
-        identity(),
-        "thread".into(),
-        batch["turns"].as_array().expect("turns").clone(),
-        Some("idle".into()),
-        batch["operations"].as_array().expect("journal").clone(),
-    )
-    .expect("history");
-    assert_eq!(
-        serde_json::to_value(context_repair::decide(&snapshot, &history)).expect("decisions"),
-        json!([{"id":"event","decision":"delivered","turnId":"native-turn"}])
-    );
-    let stale = RecoverySnapshot::from_records(
-        agent,
-        events,
-        identity(),
-        vec![batch["source"].clone()],
-        None,
-    )
-    .expect("absent pending proof is held");
-    assert!(matches!(
-        &context_repair::decide(&stale, &history)[0],
-        InputDecision::Waiting { .. }
-    ));
 }
 
 #[test]

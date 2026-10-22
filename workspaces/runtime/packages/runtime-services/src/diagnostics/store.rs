@@ -109,30 +109,17 @@ pub fn migration_status(connection: &Connection) -> Result<Value, rusqlite::Erro
         }
     }
     if table_exists(connection, "runtime_payload_migrations")? {
-        let columns = table_columns(connection, "runtime_payload_migrations")?;
-        let row = if columns.contains("status") {
-            connection
-                .query_row(
-                    "SELECT cursor,complete,status,updated,error FROM runtime_payload_migrations WHERE name='payload-v1:tasks'",
-                    [],
-                    |row| Ok((row.get::<_, i64>(0)?, row.get::<_, bool>(1)?, row.get::<_, String>(2)?, row.get::<_, Option<f64>>(3)?, row.get::<_, Option<String>>(4)?)),
-                )
-                .optional()?
-        } else {
-            connection
-                .query_row(
-                    "SELECT cursor,complete FROM runtime_payload_migrations WHERE name='payload-v1:tasks'",
-                    [],
-                    |row| Ok((row.get::<_, i64>(0)?, row.get::<_, bool>(1)?, String::new(), None, None)),
-                )
-                .optional()?
-        };
+        let row = connection.query_row(
+            "SELECT cursor,complete,status,updated,error FROM runtime_payload_migrations WHERE name='payload-v1:tasks'",
+            [],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, bool>(1)?, row.get::<_, String>(2)?, row.get::<_, Option<f64>>(3)?, row.get::<_, Option<String>>(4)?)),
+        ).optional()?;
         let payload = row.map_or_else(
             || json!({"cursor": 0, "complete": false, "status": "pending", "updated": null, "error": null}),
             |(cursor, complete, saved_status, updated, error)| json!({
                 "cursor": cursor,
                 "complete": complete,
-                "status": if saved_status.is_empty() { if complete { "complete" } else { "pending" } } else { saved_status.as_str() },
+                "status": saved_status,
                 "updated": updated,
                 "error": error,
             }),
@@ -162,16 +149,6 @@ pub fn migration_status(connection: &Connection) -> Result<Value, rusqlite::Erro
         );
     }
     Ok(Value::Object(status))
-}
-
-fn table_columns(
-    connection: &Connection,
-    table: &str,
-) -> Result<std::collections::BTreeSet<String>, rusqlite::Error> {
-    // Both identifiers are closed constants passed by this module.
-    let sql = format!("PRAGMA table_info({table})");
-    let mut statement = connection.prepare(&sql)?;
-    statement.query_map([], |row| row.get(1))?.collect()
 }
 
 fn table_exists(connection: &Connection, table: &str) -> Result<bool, rusqlite::Error> {
