@@ -104,6 +104,13 @@ async fn work_commands_match_python_arguments_bounds_and_provenance() {
                 value.as_object_mut().unwrap().remove("created");
                 value.as_object_mut().unwrap().remove("updated");
             }
+            // Rust owns review gates. Python has no gate field; a new work
+            // item has no gate until review. Compare every other stored field.
+            assert_eq!(
+                stored.as_object_mut().unwrap().remove("gate"),
+                Some(Value::Null)
+            );
+            assert!(expected_stored.get("gate").is_none());
             assert_eq!(stored, expected_stored);
         } else {
             let mut actual = record(
