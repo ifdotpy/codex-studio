@@ -28,6 +28,8 @@ const READ_OUTPUT: usize = 64 * 1024;
 /// Seconds of a command that `exec` waits for before it returns a handle
 /// (Python `SYNC_SECONDS`).
 const SYNC_SECONDS: u64 = 5;
+/// Maximum synchronous completion wait, including process startup and pipe drain.
+const SYNC_WAIT_TIMEOUT: Duration = Duration::from_secs(8);
 /// Commands in progress on one server (Python `start`).
 const MAX_ACTIVE: usize = 32;
 /// Input requests of one command (Python `control`).
@@ -312,6 +314,8 @@ pub struct ServerExec {
     restored: tokio::sync::OnceCell<()>,
     /// The last prune of expired commands (Python prunes hourly).
     pruned: Mutex<Option<Instant>>,
+    #[cfg(test)]
+    snapshot_reads: std::sync::atomic::AtomicUsize,
 }
 
 impl ServerExec {
@@ -342,6 +346,8 @@ impl ServerExec {
             active: Mutex::new(HashMap::new()),
             restored: tokio::sync::OnceCell::new(),
             pruned: Mutex::new(None),
+            #[cfg(test)]
+            snapshot_reads: std::sync::atomic::AtomicUsize::new(0),
         });
         let runner = {
             let mut runners = runners
@@ -354,6 +360,9 @@ impl ServerExec {
     }
 
     fn snapshot(&self, key: &str) -> Option<Value> {
+        #[cfg(test)]
+        self.snapshot_reads
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let raw = std::fs::read(job_path(&self.folder, key, ".output.json")).ok()?;
         serde_json::from_slice(&raw).ok()
     }
@@ -693,23 +702,19 @@ impl ServerExec {
             snapshot_dirty: true,
             last_publish: tokio::time::Instant::now(),
         };
-        tokio::spawn(job.run(receiver));
-        if timeout <= SYNC_SECONDS {
-            let deadline = Instant::now() + Duration::from_secs(SYNC_SECONDS + 3);
-            while Instant::now() < deadline {
-                let value = self
-                    .read(principal, &json!({"actor": actor, "handle": key}))
-                    .await?;
-                if !matches!(value["status"].as_str(), Some("starting" | "running")) {
-                    let snapshot = self.snapshot(key);
-                    let final_record = snapshot
-                        .and_then(|snapshot| snapshot.get("record").cloned())
-                        .unwrap_or_else(|| record.clone());
-                    self.save(principal, &actor, key, &final_record).await?;
-                    return Ok(value);
-                }
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            }
+        let completion = tokio::spawn(job.run(receiver));
+        // A timed-out wait or dropped caller detaches the Job; its command timeout
+        // and exec_cancel still stop the process.
+        // Job::finish publishes and saves the final record before this wakes.
+        if timeout <= SYNC_SECONDS
+            && matches!(
+                tokio::time::timeout(SYNC_WAIT_TIMEOUT, completion).await,
+                Ok(Ok(()))
+            )
+        {
+            return self
+                .read(principal, &json!({"actor": actor, "handle": key}))
+                .await;
         }
         Ok(record)
     }

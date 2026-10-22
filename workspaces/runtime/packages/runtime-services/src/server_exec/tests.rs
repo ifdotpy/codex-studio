@@ -126,6 +126,7 @@ async fn snapshot_job(root: &Path) -> Job {
             active: Mutex::new(HashMap::new()),
             restored: tokio::sync::OnceCell::new(),
             pruned: Mutex::new(None),
+            snapshot_reads: std::sync::atomic::AtomicUsize::new(0),
         }),
         principal: "principal".into(),
         actor: "actor".into(),
@@ -288,4 +289,229 @@ fn snapshots_wait_for_the_blocking_pool_without_blocking_the_async_worker() {
         publish.await;
         assert!(path.exists());
     });
+}
+
+struct CompletedEvent(tokio::sync::Notify);
+
+impl ExecEvents for CompletedEvent {
+    fn completed<'a>(
+        &'a self,
+        _: &'a str,
+        _: &'a str,
+        _: &'a Value,
+    ) -> futures_util::future::BoxFuture<'a, ()> {
+        Box::pin(async { self.0.notify_one() })
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn synchronous_start_reads_one_snapshot_after_job_completion() {
+    let root = tempfile::tempdir().unwrap();
+    let mut job = snapshot_job(root.path()).await;
+    let completed = Arc::new(CompletedEvent(tokio::sync::Notify::new()));
+    Arc::get_mut(&mut job.runner).unwrap().events = completed.clone();
+    let runner = job.runner;
+    let payload = json!({
+        "actor": "actor", "cwd": root.path(), "timeout": SYNC_SECONDS,
+        "command": ["/bin/sh", "-c", "printf stdout; printf stderr >&2"]
+    });
+    tokio::time::pause();
+    let start = runner.start("principal", "local", &payload, "waited-command");
+    tokio::pin!(start);
+    let (result, ()) = with_clock_frozen(async {
+        tokio::join!(&mut start, async {
+            completed.0.notified().await;
+            tokio::time::advance(Duration::from_secs(1)).await;
+        })
+    })
+    .await;
+    let result = result.unwrap();
+    assert_eq!(result["status"], "completed");
+    assert_eq!(result["exitCode"], 0);
+    assert_eq!(result["stdout"], "stdout");
+    assert_eq!(result["stderr"], "stderr");
+    assert_eq!(
+        runner
+            .snapshot_reads
+            .load(std::sync::atomic::Ordering::Relaxed),
+        1
+    );
+    assert!(runner.active.lock().unwrap().is_empty());
+}
+
+// Drive real filesystem/process work without allowing Tokio's paused clock to
+// advance automatically while the blocking pool or child process is scheduled.
+async fn with_clock_frozen<F: std::future::Future>(future: F) -> F::Output {
+    const FIXTURE_COMPLETION_TIMEOUT: Duration = Duration::from_secs(10);
+    tokio::pin!(future);
+    let began = Instant::now();
+    loop {
+        assert!(began.elapsed() < FIXTURE_COMPLETION_TIMEOUT);
+        tokio::select! {
+            biased;
+            result = &mut future => return result,
+            () = tokio::task::yield_now() => {}
+        }
+    }
+}
+
+struct HeldCompletion {
+    entered: tokio::sync::Notify,
+    release: tokio::sync::Notify,
+}
+
+impl ExecEvents for HeldCompletion {
+    fn completed<'a>(
+        &'a self,
+        _: &'a str,
+        _: &'a str,
+        _: &'a Value,
+    ) -> futures_util::future::BoxFuture<'a, ()> {
+        Box::pin(async {
+            self.entered.notify_one();
+            self.release.notified().await;
+        })
+    }
+}
+
+async fn held_completion_runner(root: &Path) -> (Arc<ServerExec>, Arc<HeldCompletion>) {
+    let mut job = snapshot_job(root).await;
+    let events = Arc::new(HeldCompletion {
+        entered: tokio::sync::Notify::new(),
+        release: tokio::sync::Notify::new(),
+    });
+    Arc::get_mut(&mut job.runner).unwrap().events = events.clone();
+    (job.runner, events)
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn synchronous_start_wait_timeout_detaches_the_job_without_reading_output() {
+    let root = tempfile::tempdir().unwrap();
+    let (runner, events) = held_completion_runner(root.path()).await;
+    let payload = json!({
+        "actor": "actor", "cwd": root.path(), "timeout": SYNC_SECONDS,
+        "command": ["/bin/sh", "-c", "printf retained"]
+    });
+    tokio::time::pause();
+    let start = runner.start("principal", "local", &payload, "wait-timeout");
+    tokio::pin!(start);
+    with_clock_frozen(async {
+        tokio::select! {
+            result = &mut start => panic!("returned before completion: {result:?}"),
+            () = events.entered.notified() => {}
+        }
+    })
+    .await;
+    assert_eq!(
+        runner
+            .snapshot_reads
+            .load(std::sync::atomic::Ordering::Relaxed),
+        0
+    );
+    tokio::time::advance(SYNC_WAIT_TIMEOUT).await;
+    let result = start.await.unwrap();
+    assert_eq!(result["status"], "starting");
+    assert!(runner.active.lock().unwrap().contains_key("wait-timeout"));
+    events.release.notify_one();
+    with_clock_frozen(async {
+        while !runner.active.lock().unwrap().is_empty() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+    let result = runner
+        .read(
+            "principal",
+            &json!({"actor": "actor", "handle": "wait-timeout"}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(result["status"], "completed");
+    assert_eq!(result["stdout"], "retained");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn synchronous_start_lost_response_keeps_the_job_and_rejects_reexecution() {
+    let root = tempfile::tempdir().unwrap();
+    let (runner, events) = held_completion_runner(root.path()).await;
+    let payload = json!({
+        "actor": "actor", "cwd": root.path(), "timeout": SYNC_SECONDS,
+        "command": ["/bin/sh", "-c", "printf retained"]
+    });
+    tokio::time::pause();
+    {
+        let start = runner.start("principal", "local", &payload, "lost-response");
+        tokio::pin!(start);
+        with_clock_frozen(async {
+            tokio::select! {
+                result = &mut start => panic!("returned before completion: {result:?}"),
+                () = events.entered.notified() => {}
+            }
+        })
+        .await;
+        // Drop the caller while Job::finish is still delivering its completion.
+    }
+    assert!(runner.active.lock().unwrap().contains_key("lost-response"));
+    events.release.notify_one();
+    with_clock_frozen(async {
+        while !runner.active.lock().unwrap().is_empty() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+    let result = runner
+        .read(
+            "principal",
+            &json!({"actor": "actor", "handle": "lost-response"}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(result["status"], "completed");
+    assert_eq!(result["stdout"], "retained");
+    assert!(matches!(
+        runner
+            .start("principal", "local", &payload, "lost-response")
+            .await,
+        Err(ExecError::Failed(_))
+    ));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn synchronous_start_explicit_cancel_still_stops_the_job() {
+    let root = tempfile::tempdir().unwrap();
+    let runner = snapshot_job(root.path()).await.runner;
+    let payload = json!({
+        "actor": "actor", "cwd": root.path(), "timeout": SYNC_SECONDS,
+        "command": ["/bin/sh", "-c", "read input"]
+    });
+    tokio::time::pause();
+    let (result, cancelled) = with_clock_frozen(async {
+        tokio::join!(
+            runner.start("principal", "local", &payload, "cancel-waited"),
+            async {
+                let fence = job_path(&runner.folder, "cancel-waited", ".started");
+                while !fence.exists() {
+                    tokio::task::yield_now().await;
+                }
+                runner
+                    .control(
+                        "principal",
+                        "exec_cancel",
+                        &json!({"actor": "actor", "handle": "cancel-waited"}),
+                        "cancel-request",
+                    )
+                    .await
+            }
+        )
+    })
+    .await;
+    assert_eq!(cancelled.unwrap()["accepted"], true);
+    let result = result.unwrap();
+    assert_eq!(result["status"], "cancelled");
+    assert_eq!(result["timedOut"], false);
+    assert!(runner.active.lock().unwrap().is_empty());
 }

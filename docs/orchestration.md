@@ -241,6 +241,9 @@ Server command output snapshots follow one flow:
 4. Snapshot serialization, atomic replacement, and fsync run on the labeled
    blocking pool. Each write finishes before another begins.
 5. The final snapshot finishes before the final record is saved and released.
+6. A short synchronous request waits for that Job to finish, then reads output once.
+   Its bounded wait or a lost response leaves the Job running; cancellation remains
+   an explicit control request.
 
 Inbox, workspace agent choices, and attention counts use the same lead tree.
 Two chats remain separate even when they use the same account or project folder.
