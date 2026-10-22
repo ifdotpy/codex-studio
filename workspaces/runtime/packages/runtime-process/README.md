@@ -32,19 +32,21 @@
 
 ## Process supervisor handshake contract
 
-Source of truth: [`Supervisor.handle`](../../../apps/server/src/codex_process_supervisor.py#L663),
-the connection handshake and frame loop in the same module, and its Python
-caller [`ProcessProxy`](../../../apps/server/src/codex_process_supervisor.py#L1468).
-The wire uses newline-delimited JSON over a Unix domain socket (Windows named
-pipe in the Python implementation). The supervisor is a separate long-lived
-process managed by [`codex_supervisor_service.py`](../../../apps/server/src/codex_supervisor_service.py#L232),
-so it retains child ownership across backend restarts. The first client frame is
-`{protocol: PROCESS_SUPERVISOR_PROTOCOL_VERSION, stateDir, backendId}`; the
-server replies `{ok: true}`. The version is owned by
-[`codex_shared_values.py`](../../../apps/server/src/codex_shared_values.py) and
-generated for this crate. A wrong protocol or state directory is rejected with
-an `error` frame before requests are accepted. Operator CLI connections use the
-same protocol field with `{stateDir, operator: true}`.
+Source of truth: [the supervisor daemon](src/supervisor_daemon.rs) and
+[its shared contract](src/supervisor_contract.rs). The wire uses
+newline-delimited JSON over a Unix domain socket. The independent Rust process
+retains child ownership across backend restarts. `just install` installs its
+command link. The backend user service uses
+`studio-runtime-server service install|status|uninstall`; those commands never
+stop the supervisor or restart active work. See the
+[operator commands](../../apps/runtime-server/README.md#command-and-user-service-installation).
+
+The compatibility handshake starts with
+`{protocol: PROCESS_SUPERVISOR_PROTOCOL_VERSION, stateDir, backendId}` and
+replies `{ok: true}`. The version is owned by
+[supervisor_contract.rs](src/supervisor_contract.rs). A wrong protocol or state
+directory is rejected before requests are accepted. Operator connections use
+the protocol field with `{stateDir, operator: true}`.
 
 The Rust provider factory uses a separate v2 handshake and requires the daemon
 to echo protocol 2. It does not fall back to v1. V2 `nextBatch` uses the shared
