@@ -111,12 +111,41 @@ pub enum WriteOutcome {
     NotSent,
     Unknown,
 }
+
+/// Why a request is proven not written to the provider. The account worker
+/// names it in the error of the start it settles.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NotSentCause {
+    /// The reply deadline of the request elapsed before the session wrote it.
+    DeadlineExpired,
+    /// The provider transport refused the write.
+    TransportRefused,
+    /// The provider session ended before it wrote the request.
+    SessionEnded,
+    /// The session refused the request before admission (not ready or invalid).
+    Refused,
+}
+
+impl NotSentCause {
+    /// Plain description for a stored start error.
+    pub fn describe(self) -> &'static str {
+        match self {
+            Self::DeadlineExpired => "its reply deadline elapsed before Studio wrote it",
+            Self::TransportRefused => "the provider transport refused the write",
+            Self::SessionEnded => "the provider session ended before Studio wrote it",
+            Self::Refused => "the provider session refused it before admission",
+        }
+    }
+}
+
 pub enum SessionOutcome {
     Write {
         operation_id: OperationId,
         ticket: Option<RequestTicket>,
         outcome: WriteOutcome,
         recovery: Option<RecoveredRequest>,
+        /// Set exactly when `outcome` is `NotSent`.
+        not_sent: Option<NotSentCause>,
     },
     Resolved {
         ticket: RequestTicket,
@@ -673,7 +702,12 @@ impl SessionTask {
         // owned here; preserve positive evidence without invoking protocol code.
         for action in std::mem::take(&mut self.retained.actions) {
             if let Action::Resolve { ticket, outcome } = action {
-                self.retain_resolution(ticket, outcome, self.retained.pending.is_none());
+                self.retain_resolution(
+                    ticket,
+                    outcome,
+                    self.retained.pending.is_none(),
+                    NotSentCause::SessionEnded,
+                );
             }
         }
         let mut undelivered: Vec<_> = self.retained.pending.take().into_iter().collect();
@@ -696,6 +730,7 @@ impl SessionTask {
                 ticket: None,
                 outcome: WriteOutcome::NotSent,
                 recovery: None,
+                not_sent: Some(NotSentCause::SessionEnded),
             });
         }
         self.publish(&adapter);
@@ -727,6 +762,7 @@ impl SessionTask {
                     ticket: Some(record.ticket.clone()),
                     outcome: WriteOutcome::NotSent,
                     recovery: None,
+                    not_sent: Some(NotSentCause::SessionEnded),
                 });
             } else if !record.unknown_reported {
                 outcomes.push(SessionOutcome::Resolved {
@@ -1157,7 +1193,12 @@ impl SessionTask {
                     _ => return Err(SessionTaskError::Invalid),
                 },
                 Action::Resolve { ticket, outcome } => {
-                    if self.retain_resolution(ticket.clone(), outcome, control) {
+                    if self.retain_resolution(
+                        ticket.clone(),
+                        outcome,
+                        control,
+                        NotSentCause::DeadlineExpired,
+                    ) {
                         let released = self.state.reject_unsent(&ticket)?;
                         self.retained.actions.extend(released);
                     }
@@ -1174,11 +1215,15 @@ impl SessionTask {
 
     /// Shared by ordinary transitions and unwind cleanup. Returns whether pure
     /// state should retire an unsent request; cleanup never executes that step.
+    /// `not_sent_cause` names why an unknown outcome of a still queued request
+    /// proves it unsent: an ordinary transition resolves it only at its
+    /// deadline, cleanup only because the session ended.
     fn retain_resolution(
         &mut self,
         ticket: RequestTicket,
         outcome: RequestOutcome,
         control: bool,
+        not_sent_cause: NotSentCause,
     ) -> bool {
         let Some(record) = self.records.get_mut(&ticket.id) else {
             return false;
@@ -1190,6 +1235,7 @@ impl SessionTask {
                     ticket: Some(ticket.clone()),
                     outcome: WriteOutcome::NotSent,
                     recovery: None,
+                    not_sent: Some(not_sent_cause),
                 }
             } else {
                 if record.unknown_reported {
@@ -1285,6 +1331,8 @@ impl SessionTask {
                 ticket: ticket.clone(),
                 outcome,
                 recovery,
+                not_sent: (outcome == WriteOutcome::NotSent)
+                    .then_some(NotSentCause::TransportRefused),
             },
         );
         if let Some(ticket) = &ticket {

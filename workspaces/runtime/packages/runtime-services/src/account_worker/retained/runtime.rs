@@ -214,6 +214,11 @@ impl Worker {
                     ticket: Some(ticket),
                     outcome: WriteOutcome::NotSent,
                     recovery: None,
+                    not_sent: Some(if self.closing {
+                        NotSentCause::SessionEnded
+                    } else {
+                        NotSentCause::DeadlineExpired
+                    }),
                 },
                 0,
                 journal_actor_id.as_deref(),
@@ -229,7 +234,8 @@ impl Worker {
             })
             .await
         {
-            let outcome = if definite_rejection(&error) {
+            let not_sent = definite_rejection(&error).then_some(NotSentCause::Refused);
+            let outcome = if not_sent.is_some() {
                 WriteOutcome::NotSent
             } else {
                 WriteOutcome::Unknown
@@ -240,6 +246,7 @@ impl Worker {
                     ticket: Some(ticket),
                     outcome,
                     recovery: None,
+                    not_sent,
                 },
                 0,
                 journal_actor_id.as_deref(),

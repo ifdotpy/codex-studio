@@ -105,6 +105,7 @@ pub struct SchedulerRepository;
 
 mod idle_unload;
 mod lifecycle;
+pub use lifecycle::START_RETURN_LIMIT;
 mod selection;
 mod steer;
 use lifecycle::*;

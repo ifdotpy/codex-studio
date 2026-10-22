@@ -3,8 +3,8 @@
 use crate::{
     notification_dispatch::NotificationStreamBuffer,
     provider_session_task::{
-        RecoveredRequest, RequestSpec, SessionControl, SessionEvent, SessionExit, SessionHandle,
-        SessionOutcome, SessionTaskConfig, SessionTaskError, WriteOutcome,
+        NotSentCause, RecoveredRequest, RequestSpec, SessionControl, SessionEvent, SessionExit,
+        SessionHandle, SessionOutcome, SessionTaskConfig, SessionTaskError, WriteOutcome,
     },
     scheduler::{self, TurnIntent, TurnStart},
 };
@@ -2286,7 +2286,16 @@ impl Worker {
             Err(error) => {
                 // Only the session's explicit pre-admission rejection proves NotSent.
                 // A failure while draining unrelated evidence may follow an enqueued write.
-                let outcome = if definite_rejection(&error) {
+                let not_sent = definite_rejection(&error).then_some(NotSentCause::Refused);
+                if not_sent.is_some() {
+                    eprintln!(
+                        "provider session refused {} before admission; account={} generation={}: {error}",
+                        method.as_str(),
+                        self.account,
+                        self.generation.0
+                    );
+                }
+                let outcome = if not_sent.is_some() {
                     WriteOutcome::NotSent
                 } else {
                     WriteOutcome::Unknown
@@ -2302,6 +2311,7 @@ impl Worker {
                         }),
                         outcome,
                         recovery: None,
+                        not_sent,
                     }],
                 })
                 .await?;
@@ -2331,6 +2341,7 @@ impl Worker {
                 }),
                 outcome: WriteOutcome::NotSent,
                 recovery: None,
+                not_sent: Some(NotSentCause::SessionEnded),
             }],
         })
         .await
@@ -2392,15 +2403,17 @@ impl Worker {
         // A worker that began closing during the durable boundary never writes:
         // that proves the request not sent, so the input returns to the queue.
         let outcome = if self.closing {
-            Some(WriteOutcome::NotSent)
+            Some((WriteOutcome::NotSent, Some(NotSentCause::SessionEnded)))
         } else {
             match self.drive(control.submit(prepared)).await {
                 Ok(_) => None,
-                Err(error) if definite_rejection(&error) => Some(WriteOutcome::NotSent),
-                Err(_) => Some(WriteOutcome::Unknown),
+                Err(error) if definite_rejection(&error) => {
+                    Some((WriteOutcome::NotSent, Some(NotSentCause::Refused)))
+                }
+                Err(_) => Some((WriteOutcome::Unknown, None)),
             }
         };
-        if let Some(outcome) = outcome {
+        if let Some((outcome, not_sent)) = outcome {
             self.event(SessionEvent {
                 journal: None,
                 outcomes: vec![SessionOutcome::Write {
@@ -2412,6 +2425,7 @@ impl Worker {
                     }),
                     outcome,
                     recovery: None,
+                    not_sent,
                 }],
             })
             .await?;
