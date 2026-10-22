@@ -19,6 +19,10 @@ build-release-binaries dir="":
 verify-release-binaries dir="":
     @node workspaces/client/apps/desktop/release-binaries.mjs verify {{quote(dir)}}
 
+[doc("Deliver a commit (default HEAD) to the live server of this Linux host: source snapshot release, `current` link, systemd restart, automatic rollback when unhealthy. The only way to change the live server binary.")]
+deliver-server commit="HEAD":
+    @workspaces/runtime/apps/runtime-server/deliver.sh {{quote(commit)}}
+
 [doc("Check the package signing setup in seconds: configuration, file modes, keychain unlock, identity. Prints PASS or the exact FAIL reason, never the password. Run it before package-native.")]
 signing-check:
     @node workspaces/client/apps/desktop/signing-check.mjs
