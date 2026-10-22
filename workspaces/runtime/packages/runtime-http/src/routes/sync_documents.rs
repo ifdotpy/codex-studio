@@ -177,7 +177,7 @@ pub(crate) async fn pull(
                         }
                         let payload: Value = serde_json::from_str(&document.payload)
                             .map_err(|_| invalid_stored_draft(&document.id))?;
-                        validate_draft_value(&validators, &document.id, &payload)
+                        validate_draft_value(&document.id, &payload)
                             .map_err(|_| invalid_stored_draft(&document.id))?;
                     }
                     let checkpoint = documents.last().map_or(after, |document| document.sequence);
@@ -583,7 +583,7 @@ pub(crate) async fn push_drafts(
         if !validators.validate_stored("DraftPayload", &payload) {
             return Err(draft_validation_error(index, "newDocumentState", "payload"));
         }
-        sync_policy::validate_draft(&row.new_document_state.id, &payload)
+        validate_draft_value(&row.new_document_state.id, &payload)
             .map_err(|_| draft_validation_error(index, "newDocumentState", "id"))?;
         let assumed = row
             .assumed_master_state
@@ -598,15 +598,13 @@ pub(crate) async fn push_drafts(
                 }
                 let payload: Value = serde_json::from_str(&assumed.payload)
                     .map_err(|_| draft_validation_error(index, "assumedMasterState", "payload"))?;
-                if !validators.validate_stored("DraftPayload", &payload) {
+                if validate_draft_value(&row.new_document_state.id, &payload).is_err() {
                     return Err(draft_validation_error(
                         index,
                         "assumedMasterState",
                         "payload",
                     ));
                 }
-                sync_policy::validate_draft(&row.new_document_state.id, &payload)
-                    .map_err(|_| draft_validation_error(index, "assumedMasterState", "payload"))?;
                 Ok::<_, ApiError>((payload, assumed.deleted.unwrap_or(false)))
             })
             .transpose()?;
@@ -620,18 +618,12 @@ pub(crate) async fn push_drafts(
     }
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
     let wake = state.event_wake.clone();
-    let validators = validators.clone();
-    let result = sync_documents::push_drafts(
-        &store,
-        writes,
-        move |payload| validators.validate_stored("DraftPayload", payload),
-        move || wake.notify_one(),
-    )
-    .await
-    .map_err(|error| match error {
-        sync_documents::DraftPushError::InvalidStored { id } => invalid_stored_draft(&id),
-        sync_documents::DraftPushError::Store(_) => ApiError::internal(),
-    })?;
+    let result = sync_documents::push_drafts(&store, writes, move || wake.notify_one())
+        .await
+        .map_err(|error| match error {
+            sync_documents::DraftPushError::InvalidStored { id } => invalid_stored_draft(&id),
+            sync_documents::DraftPushError::Store(_) => ApiError::internal(),
+        })?;
     Ok(Json(super::generated_json::<
         Vec<crate::generated::SyncDocument>,
     >(Value::Array(
@@ -898,16 +890,10 @@ fn invalid_stored_draft(id: &str) -> ApiError {
     ApiError::invalid_stored("drafts", id)
 }
 
-fn validate_draft_value(
-    validators: &crate::validation::Registry,
-    id: &str,
-    payload: &Value,
-) -> Result<(), ()> {
-    validators
-        .validate_stored("DraftPayload", payload)
-        .then_some(())
-        .ok_or(())?;
-    sync_policy::validate_draft(id, payload).map_err(|_| ())
+fn validate_draft_value(id: &str, payload: &Value) -> Result<(), ()> {
+    studio_runtime_schema::drafts::DraftVersion::from_stored_value(id, payload.clone())
+        .map(|_| ())
+        .map_err(|_| ())
 }
 
 fn query_integer(query: &QueryParams, name: &str, default: i64) -> Result<i64, ApiError> {
@@ -939,6 +925,91 @@ mod vault_maintenance_tests {
 
     fn response_value(response: &SyncPullResponseBody) -> Value {
         serde_json::to_value(response).expect("generated sync response serializes")
+    }
+
+    #[tokio::test]
+    async fn stored_legacy_drafts_remain_readable_and_replaceable() {
+        use axum::{
+            body::{Body, to_bytes},
+            extract::ConnectInfo,
+            http::{Request, StatusCode},
+        };
+        use tower::ServiceExt;
+        let directory = tempfile::tempdir().unwrap();
+        let store = Arc::new(RuntimeStore::open(Some(directory.path())).await.unwrap());
+        let legacy = json!({"device":"phone","session":"chat","text":"x","updated":1.5});
+        let raw = legacy.to_string();
+        let original = raw.clone();
+        store
+            .transaction(move |tx| {
+                SyncDocumentsRepository::put_draft(tx, "phone:chat", &raw, false).map(|_| ())
+            })
+            .await
+            .unwrap();
+        let app = crate::router::router(crate::router::HttpState::new(
+            "token".into(),
+            "workspace".into(),
+            directory.path().display().to_string(),
+            4321,
+            None,
+            Some(store.clone()),
+            None,
+        ))
+        .unwrap();
+        let request = |method: &str, uri: &str, body: Value| {
+            let mut request = Request::builder()
+                .method(method)
+                .uri(uri)
+                .header("host", "127.0.0.1:4321")
+                .header("origin", "http://127.0.0.1:4321")
+                .header("x-canvas-token", "token")
+                .header("x-canvas-workspace", "workspace")
+                .header("content-type", "application/json")
+                .body(if method == "GET" {
+                    Body::empty()
+                } else {
+                    Body::from(body.to_string())
+                })
+                .unwrap();
+            request.extensions_mut().insert(ConnectInfo(
+                "127.0.0.1:4321".parse::<std::net::SocketAddr>().unwrap(),
+            ));
+            request
+        };
+        let response = app
+            .clone()
+            .oneshot(request("GET", "/api/sync/pull?scope=drafts", Value::Null))
+            .await
+            .unwrap();
+        let status = response.status();
+        let body: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+                .unwrap();
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["documents"][0]["payload"], original);
+        let canonical =
+            json!({"id":"phone:chat","device":"phone","session":"chat","text":"next","updated":2});
+        let rows = json!({"rows":[{"newDocumentState":{"id":"phone:chat","payload":canonical.to_string(),"seq":0,"deleted":false},
+            "assumedMasterState":{"id":"phone:chat","payload":original,"seq":1,"deleted":false}}]});
+        let response = app
+            .oneshot(request("POST", "/api/sync/drafts", rows))
+            .await
+            .unwrap();
+        let status = response.status();
+        let body: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+                .unwrap();
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body, json!([]));
+        let stored = store
+            .transaction(|tx| SyncDocumentsRepository::draft(tx, "phone:chat"))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(&stored.payload).unwrap(),
+            canonical
+        );
     }
 
     #[test]

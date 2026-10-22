@@ -33,7 +33,9 @@ binary (`src/contracts.rs`) renders their TypeScript, Swift, and VM guest copies
 and the web API types of `runtime-http/openapi.json`, and holds the committed
 OpenAPI and persisted-state schemas to these owners. Refresh the copies with
 `pnpm run contracts:generate`; `pnpm run contracts:check` rejects drift. The
-JSON schemas in `src/schemas` are committed source.
+JSON schemas in `src/schemas` are committed source. Draft payload schemas and
+`web/src/generated/rustOwned.ts` are generated from the client-domain Rust owner
+with schemars, through the same contract commands.
 
 `DeliveryMoment` controls when user sends and agent messages or sends may reach
 the recipient. Serialization always uses the canonical spelling. Request and

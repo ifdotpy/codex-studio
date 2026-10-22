@@ -7,6 +7,7 @@
   "ignorePatterns": [
     "workspaces/runtime/apps/layr/",
     "workspaces/runtime/apps/layr-desk/",
-    "workspaces/runtime/packages/runtime-http/openapi.json"
+    "workspaces/runtime/packages/runtime-http/openapi.json",
+    "workspaces/runtime/packages/runtime-http/draft-payload.schema.json"
   ]
 }

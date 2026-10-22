@@ -236,3 +236,22 @@ type AccountProvider =
 const accountProvider: Assert<Equal<AccountProvider, "codex" | "claude">> =
   true;
 void accountProvider;
+
+// Draft wire properties come from the Rust owner, including required updated.
+type DraftContract = import("./generated/rustOwned").DraftVersion;
+const draftContract: DraftContract = {
+  id: "phone:chat",
+  session: "chat",
+  device: "phone",
+  text: "x",
+  updated: 1,
+};
+// @ts-expect-error A new draft must carry its version timestamp.
+const missingDraftTimestamp: DraftContract = {
+  id: "phone:chat",
+  session: "chat",
+  device: "phone",
+  text: "x",
+};
+void draftContract;
+void missingDraftTimestamp;

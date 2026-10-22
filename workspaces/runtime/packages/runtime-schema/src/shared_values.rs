@@ -27,7 +27,7 @@ pub const NATIVE_TERMINAL_ITEMS_PER_PAGE: usize = 100;
 pub const NATIVE_TERMINAL_MAX_PAGES: usize = 100;
 
 /// Largest integer a JavaScript number holds exactly (2^53 - 1).
-pub const MAX_SAFE_INTEGER: i64 = 9007199254740991;
+pub use studio_client_domain::MAX_SAFE_INTEGER;
 /// Largest user attachment, in bytes.
 pub const MAX_USER_ATTACHMENT_BYTES: usize = 20971520;
 /// Maximum attachment items admitted across one provider turn's input batch.

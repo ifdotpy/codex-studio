@@ -6,8 +6,9 @@
 //! committed source; `check_schema_parity` holds them to the Rust owners.
 
 use std::fmt::Write as _;
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use serde_json::Value;
 
@@ -506,14 +507,37 @@ fn check_delivery_parity(openapi: &Value) -> Result<(), String> {
     clippy::disallowed_methods,
     reason = "contract generator runs on the synchronous studio-contracts CLI thread, outside Tokio"
 )]
-fn api_types(root: &Path) -> Result<String, String> {
+fn api_types(root: &Path, rust_owned: Option<&Value>) -> Result<String, String> {
     let node = std::env::var(NODE_ENVIRONMENT).unwrap_or_else(|_| "node".into());
-    let output = Command::new(&node)
-        .arg(root.join(API_TYPES_SCRIPT))
+    let mut command = Command::new(&node);
+    command.arg(root.join(API_TYPES_SCRIPT)).current_dir(root);
+    if let Some(document) = rust_owned {
+        command.arg("--rust-owned").stdin(Stdio::piped());
+        let mut child = command
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|error| format!("cannot start {node}: {error}"))?;
+        child
+            .stdin
+            .take()
+            .ok_or("missing schema input")?
+            .write_all(document.to_string().as_bytes())
+            .map_err(|error| error.to_string())?;
+        return read_api_types(
+            child
+                .wait_with_output()
+                .map_err(|error| error.to_string())?,
+        );
+    }
+    let output = command
         .arg(root.join(OPENAPI_PATH))
-        .current_dir(root)
         .output()
         .map_err(|error| format!("cannot start {node}: {error}"))?;
+    Ok(read_api_types(output)? + &api_types_tail())
+}
+
+fn read_api_types(output: std::process::Output) -> Result<String, String> {
     if !output.status.success() {
         return Err(format!(
             "{API_TYPES_SCRIPT} failed: {}",
@@ -522,7 +546,7 @@ fn api_types(root: &Path) -> Result<String, String> {
     }
     let body = String::from_utf8(output.stdout)
         .map_err(|error| format!("{API_TYPES_SCRIPT} printed invalid UTF-8: {error}"))?;
-    Ok(body + &api_types_tail())
+    Ok(body)
 }
 
 /// Render every contract file. `with_api_types` also runs Node for `api.ts`.
@@ -579,10 +603,24 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
             text: linux_vm_swift(),
         },
     ];
+    let draft_schema = studio_client_domain::drafts::schema().to_value();
+    rendered.push(Rendered {
+        path: "workspaces/runtime/packages/runtime-http/draft-payload.schema.json".into(),
+        text: serde_json::to_string_pretty(&draft_schema).map_err(|error| error.to_string())?
+            + "\n",
+    });
     if with_api_types {
+        let document = serde_json::json!({
+            "openapi":"3.1.0", "info":{"title":"Rust-owned contracts","version":"1"},
+            "paths":{}, "components":{"schemas":{"DraftVersion":draft_schema}}
+        });
+        rendered.push(Rendered {
+            path: web("rustOwned.ts"),
+            text: api_types(root, Some(&document))?,
+        });
         rendered.push(Rendered {
             path: web("api.ts"),
-            text: api_types(root)?,
+            text: api_types(root, None)?,
         });
     }
     Ok(rendered)

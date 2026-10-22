@@ -220,6 +220,13 @@ Native composer draft synchronization follows this flow:
 3. Combine simultaneous triggers and retain one follow-up when notified during a refresh.
 4. Keep idle windows quiet; closing the view removes listeners and pending refreshes.
 
+Draft payload compatibility follows this flow:
+
+1. Derive the server schema and web type from [DraftVersion](../workspaces/client/packages/client-domain/src/drafts.rs) with `pnpm run contracts:generate`.
+2. Validate new pushes against that schema; require a JavaScript-safe integer timestamp.
+3. Read historical drafts through the same Rust owner: missing or null timestamps become zero, and fractional timestamps are floored.
+4. Preserve stored payload bytes; read normalization never rewrites or drops a draft. `pnpm run contracts:check` rejects generated drift.
+
 Deleting an agent chat removes it from the user list until the next agent message. Its participants retain their history.
 Deletion stops the selected agent and its descendants and removes them from the interface.
 Stored transcripts and project files remain on disk. Deleted agents cannot resume from late events or message retries.
