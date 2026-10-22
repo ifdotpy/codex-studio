@@ -937,32 +937,81 @@ fn copy_if(record: &Value, output: &mut serde_json::Map<String, Value>, to: &str
     }
 }
 
-fn is_descendant(tx: &Transaction<'_>, actor: &Actor, target: &str) -> Result<bool, Error> {
-    let records = studio_runtime_store::system_reads::all(tx, "runtime_agents")?;
-    let mut current = records
-        .iter()
-        .find(|record| record.get("id").and_then(Value::as_str) == Some(target));
-    let mut visited = 0usize;
-    while let Some(record) = current {
-        if record.get("rootId").and_then(Value::as_str) != Some(actor.root_id.as_str()) {
-            return Ok(false);
-        }
-        let parent = record.get("parentId").and_then(Value::as_str);
-        if parent == Some(actor.id.as_str()) {
-            return Ok(true);
-        }
-        let Some(parent) = parent else {
-            return Ok(false);
-        };
-        visited += 1;
-        if visited > records.len() {
-            return Err(Error::Invalid("Invalid stored agent ancestry"));
-        }
-        current = records
-            .iter()
-            .find(|candidate| candidate.get("id").and_then(Value::as_str) == Some(parent));
+/// The routing aliases and federation addresses are chat targets, never agents.
+pub(crate) fn is_agent_target(target: &str) -> bool {
+    !matches!(target, "parent" | "lead" | "broadcast" | "all" | "user")
+        && !target.starts_with("remote:")
+        && !target.starts_with("federated:")
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum AgentAncestry {
+    Descendant,
+    Unrelated,
+    Cycle,
+}
+
+/// Read only checked rows on the target's parent chain, by their indexed ID.
+/// The caller's authenticated epoch remains the responsibility of its snapshot.
+pub(crate) fn agent_ancestry(
+    tx: &Transaction<'_>,
+    sender: &str,
+    target: &str,
+) -> Result<AgentAncestry, Error> {
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct ParentEdge {
+        root_id: String,
+        parent_id: Option<String>,
     }
-    Ok(false)
+
+    fn edge(tx: &Transaction<'_>, id: &str) -> Result<Option<ParentEdge>, Error> {
+        studio_runtime_store::system_reads::get(tx, "runtime_agents", id)?
+            .map(|value| {
+                serde_json::from_value(value).map_err(|_| {
+                    Error::Store(studio_runtime_store::system_reads::invalid(
+                        "runtime_agents",
+                        id,
+                    ))
+                })
+            })
+            .transpose()
+    }
+
+    if !is_agent_target(target) {
+        return Ok(AgentAncestry::Unrelated);
+    }
+    let Some(sender_edge) = edge(tx, sender)? else {
+        return Ok(AgentAncestry::Unrelated);
+    };
+    let mut current = target.to_owned();
+    let mut visited = std::collections::HashSet::new();
+    loop {
+        if !visited.insert(current.clone()) {
+            return Ok(AgentAncestry::Cycle);
+        }
+        let Some(record) = edge(tx, &current)? else {
+            return Ok(AgentAncestry::Unrelated);
+        };
+        if record.root_id != sender_edge.root_id {
+            return Ok(AgentAncestry::Unrelated);
+        }
+        let Some(parent) = record.parent_id else {
+            return Ok(AgentAncestry::Unrelated);
+        };
+        if parent == sender {
+            return Ok(AgentAncestry::Descendant);
+        }
+        current = parent;
+    }
+}
+
+fn is_descendant(tx: &Transaction<'_>, actor: &Actor, target: &str) -> Result<bool, Error> {
+    match agent_ancestry(tx, &actor.id, target)? {
+        AgentAncestry::Descendant => Ok(true),
+        AgentAncestry::Unrelated => Ok(false),
+        AgentAncestry::Cycle => Err(Error::Invalid("Invalid stored agent ancestry")),
+    }
 }
 
 fn field<'a>(value: &'a Value, name: &str) -> Result<&'a str, Error> {
