@@ -1031,12 +1031,15 @@ async function finishTurn(s, active, result, error) {
     turn.items[0]?.type === "userMessage" &&
     typeof turn.clientUserMessageId === "string" &&
     turn.clientUserMessageId.length > 0 &&
-    active.input.values.some(
-      (input) =>
-        input.studioInputIdentity === turn.clientUserMessageId &&
-        input.uuid === turn.items[0].nativeId &&
-        input.session_id === (s.nativeId || s.id),
-    )
+    // Stop can withdraw the initial input before preparation fails. Its
+    // cancellation receipt preserves the proof that Claude did not read it.
+    (turn.items[0].deliveryStatus === "cancelled" ||
+      active.input.values.some(
+        (input) =>
+          input.studioInputIdentity === turn.clientUserMessageId &&
+          input.uuid === turn.items[0].nativeId &&
+          input.session_id === (s.nativeId || s.id),
+      ))
   ) {
     // InputQueue removes the message before yielding it to the SDK.
     turn.startOutcome = "not_applied";

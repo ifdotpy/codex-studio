@@ -154,6 +154,14 @@ class PreAdmission(fixture.Bridge):
         self.assertEqual(len((self.root / '.queries').read_text().splitlines()), 1)
         self.assertEqual(self.call('thread/read', {'threadId': self.thread})
                          ['thread']['status']['type'], 'idle')
+        (self.root / '.hang-account').unlink()
+        self.restart_bridge()
+        retried = self.turn('fixture input', 'stop-before-admission')['turn']['id']
+        self.assertNotEqual(retried, turn)
+        self.assertEqual(self.completed()['status'], 'completed')
+        self.assertEqual(len(self.admissions()), 1)
+        self.assertEqual(self.turn('fixture input', 'stop-before-admission')['turn']['id'], retried)
+        self.assertEqual(len(self.admissions()), 1)
 
     def test_preparation_post_admission_structured_error_preserves_acceptance(self):
         turn = self.turn('post-admission-timeout', 'already-admitted')['turn']['id']
