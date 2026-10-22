@@ -372,7 +372,7 @@ class RustSelectionTest(unittest.TestCase):
             recovery.supervisor_tick({**config, "processSupervisor": str(self.state / "bin/missing")}, self.state)
 
     def test_supervisor_protocol_matches_its_rust_owner(self):
-        owner = (REPOSITORY_ROOT / "workspaces/runtime/packages/runtime-process/src/protocol.rs").read_text()
+        owner = (REPOSITORY_ROOT / "workspaces/runtime/packages/runtime-providers/src/supervisor_protocol.rs").read_text()
         self.assertIn(f"pub const SUPERVISOR_PROTOCOL_V2: u64 = {recovery.SUPERVISOR_PROTOCOL_V2};", owner)
         frame_owner = (REPOSITORY_ROOT / "workspaces/runtime/packages/runtime-process/src/supervisor_contract.rs").read_text()
         self.assertIn(f"pub const MAX_SUPERVISOR_FRAME_BYTES: usize = {recovery.MAX_SUPERVISOR_FRAME_BYTES};", frame_owner)
