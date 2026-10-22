@@ -550,18 +550,6 @@ impl super::runtime_dispatch::InterruptPort for ManagedInterruptAdapter {
                     certainty: DeliveryCertainty::Written,
                     applied: Some(true),
                 }),
-                Err(crate::agent_management::ManagementError::Store(
-                    studio_runtime_store::StoreError::RecordContract(
-                        "Lifecycle committed; effect delivery remains pending",
-                    ),
-                )) => Ok(DispatchedOperation {
-                    result: OperationResult {
-                        value: json!("Lifecycle outcome unknown; do not repeat it"),
-                        signals: Vec::new(),
-                    },
-                    certainty: DeliveryCertainty::Unknown,
-                    applied: None,
-                }),
                 Err(error) => Err(management_error(error)),
             }
         })

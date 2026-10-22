@@ -223,6 +223,15 @@ Native composer draft synchronization follows this flow:
 Deleting an agent chat removes it from the user list until the next agent message. Its participants retain their history.
 Deletion stops the selected agent and its descendants and removes them from the interface.
 Stored transcripts and project files remain on disk. Deleted agents cannot resume from late events or message retries.
+Delete confirmation and pending cleanup follow this flow:
+
+1. Commit the authorized deletion and return its committed result.
+2. Drain saved effects; log failures and retain their intents without changing that result.
+3. Reconcile each cleanup intent independently, so one failure cannot block other chats.
+4. Settle an already missing owned worktree without filesystem or Git mutations.
+5. After a lost response, read server state without resending the delete. A newer
+   refresh cannot discard this readback; confirmation requires the same workspace.
+
 Monitor projection updates follow this flow:
 
 1. Creation, status, owner, and creation-time changes select the canonical monitor window.
