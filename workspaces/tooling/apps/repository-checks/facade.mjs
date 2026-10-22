@@ -1073,6 +1073,7 @@ function fastTierCommands(root) {
               "test(account_worker::tests::native_requests::)",
               "test(stale_stamp_of_an_undelivered_steer_batch_does_not_block_the_next_turn)",
               "test(stamp_tests::)",
+              "test(start_submission_replaces_an_earlier_unsent_attempt)",
               "test(transcript_reasoning_decodes_each_row_before_fetching_the_next)",
               "test(sync_policy::tests::monitor_)",
               "test(work_write::actor_tests::submission_manifest_boundaries_use_shared_limits)",

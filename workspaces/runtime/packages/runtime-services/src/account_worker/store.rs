@@ -921,6 +921,14 @@ pub(super) async fn submitted(
     })
     .await;
     match result {
+        Err(WorkerError::Notification(
+            crate::notification_dispatch::NotificationDispatchError::ConflictingInput,
+        )) => {
+            let reason = "Submitted input conflicts with an earlier record".to_owned();
+            scheduler::settle_start_outcome(store, &blocked_intent, TurnStart::Blocked { reason })
+                .await?;
+            Ok(false)
+        }
         Err(WorkerError::PreparationRefused(reason)) => {
             let reason = if preparation::snapshot_changed(&reason) {
                 let reason = changed_start_reason(&blocked_method, &reason);

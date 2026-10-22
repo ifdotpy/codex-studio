@@ -4684,6 +4684,6 @@ pub fn commit_prepared_turn(
     )? {
         return Ok(false);
     }
-    crate::notification_dispatch::record_user_submission(tx, &intent.agent_id, submission)?;
+    crate::notification_dispatch::record_start_submission(tx, &intent.agent_id, submission)?;
     Ok(true)
 }
