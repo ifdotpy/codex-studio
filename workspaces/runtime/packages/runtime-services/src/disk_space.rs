@@ -2,8 +2,8 @@
 //!
 //! State thresholds and the error pattern are owned by
 //! `studio_runtime_schema::shared_values`; generated Python values share them.
-//! Worker storage uses the fixed floor owned by `WORKER_STORAGE_MIN_FREE_BYTES`.
-//! Below
+//! Worker workspace and build volumes use the same disk-full floor as the
+//! state volume: a worker waits only when its volume is really full. Below
 //! `DISK_FULL_ENTER_FREE_BYTES` the disk is full: no new turn starts, and an
 //! agent whose turn failed for lack of space waits as a capacity retry with the
 //! cause `diskFull`. The full state ends at or above `DISK_FULL_EXIT_FREE_BYTES`.
@@ -206,8 +206,9 @@ fn status_value(free: Option<u64>, full: bool) -> Value {
 }
 
 /// Minimum available bytes before starting implementer work on a workspace or
-/// build-output filesystem. This is the sole owner of the worker storage floor.
-pub const WORKER_STORAGE_MIN_FREE_BYTES: u64 = 64 * GIB;
+/// build-output filesystem: the disk-full floor of the state volume. Studio does
+/// not reserve extra space for agent workloads; it holds work only on a full disk.
+pub const WORKER_STORAGE_MIN_FREE_BYTES: u64 = DISK_FULL_ENTER_FREE_BYTES;
 
 /// Additional build-output locations, captured once when the server starts.
 #[derive(Clone, Debug, Default)]
@@ -636,6 +637,24 @@ mod tests {
     }
 
     #[test]
+    fn worker_storage_is_not_held_while_the_disk_is_not_full() {
+        // 2026-10-22: a 64 GiB reserve held every implementer at 12 GiB free.
+        let mut gate =
+            DiskGate::with_sampler(PathBuf::from("/state"), Arc::new(|_| Some(12 * GIB)));
+        gate.build_roots = WorkerStorageConfig {
+            build_roots: vec![PathBuf::from("/build/target")],
+        };
+        let report =
+            gate.report_with_filesystem(&[PathBuf::from("/workspace")], synthetic_filesystem);
+        assert!(
+            report
+                .hold_reason(crate::thread_prepare::Role::Implementer)
+                .is_none()
+        );
+        assert_eq!(WORKER_STORAGE_MIN_FREE_BYTES, DISK_FULL_ENTER_FREE_BYTES);
+    }
+
+    #[test]
     fn worker_storage_hold_checks_build_volume_and_resumes_at_one_floor() {
         let output_free = Arc::new(AtomicU64::new(WORKER_STORAGE_MIN_FREE_BYTES - 1));
         let samples = Arc::clone(&output_free);
@@ -758,7 +777,14 @@ mod tests {
                 .expect("visible reason")
                 .starts_with(STORAGE_HOLD_PREFIX)
         );
-        free.store(WORKER_STORAGE_MIN_FREE_BYTES, Ordering::SeqCst);
+        // One sampler serves the state volume too, and a full state volume keeps
+        // its sample and latch until its recheck; a new gate sees the freed disk.
+        free.store(DISK_FULL_EXIT_FREE_BYTES, Ordering::SeqCst);
+        let sample = Arc::clone(&free);
+        let gate = DiskGate::with_sampler(
+            root.path().to_path_buf(),
+            Arc::new(move |_| Some(sample.load(Ordering::SeqCst))),
+        );
         assert!(
             !hold_agent_turn_with_gate(&store, "worker", 1, Some(&gate))
                 .await
