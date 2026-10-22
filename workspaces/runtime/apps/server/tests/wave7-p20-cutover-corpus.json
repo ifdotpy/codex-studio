@@ -1,11 +1,11 @@
 {
   "blockers_ordered_by_operations_unblocked": [],
   "counts": {
-    "implemented": 162,
+    "implemented": 163,
     "named_dependencies": 0,
     "not_registered": 0,
     "partial": 0,
-    "total": 162
+    "total": 163
   },
   "lifecycle_dependencies": {
     "direct provider launch": {
@@ -453,6 +453,11 @@
     {
       "dependencies": [],
       "operation": "POST /api/checkpoint/restore",
+      "status": "implemented"
+    },
+    {
+      "dependencies": [],
+      "operation": "POST /api/claude/file-backups",
       "status": "implemented"
     },
     {
