@@ -189,6 +189,9 @@ pub struct StoreBridge {
     start_gates: Arc<crate::account_start_gate::StartGates>,
     managed_tool_runtime:
         Arc<std::sync::RwLock<Option<Arc<crate::provider_callbacks::ManagedToolRuntime>>>>,
+    /// Per-bridge fixture samples; DiskGate still owns every admission rule.
+    #[cfg(test)]
+    disk_gate: Option<Arc<crate::disk_space::DiskGate>>,
     #[cfg(test)]
     faults: Arc<tests::Faults>,
     #[cfg(test)]
@@ -243,6 +246,8 @@ impl StoreBridge {
             agent_wakes,
             start_gates: Arc::default(),
             managed_tool_runtime: Arc::new(std::sync::RwLock::new(None)),
+            #[cfg(test)]
+            disk_gate: None,
             #[cfg(test)]
             faults: Arc::default(),
             #[cfg(test)]

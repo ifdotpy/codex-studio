@@ -1264,7 +1264,11 @@ async fn startup_first_pass_continues_an_interrupted_restart_turn_from_native_hi
 /// Exercise the production disconnect writer and account first-pass caller,
 /// with the same saved turn for a lead and an authorized child.
 async fn automatic_recovery_case(restart: bool, child: bool, stopped: bool) {
-    let state = State::new().await;
+    let mut state = State::new().await;
+    state.bridge.disk_gate = Some(Arc::new(crate::disk_space::DiskGate::with_sampler(
+        state.root.clone(),
+        Arc::new(|_| Some(crate::disk_space::WORKER_STORAGE_MIN_FREE_BYTES)),
+    )));
     let agent_id = state.agent.clone();
     state.bridge.run(move |store| async move {
         store.transaction_with(move |tx| {
@@ -1312,6 +1316,16 @@ async fn automatic_recovery_case(restart: bool, child: bool, stopped: bool) {
     }
     let mut peer = Peer::identity("default", 2, None);
     let mut worker = peer.worker(state.bridge.clone()).await;
+    if !stopped {
+        let record = state.record().await;
+        assert!(
+            RecoverySnapshot::from_record(record.clone())
+                .unwrap()
+                .automatic_turn()
+                .is_some(),
+            "{record}"
+        );
+    }
     if stopped {
         worker_barrier(&worker).await;
         let record = state.record().await;

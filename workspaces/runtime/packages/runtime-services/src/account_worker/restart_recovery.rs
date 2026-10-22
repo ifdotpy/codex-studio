@@ -93,7 +93,7 @@ async fn reconcile_first_pass(
         for job in jobs {
             // Restart and provider loss share the same guarded native-history pass.
             let recovery_turn = matches!(&job, RecoveryJob::Connection { snapshot, .. }
-                if snapshot.eligibility().restart_turn || snapshot.eligibility().transport_turn);
+                if snapshot.automatic_turn().is_some());
             if recovery_turn
                 && matches!(&job, RecoveryJob::Connection { snapshot, .. }
                 if !crate::image_workspace::restart_follow_up_allowed(
@@ -261,11 +261,10 @@ async fn claim_automatic_check(
         .to_owned();
     let check = check.to_owned();
     let expected = snapshot.record().clone();
-    let marker_key = if snapshot.eligibility().restart_turn {
-        "restartRecovery"
-    } else {
-        "disconnectRecovery"
-    };
+    let marker_key = snapshot
+        .automatic_turn()
+        .ok_or(RecoveryError::CommitFailed)?
+        .marker_key();
     crate::scheduler::lifecycle_transaction_with(store, move |tx| {
         let Some(agent) = AgentRepository::get(tx, &AgentId::from(id.as_str()))? else {
             return Ok(None);

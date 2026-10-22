@@ -726,7 +726,9 @@ impl CompletionWriter for LifecycleCompletionWriter {
                     json!({"status":"reconciled","turnId":turn_id,"outcome":turn["status"]});
                 let continuation = (turn["status"] == "interrupted"
                     && (restart || *mode == CompletionMode::AutomaticConnection)
-                    && interrupted_can_continue(expected, turn_id)
+                    && expected
+                        .automatic_turn()
+                        .is_some_and(|recovery| recovery.can_continue(turn_id))
                     && !uncertain(tx, id, epoch)?)
                 .then(|| interrupted_continuation(tx, a, turn, turn_id))
                 .transpose()?;
@@ -811,30 +813,6 @@ impl CompletionWriter for LifecycleCompletionWriter {
             _ => Err(RecoveryError::EffectsUnavailable),
         }
     }
-}
-
-/// Only the exact interrupted turn with its saved permission may continue.
-/// Eligibility owns the stop, deletion, epoch and native hold guards.
-fn interrupted_can_continue(snapshot: &RecoverySnapshot, turn_id: &str) -> bool {
-    let eligible = snapshot.eligibility();
-    let agent = snapshot.record();
-    let receipt = if eligible.restart_turn
-        && matches!(
-            agent["restartRecovery"]["stage"].as_str(),
-            Some("pending" | "superseded")
-        ) {
-        &agent["restartRecovery"]
-    } else if eligible.transport_turn {
-        &agent["disconnectRecovery"]
-    } else {
-        return false;
-    };
-    receipt["autoWake"] == true
-        && receipt["turnId"] == turn_id
-        && ["epoch", "accountKey", "threadId"]
-            .iter()
-            .all(|key| receipt[*key] == agent[*key])
-        && !crate::event_write::truthy(agent.get("nativeFailureHold"))
 }
 
 /// Close the restart marker after native history decided its turn. The
