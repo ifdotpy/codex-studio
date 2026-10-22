@@ -88,6 +88,22 @@ async fn child_results(state: &State) -> Vec<(String, Value)> {
         .unwrap()
 }
 
+/// Read a follow-up by its queue identity (annotation helpers add another prefix).
+async fn followup_status(state: &State, id: &str) -> String {
+    let id = studio_runtime_store::QueueEventId::from(id);
+    state
+        .bridge
+        .run(move |store| async move {
+            Ok(
+                studio_runtime_store::QueueEventRepository::get(&store.test_reader()?, &id)?
+                    .expect("capacity follow-up exists")
+                    .status,
+            )
+        })
+        .await
+        .unwrap()
+}
+
 /// The next `turn/start`, resuming the thread first when this connection has
 /// not loaded it. Fails at [`DEADLINE`] when the worker writes nothing.
 async fn next_turn_start(peer: &mut Peer) -> Value {
@@ -322,7 +338,7 @@ async fn capacity_retry_restart_unknown_reports_once_without_resending() {
                 super::capacity_retry::retry_of(&state, &retry_id).await["status"],
                 "unknown"
             );
-            assert_eq!(state.event_status(&followup).await, "uncertain");
+            assert_eq!(followup_status(&state, &followup).await, "uncertain");
             let results = child_results(&state).await;
             assert_eq!(results.len(), 1, "{kind:?}: {results:?}");
             assert_eq!(results[0].0, format!("hold:{retry_id}:unknown"));
@@ -345,7 +361,7 @@ async fn capacity_retry_restart_unknown_reports_once_without_resending() {
                 "{kind:?}: {record}"
             );
             assert_eq!(record["capacityRetryCount"], 1);
-            assert_eq!(state.event_status(&followup).await, "delivered");
+            assert_eq!(followup_status(&state, &followup).await, "delivered");
             assert_eq!(child_results(&state).await.len(), 1);
         }
         worker.shutdown().await.unwrap();
