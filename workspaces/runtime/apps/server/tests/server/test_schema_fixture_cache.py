@@ -34,6 +34,11 @@ class ApiSchemaFixtureCacheTests(unittest.TestCase):
             self.assertFalse(outside.exists())
             self.assertEqual(list(temporary_root.iterdir()), [])
 
+    @unittest.skip(
+        "The Rust backend owns the API schema. The Python backend no longer tracks "
+        "Rust-only fields, such as worker capability profiles, task result schemas, "
+        "and acceptance gates."
+    )
     def test_generated_schema_identity_matches_runtime_computation(self):
         from studio_api.context import compute_api_schema_hash_in_subprocess
 
