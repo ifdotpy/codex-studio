@@ -173,10 +173,8 @@ const CODEX_APP_SERVER_ARGS: [&str; 3] = ["app-server", "--listen", "stdio://"];
 /// host app-server. Zero frees it as soon as Studio unsubscribes it (see
 /// `account_worker::idle_unload`); Codex's default (30 minutes on 0.163.0)
 /// keeps every finished worker's and deleted agent's thread loaded. Resuming an
-/// unloaded thread costs about as much CPU as a warm turn. A running
-/// app-server started without it is reattached with its own command
-/// (`ProviderLaunchSpec::reattach_commands`) and keeps Codex's default until
-/// it exits. The VM guest launch keeps Codex's default: its guest validates
+/// unloaded thread costs about as much CPU as a warm turn.
+/// The VM guest launch keeps Codex's default: its guest validates
 /// the exact command, and a guest serves one agent.
 const CODEX_THREAD_UNLOAD_DELAY: [&str; 2] = ["-c", "thread_unload_delay_secs=0"];
 /// Names of the MCP servers that the Codex home's `config.toml` defines. The
@@ -260,19 +258,13 @@ impl ProviderAdapter for CodexAdapter {
         } else {
             &[]
         };
-        let launch = |overrides: &[&str]| {
-            std::iter::once(codex_executable.unwrap_or(CODEX_EXECUTABLE))
-                .chain(CODEX_APP_SERVER_ARGS)
-                .chain(overrides.iter().copied())
-                .chain(credentials.iter().copied())
-                .map(str::to_owned)
-                .collect::<Vec<_>>()
-        };
-        let mut spec =
-            ProviderLaunchSpec::new(launch(&CODEX_THREAD_UNLOAD_DELAY), environment, root)
-                .with_inherited_cwd();
-        // The command before the unload override, which running app-servers keep.
-        spec.reattach_commands.push(launch(&[]));
+        let command = std::iter::once(codex_executable.unwrap_or(CODEX_EXECUTABLE))
+            .chain(CODEX_APP_SERVER_ARGS)
+            .chain(CODEX_THREAD_UNLOAD_DELAY)
+            .chain(credentials.iter().copied())
+            .map(str::to_owned)
+            .collect();
+        let spec = ProviderLaunchSpec::new(command, environment, root).with_inherited_cwd();
         Ok(ProviderLaunch {
             spec,
             executable: codex_executable.map(str::to_owned),

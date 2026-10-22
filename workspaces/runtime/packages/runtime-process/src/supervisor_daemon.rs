@@ -26,8 +26,8 @@ use std::{
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
-use studio_runtime_providers::supervisor_v1::{
-    Command, HANDLE_LIMIT, Handshake, Ownership, PROTOCOL, Request, StartMatch, WriteDecision,
+use studio_runtime_providers::supervisor_protocol::{
+    Command, HANDLE_LIMIT, Ownership, Request, StartMatch, WriteDecision,
 };
 use studio_runtime_store::path_identity::CanonicalPath;
 use studio_runtime_store::supervisor_journal::{
@@ -52,7 +52,7 @@ pub enum Error {
     #[error("Invalid supervisor request")]
     Json(#[from] serde_json::Error),
     #[error(transparent)]
-    Protocol(#[from] studio_runtime_providers::supervisor_v1::Refusal),
+    Protocol(#[from] studio_runtime_providers::supervisor_protocol::Refusal),
     #[error(
         "Supervisor handle {handle:?} is active with PID {pid} and different launch settings; wait for it to exit or use the operator CLI to close a verified test/unknown handle."
     )]
@@ -186,7 +186,7 @@ impl Supervisor {
                     handles.push(json!({"id":row.id,"pid":row.pid,"signature":row.signature,"startTime":row.start_time,"jobIdentity":null,"sequence":row.snapshot.sequence(),"acknowledged":row.snapshot.acknowledged(),"bufferedBytes":row.buffered,"backpressure":child.as_ref().is_some_and(|c|c.paused.load(Ordering::Acquire)),"stdoutReaderAlive":child.as_ref().is_some_and(|c|c.stdout_alive.load(Ordering::Acquire)),"stdoutReaderError":child.as_ref().map(|c|lock(&c.stdout_error).map(|e|e.clone())).transpose()?.flatten(),"persistenceErrors":child.as_ref().map(|c|lock(&c.errors).map(|e|e.clone())).transpose()?.unwrap_or_default()}));
                 }
                 Ok(
-                    json!({"protocol":PROTOCOL,"stateDir":self.root,"handles":handles,"journalLimitBytes":HANDLE_LIMIT,"outputLimitBytesPerHandle":HANDLE_LIMIT,"durability":"sqlite-full-sync-per-request","recovery":lock(&self.recovery)?.clone()}),
+                    json!({"protocol":SUPERVISOR_PROTOCOL_V2,"stateDir":self.root,"handles":handles,"journalLimitBytes":HANDLE_LIMIT,"outputLimitBytesPerHandle":HANDLE_LIMIT,"durability":"sqlite-full-sync-per-request","recovery":lock(&self.recovery)?.clone()}),
                 )
             }
             Command::FinishFallback => {
@@ -263,7 +263,7 @@ impl Supervisor {
                                     saved.start_time.as_deref().unwrap_or("")
                                 )?
                                 .0,
-                                StartMatch::Exact | StartMatch::Legacy
+                                StartMatch::Exact
                             )
                         {
                             return Err(Error::Refused(
@@ -339,7 +339,7 @@ impl Supervisor {
                     if let Some(expected) = &row.start_time {
                         match inspect_start(row.pid, expected)?.0 {
                             StartMatch::Gone => {}
-                            StartMatch::Exact | StartMatch::Legacy => {
+                            StartMatch::Exact => {
                                 if let Some(verified) = self.verified_start(&row)? {
                                     stop_verified(
                                         row.pid,
@@ -592,7 +592,6 @@ impl Supervisor {
         };
         match kind {
             StartMatch::Exact => {}
-            StartMatch::Legacy => {}
             StartMatch::Gone => return Ok(None),
             _ => return Err(Error::Refused("Child identity changed before signal")),
         }
@@ -609,9 +608,6 @@ impl Supervisor {
             None => return Ok(None),
             Some(current) if current == actual => {}
             Some(_) => return Err(Error::Refused("Child identity changed before signal")),
-        }
-        if kind == StartMatch::Legacy {
-            self.journal.upgrade_identity(row, &actual)?;
         }
         Ok(Some(actual))
     }
@@ -630,7 +626,7 @@ impl Supervisor {
                         "identity-mismatch",
                         "PID belongs to a different process start time",
                     ),
-                    StartMatch::Exact | StartMatch::Legacy => {
+                    StartMatch::Exact => {
                         recovery["degraded"] = json!(true);
                         recovery["notice"] = json!(
                             "The process supervisor restarted; native work is using recovery."
@@ -860,11 +856,12 @@ async fn v2_connection_loop(
     supervisor: Arc<Supervisor>,
     socket: tokio::net::UnixStream,
     operator: bool,
+    budget: Duration,
 ) -> Result<()> {
     use tokio::io::AsyncWriteExt;
 
     let mut reader = tokio::io::BufReader::new(socket);
-    while let Some(raw) = read_v2_frame(&mut reader, FRAME_BUDGET).await? {
+    while let Some(raw) = read_v2_frame(&mut reader, budget).await? {
         let request_id = raw.get("requestId").cloned();
         let bytes = if raw.get("action").and_then(Value::as_str) == Some("nextBatch") {
             match serde_json::from_value::<NextBatchRequestEnvelope>(raw) {
@@ -972,60 +969,17 @@ fn connection_with_budget(supervisor: Arc<Supervisor>, mut socket: UnixStream, b
         let mut reader = BufReader::new(socket.try_clone()?);
         let first_value = read_frame(&mut reader, Some(Instant::now() + budget), budget)?
             .ok_or(Error::Refused("Missing supervisor handshake"))?;
-        let protocol = first_value
-            .get("protocol")
-            .and_then(Value::as_u64)
-            .ok_or(Error::Refused("Invalid supervisor protocol"))?;
-        let (first, operator) = match protocol {
-            PROTOCOL => {
-                let first: Handshake = serde_json::from_value(first_value)?;
-                let operator = first.operator;
-                (first, operator)
-            }
-            SUPERVISOR_PROTOCOL_V2 => {
-                let first: SupervisorHandshakeV2 = serde_json::from_value(first_value)?;
-                if first.protocol != SUPERVISOR_PROTOCOL_V2 {
-                    return Err(Error::Refused("Invalid supervisor protocol"));
-                }
-                let operator = first.operator;
-                let state_dir = first
-                    .state_dir
-                    .to_str()
-                    .ok_or(Error::Refused("Invalid supervisor state directory"))?
-                    .to_owned();
-                (
-                    Handshake {
-                        protocol: PROTOCOL,
-                        state_dir,
-                        backend_id: first.backend_id.map(|backend| backend.0),
-                        probe: first.probe,
-                        operator,
-                    },
-                    operator,
-                )
-            }
-            _ => return Err(Error::Refused("Supervisor protocol mismatch")),
-        };
-        admitted =
-            lock(&supervisor.ownership)?.attach(&first, &supervisor.root.to_string_lossy())?;
-        if protocol == PROTOCOL {
-            write_frame(&mut socket, &json!({"ok":true}))?;
-            while let Some(raw) = read_frame(&mut reader, None, budget)? {
-                let id = raw.get("requestId").cloned();
-                let response = match serde_json::from_value::<Request>(raw)
-                    .map_err(Error::from)
-                    .and_then(|request| supervisor.handle(request.command, operator))
-                {
-                    Ok(value) => json!({"requestId":id,"result":value}),
-                    Err(error) => {
-                        json!({"requestId":id,"error":error.to_string().chars().take(500).collect::<String>()})
-                    }
-                };
-                write_frame(&mut socket, &response)?;
-            }
-            return Ok(());
+        let first: SupervisorHandshakeV2 = serde_json::from_value(first_value)?;
+        if first.protocol != SUPERVISOR_PROTOCOL_V2 {
+            return Err(Error::Refused("Supervisor protocol mismatch"));
         }
-
+        let operator = first.operator;
+        admitted = lock(&supervisor.ownership)?.attach(
+            &first.state_dir,
+            first.backend_id.as_ref().map(|backend| backend.0.as_str()),
+            first.probe,
+            &supervisor.root,
+        )?;
         write_frame(
             &mut socket,
             &json!({"ok":true,"protocol":SUPERVISOR_PROTOCOL_V2}),
@@ -1041,7 +995,7 @@ fn connection_with_budget(supervisor: Arc<Supervisor>, mut socket: UnixStream, b
         let runtime_supervisor = supervisor.clone();
         runtime.block_on(async move {
             let async_socket = tokio::net::UnixStream::from_std(async_socket)?;
-            v2_connection_loop(runtime_supervisor, async_socket, operator).await
+            v2_connection_loop(runtime_supervisor, async_socket, operator, budget).await
         })
     })();
     let _ignored = socket.set_nonblocking(false);
@@ -1117,10 +1071,7 @@ pub fn serve(root: &Path, wait_for_lease: bool) -> Result<()> {
         let expected = identity["startTime"].as_str().ok_or(Error::Refused(
             "The previous supervisor lease identity is invalid",
         ))?;
-        if matches!(
-            inspect_start(pid, expected)?.0,
-            StartMatch::Exact | StartMatch::Legacy
-        ) {
+        if matches!(inspect_start(pid, expected)?.0, StartMatch::Exact) {
             return Err(Error::Refused(
                 "The previous supervisor process is still alive",
             ));

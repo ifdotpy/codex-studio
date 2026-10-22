@@ -10,7 +10,6 @@ use std::{collections::BTreeMap, future::Future, path::PathBuf, time::Duration};
 use studio_runtime_providers::{
     DecodedJournalPayload, Frame, RequestId, ResponseBody, decode_journal_entry_borrowed,
 };
-use studio_runtime_store::supervisor_journal::launch_signature;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use tokio::sync::Semaphore;
 use tokio::{
@@ -172,7 +171,6 @@ impl SupervisorProviderTaskFactory {
                 clock: options.clock,
                 handle,
                 open,
-                reattach_commands: options.launch.reattach_commands,
                 identity: self.identity.clone(),
                 endpoint: self.endpoint.clone(),
                 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -364,7 +362,6 @@ struct AdapterTask {
     handle: ProviderHandle,
     open: OpenRequest,
     /// Earlier commands of this launch that a running child may keep.
-    reattach_commands: Vec<Vec<String>>,
     identity: BackendIdentity,
     endpoint: PathBuf,
     #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -457,9 +454,6 @@ impl AdapterTask {
             self.open.env = self
                 .retained_environment(prior.pid, prior.return_code.is_some())
                 .await?;
-            if prior.return_code.is_none() && !self.reattach_commands.is_empty() {
-                self.adopt_reattach_command(&mut rpc).await?;
-            }
             if self.handled_cursor > prior.sequence {
                 return Err(AdapterError::InvalidConfiguration);
             }
@@ -592,48 +586,6 @@ impl AdapterTask {
         _exited: bool,
     ) -> Result<BTreeMap<String, String>, AdapterError> {
         Err(AdapterError::UnverifiableChild)
-    }
-
-    /// Open a running child started with one of the launch's earlier commands
-    /// with that command, so the supervisor reattaches it instead of refusing
-    /// different launch settings. Health reports each active handle's launch
-    /// signature; the supervisor holds at most `MAX_CHILDREN` of them.
-    async fn adopt_reattach_command<S: AsyncRead + AsyncWrite + Unpin>(
-        &mut self,
-        rpc: &mut Rpc<S>,
-    ) -> Result<(), AdapterError> {
-        #[derive(Deserialize)]
-        struct Health {
-            handles: Vec<Handle>,
-        }
-        #[derive(Deserialize)]
-        struct Handle {
-            id: String,
-            signature: String,
-        }
-        let health: Health = rpc
-            .call(
-                SupervisorAction::Health,
-                HealthRequest::default(),
-                &mut self.stop,
-            )
-            .await?;
-        let Some(running) = health
-            .handles
-            .into_iter()
-            .find(|handle| handle.id == self.open.handle.0)
-        else {
-            return Ok(());
-        };
-        let cwd = (!self.inherit_cwd).then_some(self.open.cwd.as_str());
-        if let Some(command) = self
-            .reattach_commands
-            .iter()
-            .find(|command| launch_signature(command, &self.open.env, cwd) == running.signature)
-        {
-            self.open.command = command.clone();
-        }
-        Ok(())
     }
 
     async fn serve<S: AsyncRead + AsyncWrite + Unpin>(
