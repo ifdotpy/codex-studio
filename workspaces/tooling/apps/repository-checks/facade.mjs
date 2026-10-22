@@ -1147,6 +1147,8 @@ function fastTierCommands(root) {
               "test(provider_callbacks_unjournaled_card_is_refused_without_writes)",
               "test(/^provider_session_task::expiry_batch_preserves_all_queued_request_outcomes_in_order$/)",
               "test(/^turn_lifecycle_corpus::fast_witnesses_cover_transitions_states_and_review_findings$/)",
+              "test(wave7_p10_lifecycle::committed_delete_)",
+              "test(wave7_p10_lifecycle::lost_wake_preserves_committed_stop_for_restart)",
               "test(/^wave9_safety_buffering_executor::comparison_normalizes_only_generated_identity_and_role_source_roots$/)",
             ]),
           ],
@@ -1231,6 +1233,36 @@ function fastTierCommands(root) {
           "project preparation structural conflicts and idle async answer",
         reason:
           "Check project writes across agent execution changes and real structural conflicts.",
+      },
+    },
+    {
+      item: { name: "studio-runtime-http", ecosystem: "cargo" },
+      label: "Committed delete response witness",
+      commands: [
+        [
+          "cargo",
+          [
+            "nextest",
+            "run",
+            "--locked",
+            "--no-tests",
+            "fail",
+            "--message-format",
+            "libtest-json-plus",
+            "-p",
+            "studio-runtime-http",
+            "--test",
+            "integration",
+            "-E",
+            "test(committed_delete_route_succeeds_with_unrelated_failing_cleanup)",
+          ],
+        ],
+      ],
+      options: {
+        selector:
+          "Committed delete with an unrelated failing workspace cleanup intent",
+        reason:
+          "Return the committed delete result and drain its cleanup without losing another intent's retry state.",
       },
     },
     {
@@ -1402,6 +1434,9 @@ function fastTierCommands(root) {
               "test(archive_finished_reason_survives_dispatch_and_receipt_replay)",
               "test(committed_archive_)",
               "test(lead_archive_and_restore_run_through_the_lifecycle_owner)",
+              "test(workspace_cleanup_runtime::tests::missing_archive_worktree_settles_without_external_effects)",
+              "test(workspace_cleanup_runtime::tests::missing_worktree_subdirectory_does_not_settle_a_live_root)",
+              "test(workspace_cleanup_runtime::tests::cleanup_failure_does_not_block_unrelated_queued_intents)",
               "test(status_snapshot_tracks_capacity_finished_pages_and_revision_replay)",
               "test(workspace_pending_reuses_reserved_attempt)",
               "test(long_answers_use_canonical_bounded_agent_sync_projection)",
@@ -1453,6 +1488,32 @@ function fastTierCommands(root) {
         selector: "Native drafts idle and refresh work counts",
         reason:
           "Prevent idle polling and lost draft notifications during a refresh.",
+      },
+    },
+    {
+      item: web,
+      label: "Delete readback generation witnesses",
+      commands: [
+        [
+          "pnpm",
+          [
+            "--filter",
+            "codex-agents-web",
+            "exec",
+            "vitest",
+            "run",
+            "--config",
+            "vitest.unit.config.ts",
+            "src/hooks/snapshotDeleteReadback.test.ts",
+            "src/chatDeleteScope.test.ts",
+          ],
+        ],
+      ],
+      options: {
+        selector:
+          "Delete readback across superseded session and projection requests",
+        reason:
+          "An authoritative delete readback must settle even when another refresh owns the current render generation.",
       },
     },
     {

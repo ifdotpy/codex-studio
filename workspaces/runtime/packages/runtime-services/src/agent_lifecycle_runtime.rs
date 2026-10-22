@@ -138,13 +138,11 @@ pub async fn execute(
     let result =
         crate::agent_management_store::execute_prepared(store, action, now, Some(ports.clone()))
             .await?;
-    // A lost wake cannot roll back the committed intent. Restart drains the same
-    // effect; report an internal failure, never a no-write capability refusal.
-    ports.committed().await.map_err(|_| {
-        studio_runtime_store::StoreError::RecordContract(
-            "Lifecycle committed; effect delivery remains pending",
-        )
-    })?;
+    // A failed wake cannot roll back the committed intent. Its retained owner
+    // retries the same effects; callers must receive the committed result.
+    if let Err(error) = ports.committed().await {
+        eprintln!("Lifecycle committed; effect delivery remains pending: {error}");
+    }
     Ok(result)
 }
 

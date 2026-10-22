@@ -361,6 +361,120 @@ async fn production_stop_cancels_usage_and_capacity_continuations_in_store() {
 }
 
 #[tokio::test]
+async fn committed_delete_succeeds_when_post_commit_delivery_fails() {
+    struct FailedDelivery;
+    impl LifecyclePorts for FailedDelivery {
+        fn stage(
+            &self,
+            tx: &Transaction<'_>,
+            effect: &LifecycleEffect,
+        ) -> Result<(), ManagementError> {
+            InterruptFixture::default().stage(tx, effect)
+        }
+        fn committed(&self) -> agent_lifecycle_runtime::LifecycleCommitFuture<'_> {
+            Box::pin(async {
+                Err(ManagementError::Unavailable(
+                    "workspace-state/agent-lifecycle",
+                ))
+            })
+        }
+    }
+    let case = cases()
+        .into_iter()
+        .find(|case| case["name"] == "delete")
+        .expect("delete case");
+    let root = tempfile::tempdir().expect("root");
+    template(root.path());
+    let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("open"));
+    seed(
+        &store,
+        serde_json::from_value(case["records"].clone()).expect("records"),
+    )
+    .await;
+    let result = agent_lifecycle_runtime::execute(
+        store.clone(),
+        &Action::Delete {
+            target: "lead".into(),
+        },
+        case["now"].as_f64().expect("now"),
+        Arc::new(FailedDelivery),
+    )
+    .await
+    .expect("committed result survives effect failure");
+    assert!(
+        result["deleted"]
+            .as_array()
+            .expect("deleted ids")
+            .contains(&json!("lead"))
+    );
+    assert!(
+        state(&store)["tables"]["runtime_agents"]
+            .as_array()
+            .expect("agents")
+            .iter()
+            .filter(|agent| agent["id"] == "lead")
+            .all(|agent| agent["deletedAt"].is_number())
+    );
+}
+
+#[tokio::test]
+async fn committed_delete_drains_its_intent_despite_unrelated_cleanup_failure() {
+    struct NoBroker;
+    impl AccountSessionPort for NoBroker {}
+    let case = cases()
+        .into_iter()
+        .find(|case| case["name"] == "delete")
+        .expect("delete case");
+    let mut records: Records = serde_json::from_value(case["records"].clone()).expect("records");
+    let root = tempfile::tempdir().expect("root");
+    records.tables.get_mut("runtime_agents").expect("agents").push(json!({
+        "id":"a-broken-cleanup", "rootId":"a-broken-cleanup", "epoch":1, "status":"paused", "deletedAt":1,
+        "cwd":root.path(), "worktreeReady":true, "agentArchive":{"at":1,"epoch":1,"cleanupPending":true},
+        "workspaceCleanupIntent":studio_runtime_services::workspace_cleanup_runtime::queued_cleanup_intent("a-broken-cleanup", 1, studio_runtime_services::workspace_cleanup_runtime::CleanupAction::Archive)
+    }));
+    template(root.path());
+    let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("open"));
+    seed(&store, records).await;
+    let ports = ProductionLifecyclePorts::new(
+        store.clone(),
+        Arc::new(Notify::new()),
+        Arc::new(Notify::new()),
+        Arc::new(NoBroker),
+        None,
+    );
+    let result = ports
+        .execute(
+            &Action::Delete {
+                target: "lead".into(),
+            },
+            case["now"].as_f64().expect("now"),
+        )
+        .await
+        .expect("delete commits despite unrelated cleanup failure");
+    assert!(
+        result["deleted"]
+            .as_array()
+            .expect("deleted ids")
+            .contains(&json!("lead"))
+    );
+    let saved = state(&store);
+    let agents = saved["tables"]["runtime_agents"]
+        .as_array()
+        .expect("agents");
+    let deleted = agents
+        .iter()
+        .find(|agent| agent["id"] == "lead")
+        .expect("deleted lead");
+    assert!(deleted["deletedAt"].is_number());
+    assert!(deleted.get("workspaceCleanupIntent").is_none());
+    let broken = agents
+        .iter()
+        .find(|agent| agent["id"] == "a-broken-cleanup")
+        .expect("unrelated");
+    assert_eq!(broken["workspaceCleanupIntent"]["phase"], "queued");
+}
+
+#[tokio::test]
 async fn production_delete_releases_deleted_worker_work_item() {
     struct NoBroker;
     impl AccountSessionPort for NoBroker {}
@@ -1996,16 +2110,9 @@ async fn lost_wake_preserves_committed_stop_for_restart() {
     )
     .await;
     let action: Action = serde_json::from_value(case["action"].clone()).expect("action");
-    assert!(matches!(
-        agent_lifecycle_runtime::execute(
-            Arc::clone(&store),
-            &action,
-            1234567.5,
-            Arc::new(LostWake),
-        )
-        .await,
-        Err(ManagementError::Store(_))
-    ));
+    agent_lifecycle_runtime::execute(Arc::clone(&store), &action, 1234567.5, Arc::new(LostWake))
+        .await
+        .expect("a lost wake preserves the committed stop result");
     drop(store);
     let store = RuntimeStore::open(Some(root.path()))
         .await
