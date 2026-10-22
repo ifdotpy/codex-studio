@@ -206,22 +206,30 @@ impl ResourceNotifications {
         // Sample after acquiring the guard: a queued subscriber uses the newest
         // coalesced revision and any projections the previous reader completed.
         let mut view = self.changes_since(resources, after)?;
+        if view.cursor.closed {
+            return Ok(view);
+        }
         let mut selected = Vec::new();
         let mut versions = Vec::new();
         for (resource, version) in view.resources.iter().zip(&view.versions) {
             let key = resource.to_string();
             let existing = content.iter().position(|entry| entry.key == key);
-            let cached =
-                existing.filter(|index| content[*index].checked_revision == view.cursor.revision);
+            let cached = existing.filter(|index| content[*index].checked_revision == *version);
             let revision = if let Some(index) = cached {
                 content[index].revision
             } else {
                 let digest = read(resource.clone())
                     .await
                     .map(|bytes| Sha256::digest(&bytes).into());
-                // A commit during the read may have mixed two snapshots. Do not
-                // record that digest or suppress the original invalidation.
-                if self.changes.snapshot() != view.cursor {
+                // Only a publication affecting this resource makes its read
+                // uncertain. Token and unrelated-resource publications do not.
+                let latest =
+                    self.changes_since(std::slice::from_ref(resource), Some(view.cursor.revision))?;
+                if latest.cursor.closed {
+                    view.cursor.closed = true;
+                    return Ok(view);
+                }
+                if !latest.resources.is_empty() {
                     selected.push(resource.clone());
                     versions.push(*version);
                     continue;
@@ -238,7 +246,7 @@ impl ResourceNotifications {
                 content.push_back(ContentVersion {
                     key,
                     digest,
-                    checked_revision: view.cursor.revision,
+                    checked_revision: *version,
                     revision,
                 });
                 revision
@@ -341,6 +349,36 @@ mod tests {
             .expect("changed content");
         assert_eq!(changed.resources, vec![resources[0].clone()]);
         assert_eq!(changed.versions, vec![43]);
+    }
+
+    #[tokio::test]
+    async fn token_publications_do_not_repeat_or_invalidate_content_projections() {
+        let hub = Arc::new(ChangeNotificationHub::new());
+        let notifications = ResourceNotifications::new(hub.clone());
+        let resources = [json!({"kind":"accounts"})];
+        notifications
+            .changes_since_with_content(&resources, None, |_| async { Some(vec![0]) })
+            .await
+            .expect("initial");
+        hub.notify_one();
+        let view = notifications
+            .changes_since_with_content(&resources, Some(0), |_| {
+                hub.try_publish(1, false, |_| {});
+                std::future::ready(Some(vec![0]))
+            })
+            .await
+            .expect("token raced with unchanged projection");
+        assert!(
+            view.resources.is_empty(),
+            "tokens do not change resource content"
+        );
+        let second = notifications
+            .changes_since_with_content(&resources, Some(0), |_| async {
+                panic!("token-only revision changes must reuse the computed resource version")
+            })
+            .await
+            .expect("second subscriber");
+        assert!(second.resources.is_empty());
     }
 
     #[tokio::test]

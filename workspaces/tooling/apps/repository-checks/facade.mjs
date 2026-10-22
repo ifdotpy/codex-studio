@@ -1257,6 +1257,7 @@ function fastTierCommands(root) {
               "test(unrelated_commits_do_not_reread_five_unchanged_resources)",
               "test(subscribed_content_is_computed_once_per_coalesced_revision)",
               "test(unavailable_and_racing_content_keep_the_safe_refresh)",
+              "test(token_publications_do_not_repeat_or_invalidate_content_projections)",
             ]),
           ],
         ],

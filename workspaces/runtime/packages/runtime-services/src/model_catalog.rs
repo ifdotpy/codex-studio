@@ -261,7 +261,7 @@ impl ModelCatalogService {
                     (
                         key,
                         &entry.value,
-                        entry.value.is_none() && entry.error,
+                        entry.error && !entry.pending,
                         entry.value.is_none() && entry.pending,
                     )
                 })
@@ -847,6 +847,17 @@ pub(crate) mod tests {
             entry.error = true;
         }
         assert_eq!(service.cached_resource_content(), Some(before.clone()));
+        {
+            let mut cache = service.0.state.lock().expect("cache");
+            let entry = cache.entries.values_mut().next().expect("entry");
+            entry.pending = false;
+            entry.expires_at = Some(Instant::now() + CATALOG_FAILURE_RETRY);
+        }
+        assert_ne!(
+            service.cached_resource_content(),
+            Some(before.clone()),
+            "a failed worker catalog is unavailable even while display reads retain the old payload"
+        );
         service.seed_test_admission_catalog("account", "home", "codex", json!({"data":[]}));
         assert_ne!(service.cached_resource_content(), Some(before));
     }
