@@ -125,6 +125,18 @@
       "candidate": "['{}']"
     },
     {
+      "pointer": "/components/schemas/Account/properties/group",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/Account/properties/group",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
       "pointer": "/components/schemas/Account/properties/startThrottle",
       "constraint": "@nullable",
       "baseline": "None",
@@ -135,6 +147,30 @@
       "constraint": "@nullableBranch",
       "baseline": "None",
       "candidate": "['{\"$ref\":\"#/components/schemas/AccountStartThrottle\"}']"
+    },
+    {
+      "pointer": "/components/schemas/AccountGroupRequest/properties/group",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/AccountGroupRequest/properties/group",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
+      "pointer": "/components/schemas/AccountsResponse/properties/accounts/items/properties/group",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/AccountsResponse/properties/accounts/items/properties/group",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
     },
     {
       "pointer": "/components/schemas/AccountsResponse/properties/accounts/items/properties/startThrottle",
@@ -149,6 +185,18 @@
       "candidate": "['{\"$ref\":\"#/components/schemas/AccountStartThrottle\"}']"
     },
     {
+      "pointer": "/components/schemas/AccountsResponse/properties/archivedAccounts/items/properties/group",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/AccountsResponse/properties/archivedAccounts/items/properties/group",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
       "pointer": "/components/schemas/AccountsResponse/properties/archivedAccounts/items/properties/startThrottle",
       "constraint": "@nullable",
       "baseline": "None",
@@ -159,6 +207,12 @@
       "constraint": "@nullableBranch",
       "baseline": "None",
       "candidate": "['{\"$ref\":\"#/components/schemas/AccountStartThrottle\"}']"
+    },
+    {
+      "pointer": "/components/schemas/AccountsResponse/properties/defaultAccountGroups",
+      "constraint": "property",
+      "baseline": "absent from closed object",
+      "candidate": "accepted property"
     },
     {
       "pointer": "/components/schemas/AgentEntityCapacityRetryDto/properties/cause",
@@ -1139,6 +1193,30 @@
       "candidate": "['{}']"
     },
     {
+      "pointer": "/components/schemas/PeerProjectResponse/properties/accountGroups",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/PeerProjectResponse/properties/accountGroups",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{\"items\":{\"type\":\"string\"}}']"
+    },
+    {
+      "pointer": "/components/schemas/PeerProjectResponse/properties/accountGroupsRevision",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/PeerProjectResponse/properties/accountGroupsRevision",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
       "pointer": "/components/schemas/ProcessActionResult/properties/_syncEntities",
       "constraint": "@nullable",
       "baseline": "None",
@@ -1437,6 +1515,102 @@
       "constraint": "@nullableBranch",
       "baseline": "None",
       "candidate": "['{\"$ref\":\"#/components/schemas/ProcessActionResult\"}']"
+    },
+    {
+      "pointer": "/components/schemas/Project/properties/accountGroups",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/Project/properties/accountGroups",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{\"items\":{\"type\":\"string\"}}']"
+    },
+    {
+      "pointer": "/components/schemas/Project/properties/accountGroupsRevision",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/Project/properties/accountGroupsRevision",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
+      "pointer": "/components/schemas/ProjectMutationRecord/properties/accountGroups",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/ProjectMutationRecord/properties/accountGroups",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{\"items\":{\"type\":\"string\"}}']"
+    },
+    {
+      "pointer": "/components/schemas/ProjectMutationRecord/properties/accountGroupsRevision",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/ProjectMutationRecord/properties/accountGroupsRevision",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
+      "pointer": "/components/schemas/ProjectReadResponse/properties/items/items/properties/accountGroups",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/ProjectReadResponse/properties/items/items/properties/accountGroups",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{\"items\":{\"type\":\"string\"}}']"
+    },
+    {
+      "pointer": "/components/schemas/ProjectReadResponse/properties/items/items/properties/accountGroupsRevision",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/ProjectReadResponse/properties/items/items/properties/accountGroupsRevision",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
+      "pointer": "/components/schemas/ProjectWriteRequest/properties/account_groups",
+      "constraint": "property",
+      "baseline": "absent from closed object",
+      "candidate": "accepted property"
+    },
+    {
+      "pointer": "/components/schemas/ProjectWriteRequest/properties/account_groups",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/ProjectWriteRequest/properties/account_groups",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{\"items\":{\"pattern\":\"^[a-z0-9][a-z0-9_-]{0,31}$\",\"type\":\"string\"}}']"
+    },
+    {
+      "pointer": "/components/schemas/ProjectWriteRequest/properties/action",
+      "constraint": "enum",
+      "baseline": "['add_folder', 'register', 'remove', 'remove_folder', 'rename', 'rename_folder', 'set_account', 'set_accounts', 'set_worker_base', 'set_worker_environment']",
+      "candidate": "['add_folder', 'register', 'remove', 'remove_folder', 'rename', 'rename_folder', 'set_account', 'set_account_groups', 'set_accounts', 'set_worker_base', 'set_worker_environment']"
     },
     {
       "pointer": "/components/schemas/QuestionEntry/properties/header",
@@ -2255,6 +2429,18 @@
       "candidate": "['id', 'agent', 'text', 'checks', 'revision', 'files', 'created']"
     },
     {
+      "pointer": "/paths/~1api~1accounts~1group/post/requestBody/content/application~1json/schema/properties/group",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/paths/~1api~1accounts~1group/post/requestBody/content/application~1json/schema/properties/group",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
       "pointer": "/paths/~1api~1agents/post/requestBody/content/application~1json/schema/properties/workspaceMode",
       "constraint": "enum",
       "baseline": "['image', 'layr', 'worktree']",
@@ -2331,6 +2517,12 @@
       "constraint": "@nullableBranch",
       "baseline": "None",
       "candidate": "['{\"$ref\":\"#/components/schemas/ProcessResponseTarget\"}']"
+    },
+    {
+      "pointer": "/paths/~1api~1projects/post/requestBody/content/application~1json/schema",
+      "constraint": "@anyOf",
+      "baseline": "['{\"additionalProperties\":false,\"properties\":{\"account_key\":{\"anyOf\":[{\"type\":\"null\"},{\"type\":\"string\"}],\"title\":\"Account Key\"},\"account_keys\":{\"anyOf\":[{\"items\":{\"type\":\"string\"},\"type\":\"array\"},{\"type\":\"null\"}],\"title\":\"Account Keys\"},\"action\":{\"anyOf\":[{\"enum\":[\"register\",\"remove\",\"set_account\",\"set_worker_base\",\"set_worker_environment\",\"set_accounts\",\"rename\",\"add_folder\",\"rename_folder\",\"remove_folder\"],\"type\":\"string\"},{\"type\":\"null\"}],\"title\":\"Action\"},\"base_ref\":{\"anyOf\":[{\"type\":\"null\"},{\"type\":\"string\"}],\"title\":\"Base Ref\"},\"environment\":{\"anyOf\":[{\"enum\":[\"host\",\"linux\"],\"type\":\"string\"},{\"type\":\"null\"}],\"title\":\"Environment\"},\"expected_revision\":{\"anyOf\":[{\"maximum\":9007199254740991,\"minimum\":0,\"type\":\"integer\"},{\"type\":\"null\"}],\"title\":\"Expected Revision\"},\"folder_id\":{\"anyOf\":[{\"type\":\"null\"},{\"type\":\"string\"}],\"title\":\"Folder Id\"},\"name\":{\"anyOf\":[{\"type\":\"null\"},{\"type\":\"string\"}],\"title\":\"Name\"},\"parent_id\":{\"anyOf\":[{\"type\":\"null\"},{\"type\":\"string\"}],\"title\":\"Parent Id\"},\"path\":{\"minLength\":1,\"title\":\"Path\",\"type\":\"string\"},\"request_id\":{\"anyOf\":[{\"maxLength\":128,\"minLength\":1,\"type\":\"string\"},{\"type\":\"null\"}],\"title\":\"Request Id\"},\"server\":{\"anyOf\":[{\"maxLength\":128,\"type\":\"string\"},{\"type\":\"null\"}],\"title\":\"Server\"}},\"required\":[\"path\"],\"title\":\"ProjectWriteRequest\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"action\":{\"const\":\"reorder\",\"title\":\"Action\",\"type\":\"string\"},\"expected_revision\":{\"maximum\":9007199254740991,\"minimum\":0.0,\"title\":\"Expected Revision\",\"type\":\"integer\"},\"groups\":{\"additionalProperties\":{\"items\":{\"type\":\"string\"},\"type\":\"array\"},\"title\":\"Groups\",\"type\":\"object\"},\"migration\":{\"anyOf\":[{\"type\":\"boolean\"},{\"type\":\"null\"}],\"title\":\"Migration\"},\"request_id\":{\"maxLength\":255,\"minLength\":1,\"title\":\"Request Id\",\"type\":\"string\"}},\"required\":[\"action\",\"request_id\",\"expected_revision\",\"groups\"],\"title\":\"SidebarReorderRequest\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"action\":{\"enum\":[\"add_location\",\"remove_location\"],\"title\":\"Action\",\"type\":\"string\"},\"path\":{\"anyOf\":[{\"maxLength\":4096,\"type\":\"string\"},{\"type\":\"null\"}],\"title\":\"Path\"},\"project\":{\"maxLength\":4096,\"minLength\":1,\"title\":\"Project\",\"type\":\"string\"},\"request_id\":{\"maxLength\":128,\"minLength\":1,\"title\":\"Request Id\",\"type\":\"string\"},\"server\":{\"maxLength\":128,\"minLength\":1,\"title\":\"Server\",\"type\":\"string\"}},\"required\":[\"action\",\"project\",\"server\",\"request_id\"],\"title\":\"ProjectLocationRequest\",\"type\":\"object\"}']",
+      "candidate": "['{\"additionalProperties\":false,\"properties\":{\"account_groups\":{\"anyOf\":[{\"items\":{\"pattern\":\"^[a-z0-9][a-z0-9_-]{0,31}$\",\"type\":\"string\"},\"maxItems\":16,\"type\":\"array\"},{\"type\":\"null\"}],\"title\":\"Account Groups\"},\"account_key\":{\"anyOf\":[{\"type\":\"null\"},{\"type\":\"string\"}],\"title\":\"Account Key\"},\"account_keys\":{\"anyOf\":[{\"items\":{\"type\":\"string\"},\"type\":\"array\"},{\"type\":\"null\"}],\"title\":\"Account Keys\"},\"action\":{\"anyOf\":[{\"enum\":[\"register\",\"remove\",\"set_account\",\"set_worker_base\",\"set_worker_environment\",\"set_accounts\",\"rename\",\"add_folder\",\"rename_folder\",\"remove_folder\",\"set_account_groups\"],\"type\":\"string\"},{\"type\":\"null\"}],\"title\":\"Action\"},\"base_ref\":{\"anyOf\":[{\"type\":\"null\"},{\"type\":\"string\"}],\"title\":\"Base Ref\"},\"environment\":{\"anyOf\":[{\"enum\":[\"host\",\"linux\"],\"type\":\"string\"},{\"type\":\"null\"}],\"title\":\"Environment\"},\"expected_revision\":{\"anyOf\":[{\"maximum\":9007199254740991,\"minimum\":0,\"type\":\"integer\"},{\"type\":\"null\"}],\"title\":\"Expected Revision\"},\"folder_id\":{\"anyOf\":[{\"type\":\"null\"},{\"type\":\"string\"}],\"title\":\"Folder Id\"},\"name\":{\"anyOf\":[{\"type\":\"null\"},{\"type\":\"string\"}],\"title\":\"Name\"},\"parent_id\":{\"anyOf\":[{\"type\":\"null\"},{\"type\":\"string\"}],\"title\":\"Parent Id\"},\"path\":{\"minLength\":1,\"title\":\"Path\",\"type\":\"string\"},\"request_id\":{\"anyOf\":[{\"maxLength\":128,\"minLength\":1,\"type\":\"string\"},{\"type\":\"null\"}],\"title\":\"Request Id\"},\"server\":{\"anyOf\":[{\"maxLength\":128,\"type\":\"string\"},{\"type\":\"null\"}],\"title\":\"Server\"}},\"required\":[\"path\"],\"title\":\"ProjectWriteRequest\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"action\":{\"const\":\"reorder\",\"title\":\"Action\",\"type\":\"string\"},\"expected_revision\":{\"maximum\":9007199254740991,\"minimum\":0.0,\"title\":\"Expected Revision\",\"type\":\"integer\"},\"groups\":{\"additionalProperties\":{\"items\":{\"type\":\"string\"},\"type\":\"array\"},\"title\":\"Groups\",\"type\":\"object\"},\"migration\":{\"anyOf\":[{\"type\":\"boolean\"},{\"type\":\"null\"}],\"title\":\"Migration\"},\"request_id\":{\"maxLength\":255,\"minLength\":1,\"title\":\"Request Id\",\"type\":\"string\"}},\"required\":[\"action\",\"request_id\",\"expected_revision\",\"groups\"],\"title\":\"SidebarReorderRequest\",\"type\":\"object\"}', '{\"additionalProperties\":false,\"properties\":{\"action\":{\"enum\":[\"add_location\",\"remove_location\"],\"title\":\"Action\",\"type\":\"string\"},\"path\":{\"anyOf\":[{\"maxLength\":4096,\"type\":\"string\"},{\"type\":\"null\"}],\"title\":\"Path\"},\"project\":{\"maxLength\":4096,\"minLength\":1,\"title\":\"Project\",\"type\":\"string\"},\"request_id\":{\"maxLength\":128,\"minLength\":1,\"title\":\"Request Id\",\"type\":\"string\"},\"server\":{\"maxLength\":128,\"minLength\":1,\"title\":\"Server\",\"type\":\"string\"}},\"required\":[\"action\",\"project\",\"server\",\"request_id\"],\"title\":\"ProjectLocationRequest\",\"type\":\"object\"}']"
     },
     {
       "pointer": "/paths/~1api~1sync~1notify/post/requestBody/content/application~1json/schema/properties/resources/items",

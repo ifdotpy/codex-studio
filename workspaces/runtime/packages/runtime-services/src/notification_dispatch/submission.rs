@@ -68,15 +68,10 @@ pub(super) fn validate_submission(
         if meta_ids != input_ids {
             return Err(stored("runtime_event_meta", &input.id));
         }
-        if meta
-            .as_ref()
-            .and_then(|meta| meta.get("transcriptItemId"))
-            .is_some_and(|value| {
-                value.as_str() != Some(format!("{agent_id}:{}", submission.first_event_id).as_str())
-            })
-        {
-            return Err(stored("runtime_event_meta", &input.id));
-        }
+        // A stored `transcriptItemId` is not checked: it can belong to an earlier,
+        // never delivered attempt (a rejected steer skips deferred input, so its first
+        // event differs from the next turn's). Delivered events leave the pending set;
+        // the submission restamps the batch it commits.
         if matches!(authorization, SubmissionAuthorization::Current) {
             validate_submission_policy(
                 transaction,

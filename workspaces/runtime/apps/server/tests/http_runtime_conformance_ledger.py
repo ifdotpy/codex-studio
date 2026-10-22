@@ -687,6 +687,12 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
     ("POST", "/api/accounts/name"): {
         "primary": {"body": {"account_key": "ledger-unknown-account", "label": "Probe account", "request_id": "ledger-name"}, "expected": "400", "assert_no_write": True},
     },
+    ("POST", "/api/accounts/group"): {
+        "primary": {"body": {"account_key": "ledger-unknown-account", "group": "probe"}, "expected": "400", "assert_no_write": True},
+    },
+    ("POST", "/api/accounts/default-groups"): {
+        "primary": {"body": {"groups": ["probe", "probe"]}, "expected": "400", "assert_no_write": True},
+    },
     ("POST", "/api/accounts/throttle"): {
         "primary": {"body": {"account_key": "ledger-unknown-account", "burst": 8, "pauseSeconds": 1, "maxRunningTurns": 8}, "expected": "400", "assert_no_write": True},
     },

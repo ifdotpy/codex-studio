@@ -121,7 +121,7 @@ class AccountsModelTests(unittest.TestCase):
     def test_account_snapshot_has_explicit_collections(self) -> None:
         result = AccountsResponse.model_validate({
             "accounts": [], "archivedAccounts": [], "defaultAccountKey": "default",
-            "logins": [], "supportsDisconnect": True, "supportsDelete": True,
+            "defaultAccountGroups": [], "logins": [], "supportsDisconnect": True, "supportsDelete": True,
         })
         self.assertEqual(result.defaultAccountKey, "default")
         with self.assertRaises(ValidationError):

@@ -1791,6 +1791,8 @@ class ProjectRecord(TypedDict):
     projectAliases: NotRequired[list[ProjectAliasRecord]]
     updated: NotRequired[float]
     accountKeys: NotRequired[list[str]]
+    accountGroups: NotRequired[list[str]]
+    accountGroupsRevision: NotRequired[SafeInt]
     folders: NotRequired[list[ProjectFolderRecord]]
     organizationRevision: NotRequired[SafeInt]
     peerTeams: NotRequired[list[ProjectPeerTeamRecord]]

@@ -418,6 +418,7 @@ mod tests {
             ],
             archived_accounts: vec![],
             default_account_key: json!("a"),
+            default_account_groups: Vec::new(),
             logins: vec![],
             known_account_keys: Default::default(),
         };
