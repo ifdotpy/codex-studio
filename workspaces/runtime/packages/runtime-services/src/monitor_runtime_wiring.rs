@@ -649,23 +649,21 @@ impl MonitorRuntime {
                 Err(error) => record_tick_failure(&mut failure, error),
             }
         }
+        let more = result_batch_full
+            || attach_more
+            || !drained
+            || stall_more
+            || orphan_more
+            || start_more
+            || cancel_more
+            || rules_more;
+        if !more {
+            scan.stall_monitor = Some(String::new());
+            scan.orphan_monitor = Some(String::new());
+        }
         match failure {
             Some(error) => Err(error),
-            None => {
-                let more = result_batch_full
-                    || attach_more
-                    || !drained
-                    || stall_more
-                    || orphan_more
-                    || start_more
-                    || cancel_more
-                    || rules_more;
-                if !more {
-                    scan.stall_monitor = Some(String::new());
-                    scan.orphan_monitor = Some(String::new());
-                }
-                Ok(more)
-            }
+            None => Ok(more),
         }
     }
 
@@ -1670,6 +1668,7 @@ mod tests {
         queued_results: AtomicUsize,
         drained_results: AtomicUsize,
         probes: AtomicUsize,
+        probe_errors: AtomicUsize,
         reattach_calls: AtomicUsize,
         orphan_checks: AtomicUsize,
         next_call_times: Mutex<Vec<tokio::time::Instant>>,
@@ -1770,6 +1769,9 @@ mod tests {
             Box::pin(async move {
                 self.probes.fetch_add(1, Ordering::SeqCst);
                 self.probe_called.notify_one();
+                if self.probe_errors.load(Ordering::SeqCst) > 0 {
+                    return Err(MonitorError::Refused("test probe failure"));
+                }
                 Ok(())
             })
         }
@@ -2318,6 +2320,33 @@ mod tests {
         assert_eq!(second.effects.len(), 1);
         assert_eq!(second.effects[0].0, "monitor-064");
         assert!(matches!(&second.effects[0].1, Effect::Probe { .. }));
+    }
+
+    #[tokio::test]
+    async fn monitor_scan_restarts_after_persistent_probe_failure() {
+        let (_root, store, port) = fixture().await;
+        insert_active_owner(&store).await;
+        port.probe_errors.store(1, Ordering::SeqCst);
+        let runtime = MonitorRuntime::new(store.clone(), port.clone(), Arc::new(Notify::new()));
+        for expected_probes in 1..=2 {
+            store.transaction_with(|tx| {
+                tx.execute(
+                    "INSERT INTO runtime_monitors(id,record) VALUES ('monitor',?1) ON CONFLICT(id) DO UPDATE SET record=excluded.record",
+                    [serde_json::json!({
+                        "id":"monitor","agent":"owner","epoch":0,"status":"running",
+                        "created":0.0,"activityAt":0.0,"activityGeneration":1,
+                        "stallWakeGeneration":0,"stallTimeoutSeconds":50,"livenessCommand":"true"
+                    }).to_string()],
+                )?;
+                Ok::<_, studio_runtime_store::StoreError>(())
+            }).await.expect("make monitor due for another probe");
+            let result = runtime.tick_with_progress(100.0).await;
+            assert!(matches!(
+                result,
+                Err(MonitorError::Refused("test probe failure"))
+            ));
+            assert_eq!(port.probes.load(Ordering::SeqCst), expected_probes);
+        }
     }
 
     #[tokio::test]

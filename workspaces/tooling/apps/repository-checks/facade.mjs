@@ -1208,6 +1208,7 @@ function fastTierCommands(root) {
               "test(/^monitor_start_preparation::/)",
               "test(/^monitor_wake_guarantees::/)",
               "test(/^monitor_runtime_wiring::tests::monitor_scan_checks_each_unchanged_monitor_once_per_cycle$/)",
+              "test(/^monitor_runtime_wiring::tests::monitor_scan_restarts_after_persistent_probe_failure$/)",
               "(not binary(integration) & (test(monitor_completion_) | test(reattached_exit_)))",
             ]),
           ],
