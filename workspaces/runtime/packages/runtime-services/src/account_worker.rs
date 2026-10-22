@@ -106,6 +106,42 @@ fn vm_refresh_deadline_after_session_change(
     }
 }
 
+/// Typed owner of a pending preparation; diagnostic text never selects its category.
+#[derive(Debug)]
+pub struct PreparationBlock {
+    pub reason: studio_runtime_schema::agent_progress::StartWaitReason,
+    pub diagnostic: String,
+}
+impl PreparationBlock {
+    pub fn new(
+        reason: studio_runtime_schema::agent_progress::StartWaitReason,
+        diagnostic: impl Into<String>,
+    ) -> Self {
+        Self {
+            reason,
+            diagnostic: diagnostic.into(),
+        }
+    }
+}
+impl From<String> for PreparationBlock {
+    fn from(diagnostic: String) -> Self {
+        Self::new(
+            studio_runtime_schema::agent_progress::StartWaitReason::Dependency,
+            diagnostic,
+        )
+    }
+}
+impl From<&str> for PreparationBlock {
+    fn from(diagnostic: &str) -> Self {
+        diagnostic.to_owned().into()
+    }
+}
+impl std::fmt::Display for PreparationBlock {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.diagnostic.fmt(f)
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum WorkerError {
     #[error(transparent)]
@@ -122,10 +158,10 @@ pub enum WorkerError {
     StaleVmActor,
     /// Pending on a blocker this preparation cannot name: any agent change may clear it.
     #[error("{0}")]
-    PreparationPending(String),
+    PreparationPending(PreparationBlock),
     /// Pending until the agent's own row changes (its workspace or VM readiness).
     #[error("{0}")]
-    PreparationAwaitsAgent(String),
+    PreparationAwaitsAgent(PreparationBlock),
     #[error("provider cleanup is not confirmed: {0}")]
     CleanupUnconfirmed(String),
     #[error("account already has a worker")]
@@ -1703,14 +1739,16 @@ impl Worker {
         let commands = self.commands.clone();
         let agent_id = intent.agent_id.clone();
         let epoch = intent.epoch;
-        let catalog = (pending.reason == preparation::CATALOG_PENDING_REASON).then(|| {
-            (
-                self.resources.model_catalog.clone(),
-                self.account.clone(),
-                self.resources.account_home.clone(),
-                intent.provider.key().to_owned(),
-            )
-        });
+        let catalog = (pending.reason
+            == studio_runtime_schema::agent_progress::StartWaitReason::ModelCatalog)
+            .then(|| {
+                (
+                    self.resources.model_catalog.clone(),
+                    self.account.clone(),
+                    self.resources.account_home.clone(),
+                    intent.provider.key().to_owned(),
+                )
+            });
         let agents = catalog
             .is_none()
             .then(|| self.bridge.agent_wakes.wait(since, pending.rows));
@@ -2405,10 +2443,16 @@ impl Worker {
             }
         } else {
             let resolver = self.resources.vm_provider_launch.clone().ok_or_else(|| {
-                WorkerError::PreparationPending("provider-session/vm-launch-resolver".into())
+                WorkerError::PreparationPending(crate::account_worker::PreparationBlock::new(
+                    studio_runtime_schema::agent_progress::StartWaitReason::ProviderSession,
+                    "provider-session/vm-launch-resolver",
+                ))
             })?;
             let guest = self.resources.guest_rpc.clone().ok_or_else(|| {
-                WorkerError::PreparationPending("provider-session/vm-guest-unavailable".into())
+                WorkerError::PreparationPending(crate::account_worker::PreparationBlock::new(
+                    studio_runtime_schema::agent_progress::StartWaitReason::ProviderSession,
+                    "provider-session/vm-guest-unavailable",
+                ))
             })?;
             self.resolving_vm_actors.insert(request.agent_id.clone());
             let resolved = self.drive(resolver.resolve(request.clone())).await;

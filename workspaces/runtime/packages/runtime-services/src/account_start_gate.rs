@@ -44,7 +44,8 @@ use tokio::time::Instant;
 /// The account registry row field that stores [`StartThrottle`].
 pub const REGISTRY_FIELD: &str = "startThrottle";
 /// The agent record field that shows a start waiting here.
-pub const WAIT_FIELD: &str = "startWait";
+pub use studio_runtime_schema::agent_progress::START_WAIT_FIELD as WAIT_FIELD;
+pub use studio_runtime_schema::agent_progress::{AgentStartWait, StartWaitReason};
 
 /// One account's turn start throttle. Bounds and the per-provider defaults
 /// (with the measurements behind them) are owned by the shared values
@@ -367,10 +368,9 @@ impl StartGate {
             if first && matches!(wait, Wait::Slot { .. }) && self.prune(&sources.store).await? {
                 continue;
             }
-            let kind = std::mem::discriminant(&wait);
-            if wait != Wait::Behind && shown != Some(kind) {
+            if shown != Some((wait, throttle)) {
                 show_wait(&sources.store, agent, epoch, wait, throttle).await?;
-                shown = Some(kind);
+                shown = Some((wait, throttle));
             }
             let pause_end = match wait {
                 Wait::Pause { until } if first => Some(until),
@@ -498,36 +498,56 @@ async fn show_wait(
     wait: Wait,
     throttle: StartThrottle,
 ) -> Result<(), ContinuationError> {
-    let value = match wait {
-        Wait::Behind => return Ok(()),
-        Wait::Slot { running } => json!({
-            "reason": "slot", "epoch": epoch, "runningTurns": running,
-            "maxRunningTurns": throttle.max_running,
-        }),
+    let mut value = AgentStartWait::new(StartWaitReason::StartQueue, epoch);
+    match wait {
+        Wait::Behind => {}
+        Wait::Slot { running } => {
+            value.reason = StartWaitReason::Slot;
+            value.running_turns = Some(running);
+            value.max_running_turns = Some(throttle.max_running);
+        }
         Wait::Pause { until } => {
-            let remaining = until.saturating_duration_since(Instant::now());
-            let until = crate::event_write::unix_time()
-                .map_err(|_| ContinuationError::Unavailable("account-start/clock"))?
-                + remaining.as_secs_f64();
-            json!({
-                "reason": "pause", "epoch": epoch, "until": until,
-                "runningTurns": 0, "maxRunningTurns": throttle.max_running,
-            })
+            value.reason = StartWaitReason::Pause;
+            value.until = Some(
+                crate::event_write::unix_time()
+                    .map_err(|_| ContinuationError::Unavailable("account-start/clock"))?
+                    + until
+                        .saturating_duration_since(Instant::now())
+                        .as_secs_f64(),
+            );
         }
-    };
-    let agent = agent.to_owned();
-    crate::scheduler::lifecycle_transaction_with(store, move |tx| {
-        let Some(mut record) = AgentRepository::get(tx, &AgentId::from(agent.as_str()))? else {
-            return Ok::<_, StoreError>(());
-        };
-        if record.status != AgentStatus::Queued || record.epoch != epoch {
-            return Ok(());
-        }
-        record.extra.insert(WAIT_FIELD.into(), value);
-        AgentRepository::put(tx, &record)
-    })
-    .await?;
+    }
+    show_blocked(store, vec![(agent.to_owned(), value)]).await?;
     Ok(())
+}
+
+/// Publish the current admission owner's wait through the existing agent projection.
+pub async fn show_blocked(
+    store: &RuntimeStore,
+    waits: Vec<(String, AgentStartWait)>,
+) -> Result<(), StoreError> {
+    if waits.is_empty() {
+        return Ok(());
+    }
+    crate::scheduler::lifecycle_transaction_with(store, move |tx| {
+        for (agent, wait) in waits {
+            let Some(mut record) = AgentRepository::get(tx, &AgentId::from(agent.as_str()))? else {
+                continue;
+            };
+            if !matches!(record.status, AgentStatus::Queued | AgentStatus::Starting)
+                || record.epoch != wait.epoch
+            {
+                continue;
+            }
+            let value = serde_json::to_value(wait)?;
+            if record.extra.get(WAIT_FIELD) != Some(&value) {
+                record.extra.insert(WAIT_FIELD.into(), value);
+                AgentRepository::put(tx, &record)?;
+            }
+        }
+        Ok::<_, StoreError>(())
+    })
+    .await
 }
 
 /// The start gates of every account in this process.

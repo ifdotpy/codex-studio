@@ -235,6 +235,18 @@ fn agent_progress_py() -> Result<String, String> {
     Ok(text)
 }
 
+/// The record model imports this leaf module without entering the sync package.
+fn start_wait_py() -> Result<String, String> {
+    let reasons = crate::agent_progress::StartWaitReason::ALL
+        .iter()
+        .map(|reason| serde_json::to_string(reason).map_err(|error| error.to_string()))
+        .collect::<Result<Vec<_>, _>>()?
+        .join(", ");
+    Ok(format!(
+        "# {HEADER}\nfrom typing import Literal\n\nStartWaitReason = Literal[{reasons}]\n"
+    ))
+}
+
 fn delivery_moment_ts() -> String {
     let mut text = format!("// {HEADER}\nexport const DeliveryMoment = {{\n");
     for moment in DeliveryMoment::ALL {
@@ -429,6 +441,19 @@ pub fn check_schema_parity(openapi: &Value, account_transfer: &Value) -> Result<
     check_delivery_parity(openapi)?;
     check_account_group_parity(openapi)?;
     crate::agent_progress::check_schema_parity(openapi)?;
+    let expected = serde_json::to_value(crate::agent_progress::StartWaitReason::ALL)
+        .map_err(|error| error.to_string())?;
+    for pointer in [
+        "/components/schemas/AgentEntityStartWaitDto/properties/reason/enum",
+        "/components/schemas/StartWaitRecordResponse/properties/reason/enum",
+    ] {
+        if openapi.pointer(pointer) != Some(&expected) {
+            return Err(format!(
+                "{pointer} must match StartWaitReason in runtime-schema/src/agent_progress.rs"
+            ));
+        }
+    }
+
     expect_number(
         openapi,
         "/components/schemas/ManagedMessageBody/properties/assets/maxItems",
@@ -614,6 +639,10 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
     }
     let web = |name: &str| format!("{WEB_GENERATED}/{name}");
     let mut rendered = vec![
+        Rendered {
+            path: "workspaces/runtime/apps/server/src/codex_start_wait.py".into(),
+            text: start_wait_py()?,
+        },
         Rendered {
             path: "workspaces/runtime/apps/server/src/studio_api/sync/agent_progress_generated.py"
                 .into(),

@@ -1,15 +1,36 @@
 import type { Agent } from "./types";
 
-/**
- * Why a queued turn waits for its account's start throttle, or null. The
- * server writes `startWait` when the start waits and clears it with the
- * claim; it applies only while the agent is still queued at that epoch.
- */
+/** Render the server's epoch-scoped wait, shared with orchestration_status. */
 export function startWaitLabel(agent: Agent): string | null {
   const wait = agent.startWait;
-  if (!wait || agent.status !== "queued" || wait.epoch !== agent.epoch)
+  if (
+    !wait ||
+    !["queued", "starting"].includes(agent.status ?? "") ||
+    wait.epoch !== agent.epoch
+  )
     return null;
-  return wait.reason === "slot"
-    ? `Waiting for an account slot (${wait.runningTurns}/${wait.maxRunningTurns})`
-    : "Waiting for the account pause";
+  switch (wait.reason) {
+    case "slot":
+      return `Waiting for an account slot (${wait.runningTurns}/${wait.maxRunningTurns})`;
+    case "pause":
+      return "Waiting for the account pause";
+    case "start_queue":
+      return "Waiting behind an earlier account start";
+    case "disk":
+      return "Waiting for free disk space";
+    case "model_catalog":
+      return "Waiting for the model catalog";
+    case "provider_session":
+      return "Waiting for the provider session";
+    case "dependency":
+      return "Waiting for a preparation dependency";
+    case "dispatch_pending":
+      return "Waiting for dispatch handoff";
+    case "paused":
+      return "Automatic continuation is paused";
+    case "native_failure":
+      return "Waiting for native failure recovery";
+    case "account_transfer":
+      return "Waiting for account transfer";
+  }
 }

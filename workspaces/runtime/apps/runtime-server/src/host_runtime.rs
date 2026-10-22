@@ -539,7 +539,7 @@ impl studio_runtime_services::account_worker::preparation::VmProviderLaunchResol
                 &credential_document,
             )
             .await
-            .map_err(|error| WorkerError::PreparationPending(format!("vm-credentials/{error}")))?;
+            .map_err(|error| WorkerError::PreparationPending(studio_runtime_services::account_worker::PreparationBlock::new(studio_runtime_services::account_start_gate::StartWaitReason::ProviderSession, format!("vm-credentials/{error}"))))?;
             Ok(
                 studio_runtime_services::account_worker::preparation::VmProviderLaunch {
                     provider,
