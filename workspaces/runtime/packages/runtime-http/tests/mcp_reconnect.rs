@@ -55,8 +55,12 @@ impl AccountSessionPort for Session {
             };
             Ok(SessionReceipt {
                 scope: scope(),
-                operation: request.operation,
-                ticket: None,
+                operation: request.operation.clone(),
+                ticket: Some(studio_runtime_providers::RequestTicket {
+                    generation: scope().generation,
+                    id: studio_runtime_providers::RequestId::String(request.operation),
+                    method: request.method,
+                }),
                 certainty: if self.unknown {
                     RequestCertainty::Unknown
                 } else {
