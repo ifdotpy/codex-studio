@@ -1211,6 +1211,7 @@ function fastTierCommands(root) {
               "test(disk_space::tests::)",
               "test(archive_finished_)",
               "test(archive_finished_reason_survives_dispatch_and_receipt_replay)",
+              "test(committed_archive_)",
               "test(lead_archive_and_restore_run_through_the_lifecycle_owner)",
               "test(status_snapshot_tracks_capacity_finished_pages_and_revision_replay)",
               "test(workspace_pending_reuses_reserved_attempt)",

@@ -1295,6 +1295,16 @@ tasks to the unassigned ready backlog. The archive and task changes commit in on
 transaction. Task results and decisions remain. The default keeps the
 `assigned_work` blocker. Active work and all other blockers still prevent archive.
 
+Archive commit and workspace cleanup follow one flow:
+
+1. Commit the authorized archive and retain its original receipt.
+2. Run cleanup for that worker only; unrelated pending workspaces stay separate.
+3. If cleanup fails, report the worker as archived with cleanup pending and the
+   original error as the workspace reason. Batch results count the archive and
+   include that reason among kept workspaces.
+4. Recover through the saved tool receipt after a lost response. A later archive
+   call preserves the original archive identity; uncertain effects stay held.
+
 After an image detach interruption, make a new `archive` call to finish detaching. After partial Git removal, make a new `archive` call to retry cleanup. Studio
 preserves the failed cleanup record and Git error. It can repair the exact saved
 Git registration without changing worktree files. Modified or untracked files
