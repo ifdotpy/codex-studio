@@ -7,8 +7,10 @@
 use std::collections::{BTreeSet, VecDeque};
 use std::sync::{Arc, Mutex, OnceLock};
 
+use serde::Deserialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
+use studio_runtime_store::ResourceChange;
 use thiserror::Error;
 
 use crate::change_notifications::{ChangeNotificationHub, ChangeSnapshot};
@@ -27,6 +29,27 @@ pub enum ResourceNotifyError {
     Unavailable,
 }
 
+// Notification roles only: HTTP's generated ResourceRef owns input validation.
+#[derive(Deserialize)]
+struct ResourceScope {
+    kind: ResourceKind,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "kebab-case")]
+enum ResourceKind {
+    State,
+    Transcript,
+    Transcripts,
+    Room,
+    Task,
+    Tasks,
+    Workspace,
+    MultiServer,
+    #[serde(other)]
+    Other,
+}
+
 struct ContentVersion {
     key: String,
     digest: Option<[u8; 32]>,
@@ -39,6 +62,7 @@ struct Publications {
     versions: VecDeque<(String, i64)>,
     pruned_revision: i64,
     entity_reset_revision: i64,
+    entity_revision: i64,
 }
 
 /// A consistent resource view, with only the requested resources that changed.
@@ -68,7 +92,24 @@ impl ResourceNotifications {
                 versions: VecDeque::new(),
                 pruned_revision: 0,
                 entity_reset_revision: 0,
+                entity_revision: 0,
             }),
+        }
+    }
+
+    /// One post-commit wake; exact entity-only writes do not move the broad cursor.
+    pub fn notify_store_commit(&self, change: ResourceChange) {
+        match change {
+            ResourceChange::All => self.changes.notify_one(),
+            ResourceChange::Entities => {
+                let Ok(mut state) = self.publications.lock() else {
+                    self.changes.notify_one();
+                    return;
+                };
+                self.changes.try_publish(1, false, |cursor| {
+                    state.entity_revision = cursor.revision;
+                });
+            }
         }
     }
 
@@ -155,7 +196,9 @@ impl ResourceNotifications {
         let mut versions = Vec::new();
         for resource in resources {
             let key = resource.to_string();
-            let explicit = if resource["kind"] == "state" {
+            let scope: ResourceScope = serde_json::from_value(resource.clone())
+                .map_err(|_| ResourceNotifyError::Invalid)?;
+            let explicit = if matches!(scope.kind, ResourceKind::State) {
                 state.entity_reset_revision
             } else {
                 state
@@ -164,12 +207,20 @@ impl ResourceNotifications {
                     .find(|(existing, _)| *existing == key)
                     .map_or(0, |(_, revision)| *revision)
             };
-            // Multi-server discovery reads also refresh volatile access timestamps. Its
-            // semantic cursor must come only from explicit multi-server publications.
-            let version = if resource.get("kind").and_then(Value::as_str) == Some("multi-server") {
-                explicit
-            } else {
-                explicit.max(cursor.resource_revision)
+            let version = match scope.kind {
+                // Discovery reads refresh volatile access timestamps; only its
+                // explicit publications may advance this semantic cursor.
+                ResourceKind::MultiServer => explicit,
+                ResourceKind::State
+                | ResourceKind::Transcript
+                | ResourceKind::Transcripts
+                | ResourceKind::Room
+                | ResourceKind::Task
+                | ResourceKind::Tasks
+                | ResourceKind::Workspace => explicit
+                    .max(cursor.resource_revision)
+                    .max(state.entity_revision),
+                ResourceKind::Other => explicit.max(cursor.resource_revision),
             };
             if after.is_none_or(|revision| version > revision) || overflow {
                 selected.push(resource.clone());

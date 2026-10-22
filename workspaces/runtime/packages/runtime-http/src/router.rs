@@ -218,9 +218,16 @@ impl HttpState {
             studio_runtime_services::model_catalog::ModelCatalogService::with_change_callback(
                 Arc::new(move || model_changes.notify_one()),
             );
+        let resource_notifications = Arc::new(
+            studio_runtime_services::resource_notify::ResourceNotifications::new(Arc::clone(
+                &sync_changes,
+            )),
+        );
         if let Some(store) = &store {
-            let changes = Arc::clone(&sync_changes);
-            store.add_resource_change_observer(move || changes.notify_one());
+            let notifications = Arc::clone(&resource_notifications);
+            store.add_resource_change_observer(move |change| {
+                notifications.notify_store_commit(change)
+            });
         }
         Self {
             message_admission: None,
@@ -268,11 +275,7 @@ impl HttpState {
             tool_catalog: None,
             model_catalog,
             capabilities_cache: Arc::new(Default::default()),
-            resource_notifications: Arc::new(
-                studio_runtime_services::resource_notify::ResourceNotifications::new(Arc::clone(
-                    &sync_changes,
-                )),
-            ),
+            resource_notifications,
             sync_changes: Arc::clone(&sync_changes),
             token_rates: Arc::new(TokenRateHub::with_change_hub(Arc::clone(&sync_changes))),
             event_wake: Arc::new(Notify::new()),
@@ -976,6 +979,85 @@ mod tests {
             None,
         );
         (state, store, directory)
+    }
+
+    #[tokio::test]
+    async fn entity_only_commits_preserve_volatile_resources_and_refresh_entity_refs() {
+        let (state, store, _directory) = state_with_store().await;
+        let volatile = [
+            serde_json::json!({"kind":"accounts"}),
+            serde_json::json!({"kind":"models"}),
+            serde_json::json!({"kind":"costs"}),
+            serde_json::json!({"kind":"desktop"}),
+            serde_json::json!({"kind":"queue","agentId":"agent"}),
+            serde_json::json!({"kind":"session-cost","agentId":"agent"}),
+            serde_json::json!({"kind":"terminals"}),
+        ];
+        let entities = vec![
+            serde_json::json!({"kind":"state"}),
+            serde_json::json!({"kind":"transcript","agentId":"agent"}),
+            serde_json::json!({"kind":"transcripts"}),
+            serde_json::json!({"kind":"room","roomId":"room"}),
+            serde_json::json!({"kind":"tasks","agentId":"agent"}),
+            serde_json::json!({"kind":"task","taskId":"task"}),
+            serde_json::json!({"kind":"workspace","agentId":"agent"}),
+        ];
+        let resources = volatile
+            .iter()
+            .chain(&entities)
+            .cloned()
+            .collect::<Vec<_>>();
+        store
+            .transaction(|tx| {
+                studio_runtime_store::SyncDocumentsRepository::put_entity(
+                    tx,
+                    "agent",
+                    "agent",
+                    serde_json::json!({"id":"agent"}),
+                    false,
+                )?;
+                studio_runtime_store::SyncDocumentsRepository::put_entity(
+                    tx,
+                    "transcript:agent",
+                    "item",
+                    serde_json::json!({"text":"hello"}),
+                    false,
+                )?;
+                Ok(())
+            })
+            .await
+            .expect("entity-only commit");
+        assert_eq!(state.sync_changes.snapshot().revision, 1);
+        assert_eq!(
+            state.sync_changes.snapshot().resource_revision,
+            0,
+            "entity-only commit must not invalidate every resource"
+        );
+        let view = state
+            .resource_notifications
+            .changes_since(&resources, Some(0))
+            .expect("entity changes");
+        assert_eq!(view.resources, entities);
+        assert!(!view.entity_reset, "known entity writes remain incremental");
+        store.transaction(|tx| {
+            studio_runtime_store::SyncDocumentsRepository::put_entity(tx, "agent", "agent", serde_json::json!({"id":"agent","status":"idle"}), false)?;
+            tx.execute("INSERT INTO runtime_items(id,agent,created,record) VALUES('mixed','agent',1,'{}')", [])?;
+            Ok(())
+        }).await.expect("mixed commit");
+        assert_eq!(state.sync_changes.snapshot().resource_revision, 2);
+        assert_eq!(
+            state
+                .resource_notifications
+                .changes_since(&resources, Some(1))
+                .expect("mixed changes")
+                .resources,
+            resources
+        );
+        store.transaction(|tx| {
+            tx.execute_batch("CREATE TABLE unknown_resource_writer(id INTEGER); INSERT INTO unknown_resource_writer VALUES(1)")?;
+            Ok(())
+        }).await.expect("unknown writer");
+        assert_eq!(state.sync_changes.snapshot().resource_revision, 3);
     }
 
     #[tokio::test]

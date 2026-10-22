@@ -1234,6 +1234,42 @@ function fastTierCommands(root) {
       },
     },
     {
+      item: { name: "studio-runtime-store", ecosystem: "cargo" },
+      label: "entity commit invalidation witnesses",
+      commands: [
+        [
+          "cargo",
+          [
+            "nextest",
+            "run",
+            "--locked",
+            "--no-tests",
+            "fail",
+            "--message-format",
+            "libtest-json-plus",
+            "-p",
+            "studio-runtime-http",
+            "-p",
+            "studio-runtime-store",
+            "--lib",
+            "-E",
+            nextestAnyOf([
+              "test(entity_only_commits_preserve_volatile_resources_and_refresh_entity_refs)",
+              "test(resource_change_classifier_tests::)",
+              "test(entity_resource_hints_cover_tombstones_deletes_and_unknown_commits)",
+              "test(tracked_observer_tables_must_keep_rowid_storage)",
+            ]),
+          ],
+        ],
+      ],
+      options: {
+        selector:
+          "typed entity-only commit hints and conservative broad refresh",
+        reason:
+          "Entity-only writes must wake entity-backed refs without advancing volatile resource versions; unknown and mixed writes retain broad invalidation.",
+      },
+    },
+    {
       item: { name: "studio-runtime-http", ecosystem: "cargo" },
       label: "resource content invalidation witnesses",
       commands: [
