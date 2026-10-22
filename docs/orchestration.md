@@ -15,6 +15,14 @@ Streaming analytics appends each delta to its existing text and updates retained
 JSON bytes from that fragment's escaped size. Command-output trimming subtracts
 the escaped size of the removed prefix, preserving the existing character limit.
 
+Branching before a message follows this flow:
+
+1. Read native turn IDs in descending pages with item bodies omitted.
+2. Stop at the selected turn's predecessor, including across a page boundary.
+   If the selected turn is first, start an empty thread instead.
+3. Keep each page's durable operation identity and the existing fork recovery
+   handling, so a lost response cannot duplicate the native branch.
+
 Use the [Electron desktop app](../workspaces/client/apps/desktop/README.md), or build the [React interface](../workspaces/client/apps/web/README.md), start `codex-canvas`, and open <http://127.0.0.1:4620>.
 Use the new-chat action inside a project. The server creates an empty lead conversation immediately.
 If the current lead chat is empty, it reuses that chat and preserves the draft.
