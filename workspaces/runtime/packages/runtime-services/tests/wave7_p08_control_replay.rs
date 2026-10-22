@@ -150,7 +150,13 @@ async fn restart_at_each_control_transport_boundary_never_resends_an_uncertain_m
                     assert_eq!(call.identity.scope.epoch, 2);
                     assert_eq!(
                         call.identity.scope.request_id.as_deref(),
-                        Some("control-one")
+                        if call.identity.method == mutation {
+                            Some("control-one")
+                        } else {
+                            // Idle reads use fresh identities; only the mutation
+                            // retains the caller's durable receipt identity.
+                            None
+                        }
                     );
                 }
                 let agent = AgentRepository::get(
