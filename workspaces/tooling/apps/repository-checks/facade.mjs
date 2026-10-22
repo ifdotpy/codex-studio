@@ -862,6 +862,27 @@ function fastTierCommands(root) {
     operationsModulePreparation(),
     webWasmPreparation(root),
     {
+      item: { name: "retained Python helper boundaries", ecosystem: "pnpm" },
+      label: "retained Python helper boundaries",
+      commands: [
+        [
+          "node",
+          [
+            "--test",
+            path.join(
+              root,
+              "workspaces/client/apps/desktop/retained-helper-witness.test.cjs",
+            ),
+          ],
+        ],
+      ],
+      options: {
+        selector: "retained helper import and launch boundaries",
+        reason:
+          "Keep retained desktop and guest Python independent of the removed backend.",
+      },
+    },
+    {
       item: { name: "schema and dependency guards", ecosystem: "pnpm" },
       label: "schema and dependency guards",
       commands: [
@@ -1042,6 +1063,7 @@ function fastTierCommands(root) {
             "--lib",
             "-E",
             nextestAnyOf([
+              "test(peer_updates::tests::desktop_installer_contract_matches_rust_owner)",
               "test(server_exec::tests::snapshots_)",
               "test(server_exec::tests::snapshot_write_failure_)",
               "test(server_exec::tests::existing_start_fence_)",

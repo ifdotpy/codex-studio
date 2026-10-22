@@ -1476,3 +1476,10 @@ change with both options. Cross-machine Claude cache reuse remains unverified.
 2. Recovery probes the Rust supervisor socket with protocol 2 and takes no provider ownership; an unavailable owner makes recovery wait.
 3. Recovery attaches to an existing backend or starts the saved Rust server only when the runtime lease is free.
 4. Recovery restarts its own job without unloading the supervisor or its live provider children. Desktop Python helpers use only local desktop modules.
+
+### Retained guest and desktop helpers
+
+1. Desktop recovery reads process arguments and pending updates from its local helpers.
+2. The installer verifies the staged app and waits for the VM maintenance lock.
+3. The guest relays native provider requests to the Rust process supervisor.
+4. Guest restarts reuse the supervisor socket and journal; an uncertain owner stays blocked.
