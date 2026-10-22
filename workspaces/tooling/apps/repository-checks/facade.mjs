@@ -829,6 +829,12 @@ function operationsModulePreparation() {
   };
 }
 
+// A fast-tier nextest filter with one witness per line, so independent changes
+// add separate lines instead of rewriting one shared filter string.
+function nextestAnyOf(terms) {
+  return terms.join(" | ");
+}
+
 function fastTierCommands(root) {
   const packages = discover(root);
   const server = serverPackage();
@@ -879,7 +885,12 @@ function fastTierCommands(root) {
             "--test",
             "integration",
             "-E",
-            "test(agent_columns::tests::migration_2026_10_20_columns_round_trips_an_old_state_once) | test(agent_columns::tests::migration_2026_10_21_removes_capacity_column_and_replaces_wake_index_once) | test(/^sql_callback_guard::/) | test(sql_guard_tests::)",
+            nextestAnyOf([
+              "test(agent_columns::tests::migration_2026_10_20_columns_round_trips_an_old_state_once)",
+              "test(agent_columns::tests::migration_2026_10_21_removes_capacity_column_and_replaces_wake_index_once)",
+              "test(/^sql_callback_guard::/)",
+              "test(sql_guard_tests::)",
+            ]),
           ],
         ],
       ],
@@ -908,7 +919,11 @@ function fastTierCommands(root) {
             "studio-runtime-services",
             "--lib",
             "-E",
-            "test(server_exec::tests::snapshots_) | test(server_exec::tests::snapshot_write_failure_) | test(server_exec::tests::existing_start_fence_)",
+            nextestAnyOf([
+              "test(server_exec::tests::snapshots_)",
+              "test(server_exec::tests::snapshot_write_failure_)",
+              "test(server_exec::tests::existing_start_fence_)",
+            ]),
           ],
         ],
       ],
@@ -938,7 +953,19 @@ function fastTierCommands(root) {
             "studio-runtime-services",
             "--lib",
             "-E",
-            "test(account_worker::tests::callback_handoff::) | test(account_worker::tests::callback_head_of_line) | test(stale_stamp_of_an_undelivered_steer_batch_does_not_block_the_next_turn) | test(stamp_tests::) | test(sync_policy::tests::monitor_) | test(work_write::actor_tests::submission_manifest_boundaries_use_shared_limits) | test(work_write::actor_tests::nonempty_file_submission_rechecks_cwd_and_replays_without_filesystem_work) | test(ancestry_reads_only_the_checked_parent_chain) | test(send_to_descendant_is_followup_input_while_parent_and_broadcast_are_chat) | test(account_worker::tests::retained::automatic_recovery_) | test(account_worker::tests::retained::startup_first_pass_reconciles_exact_history_without_replaying_unknown_input)",
+            nextestAnyOf([
+              "test(account_worker::tests::callback_handoff::)",
+              "test(account_worker::tests::callback_head_of_line)",
+              "test(stale_stamp_of_an_undelivered_steer_batch_does_not_block_the_next_turn)",
+              "test(stamp_tests::)",
+              "test(sync_policy::tests::monitor_)",
+              "test(work_write::actor_tests::submission_manifest_boundaries_use_shared_limits)",
+              "test(work_write::actor_tests::nonempty_file_submission_rechecks_cwd_and_replays_without_filesystem_work)",
+              "test(ancestry_reads_only_the_checked_parent_chain)",
+              "test(send_to_descendant_is_followup_input_while_parent_and_broadcast_are_chat)",
+              "test(account_worker::tests::retained::automatic_recovery_)",
+              "test(account_worker::tests::retained::startup_first_pass_reconciles_exact_history_without_replaying_unknown_input)",
+            ]),
           ],
         ],
         [
@@ -956,7 +983,10 @@ function fastTierCommands(root) {
             "--test",
             "integration",
             "-E",
-            "test(/^provider_session_task::active_barrier_holds_new_requests_but_not_callback_answers_or_interrupts$/) | test(/^provider_session_task::expiry_batch_preserves_all_queued_request_outcomes_in_order$/)",
+            nextestAnyOf([
+              "test(/^provider_session_task::active_barrier_holds_new_requests_but_not_callback_answers_or_interrupts$/)",
+              "test(/^provider_session_task::expiry_batch_preserves_all_queued_request_outcomes_in_order$/)",
+            ]),
           ],
         ],
       ],
@@ -988,7 +1018,10 @@ function fastTierCommands(root) {
             "--test",
             "integration",
             "-E",
-            "test(/^provider_stdio::killed_provider_is_reaped_with_full_journal_and_unobserved_write$/) | test(/^wave7_p01_registry::direct_child_sigkill_settles_unknown_without_resend$/)",
+            nextestAnyOf([
+              "test(/^provider_stdio::killed_provider_is_reaped_with_full_journal_and_unobserved_write$/)",
+              "test(/^wave7_p01_registry::direct_child_sigkill_settles_unknown_without_resend$/)",
+            ]),
           ],
         ],
       ],
@@ -1084,7 +1117,14 @@ function fastTierCommands(root) {
             "integration",
             "--lib",
             "-E",
-            "test(exit_logging_tests::continuation_) | test(/^history_runtime::tests::slow_filesystem_metadata_does_not_block_a_store_observer$/) | test(/^analytics_history_checkpoint::terminal_error_repair_is_idempotent_for_exact_and_ambiguous_notices$/) | test(/^monitor_start_preparation::/) | test(/^monitor_wake_guarantees::/) | (not binary(integration) & (test(monitor_completion_) | test(reattached_exit_)))",
+            nextestAnyOf([
+              "test(exit_logging_tests::continuation_)",
+              "test(/^history_runtime::tests::slow_filesystem_metadata_does_not_block_a_store_observer$/)",
+              "test(/^analytics_history_checkpoint::terminal_error_repair_is_idempotent_for_exact_and_ambiguous_notices$/)",
+              "test(/^monitor_start_preparation::/)",
+              "test(/^monitor_wake_guarantees::/)",
+              "(not binary(integration) & (test(monitor_completion_) | test(reattached_exit_)))",
+            ]),
           ],
         ],
       ],
@@ -1115,7 +1155,22 @@ function fastTierCommands(root) {
             "studio-runtime-schema",
             "--lib",
             "-E",
-            "test(journal_fixture_directory_is_removed_on_return_and_unwind) | test(nonempty_file_submission_rechecks_cwd_and_replays_without_filesystem_work) | test(unrelated_reservation_started_after_path_capture_does_not_refuse_ready_token) | test(room_membership_uses_symlink_paths_resolved_by_the_creation_owner) | test(agent_progress::tests::) | test(completed_child_turn_reports_unsubmitted_assignment_once_with_final_text) | test(account_worker::tests::continuation_start::capacity_retry_restart_unknown_reports_once_without_resending) | test(agent_progress_schema_matches_strict_serde_contract) | test(disk_space::tests::) | test(archive_finished_) | test(lead_archive_and_restore_run_through_the_lifecycle_owner) | test(status_snapshot_tracks_capacity_finished_pages_and_revision_replay) | test(workspace_pending_reuses_reserved_attempt) | test(long_answers_use_canonical_bounded_agent_sync_projection)",
+            nextestAnyOf([
+              "test(journal_fixture_directory_is_removed_on_return_and_unwind)",
+              "test(nonempty_file_submission_rechecks_cwd_and_replays_without_filesystem_work)",
+              "test(unrelated_reservation_started_after_path_capture_does_not_refuse_ready_token)",
+              "test(room_membership_uses_symlink_paths_resolved_by_the_creation_owner)",
+              "test(agent_progress::tests::)",
+              "test(completed_child_turn_reports_unsubmitted_assignment_once_with_final_text)",
+              "test(account_worker::tests::continuation_start::capacity_retry_restart_unknown_reports_once_without_resending)",
+              "test(agent_progress_schema_matches_strict_serde_contract)",
+              "test(disk_space::tests::)",
+              "test(archive_finished_)",
+              "test(lead_archive_and_restore_run_through_the_lifecycle_owner)",
+              "test(status_snapshot_tracks_capacity_finished_pages_and_revision_replay)",
+              "test(workspace_pending_reuses_reserved_attempt)",
+              "test(long_answers_use_canonical_bounded_agent_sync_projection)",
+            ]),
           ],
         ],
       ],
