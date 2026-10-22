@@ -120,6 +120,53 @@ fn request(state: &State, port: &RetainedSessionPort, operation: &str) -> Sessio
     }
 }
 
+#[tokio::test]
+async fn retained_mcp_reconnect_binds_actor_thread_scope_and_replays_once() {
+    let state = State::new().await;
+    let mut peer = Peer::new();
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    let port = worker.retained_session();
+    let mut call = request(&state, &port, "mcp-reconnect:receipt");
+    call.expected_scope = Some(port.scope().clone());
+    call.method = Method::McpServerReconnect;
+    call.params = json!({"threadId":"fake-thread-0","name":"server"});
+    let mut invalid = call.clone();
+    invalid.actor.as_mut().unwrap().epoch += 1;
+    assert_eq!(
+        port.request(invalid).await.unwrap_err(),
+        PortError::Identity
+    );
+    let mut invalid = call.clone();
+    invalid.params["threadId"] = json!("other-thread");
+    assert_eq!(
+        port.request(invalid).await.unwrap_err(),
+        PortError::Identity
+    );
+    let mut invalid = call.clone();
+    invalid.expected_scope.as_mut().unwrap().generation += 1;
+    assert_eq!(port.request(invalid).await.unwrap_err(), PortError::Invalid);
+    assert!(peer.writes.try_recv().is_err());
+
+    let sender = port.clone();
+    let first = call.clone();
+    let task = tokio::spawn(async move { sender.request(first).await });
+    let wire = peer.write("mcpServer/reconnect").await;
+    assert_eq!(wire["params"], call.params);
+    peer.reply(&wire, json!({})).await;
+    assert_eq!(
+        task.await.unwrap().unwrap().result,
+        RequestResult::Reply(json!({}))
+    );
+    assert_eq!(
+        port.request(call.clone()).await.unwrap().result,
+        RequestResult::Reply(json!({}))
+    );
+    call.params["name"] = json!("other-server");
+    assert_eq!(port.request(call).await.unwrap_err(), PortError::Identity);
+    assert!(peer.writes.try_recv().is_err());
+    worker.shutdown().await.unwrap();
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn reset_service_recovers_lost_response_through_retained_worker_once() {
     let broker_state = tempfile::tempdir().unwrap();
