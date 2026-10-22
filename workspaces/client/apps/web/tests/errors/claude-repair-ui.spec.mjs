@@ -51,6 +51,7 @@ test("Claude unconfirmed turn and journal repair at 320 and 1200 pixels", async 
   });
   const writes = [],
     errors = [];
+  let reportStatus = "needs_repair";
   page.on("pageerror", (error) => errors.push(error.message));
   await page.route("**/check", (route) =>
     route.fulfill({
@@ -68,11 +69,11 @@ test("Claude unconfirmed turn and journal repair at 320 and 1200 pixels", async 
       json:
         path === "/api/claude/repair-report"
           ? {
-              status: "needs_repair",
+              status: reportStatus,
               skippedRows: 3,
-              invalidSequence: true,
+              invalidSequence: reportStatus === "needs_repair",
               scopeConfirmed: true,
-              nativeHistoryConfirmed: false,
+              nativeHistoryConfirmed: reportStatus === "repaired",
             }
           : { items: [], turns: [], requests: [] },
     });
@@ -80,41 +81,54 @@ test("Claude unconfirmed turn and journal repair at 320 and 1200 pixels", async 
   await server.listen();
   try {
     for (const width of [320, 1200]) {
-      await page.setViewportSize({ width, height: 1000 });
-      await page.goto(server.resolvedUrls.local[0] + "check");
-      await expect(
-        page.getByText("Outcome unconfirmed", { exact: true }),
-      ).toBeVisible();
-      await expect(
-        page.getByText("Journal needs repair", { exact: true }),
-      ).toBeVisible();
-      await expect(
-        page.getByText("Skipped rows: 3.", { exact: true }),
-      ).toBeVisible();
-      await page.getByText("Repair report", { exact: true }).click();
-      await expect(
-        page.getByText("Missing evidence", { exact: true }),
-      ).toBeVisible();
-      await expect(
-        page.getByText("A complete journal sequence.", { exact: true }),
-      ).toBeVisible();
-      await expect(page.locator('[data-outcome="uncertain"]')).toBeVisible();
-      await expect(
-        page.getByRole("button", {
-          name: /retry|replay|repair|another answer/i,
-        }),
-      ).toHaveCount(0);
-      expect(
-        await page.evaluate(
-          () => document.documentElement.scrollWidth <= innerWidth,
-        ),
-      ).toBe(true);
-      const screenshot = testInfo.outputPath(`claude-repair-${width}.png`);
-      await page.screenshot({ path: screenshot, fullPage: true });
-      await testInfo.attach(`claude-repair-${width}`, {
-        path: screenshot,
-        contentType: "image/png",
-      });
+      for (const status of ["needs_repair", "repaired"]) {
+        reportStatus = status;
+        await page.setViewportSize({ width, height: 1000 });
+        await page.goto(server.resolvedUrls.local[0] + "check");
+        await expect(
+          page.getByText("Outcome unconfirmed", { exact: true }),
+        ).toBeVisible();
+        await expect(
+          page.getByText(
+            status === "repaired" ? "Journal repaired" : "Journal needs repair",
+            { exact: true },
+          ),
+        ).toBeVisible();
+        await expect(
+          page.getByText("Skipped rows: 3.", { exact: true }),
+        ).toBeVisible();
+        await page.getByText("Repair report", { exact: true }).click();
+        await expect(
+          page.getByText("Missing evidence", { exact: true }),
+        ).toBeVisible();
+        await expect(
+          page.getByText(
+            status === "repaired"
+              ? "No missing evidence was reported."
+              : "A complete journal sequence.",
+            { exact: true },
+          ),
+        ).toBeVisible();
+        await expect(page.locator('[data-outcome="uncertain"]')).toBeVisible();
+        await expect(
+          page.getByRole("button", {
+            name: /retry|replay|repair|another answer/i,
+          }),
+        ).toHaveCount(0);
+        expect(
+          await page.evaluate(
+            () => document.documentElement.scrollWidth <= innerWidth,
+          ),
+        ).toBe(true);
+        const screenshot = testInfo.outputPath(
+          `claude-repair-${status}-${width}.png`,
+        );
+        await page.screenshot({ path: screenshot, fullPage: true });
+        await testInfo.attach(`claude-repair-${status}-${width}`, {
+          path: screenshot,
+          contentType: "image/png",
+        });
+      }
     }
     expect(writes).toEqual([]);
     expect(errors).toEqual([]);

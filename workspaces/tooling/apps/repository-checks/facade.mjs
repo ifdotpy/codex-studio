@@ -839,6 +839,7 @@ function fastTierCommands(root) {
   const packages = discover(root);
   const server = serverPackage();
   const web = packageTarget(packages, "codex-agents-web");
+  const bridge = packageTarget(packages, "studio-claude-bridge");
   const tooling = packageTarget(packages, "codex-studio-tooling");
   const facade = path.join(
     root,
@@ -864,6 +865,31 @@ function fastTierCommands(root) {
       item: server,
       label: "server safety witnesses",
       options: serverCategoryOptions("fast"),
+    },
+    {
+      item: bridge,
+      label: "Claude restart and journal evidence witnesses",
+      commands: [
+        [
+          "pnpm",
+          [
+            "--filter",
+            "studio-claude-bridge",
+            "exec",
+            "vitest",
+            "run",
+            "--config",
+            "vitest.config.mjs",
+            "restart-reconcile.test.mjs",
+            "journal-repair.test.mjs",
+          ],
+        ],
+      ],
+      options: {
+        selector: "restart-reconcile and journal-repair",
+        reason:
+          "Preserve unconfirmed outcomes and bounded, read-only repair evidence without a model query.",
+      },
     },
     {
       item: { name: "studio-runtime-services", ecosystem: "cargo" },
@@ -1015,6 +1041,8 @@ function fastTierCommands(root) {
             nextestAnyOf([
               "test(/^provider_session_task::active_barrier_holds_new_requests_but_not_callback_answers_or_interrupts$/)",
               "test(/^provider_session_task::expiry_batch_preserves_all_queued_request_outcomes_in_order$/)",
+              "test(/^recovery_store::restart_continues_only_a_confirmed_interruption$/)",
+              "test(/^analytics_capture_corpus::uncertain_turn_keeps_its_outcome_and_reason_in_analytics$/)",
             ]),
           ],
         ],
@@ -1094,7 +1122,7 @@ function fastTierCommands(root) {
     },
     {
       item: { name: "studio-runtime-http", ecosystem: "cargo" },
-      label: "shared named schema validation witnesses",
+      label: "shared schema validation and repair report witnesses",
       commands: [
         [
           "cargo",
@@ -1109,8 +1137,10 @@ function fastTierCommands(root) {
             "-p",
             "studio-runtime-http",
             "--lib",
+            "--test",
+            "integration",
             "-E",
-            "test(validation::tests::named_schema_)",
+            "test(validation::tests::named_schema_) | test(/^claude_repair_report::/)",
           ],
         ],
       ],
