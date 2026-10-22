@@ -11,7 +11,8 @@
     "withGlobalTauri": true,
     "windows": [],
     "security": {
-      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src ipc: http://ipc.localhost; media-src 'self' blob: data:; frame-src 'self' blob: studio-view:; frame-ancestors 'none'; object-src 'none'; base-uri 'self'"
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src ipc: http://ipc.localhost; media-src 'self' blob: data:; frame-src 'self' blob: studio-view:; frame-ancestors 'none'; object-src 'none'; base-uri 'self'",
+      "dangerousDisableAssetCspModification": ["style-src"]
     }
   },
   "bundle": {

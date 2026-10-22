@@ -325,6 +325,7 @@ test("pnpm Node test selection uses the native test-name filter", () => {
           "workspaces/tooling/apps/repository-checks/tests/facade.test.mjs",
           "workspaces/tooling/apps/repository-checks/tests/release-binaries.test.mjs",
           "workspaces/tooling/apps/repository-checks/tests/scale-verifier-teardown.test.mjs",
+          "workspaces/tooling/apps/repository-checks/tests/native-style-policy.test.mjs",
         ],
       ],
     ],
