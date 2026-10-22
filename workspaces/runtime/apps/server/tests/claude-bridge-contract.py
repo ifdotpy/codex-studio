@@ -1299,7 +1299,8 @@ class Bridge(unittest.TestCase):
         self.proc.stderr.close()
         self.proc = subprocess.Popen([node_executable(), str(self.root / 'bridge.mjs'), str(self.root / 'state')],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-            env={**os.environ, 'STUDIO_CLAUDE_ACCOUNT': 'test@example.test'})
+            env={**os.environ, 'STUDIO_CLAUDE_ACCOUNT': 'test@example.test',
+                 'CLAUDE_CONFIG_DIR': str(self.root / 'native-config')})
         self.rows = queue.Queue()
         # Turn completions not yet returned by completed(), whoever read them.
         self.completions = collections.deque()
