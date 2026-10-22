@@ -703,6 +703,16 @@ consumes generated copies. Both backends use them:
 - Atomic file writes remove their temporary file on any failure and keep the
   previous file.
 
+### Capacity retry outcomes
+
+1. A temporary failure schedules one follow-up through the ordinary input queue.
+2. An accepted start binds the retry to that turn; its completion reports the result.
+3. A rejected start ends the retry as `failed` and sends one parent `child_result`.
+4. A lost start outcome, including across restart, ends the retry as `unknown`
+   and sends one parent recovery notice. The submitted input stays uncertain.
+5. Recovery never resends that input. A late acceptance can bind the same retry
+   to its existing turn; repeated recovery does not repeat the notice.
+
 ## Stop and recovery
 
 **Stop agent** stops only the selected agent. **Stop team** stops its lead and all
