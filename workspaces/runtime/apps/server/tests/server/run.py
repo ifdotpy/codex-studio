@@ -235,6 +235,7 @@ FAST_SUITES = (
     f"{TESTS_REL}/server/test_route_manifest.py",
     f"{TESTS_REL}/server/test_http_backend_harness.py",
     f"{TESTS_REL}/server/test_fast_suite_selection.py",
+    f"{TESTS_REL}/server/test_smoke_installed_acks.py",
     f"{TESTS_REL}/server/test_host_exec_teardown.py",
     f"{TESTS_REL}/host-exec-restart-contract.py",
 )
