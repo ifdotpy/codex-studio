@@ -1099,10 +1099,20 @@ fn settle_outcome(
             ..
         } => false,
         SessionOutcome::Write {
-            outcome, ticket, ..
+            outcome: WriteOutcome::NotSent,
+            ticket,
+            not_sent,
+            ..
         } => {
-            let not_sent = outcome == WriteOutcome::NotSent;
-            uncertain(tx, &context, ticket.as_ref(), not_sent, session_closed)? || not_sent
+            if let Some((agent, epoch)) =
+                settle_not_sent(tx, &context, ticket.as_ref(), not_sent, session_closed)?
+            {
+                effect = Some(Effect::Wake(agent, epoch));
+            }
+            true
+        }
+        SessionOutcome::Write { ticket, .. } => {
+            uncertain(tx, &context, ticket.as_ref(), false, session_closed)?
         }
         SessionOutcome::Resolved {
             outcome: RequestOutcome::Unknown,
@@ -1304,6 +1314,56 @@ fn start_settled(
             .is_some_and(|saved| saved.pointer("/receipts/startResult").is_some()),
     )
 }
+/// Settle a request proven not written to the provider. Returns the agent to
+/// wake when its exact input batch went back to the queue.
+///
+/// The provider never received the input, so a start request (thread or turn)
+/// returns its batch and the agent claims it again (for example after its
+/// reply deadline elapsed while Studio prepared it). The stored reason names
+/// the request and the cause. A batch that returned too often, or an attempt
+/// that is no longer current, settles failed with that reason; its input stays
+/// pending.
+fn settle_not_sent(
+    tx: &studio_runtime_store::Transaction<'_>,
+    context: &Pending,
+    ticket: Option<&studio_runtime_providers::RequestTicket>,
+    cause: Option<crate::provider_session_task::NotSentCause>,
+    session_closed: bool,
+) -> Result<Option<(String, i64)>, WorkerError> {
+    let method = context.method()?;
+    if method == Method::TurnInterrupt {
+        uncertain(tx, context, ticket, true, session_closed)?;
+        return Ok(None);
+    }
+    let identity = context.intent.identity();
+    // A thread request that died with its provider process never submitted the
+    // input; the attempt retries on the next session instead of holding it.
+    if method != Method::TurnStart
+        && session_closed
+        && SchedulerRepository::requeue_unsubmitted_attempt(tx, &identity)?
+    {
+        return Ok(None);
+    }
+    let reason = not_sent_reason(method, cause);
+    if SchedulerRepository::return_unstarted_input(tx, &identity, &reason)? {
+        return Ok(Some((identity.agent_id, identity.epoch)));
+    }
+    SchedulerRepository::settle_start_outcome(tx, &identity, "pending", Some(&reason))?;
+    Ok(None)
+}
+
+/// The stored error of a start whose `method` request was not sent.
+fn not_sent_reason(
+    method: Method,
+    cause: Option<crate::provider_session_task::NotSentCause>,
+) -> String {
+    format!(
+        "Provider did not send {}: {}. The input is kept.",
+        method.as_str(),
+        cause.map_or("Studio did not write it", |cause| cause.describe())
+    )
+}
+
 /// Settle a request whose provider outcome is unknown. Returns true when the
 /// request is retired because its attempt went back to the queue.
 fn uncertain(

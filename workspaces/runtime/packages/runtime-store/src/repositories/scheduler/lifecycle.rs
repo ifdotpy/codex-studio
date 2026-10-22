@@ -948,6 +948,46 @@ impl SchedulerRepository {
         Ok(recovered)
     }
 
+    /// Return the exact input batch of an idle start to the queue before the
+    /// provider received it, and queue the agent to claim it again. The caller
+    /// proves that the input never reached the provider: the session proved
+    /// its request not written. So the retry cannot repeat a message. `reason`
+    /// names the request and the cause; the attempt keeps it as its error.
+    ///
+    /// A start reserved during a busy turn takes the busy rejection path of
+    /// `return_unapplied_input`. Returns false and changes nothing when the
+    /// start outcome is already settled, when the attempt is no longer the
+    /// agent's current start, or when its run already returned
+    /// [`START_RETURN_LIMIT`] batches. The caller then settles the start with
+    /// the same reason.
+    pub fn return_unstarted_input(
+        transaction: &Transaction<'_>,
+        identity: &TurnAttemptIdentity,
+        reason: &str,
+    ) -> StoreResult<bool> {
+        let Some(agent) = load_agent(transaction, &identity.agent_id)? else {
+            return Ok(false);
+        };
+        if ExecutionHistoryRepository::attempt(transaction, &identity.attempt_id)?
+            .is_some_and(|saved| saved.pointer("/receipts/startResult").is_some())
+            || ExecutionHistoryRepository::start_returns(transaction, &identity.attempt_id)?
+                >= START_RETURN_LIMIT
+        {
+            return Ok(false);
+        }
+        if !return_unapplied_input(
+            transaction,
+            agent,
+            identity,
+            reason,
+            json!({"outcome":"returned","reason":reason}),
+        )? {
+            return Ok(false);
+        }
+        ExecutionHistoryRepository::mark_start_return(transaction, &identity.attempt_id)?;
+        Ok(true)
+    }
+
     /// Return one unsubmitted start attempt's reserved input to the queue. Its
     /// input never reached `turn/start`, so the retry cannot repeat a message.
     pub fn requeue_unsubmitted_attempt(
@@ -1711,6 +1751,12 @@ pub(super) fn acceptance_input(agent: &str, epoch: i64, turn: &str) -> Value {
 }
 const UNKNOWN_START_ERROR: &str = "turn/start response timed out; outcome unknown";
 const NOT_SENT_ERROR: &str = "Provider did not send turn/start";
+/// Input batches of one execution run that
+/// [`SchedulerRepository::return_unstarted_input`] returns to the queue before
+/// the provider received them. Unit: returned attempts. The next such start of
+/// that run settles with its named cause instead, so a cause that never clears
+/// cannot restart the agent forever.
+pub const START_RETURN_LIMIT: usize = 3;
 const WAITING_START: &str =
     "The native start result is unknown. Studio is checking the original input in native history.";
 
