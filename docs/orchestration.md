@@ -200,6 +200,14 @@ Monitor projection updates follow this flow:
 3. Terminal monitors outside the window stay retired; owner deletion maintains the window.
 4. Source changes, projections, and tombstones commit in the same transaction.
 
+Monitor processing follows this flow:
+
+1. Stall and orphan scans each advance through bounded pages.
+2. A finished monitor scan stays finished while other scans and queued results continue.
+3. Staged orphan recovery requests reattach for the saved operation on the next pass.
+4. Once all work finishes, cursors reset for the next cycle. Wake notifications
+   received during scanning remain pending and start that next cycle.
+
 Agents use `orchestration_monitor` for all long commands, checks, and watchers.
 A settled turn with active owned commands stays in `waiting_on_monitor`. Each
 command queues one durable `monitor_exit` event when its outcome is decided,

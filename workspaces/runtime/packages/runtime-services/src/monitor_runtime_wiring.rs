@@ -163,14 +163,27 @@ pub trait MonitorPort: MonitorNative + rules_tick::RuleMonitor + Send + Sync {
     ) -> futures_util::future::BoxFuture<'a, InputReply>;
 }
 
-#[derive(Default)]
 struct Scan {
     monitor: String,
+    // Some(cursor) is the next page; None stays finished until the cycle ends.
     stall_monitor: Option<String>,
     orphan_monitor: Option<String>,
     rule: i64,
     recovering_rules: bool,
     recovering_receipts: bool,
+}
+
+impl Default for Scan {
+    fn default() -> Self {
+        Self {
+            monitor: String::new(),
+            stall_monitor: Some(String::new()),
+            orphan_monitor: Some(String::new()),
+            rule: 0,
+            recovering_rules: false,
+            recovering_receipts: false,
+        }
+    }
 }
 
 pub struct MonitorRuntime {
@@ -610,24 +623,25 @@ impl MonitorRuntime {
         let mut stall_more = false;
         let mut orphan_more = false;
         if drained && !result_batch_full && failure.is_none() {
-            match monitor_runtime::tick_page(&self.store, now, scan.stall_monitor.as_deref()).await
-            {
-                Ok(page) => {
-                    stall_more = page.next_after.is_some();
-                    scan.stall_monitor = page.next_after;
-                    for (id, effect) in page.effects {
-                        if let crate::monitor_policy::Effect::Probe {
-                            generation,
-                            command,
-                        } = effect
-                            && let Err(error) = self.port.probe(&id, generation, &command).await
-                        {
-                            record_tick_failure(&mut failure, error);
+            if let Some(after) = scan.stall_monitor.as_deref() {
+                match monitor_runtime::tick_page(&self.store, now, Some(after)).await {
+                    Ok(page) => {
+                        stall_more = page.next_after.is_some();
+                        scan.stall_monitor = page.next_after;
+                        for (id, effect) in page.effects {
+                            if let crate::monitor_policy::Effect::Probe {
+                                generation,
+                                command,
+                            } = effect
+                                && let Err(error) = self.port.probe(&id, generation, &command).await
+                            {
+                                record_tick_failure(&mut failure, error);
+                            }
                         }
                     }
-                }
-                Err(error) => {
-                    record_tick_failure(&mut failure, error);
+                    Err(error) => {
+                        record_tick_failure(&mut failure, error);
+                    }
                 }
             }
             match self.settle_orphans(&mut scan, now).await {
@@ -637,14 +651,21 @@ impl MonitorRuntime {
         }
         match failure {
             Some(error) => Err(error),
-            None => Ok(result_batch_full
-                || attach_more
-                || !drained
-                || stall_more
-                || orphan_more
-                || start_more
-                || cancel_more
-                || rules_more),
+            None => {
+                let more = result_batch_full
+                    || attach_more
+                    || !drained
+                    || stall_more
+                    || orphan_more
+                    || start_more
+                    || cancel_more
+                    || rules_more;
+                if !more {
+                    scan.stall_monitor = Some(String::new());
+                    scan.orphan_monitor = Some(String::new());
+                }
+                Ok(more)
+            }
         }
     }
 
@@ -653,9 +674,10 @@ impl MonitorRuntime {
     /// always delivered first. Returns whether another pass is due now: a
     /// staged command needs the reattach pass, a full page needs the next page.
     async fn settle_orphans(&self, scan: &mut Scan, now: f64) -> Result<bool, MonitorError> {
-        let ids =
-            monitor_runtime::unqueued_running_ids(&self.store, scan.orphan_monitor.as_deref())
-                .await?;
+        let Some(after) = scan.orphan_monitor.as_deref() else {
+            return Ok(false);
+        };
+        let ids = monitor_runtime::unqueued_running_ids(&self.store, Some(after)).await?;
         let full = ids.len() == monitor_runtime::MONITOR_TICK_BATCH;
         scan.orphan_monitor = if full { ids.last().cloned() } else { None };
         let mut staged = false;
@@ -1649,6 +1671,7 @@ mod tests {
         drained_results: AtomicUsize,
         probes: AtomicUsize,
         reattach_calls: AtomicUsize,
+        orphan_checks: AtomicUsize,
         next_call_times: Mutex<Vec<tokio::time::Instant>>,
         next_error_times: Mutex<Vec<tokio::time::Instant>>,
         called: Notify,
@@ -1690,6 +1713,11 @@ mod tests {
     }
 
     impl super::MonitorPort for EventPort {
+        fn exit_owned(&self, _id: &str) -> Option<bool> {
+            self.orphan_checks.fetch_add(1, Ordering::SeqCst);
+            Some(true)
+        }
+
         fn next<'a>(
             &'a self,
         ) -> futures_util::future::BoxFuture<'a, Result<Option<Delivery>, MonitorError>> {
@@ -2293,12 +2321,72 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn monitor_scan_checks_each_unchanged_monitor_once_per_cycle() {
+        let (_root, store, port) = fixture().await;
+        insert_active_owner(&store).await;
+        const SCAN_PAGES: usize = 16;
+        let monitor_count = crate::monitor_runtime::MONITOR_TICK_BATCH * SCAN_PAGES;
+        store
+            .transaction_with(move |tx| {
+                for index in 0..monitor_count {
+                    let id = format!("monitor-{index:04}");
+                    tx.execute(
+                        "INSERT INTO runtime_monitors(id,record) VALUES (?1,?2)",
+                        (
+                            &id,
+                            serde_json::json!({
+                                "id":id,"agent":"owner","epoch":0,"status":"running",
+                                "operation":{"agent":"owner","epoch":0,"accountKey":"default","connectionId":"test"},
+                                "created":100.0,"activityAt":100.0,
+                                "activityGeneration":1,"stallWakeGeneration":0,
+                                "stallTimeoutSeconds":0
+                            }).to_string(),
+                        ),
+                    )?;
+                }
+                Ok::<_, studio_runtime_store::StoreError>(())
+            })
+            .await
+            .expect("persist unchanged monitor fixtures");
+        let runtime = MonitorRuntime::new(store, port.clone(), Arc::new(Notify::new()));
+        // The orphan query needs an empty final page for an exact multiple of its limit.
+        let expected_ticks = SCAN_PAGES + 1;
+        for cycle in 1..=2 {
+            let mut ticks = 0;
+            loop {
+                ticks += 1;
+                let more = runtime.tick_with_progress(100.0).await.expect("scan page");
+                if cycle == 1 && ticks == 1 {
+                    runtime.wake_tick();
+                }
+                assert!(
+                    ticks <= expected_ticks,
+                    "finished phases restarted in cycle {cycle}"
+                );
+                if !more {
+                    break;
+                }
+            }
+            assert_eq!(ticks, expected_ticks);
+            assert_eq!(
+                port.orphan_checks.load(Ordering::SeqCst),
+                monitor_count * cycle
+            );
+            if cycle == 1 {
+                tokio::time::timeout(Duration::from_secs(1), runtime.dispatch_wake.notified())
+                    .await
+                    .expect("a wake during scanning stays pending for the next cycle");
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn monitor_loop_reaches_a_due_sixty_fifth_monitor_then_sleeps() {
         let (_root, store, port) = fixture().await;
         insert_active_owner(&store).await;
         let monitor_count = crate::monitor_runtime::MONITOR_TICK_BATCH + 1;
         let page_count = monitor_count.div_ceil(crate::monitor_runtime::MONITOR_TICK_BATCH);
-        // The probe commit resets the cursor, so the follow-up scan traverses the
+        // The probe commit leaves a wake pending, so a new cycle traverses the
         // same pages once more before the runtime can enter its idle wait.
         let expected_ticks = page_count * 2;
         let active_at = crate::event_write::unix_time().expect("read fixture time");
@@ -2346,7 +2434,7 @@ mod tests {
         wait_for_completed_ticks(&runtime, expected_ticks).await;
         wait_for_cycles(&runtime, page_count).await;
         assert!(
-            runtime.scan.lock().await.stall_monitor.is_none(),
+            runtime.scan.lock().await.stall_monitor.as_deref() == Some(""),
             "both cursor traversals must finish before claiming the loop is idle"
         );
         assert_eq!(port.probes.load(Ordering::SeqCst), 1);

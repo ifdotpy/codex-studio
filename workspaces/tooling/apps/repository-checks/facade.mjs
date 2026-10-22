@@ -1207,6 +1207,7 @@ function fastTierCommands(root) {
               "test(/^analytics_history_schedule::tests::/)",
               "test(/^monitor_start_preparation::/)",
               "test(/^monitor_wake_guarantees::/)",
+              "test(/^monitor_runtime_wiring::tests::monitor_scan_checks_each_unchanged_monitor_once_per_cycle$/)",
               "(not binary(integration) & (test(monitor_completion_) | test(reattached_exit_)))",
             ]),
           ],
