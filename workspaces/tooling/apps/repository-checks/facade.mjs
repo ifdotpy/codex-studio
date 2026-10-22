@@ -926,6 +926,37 @@ function fastTierCommands(root) {
       },
     },
     {
+      item: { name: "provider process exit", ecosystem: "cargo" },
+      label: "independent provider reaping witnesses",
+      commands: [
+        [
+          "cargo",
+          [
+            "nextest",
+            "run",
+            "--locked",
+            "--no-tests",
+            "fail",
+            "--message-format",
+            "libtest-json-plus",
+            "-p",
+            "studio-runtime-process",
+            "-p",
+            "studio-runtime-server",
+            "--test",
+            "integration",
+            "-E",
+            "test(/^provider_stdio::killed_provider_is_reaped_with_full_journal_and_unobserved_write$/) | test(/^wave7_p01_registry::direct_child_sigkill_settles_unknown_without_resend$/)",
+          ],
+        ],
+      ],
+      options: {
+        selector: "full stdio lanes and direct provider SIGKILL recovery",
+        reason:
+          "Check that child reaping and account session loss do not wait for blocked I/O, and that the registry starts a new generation without resending an uncertain turn.",
+      },
+    },
+    {
       item: { name: "project preparation", ecosystem: "cargo" },
       label: "project preparation conflict witnesses",
       commands: [
