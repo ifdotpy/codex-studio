@@ -115,7 +115,11 @@ test("Stop replies before a reserved input save completes and the rejection surv
   const history = await bridge.call("thread/turns/list", {
     threadId: bridge.thread,
   });
-  assert.equal(history.data.at(-1).startOutcome, "not_applied");
+  assert.equal(
+    history.data.find((turn) => turn.clientUserMessageId === "blocked-save")
+      .startOutcome,
+    "not_applied",
+  );
   await bridge.restart();
   const retry = await start(bridge, "blocked-save");
   assert.equal((await completed(bridge, retry.turn.id)).status, "completed");

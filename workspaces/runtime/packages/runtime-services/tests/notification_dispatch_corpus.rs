@@ -13,7 +13,7 @@ async fn live_limits_thread_dispatch_records_only_the_ignored_receipt() {
     // account_worker::tests::limits_updates covers journal ingestion and replay.
     let root = tempfile::tempdir().expect("temporary state");
     let store = RuntimeStore::open(Some(root.path())).await.expect("store");
-    let agent = json!({"id":"agent","rootId":"agent","epoch":1,"status":"running",
+    let agent = json!({"id":"agent","rootId":"agent","epoch":1,"status":"running","events":0,
         "threadId":"thread","accountKey":"default","provider":"codex","isLead":true});
     store
         .transaction_with(move |tx| {
