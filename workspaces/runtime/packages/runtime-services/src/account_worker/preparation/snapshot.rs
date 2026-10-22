@@ -1007,6 +1007,30 @@ fn preserve_complaint(
     Ok(false)
 }
 
+/// Python `frozenNativeParams` of a moved agent. Python reads the three saved
+/// fields and the tools by key, so a missing one is an invalid stored agent.
+fn frozen_params(record: &Value) -> Result<Option<thread::FrozenParams>, WorkerError> {
+    let Some(frozen) = record.get("frozenNativeParams").filter(|v| !v.is_null()) else {
+        return Ok(None);
+    };
+    let field = |key: &str| {
+        frozen
+            .get(key)
+            .cloned()
+            .ok_or_else(|| invalid("agent/frozenNativeParams"))
+    };
+    let dynamic_tools = serde_json::from_value(field("dynamicTools")?)
+        .map_err(|_| invalid("agent/frozenNativeParams"))?;
+    Ok(Some(thread::FrozenParams {
+        base_instructions: field("baseInstructions")?,
+        developer_instructions: field("developerInstructions")?,
+        model: field("model")?,
+        dynamic_tools,
+        effort: frozen.get("effort").cloned(),
+        summary: frozen.get("summary").cloned(),
+    }))
+}
+
 pub(super) fn thread_snapshot(
     tx: &Transaction<'_>,
     resources: &PreparationResources,
@@ -1056,12 +1080,8 @@ pub(super) fn thread_snapshot(
     } else {
         None
     };
-    let unsupported = if record
-        .get("frozenNativeParams")
-        .is_some_and(|v| !v.is_null())
-    {
-        Some(thread::Refusal::FrozenImport)
-    } else if record.get("nativeToolUpdate").is_some_and(|v| !v.is_null()) {
+    let frozen = frozen_params(record)?;
+    let unsupported = if record.get("nativeToolUpdate").is_some_and(|v| !v.is_null()) {
         Some(thread::Refusal::NativeCatalogMutation)
     } else {
         None
@@ -1132,6 +1152,7 @@ pub(super) fn thread_snapshot(
         pending: None,
         loaded: None,
         closed: false,
+        frozen,
     })
 }
 
@@ -1440,6 +1461,46 @@ mod resource_tests {
     }
 
     use super::*;
+
+    /// igor-mbp rehearsal 2026-10-22: two moved Claude agents carried Python's
+    /// `frozenNativeParams`; Rust refused them (`thread-preparation/FrozenImport`)
+    /// and a child result turned the completed parent into a failed agent.
+    #[test]
+    fn a_moved_agent_keeps_its_frozen_native_parameters() {
+        let tool = json!({"name":"orchestration_message","description":"Saved","inputSchema":{"type":"object"}});
+        let record = json!({"frozenNativeParams":{"baseInstructions":"base","developerInstructions":"guidance",
+            "model":"default","dynamicTools":[tool],"effort":"high"}});
+        let frozen = frozen_params(&record).expect("valid").expect("frozen");
+        assert_eq!(frozen.model, json!("default"));
+        assert_eq!(frozen.developer_instructions, json!("guidance"));
+        assert_eq!(frozen.dynamic_tools.len(), 1);
+        assert_eq!(frozen.effort, Some(json!("high")));
+        assert_eq!(frozen.summary, None);
+        assert!(
+            frozen_params(&json!({"frozenNativeParams":null}))
+                .expect("absent")
+                .is_none()
+        );
+        for missing in [
+            "baseInstructions",
+            "developerInstructions",
+            "model",
+            "dynamicTools",
+        ] {
+            let mut broken = record.clone();
+            broken["frozenNativeParams"]
+                .as_object_mut()
+                .expect("object")
+                .remove(missing);
+            assert!(frozen_params(&broken).is_err(), "{missing} is required");
+        }
+        let mut malformed = record;
+        malformed["frozenNativeParams"]["dynamicTools"] = json!([{"name":"orchestration_message"}]);
+        assert!(
+            frozen_params(&malformed).is_err(),
+            "a tool needs its schema"
+        );
+    }
 
     #[test]
     fn native_thread_blocks_follow_the_current_thread_and_turn() {

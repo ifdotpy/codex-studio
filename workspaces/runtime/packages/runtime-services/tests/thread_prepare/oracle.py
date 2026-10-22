@@ -138,6 +138,15 @@ def actor_of(s):
             result[native] = copy.deepcopy(a[key])
     if a["deleted"]:
         result["deletedAt"] = "deleted"
+    if s.get("frozen"):
+        frozen = s["frozen"]
+        saved = dict(baseInstructions=frozen["base_instructions"],
+                     developerInstructions=frozen["developer_instructions"],
+                     model=frozen["model"], dynamicTools=copy.deepcopy(frozen["dynamic_tools"]))
+        for key in ("effort", "summary"):
+            if frozen.get(key) is not None:
+                saved[key] = frozen[key]
+        result["frozenNativeParams"] = saved
     if a.get("native_review"):
         # The review object Python saves on a native review child.
         result["nativeReview"] = {"target": {"type": "uncommittedChanges"}, "requestId": "review-request",
