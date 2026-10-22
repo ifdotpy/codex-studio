@@ -5,7 +5,7 @@ mod wave7_p01_registry;
 // Register every integration test module here; the tooling witness checks coverage.
 
 #[cfg(unix)]
-pub(crate) use wave7_p01_registry::{account_registry, provider_ports};
+pub(crate) use wave7_p01_registry::{account_registry, host_runtime, provider_ports};
 
 #[path = "../../../packages/runtime-services/tests/support/prepared_python.rs"]
 pub(crate) mod prepared_python_support;
