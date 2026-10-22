@@ -892,6 +892,35 @@ function fastTierCommands(root) {
     },
     {
       item: { name: "studio-runtime-services", ecosystem: "cargo" },
+      label: "server command snapshot witnesses",
+      commands: [
+        [
+          "cargo",
+          [
+            "nextest",
+            "run",
+            "--locked",
+            "--no-tests",
+            "fail",
+            "--message-format",
+            "libtest-json-plus",
+            "-p",
+            "studio-runtime-services",
+            "--lib",
+            "-E",
+            "test(server_exec::tests::snapshots_) | test(server_exec::tests::snapshot_write_failure_) | test(server_exec::tests::existing_start_fence_)",
+          ],
+        ],
+      ],
+      options: {
+        selector:
+          "server_exec snapshot coalescing, write retry and start fence",
+        reason:
+          "Check that idle commands do not rewrite snapshots, changed output coalesces, failed writes retry, and an existing start fence prevents another process.",
+      },
+    },
+    {
+      item: { name: "studio-runtime-services", ecosystem: "cargo" },
       label: "provider callback and task submission acceptance witnesses",
       commands: [
         [
@@ -1024,7 +1053,7 @@ function fastTierCommands(root) {
             "studio-runtime-schema",
             "--lib",
             "-E",
-            "test(nonempty_file_submission_rechecks_cwd_and_replays_without_filesystem_work) | test(unrelated_reservation_started_after_path_capture_does_not_refuse_ready_token) | test(room_membership_uses_symlink_paths_resolved_by_the_creation_owner) | test(agent_progress::tests::) | test(completed_child_turn_reports_unsubmitted_assignment_once_with_final_text) | test(agent_progress_schema_matches_strict_serde_contract) | test(disk_space::tests::) | test(archive_finished_) | test(lead_archive_and_restore_run_through_the_lifecycle_owner) | test(status_snapshot_tracks_capacity_finished_pages_and_revision_replay)",
+            "test(nonempty_file_submission_rechecks_cwd_and_replays_without_filesystem_work) | test(unrelated_reservation_started_after_path_capture_does_not_refuse_ready_token) | test(room_membership_uses_symlink_paths_resolved_by_the_creation_owner) | test(agent_progress::tests::) | test(completed_child_turn_reports_unsubmitted_assignment_once_with_final_text) | test(account_worker::tests::continuation_start::capacity_retry_restart_unknown_reports_once_without_resending) | test(agent_progress_schema_matches_strict_serde_contract) | test(disk_space::tests::) | test(archive_finished_) | test(lead_archive_and_restore_run_through_the_lifecycle_owner) | test(status_snapshot_tracks_capacity_finished_pages_and_revision_replay)",
           ],
         ],
       ],
