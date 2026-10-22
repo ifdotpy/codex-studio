@@ -325,6 +325,16 @@ impl MonitorSnapshot {
     pub fn agent(&self) -> &str {
         &self.fields.agent
     }
+    /// Only these fields can change selection in the canonical monitor window.
+    pub(crate) fn same_window_position(&self, other: &Self) -> bool {
+        self.fields.id == other.fields.id
+            && self.fields.agent == other.fields.agent
+            && self.fields.status == other.fields.status
+            && self.fields.created == other.fields.created
+    }
+    pub(crate) fn live_window_owner(&self) -> bool {
+        self.actor.deleted_at.is_none()
+    }
     pub(crate) fn active(&self) -> bool {
         matches!(
             self.fields.status,

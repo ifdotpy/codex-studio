@@ -126,6 +126,15 @@ impl HistoryWake {
     }
 
     fn filesystem(&self, result: notify::Result<Event>, registry_parent: &Path) {
+        self.filesystem_with_exists(result, registry_parent, Path::exists);
+    }
+
+    fn filesystem_with_exists(
+        &self,
+        result: notify::Result<Event>,
+        registry_parent: &Path,
+        mut exists: impl FnMut(&Path) -> bool,
+    ) {
         match result {
             Ok(event) => {
                 let kind = &event.kind;
@@ -141,26 +150,35 @@ impl HistoryWake {
                 );
                 let needs_rescan =
                     event.need_rescan() || matches!(kind, EventKind::Any | EventKind::Other);
+                let empty_paths = event.paths.is_empty();
+                // Metadata may block on the filesystem. Store observers share
+                // pending, so prepare all filesystem evidence before locking it.
+                let paths = event
+                    .paths
+                    .into_iter()
+                    .map(|path| {
+                        let removed = removed_event || !exists(&path);
+                        (
+                            path,
+                            PendingFileEvent {
+                                removed,
+                                structural,
+                            },
+                        )
+                    })
+                    .collect::<Vec<_>>();
                 self.with_pending(|pending| {
-                    if needs_rescan || event.paths.is_empty() {
+                    if needs_rescan || empty_paths {
                         pending.overflow = true;
                         pending.accounts_dirty = true;
                         pending.files.clear();
                     }
-                    for path in event.paths {
-                        let removed = removed_event || !path.exists();
+                    for (path, event) in paths {
                         if registry_event_path(&path, registry_parent) {
                             pending.accounts_dirty = true;
                         }
                         if !pending.overflow {
-                            record_file_change(
-                                pending,
-                                path,
-                                PendingFileEvent {
-                                    removed,
-                                    structural,
-                                },
-                            );
+                            record_file_change(pending, path, event);
                         }
                     }
                 });
@@ -1029,6 +1047,63 @@ mod tests {
     use super::*;
     use serde_json::{Value, json};
     use tempfile::tempdir;
+
+    #[tokio::test]
+    async fn slow_filesystem_metadata_does_not_block_a_store_observer() {
+        const OBSERVER_DEADLINE: Duration = Duration::from_secs(5);
+        let root = tempdir().expect("temporary store");
+        let store = RuntimeStore::open(Some(root.path())).await.expect("store");
+        let wake = Arc::new(HistoryWake::default());
+        let observer_wake = Arc::clone(&wake);
+        store.add_table_change_observer(ObservedTable::Budget, move || observer_wake.budget());
+        let filesystem_wake = Arc::clone(&wake);
+        let (entered, checking) = oneshot::channel();
+        let (release, blocked) = std::sync::mpsc::channel();
+        let filesystem = std::thread::spawn(move || {
+            let mut entered = Some(entered);
+            filesystem_wake.filesystem_with_exists(
+                Ok(Event::new(EventKind::Modify(ModifyKind::Any))
+                    .add_path(PathBuf::from("/profile/sessions/rollout-thread.jsonl"))),
+                Path::new("/state/accounts"),
+                |_| {
+                    entered
+                        .take()
+                        .expect("one metadata check")
+                        .send(())
+                        .expect("entered");
+                    blocked.recv().expect("release metadata check");
+                    true
+                },
+            );
+        });
+        checking.await.expect("metadata lookup started");
+        let committed = tokio::time::timeout(
+            OBSERVER_DEADLINE,
+            store.transaction(|tx| {
+                tx.execute(
+                    "INSERT INTO runtime_budget(id,record) VALUES('observer-witness','{}')",
+                    [],
+                )?;
+                Ok(())
+            }),
+        )
+        .await;
+        // Release and join even when the regression blocks the transaction.
+        release.send(()).expect("release filesystem");
+        filesystem.join().expect("filesystem callback");
+        committed
+            .expect("store observer completes while metadata is blocked")
+            .expect("commit");
+        let pending = wake.take();
+        assert!(pending.budget_dirty);
+        assert_eq!(
+            pending.files.values().copied().collect::<Vec<_>>(),
+            vec![PendingFileEvent {
+                removed: false,
+                structural: false,
+            }]
+        );
+    }
 
     #[tokio::test]
     async fn only_agent_commits_dirty_the_history_roster() {

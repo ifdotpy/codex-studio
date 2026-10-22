@@ -32,6 +32,12 @@ pub const MAX_SAFE_INTEGER: i64 = 9007199254740991;
 pub const MAX_USER_ATTACHMENT_BYTES: usize = 20971520;
 /// Maximum attachment items admitted across one provider turn's input batch.
 pub const MAX_TURN_ATTACHMENTS: usize = 8;
+// Task result evidence: keep complete manifests for broad changes (the reported
+// 73-file submission exceeded the former cap) without adding commit lookup semantics.
+/// Most file paths in one task result submission, in paths.
+pub const TASK_SUBMISSION_MAX_FILES: usize = 500;
+/// Longest submitted file path, in Unicode code points before trimming.
+pub const TASK_SUBMISSION_PATH_MAX_CODEPOINTS: usize = 4096;
 /// Largest managed user message, in Unicode code points (independent of UTF-8 bytes).
 pub const MAX_MANAGED_MESSAGE_CODEPOINTS: usize = 32000;
 /// Display label of `MAX_USER_ATTACHMENT_BYTES`.

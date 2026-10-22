@@ -3,6 +3,11 @@
 import importlib.util
 from pathlib import Path
 import unittest
+import os
+import tempfile
+import subprocess
+import sys
+from unittest.mock import patch
 
 RUNNER_PATH = Path(__file__).with_name("run.py")
 RUNNER_SPEC = importlib.util.spec_from_file_location("fast_server_suite_runner", RUNNER_PATH)
@@ -11,6 +16,30 @@ RUNNER_SPEC.loader.exec_module(RUNNER)
 
 
 class FastSuiteSelection(unittest.TestCase):
+    def test_runner_resolves_checkout_native_module_before_shared_environment(self):
+        from codex_operations_artifact import operations_extension
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "target"
+            debug = target / "debug"
+            debug.mkdir(parents=True)
+            # A fake library verifies import search order without loading native code.
+            with patch.dict(os.environ, {"CARGO_TARGET_DIR": str(target)}):
+                with self.assertRaisesRegex(RuntimeError, "checkout requires"):
+                    operations_extension(RUNNER.ROOT, profile="debug")
+                library = debug / ("studio_operations_native.dll" if sys.platform == "win32" else
+                                   "libstudio_operations_native.dylib" if sys.platform == "darwin" else
+                                   "libstudio_operations_native.so")
+                library.touch()
+                scratch = root / "suite"
+                scratch.mkdir()
+                environment = RUNNER._suite_environment(RUNNER.ROOT, scratch)
+                found = subprocess.run(
+                    [sys.executable, "-c", "import importlib.util; print(importlib.util.find_spec('studio_operations_native').origin)"],
+                    env=environment, capture_output=True, text=True, check=True, timeout=5,
+                )
+                self.assertEqual(Path(found.stdout.strip()).resolve(), library.resolve())
+
     def test_fast_selection_is_discovered_default_and_excludes_manual_work(self):
         selected = RUNNER.only_category([], "fast")
         paths = {path for path, _kind in selected}

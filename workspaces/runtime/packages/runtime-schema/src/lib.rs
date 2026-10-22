@@ -370,17 +370,23 @@ pub fn registry_for_document(document: &Value) -> SchemaResult<JsonSchemaRegistr
     registry.prepare().map_err(|error| error.to_string())
 }
 
-/// Ensure every schema used by persisted Rust records has compiled successfully.
+/// Ensure every named runtime schema has compiled successfully.
 pub fn initialize() -> SchemaResult<()> {
     compiled_schemas().map(|_| ())
 }
 
-/// Validate one persisted value against its named schema.
-pub fn validate(schema: &str, value: &Value) -> SchemaResult<bool> {
-    let validator = compiled_schemas()?
+/// Borrow the process-wide compiled named validator. Clones share jsonschema's root graph.
+/// HTTP keeps its own schema allowlist while reusing this owner for compilation.
+pub fn compiled_validator(schema: &str) -> SchemaResult<&'static Validator> {
+    compiled_schemas()?
         .validators
         .get(schema)
-        .ok_or_else(|| format!("unknown persisted schema {schema}"))?;
+        .ok_or_else(|| format!("unknown persisted schema {schema}"))
+}
+
+/// Validate one persisted value against its named schema.
+pub fn validate(schema: &str, value: &Value) -> SchemaResult<bool> {
+    let validator = compiled_validator(schema)?;
     Ok(validator.is_valid(value))
 }
 
@@ -436,10 +442,7 @@ pub fn table_schema(table: &str) -> Option<&'static str> {
 
 /// Return validation errors as JSON pointers and keywords.
 pub fn validation_errors(schema: &str, value: &Value) -> SchemaResult<Vec<(String, String)>> {
-    let validator = compiled_schemas()?
-        .validators
-        .get(schema)
-        .ok_or_else(|| format!("unknown persisted schema {schema}"))?;
+    let validator = compiled_validator(schema)?;
     Ok(validator
         .iter_errors(value)
         .map(|error| {
@@ -461,10 +464,7 @@ pub fn first_error(schema: &str, value: &Value) -> SchemaResult<Option<(String, 
 /// This preserves historical forward-compatible stored fields while refusing to
 /// strip a required/type/union error into a valid value.
 pub fn strip_stored_extra_fields(schema: &str, value: &mut Value) -> SchemaResult<()> {
-    let validator = compiled_schemas()?
-        .validators
-        .get(schema)
-        .ok_or_else(|| format!("unknown persisted schema {schema}"))?;
+    let validator = compiled_validator(schema)?;
     strip_extra_fields_with_validator(validator, value);
     Ok(())
 }
@@ -632,6 +632,31 @@ fn compile_schemas() -> SchemaResult<CompiledSchemas> {
     let mut validators = BTreeMap::new();
 
     for name in [
+        "AgentEntityDto",
+        "ChatEntityDto",
+        "ComplaintEntityDto",
+        "ConfigureResponse",
+        "DiagnosticsResponse",
+        "EdgeEntityDto",
+        "ErrorResponse",
+        "EventEntityDto",
+        "ExecutionLedger",
+        "PeerTeamEntityDto",
+        "PreferenceField",
+        "ProjectEntityDto",
+        "ProjectMutationRecord",
+        "RequestEntityDto",
+        "ResourceRef",
+        "RoomEntityDto",
+        "RuleEntityDto",
+        "RuntimeLockOperation",
+        "RuntimeLockSample",
+        "SqliteContention",
+        "SyncPullResetResponse",
+        "SyncPullResponse",
+        "TaskEntityDto",
+        "WorkEntityDto",
+        "WorkspaceEntityDto",
         "DevicePairResponse",
         "ServerIdentityResponse",
         "DiscoveryIdentity",
@@ -1169,6 +1194,11 @@ mod tests {
     #[test]
     fn unknown_schema_names_are_configuration_errors() {
         assert!(validate("MissingRecordSchema", &json!({})).is_err());
+        assert!(super::compiled_validator("MissingRecordSchema").is_err());
+        assert!(std::ptr::eq(
+            super::compiled_validator("SyncTaskEntityPayload").expect("sync branch compiles"),
+            super::compiled_validator("SyncTaskEntityPayload").expect("same cached branch"),
+        ));
     }
 
     #[test]

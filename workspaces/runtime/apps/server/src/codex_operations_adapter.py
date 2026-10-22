@@ -12,6 +12,8 @@ PROTOCOL_VERSION = OPERATIONS_PYTHON_PROTOCOL_VERSION
 
 # A packaged backend must use the extension shipped with its own sources,
 # rather than a potentially older copy installed in a shared Python environment.
+# Checkout tests prepend the artifact selected by codex_operations_artifact in
+# the server runner; they never update the shared interpreter's site-packages.
 _source = Path(__file__).resolve().parent
 _packaged_bin = _source.parent / "bin" if _source.name == "scripts" else None
 if _packaged_bin is not None:

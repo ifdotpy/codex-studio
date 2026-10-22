@@ -201,6 +201,7 @@ fn is_exact_rejection(tool: RequestTool, error: Option<&str>) -> bool {
             "Submit a result before review",
             "This work item is not ready",
             "Supply up to 50 file paths",
+            "Submission files exceed shared count or path-length limits",
             "Another agent owns this work item",
             "Dependencies have not been accepted",
             "Unknown managed agent",
