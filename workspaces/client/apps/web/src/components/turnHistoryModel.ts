@@ -133,6 +133,10 @@ export function historyGroups(
     const uncertain = group.items.some(
       (item) => item.turnStatus === "uncertain",
     );
+    if (first.turnId && first.role !== "user" && uncertain) {
+      group.outcome = "uncertain";
+      continue;
+    }
     if (
       !first.turnId ||
       (!uncertain && first.turnId === currentTurn) ||
@@ -192,6 +196,13 @@ export function incrementalHistoryGroups(
   } | null,
 ): HistoryGroup[] {
   if (!prior || prior.currentTurn !== currentTurn)
+    return historyGroups(items, currentTurn);
+  // A user-only unconfirmed outcome depends on replies outside its own group.
+  if (
+    items.some(
+      (item) => item.role === "user" && item.turnStatus === "uncertain",
+    )
+  )
     return historyGroups(items, currentTurn);
   let shared = 0;
   while (

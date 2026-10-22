@@ -39,3 +39,9 @@ it("distinguishes a confirmed repair", () => {
   expect(repairReason(repaired)).toContain("repaired");
   expect(missingRepairEvidence(repaired)).toEqual([]);
 });
+
+it("explains a session or workspace mismatch", () => {
+  expect(
+    repairReason({ ...report, invalidSequence: false, scopeConfirmed: false }),
+  ).toContain("does not match");
+});

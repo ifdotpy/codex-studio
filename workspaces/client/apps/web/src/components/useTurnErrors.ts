@@ -2,6 +2,7 @@ import { useServerApi } from "../servers/ServerServicesContext";
 import { useEffect, useMemo, useState } from "react";
 import "../api";
 import type { Agent, JsonValue, Message } from "../types";
+import { failureMessage } from "./turnFailureReason";
 
 const cachedErrors = new Map<string, Record<string, JsonValue>>();
 const inFlight = new Map<string, Promise<Record<string, JsonValue>>>();
@@ -166,6 +167,11 @@ export function useTurnErrors(items: Message[], agent?: Agent, workspace = "") {
   }, [scope, agent?.id, agent?.threadId, requestKey]);
   const enriched = useMemo(() => {
     const last = new Map<string, number>();
+    const unconfirmed = new Set(
+      items
+        .filter((item) => item.turnStatus === "uncertain")
+        .map((item) => item.turnId),
+    );
     items.forEach((item, index) => {
       if (item.turnId && typeof item.turnId === "string")
         last.set(item.turnId, index);
@@ -177,6 +183,14 @@ export function useTurnErrors(items: Message[], agent?: Agent, workspace = "") {
       const error = errors[turnId];
       if (!error || existing.has(turnId) || last.get(turnId) !== index)
         return [item];
+      if (unconfirmed.has(turnId))
+        return [
+          {
+            ...item,
+            turnStatus: "uncertain",
+            turnError: failureMessage(error),
+          },
+        ];
       return [
         item,
         {
@@ -184,7 +198,7 @@ export function useTurnErrors(items: Message[], agent?: Agent, workspace = "") {
           role: "system",
           text: "",
           turnId,
-          turnStatus: item.turnStatus === "uncertain" ? "uncertain" : "failed",
+          turnStatus: "failed",
           nativeNotice: "error",
           nativeError: error,
         },

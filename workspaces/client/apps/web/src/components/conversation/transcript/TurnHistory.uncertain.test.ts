@@ -39,6 +39,9 @@ for (const role of ["user", "assistant"] as const) {
     expect(markup).toContain('data-outcome="uncertain"');
     expect(markup).toContain("Outcome unconfirmed");
     expect(markup).toContain("The native transcript is incomplete.");
+    expect(markup.match(/The native transcript is incomplete\./g)).toHaveLength(
+      1,
+    );
     expect(markup).not.toContain("Turn interrupted");
     expect(markup).not.toContain('data-outcome="failed"');
     expect(markup).not.toContain("<button");
