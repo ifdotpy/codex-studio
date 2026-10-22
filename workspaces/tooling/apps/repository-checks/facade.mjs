@@ -943,6 +943,7 @@ function fastTierCommands(root) {
               "test(fresh_state::rust_fresh_state_catalog_is_deterministic_and_survives_reopen)",
               "test(cross_runtime::fixture_records_are_readable_and_writable_in_rust)",
               "test(sql_guard_tests::)",
+              "test(repositories::workspace_views::bulk_read_tests::)",
             ]),
           ],
         ],
@@ -1172,6 +1173,34 @@ function fastTierCommands(root) {
           "shared named validator startup and invalid-value error parity",
         reason:
           "Preserve named-schema validation and error locations while HTTP reuses the compiled schema owner.",
+      },
+    },
+    {
+      item: { name: "studio-runtime-http", ecosystem: "cargo" },
+      label: "task page HTTP projection witness",
+      commands: [
+        [
+          "cargo",
+          [
+            "nextest",
+            "run",
+            "--locked",
+            "--no-tests",
+            "fail",
+            "--message-format",
+            "libtest-json-plus",
+            "-p",
+            "studio-runtime-http",
+            "--lib",
+            "-E",
+            "test(task_page_http_keeps_summary_and_ignores_invalid_lookahead)",
+          ],
+        ],
+      ],
+      options: {
+        selector: "task page summary and lookahead validation",
+        reason:
+          "Keep task summaries and pagination unchanged while selecting records once per page.",
       },
     },
     {

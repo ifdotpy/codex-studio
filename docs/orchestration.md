@@ -1478,3 +1478,10 @@ change with both options. Cross-machine Claude cache reuse remains unverified.
 2. After a confirmed connection refusal, the client starts `studio-runtime-server` and verifies its executable build identity.
 3. Recovery owns the independent Rust process supervisor; quitting the client leaves runtime work active.
 4. A timeout or incompatible owner fails visibly without starting a replacement.
+
+## Task history reads
+
+1. The server reads the workspace agents and their volatile fields together.
+2. It selects task IDs and records for the requested page in one query.
+3. It validates only the served records; the extra row indicates more history.
+4. Current and older-page cursors retain their timestamp and ID ordering.

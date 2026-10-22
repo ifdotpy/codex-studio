@@ -50,7 +50,7 @@ pub fn is_volatile_field(key: &str) -> bool {
     AGENT_VOLATILE_FIELDS.contains(&key)
 }
 
-fn columns(prefix: &str) -> String {
+pub(crate) fn columns(prefix: &str) -> String {
     AGENT_VOLATILE_FIELDS
         .iter()
         .map(|field| format!("{prefix}\"{field}\""))
@@ -430,7 +430,7 @@ pub fn merged_rows(
         .collect()
 }
 
-fn merge_row(
+pub(crate) fn merge_row(
     row: &rusqlite::Row<'_>,
     id: &str,
     fields: &mut Map<String, Value>,
