@@ -1,0 +1,229 @@
+{
+  "codex": {
+    "initial": {
+      "version": 1,
+      "defaultAccountKey": "default",
+      "accounts": {
+        "default": {
+          "id": "default",
+          "home": "/tmp/wave9-login-parity-d8itjhqq/codex/codex-home",
+          "label": "Codex",
+          "source": "Codex CLI",
+          "accountId": null,
+          "email": null,
+          "plan": null,
+          "status": "signedOut"
+        }
+      },
+      "logins": {},
+      "deleteReceipts": {}
+    },
+    "responses": [
+      {
+        "requestId": "4b154e4b-80bb-4f1f-b07f-dcaa15563190",
+        "accountKey": "login-4b154e4b-80bb-4f1f-b07f-dcaa15563190",
+        "status": "pending",
+        "createdAt": 1900000000.0,
+        "emailHint": null,
+        "requestedLabel": null,
+        "loginId": "fixture-login",
+        "verificationUrl": "https://example.invalid/device",
+        "userCode": "fixture-code"
+      },
+      {
+        "requestId": "4b154e4b-80bb-4f1f-b07f-dcaa15563190",
+        "accountKey": "login-4b154e4b-80bb-4f1f-b07f-dcaa15563190",
+        "status": "pending",
+        "createdAt": 1900000000.0,
+        "emailHint": null,
+        "requestedLabel": null,
+        "loginId": "fixture-login",
+        "verificationUrl": "https://example.invalid/device",
+        "userCode": "fixture-code"
+      },
+      {
+        "requestId": "4b154e4b-80bb-4f1f-b07f-dcaa15563190",
+        "accountKey": "login-4b154e4b-80bb-4f1f-b07f-dcaa15563190",
+        "status": "cancelled",
+        "createdAt": 1900000000.0,
+        "emailHint": null,
+        "requestedLabel": null,
+        "loginId": "fixture-login"
+      },
+      {
+        "requestId": "4b154e4b-80bb-4f1f-b07f-dcaa15563190",
+        "accountKey": "login-4b154e4b-80bb-4f1f-b07f-dcaa15563190",
+        "status": "cancelled",
+        "createdAt": 1900000000.0,
+        "emailHint": null,
+        "requestedLabel": null,
+        "loginId": "fixture-login"
+      }
+    ],
+    "stored": {
+      "version": 1,
+      "defaultAccountKey": "default",
+      "accounts": {
+        "default": {
+          "id": "default",
+          "home": "/tmp/wave9-login-parity-d8itjhqq/codex/codex-home",
+          "label": "Codex",
+          "source": "Codex CLI",
+          "accountId": null,
+          "email": null,
+          "plan": null,
+          "status": "signedOut"
+        },
+        "login-4b154e4b-80bb-4f1f-b07f-dcaa15563190": {
+          "id": "login-4b154e4b-80bb-4f1f-b07f-dcaa15563190",
+          "home": "/tmp/wave9-login-parity-d8itjhqq/codex/codex-runtime/accounts/login-4b154e4b-80bb-4f1f-b07f-dcaa15563190",
+          "label": "New account",
+          "source": "Codex Agents",
+          "accountId": null,
+          "email": null,
+          "plan": null,
+          "status": "signedOut"
+        }
+      },
+      "logins": {
+        "4b154e4b-80bb-4f1f-b07f-dcaa15563190": {
+          "requestId": "4b154e4b-80bb-4f1f-b07f-dcaa15563190",
+          "accountKey": "login-4b154e4b-80bb-4f1f-b07f-dcaa15563190",
+          "status": "cancelled",
+          "createdAt": 1900000000.0,
+          "emailHint": null,
+          "requestedLabel": null,
+          "loginId": "fixture-login"
+        }
+      },
+      "deleteReceipts": {}
+    },
+    "accountsRoot": "/tmp/wave9-login-parity-d8itjhqq/codex/codex-runtime/accounts",
+    "root": "/tmp/wave9-login-parity-d8itjhqq/codex"
+  },
+  "claudeAdd": {
+    "responses": [
+      {
+        "requestId": "e0166868-592a-4dca-8994-04d34a730af5",
+        "accountKey": "pending-e0166868-592a-4dca-8994-04d34a730af5",
+        "status": "starting",
+        "email": "fixture@example.test",
+        "plan": null,
+        "codeSubmitted": false
+      },
+      {
+        "requestId": "e0166868-592a-4dca-8994-04d34a730af5",
+        "accountKey": "pending-e0166868-592a-4dca-8994-04d34a730af5",
+        "status": "starting",
+        "email": "fixture@example.test",
+        "plan": null,
+        "codeSubmitted": false
+      },
+      {
+        "requestId": "e0166868-592a-4dca-8994-04d34a730af5",
+        "accountKey": "pending-e0166868-592a-4dca-8994-04d34a730af5",
+        "status": "pending",
+        "email": "fixture@example.test",
+        "plan": null,
+        "codeSubmitted": false,
+        "verificationUrl": "https://claude.com/cai/oauth/authorize?fixture=1"
+      },
+      {
+        "requestId": "e0166868-592a-4dca-8994-04d34a730af5",
+        "accountKey": "pending-e0166868-592a-4dca-8994-04d34a730af5",
+        "status": "pending",
+        "email": "fixture@example.test",
+        "plan": null,
+        "codeSubmitted": true,
+        "verificationUrl": "https://claude.com/cai/oauth/authorize?fixture=1"
+      },
+      {
+        "requestId": "e0166868-592a-4dca-8994-04d34a730af5",
+        "accountKey": "pending-e0166868-592a-4dca-8994-04d34a730af5",
+        "status": "cancelled",
+        "email": "fixture@example.test",
+        "plan": null,
+        "codeSubmitted": true
+      },
+      {
+        "requestId": "e0166868-592a-4dca-8994-04d34a730af5",
+        "accountKey": "pending-e0166868-592a-4dca-8994-04d34a730af5",
+        "status": "cancelled",
+        "email": "fixture@example.test",
+        "plan": null,
+        "codeSubmitted": true
+      }
+    ],
+    "stored": {
+      "receipt": {
+        "requestId": "e0166868-592a-4dca-8994-04d34a730af5",
+        "accountKey": "pending-e0166868-592a-4dca-8994-04d34a730af5",
+        "status": "cancelled",
+        "email": "fixture@example.test",
+        "plan": null,
+        "codeSubmitted": true
+      },
+      "metadata": {
+        "flow": "add",
+        "requestHash": "12a6378da09c83300f17fd3eaa02e4f6daa3e996b465e47b5c981c63ca907da1",
+        "emailHint": "fixture@example.test",
+        "label": "Fixture Claude",
+        "configDir": "/tmp/wave9-login-parity-d8itjhqq/claude-add/claude-logins/config-e0166868-592a-4dca-8994-04d34a730af5",
+        "binaryPath": "/fixture/scripted",
+        "codeSubmitted": true,
+        "cleanupDone": true
+      }
+    },
+    "writes": ["fixture-code#fixture-state\n"],
+    "directory": "/tmp/wave9-login-parity-d8itjhqq/claude-add/claude-logins",
+    "root": "/tmp/wave9-login-parity-d8itjhqq/claude-add"
+  },
+  "claudeStart": {
+    "responses": [
+      {
+        "requestId": "987edcdc-0e86-4fdf-a1c6-1513517d3ad0",
+        "accountKey": "claude-profile",
+        "status": "starting",
+        "email": "fixture@example.test"
+      },
+      {
+        "requestId": "987edcdc-0e86-4fdf-a1c6-1513517d3ad0",
+        "accountKey": "claude-profile",
+        "status": "starting",
+        "email": "fixture@example.test"
+      },
+      {
+        "requestId": "987edcdc-0e86-4fdf-a1c6-1513517d3ad0",
+        "accountKey": "claude-profile",
+        "status": "pending",
+        "email": "fixture@example.test",
+        "verificationUrl": "https://claude.com/cai/oauth/authorize?fixture=1"
+      },
+      null,
+      {
+        "requestId": "987edcdc-0e86-4fdf-a1c6-1513517d3ad0",
+        "accountKey": "claude-profile",
+        "status": "cancelled",
+        "email": "fixture@example.test"
+      },
+      {
+        "requestId": "987edcdc-0e86-4fdf-a1c6-1513517d3ad0",
+        "accountKey": "claude-profile",
+        "status": "cancelled",
+        "email": "fixture@example.test"
+      }
+    ],
+    "stored": {
+      "receipt": {
+        "requestId": "987edcdc-0e86-4fdf-a1c6-1513517d3ad0",
+        "accountKey": "claude-profile",
+        "status": "cancelled",
+        "email": "fixture@example.test"
+      },
+      "metadata": {}
+    },
+    "writes": [],
+    "directory": "/tmp/wave9-login-parity-d8itjhqq/claude-start/claude-logins",
+    "root": "/tmp/wave9-login-parity-d8itjhqq/claude-start"
+  }
+}

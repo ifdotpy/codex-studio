@@ -21,6 +21,7 @@ mod context_repair_corpus;
 mod continuation_corpus;
 mod continuation_recovery;
 mod image_workspace_corpus;
+mod media_auth_fixtures;
 mod monitor_recovery;
 mod monitor_start_preparation;
 mod monitor_wake_guarantees;
