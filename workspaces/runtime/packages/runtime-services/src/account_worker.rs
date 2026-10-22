@@ -225,6 +225,9 @@ pub struct StoreBridge {
     start_gates: Arc<crate::account_start_gate::StartGates>,
     managed_tool_runtime:
         Arc<std::sync::RwLock<Option<Arc<crate::provider_callbacks::ManagedToolRuntime>>>>,
+    /// Per-bridge fixture samples; DiskGate still owns every admission rule.
+    #[cfg(test)]
+    disk_gate: Option<Arc<crate::disk_space::DiskGate>>,
     #[cfg(test)]
     faults: Arc<tests::Faults>,
     #[cfg(test)]
@@ -279,6 +282,8 @@ impl StoreBridge {
             agent_wakes,
             start_gates: Arc::default(),
             managed_tool_runtime: Arc::new(std::sync::RwLock::new(None)),
+            #[cfg(test)]
+            disk_gate: None,
             #[cfg(test)]
             faults: Arc::default(),
             #[cfg(test)]
@@ -4443,7 +4448,11 @@ impl Worker {
 
         let written = tokio::time::timeout_at(deadline, async {
             while !self.callbacks.is_empty() {
-                let event = self.events.recv().await.ok_or(WorkerError::Closed)?;
+                let Some(event) = self.events.recv().await else {
+                    // SessionExit owns any final write receipts that could not
+                    // enter this lane. finish() settles them after the join.
+                    break;
+                };
                 self.event(event).await?;
             }
             Ok::<(), WorkerError>(())

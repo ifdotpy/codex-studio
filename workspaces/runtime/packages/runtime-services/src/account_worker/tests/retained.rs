@@ -1241,7 +1241,9 @@ async fn startup_first_pass_continues_an_interrupted_restart_turn_from_native_hi
     let start = peer.write("turn/start").await;
     let input = start["params"]["input"].to_string();
     assert!(
-        input.contains("Studio restarted. The previous native turn is confirmed interrupted."),
+        input.contains(
+            "Studio connection was interrupted. The previous native turn is confirmed interrupted."
+        ),
         "{input}"
     );
     assert!(!input.contains("annotation:input"), "{input}");
@@ -1257,6 +1259,125 @@ async fn startup_first_pass_continues_an_interrupted_restart_turn_from_native_hi
     assert_eq!(record["connectionRecovery"]["continued"], true);
     assert_eq!(state.event_status("input").await, "delivered");
     worker.shutdown().await.unwrap();
+}
+
+/// Exercise the production disconnect writer and account first-pass caller,
+/// with the same saved turn for a lead and an authorized child.
+async fn automatic_recovery_case(restart: bool, child: bool, stopped: bool) {
+    let mut state = State::new().await;
+    state.bridge.disk_gate = Some(Arc::new(crate::disk_space::DiskGate::with_sampler(
+        state.root.clone(),
+        Arc::new(|_| Some(crate::disk_space::WORKER_STORAGE_MIN_FREE_BYTES)),
+    )));
+    let agent_id = state.agent.clone();
+    state.bridge.run(move |store| async move {
+        store.transaction_with(move |tx| {
+            let mut agent = AgentRepository::get(tx, &AgentId::from(agent_id.as_str()))?.unwrap();
+            if child {
+                let mut parent = agent.clone();
+                parent.id = AgentId::from("parent");
+                parent.root_id = AgentId::from("parent");
+                parent.status = studio_runtime_store::AgentStatus::Completed;
+                parent.extra.insert("threadId".into(), Value::Null);
+                AgentRepository::put(tx, &parent)?;
+                agent.root_id = AgentId::from("parent");
+                agent.extra.insert("parentId".into(), json!("parent"));
+                agent.extra.insert("isLead".into(), json!(false));
+                agent.extra.insert("role".into(), json!("implementer"));
+            }
+            agent.status = studio_runtime_store::AgentStatus::Running;
+            agent.extra.insert("turnId".into(), json!("old-turn"));
+            agent.extra.insert("inFlight".into(), json!(true));
+            agent.extra.insert("startAttempt".into(), json!({
+                "id":"old-attempt", "accountKey":"default", "epoch":agent.epoch,
+                "threadId":"fake-thread-0", "turnId":"old-turn", "submitted":true,
+                "connectionGeneration":1, "events":["annotation:input"],
+                "activeAtReservation":false, "settingsFixed":true
+            }));
+            AgentRepository::put(tx, &agent)?;
+            tx.execute("UPDATE runtime_events SET status='delivered',turn_id='old-turn' WHERE id='annotation:input'", [])?;
+            let interrupted = studio_runtime_store::SchedulerRepository::disconnect_account(tx, "default", 1, 1.0, restart)?;
+            assert_eq!(interrupted, vec![agent_id.clone()], "fixture turn must be disconnected");
+            if stopped {
+                studio_runtime_store::SchedulerRepository::stop_agent(tx, &agent_id, "Explicit Stop")?;
+            }
+            Ok::<(), WorkerError>(())
+        }).await?;
+        Ok(())
+    }).await.unwrap();
+    // A replacement provider within one backend is not a backend restart.
+    if !restart {
+        state
+            .bridge
+            .recovered_accounts
+            .lock()
+            .unwrap()
+            .insert("default".into());
+    }
+    let mut peer = Peer::identity("default", 2, None);
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    if !stopped {
+        let record = state.record().await;
+        assert!(
+            RecoverySnapshot::from_record(record.clone())
+                .unwrap()
+                .automatic_turn()
+                .is_some(),
+            "{record}"
+        );
+    }
+    if stopped {
+        worker_barrier(&worker).await;
+        let record = state.record().await;
+        assert_eq!(record["status"], "paused");
+        assert_eq!(record["epoch"], state.epoch + 1);
+        assert_eq!(record["autoWake"], false);
+        assert!(
+            peer.writes.try_recv().is_err(),
+            "Stop permits no provider request"
+        );
+    } else {
+        reply_restart_turn_history(&mut peer, "interrupted").await;
+        let resume = peer.write("thread/resume").await;
+        peer.reply(&resume, json!({"thread":{"id":"fake-thread-0"}}))
+            .await;
+        let start = peer.write("turn/start").await;
+        let input = start["params"]["input"].to_string();
+        assert!(
+            input.contains("Continue the existing authorized task"),
+            "{input}"
+        );
+        assert!(!input.contains("annotation:input"), "{input}");
+        peer.accepted(&start).await;
+        worker_barrier(&worker).await;
+        assert_eq!(
+            state.record().await["connectionRecovery"]["continued"],
+            true
+        );
+        assert_eq!(state.event_status("input").await, "delivered");
+        assert!(peer.writes.try_recv().is_err(), "exactly one follow-up");
+        peer.completed().await;
+        worker_barrier(&worker).await;
+        assert_eq!(state.record().await["lastCompletedTurn"], "turn");
+        assert_eq!(state.event_status("input").await, "delivered");
+    }
+    worker.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn automatic_recovery_continues_leads_and_workers_once_after_provider_loss_or_restart() {
+    for restart in [false, true] {
+        for child in [false, true] {
+            automatic_recovery_case(restart, child, false).await;
+        }
+    }
+}
+
+#[tokio::test]
+async fn automatic_recovery_preserves_explicitly_stopped_workers_after_provider_loss_or_restart() {
+    for restart in [false, true] {
+        automatic_recovery_case(restart, true, true).await;
+    }
 }
 
 /// Idle agents of the same account whose ids sort before the test agent. They
@@ -1317,7 +1438,9 @@ async fn startup_first_pass_reaches_a_restart_turn_after_the_first_scan_page() {
     let start = peer.write("turn/start").await;
     let input = start["params"]["input"].to_string();
     assert!(
-        input.contains("Studio restarted. The previous native turn is confirmed interrupted."),
+        input.contains(
+            "Studio connection was interrupted. The previous native turn is confirmed interrupted."
+        ),
         "{input}"
     );
     peer.accepted(&start).await;
