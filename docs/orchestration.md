@@ -82,6 +82,13 @@ Provider session expiry keeps request order:
    predecessor releases the thread. Written requests retain uncertain identities.
 4. Pending outcomes and remaining actions stay owned by the session for shutdown.
 
+Transcript reasoning projection follows the stored row order:
+
+1. Read one reasoning record from the page's time interval.
+2. Decode and validate it, including records for turns absent from the page.
+3. Add its timing to the existing groups and drop the raw record before reading
+   the next. Group intervals remain retained until the page is assembled.
+
 Workers appear on the right. Select a worker to read its conversation, then select **Lead** to return.
 On a narrow screen, **Team** opens the worker panel.
 Worker cards show the original assignment and the last report from a completed
