@@ -5395,7 +5395,10 @@ dependencies = [
 name = "studio-process-supervisor"
 version = "0.1.0"
 dependencies = [
+ "rusqlite",
+ "rustix",
  "serde_json",
+ "studio-runtime-proc-sys",
  "studio-runtime-process",
  "studio-runtime-store",
  "tempfile",
@@ -5509,6 +5512,7 @@ dependencies = [
  "studio-runtime-http",
  "studio-runtime-process",
  "studio-runtime-providers",
+ "studio-runtime-schema",
  "studio-runtime-services",
  "studio-runtime-store",
  "tempfile",

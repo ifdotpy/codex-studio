@@ -1032,17 +1032,23 @@ mod tests {
         let cwd = root.join(format!("leader-{}", std::process::id()));
         std::fs::create_dir_all(&cwd).expect("isolated cwd");
         let host = LocalPtyHost;
-        // The leader blocks TERM before it writes READY and then takes TERM
-        // with sigwait, so a TERM sent at any time after READY is consumed.
-        // Do not use a Python handler with signal.pause(): CPython runs the
-        // handler only at an eval-loop check, and a TERM that arrives after
-        // the last check and before pause(2) starts is lost. The leader then
-        // never exits and the TERM wait below reaches its bound.
-        // The replacement waits for SIGKILL, which no process can lose.
+        // A shell trap handles TERM after READY. Job control gives the
+        // replacement a new process group in the same terminal session. Its
+        // ready file proves TERM is ignored before the leader exits.
         let command = [
-            "/usr/bin/python3".to_owned(),
+            "/bin/sh".to_owned(),
             "-c".to_owned(),
-            "import os,signal\nsignal.pthread_sigmask(signal.SIG_BLOCK,{signal.SIGTERM})\nr,w=os.pipe()\nos.write(1,b'READY\\n')\nsignal.sigwait({signal.SIGTERM})\nif os.fork()==0:\n os.close(r); os.setpgid(0,0); signal.signal(signal.SIGTERM,signal.SIG_IGN)\n os.write(1,f'REPLACEMENT:{os.getpid()}:{os.getpgrp()}\\n'.encode()); os.write(w,b'x')\n while True: signal.pause()\nos.close(w); os.read(r,1); raise SystemExit(0)".to_owned(),
+            r#"
+handoff() {
+ set -m
+ /bin/sh -c 'trap "" TERM; printf "REPLACEMENT:%s:%s\n" "$$" "$$"; : > replacement-ready; exec sleep infinity' &
+ while [ ! -e replacement-ready ]; do :; done
+ exit 0
+}
+trap handoff TERM
+printf 'READY\n'
+while IFS= read -r line; do :; done
+"#.to_owned(),
         ];
         let env = [
             ("TERM".into(), "xterm-256color".into()),
