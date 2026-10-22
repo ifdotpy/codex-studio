@@ -7,8 +7,7 @@ use serde_json::{Value, json};
 use studio_runtime_providers::Frame;
 use studio_runtime_store::CachedSql;
 use studio_runtime_store::{
-    MonitorRecord, NotificationDispatchRepository, RuntimeStore, StoreError,
-    SyncDocumentsRepository, Table, Transaction, sha256_hex,
+    MonitorRecord, NotificationDispatchRepository, StoreError, Table, Transaction, sha256_hex,
 };
 use thiserror::Error;
 
@@ -52,7 +51,6 @@ pub enum DispatchOutcome {
     Unhandled { kind: String, reason: String },
 }
 
-/// Immutable server identity, resolved before entering a writer transaction.
 /// Native session identity supplied by the account worker, never reconstructed
 /// from a journal generation. Replayed generations cannot acquire current controls.
 #[derive(Clone)]
@@ -65,19 +63,12 @@ pub struct NativeProcessSource {
 
 #[derive(Clone, Default)]
 pub struct PublicationContext {
-    server_id: Option<String>,
     native_source: Option<NativeProcessSource>,
 }
 impl PublicationContext {
     pub fn with_native_source(mut self, source: Option<NativeProcessSource>) -> Self {
         self.native_source = source;
         self
-    }
-    pub fn load(store: &RuntimeStore) -> Result<Self, NotificationDispatchError> {
-        Ok(Self {
-            server_id: store.local_server_id()?,
-            native_source: None,
-        })
     }
 }
 
@@ -309,8 +300,9 @@ pub struct NotificationDispatchResult {
     pub post_commit: NotificationPublicationBatch,
 }
 
-/// The caller owns the transaction and the connection's stream buffer. Commit
-/// SQLite first, then apply `stream_update` (when present) to that buffer. On
+/// The caller owns the transaction and the connection's stream buffer.
+/// Use scheduler::lifecycle_transaction_with to publish changed agents in the same
+/// SQLite transaction, then apply `stream_update` (when present) to that buffer. On
 /// rollback or commit failure discard the update. This call never mutates the
 /// supplied buffer; a saved receipt returns the saved outcome and no update.
 /// `observed_at` is never part of delivery identity.
@@ -509,7 +501,7 @@ pub fn dispatch_notification_with_effects(
                     observed_at,
                 )?;
                 if agent != before {
-                    persist_agent(transaction, agent_id, &agent, publication)?;
+                    persist_agent(transaction, agent_id, &agent)?;
                     agent_changed = true;
                 }
             }
@@ -722,7 +714,7 @@ pub fn dispatch_notification_with_effects(
                 after_known = if before.as_ref() == Some(&agent) {
                     AfterAgent::Unchanged
                 } else {
-                    AfterAgent::Stored(persist_agent(transaction, agent_id, &agent, publication)?)
+                    AfterAgent::Stored(persist_agent(transaction, agent_id, &agent)?)
                 };
                 return save_outcome(transaction, &receipt_id, &content_signature, outcome);
             }
@@ -735,8 +727,7 @@ pub fn dispatch_notification_with_effects(
                 update_common_agent_fields(&mut agent, kind, params, observed_at)?;
             }
             if !matches!(outcome, DispatchOutcome::Ignored { .. }) {
-                after_known =
-                    AfterAgent::Stored(persist_agent(transaction, agent_id, &agent, publication)?);
+                after_known = AfterAgent::Stored(persist_agent(transaction, agent_id, &agent)?);
             }
             save_outcome(transaction, &receipt_id, &content_signature, outcome)
         })()?;
@@ -1396,7 +1387,7 @@ fn write_text_notification(
 pub fn flush_notification_streams(
     transaction: &Transaction<'_>,
     agent_id: &str,
-    publication: &PublicationContext,
+    _publication: &PublicationContext,
     streams: &NotificationStreamBuffer,
     observed_at: f64,
 ) -> Result<Option<NotificationStreamBuffer>, NotificationDispatchError> {
@@ -1415,7 +1406,7 @@ pub fn flush_notification_streams(
             observed_at,
         )?;
         if agent != before {
-            persist_agent(transaction, agent_id, &agent, publication)?;
+            persist_agent(transaction, agent_id, &agent)?;
         }
         Ok(next.changed_from(streams).then_some(next))
     })
@@ -2007,26 +1998,16 @@ fn update_common_agent_fields(
     Ok(())
 }
 
-/// Store `agent` with its mode fields normalized and return the stored value.
+/// Store normalized source state. The outer lifecycle transaction alone publishes agents.
 fn persist_agent(
     transaction: &Transaction<'_>,
     agent_id: &str,
     agent: &Value,
-    publication: &PublicationContext,
 ) -> Result<Value, NotificationDispatchError> {
     let mut normalized = agent.clone();
     crate::agents_create::mode_fields(&mut normalized);
     let agent = &normalized;
     NotificationDispatchRepository::put_agent_record(transaction, agent_id, agent)?;
-    let context = crate::sync_entity_context::agent_view_context(
-        transaction,
-        agent,
-        publication.server_id.as_deref(),
-    )
-    .map_err(|_| stored("runtime_agents", agent_id))?;
-    let view = crate::sync_views::agent_entity_view(agent, &context)
-        .ok_or_else(|| stored("runtime_agents", agent_id))?;
-    SyncDocumentsRepository::put_entity(transaction, "agent", agent_id, view, false)?;
     Ok(normalized)
 }
 
@@ -3100,7 +3081,7 @@ mod tests {
             .commit()
             .expect("refusal leaves caller transaction committable");
 
-        connection.execute_batch("CREATE TRIGGER fail_sync_projection BEFORE UPDATE ON sync_entities BEGIN SELECT RAISE(ABORT,'fixture failure'); END;").expect("failure trigger creates");
+        connection.execute_batch("CREATE TRIGGER fail_agent_source BEFORE INSERT ON runtime_agent_volatile BEGIN SELECT RAISE(ABORT,'fixture failure'); END;").expect("failure trigger creates");
         let delta = json!({"method":"item/completed","params":{"threadId":"thread","turnId":"turn","item":{"id":"rollback","type":"agentMessage","text":"written then refused"}}});
         let transaction = connection.transaction().expect("transaction begins");
         assert!(dispatch(&transaction, &mut streams, 2, &delta, 2.0).is_err());
@@ -3130,7 +3111,7 @@ mod tests {
             .expect("receipt count reads");
         assert_eq!(receipts, 0);
         connection
-            .execute_batch("DROP TRIGGER fail_sync_projection")
+            .execute_batch("DROP TRIGGER fail_agent_source")
             .expect("failure trigger drops");
         let transaction = connection.transaction().expect("retry transaction begins");
         assert_eq!(
@@ -3584,60 +3565,6 @@ mod tests {
             Some("onetwo")
         );
         assert_eq!(base_rows(&transaction), 0);
-    }
-
-    #[test]
-    fn long_answers_use_canonical_bounded_agent_sync_projection() {
-        let mut connection = database();
-        let mut agent = TranscriptRepository::agent(&connection, "agent")
-            .expect("agent reads")
-            .expect("agent exists");
-        agent["turnEpoch"] = json!(99);
-        agent["nativeFailureHold"] = json!({"reason":"hidden"});
-        agent["lastCompletedTurnError"] = json!({"message":"hidden"});
-        agent["startOutcomeHold"] = json!({"attempt":"hidden"});
-        agent["restartRecovery"] = json!({"stage":"held"});
-        agent["startAttempt"] = json!({"id":"private-attempt","submitted":true});
-        connection
-            .execute(
-                "UPDATE runtime_agents SET record=?1 WHERE id='agent'",
-                [agent.to_string()],
-            )
-            .expect("runtime-only sync fields store");
-        let long_answer = "x".repeat(5_001);
-        let notification = json!({"method":"item/completed","params":{"threadId":"thread","turnId":"turn","item":{"id":"long","type":"agentMessage","text":long_answer}}});
-        let mut streams = NotificationStreamBuffer::default();
-        let transaction = connection
-            .transaction()
-            .expect("long answer transaction begins");
-        dispatch(&transaction, &mut streams, 1, &notification, 2.0).expect("long answer writes");
-        transaction.commit().expect("long answer commits");
-        let raw_payload: String = connection
-            .query_row(
-                "SELECT payload FROM sync_entities WHERE collection='agent' AND id='agent'",
-                [],
-                |row| row.get(0),
-            )
-            .expect("agent sync payload reads");
-        let payload: Value =
-            serde_json::from_str(&raw_payload).expect("agent sync payload is JSON");
-        assert_eq!(
-            payload["value"]["lastAnswer"].as_str().map(str::len),
-            Some(4_000)
-        );
-        for field in [
-            "turnEpoch",
-            "nativeFailureHold",
-            "lastCompletedTurnError",
-            "startOutcomeHold",
-            "restartRecovery",
-        ] {
-            assert!(
-                payload["value"].get(field).is_none(),
-                "runtime field {field} leaked"
-            );
-        }
-        assert!(payload["value"]["startAttempt"].get("id").is_none());
     }
 }
 

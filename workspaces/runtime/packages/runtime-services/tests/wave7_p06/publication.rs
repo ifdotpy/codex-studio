@@ -23,55 +23,54 @@ async fn journal(
         .push(&bytes)
         .expect("test invariant")
         .remove(0);
-    let publication = PublicationContext::load(store).expect("test invariant");
-    store
-        .transaction_with(move |tx| {
-            let raw: String = tx
-                .query_row("SELECT payload FROM p06_buffer WHERE id=1", [], |row| {
-                    row.get(0)
-                })
-                .map_err(studio_runtime_store::StoreError::from)?;
-            let streams: NotificationStreamBuffer = serde_json::from_str(&raw)?;
-            let dispatched = dispatch_notification_with_effects(
-                tx,
-                "agent",
-                &publication,
-                &streams,
-                &ProviderDeliveryIdentity {
-                    provider_handle: "account:default".into(),
-                    generation: 7,
-                    cursor,
-                },
-                &frame,
-                1234.5,
-                &RuntimeNotificationEffects,
-            )?;
-            let next = dispatched.stream_update.unwrap_or(streams);
-            if !dispatched.post_commit.is_empty() {
-                if fail {
-                    return Err(NotificationDispatchError::InvalidNotification);
-                }
-                tx.execute(
-                    "INSERT INTO p06_journal(id,sequence,payload,ack) VALUES(?1,?2,?3,0)",
-                    params![
-                        format!(
-                            "hash-order-{:020}",
-                            u64::MAX - dispatched.post_commit.sequence
-                        ),
-                        i64::try_from(dispatched.post_commit.sequence).expect("test invariant"),
-                        serde_json::to_string(&dispatched.post_commit)?
-                    ],
-                )
-                .map_err(studio_runtime_store::StoreError::from)?;
+    let publication = PublicationContext::default();
+    studio_runtime_services::scheduler::lifecycle_transaction_with(store, move |tx| {
+        let raw: String = tx
+            .query_row("SELECT payload FROM p06_buffer WHERE id=1", [], |row| {
+                row.get(0)
+            })
+            .map_err(studio_runtime_store::StoreError::from)?;
+        let streams: NotificationStreamBuffer = serde_json::from_str(&raw)?;
+        let dispatched = dispatch_notification_with_effects(
+            tx,
+            "agent",
+            &publication,
+            &streams,
+            &ProviderDeliveryIdentity {
+                provider_handle: "account:default".into(),
+                generation: 7,
+                cursor,
+            },
+            &frame,
+            1234.5,
+            &RuntimeNotificationEffects,
+        )?;
+        let next = dispatched.stream_update.unwrap_or(streams);
+        if !dispatched.post_commit.is_empty() {
+            if fail {
+                return Err(NotificationDispatchError::InvalidNotification);
             }
             tx.execute(
-                "UPDATE p06_buffer SET payload=?1 WHERE id=1",
-                [serde_json::to_string(&next)?],
+                "INSERT INTO p06_journal(id,sequence,payload,ack) VALUES(?1,?2,?3,0)",
+                params![
+                    format!(
+                        "hash-order-{:020}",
+                        u64::MAX - dispatched.post_commit.sequence
+                    ),
+                    i64::try_from(dispatched.post_commit.sequence).expect("test invariant"),
+                    serde_json::to_string(&dispatched.post_commit)?
+                ],
             )
             .map_err(studio_runtime_store::StoreError::from)?;
-            Ok(())
-        })
-        .await
+        }
+        tx.execute(
+            "UPDATE p06_buffer SET payload=?1 WHERE id=1",
+            [serde_json::to_string(&next)?],
+        )
+        .map_err(studio_runtime_store::StoreError::from)?;
+        Ok(())
+    })
+    .await
 }
 
 async fn drain(root: &Path, crash_after_publish: bool) {

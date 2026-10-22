@@ -6,7 +6,7 @@ use studio_runtime_providers::{DecodedJournalPayload, decode_journal_value};
 const GENERATION: u64 = 7;
 const SCOPE: &str = "default";
 
-fn entry(cursor: u64, frame: Value) -> JournalEntry {
+pub(super) fn entry(cursor: u64, frame: Value) -> JournalEntry {
     let DecodedJournalPayload::Frame(frame) =
         decode_journal_value(cursor, GENERATION, &frame).payload
     else {
@@ -28,7 +28,7 @@ fn delta(cursor: u64) -> JournalEntry {
     )
 }
 
-async fn running_store() -> (tempfile::TempDir, Arc<RuntimeStore>) {
+pub(super) async fn running_store() -> (tempfile::TempDir, Arc<RuntimeStore>) {
     let directory = tempfile::tempdir().expect("temporary store");
     let store = Arc::new(
         RuntimeStore::open(Some(directory.path()))
@@ -54,7 +54,7 @@ async fn running_store() -> (tempfile::TempDir, Arc<RuntimeStore>) {
     (directory, store)
 }
 
-async fn journal(
+pub(super) async fn journal(
     store: &Arc<RuntimeStore>,
     streams: NotificationStreamBuffer,
     entries: Vec<JournalEntry>,

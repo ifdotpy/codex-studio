@@ -1426,3 +1426,11 @@ change with both options. Cross-machine Claude cache reuse remains unverified.
 2. Legacy terminal-error repair reads its completion checkpoint before requesting
    the Canvas writer. Pending repairs recheck the checkpoint inside the existing
    analytics transaction before applying a page; completed repairs skip admission.
+
+### Agent publication in journal transactions
+
+1. The account worker applies a notification batch or stream flush in the existing lifecycle transaction.
+2. Dispatch stores normalized agent state, transcript changes, stream state and exact replay receipts.
+3. The lifecycle owner validates each final changed agent row and publishes its canonical renderer view once.
+4. Source state, receipts and renderer views commit together; a projection failure rolls them all back.
+5. Replaying committed journal identities returns the saved outcomes without publishing agents again.
