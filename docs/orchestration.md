@@ -1445,3 +1445,14 @@ change with both options. Cross-machine Claude cache reuse remains unverified.
 3. The lifecycle owner validates each final changed agent row and publishes its canonical renderer view once.
 4. Source state, receipts and renderer views commit together; a projection failure rolls them all back.
 5. Replaying committed journal identities returns the saved outcomes without publishing agents again.
+
+### Callback saved-output reads
+
+1. The callback claims its exact request identity before reading saved output.
+2. A pooled SQL reader snapshots the selected receipts, results and blob references.
+3. Outside SQL, the payload owner reads and verifies blobs and durably writes any recovered output.
+4. The Canvas writer rechecks the active actor, claim owner, selection and complete raw rows.
+5. Changed epochs, references or late results refuse stale settlement without repeating the operation.
+6. The existing receipt owner atomically commits recovery and the callback result using prepared payloads only.
+7. Panel guidance is read once before its callback transaction; the transaction still checks lead authority.
+8. A lost response uses the saved request identity and existing uncertain-outcome recovery.
