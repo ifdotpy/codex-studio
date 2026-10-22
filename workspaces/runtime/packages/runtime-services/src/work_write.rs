@@ -1217,19 +1217,17 @@ fn vm_result_needs_merge(lead_id: &str, owner: &AgentRecord) -> bool {
 pub async fn prepare_vm_accept(
     store: &RuntimeStore,
     agent_id: &str,
-    task_id: &str,
-    version: Option<i64>,
     request_id: Option<&str>,
     signature: &str,
-    reason: &str,
-    override_reason: Option<&str>,
+    input: &AcceptWork,
 ) -> Result<VmAcceptPreparation, WorkWriteError> {
     let agent_id = agent_id.to_owned();
-    let task_id = task_id.to_owned();
+    let task_id = input.task_id.clone();
+    let version = input.version;
     let request_id = request_id.map(str::to_owned);
     let signature = signature.to_owned();
-    let reason = reason.to_owned();
-    let override_reason = override_reason.map(str::to_owned);
+    let reason = input.reason.clone();
+    let override_reason = input.override_reason.clone();
     store
         .transaction_with_error(move |tx| {
             let lead = event_write::checked_agent(tx, &agent_id)?;

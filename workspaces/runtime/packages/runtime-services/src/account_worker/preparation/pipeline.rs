@@ -1061,7 +1061,7 @@ pub(crate) async fn prepare_with_connection_id(
     }
     let selection = admit(Arc::clone(&store), resources, intent).await?;
     let token = workspace(Arc::clone(&store), resources, intent).await?;
-    prepare_ready(
+    Box::pin(prepare_ready(
         store,
         resources,
         intent,
@@ -1071,7 +1071,7 @@ pub(crate) async fn prepare_with_connection_id(
         Some(selection),
         token,
         None,
-    )
+    ))
     .await
 }
 
@@ -1654,7 +1654,7 @@ async fn prepare_native_snapshot(
     let (identity, _) = catalog(resources, &intent)?;
     let state_root = store.root().to_path_buf();
     let intent = intent.clone();
-    let resources_for_snapshot = resources.for_agent(&store, &agent_id).await?;
+    let resources_for_snapshot = resources.for_agent(&store, agent_id).await?;
     let generation = generation.to_string();
     let transfer_owner = account_transfer_owner.map(str::to_owned);
     scheduler::lifecycle_transaction_with(&store, move |tx| {

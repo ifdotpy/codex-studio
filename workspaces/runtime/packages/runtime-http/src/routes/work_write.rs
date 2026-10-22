@@ -316,24 +316,9 @@ async fn prepare_vm_accept(
     };
 
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
-    let agent_id = agent.to_owned();
-    let task_id = input.task_id.clone();
-    let expected_version = input.version;
-    let request = request_id.map(str::to_owned);
-    let request_signature = signature.to_owned();
-    let reason = input.reason.clone();
-    let preparation = prepare(
-        &store,
-        &agent_id,
-        &task_id,
-        expected_version,
-        request.as_deref(),
-        &request_signature,
-        &reason,
-        input.override_reason.as_deref(),
-    )
-    .await
-    .map_err(write_error)?;
+    let preparation = prepare(&store, agent, request_id, signature, input)
+        .await
+        .map_err(write_error)?;
     match preparation {
         VmAcceptPreparation::NotVm => {}
         VmAcceptPreparation::Merged(result_id) => input.merged_result_id = Some(result_id),
