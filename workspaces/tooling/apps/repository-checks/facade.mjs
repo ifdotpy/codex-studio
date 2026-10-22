@@ -943,7 +943,7 @@ function fastTierCommands(root) {
             "--test",
             "integration",
             "-E",
-            "test(/^provider_session_task::active_barrier_holds_new_requests_but_not_callback_answers_or_interrupts$/)",
+            "test(/^provider_session_task::active_barrier_holds_new_requests_but_not_callback_answers_or_interrupts$/) | test(/^provider_session_task::expiry_batch_preserves_all_queued_request_outcomes_in_order$/)",
           ],
         ],
       ],

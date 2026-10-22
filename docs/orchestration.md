@@ -74,6 +74,14 @@ an uncertain delivery for recovery, not permission to resend it. Historical
 spellings are read through the shared compatibility parser; new callers should
 use the canonical enum values.
 
+Provider session expiry keeps request order:
+
+1. The session collects the actions from one protocol transition in a FIFO queue.
+2. It consumes each action once and appends newly released actions to the queue.
+3. Expired unsent requests report `NotSent`; a live successor can run after its
+   predecessor releases the thread. Written requests retain uncertain identities.
+4. Pending outcomes and remaining actions stay owned by the session for shutdown.
+
 Workers appear on the right. Select a worker to read its conversation, then select **Lead** to return.
 On a narrow screen, **Team** opens the worker panel.
 Worker cards show the original assignment and the last report from a completed
