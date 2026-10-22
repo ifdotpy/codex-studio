@@ -47,9 +47,18 @@ fn sonnet_wait_uses_main_reset_and_ignores_full_opus_bucket() {
         1000.0,
     )
     .expect("record failure");
-    assert_eq!(recorded.record.unwrap()["dueAt"], 1305.0);
+    assert_eq!(
+        recorded.record.expect("failure creates resume record")["dueAt"],
+        1305.0
+    );
     let changed = usage_resume::limits_changed(&s, &full, 1000.0).expect("limits changed");
-    assert_eq!(changed.record.as_ref().unwrap()["dueAt"], 1305.0);
+    assert_eq!(
+        changed
+            .record
+            .as_ref()
+            .expect("limit change preserves resume record")["dueAt"],
+        1305.0
+    );
     let scheduled = Snapshot::from_records(json!({"agent":changed.agent,"record":changed.record}))
         .expect("rescheduled snapshot");
     let mut reset_data = data(20.0);
@@ -61,7 +70,12 @@ fn sonnet_wait_uses_main_reset_and_ignores_full_opus_bucket() {
     .expect("post-reset observation");
     let released =
         usage_resume::tick(&scheduled, &after_reset, 1305.0).expect("tick after main reset");
-    assert_eq!(released.record.unwrap()["status"], "started");
+    assert_eq!(
+        released
+            .record
+            .expect("reset release creates resume record")["status"],
+        "started"
+    );
     assert_eq!(released.effects.len(), 1);
 }
 
@@ -73,9 +87,15 @@ fn allowed_overage_releases_a_scheduled_resume() {
     let limits = observation(data);
     let s = snapshot("sonnet");
     let changed = usage_resume::limits_changed(&s, &limits, 1000.0).expect("limits changed");
-    assert_eq!(changed.record.unwrap()["dueAt"], 1000.0);
+    assert_eq!(
+        changed.record.expect("limit change creates resume record")["dueAt"],
+        1000.0
+    );
     let released = usage_resume::tick(&s, &limits, 1000.0).expect("tick");
-    assert_eq!(released.record.unwrap()["status"], "started");
+    assert_eq!(
+        released.record.expect("resume tick creates record")["status"],
+        "started"
+    );
 }
 
 #[test]
@@ -83,7 +103,7 @@ fn unknown_models_and_buckets_keep_the_latest_reset() {
     for model in ["default", "custom-sonnet-proxy", "claude-new-model", ""] {
         let decision =
             usage_resume::tick(&snapshot(model), &observation(data(100.0)), 1000.0).expect("tick");
-        let record = decision.record.unwrap();
+        let record = decision.record.expect("model tick creates record");
         assert_eq!(record["status"], "scheduled", "{model}");
         assert_eq!(record["dueAt"], 9005.0, "{model}");
     }
@@ -92,7 +112,10 @@ fn unknown_models_and_buckets_keep_the_latest_reset() {
         json!({"secondary":{"usedPercent":100.0,"resetsAt":10000.0}});
     let decision =
         usage_resume::tick(&snapshot("sonnet"), &observation(data), 1000.0).expect("tick");
-    assert_eq!(decision.record.unwrap()["dueAt"], 10005.0);
+    assert_eq!(
+        decision.record.expect("long reset creates resume record")["dueAt"],
+        10005.0
+    );
 }
 
 #[test]
@@ -116,7 +139,7 @@ fn plain_429_typed_error_schedules_a_rate_limit_resume() {
         1000.0,
     )
     .expect("record failure");
-    let record = decision.record.unwrap();
+    let record = decision.record.expect("failure creates resume record");
     assert_eq!(record["cause"], "rate_limit");
     assert_eq!(record["dueAt"], 1305.0);
 }
@@ -133,7 +156,10 @@ fn overage_does_not_bypass_unknown_scope_rejection_or_spend_controls() {
         data["claudeRateLimit"] = permission;
         let decision =
             usage_resume::tick(&snapshot("sonnet"), &observation(data), 1000.0).expect("tick");
-        assert_eq!(decision.record.unwrap()["status"], "scheduled");
+        assert_eq!(
+            decision.record.expect("tick preserves scheduled record")["status"],
+            "scheduled"
+        );
     }
     for unknown in [false, true] {
         let mut data = data(100.0);
@@ -146,7 +172,10 @@ fn overage_does_not_bypass_unknown_scope_rejection_or_spend_controls() {
         }
         let decision =
             usage_resume::tick(&snapshot("sonnet"), &observation(data), 1000.0).expect("tick");
-        assert_eq!(decision.record.unwrap()["status"], "scheduled");
+        assert_eq!(
+            decision.record.expect("tick preserves scheduled record")["status"],
+            "scheduled"
+        );
     }
 }
 
@@ -163,14 +192,24 @@ fn overage_permission_covers_known_limits_but_requires_a_fresh_observation() {
         data["claudeRateLimit"]["rateLimitType"] = json!("seven_day_sonnet");
         let decision = usage_resume::tick(&snapshot("sonnet"), &observation(data.clone()), 1000.0)
             .expect("tick");
-        assert_eq!(decision.record.unwrap()["status"], "started");
+        assert_eq!(
+            decision
+                .record
+                .expect("fresh observation starts resume record")["status"],
+            "started"
+        );
         let stale = LimitsObservation::from_record(
             json!({"accountKey":"default","at":900.0,"data":data}),
             None,
         )
         .expect("stale observation");
         let decision = usage_resume::tick(&snapshot("sonnet"), &stale, 1000.0).expect("tick");
-        assert_eq!(decision.record.unwrap()["status"], "scheduled");
+        assert_eq!(
+            decision
+                .record
+                .expect("stale observation preserves scheduled record")["status"],
+            "scheduled"
+        );
     }
 }
 

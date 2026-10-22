@@ -1333,7 +1333,7 @@ async fn corpus(full: bool, runtime_effects: bool) {
                 });
                 expected_dispatch["runtime_operation_receipts"]
                     .as_array_mut()
-                    .unwrap()
+                    .expect("expected operation receipts are an array")
                     .push(receipt);
                 assert_eq!(
                     actual, expected_dispatch,

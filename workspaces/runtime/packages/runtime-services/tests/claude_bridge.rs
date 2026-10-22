@@ -51,7 +51,7 @@ fn bridge_launch_pins_organization_and_refuses_another_organization() {
                 "loggedIn":true,"authMethod":"claude.ai","email":"fixture@example.test",
                 "orgId":org,"accountUuid":"account-a","subscriptionType":"max"
             }))
-            .unwrap(),
+            .expect("Claude status serializes"),
             true,
         )
     };
@@ -59,7 +59,7 @@ fn bridge_launch_pins_organization_and_refuses_another_organization() {
     let profile = json!({"provider":"claude","status":"ready","email":first.email,
         "accountId":first.account_id,"_credentialIdentity":first.credential_identity,
         "claudeOptions":{}});
-    let snapshot = BridgeSnapshot::from_record(profile).unwrap();
+    let snapshot = BridgeSnapshot::from_record(profile).expect("bridge snapshot parses");
     let paths = || ResolvedBridge {
         node: "/fixture/node".into(),
         executable: "/fixture/claude".into(),
@@ -69,7 +69,7 @@ fn bridge_launch_pins_organization_and_refuses_another_organization() {
     };
     let launch = snapshot
         .launch(paths(), &first, Default::default())
-        .unwrap();
+        .expect("verified bridge launch succeeds");
     assert_eq!(
         launch.environment["STUDIO_CLAUDE_ACCOUNT"],
         "fixture@example.test"

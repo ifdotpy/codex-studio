@@ -714,8 +714,6 @@ async fn exited_generation_entries_do_not_hold_back_the_initialize_reply() {
 }
 
 #[cfg(unix)]
-use crate::process_support as support;
-
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn disposable_supervisor_session_preserves_replay_and_settlement_across_reattach() {

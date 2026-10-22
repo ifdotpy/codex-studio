@@ -242,7 +242,7 @@ async fn update_profiles(
             max_turns: body
                 .max_turns
                 .flatten()
-                .map(|n| u32::try_from(n))
+                .map(u32::try_from)
                 .transpose()
                 .map_err(|_| validation_error("maxTurns"))?,
         };
