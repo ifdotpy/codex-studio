@@ -732,17 +732,13 @@ function fastTierCommands(root) {
       label: "Mac sync chunk read witness",
       commands: [
         [
-          "python3",
+          "node",
           [
-            "-B",
-            "-m",
-            "unittest",
-            "discover",
-            "-s",
-            "workspaces/runtime/apps/vm-guest",
-            "-p",
-            "test_mac_sync.py",
-            "-v",
+            "--test",
+            path.join(
+              root,
+              "workspaces/runtime/apps/vm-guest/mac-sync-witness.test.mjs",
+            ),
           ],
         ],
       ],
