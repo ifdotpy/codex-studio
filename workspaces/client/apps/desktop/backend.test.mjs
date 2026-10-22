@@ -165,7 +165,11 @@ test("a slow existing backend attaches without spawning a process", async () => 
       const result = await ensureBackend({
         resources: "/missing-desktop-assets",
         port: Number(new URL(origin).port),
-        env: { CODEX_AGENTS_STATE_DIR: canonicalState },
+        env: {
+          CODEX_AGENTS_STATE_DIR: canonicalState,
+          CODEX_RUNTIME_SERVER:
+            "/missing-desktop-assets/bin/studio-runtime-server",
+        },
       });
       assert.deepEqual(result, {
         ...data,
@@ -394,7 +398,11 @@ test("an app restart reports a pending backend update and preserves the owner", 
 });
 
 test("unavailable source cannot be reported as a current backend", () => {
-  assert.deepEqual(updateStatus("/missing-desktop-source", record), {
+  // Pin the server path: the checkout target/debug fallback may hold a build.
+  const env = {
+    CODEX_RUNTIME_SERVER: "/missing-desktop-source/bin/studio-runtime-server",
+  };
+  assert.deepEqual(updateStatus("/missing-desktop-source", record, env), {
     availableBackendBuild: null,
     updateRequired: null,
   });
