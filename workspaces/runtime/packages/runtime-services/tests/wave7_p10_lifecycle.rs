@@ -944,11 +944,19 @@ async fn production_interrupt_is_durable_post_commit_and_retry_coalesces_after_r
                     )
                     .expect("stopped agent row");
                 let agent: Value = serde_json::from_str(&raw).expect("agent record");
-                assert_eq!(agent["startAttempt"]["interrupt"]["outcome"], "unknown");
-                assert_eq!(
-                    agent["startAttempt"]["interrupt"]["requestTicket"],
-                    request.operation
-                );
+                let interrupt = &agent["startAttempt"]["interrupt"];
+                if request.method == studio_runtime_providers::Method::TurnInterrupt {
+                    assert_eq!(interrupt["outcome"], "unknown");
+                    assert_eq!(interrupt["requestTicket"], request.operation);
+                } else {
+                    // The command cleanup follows the settled interrupt.
+                    assert_eq!(
+                        request.method,
+                        studio_runtime_providers::Method::ThreadBackgroundTerminalsClean
+                    );
+                    assert_eq!(interrupt["outcome"], "accepted");
+                    assert_eq!(request.params, json!({"threadId":agent["threadId"]}));
+                }
                 self.calls.lock().expect("calls lock").push(request.clone());
                 Ok(SessionReceipt {
                     scope: self.scope.clone(),
@@ -1041,9 +1049,12 @@ async fn production_interrupt_is_durable_post_commit_and_retry_coalesces_after_r
             );
             let calls = broker.calls.lock().expect("calls lock");
             assert_eq!(
-                calls.len(),
-                1,
-                "one provider dispatch after {boundary} rollback"
+                calls.iter().map(|call| call.method).collect::<Vec<_>>(),
+                [
+                    studio_runtime_providers::Method::TurnInterrupt,
+                    studio_runtime_providers::Method::ThreadBackgroundTerminalsClean
+                ],
+                "one interrupt and one command cleanup after {boundary} rollback"
             );
             assert_eq!(
                 calls[0].actor.as_ref().map(|actor| actor.agent.as_str()),
@@ -1749,12 +1760,34 @@ async fn production_unknown_interrupt_is_never_resent_on_repeated_stop() {
         .expect("first stop commits with unknown interrupt");
     let first = state(&store)["tables"]["runtime_agents"][0]["startAttempt"]["interrupt"].clone();
     assert_eq!(first["outcome"], "unknown");
+    let sent = broker
+        .calls
+        .lock()
+        .expect("broker calls")
+        .iter()
+        .map(|call| (call.method, call.operation.clone()))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        sent.iter().map(|(method, _)| *method).collect::<Vec<_>>(),
+        [
+            studio_runtime_providers::Method::TurnInterrupt,
+            studio_runtime_providers::Method::ThreadBackgroundTerminalsClean
+        ],
+        "an unknown interrupt is still followed by the command cleanup once"
+    );
     ports
         .execute(&action, case["now"].as_f64().expect("time"))
         .await
         .expect("repeat stop commits without another interrupt");
     let calls = broker.calls.lock().expect("broker calls");
-    assert_eq!(calls.len(), 1);
+    assert_eq!(
+        calls
+            .iter()
+            .map(|call| (call.method, call.operation.clone()))
+            .collect::<Vec<_>>(),
+        sent,
+        "the repeated stop sends nothing again"
+    );
     drop(calls);
     let reader = store.test_reader().expect("reader");
     let raw: String = reader

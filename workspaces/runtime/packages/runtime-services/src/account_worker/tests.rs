@@ -29,6 +29,7 @@ mod settled_turn_tasks;
 mod stale_disconnect_recovery;
 mod start_throttle;
 mod steer;
+mod stop_after_reattach;
 mod submission;
 mod tool_reply_retirement;
 mod unsent_start;

@@ -122,7 +122,21 @@ pub struct InterruptRequest {
     pub thread: String,
     pub turn: String,
     pub scope: ConnectionScope,
+    /// The provider request that ends the thread's command processes which
+    /// outlive the interrupt (see `ProviderKind::stop_terminals_method`).
+    pub terminals: Option<TerminalCleanup>,
 }
+
+/// One post-interrupt request that ends a stopped thread's surviving commands.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TerminalCleanup {
+    pub operation: String,
+    pub method: studio_runtime_providers::Method,
+}
+
+/// Operation prefixes of a stop's provider requests; one stop signature names both.
+const INTERRUPT_OPERATION_PREFIX: &str = "lifecycle-interrupt:";
+const TERMINALS_OPERATION_PREFIX: &str = "lifecycle-terminals:";
 
 /// Production LifecyclePorts constructor used by stop/delete callers.
 pub struct ProductionLifecyclePorts {
@@ -255,14 +269,25 @@ impl ProductionLifecyclePorts {
             .or_else(|| before.get("accountKey").and_then(Value::as_str))
             .unwrap_or("default")
             .to_owned();
-        let connection = attempt
+        let stored_connection = attempt
             .get("connectionId")
             .and_then(Value::as_str)
             .or_else(|| before.get("connectionId").and_then(Value::as_str))
             .ok_or(ManagementError::Unavailable(
                 "account-worker/agent-interrupt",
-            ))?
-            .to_owned();
+            ))?;
+        // The provider generation names the app-server process that runs the
+        // turn. A replacement account worker attaches to that same process with
+        // a new connection id, and the turn keeps running there, so address the
+        // live connection of that generation. A request bound to the replaced
+        // connection id is refused before it is written, and the turn and its
+        // commands would keep running. Another generation keeps the stored id.
+        let connection = match self.interrupt_broker.current_scope(&account) {
+            Some(live) if live.account == account && live.generation == generation => {
+                live.connection
+            }
+            _ => stored_connection.to_owned(),
+        };
         let stopped_epoch = effect
             .stopped()
             .get("epoch")
@@ -272,24 +297,29 @@ impl ProductionLifecyclePorts {
             .get("epoch")
             .and_then(Value::as_i64)
             .ok_or(ManagementError::Invalid("Invalid interrupt actor epoch"))?;
-        let ticket = format!(
-            "lifecycle-interrupt:{}",
-            event_write::request_signature(&json!([
-                agent,
-                stopped_epoch,
-                generation,
-                attempt.get("id"),
-                &account,
-                &connection,
-                thread,
-                turn
-            ]))
-        );
+        let signature = event_write::request_signature(&json!([
+            agent,
+            stopped_epoch,
+            generation,
+            attempt.get("id"),
+            &account,
+            &connection,
+            thread,
+            turn
+        ]));
+        let ticket = format!("{INTERRUPT_OPERATION_PREFIX}{signature}");
         if !SchedulerRepository::prepare_interrupt(tx, agent, thread, turn, generation, &ticket)? {
             return Err(ManagementError::Unavailable(
                 "account-worker/agent-interrupt",
             ));
         }
+        let terminals = studio_runtime_providers::ProviderKind::of_field(before.get("provider"))
+            .ok()
+            .and_then(studio_runtime_providers::ProviderKind::stop_terminals_method)
+            .map(|method| TerminalCleanup {
+                operation: format!("{TERMINALS_OPERATION_PREFIX}{signature}"),
+                method,
+            });
         let request = InterruptRequest {
             ticket,
             agent: agent.to_owned(),
@@ -301,6 +331,7 @@ impl ProductionLifecyclePorts {
                 connection,
                 generation,
             },
+            terminals,
         };
         self.prepared
             .lock()
@@ -367,6 +398,23 @@ impl ProductionLifecyclePorts {
                     Ok::<_, ManagementError>(())
                 })
                 .await?;
+            // An interrupt ends the turn, not the commands it left running.
+            // Unless the interrupt provably never left Studio, end them on the
+            // same provider process. The request has its own operation id and
+            // is sent once; a lost reply is not resent.
+            if let Some(cleanup) = &request.terminals
+                && outcome != InterruptWriteResult::NotSent
+            {
+                let cleaned =
+                    request_terminal_cleanup(self.interrupt_broker.as_ref(), &request, cleanup)
+                        .await;
+                if cleaned != InterruptWriteResult::Accepted {
+                    eprintln!(
+                        "stopped agent {} command cleanup on thread {} was not confirmed: {cleaned:?}",
+                        request.agent, request.thread
+                    );
+                }
+            }
         }
         Ok(())
     }
@@ -465,40 +513,81 @@ async fn request_interrupt(
     port: &dyn AccountSessionPort,
     request: &InterruptRequest,
 ) -> InterruptWriteResult {
+    request_stop_work(
+        port,
+        request,
+        &request.ticket,
+        studio_runtime_providers::Method::TurnInterrupt,
+        json!({"threadId":request.thread,"turnId":request.turn}),
+    )
+    .await
+}
+
+async fn request_terminal_cleanup(
+    port: &dyn AccountSessionPort,
+    request: &InterruptRequest,
+    cleanup: &TerminalCleanup,
+) -> InterruptWriteResult {
+    request_stop_work(
+        port,
+        request,
+        &cleanup.operation,
+        cleanup.method,
+        json!({"threadId":request.thread}),
+    )
+    .await
+}
+
+/// Send one request that ends a stopped turn's provider work on the stop's
+/// exact scope, as the prior-epoch actor the retained worker authorizes.
+async fn request_stop_work(
+    port: &dyn AccountSessionPort,
+    request: &InterruptRequest,
+    operation: &str,
+    method: studio_runtime_providers::Method,
+    params: Value,
+) -> InterruptWriteResult {
     let expected = request.scope.clone();
     let receipt = port
         .provider_request(ProviderRequest {
             account: request.scope.account.clone(),
-            operation: request.ticket.clone(),
+            operation: operation.to_owned(),
             actor: Some(RequestActor {
                 agent: request.agent.clone(),
                 epoch: request.epoch,
             }),
             deleted_actor_session: None,
             expected_scope: Some(expected.clone()),
-            method: studio_runtime_providers::Method::TurnInterrupt,
-            params: json!({"threadId":request.thread,"turnId":request.turn}),
+            method,
+            params,
             deadline: Instant::now() + INTERRUPT_TIMEOUT,
         })
         .await;
+    // The receipt names the exact operation; the retained worker derives the
+    // wire request id from it, so the id is not compared here (as voice and
+    // catalog reads do). A check against the operation text made every real
+    // interrupt receipt look unknown.
     match receipt {
         Ok(receipt)
-            if receipt.operation == request.ticket && receipt.scope.account == expected.account =>
+            if receipt.operation == operation && receipt.scope.account == expected.account =>
         {
             match receipt.certainty {
                 RequestCertainty::Written
                     if receipt.scope == expected
                         && receipt.ticket.as_ref().is_some_and(|ticket| {
-                        ticket.generation == expected.generation
-                            && ticket.method == studio_runtime_providers::Method::TurnInterrupt
-                            && matches!(&ticket.id, studio_runtime_providers::RequestId::String(id) if id == &request.ticket)
-                    }) => match receipt.result {
+                            ticket.generation == expected.generation && ticket.method == method
+                        }) =>
+                {
+                    match receipt.result {
                         Some(ProviderResponse::Reply(_)) => InterruptWriteResult::Accepted,
                         Some(ProviderResponse::Rejected(_)) => InterruptWriteResult::Rejected,
                         None => InterruptWriteResult::Unknown,
-                    },
+                    }
+                }
                 RequestCertainty::NotSent => InterruptWriteResult::NotSent,
-                RequestCertainty::Written | RequestCertainty::Unknown => InterruptWriteResult::Unknown,
+                RequestCertainty::Written | RequestCertainty::Unknown => {
+                    InterruptWriteResult::Unknown
+                }
             }
         }
         Err(AccountSessionError::Requires(_)) | Err(AccountSessionError::Refused(_)) => {
@@ -1663,6 +1752,7 @@ mod tests {
                 connection: "connection".into(),
                 generation: 8,
             },
+            terminals: None,
         }
     }
 

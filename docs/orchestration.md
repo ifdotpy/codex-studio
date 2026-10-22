@@ -797,6 +797,10 @@ consumes generated copies. Both backends use them:
 **Stop agent** stops only the selected agent. **Stop team** stops its lead and all
 descendants. Stop disables automatic continuation, increments the agent generation,
 cancels pending events and requests interruption of active turns and commands.
+The interrupt goes to the provider process that runs the turn, also after Studio
+reconnects to that process. A Codex interrupt leaves the thread's background
+terminals running, so Stop and delete then send `thread/backgroundTerminals/clean`.
+The Claude bridge stops its background tasks as part of the interrupt.
 A late result from an earlier generation cannot resume that agent.
 A new user message explicitly resumes the target. Other stopped agents stay stopped
 until the user or a resumed lead sends them a new task.

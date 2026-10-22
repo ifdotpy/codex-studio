@@ -104,6 +104,24 @@ impl ProviderKind {
     }
 }
 
+impl ProviderKind {
+    /// The thread request that ends command processes which outlive
+    /// `turn/interrupt`, sent after a stop interrupts the agent's turn.
+    ///
+    /// The Codex app-server keeps a thread's unified exec sessions (background
+    /// terminals) running after an interrupt; `thread/backgroundTerminals/clean`
+    /// ends them. Studio command monitors use `command/exec`, which this request
+    /// does not touch. The Claude bridge stops its background tasks inside
+    /// `turn/interrupt`, so Claude needs no second request.
+    #[must_use]
+    pub const fn stop_terminals_method(self) -> Option<crate::Method> {
+        match self {
+            Self::Codex => Some(crate::Method::ThreadBackgroundTerminalsClean),
+            Self::Claude => None,
+        }
+    }
+}
+
 impl FromStr for ProviderKind {
     type Err = UnknownProvider;
 

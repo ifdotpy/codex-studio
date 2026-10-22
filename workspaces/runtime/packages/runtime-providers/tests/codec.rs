@@ -65,6 +65,10 @@ fn one_off_catalog_and_terminal_methods_keep_their_wire_names() {
             Method::ThreadBackgroundTerminalsTerminate,
             "thread/backgroundTerminals/terminate",
         ),
+        (
+            Method::ThreadBackgroundTerminalsClean,
+            "thread/backgroundTerminals/clean",
+        ),
     ];
     for (operation, wire) in methods {
         assert_eq!(operation.as_str(), wire);
