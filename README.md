@@ -11,14 +11,12 @@ Requirements and detailed setup are in the [product guide](docs/product-guide.md
 ```sh
 pnpm install --frozen-lockfile
 git config --local core.hooksPath .githooks
-cargo build --release -p studio-operations-python
-python3 workspaces/runtime/apps/server/src/install-cli.py
+just install
 pnpm --filter codex-agents-web run build
 pnpm --filter codex-agents-desktop run start
 ```
 
-The installer copies the built module into the managed Python environment; it
-does not build it.
+The installer builds the Rust command binaries and links them into `~/.local/bin`.
 
 The root [`package.json`](package.json) owns root commands. Each app manifest
 owns its package commands; see the workspace guides below.
@@ -30,7 +28,7 @@ server/client suites in [docs/testing.md](docs/testing.md) as the pre-PR gate.
 
 ## Where things live
 
-- [Runtime](workspaces/runtime/README.md): Python server, VM guest, and prompts.
+- [Runtime](workspaces/runtime/README.md): Rust server, VM guest, and prompts.
 - [Providers](workspaces/providers/README.md): provider process integrations.
 - [Client](workspaces/client/README.md): web renderer and Electron desktop app.
 - [Tooling](workspaces/tooling/README.md): repository checks and commit hooks.

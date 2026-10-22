@@ -862,6 +862,33 @@ function fastTierCommands(root) {
     operationsModulePreparation(),
     webWasmPreparation(root),
     {
+      item: { name: "studio-runtime-server", ecosystem: "cargo" },
+      label: "Rust operator CLI witnesses",
+      commands: [
+        [
+          "cargo",
+          [
+            "nextest",
+            "run",
+            "--locked",
+            "--no-tests",
+            "fail",
+            "--message-format",
+            "libtest-json-plus",
+            "-p",
+            "studio-runtime-server",
+            "-E",
+            "test(operator_cli::)",
+          ],
+        ],
+      ],
+      options: {
+        selector: "Rust service and command installation without Python",
+        reason:
+          "Check isolated user service managers, delivery layout, safe link migration, and idempotent retries without touching host services.",
+      },
+    },
+    {
       item: { name: "schema and dependency guards", ecosystem: "pnpm" },
       label: "schema and dependency guards",
       commands: [

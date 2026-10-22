@@ -1,3 +1,4 @@
+mod operator_cli;
 mod browser_launcher;
 mod install_layout;
 mod state_check;

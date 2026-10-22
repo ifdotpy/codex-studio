@@ -5509,6 +5509,7 @@ dependencies = [
  "studio-runtime-http",
  "studio-runtime-process",
  "studio-runtime-providers",
+ "studio-runtime-schema",
  "studio-runtime-services",
  "studio-runtime-store",
  "tempfile",
