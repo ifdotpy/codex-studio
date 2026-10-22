@@ -153,6 +153,7 @@ async fn cancelled_prepare_never_returns_a_usable_generation() {
     );
 }
 
+#[cfg(target_os = "linux")]
 use crate::process_support as support;
 
 // Retained child environment verification is implemented only on Linux.
