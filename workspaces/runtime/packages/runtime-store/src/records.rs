@@ -993,6 +993,29 @@ pub fn decode_agent_value(
     row_id: &str,
     encoded: &str,
 ) -> StoreResult<Value> {
+    let mut value = parse_agent_value(row_id, encoded)?;
+    crate::agent_volatile::merge(connection, row_id, &mut value)?;
+    validate_agent_value(row_id, value)
+}
+
+pub(crate) fn parse_agent_value(row_id: &str, encoded: &str) -> StoreResult<Value> {
+    #[cfg(any(test, feature = "test-support"))]
+    crate::agent_volatile::publication_work::record(
+        row_id,
+        crate::agent_volatile::publication_work::Operation::Decode,
+    );
+    let value: Value = serde_json::from_str(encoded).map_err(|_| {
+        invalid_agent_field(
+            row_id,
+            "",
+            &format!("invalid_json; record length {} bytes", encoded.len()),
+            None,
+        )
+    })?;
+    Ok(value)
+}
+
+pub(crate) fn validate_agent_value(row_id: &str, value: Value) -> StoreResult<Value> {
     /// The fields [`AgentRecord`] types; every other field is free JSON.
     #[derive(Deserialize)]
     struct TypedFields<'a> {
@@ -1004,20 +1027,6 @@ pub fn decode_agent_value(
         #[serde(rename = "status")]
         _status: &'a str,
     }
-    #[cfg(any(test, feature = "test-support"))]
-    crate::agent_volatile::publication_work::record(
-        row_id,
-        crate::agent_volatile::publication_work::Operation::Decode,
-    );
-    let mut value: Value = serde_json::from_str(encoded).map_err(|_| {
-        invalid_agent_field(
-            row_id,
-            "",
-            &format!("invalid_json; record length {} bytes", encoded.len()),
-            None,
-        )
-    })?;
-    crate::agent_volatile::merge(connection, row_id, &mut value)?;
     if !studio_runtime_schema::validate(AgentRecord::SCHEMA, &value)
         .map_err(crate::StoreError::SchemaValidation)?
     {

@@ -1531,3 +1531,10 @@ change with both options. Cross-machine Claude cache reuse remains unverified.
 1. The access snapshot identifies references to a previous server identity.
 2. Server settings display these warnings without a replacement action.
 3. References keep their original identity; historical replacement records remain readable.
+
+## Task history reads
+
+1. The server reads the workspace agents and their volatile fields together.
+2. It selects task IDs and records for the requested page in one query.
+3. It validates only the served records; the extra row indicates more history.
+4. Current and older-page cursors retain their timestamp and ID ordering.
