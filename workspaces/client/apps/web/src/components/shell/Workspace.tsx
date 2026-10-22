@@ -983,7 +983,15 @@ function Tools(c: Context) {
             agent={c.selected?.id ?? ""}
             initial={state.data}
             query={query}
-            loadPage={(cursor) => get("/api/capabilities", { query: {agent: c.selected?.id ?? "", fresh: true, ...(cursor ? {serversCursor: cursor} : {})} })}
+            loadPage={(cursor) =>
+              get("/api/capabilities", {
+                query: {
+                  agent: c.selected?.id ?? "",
+                  fresh: true,
+                  ...(cursor ? { serversCursor: cursor } : {}),
+                },
+              })
+            }
             reconnect={(body) => post("/api/mcp/reconnect", body)}
           />
         </>
