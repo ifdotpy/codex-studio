@@ -812,6 +812,16 @@ consumes generated copies. Both backends use them:
 5. Recovery never resends that input. A late acceptance can bind the same retry
    to its existing turn; repeated recovery does not repeat the notice.
 
+## Starts held for authentication
+
+1. A turn whose account is signed out or changed keeps its input pending and
+   records the authentication reason on the agent.
+2. Account changes and published auth invalidations wake the release loop;
+   elapsed time alone does not wake it.
+3. When the account is ready again, the loop requeues the held input once.
+   Its paused-time witness waits for credential-watch publication before
+   measuring the interval without a wake, including process-wide auth signals.
+
 ## Stop and recovery
 
 **Stop agent** stops only the selected agent. **Stop team** stops its lead and all
