@@ -1,76 +1,182 @@
-//! Real Python decisions over immutable observations; no Runtime or provider is created.
-use crate::prepared_python_support as prepared_python;
+//! Captured legacy decisions over immutable observations; no backend process is needed.
 use serde_json::{Value, json};
-use std::io::{BufRead, BufReader, Write};
-use std::path::Path;
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use studio_runtime_services::turn_prepare::{
     ContextManifest, Event, NativeReceipt, PreparationSnapshot, PrepareError, accept, compile,
 };
 
-struct Oracle {
-    child: Child,
-    input: ChildStdin,
-    output: BufReader<ChildStdout>,
-    _environment: prepared_python::IsolatedTestEnvironment,
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CapturedCase {
+    case: Value,
+    response: Value,
 }
-impl Oracle {
+struct CapturedExpectations(Vec<CapturedCase>);
+impl CapturedExpectations {
     fn new() -> Self {
-        let python = prepared_python::prepared_python(
-            &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
-        );
-        let environment = prepared_python::IsolatedTestEnvironment::new();
-        let mut command = Command::new(python);
-        environment.apply(&mut command);
-        let mut child = command
-            .arg("-B")
-            .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/turn_prepare/oracle.py"))
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .spawn()
-            .expect("start guarded preparation oracle");
-        let input = child.stdin.take().expect("oracle input");
-        let output = BufReader::new(child.stdout.take().expect("oracle output"));
-        Self {
-            child,
-            input,
-            output,
-            _environment: environment,
-        }
+        Self(crate::turn_fixtures::load(include_bytes!(
+            "turn_prepare/expected.json"
+        )))
     }
     fn call(&mut self, value: Value) -> Value {
-        writeln!(self.input, "{value}").expect("write oracle request");
-        self.input.flush().expect("flush oracle request");
-        let mut line = String::new();
-        self.output
-            .read_line(&mut line)
-            .expect("read oracle response");
-        assert!(!line.is_empty(), "oracle exited before response");
-        serde_json::from_str(&line).expect("oracle JSON")
-    }
-}
-impl Drop for Oracle {
-    fn drop(&mut self) {
-        let graceful =
-            writeln!(self.input, "{{\"command\":\"close\"}}").is_ok() && self.input.flush().is_ok();
-        if graceful {
-            if let Err(error) = self.child.wait() {
-                eprintln!("could not reap turn-preparation oracle during teardown: {error}");
+        #[derive(serde::Deserialize)]
+        #[serde(tag = "command", rename_all = "snake_case", deny_unknown_fields)]
+        enum Request {
+            Case {
+                case: Value,
+            },
+            Normalize {
+                segments: Option<Vec<Segment>>,
+                value: Value,
+            },
+            ReceiptSequence {
+                order: Vec<usize>,
+            },
+        }
+        match serde_json::from_value(value).expect("typed fixture request") {
+            Request::Case { case } => self
+                .0
+                .iter()
+                .find(|row| {
+                    row.case == case
+                        || (case.get("id").is_some() && row.case.get("id") == case.get("id"))
+                })
+                .expect("captured preparation case")
+                .response
+                .clone(),
+            Request::Normalize { segments, value } => {
+                normalize_prepared(value, &segments.unwrap_or_default())
             }
-        } else {
-            if let Err(error) = self.child.kill()
-                && error.kind() != std::io::ErrorKind::InvalidInput
-            {
-                eprintln!("could not stop turn-preparation oracle: {error}");
-            }
-            if let Err(error) = self.child.wait() {
-                eprintln!("could not reap turn-preparation oracle: {error}");
+            Request::ReceiptSequence { order } => {
+                let rows: Vec<ReceiptSequence> = crate::turn_fixtures::load(include_bytes!(
+                    "turn_prepare/receipt_sequences.json"
+                ));
+                rows.into_iter()
+                    .find(|row| row.order == order)
+                    .expect("captured receipt order")
+                    .expected
             }
         }
     }
 }
-
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReceiptSequence {
+    order: Vec<usize>,
+    expected: Value,
+}
+#[derive(Clone, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+enum Segment {
+    Literal(String),
+    Json(Value),
+    Token(String),
+}
+fn normalize_text(mut text: &str, segments: &[Segment]) -> Value {
+    let mut result = Vec::new();
+    for segment in segments {
+        let (value, consumed) = match segment {
+            Segment::Literal(expected) => {
+                assert!(text.starts_with(expected), "literal text differs: {text:?}");
+                (Segment::Literal(expected.clone()), expected.len())
+            }
+            Segment::Json(_) => {
+                let mut stream = serde_json::Deserializer::from_str(text).into_iter::<Value>();
+                let value = stream
+                    .next()
+                    .expect("generated JSON segment")
+                    .expect("valid generated JSON");
+                (Segment::Json(value), stream.byte_offset())
+            }
+            Segment::Token(expected) => {
+                let token = text.get(..expected.len()).expect("complete context token");
+                (Segment::Token(token.to_owned()), expected.len())
+            }
+        };
+        result.push(value);
+        text = &text[consumed..];
+    }
+    assert!(text.is_empty(), "unexpected trailing model text");
+    json!(result)
+}
+fn normalize_prepared(value: Value, segments: &[Segment]) -> Value {
+    #[derive(serde::Deserialize)]
+    struct Observation {
+        ok: bool,
+        #[serde(default)]
+        fulltext: Option<String>,
+        #[serde(default)]
+        transcript: Option<studio_runtime_services::turn_prepare::TranscriptItem>,
+        #[serde(default)]
+        provider_inputs: Vec<studio_runtime_services::turn_prepare::ProviderInput>,
+        #[serde(default)]
+        clock_segments: Vec<Segment>,
+        #[serde(flatten)]
+        remaining: std::collections::BTreeMap<String, Value>,
+    }
+    let observation: Observation =
+        serde_json::from_value(value.clone()).expect("typed preparation observation");
+    if !observation.ok {
+        return value;
+    }
+    let transcript = observation.transcript.expect("successful transcript");
+    let mut projected = json!(transcript);
+    if let Some(fulltext) = observation.fulltext {
+        assert!(transcript.truncated && fulltext.starts_with(&transcript.text));
+        let fulltext = normalize_text(&fulltext, segments);
+        projected["text"] =
+            json!({"prefixOf":fulltext,"characters":transcript.text.chars().count()});
+        let mut remaining = observation.remaining;
+        remaining.insert("fulltext".into(), fulltext);
+        finish_observation(
+            remaining,
+            projected,
+            observation.provider_inputs,
+            segments,
+            &observation.clock_segments,
+        )
+    } else {
+        assert!(!transcript.truncated);
+        projected["text"] = normalize_text(&transcript.text, segments);
+        let mut remaining = observation.remaining;
+        remaining.insert("fulltext".into(), Value::Null);
+        finish_observation(
+            remaining,
+            projected,
+            observation.provider_inputs,
+            segments,
+            &observation.clock_segments,
+        )
+    }
+}
+fn finish_observation(
+    mut remaining: std::collections::BTreeMap<String, Value>,
+    transcript: Value,
+    inputs: Vec<studio_runtime_services::turn_prepare::ProviderInput>,
+    segments: &[Segment],
+    clocks: &[Segment],
+) -> Value {
+    let mut segments = segments.to_vec();
+    segments.extend_from_slice(clocks);
+    let inputs: Vec<Value> = inputs
+        .into_iter()
+        .enumerate()
+        .map(|(index, input)| {
+            if index == 0 {
+                let studio_runtime_services::turn_prepare::ProviderInput::Text { text } = input
+                else {
+                    panic!("text first")
+                };
+                json!({"type":"text","text":normalize_text(&text,&segments)})
+            } else {
+                json!(input)
+            }
+        })
+        .collect();
+    remaining.insert("ok".into(), json!(true));
+    remaining.insert("transcript".into(), transcript);
+    remaining.insert("provider_inputs".into(), json!(inputs));
+    json!(remaining)
+}
 fn difference(left: &Value, right: &Value, path: &str) -> Option<String> {
     match (left, right) {
         (Value::Object(a), Value::Object(b)) => {
@@ -111,7 +217,7 @@ fn python_submission_compiler_corpus() {
         serde_json::from_str(include_str!("turn_prepare/cases.json")).expect("corpus data");
     let full = std::env::var_os("STUDIO_RUNTIME_CORPUS_FULL").is_some();
     let filter = std::env::var("TURN_PREPARE_CASE").ok();
-    let mut oracle = Oracle::new();
+    let mut oracle = CapturedExpectations::new();
     let mut count = 0;
     for case in cases.iter().filter(|c| {
         (full || c["fast"] == true)
@@ -188,8 +294,8 @@ fn python_submission_compiler_corpus() {
             json!(snapshot) == original,
             "compiler mutated its input snapshot"
         );
-        actual =
-            oracle.call(json!({"command":"normalize","tokens":fixture["tokens"],"segments":fixture["segments"],"value":actual}));
+        actual = oracle
+            .call(json!({"command":"normalize","segments":fixture["segments"],"value":actual}));
         if let Some(diff) = difference(&actual, &fixture["expected"], "$") {
             panic!("{} ({}) {diff}", case["id"], case["family"]);
         }
@@ -204,7 +310,7 @@ fn python_submission_compiler_corpus() {
 
 #[test]
 fn malformed_snapshot_fields_are_refused_at_the_typed_boundary() {
-    let mut oracle = Oracle::new();
+    let mut oracle = CapturedExpectations::new();
     let fixture = oracle.call(json!({"command":"case","case":{}}));
     let cases: Vec<Value> =
         serde_json::from_str(include_str!("turn_prepare/invalid_snapshots.json"))
@@ -229,18 +335,9 @@ fn malformed_snapshot_fields_are_refused_at_the_typed_boundary() {
 }
 
 #[test]
-fn oracle_keeps_token_and_literal_identity_and_reaches_refusal_branches() {
-    assert_eq!(
-        Oracle::new().call(json!({"command":"oracle_invariants"})),
-        json!(true)
-    );
-}
-
-#[test]
 fn competing_preparations_cannot_roll_back_either_receipt_order() {
-    let mut oracle = Oracle::new();
+    let mut oracle = CapturedExpectations::new();
     let mut preparations = Vec::new();
-    let mut python_preparations = Vec::new();
     for (index, role) in ["First role", "Second role"].iter().enumerate() {
         let fixture = oracle.call(json!({"command":"case","case":{
             "snapshot":{"guidance":{"role":role},"operation_id":format!("op-{index}")},
@@ -249,12 +346,10 @@ fn competing_preparations_cannot_roll_back_either_receipt_order() {
         let snapshot = serde_json::from_value(fixture["snapshot"].clone()).expect("snapshot");
         let events: Vec<Event> = serde_json::from_value(fixture["events"].clone()).expect("events");
         preparations.push(compile(&snapshot, &events).expect("prepared"));
-        python_preparations.push(fixture["prepared"].clone());
     }
     assert!(preparations[0].manifest.versions != preparations[1].manifest.versions);
     for order in [[0, 1, 2, 0], [1, 0, 2, 1]] {
         preparations.truncate(2);
-        python_preparations.truncate(2);
         let prior_role = ["First role", "Second role"][order[0]];
         let fixture = oracle.call(json!({"command":"case","case":{
             "snapshot":{"guidance":{"role":"Successive role"},"operation_id":"op-2"},
@@ -264,10 +359,7 @@ fn competing_preparations_cannot_roll_back_either_receipt_order() {
             serde_json::from_value(fixture["snapshot"].clone()).expect("successive snapshot");
         let events: Vec<Event> = serde_json::from_value(fixture["events"].clone()).expect("events");
         preparations.push(compile(&snapshot, &events).expect("successive preparation"));
-        python_preparations.push(fixture["prepared"].clone());
-        let expected = oracle.call(
-            json!({"command":"receipt_sequence","prepared":python_preparations,"order":order}),
-        );
+        let expected = oracle.call(json!({"command":"receipt_sequence","order":order}));
         let mut current = None;
         let mut turns = [None, None, None];
         for (step, index) in order.iter().copied().enumerate() {
@@ -297,7 +389,7 @@ fn competing_preparations_cannot_roll_back_either_receipt_order() {
 
 #[test]
 fn reference_floor_is_soft_but_transcript_ceiling_is_hard() {
-    let mut oracle = Oracle::new();
+    let mut oracle = CapturedExpectations::new();
     let fixture =
         oracle.call(json!({"command":"case","case":{"id":"summary-result-file-soft-limit"}}));
     let snapshot = serde_json::from_value(fixture["snapshot"].clone()).expect("snapshot");
