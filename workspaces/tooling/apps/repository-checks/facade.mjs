@@ -977,6 +977,7 @@ function fastTierCommands(root) {
               "test(server_exec::tests::snapshots_)",
               "test(server_exec::tests::snapshot_write_failure_)",
               "test(server_exec::tests::existing_start_fence_)",
+              "test(server_exec::tests::output_tail_append_does_not_move_retained_bytes)",
             ]),
           ],
         ],

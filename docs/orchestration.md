@@ -1,5 +1,12 @@
 # Managed Codex teams
 
+Server command output follows this flow:
+
+1. Retain the first and last bytes within the command's output limit.
+2. Evict old tail bytes without shifting retained bytes on every output block.
+3. Copy only the requested page on read; keep the same offsets, gap reporting,
+   UTF-8 decoding, and durable snapshot format.
+
 Use the [Electron desktop app](../workspaces/client/apps/desktop/README.md), or build the [React interface](../workspaces/client/apps/web/README.md), start `codex-canvas`, and open <http://127.0.0.1:4620>.
 Use the new-chat action inside a project. The server creates an empty lead conversation immediately.
 If the current lead chat is empty, it reuses that chat and preserves the draft.
