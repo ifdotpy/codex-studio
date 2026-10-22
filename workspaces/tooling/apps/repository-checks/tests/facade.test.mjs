@@ -113,15 +113,19 @@ test("short and comprehensive recipes preserve their owned test boundaries", () 
     /active_barrier_holds_new_requests_but_not_callback_answers/,
   );
   assert.match(fast.command, /test:unit:fast/);
-  assert.equal((fast.command.match(/'--test' 'integration'/g) ?? []).length, 5);
-  assert.match(
-    fast.command,
+  // The provider reaping witnesses are Linux only and run only on Linux.
+  const linux = process.platform === "linux";
+  assert.equal(
+    (fast.command.match(/'--test' 'integration'/g) ?? []).length,
+    linux ? 5 : 4,
+  );
+  for (const witness of [
     /killed_provider_is_reaped_with_full_journal_and_unobserved_write/,
-  );
-  assert.match(
-    fast.command,
     /direct_child_sigkill_settles_unknown_without_resend/,
-  );
+  ]) {
+    if (linux) assert.match(fast.command, witness);
+    else assert.doesNotMatch(fast.command, witness);
+  }
   assert.match(fast.command, /test\(\/\^sql_callback_guard::\/\)/);
   assert.match(fast.command, /test\(\/\^project_preparation::\/\)/);
   assert.match(fast.command, /test\(\/\^monitor_start_preparation::\/\)/);
