@@ -987,6 +987,35 @@ function fastTierCommands(root) {
       },
     },
     {
+      item: { name: "studio-runtime-http", ecosystem: "cargo" },
+      label: "shared named schema validation witnesses",
+      commands: [
+        [
+          "cargo",
+          [
+            "nextest",
+            "run",
+            "--locked",
+            "--no-tests",
+            "fail",
+            "--message-format",
+            "libtest-json-plus",
+            "-p",
+            "studio-runtime-http",
+            "--lib",
+            "-E",
+            "test(validation::tests::named_schema_)",
+          ],
+        ],
+      ],
+      options: {
+        selector:
+          "shared named validator startup and invalid-value error parity",
+        reason:
+          "Preserve named-schema validation and error locations while HTTP reuses the compiled schema owner.",
+      },
+    },
+    {
       item: { name: "studio-runtime-services", ecosystem: "cargo" },
       label: "monitor ownership, terminal wake, and recovery witnesses",
       commands: [
