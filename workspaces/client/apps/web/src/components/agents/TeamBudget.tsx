@@ -3,7 +3,10 @@ import { useEffect, useState } from "react";
 import { Button, TextInput } from "@mantine/core";
 import { errorText, type GetResult } from "../../api";
 import type { Agent } from "../../types";
-import { useServerApi } from "../../servers/ServerServicesContext";
+import {
+  useServerApi,
+  useServerResourceReads,
+} from "../../servers/ServerServicesContext";
 import { MAX_SAFE_INTEGER } from "../../generated/sharedValues";
 import "./agent-limits.css";
 
@@ -29,6 +32,12 @@ export function TeamBudgetView({
   const incomplete = summary.incomplete.length > 0;
   return (
     <>
+      <p>
+        Budget:{" "}
+        {summary.tokenBudget == null
+          ? "Unlimited"
+          : `${summary.tokenBudget.toLocaleString()} tokens`}
+      </p>
       <p>
         Spent: {spent == null ? "Unavailable" : spent.toLocaleString()} tokens
         {incomplete ? " (known usage)" : ""}
@@ -70,6 +79,7 @@ export default function TeamBudget({
   members: Agent[];
 }) {
   const { get, post } = useServerApi();
+  const watchResourceReads = useServerResourceReads();
   const [summary, setSummary] = useState<Summary | null>(null);
   const [input, setInput] = useState(String(lead.tokenBudget ?? ""));
   const [error, setError] = useState("");
@@ -95,23 +105,38 @@ export default function TeamBudget({
   );
   useEffect(() => {
     let current = true;
-    get("/api/team-budget", { query: { agent: lead.id } })
-      .then((value) => {
+    // Cleanup receipts can arrive after a worker leaves the live team list.
+    // The costs resource also follows the durable usage records of deleted workers.
+    const stop = watchResourceReads(
+      { kind: "costs" },
+      async () => {
+        const value = await get("/api/team-budget", {
+          query: { agent: lead.id },
+        });
         if (current) {
           setSummary(value);
           setReadError("");
         }
-      })
-      .catch((failure) => {
+      },
+      (failure) => {
         if (current) {
           setSummary(null);
           setReadError(errorText(failure));
         }
-      });
+      },
+    );
     return () => {
       current = false;
+      stop();
     };
-  }, [lead.id, lead.tokenBudget, usageRevision, revision, get]);
+  }, [
+    lead.id,
+    lead.tokenBudget,
+    usageRevision,
+    revision,
+    get,
+    watchResourceReads,
+  ]);
   return (
     <>
       <section className="agent-limits" aria-label="Team token budget">

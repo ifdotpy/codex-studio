@@ -41,6 +41,8 @@ test("agent limits show effective capabilities, budget holds, and retained folde
           const api={post,get,saved:(key,fallback)=>JSON.parse(localStorage.getItem(key)||'null')||fallback};
           export const useServerApi=()=>api;
           export const useServerStorage=()=>localStorage;
+          const watch=(_resource,read,failed)=>{let active=true;window.refreshBudget=async()=>{if(active)await read().catch(failed);};queueMicrotask(()=>{if(active)void window.refreshBudget();});return()=>{active=false;};};
+          export const useServerResourceReads=()=>watch;
           export const useServerFileDialogs=()=>({canRevealPath:()=>true,revealPath:async(path)=>{window.openedFolder=path;}});`;
           if (id === entry)
             return `
@@ -58,6 +60,7 @@ test("agent limits show effective capabilities, budget holds, and retained folde
   const continues = [],
     budgets = [],
     errors = [];
+  let cleanupComplete = false;
   page.on("pageerror", (error) => errors.push(error.message));
   try {
     await server.listen();
@@ -65,18 +68,20 @@ test("agent limits show effective capabilities, budget holds, and retained folde
       route.fulfill({
         json: {
           rootId: "lead",
-          retainedWorktrees: [
-            {
-              id: "deleted-worker",
-              name: "Deleted worker",
-              cleanup: {
-                phase: "not_sent",
-                reason:
-                  "Submodule vendor/documentation has local changes. Cleanup kept the worktree.",
-                path: "/Users/example/Projects/studio/.worktrees/codex-agents/worker/vendor/documentation",
-              },
-            },
-          ],
+          retainedWorktrees: cleanupComplete
+            ? [
+                {
+                  id: "deleted-worker",
+                  name: "Deleted worker",
+                  cleanup: {
+                    phase: "not_sent",
+                    reason:
+                      "Submodule vendor/documentation has local changes. Cleanup kept the worktree.",
+                    path: "/Users/example/Projects/studio/.worktrees/codex-agents/worker/vendor/documentation",
+                  },
+                },
+              ]
+            : [],
           tokenBudget: 100000,
           tokensUsed: 24000,
           reached: false,
@@ -109,7 +114,14 @@ test("agent limits show effective capabilities, budget holds, and retained folde
       `http://127.0.0.1:${server.httpServer.address().port}/check`,
     );
     await page.getByText("Effective capabilities", { exact: true }).click();
+    // Cleanup finishes after the deleted worker is absent from the live team.
+    await expect(
+      page.getByText("Worktree retained", { exact: true }),
+    ).toHaveCount(0);
+    cleanupComplete = true;
+    await page.evaluate(() => window.refreshBudget());
     for (const text of [
+      "Budget: 100,000 tokens",
       "Stopped: turn limit reached",
       "Usage accounting incomplete.",
       "Remaining: Unavailable",

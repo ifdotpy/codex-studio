@@ -9,6 +9,7 @@ vi.mock("../../servers/ServerServicesContext", () => ({
     saved: (_key: string, value: unknown) => value,
   }),
   useServerStorage: () => ({ setItem: vi.fn() }),
+  useServerResourceReads: () => vi.fn(),
   useServerFileDialogs: () => ({
     canRevealPath: () => true,
     revealPath: vi.fn(),
@@ -57,6 +58,21 @@ test("unlimited workers show provider defaults without a reset action", () => {
   expect(html).toContain("Provider default");
   expect(html).not.toContain(">Continue<");
 });
+test("lead and remote worker panels do not offer a local continuation", () => {
+  expect(
+    render(createElement(WorkerLimits, { agent: { ...worker, isLead: true } })),
+  ).not.toContain("Worker limits");
+  const html = render(
+    createElement(WorkerLimits, {
+      agent: {
+        ...worker,
+        remoteWorker: { server: "remote", link: "remote-worker" },
+      },
+    }),
+  );
+  expect(html).toContain("Stopped: turn limit reached");
+  expect(html).not.toContain(">Continue<");
+});
 test("retained worktrees show reason and path without a delete action", () => {
   const html = render(
     createElement(RetainedWorktree, {
@@ -90,9 +106,9 @@ test("team totals distinguish verified remaining tokens from incomplete usage", 
     reached: false,
     incomplete: [],
   };
-  expect(render(createElement(TeamBudgetView, { summary }))).toContain(
-    "Remaining: 60 tokens",
-  );
+  const verified = render(createElement(TeamBudgetView, { summary }));
+  expect(verified).toContain("Budget: 100 tokens");
+  expect(verified).toContain("Remaining: 60 tokens");
   const html = render(
     createElement(TeamBudgetView, {
       summary: {
@@ -108,6 +124,20 @@ test("team totals distinguish verified remaining tokens from incomplete usage", 
   expect(html).toContain("Remaining: Unavailable");
   expect(html).toContain("Usage accounting incomplete.");
   expect(html).toContain("Admission blocked:");
+  expect(
+    render(
+      createElement(TeamBudgetView, {
+        summary: { ...summary, tokenBudget: null },
+      }),
+    ),
+  ).toContain("Budget: Unlimited");
+  expect(
+    render(
+      createElement(TeamBudgetView, {
+        summary: { ...summary, tokensUsed: 120, reached: true },
+      }),
+    ),
+  ).toContain("Remaining: 0 tokens");
 });
 test("budget input supports an unlimited cap and rejects invalid token counts", () => {
   expect(budgetInput(" ")).toBeNull();
