@@ -244,13 +244,26 @@ impl HostRuntime {
             accounts: accounts.clone(),
             account_session: state.account_session.clone(),
             store: store.clone(),
-            guest: vm_guest,
+            guest: Arc::clone(&vm_guest),
             claude_bridge_dir: claude_bridge_dir.clone(),
         }));
         let resources = resources.with_account_session(state.account_session.clone());
         let preparation_resources = Arc::new(resources.clone());
         if let Some(managed_tool_runtime) = &managed_tool_runtime {
             managed_tool_runtime.set_preparation_resources(Arc::clone(&preparation_resources));
+            // VM agents run Mac commands through the guest channel and the Python
+            // service of the server scripts (docs/host-exec.md).
+            managed_tool_runtime.attach_host_exec(
+                studio_runtime_services::host_exec::HostExecRuntime::new(
+                    Arc::clone(&vm_guest),
+                    Arc::new(
+                        studio_runtime_services::host_exec::PythonHostExecService::new(
+                            install_root.server_source(),
+                            studio_runtime_services::vault::linux_vm_state_dir(store.root()),
+                        ),
+                    ),
+                ),
+            );
         }
         let callback_runtime = Arc::new(
             studio_runtime_services::callback_runtime::CallbackRuntime::new(

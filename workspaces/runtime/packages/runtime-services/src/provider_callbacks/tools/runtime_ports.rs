@@ -152,6 +152,14 @@ impl ManagedToolRuntime {
         }
     }
 
+    /// Attach the VM guest channel and Mac service of `host_exec`
+    /// (docs/host-exec.md).
+    pub fn attach_host_exec(&self, runtime: Arc<crate::host_exec::HostExecRuntime>) {
+        if self.ports.late.host_exec.set(runtime).is_err() {
+            // The first attached runtime stays the owner of host commands.
+        }
+    }
+
     /// Attach the provider-session voice adapter that plays
     /// `orchestration_speak` in a ready voice session.
     pub fn attach_voice(&self, port: Arc<dyn crate::voice_runtime::VoiceRequestPort>) {

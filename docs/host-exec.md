@@ -122,6 +122,24 @@ stops it when it has no command child process. Receipts, tokens, leases, and
 unknown outcomes stay in the same state folder. `host-exec-bootstrap.py` checks
 this with real service processes.
 
+### Rust backend
+
+The Rust backend (`studio-runtime-server`) runs `host_exec` in
+`runtime-services/src/host_exec.rs`. It gives the tool to VM agents that are not
+reviewers, and it sends the same guest requests, identities and timeouts as
+`codex_host_exec.py`. The Mac service stays the Python process above. Before each
+call, the Rust backend runs `codex_host_exec.ensure_service` from the server
+scripts with `CODEX_AGENTS_PYTHON`, or with `python3` on `PATH` when that variable
+is not set. Then it sends `host.configure` with the channel token, because the Rust
+backend does not start the VM. The Python module owns the shared values;
+`host-exec-restart-contract.py` checks the Rust copies and the bundled tool
+definition `host_exec_tool.json`.
+
+The Rust backend saves the guest request on the tool receipt, but it does not
+resume an interrupted call yet. After a restart, the call keeps its "outcome
+unknown" answer with its operation ID. Read the result with `status` or `list`;
+do not repeat the command.
+
 ## Slots and source changes
 
 By default, each project has four Mac slots and a 20 GiB disk budget. A project
