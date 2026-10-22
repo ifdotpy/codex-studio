@@ -120,6 +120,10 @@ ACCOUNT_RUNNING_TURNS_DEFAULT_CODEX = 32
 ACCOUNT_START_BURST_DEFAULT_CLAUDE = 32
 ACCOUNT_START_PAUSE_DEFAULT_SECONDS_CLAUDE = 5
 ACCOUNT_RUNNING_TURNS_DEFAULT_CLAUDE = 64
+# Account group names and the account order of a project, for the API schema only;
+# the Rust backend implements account orders (owner: runtime-schema shared_values.rs).
+ACCOUNT_GROUP_PATTERN = "^[a-z0-9][a-z0-9_-]{0,31}$"
+ACCOUNT_GROUPS_MAX = 16
 
 
 def user_attachment_limit_label() -> str:

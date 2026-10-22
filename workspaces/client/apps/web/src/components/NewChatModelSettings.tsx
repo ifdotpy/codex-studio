@@ -12,6 +12,11 @@ import {
   useWorkerModels,
 } from "./agents/WorkerModelPicker";
 import {
+  DEFAULT_CLAUDE_LEAD_EFFORT,
+  DEFAULT_CLAUDE_LEAD_MODEL,
+} from "../generated/sharedValues";
+import { defaultChatModel, newChatDefault } from "./accountPreference";
+import {
   readNewChatResource,
   settingsForNewChatAccount,
   type NewChatSettings,
@@ -145,7 +150,13 @@ function ModelDraft({
         );
         setAccounts(value);
         setAccountKey(
-          project?.accountKey || value.defaultAccountKey || "default",
+          newChatDefault(
+            value.accounts,
+            value.defaultAccountKey || "default",
+            value.defaultAccountGroups,
+            project,
+            null,
+          ).accountKey,
         );
       })
       .catch((failure) => {
@@ -154,15 +165,21 @@ function ModelDraft({
     return () => controller.abort();
   }, [serverKey, projectId, path, attempt, onChange]);
   const catalog = useWorkerModels(accountKey || "default", !!accounts);
-  const model =
-    settings.model ||
-    catalog.models.find((row) => row.model === "gpt-6-astra")?.model ||
-    catalog.models.find((row) => row.isDefault)?.model ||
-    catalog.models[0]?.model;
+  const provider = accounts?.accounts.find(
+    (row) => row.id === accountKey,
+  )?.provider;
+  const model = settings.model || defaultChatModel(provider, catalog.models);
+  // A Claude orchestrator that keeps the default model starts at the default effort.
+  const defaultEffort =
+    !settings.model &&
+    settings.effort === undefined &&
+    model === DEFAULT_CLAUDE_LEAD_MODEL
+      ? DEFAULT_CLAUDE_LEAD_EFFORT
+      : undefined;
   const worker = settings.worker_defaults;
   const workerModel = catalog.models.some((row) => row.model === "gpt-6-luna")
     ? "gpt-6-luna"
-    : model;
+    : (model ?? null);
   const agent: Agent = {
     id: "new-chat-draft",
     name: "New chat",
@@ -170,7 +187,7 @@ function ModelDraft({
     source: "managed",
     status: "idle",
     accountKey,
-    provider: accounts?.accounts.find((row) => row.id === accountKey)?.provider,
+    provider,
     model,
     effort: settings.effort === undefined ? "medium" : settings.effort,
     fastMode: !!settings.fast_mode,
@@ -192,8 +209,17 @@ function ModelDraft({
   const ready =
     !!accounts && !catalog.loading && !modelError && !!model && !error;
   useEffect(() => {
-    onChange(ready ? { ...settings, account_key: accountKey, model } : null);
-  }, [ready, settings, accountKey, model, onChange]);
+    onChange(
+      ready
+        ? {
+            ...settings,
+            ...(defaultEffort ? { effort: defaultEffort } : {}),
+            account_key: accountKey,
+            model,
+          }
+        : null,
+    );
+  }, [ready, settings, defaultEffort, accountKey, model, onChange]);
   const patch = useCallback(
     (value: Partial<import("../api").PostBody<"/api/conversation">>) => {
       const { id: _id, expected_account_key: _expected, ...values } = value;

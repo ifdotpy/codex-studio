@@ -49,6 +49,16 @@ pub(crate) fn routes() -> RouteGroup {
         ),
         post("/api/accounts/name", OperationStatus::Implemented, set_name),
         post(
+            "/api/accounts/group",
+            OperationStatus::Implemented,
+            set_group,
+        ),
+        post(
+            "/api/accounts/default-groups",
+            OperationStatus::Implemented,
+            set_default_groups,
+        ),
+        post(
             "/api/accounts/throttle",
             OperationStatus::Implemented,
             set_start_throttle,
@@ -86,6 +96,17 @@ struct AccountNameBody {
     account_key: String,
     label: String,
     request_id: String,
+}
+
+#[derive(Deserialize)]
+struct AccountGroupBody {
+    account_key: String,
+    group: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct DefaultGroupsBody {
+    groups: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -132,6 +153,23 @@ async fn set_name(
         driver.set_name(&body.account_key, &body.label, &body.request_id)
     })
     .await
+}
+
+async fn set_group(
+    State(state): State<HttpState>,
+    ApiJson(body): ApiJson<AccountGroupBody>,
+) -> Result<Json<crate::generated::AccountsResponse>, ApiError> {
+    run_mutation(state, move |driver| {
+        driver.set_group(&body.account_key, body.group.as_deref())
+    })
+    .await
+}
+
+async fn set_default_groups(
+    State(state): State<HttpState>,
+    ApiJson(body): ApiJson<DefaultGroupsBody>,
+) -> Result<Json<crate::generated::AccountsResponse>, ApiError> {
+    run_mutation(state, move |driver| driver.set_default_groups(&body.groups)).await
 }
 
 async fn set_start_throttle(
@@ -232,6 +270,9 @@ fn account_error(error: AccountDriverError) -> ApiError {
         }
         AccountDriverError::DeletedAccount => {
             ApiError::new(StatusCode::BAD_REQUEST, "This account was deleted")
+        }
+        AccountDriverError::InvalidAccountOrder(message) => {
+            ApiError::new(StatusCode::BAD_REQUEST, message)
         }
         AccountDriverError::NameRequestConflict => ApiError::new(
             StatusCode::BAD_REQUEST,

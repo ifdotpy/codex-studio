@@ -153,6 +153,19 @@ fn shared_values_ts() -> String {
                 "ACCOUNT_RUNNING_TURNS_MAX",
                 values::ACCOUNT_RUNNING_TURNS_MAX.to_string(),
             ),
+            ("ACCOUNT_GROUPS_MAX", values::ACCOUNT_GROUPS_MAX.to_string()),
+            (
+                "ACCOUNT_GROUP_PATTERN",
+                json_string(values::ACCOUNT_GROUP_PATTERN),
+            ),
+            (
+                "DEFAULT_CLAUDE_LEAD_MODEL",
+                json_string(values::DEFAULT_CLAUDE_LEAD_MODEL),
+            ),
+            (
+                "DEFAULT_CLAUDE_LEAD_EFFORT",
+                json_string(values::DEFAULT_CLAUDE_LEAD_EFFORT),
+            ),
         ],
     );
     ts_strings(
@@ -375,9 +388,46 @@ fn expect_number(document: &Value, pointer: &str, expected: i64) -> Result<(), S
     }
 }
 
+fn expect_text(document: &Value, pointer: &str, expected: &str) -> Result<(), String> {
+    match document.pointer(pointer).and_then(Value::as_str) {
+        Some(actual) if actual == expected => Ok(()),
+        actual => Err(format!(
+            "{pointer} is {actual:?}; the Rust owner requires {expected:?}"
+        )),
+    }
+}
+
+/// Hold the account group requests to `ACCOUNT_GROUP_PATTERN` and `ACCOUNT_GROUPS_MAX`.
+fn check_account_group_parity(openapi: &Value) -> Result<(), String> {
+    let schemas = "/components/schemas";
+    for pointer in [
+        format!("{schemas}/AccountGroupRequest/properties/group/anyOf/1"),
+        format!("{schemas}/DefaultAccountGroupsRequest/properties/groups/items"),
+        format!("{schemas}/ProjectWriteRequest/properties/account_groups/anyOf/0/items"),
+    ] {
+        expect_text(
+            openapi,
+            &format!("{pointer}/pattern"),
+            values::ACCOUNT_GROUP_PATTERN,
+        )?;
+    }
+    for pointer in [
+        format!("{schemas}/DefaultAccountGroupsRequest/properties/groups"),
+        format!("{schemas}/ProjectWriteRequest/properties/account_groups/anyOf/0"),
+    ] {
+        expect_number(
+            openapi,
+            &format!("{pointer}/maxItems"),
+            values::ACCOUNT_GROUPS_MAX as i64,
+        )?;
+    }
+    Ok(())
+}
+
 /// Hold the committed OpenAPI document and persisted-state schemas to the Rust owners.
 pub fn check_schema_parity(openapi: &Value, account_transfer: &Value) -> Result<(), String> {
     check_delivery_parity(openapi)?;
+    check_account_group_parity(openapi)?;
     crate::agent_progress::check_schema_parity(openapi)?;
     expect_number(
         openapi,

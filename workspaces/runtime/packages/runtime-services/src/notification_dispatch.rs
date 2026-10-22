@@ -3228,6 +3228,52 @@ mod tests {
     }
 
     #[test]
+    fn stale_stamp_of_an_undelivered_steer_batch_does_not_block_the_next_turn() {
+        let mut connection = database();
+        // A rejected steer stamped the current-turn row `e2` with itself as the batch
+        // head; the deferred `e1` before it returned to the queue unstamped.
+        connection.execute_batch(
+            "INSERT INTO runtime_events VALUES('e1','agent','user','early','dispatching',1,1,'turn',NULL);
+             INSERT INTO runtime_events VALUES('e2','agent','followup','later','dispatching',2,1,'turn',NULL);
+             INSERT INTO runtime_event_meta VALUES('e1','{\"delivery\":\"next_turn\"}');
+             INSERT INTO runtime_event_meta VALUES('e2','{\"delivery\":\"current_turn\",\"transcriptItemId\":\"agent:e2\"}');",
+        ).expect("batch creates");
+        let input = |id: &str, kind: &str, text: &str, at: f64| SubmittedInput {
+            id: id.to_owned(),
+            at,
+            kind: kind.to_owned(),
+            text: text.to_owned(),
+            assets: json!([]),
+        };
+        let submission = PreparedSubmission {
+            first_event_id: "e1".to_owned(),
+            submitted_at: 3.0,
+            created_at: 3.0,
+            text: "early\n\nlater".to_owned(),
+            inputs: vec![
+                input("e1", "user", "early", 1.0),
+                input("e2", "followup", "later", 2.0),
+            ],
+            assets: json!([]),
+            radio_authorized: true,
+        };
+        let transaction = connection.transaction().expect("transaction begins");
+        record_user_submission(&transaction, "agent", &submission).expect("batch submits once");
+        transaction.commit().expect("commits");
+        for id in ["e1", "e2"] {
+            let meta: String = connection
+                .query_row(
+                    "SELECT record FROM runtime_event_meta WHERE id=?1",
+                    [id],
+                    |r| r.get(0),
+                )
+                .expect("metadata reads");
+            let meta: Value = serde_json::from_str(&meta).expect("JSON");
+            assert_eq!(meta["transcriptItemId"], "agent:e1");
+        }
+    }
+
+    #[test]
     fn submission_refuses_a_foreign_followup_sender_before_any_write() {
         let mut connection = database();
         connection

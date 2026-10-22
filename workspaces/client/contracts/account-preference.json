@@ -1,0 +1,396 @@
+{
+  "description": "Decision cases of the default account of a new chat. Rust (runtime-services account_preference), Python (codex_account_preference) and the web (accountPreference.ts) each run every case. Rules: the account order is project.accountGroups when it is a non-empty list, otherwise defaultAccountGroups. An account can start when it is not disconnected, deleted or a duplicate, and its status is ready or canAttemptNativeProof is true. When project.accountKeys is a non-empty list, only those accounts can be the default. Startable accounts sort by: the index of their group in the order (no group or another group sorts after every listed group), then the project account (project.accountKey) first, then the server default account first, then the listing order. With a requested model, the first account of that model's provider is the default. Without a requested model, the first Claude account is the default when one exists, otherwise the first account. When no account can start, the default is project.accountKey, else defaultAccountKey. Without a requested model, a Claude default gets the model DEFAULT_CLAUDE_LEAD_MODEL and the effort DEFAULT_CLAUDE_LEAD_EFFORT; otherwise model and effort are null (the request or the provider default applies).",
+  "cases": [
+    {
+      "name": "without a Claude account and without groups, the project account stays the default",
+      "accounts": [
+        { "id": "codex-a", "provider": "codex", "status": "ready" },
+        { "id": "codex-b", "provider": "codex", "status": "ready" }
+      ],
+      "defaultAccountKey": "codex-a",
+      "defaultAccountGroups": [],
+      "project": { "accountKey": "codex-b" },
+      "model": null,
+      "expected": { "accountKey": "codex-b", "model": null, "effort": null }
+    },
+    {
+      "name": "without a project, the server default account stays the default",
+      "accounts": [
+        { "id": "codex-a", "provider": "codex", "status": "ready" },
+        { "id": "codex-b", "provider": "codex", "status": "ready" }
+      ],
+      "defaultAccountKey": "codex-b",
+      "defaultAccountGroups": [],
+      "project": null,
+      "model": null,
+      "expected": { "accountKey": "codex-b", "model": null, "effort": null }
+    },
+    {
+      "name": "a ready Claude account makes Claude Opus the default orchestrator",
+      "accounts": [
+        { "id": "codex-a", "provider": "codex", "status": "ready" },
+        { "id": "claude-a", "provider": "claude", "status": "ready" }
+      ],
+      "defaultAccountKey": "codex-a",
+      "defaultAccountGroups": [],
+      "project": { "accountKey": "codex-a" },
+      "model": null,
+      "expected": {
+        "accountKey": "claude-a",
+        "model": "claude-opus-5-5",
+        "effort": "medium"
+      }
+    },
+    {
+      "name": "the default order prefers the first group and puts the last group last",
+      "accounts": [
+        {
+          "id": "claude-work",
+          "provider": "claude",
+          "status": "ready",
+          "group": "work"
+        },
+        {
+          "id": "claude-other",
+          "provider": "claude",
+          "status": "ready",
+          "group": "other"
+        },
+        {
+          "id": "claude-own",
+          "provider": "claude",
+          "status": "ready",
+          "group": "own"
+        },
+        {
+          "id": "codex-own",
+          "provider": "codex",
+          "status": "ready",
+          "group": "own"
+        }
+      ],
+      "defaultAccountKey": "codex-own",
+      "defaultAccountGroups": ["own", "other", "work"],
+      "project": null,
+      "model": null,
+      "expected": {
+        "accountKey": "claude-own",
+        "model": "claude-opus-5-5",
+        "effort": "medium"
+      }
+    },
+    {
+      "name": "a project order replaces the default order",
+      "accounts": [
+        {
+          "id": "claude-own",
+          "provider": "claude",
+          "status": "ready",
+          "group": "own"
+        },
+        {
+          "id": "claude-work",
+          "provider": "claude",
+          "status": "ready",
+          "group": "work"
+        }
+      ],
+      "defaultAccountGroups": ["own", "work"],
+      "defaultAccountKey": "claude-own",
+      "project": {
+        "accountKey": "claude-own",
+        "accountGroups": ["work", "own"]
+      },
+      "model": null,
+      "expected": {
+        "accountKey": "claude-work",
+        "model": "claude-opus-5-5",
+        "effort": "medium"
+      }
+    },
+    {
+      "name": "an empty project order uses the default order",
+      "accounts": [
+        {
+          "id": "claude-work",
+          "provider": "claude",
+          "status": "ready",
+          "group": "work"
+        },
+        {
+          "id": "claude-own",
+          "provider": "claude",
+          "status": "ready",
+          "group": "own"
+        }
+      ],
+      "defaultAccountKey": "claude-work",
+      "defaultAccountGroups": ["own"],
+      "project": { "accountGroups": [] },
+      "model": null,
+      "expected": {
+        "accountKey": "claude-own",
+        "model": "claude-opus-5-5",
+        "effort": "medium"
+      }
+    },
+    {
+      "name": "a preferred account that cannot start falls back to the next account",
+      "accounts": [
+        {
+          "id": "claude-work",
+          "provider": "claude",
+          "status": "signedOut",
+          "group": "work"
+        },
+        {
+          "id": "claude-gone",
+          "provider": "claude",
+          "status": "ready",
+          "group": "work",
+          "disconnected": true
+        },
+        {
+          "id": "claude-copy",
+          "provider": "claude",
+          "status": "ready",
+          "group": "work",
+          "duplicateOf": "claude-own"
+        },
+        {
+          "id": "claude-own",
+          "provider": "claude",
+          "status": "ready",
+          "group": "own"
+        }
+      ],
+      "defaultAccountKey": "claude-work",
+      "defaultAccountGroups": ["work", "own"],
+      "project": null,
+      "model": null,
+      "expected": {
+        "accountKey": "claude-own",
+        "model": "claude-opus-5-5",
+        "effort": "medium"
+      }
+    },
+    {
+      "name": "an account that can attempt a native proof can start",
+      "accounts": [
+        {
+          "id": "claude-own",
+          "provider": "claude",
+          "status": "ready",
+          "group": "own"
+        },
+        {
+          "id": "claude-work",
+          "provider": "claude",
+          "status": "error",
+          "group": "work",
+          "canAttemptNativeProof": true
+        }
+      ],
+      "defaultAccountKey": "claude-own",
+      "defaultAccountGroups": ["work", "own"],
+      "project": null,
+      "model": null,
+      "expected": {
+        "accountKey": "claude-work",
+        "model": "claude-opus-5-5",
+        "effort": "medium"
+      }
+    },
+    {
+      "name": "a requested Codex model selects the first Codex account of the order",
+      "accounts": [
+        {
+          "id": "claude-own",
+          "provider": "claude",
+          "status": "ready",
+          "group": "own"
+        },
+        {
+          "id": "codex-work",
+          "provider": "codex",
+          "status": "ready",
+          "group": "work"
+        },
+        {
+          "id": "codex-own",
+          "provider": "codex",
+          "status": "ready",
+          "group": "own"
+        }
+      ],
+      "defaultAccountKey": "codex-work",
+      "defaultAccountGroups": ["own", "work"],
+      "project": null,
+      "model": "gpt-6-astra",
+      "expected": { "accountKey": "codex-own", "model": null, "effort": null }
+    },
+    {
+      "name": "a requested Claude model keeps the requested model",
+      "accounts": [
+        {
+          "id": "codex-own",
+          "provider": "codex",
+          "status": "ready",
+          "group": "own"
+        },
+        {
+          "id": "claude-work",
+          "provider": "claude",
+          "status": "ready",
+          "group": "work"
+        }
+      ],
+      "defaultAccountKey": "codex-own",
+      "defaultAccountGroups": ["own"],
+      "project": null,
+      "model": "sonnet",
+      "expected": { "accountKey": "claude-work", "model": null, "effort": null }
+    },
+    {
+      "name": "the project account list still limits the default",
+      "accounts": [
+        {
+          "id": "claude-own",
+          "provider": "claude",
+          "status": "ready",
+          "group": "own"
+        },
+        {
+          "id": "claude-work",
+          "provider": "claude",
+          "status": "ready",
+          "group": "work"
+        },
+        {
+          "id": "codex-work",
+          "provider": "codex",
+          "status": "ready",
+          "group": "work"
+        }
+      ],
+      "defaultAccountKey": "claude-own",
+      "defaultAccountGroups": ["own"],
+      "project": {
+        "accountKey": "codex-work",
+        "accountKeys": ["codex-work", "claude-work"]
+      },
+      "model": null,
+      "expected": {
+        "accountKey": "claude-work",
+        "model": "claude-opus-5-5",
+        "effort": "medium"
+      }
+    },
+    {
+      "name": "accounts without a group sort after every listed group",
+      "accounts": [
+        { "id": "claude-plain", "provider": "claude", "status": "ready" },
+        {
+          "id": "claude-work",
+          "provider": "claude",
+          "status": "ready",
+          "group": "work"
+        }
+      ],
+      "defaultAccountKey": "claude-plain",
+      "defaultAccountGroups": ["own", "work"],
+      "project": null,
+      "model": null,
+      "expected": {
+        "accountKey": "claude-work",
+        "model": "claude-opus-5-5",
+        "effort": "medium"
+      }
+    },
+    {
+      "name": "in one group the project account comes before the server default and the listing order",
+      "accounts": [
+        {
+          "id": "claude-1",
+          "provider": "claude",
+          "status": "ready",
+          "group": "own"
+        },
+        {
+          "id": "claude-2",
+          "provider": "claude",
+          "status": "ready",
+          "group": "own"
+        },
+        {
+          "id": "claude-3",
+          "provider": "claude",
+          "status": "ready",
+          "group": "own"
+        }
+      ],
+      "defaultAccountKey": "claude-2",
+      "defaultAccountGroups": ["own"],
+      "project": { "accountKey": "claude-3" },
+      "model": null,
+      "expected": {
+        "accountKey": "claude-3",
+        "model": "claude-opus-5-5",
+        "effort": "medium"
+      }
+    },
+    {
+      "name": "in one group the server default comes before the listing order",
+      "accounts": [
+        {
+          "id": "claude-1",
+          "provider": "claude",
+          "status": "ready",
+          "group": "own"
+        },
+        {
+          "id": "claude-2",
+          "provider": "claude",
+          "status": "ready",
+          "group": "own"
+        }
+      ],
+      "defaultAccountKey": "claude-2",
+      "defaultAccountGroups": ["own"],
+      "project": null,
+      "model": null,
+      "expected": {
+        "accountKey": "claude-2",
+        "model": "claude-opus-5-5",
+        "effort": "medium"
+      }
+    },
+    {
+      "name": "without an account that can start, the project account is the default",
+      "accounts": [
+        { "id": "claude-a", "provider": "claude", "status": "signedOut" },
+        { "id": "codex-a", "provider": "codex", "status": "signedOut" }
+      ],
+      "defaultAccountKey": "claude-a",
+      "defaultAccountGroups": [],
+      "project": { "accountKey": "codex-a" },
+      "model": null,
+      "expected": { "accountKey": "codex-a", "model": null, "effort": null }
+    },
+    {
+      "name": "without an account that can start or a project, the server default is the default",
+      "accounts": [
+        { "id": "claude-a", "provider": "claude", "status": "signedOut" }
+      ],
+      "defaultAccountKey": "claude-a",
+      "defaultAccountGroups": [],
+      "project": null,
+      "model": null,
+      "expected": {
+        "accountKey": "claude-a",
+        "model": "claude-opus-5-5",
+        "effort": "medium"
+      }
+    }
+  ]
+}

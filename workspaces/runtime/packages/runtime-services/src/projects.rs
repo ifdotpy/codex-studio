@@ -492,6 +492,9 @@ pub async fn write(
     if action == "set_worker_environment" {
         return set_worker_environment(store, body, default_account, known_accounts).await;
     }
+    if action == "set_account_groups" {
+        return set_account_groups(store, body, default_account, known_accounts).await;
+    }
     if action == "reorder" {
         return reorder(&store, body).await;
     }
@@ -930,6 +933,82 @@ async fn set_worker_environment(
         .await
 }
 
+/// Save the project's account order (`account_groups`, see
+/// [`crate::account_preference`]). An empty list removes the project's own order,
+/// so the default order applies. The order never limits the accounts of the project.
+async fn set_account_groups(
+    store: Arc<RuntimeStore>,
+    body: Value,
+    default_account: String,
+    known_accounts: Vec<Value>,
+) -> Result<Value, ProjectsError> {
+    use crate::account_preference::{
+        PROJECT_GROUPS_FIELD, PROJECT_GROUPS_REVISION_FIELD, validate_groups,
+    };
+    let groups = body
+        .get("account_groups")
+        .and_then(Value::as_array)
+        .ok_or(ProjectsError::Invalid("account order is invalid"))?
+        .iter()
+        .map(|value| value.as_str().map(str::to_owned))
+        .collect::<Option<Vec<_>>>()
+        .ok_or(ProjectsError::Invalid("account order is invalid"))?;
+    validate_groups(&groups).map_err(ProjectsError::Invalid)?;
+    let path_value = body.get("path").cloned();
+    let expected = body
+        .get("expected_revision")
+        .and_then(Value::as_u64)
+        .ok_or(ProjectsError::Invalid("account order revision is invalid"))?;
+    let (prepared, path) = prepare_path(store.clone(), path_value, true).await?;
+    store
+        .transaction_with(move |tx| -> Result<Value, ProjectsError> {
+            prepared.recheck(tx)?;
+            let mut project = load_project(tx, &path)?;
+            if path.starts_with("project:") && project.is_none() {
+                return Err(ProjectsError::Invalid("select an existing project"));
+            }
+            let current = revision_of(project.as_ref(), PROJECT_GROUPS_REVISION_FIELD, &path)?;
+            let stored = project
+                .as_ref()
+                .map(|row| crate::account_preference::groups_of(row.get(PROJECT_GROUPS_FIELD)))
+                .unwrap_or_default();
+            if project.is_some()
+                && stored == groups
+                && (expected == current || expected.saturating_add(1) == current)
+            {
+                return Ok(project.unwrap_or(Value::Null));
+            }
+            if current != expected {
+                return Err(ProjectsError::Conflict(
+                    "Account order changed. Reload it before saving",
+                ));
+            }
+            if project.is_none() {
+                let account = project_account(&prepared, tx, &path, &default_account)?;
+                project = Some(new_project(
+                    &prepared,
+                    &path,
+                    &project_name(None, &path)?,
+                    &account,
+                    &known_accounts,
+                )?);
+            }
+            let mut project = project.ok_or(ProjectsError::Invalid("project is unavailable"))?;
+            let object = project
+                .as_object_mut()
+                .ok_or(ProjectsError::Invalid("project is unavailable"))?;
+            if groups.is_empty() {
+                object.remove(PROJECT_GROUPS_FIELD);
+            } else {
+                object.insert(PROJECT_GROUPS_FIELD.to_owned(), json!(groups));
+            }
+            object.insert(PROJECT_GROUPS_REVISION_FIELD.to_owned(), json!(current + 1));
+            ProjectsRepository::put_project(tx, &project)?;
+            Ok(project)
+        })
+        .await
+}
+
 async fn organize(
     store: Arc<RuntimeStore>,
     body: Value,
@@ -1115,5 +1194,66 @@ mod compatibility_tests {
                 .expect("normalized profile"),
             resolved_home.join("profile")
         );
+    }
+}
+
+#[cfg(test)]
+mod account_order_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn project_account_order_saves_replays_and_clears_with_revisions() {
+        let folder = tempfile::tempdir().expect("project folder");
+        let path = studio_runtime_store::path_identity::resolve(folder.path())
+            .expect("resolved project folder")
+            .to_string_lossy()
+            .into_owned();
+        let state = tempfile::tempdir().expect("state");
+        let store = Arc::new(RuntimeStore::open(Some(state.path())).await.expect("store"));
+        let seeded = path.clone();
+        store
+            .transaction(move |tx| {
+                ProjectsRepository::put_project(
+                    tx,
+                    &json!({"id":seeded,"path":seeded,"name":"P","created":0,"accountKey":"default"}),
+                )
+            })
+            .await
+            .expect("seed project");
+        let save = |groups: Value, revision: u64| {
+            let store = Arc::clone(&store);
+            let path = path.clone();
+            async move {
+                write(
+                    store,
+                    json!({"action":"set_account_groups","path":path,
+                        "account_groups":groups,"expected_revision":revision}),
+                    "default".to_owned(),
+                    Vec::new(),
+                )
+                .await
+            }
+        };
+        let saved = save(json!(["attar", "personal"]), 0).await.expect("save");
+        assert_eq!(saved["accountGroups"], json!(["attar", "personal"]));
+        assert_eq!(saved["accountGroupsRevision"], 1);
+        assert_eq!(
+            saved["accountKey"], "default",
+            "the order keeps the account"
+        );
+        // A lost response retried with the old revision replays without a change.
+        let replay = save(json!(["attar", "personal"]), 0).await.expect("replay");
+        assert_eq!(replay, saved);
+        // Another order with an old revision is a conflict.
+        assert!(matches!(
+            save(json!(["personal"]), 0).await,
+            Err(ProjectsError::Conflict(_))
+        ));
+        for bad in [json!(["Attar"]), json!(["a", "a"]), json!("attar")] {
+            assert!(matches!(save(bad, 1).await, Err(ProjectsError::Invalid(_))));
+        }
+        let cleared = save(json!([]), 1).await.expect("clear");
+        assert!(cleared.get("accountGroups").is_none());
+        assert_eq!(cleared["accountGroupsRevision"], 2);
     }
 }

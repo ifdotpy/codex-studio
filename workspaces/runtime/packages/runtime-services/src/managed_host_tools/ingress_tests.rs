@@ -756,7 +756,9 @@ impl crate::provider_callbacks::ManagedCreationAccountRead for EligibleAccountRe
                 deleted: false,
                 duplicate: false,
                 max_running_turns: studio_runtime_schema::shared_values::ACCOUNT_RUNNING_TURNS_MAX,
+                group: None,
             }],
+            default_account_groups: Vec::new(),
         })
     }
 
@@ -794,6 +796,7 @@ async fn unavailable_provider_model_list_refuses_without_callback_writes() {
                 model: "gpt-5",
                 excluded_account_keys: &[],
                 project_account_keys: None,
+                project_account_groups: None,
                 active_agents: &std::collections::HashMap::new(),
             },
             model_available: &mut unavailable,

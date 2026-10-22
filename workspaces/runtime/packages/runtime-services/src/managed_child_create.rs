@@ -608,7 +608,7 @@ pub(crate) async fn spawn_agents(
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
-        let project_account_keys = match root_value
+        let project_record = match root_value
             .get("projectId")
             .and_then(Value::as_str)
             .zip(root_value.get("projectServerId").and_then(Value::as_str))
@@ -626,17 +626,20 @@ pub(crate) async fn spawn_agents(
             }
             None => None,
         }
-        .and_then(|(record, home_server)| {
-            (record["homeServerId"] == home_server)
-                .then(|| {
-                    record["accountKeys"].as_array().map(|keys| {
-                        keys.iter()
-                            .filter_map(Value::as_str)
-                            .map(str::to_owned)
-                            .collect::<Vec<_>>()
-                    })
-                })
-                .flatten()
+        .filter(|(record, home_server)| record["homeServerId"] == *home_server)
+        .map(|(record, _)| record);
+        let project_account_groups = project_record.as_ref().map(|record| {
+            crate::account_preference::groups_of(
+                record.get(crate::account_preference::PROJECT_GROUPS_FIELD),
+            )
+        });
+        let project_account_keys = project_record.as_ref().and_then(|record| {
+            record["accountKeys"].as_array().map(|keys| {
+                keys.iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>()
+            })
         });
         let (account_key, account) =
             environment.select_worker_account(crate::provider_callbacks::WorkerAccountRequest {
@@ -646,6 +649,7 @@ pub(crate) async fn spawn_agents(
                 model: requested_model,
                 excluded_account_keys: &excluded_account_keys,
                 project_account_keys: project_account_keys.as_deref(),
+                project_account_groups: project_account_groups.as_deref(),
                 active_agents: &account_load,
             })?;
         *account_load.entry(account_key.clone()).or_default() += 1;
@@ -1548,6 +1552,7 @@ pub(crate) async fn request_review(
             model,
             excluded_account_keys: &[],
             project_account_keys: None,
+            project_account_groups: None,
             active_agents: &std::collections::HashMap::new(),
         })?;
     // Review is read-only in the parent's managed workspace. Its requested

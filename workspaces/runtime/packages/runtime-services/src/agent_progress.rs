@@ -206,7 +206,8 @@ mod tests {
             stall: progress.stall,
             ..Default::default()
         };
-        let view = crate::sync_views::agent_entity_view(&agent, &context).expect("test fixture value");
+        let view =
+            crate::sync_views::agent_entity_view(&agent, &context).expect("test fixture value");
         assert_eq!(view["stall"]["taskId"], "task");
         assert!(
             studio_runtime_schema::validate_sync_entity_payload_strict(
@@ -227,12 +228,20 @@ mod tests {
         ] {
             agent["status"] = json!(status);
             assert!(
-                derive(&connection, &agent, &tasks).expect("test fixture value").stall.is_none(),
+                derive(&connection, &agent, &tasks)
+                    .expect("test fixture value")
+                    .stall
+                    .is_none(),
                 "{status:?}"
             );
         }
         agent["status"] = json!("waiting_on_monitor");
-        assert!(derive(&connection, &agent, &tasks).expect("test fixture value").stall.is_none());
+        assert!(
+            derive(&connection, &agent, &tasks)
+                .expect("test fixture value")
+                .stall
+                .is_none()
+        );
         agent["status"] = json!("idle");
         for status in [
             WorkStatus::Review,
@@ -240,7 +249,12 @@ mod tests {
             WorkStatus::Cancelled,
         ] {
             tasks[0].status = Some(status);
-            assert!(derive(&connection, &agent, &tasks).expect("test fixture value").stall.is_none());
+            assert!(
+                derive(&connection, &agent, &tasks)
+                    .expect("test fixture value")
+                    .stall
+                    .is_none()
+            );
         }
         tasks[0].status = Some(WorkStatus::Running);
         for (id, status) in [("m1", "running"), ("m2", "starting"), ("old", "completed")] {
@@ -255,7 +269,8 @@ mod tests {
             command_progress: progress.commands,
             ..Default::default()
         };
-        let view = crate::sync_views::agent_entity_view(&agent, &context).expect("test fixture value");
+        let view =
+            crate::sync_views::agent_entity_view(&agent, &context).expect("test fixture value");
         assert_eq!(view["commandProgress"][1]["monitorId"], "m2");
         assert!(
             studio_runtime_schema::validate_sync_entity_payload_strict(
@@ -286,7 +301,8 @@ mod tests {
         ] {
             connection.execute("INSERT INTO runtime_monitors VALUES(?1,?2)", [id,&raw]).expect("test fixture value");
         }
-        let progress = derive(&connection, &json!({"id":"worker","status":"idle"}), &[]).expect("test fixture value");
+        let progress = derive(&connection, &json!({"id":"worker","status":"idle"}), &[])
+            .expect("test fixture value");
         assert_eq!(progress.commands.len(), 1);
         assert_eq!(progress.commands[0].monitor_id, "live");
         assert_eq!(progress.commands[0].last_output_line, "still running");
@@ -299,7 +315,9 @@ mod tests {
             AgentId, AgentRecord, AgentRepository, MonitorRecord, RuntimeStore, Table,
         };
         let directory = tempfile::tempdir().expect("test fixture value");
-        let store = RuntimeStore::open(Some(directory.path())).await.expect("test fixture value");
+        let store = RuntimeStore::open(Some(directory.path()))
+            .await
+            .expect("test fixture value");
         store.transaction_with(|tx| {
             let actor = AgentRecord::from_value(json!({"id":"worker","rootId":"worker","epoch":0,"status":"running","autoWake":true})).expect("test fixture value");
             AgentRepository::put(tx,&actor)?;
