@@ -1060,7 +1060,7 @@ async fn callback_blob_case(race: BlobRace) {
         .lock()
         .unwrap()
         .insert(
-            (directory.path().to_path_buf(), operation),
+            (store.state_dir().to_path_buf(), operation),
             TestIoGate {
                 entered,
                 release: blocked,
