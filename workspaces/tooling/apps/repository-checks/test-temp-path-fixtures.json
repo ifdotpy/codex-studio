@@ -55,7 +55,7 @@
   ],
   "workspaces/client/packages/client-core/src/file_links.rs": [
     "\"\\u{200b} file:///tmp/%D0%96%F0%9F%A6%80.rs#L12C2 \\u{200b}\",",
-    "json!({\"path\":\"/tmp/Ж🦀.rs\",\"line\":12}),",
+    "json!({\"path\":\"/tmp/\u0416\ud83e\udd80.rs\",\"line\":12}),",
     "\"sandbox:/tmp/report.md:9:2\",",
     "json!({\"path\":\"/tmp/report.md\",\"line\":9}),",
     "\"file://localhost/tmp/a.md#L4-L8\",",
@@ -93,106 +93,6 @@
   ],
   "workspaces/runtime/apps/runtime-server/tests/wave7_p01_registry.rs": [
     "\"/var/tmp\".into(),"
-  ],
-  "workspaces/runtime/apps/server/src/studio_api/io/test_process_controls.py": [
-    "self.root = Path(\"/tmp\")",
-    "\"cwd\": \"/tmp\", \"sandbox\": \"workspace-write\","
-  ],
-  "workspaces/runtime/apps/server/src/studio_api/schema_tests/test_schema.py": [
-    "\"cwd\": \"/tmp\", \"status\": \"exited\", \"created\": 1, \"exitCode\": -9}"
-  ],
-  "workspaces/runtime/apps/server/src/studio_api/sync/resources/relay/test_relay.py": [
-    "canvas = type(\"Canvas\", (), {\"root\": \"/tmp/relay-test-state\"})()",
-    "return {\"stateDir\": \"/tmp/relay-test-state\"}",
-    "ack = relay_client.ResourceRelayClient(\"/tmp/relay-test-state\", \"http://testserver\").notify("
-  ],
-  "workspaces/runtime/apps/server/src/test_codex_linux_vm.py": [
-    "with patch.dict('os.environ', {'XDG_STATE_HOME': '/tmp/studio-xdg-test'}, clear=True):",
-    "self.assertEqual(vm.Client().state_dir, Path('/tmp/studio-xdg-test/codex-agents/linux-vm').resolve())",
-    "section = section.replace('/tmp/', str(self.root) + '/').replace('/opt/codex-studio',str(self.root / 'install'))"
-  ],
-  "workspaces/runtime/apps/server/src/test_codex_project_secrets.py": [
-    "code, output, errors, client = self.run_command(['set', '/tmp/project', 'TOKEN'], TerminalInput())",
-    "['remove', '/tmp/project', 'TOKEN', '--operation-id', 'op-7'], io.StringIO(VALUE))",
-    "# SHA-256 of the registered path text '/tmp/project'; links are not resolved.",
-    "code, output, _errors, client = self.run_command(['list', '/tmp/project'], io.StringIO(VALUE))",
-    "for arguments, stdin in ((['set', '/tmp/project', 'lower'], VALUE), (['set', '/tmp/project'], VALUE),",
-    "(['set', '/tmp/project', 'TOKEN'], ''), (['set', '/tmp/project', 'TOKEN'], '\\n'),",
-    "(['set', '/tmp/project', 'TOKEN'], 'x' * (MAX_PROJECT_SECRET_VALUE_BYTES + 1))):",
-    "code, output, errors, _client = self.run_command(['set', '/tmp/project', 'PATH'], io.StringIO(VALUE))"
-  ],
-  "workspaces/runtime/apps/server/src/test_codex_vault.py": [
-    "self.assertEqual(codex_vault.main([\"configure\", \"/tmp/project\"]), 0)"
-  ],
-  "workspaces/runtime/apps/server/tests/account-transfer-native.py": [
-    "start=source.call('thread/start', {'cwd':str(source.root) if hasattr(source,'root') else '/tmp',"
-  ],
-  "workspaces/runtime/apps/server/tests/active-task-history-contract.py": [
-    "'inFlight': False, 'cwd': '/tmp/' + key, 'epoch': 1})"
-  ],
-  "workspaces/runtime/apps/server/tests/capacity-retry-contract.py": [
-    "('effort', 'ultra'), ('cwd', '/tmp'), ('deletedAt', time.time())]:"
-  ],
-  "workspaces/runtime/apps/server/tests/claude-profiles-contract.py": [
-    "a = c.auth_metadata({'configDir': '/tmp/a'})",
-    "b = c.auth_metadata({'configDir': '/tmp/b'})",
-    "d = c.auth_metadata({'configDir': '/tmp/a', 'binaryPath': '/bin/b'})",
-    "self.assertEqual(a, c.auth_metadata({'configDir': '/tmp/a'}))",
-    "options = c.bridge_options({'launchArgs': '--chrome --add-dir \"/tmp/a b\"',",
-    "self.assertEqual(options['extraArgs'], {'chrome': None, 'add-dir': '/tmp/a b'})"
-  ],
-  "workspaces/runtime/apps/server/tests/context-repair-native.py": [
-    "tid = source.call('thread/start', {'cwd':'/tmp','config':n.n.THREAD_CONFIG,",
-    "tid = server.call('thread/start', {'cwd':'/tmp','config':n.n.THREAD_CONFIG,"
-  ],
-  "workspaces/runtime/apps/server/tests/host-exec-contract.py": [
-    "'value=value.replace(\"/private/tmp/\",\"/tmp/\");data=value.encode();'",
-    "self.assertEqual(mapped(\"/tmp/slot/source/file /private/tmp/slot/source/file\", \"/private/tmp/slot/source\", \"/line\"), \"/line/file /line/file\")"
-  ],
-  "workspaces/runtime/apps/server/tests/http_runtime_conformance_ledger_test.py": [
-    "ledger.validate_ephemeral_backend_command(\"/tmp/studio-runtime-server --port 0\"),",
-    "[\"/tmp/studio-runtime-server\", \"--port\", \"0\"],",
-    "ledger.validate_ephemeral_backend_command(\"/tmp/studio-runtime-server\"),",
-    "[\"/tmp/studio-runtime-server\"],",
-    "\"/tmp/studio-runtime-server --port 4620\",",
-    "\"/tmp/studio-runtime-server --port=4620\",",
-    "\"/tmp/studio-runtime-server --port 4635\",",
-    "\"/tmp/studio-runtime-server --port 0 --port 0\","
-  ],
-  "workspaces/runtime/apps/server/tests/native-error-contract.py": [
-    "'executionMode': 'sync', 'scope': 'turn', 'sourcePath': '/tmp/hooks.json',"
-  ],
-  "workspaces/runtime/apps/server/tests/native-tools-native.py": [
-    "tid = server.call(\"thread/start\", {\"cwd\": \"/tmp\", \"model\": \"gpt-5.6-sol\",",
-    "rt.new_thread_params = lambda agent: {\"cwd\": \"/tmp\", \"model\": \"gpt-5.6-sol\",",
-    "native = server.call(\"thread/start\", {\"cwd\": \"/tmp\", \"model\": \"gpt-5.6-sol\","
-  ],
-  "workspaces/runtime/apps/server/tests/portable-history-contract.py": [
-    "filename = '/tmp/a \"quoted\" $file_日本語.png'",
-    "history_context(self.rt, {**descriptor, 'path': '/tmp/elsewhere.jsonl'})"
-  ],
-  "workspaces/runtime/apps/server/tests/provider-capture-contract.py": [
-    "\"text\": \"Bearer abc.def and sk-abcdefghijklmnop /private/var/folders/abc/tmp.txt\","
-  ],
-  "workspaces/runtime/apps/server/tests/recent-monitors-contract.py": [
-    "accounts.data = {\"accounts\": {\"claude-x\": {\"id\": \"claude-x\", \"provider\": \"claude\", \"claudeOptions\": {\"configDir\": \"/tmp/x\"},",
-    "self.assertEqual(seen, [({\"configDir\": \"/tmp/x\"}, True)])"
-  ],
-  "workspaces/runtime/apps/server/tests/rust-host-secrets-http-contract.py": [
-    "(project / \"project.json\").write_text(json.dumps({\"projectId\":\"project-1\",\"source\":\"/tmp/Project One\"}))"
-  ],
-  "workspaces/runtime/apps/server/tests/server/test_run.py": [
-    "self.assertIsNone(RUNNER._unix_socket_path_error(Path(\"/tmp/cs\")))",
-    "too_long = Path(\"/tmp\") / (\"x\" * 90)",
-    "\"22 1 0:5 / /tmp rw,nosuid - tmpfs tmpfs rw,size=1g\\n\"",
-    "self.assertEqual(list(RUNNER._tmpfs_mounts()), [Path(\"/tmp\"), Path(\"/dev/shm\")])"
-  ],
-  "workspaces/runtime/apps/server/tests/voice-contract.py": [
-    "voice.record(lead[\"id\"],\"real-session\",\"real-transcript\",\"user\",\"Inspect the exact path /tmp/example\")",
-    "assert \"Inspect the exact path /tmp/example\" in row[0]"
-  ],
-  "workspaces/runtime/apps/server/tests/wave7-p20-host-cutover-contract.py": [
-    "\"plan\": \"/var/tmp/codex-studio-relocation/WAVE7-PLAN.md\","
   ],
   "workspaces/runtime/apps/vm-guest/test_layr_admin.py": [
     "{\"source\": \"/tmp/other\"}, {\"source\": str(self.upload.parent)},"
@@ -290,5 +190,29 @@
   "workspaces/runtime/packages/runtime-services/tests/provider_session_task.rs": [
     "launch: ProviderLaunchSpec::new(vec![\"fake\".into()], BTreeMap::new(), \"/tmp\".into()),"
   ],
-  "workspaces/runtime/packages/runtime-services/tests/title_generation/oracle.py": [
-    "return \"/tmp/title-oracle-home\""
+  "workspaces/runtime/packages/runtime-services/tests/voice_provider_corpus.rs": [
+    "\"params\":{\"command\":\"printf safe\", \"cwd\":\"/tmp\"}"
+  ],
+  "workspaces/runtime/packages/runtime-services/tests/workspace_ready/effects.rs": [
+    "(\"cwd\", json!(\"/var/tmp/changed\")),"
+  ],
+  "workspaces/runtime/packages/runtime-store/src/path.rs": [
+    "expand_home(Path::new(\"/tmp/~studio\")).expect(\"absolute path is unchanged\"),",
+    "Path::new(\"/tmp/~studio\")"
+  ],
+  "workspaces/runtime/packages/runtime-store/src/repositories/terminals.rs": [
+    "let record = json!({\"id\":\"terminal\",\"agent\":\"a\",\"title\":\"Terminal\",\"cwd\":\"/tmp\",\"status\":\"running\",\"created\":1});"
+  ],
+  "workspaces/runtime/packages/runtime-store/src/repositories/usage.rs": [
+    "\"cause\":\"serverOverloaded\",\"attempt\":1,\"maxAttempts\":3,\"cwd\":\"/tmp\","
+  ],
+  "workspaces/runtime/packages/runtime-store/src/repositories/workspace_files.rs": [
+    "INSERT INTO runtime_assets VALUES('asset','{\\\"id\\\":\\\"asset\\\",\\\"agent\\\":\\\"agent\\\",\\\"name\\\":\\\"a.txt\\\",\\\"path\\\":\\\"/tmp/a.txt\\\",\\\"mime\\\":\\\"text/plain\\\",\\\"image\\\":false,\\\"size\\\":1,\\\"hash\\\":\\\"h\\\",\\\"created\\\":0}');\",",
+    "\"path\": \"/tmp/a.txt\","
+  ],
+  "workspaces/tooling/apps/repository-checks/tests/release-binaries.test.mjs": [
+    "const { out, hostedCiPassed } = parseFlowArguments([\"/tmp/out\"]);",
+    "parseFlowArguments([\"/tmp/out\", \"--hosted-ci-passed\"]).hostedCiPassed,",
+    "() => parseFlowArguments([\"/tmp/out\", \"--skip\"]),"
+  ]
+}

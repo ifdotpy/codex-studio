@@ -114,8 +114,8 @@ It never resends them.
 
 ## Checks
 
-Run `python3 workspaces/runtime/apps/server/src/codex_python.py --exec workspaces/runtime/apps/server/tests/multi-server-orchestration-contract.py`.
-The tests use two isolated SQLite runtimes and a fake paired transport. They
+The Python backend harness has been removed; use the current
+[testing commands](testing.md). Its historical tests used two isolated SQLite runtimes and a fake paired transport. They
 cover native tool calls, dropped replies, duplicates, offline queues, restart,
 home concurrency, task review, messages, stops, access checks, and Git fetch.
 These checks do not establish live Tailscale or live model behavior.

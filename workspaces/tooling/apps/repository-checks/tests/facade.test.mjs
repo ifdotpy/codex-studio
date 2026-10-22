@@ -16,8 +16,6 @@ import {
   parseSelection,
   pruneLogs,
   recipePlan,
-  serverRunDiagnostics,
-  serverShardRunOptions,
   unsafeRustFindings,
 } from "../facade.mjs";
 import {
@@ -35,51 +33,15 @@ import {
 import os from "node:os";
 import path from "node:path";
 
-test("server runner resolves the checkout native module before shared packages", () => {
-  const runnerWitnessTimeoutMilliseconds = 10_000;
-  const result = spawnSync(
-    process.platform === "win32" ? "python" : "python3",
-    [
-      path.join(
-        process.cwd(),
-        "workspaces/runtime/apps/server/tests/server/test_fast_suite_selection.py",
-      ),
-      "FastSuiteSelection.test_runner_resolves_checkout_native_module_before_shared_environment",
-    ],
-    { encoding: "utf8", timeout: runnerWitnessTimeoutMilliseconds },
-  );
-  assert.equal(result.status, 0, result.stderr || String(result.error));
-});
-
 test("short and comprehensive recipes preserve their owned test boundaries", () => {
   const fast = recipePlan(process.cwd(), "test-fast");
   const comprehensive = recipePlan(process.cwd(), "test-comprehensive");
 
-  assert.match(fast.command, /['"]--only['"]\s+['"]fast['"]/);
   assert.match(fast.command, /contracts-check/);
+  assert.match(fast.command, /native\/check-native\.test\.mjs/);
   for (const recipe of [fast, comprehensive]) {
     assert.match(recipe.command, /build-client-wasm\.mjs/);
-    assert.equal(
-      (recipe.command.match(/'studio-operations-python'/g) ?? []).length,
-      1,
-    );
-    assert.ok(
-      recipe.command.indexOf("studio-operations-python") <
-        recipe.command.indexOf("test-server.py"),
-    );
-    assert.ok(
-      recipe.command.indexOf("build-client-wasm.mjs") <
-        recipe.command.indexOf("test-server.py"),
-    );
   }
-  assert.match(
-    comprehensive.command,
-    /['"]build['"] ['"]--locked['"] ['"]--release['"] ['"]-p['"] ['"]studio-runtime-server['"]/,
-  );
-  assert.ok(
-    comprehensive.command.indexOf("studio-runtime-server") <
-      comprehensive.command.indexOf("test-server.py"),
-  );
   assert.match(comprehensive.command, /['"]just['"] ['"]clippy-runtime['"]/);
   assert.ok(
     comprehensive.command.indexOf("build:bundle") <
@@ -139,7 +101,6 @@ test("short and comprehensive recipes preserve their owned test boundaries", () 
     /test:browser:smoke|--workspace|test-server-load|mutations/,
   );
 
-  assert.match(comprehensive.command, /test-server\.py/);
   assert.match(comprehensive.command, /--workspace/);
   assert.match(comprehensive.command, /vitest\.unit\.config\.ts/);
   assert.match(comprehensive.command, /test:browser:smoke/);
@@ -149,10 +110,6 @@ test("short and comprehensive recipes preserve their owned test boundaries", () 
   assert.ok(
     fixture >= 0,
     "the comprehensive tier builds its Rust HTTP fixture",
-  );
-  assert.ok(
-    fixture < comprehensive.command.indexOf("test-server.py"),
-    "the Rust HTTP fixture is built before the server suites",
   );
   assert.ok(
     comprehensive.command.indexOf("'build:bundle'") >= 0 &&
@@ -446,7 +403,6 @@ test("Cargo facade failures retain selection, test failure, install guidance and
     cargo,
     `#!/bin/sh
 printf '%s' "$CODEX_NODE" > "$FIXTURE_NODE_CAPTURE"
-printf '%s' "$CODEX_AGENTS_PYTHON" > "$FIXTURE_NODE_CAPTURE.python"
 case "$FIXTURE_CARGO_MODE" in
   fail) printf '%s\\n' '{"type":"suite","event":"failed","passed":0,"failed":1,"ignored":0}'; exit 100 ;;
   empty) echo 'error: no tests to run'; exit 4 ;;
@@ -455,12 +411,6 @@ esac
 `,
   );
   chmodSync(cargo, 0o755);
-  const resolver = path.join(
-    root,
-    "workspaces/runtime/apps/server/src/codex_python.py",
-  );
-  mkdirSync(path.dirname(resolver), { recursive: true });
-  writeFileSync(resolver, "print('/fixture/prepared-python')\n");
   const original = {
     PATH: process.env.PATH,
     CARGO_TARGET_DIR: process.env.CARGO_TARGET_DIR,
@@ -481,10 +431,6 @@ esac
     const empty = await execute(root, item, "missing_case", true);
     assert.equal(empty.exitCode, 1);
     assert.equal(readFileSync(nodeCapture, "utf8"), process.execPath);
-    assert.equal(
-      readFileSync(`${nodeCapture}.python`, "utf8"),
-      "/fixture/prepared-python",
-    );
     assert.deepEqual(empty.errors, [
       "nextest found no tests matching this selection",
     ]);
@@ -630,83 +576,6 @@ test("focused log cache prunes runs older than fourteen days and retains recent 
   }
 });
 
-test("server summaries count assertion scripts as executed suites and reject no runnable suite output", () => {
-  const item = { name: "server", ecosystem: "server" };
-  assert.equal(
-    parseCounts(
-      item,
-      "Server suites: 1 passed, 0 failed, 0 skipped (opt-in), 0 skipped (environment), 0.2s; plain assertion scripts are counted per suite; 0 runner errors",
-    ).executed,
-    1,
-  );
-  assert.equal(
-    parseCounts(item, "No runnable server suites: 1 skipped (opt-in).")
-      .executed,
-    0,
-  );
-});
-
-test("server shard facade options are zero-based and diagnostics report plan and ten slowest suites", () => {
-  assert.deepEqual(serverShardRunOptions("1", "4").serverArgs, [
-    "--shard-index",
-    "1",
-    "--shard-count",
-    "4",
-  ]);
-  assert.throws(
-    () => serverShardRunOptions("4", "4"),
-    /Usage: test-server-shard/,
-  );
-  const output = [
-    "Finished nested-fixture.py: passed, 900.00s",
-    `Server runner diagnostics: ${JSON.stringify({
-      workerPlan: { workers: 4 },
-      suiteDurations: Object.fromEntries(
-        Array.from({ length: 12 }, (_, index) => [`suite-${index}`, index + 1]),
-      ),
-    })}`,
-    ...Array.from(
-      { length: 12 },
-      (_, index) => `Finished suite-${index}: passed, ${index + 1}.00s`,
-    ),
-  ].join("\n");
-  const diagnostics = serverRunDiagnostics(output);
-  assert.equal(diagnostics.planLine, 'Selected worker plan: {"workers":4}');
-  assert.equal(diagnostics.durations.length, 10);
-  assert.deepEqual(diagnostics.durations.slice(0, 2), [
-    { suite: "suite-11", seconds: 12 },
-    { suite: "suite-10", seconds: 11 },
-  ]);
-});
-
-test("server shard plan prepares the checkout native module in its configured target", () => {
-  const target = path.join(os.tmpdir(), "studio-shard-target");
-  const result = spawnSync(
-    process.execPath,
-    [
-      "workspaces/tooling/apps/repository-checks/facade.mjs",
-      "test-plan",
-      "test-server-shard",
-      "1",
-      "4",
-      "--json",
-    ],
-    { encoding: "utf8", env: { ...process.env, CARGO_TARGET_DIR: target } },
-  );
-  assert.equal(result.status, 0, result.stderr);
-  const plan = JSON.parse(result.stdout);
-  assert.match(
-    plan.command,
-    /'cargo' 'build' '--locked' '-p' 'studio-operations-python'/,
-  );
-  assert.ok(
-    plan.command.indexOf("studio-operations-python") <
-      plan.command.indexOf("test-server.py"),
-  );
-  assert.ok(plan.command.includes(`CARGO_TARGET_DIR='${target}'`));
-  assert.match(plan.command, /'--shard-index' '1' '--shard-count' '4'/);
-});
-
 test("hosted remaining checks prepare native dependencies for workspace Clippy", () => {
   const workflow = readFileSync(".github/workflows/ci.yml", "utf8");
   const remaining = workflow
@@ -716,140 +585,6 @@ test("hosted remaining checks prepare native dependencies for workspace Clippy",
     remaining,
     /uses: \.\/\.github\/actions\/client-build-setup\n\s+with:\n\s+native: "true"/,
   );
-});
-
-test(
-  "server shard execution builds before Python and stops on build failure",
-  { skip: process.platform === "win32" },
-  () => {
-    const root = mkdtempSync(path.join(os.tmpdir(), "studio-shard-execution-"));
-    try {
-      const log = path.join(root, "calls.jsonl");
-      for (const command of ["cargo", "python3"]) {
-        const file = path.join(root, command);
-        writeFileSync(
-          file,
-          `#!${process.execPath}
-const fs = require("node:fs");
-fs.appendFileSync(process.env.SHARD_CALL_LOG, JSON.stringify({command: ${JSON.stringify(command)}, args: process.argv.slice(2), target: process.env.CARGO_TARGET_DIR}) + "\\n");
-if (${JSON.stringify(command)} === "cargo") process.exit(Number(process.env.SHARD_BUILD_EXIT));
-console.log("Server suites: 1 passed, 0 failed, 0 skipped (opt-in), 0 skipped (environment)");
-`,
-        );
-        chmodSync(file, 0o755);
-      }
-      for (const buildExit of [0, 42]) {
-        writeFileSync(log, "");
-        const result = spawnSync(
-          process.execPath,
-          [
-            "workspaces/tooling/apps/repository-checks/facade.mjs",
-            "test-server-shard",
-            "1",
-            "4",
-            "--json",
-          ],
-          {
-            encoding: "utf8",
-            env: {
-              ...process.env,
-              PATH: `${root}${path.delimiter}${process.env.PATH}`,
-              XDG_CACHE_HOME: path.join(root, "cache"),
-              CARGO_TARGET_DIR: path.join(root, "target"),
-              SHARD_CALL_LOG: log,
-              SHARD_BUILD_EXIT: String(buildExit),
-            },
-          },
-        );
-        assert.equal(result.status, buildExit, result.stderr || result.stdout);
-        const calls = readFileSync(log, "utf8")
-          .trim()
-          .split("\n")
-          .map((line) => JSON.parse(line));
-        assert.deepEqual(
-          calls.map((call) => call.command),
-          buildExit ? ["cargo"] : ["cargo", "python3"],
-        );
-        assert.deepEqual(calls[0].args, [
-          "build",
-          "--locked",
-          "-p",
-          "studio-operations-python",
-        ]);
-        assert.ok(
-          calls.every((call) => call.target === path.join(root, "target")),
-        );
-        if (!buildExit)
-          assert.deepEqual(calls[1].args.slice(-4), [
-            "--shard-index",
-            "1",
-            "--shard-count",
-            "4",
-          ]);
-      }
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
-  },
-);
-
-test("server failure counts do not double count structured failures or passing tracebacks", () => {
-  const item = { name: "server", ecosystem: "server" };
-  const output = [
-    "Exception in thread Thread-1 (serve_forever):",
-    "Traceback (most recent call last):",
-    "ValueError: Invalid file descriptor: -1",
-    "test_mobile_origin (__main__.MobileOriginContract.test_config_is_exact_https_origin) ... ok",
-    "Finished workspaces/runtime/apps/server/tests/mobile-origin-contract.py: passed, 0.02s",
-    "Server suites: 1 passed, 1 failed, 0 skipped (opt-in), 0 skipped (environment)",
-    'Test outcomes: {"error":0,"failed":1,"passed":8}',
-    "FAIL workspaces/runtime/apps/server/tests/tool-request-http-contract.py: test failure; failing IDs: ['ToolRequestHTTPContract.test_provider_tool_request']",
-  ].join("\n");
-  assert.equal(parseCounts(item, output).failed, 1);
-
-  const plainScriptFailure = [
-    "Server suites: 0 passed, 1 failed, 0 skipped (opt-in), 0 skipped (environment)",
-    "FAIL workspaces/runtime/apps/server/tests/assertion-script.py: exit 1",
-  ].join("\n");
-  assert.equal(parseCounts(item, plainScriptFailure).failed, 1);
-});
-
-test("server failure summaries print failing suite IDs", async () => {
-  const originalWrite = process.stdout.write;
-  let printed = "";
-  process.stdout.write = (chunk) => {
-    printed += chunk.toString();
-    return true;
-  };
-  try {
-    const output = [
-      "Server suites: 0 passed, 1 failed, 0 skipped (opt-in), 0 skipped (environment)",
-      'Test outcomes: {"error":1,"failed":0,"passed":3}',
-      "FAIL tests/example-contract.py: test failure; failing IDs: ['Example.test_reports_failure']",
-    ].join("\n");
-    const result = await execute(
-      process.cwd(),
-      { name: "server", ecosystem: "server" },
-      "",
-      false,
-      {
-        commands: [
-          [
-            "node",
-            [
-              "-e",
-              `process.stdout.write(${JSON.stringify(output)}); process.exit(1)`,
-            ],
-          ],
-        ],
-      },
-    );
-    assert.equal(result.exitCode, 1);
-    assert.match(printed, /Failing server suites:/);
-    assert.match(printed, /Example\.test_reports_failure/);
-  } finally {
-    process.stdout.write = originalWrite;
-  }
 });
 
 test("Vitest summaries count test cases rather than test files", () => {
@@ -1574,5 +1309,50 @@ test("installer recipe preserves directory arguments as literal positional value
     ]);
   } finally {
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("repository gates use manifest packages without the retired backend", () => {
+  assert.ok(
+    !discover(process.cwd()).some((item) => item.ecosystem === "server"),
+  );
+  for (const name of [
+    "test-fast",
+    "test-comprehensive",
+    "test-fast-rest",
+    "test-fast-rest-non-rust",
+    "test-heavy",
+  ]) {
+    const recipe = recipePlan(process.cwd(), name);
+    assert.doesNotMatch(
+      recipe.command,
+      /apps\/server|studio-operations-python|codex_python|test-server\.py/,
+    );
+  }
+  const scripts = JSON.parse(readFileSync("package.json", "utf8")).scripts;
+  assert.equal(scripts["typecheck:runtime"], undefined);
+  assert.equal(scripts["test:server:python"], undefined);
+  assert.match(scripts["test:server:bridge"], /studio-claude-bridge/);
+  const workflow = readFileSync(".github/workflows/ci.yml", "utf8");
+  assert.doesNotMatch(
+    workflow,
+    /setup-python|install-cli\.py|^  (?:python|fast-server):/m,
+  );
+  assert.match(workflow, /run: pnpm run contracts:check/);
+  for (const action of ["fast-tier-setup", "client-build-setup"]) {
+    assert.doesNotMatch(
+      readFileSync(`.github/actions/${action}/action.yml`, "utf8"),
+      /python3|setup-python|install-cli\.py|studio-operations-python/,
+    );
+  }
+  for (const job of [
+    "rust",
+    "rust-macos",
+    "rust-build-tests",
+    "fast-rest",
+    "fast-rust",
+    "fast-browser-smoke",
+  ]) {
+    assert.ok(workflow.includes(`  ${job}:`), job);
   }
 });

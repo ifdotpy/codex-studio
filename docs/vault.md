@@ -70,14 +70,10 @@ take 6 hours at most. `status.json` beside the configuration keeps the outcome:
 `vault.status` returns the bucket, region, prefix, recipient, the last record (`writer.json`)
 and `status.json`. It never returns the access key or the signing key.
 
-To vendor another layr-desk commit, run:
+The host command for vendoring another layr-desk commit was removed with the
+Python VM provisioner. A Rust replacement is outside this change.
 
-```sh
-python3 workspaces/runtime/apps/server/src/update-vm-layr.py --name layr-desk \
-  --source ~/Projects/layr-desk --revision <commit>
-```
-
-The command takes `Cargo.toml`, `Cargo.lock`, `LICENSE`, `crates/desk-core` and
+The former command took `Cargo.toml`, `Cargo.lock`, `LICENSE`, `crates/desk-core` and
 `crates/layr-desk` of that commit through `git archive`, and records each file's SHA-256 in
 `manifest.json`. Provisioning copies the source to `/opt/codex-studio/vm/layr-desk`.
 `install-layr.sh` checks the files against the manifest, builds them with the Rust toolchain

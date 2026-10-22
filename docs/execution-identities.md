@@ -117,9 +117,8 @@ The SQL statement counts above measure the additional record hook separately.
 Run this command in each checkout. Compare its `after` object; the command's
 `before` object is the older checked-in baseline.
 
-```sh
-python3 -B workspaces/runtime/apps/server/tests/notification-load-contract.py
-```
+The former Python backend command has been removed. See [testing](testing.md)
+for current Rust checks.
 
 The 18,046,525,440-byte migration fixture was removed after its measurement.
 The deletion check finds no files under

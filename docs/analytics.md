@@ -90,9 +90,5 @@ Analytics adds no messages or tool definitions to model input.
 
 ## Checks
 
-```sh
-python3 -B workspaces/runtime/apps/server/tests/analytics-contract.py
-python3 -B workspaces/runtime/apps/server/tests/analytics-history-connection-reuse-contract.py
-pnpm --filter codex-agents-web run build
-pnpm --filter codex-agents-web run test:browser -- analytics-ui.spec.mjs
-```
+The former Python backend command has been removed. See [testing](testing.md)
+for current Rust checks.
