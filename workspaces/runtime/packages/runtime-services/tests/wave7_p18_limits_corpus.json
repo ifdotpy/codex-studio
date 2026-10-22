@@ -1,0 +1,543 @@
+[
+  {
+    "record": { "accountKey": "fixture", "at": 7.0 },
+    "fresh": {
+      "accountKey": "fixture",
+      "data": { "rateLimits": {} },
+      "at": 8.0
+    },
+    "cached": false,
+    "result": {
+      "accountKey": "fixture",
+      "data": { "rateLimits": {} },
+      "at": 8.0
+    },
+    "calls": [["read", "fixture"]]
+  },
+  {
+    "record": { "accountKey": "fixture", "at": 7.0 },
+    "fresh": {
+      "accountKey": "fixture",
+      "data": { "rateLimits": {} },
+      "at": 8.0
+    },
+    "cached": true,
+    "result": {
+      "accountKey": "fixture",
+      "data": { "rateLimits": {} },
+      "at": 8.0
+    },
+    "calls": [["read", "fixture"]]
+  },
+  {
+    "record": { "accountKey": "fixture", "at": 7.0, "error": null },
+    "fresh": {
+      "accountKey": "fixture",
+      "data": { "rateLimits": {} },
+      "at": 8.0
+    },
+    "cached": false,
+    "result": {
+      "accountKey": "fixture",
+      "data": { "rateLimits": {} },
+      "at": 8.0
+    },
+    "calls": [["read", "fixture"]]
+  },
+  {
+    "record": { "accountKey": "fixture", "at": 7.0, "error": null },
+    "fresh": {
+      "accountKey": "fixture",
+      "data": { "rateLimits": {} },
+      "at": 8.0
+    },
+    "cached": true,
+    "result": {
+      "accountKey": "fixture",
+      "data": { "rateLimits": {} },
+      "at": 8.0
+    },
+    "calls": [["read", "fixture"]]
+  },
+  {
+    "record": { "accountKey": "fixture", "at": 7.0, "error": "" },
+    "fresh": {
+      "accountKey": "fixture",
+      "data": { "rateLimits": {} },
+      "at": 8.0
+    },
+    "cached": false,
+    "result": {
+      "accountKey": "fixture",
+      "data": { "rateLimits": {} },
+      "at": 8.0
+    },
+    "calls": [["read", "fixture"]]
+  },
+  {
+    "record": { "accountKey": "fixture", "at": 7.0, "error": "" },
+    "fresh": {
+      "accountKey": "fixture",
+      "data": { "rateLimits": {} },
+      "at": 8.0
+    },
+    "cached": true,
+    "result": {
+      "accountKey": "fixture",
+      "data": { "rateLimits": {} },
+      "at": 8.0
+    },
+    "calls": [["read", "fixture"]]
+  },
+  {
+    "record": {
+      "accountKey": "fixture",
+      "at": 7.0,
+      "error": "fixture unavailable"
+    },
+    "fresh": {
+      "accountKey": "fixture",
+      "data": { "rateLimits": {} },
+      "at": 8.0
+    },
+    "cached": false,
+    "result": {
+      "accountKey": "fixture",
+      "data": { "rateLimits": {} },
+      "at": 8.0
+    },
+    "calls": [["read", "fixture"]]
+  },
+  {
+    "record": {
+      "accountKey": "fixture",
+      "at": 7.0,
+      "error": "fixture unavailable"
+    },
+    "fresh": {
+      "accountKey": "fixture",
+      "data": { "rateLimits": {} },
+      "at": 8.0
+    },
+    "cached": true,
+    "result": {
+      "accountKey": "fixture",
+      "at": 7.0,
+      "error": "fixture unavailable"
+    },
+    "calls": []
+  },
+  {
+    "record": { "accountKey": "fixture", "data": null, "at": 7.0 },
+    "fresh": {
+      "accountKey": "fixture",
+      "data": { "rateLimits": {} },
+      "at": 8.0
+    },
+    "cached": false,
+    "result": {
+      "accountKey": "fixture",
+      "data": { "rateLimits": {} },
+      "at": 8.0
+    },
+    "calls": [["read", "fixture"]]
+  },
+  {
+    "record": { "accountKey": "fixture", "data": null, "at": 7.0 },
+    "fresh": {
+      "accountKey": "fixture",
+      "data": { "rateLimits": {} },
+      "at": 8.0
+    },
+    "cached": true,
+    "result": {
+      "accountKey": "fixture",
+      "data": { "rateLimits": {} },
+      "at": 8.0
+    },
+    "calls": [["read", "fixture"]]
+  },
+  {
+    "record": {
+      "accountKey": "fixture",
+      "data": null,
+      "at": 7.0,
+      "error": null
+    },
+    "fresh": {
+      "accountKey": "fixture",
+      "data": { "rateLimits": {} },
+      "at": 8.0
+    },
+    "cached": false,
+    "result": {
+      "accountKey": "fixture",
+      "data": { "rateLimits": {} },
+      "at": 8.0
+    },
+    "calls": [["read", "fixture"]]
+  },
+  {
+    "record": {
+      "accountKey": "fixture",
+      "data": null,
+      "at": 7.0,
+      "error": null
+    },
+    "fresh": {
+      "accountKey": "fixture",
+      "data": { "rateLimits": {} },
+      "at": 8.0
+    },
+    "cached": true,
+    "result": {
+      "accountKey": "fixture",
+      "data": { "rateLimits": {} },
+      "at": 8.0
+    },
+    "calls": [["read", "fixture"]]
+  },
+  {
+    "record": { "accountKey": "fixture", "data": null, "at": 7.0, "error": "" },
+    "fresh": {
+      "accountKey": "fixture",
+      "data": { "rateLimits": {} },
+      "at": 8.0
+    },
+    "cached": false,
+    "result": {
+      "accountKey": "fixture",
+      "data": { "rateLimits": {} },
+      "at": 8.0
+    },
+    "calls": [["read", "fixture"]]
+  },
+  {
+    "record": { "accountKey": "fixture", "data": null, "at": 7.0, "error": "" },
+    "fresh": {
+      "accountKey": "fixture",
+      "data": { "rateLimits": {} },
+      "at": 8.0
+    },
+    "cached": true,
+    "result": {
+      "accountKey": "fixture",
+      "data": { "rateLimits": {} },
+      "at": 8.0
+    },
+    "calls": [["read", "fixture"]]
+  },
+  {
+    "record": {
+      "accountKey": "fixture",
+      "data": null,
+      "at": 7.0,
+      "error": "fixture unavailable"
+    },
+    "fresh": {
+      "accountKey": "fixture",
+      "data": { "rateLimits": {} },
+      "at": 8.0
+    },
+    "cached": false,
+    "result": {
+      "accountKey": "fixture",
+      "data": { "rateLimits": {} },
+      "at": 8.0
+    },
+    "calls": [["read", "fixture"]]
+  },
+  {
+    "record": {
+      "accountKey": "fixture",
+      "data": null,
+      "at": 7.0,
+      "error": "fixture unavailable"
+    },
+    "fresh": {
+      "accountKey": "fixture",
+      "data": { "rateLimits": {} },
+      "at": 8.0
+    },
+    "cached": true,
+    "result": {
+      "accountKey": "fixture",
+      "data": null,
+      "at": 7.0,
+      "error": "fixture unavailable"
+    },
+    "calls": []
+  },
+  {
+    "record": { "accountKey": "fixture", "data": {}, "at": 7.0 },
+    "fresh": {
+      "accountKey": "fixture",
+      "data": { "rateLimits": {} },
+      "at": 8.0
+    },
+    "cached": false,
+    "result": { "accountKey": "fixture", "data": {}, "at": 7.0 },
+    "calls": [["refresh", "fixture"]]
+  },
+  {
+    "record": { "accountKey": "fixture", "data": {}, "at": 7.0 },
+    "fresh": {
+      "accountKey": "fixture",
+      "data": { "rateLimits": {} },
+      "at": 8.0
+    },
+    "cached": true,
+    "result": { "accountKey": "fixture", "data": {}, "at": 7.0 },
+    "calls": []
+  },
+  {
+    "record": { "accountKey": "fixture", "data": {}, "at": 7.0, "error": null },
+    "fresh": {
+      "accountKey": "fixture",
+      "data": { "rateLimits": {} },
+      "at": 8.0
+    },
+    "cached": false,
+    "result": { "accountKey": "fixture", "data": {}, "at": 7.0, "error": null },
+    "calls": [["refresh", "fixture"]]
+  },
+  {
+    "record": { "accountKey": "fixture", "data": {}, "at": 7.0, "error": null },
+    "fresh": {
+      "accountKey": "fixture",
+      "data": { "rateLimits": {} },
+      "at": 8.0
+    },
+    "cached": true,
+    "result": { "accountKey": "fixture", "data": {}, "at": 7.0, "error": null },
+    "calls": []
+  },
+  {
+    "record": { "accountKey": "fixture", "data": {}, "at": 7.0, "error": "" },
+    "fresh": {
+      "accountKey": "fixture",
+      "data": { "rateLimits": {} },
+      "at": 8.0
+    },
+    "cached": false,
+    "result": { "accountKey": "fixture", "data": {}, "at": 7.0, "error": "" },
+    "calls": [["refresh", "fixture"]]
+  },
+  {
+    "record": { "accountKey": "fixture", "data": {}, "at": 7.0, "error": "" },
+    "fresh": {
+      "accountKey": "fixture",
+      "data": { "rateLimits": {} },
+      "at": 8.0
+    },
+    "cached": true,
+    "result": { "accountKey": "fixture", "data": {}, "at": 7.0, "error": "" },
+    "calls": []
+  },
+  {
+    "record": {
+      "accountKey": "fixture",
+      "data": {},
+      "at": 7.0,
+      "error": "fixture unavailable"
+    },
+    "fresh": {
+      "accountKey": "fixture",
+      "data": { "rateLimits": {} },
+      "at": 8.0
+    },
+    "cached": false,
+    "result": {
+      "accountKey": "fixture",
+      "data": {},
+      "at": 7.0,
+      "error": "fixture unavailable"
+    },
+    "calls": [["refresh", "fixture"]]
+  },
+  {
+    "record": {
+      "accountKey": "fixture",
+      "data": {},
+      "at": 7.0,
+      "error": "fixture unavailable"
+    },
+    "fresh": {
+      "accountKey": "fixture",
+      "data": { "rateLimits": {} },
+      "at": 8.0
+    },
+    "cached": true,
+    "result": {
+      "accountKey": "fixture",
+      "data": {},
+      "at": 7.0,
+      "error": "fixture unavailable"
+    },
+    "calls": []
+  },
+  {
+    "record": {
+      "accountKey": "fixture",
+      "data": { "rateLimits": { "primary": { "usedPercent": 25.0 } } },
+      "at": 7.0
+    },
+    "fresh": {
+      "accountKey": "fixture",
+      "data": { "rateLimits": {} },
+      "at": 8.0
+    },
+    "cached": false,
+    "result": {
+      "accountKey": "fixture",
+      "data": { "rateLimits": { "primary": { "usedPercent": 25.0 } } },
+      "at": 7.0
+    },
+    "calls": [["refresh", "fixture"]]
+  },
+  {
+    "record": {
+      "accountKey": "fixture",
+      "data": { "rateLimits": { "primary": { "usedPercent": 25.0 } } },
+      "at": 7.0
+    },
+    "fresh": {
+      "accountKey": "fixture",
+      "data": { "rateLimits": {} },
+      "at": 8.0
+    },
+    "cached": true,
+    "result": {
+      "accountKey": "fixture",
+      "data": { "rateLimits": { "primary": { "usedPercent": 25.0 } } },
+      "at": 7.0
+    },
+    "calls": []
+  },
+  {
+    "record": {
+      "accountKey": "fixture",
+      "data": { "rateLimits": { "primary": { "usedPercent": 25.0 } } },
+      "at": 7.0,
+      "error": null
+    },
+    "fresh": {
+      "accountKey": "fixture",
+      "data": { "rateLimits": {} },
+      "at": 8.0
+    },
+    "cached": false,
+    "result": {
+      "accountKey": "fixture",
+      "data": { "rateLimits": { "primary": { "usedPercent": 25.0 } } },
+      "at": 7.0,
+      "error": null
+    },
+    "calls": [["refresh", "fixture"]]
+  },
+  {
+    "record": {
+      "accountKey": "fixture",
+      "data": { "rateLimits": { "primary": { "usedPercent": 25.0 } } },
+      "at": 7.0,
+      "error": null
+    },
+    "fresh": {
+      "accountKey": "fixture",
+      "data": { "rateLimits": {} },
+      "at": 8.0
+    },
+    "cached": true,
+    "result": {
+      "accountKey": "fixture",
+      "data": { "rateLimits": { "primary": { "usedPercent": 25.0 } } },
+      "at": 7.0,
+      "error": null
+    },
+    "calls": []
+  },
+  {
+    "record": {
+      "accountKey": "fixture",
+      "data": { "rateLimits": { "primary": { "usedPercent": 25.0 } } },
+      "at": 7.0,
+      "error": ""
+    },
+    "fresh": {
+      "accountKey": "fixture",
+      "data": { "rateLimits": {} },
+      "at": 8.0
+    },
+    "cached": false,
+    "result": {
+      "accountKey": "fixture",
+      "data": { "rateLimits": { "primary": { "usedPercent": 25.0 } } },
+      "at": 7.0,
+      "error": ""
+    },
+    "calls": [["refresh", "fixture"]]
+  },
+  {
+    "record": {
+      "accountKey": "fixture",
+      "data": { "rateLimits": { "primary": { "usedPercent": 25.0 } } },
+      "at": 7.0,
+      "error": ""
+    },
+    "fresh": {
+      "accountKey": "fixture",
+      "data": { "rateLimits": {} },
+      "at": 8.0
+    },
+    "cached": true,
+    "result": {
+      "accountKey": "fixture",
+      "data": { "rateLimits": { "primary": { "usedPercent": 25.0 } } },
+      "at": 7.0,
+      "error": ""
+    },
+    "calls": []
+  },
+  {
+    "record": {
+      "accountKey": "fixture",
+      "data": { "rateLimits": { "primary": { "usedPercent": 25.0 } } },
+      "at": 7.0,
+      "error": "fixture unavailable"
+    },
+    "fresh": {
+      "accountKey": "fixture",
+      "data": { "rateLimits": {} },
+      "at": 8.0
+    },
+    "cached": false,
+    "result": {
+      "accountKey": "fixture",
+      "data": { "rateLimits": { "primary": { "usedPercent": 25.0 } } },
+      "at": 7.0,
+      "error": "fixture unavailable"
+    },
+    "calls": [["refresh", "fixture"]]
+  },
+  {
+    "record": {
+      "accountKey": "fixture",
+      "data": { "rateLimits": { "primary": { "usedPercent": 25.0 } } },
+      "at": 7.0,
+      "error": "fixture unavailable"
+    },
+    "fresh": {
+      "accountKey": "fixture",
+      "data": { "rateLimits": {} },
+      "at": 8.0
+    },
+    "cached": true,
+    "result": {
+      "accountKey": "fixture",
+      "data": { "rateLimits": { "primary": { "usedPercent": 25.0 } } },
+      "at": 7.0,
+      "error": "fixture unavailable"
+    },
+    "calls": []
+  }
+]

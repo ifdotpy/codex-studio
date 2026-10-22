@@ -1,0 +1,126 @@
+[
+  {
+    "kind": "discover",
+    "initial": {
+      "version": 1,
+      "defaultAccountKey": "default",
+      "accounts": {
+        "default": {
+          "id": "default",
+          "home": "/tmp/o-93t5p9t6/codex-home",
+          "label": "Codex",
+          "source": "Codex CLI",
+          "accountId": null,
+          "email": null,
+          "plan": null,
+          "status": "signedOut"
+        }
+      },
+      "logins": {},
+      "deleteReceipts": {},
+      "pendingAccountsChange": true
+    },
+    "expected": {
+      "version": 1,
+      "defaultAccountKey": "default",
+      "accounts": {
+        "default": {
+          "id": "default",
+          "home": "/tmp/o-93t5p9t6/codex-home",
+          "label": "Codex",
+          "source": "Codex CLI",
+          "accountId": null,
+          "email": null,
+          "plan": null,
+          "status": "signedOut"
+        },
+        "claude-local": {
+          "id": "claude-local",
+          "provider": "claude",
+          "home": "/tmp/o-93t5p9t6/home/.claude",
+          "label": "Claude Code",
+          "source": "Claude Code",
+          "status": "ready",
+          "accountId": "claude:fixture@example.invalid",
+          "email": "fixture@example.invalid",
+          "plan": "max"
+        }
+      },
+      "logins": {},
+      "deleteReceipts": {},
+      "pendingAccountsChange": true
+    },
+    "home": "/tmp/o-93t5p9t6/home/.claude"
+  },
+  {
+    "kind": "update",
+    "initial": {
+      "version": 1,
+      "defaultAccountKey": "default",
+      "accounts": {
+        "default": {
+          "id": "default",
+          "home": "/tmp/o-93t5p9t6/codex-home",
+          "label": "Codex",
+          "source": "Codex CLI",
+          "accountId": null,
+          "email": null,
+          "plan": null,
+          "status": "signedOut"
+        },
+        "claude-local": {
+          "id": "claude-local",
+          "provider": "claude",
+          "home": "/tmp/o-93t5p9t6/home/.claude",
+          "label": "Claude Code",
+          "source": "Claude Code",
+          "status": "ready",
+          "accountId": "claude:fixture@example.invalid",
+          "email": "fixture@example.invalid",
+          "plan": "max"
+        }
+      },
+      "logins": {},
+      "deleteReceipts": {},
+      "pendingAccountsChange": true
+    },
+    "expected": {
+      "version": 1,
+      "defaultAccountKey": "default",
+      "accounts": {
+        "default": {
+          "id": "default",
+          "home": "/tmp/o-93t5p9t6/codex-home",
+          "label": "Codex",
+          "source": "Codex CLI",
+          "accountId": null,
+          "email": null,
+          "plan": null,
+          "status": "signedOut"
+        },
+        "claude-local": {
+          "id": "claude-local",
+          "provider": "claude",
+          "home": "/tmp/o-93t5p9t6/home/.claude",
+          "label": "Updated",
+          "source": "Claude Code",
+          "status": "ready",
+          "accountId": "claude:fixture@example.invalid",
+          "email": "fixture@example.invalid",
+          "plan": "max",
+          "claudeOptions": {
+            "customModels": [{ "id": "fixture", "label": "Fixture" }],
+            "launchArgs": "--verbose"
+          }
+        }
+      },
+      "logins": {},
+      "deleteReceipts": {},
+      "pendingAccountsChange": true
+    },
+    "options": {
+      "customModels": [{ "id": "fixture", "label": "Fixture" }],
+      "launchArgs": "--verbose"
+    }
+  }
+]
