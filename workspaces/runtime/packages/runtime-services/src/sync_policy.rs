@@ -1635,10 +1635,6 @@ pub enum PreferenceScope {
 
 #[derive(Debug, Error)]
 pub enum SyncPolicyError {
-    #[error("invalid draft")]
-    InvalidDraft,
-    #[error("draft identity does not match its key")]
-    DraftIdentity,
     #[error("invalid preference fields")]
     InvalidPreferences,
     #[error("invalid stored sync object {scope}/{id}")]
@@ -1656,21 +1652,6 @@ pub fn effective_limit(scope: &str, limit: i64) -> i64 {
             OTHER_PAGE_LIMIT
         },
     )
-}
-
-pub fn validate_draft(id: &str, payload: &Value) -> Result<(), SyncPolicyError> {
-    let object = payload.as_object().ok_or(SyncPolicyError::InvalidDraft)?;
-    let device = object
-        .get("device")
-        .and_then(Value::as_str)
-        .filter(|value| !value.is_empty())
-        .ok_or(SyncPolicyError::DraftIdentity)?;
-    let session = object
-        .get("session")
-        .and_then(Value::as_str)
-        .filter(|value| !value.is_empty())
-        .ok_or(SyncPolicyError::DraftIdentity)?;
-    validate_draft_identity(id, object, device, session)
 }
 
 /// Whether a JSON integer is outside serde_json's exact signed/unsigned range.
@@ -1720,28 +1701,6 @@ pub fn contains_unrepresentable_integer(raw: &str) -> bool {
         index += 1;
     }
     false
-}
-
-fn validate_draft_identity(
-    id: &str,
-    object: &Map<String, Value>,
-    device: &str,
-    session: &str,
-) -> Result<(), SyncPolicyError> {
-    let prefix = format!("{device}:");
-    let suffix = format!(":{session}");
-    let writer = id
-        .strip_prefix(&prefix)
-        .and_then(|tail| tail.strip_suffix(&suffix))
-        .unwrap_or_default();
-    let identity_matches =
-        id == format!("{device}:{session}") || (!writer.is_empty() && !writer.contains(':'));
-    if !identity_matches
-        || (object.contains_key("id") && object.get("id").and_then(Value::as_str) != Some(id))
-    {
-        return Err(SyncPolicyError::DraftIdentity);
-    }
-    Ok(())
 }
 
 pub fn parse_preferences(
@@ -3167,6 +3126,9 @@ mod tests {
 
     #[test]
     fn draft_identity_matches_row_key_and_allows_extension_members() {
+        let validate_draft = |id: &str, payload: &Value| {
+            studio_runtime_schema::drafts::DraftVersion::from_stored_value(id, payload.clone())
+        };
         let payload = json!({"device":"phone","session":"chat","id":"phone:tab:chat","text":"draft","extra":true});
         assert!(validate_draft("phone:tab:chat", &payload).is_ok());
         assert!(validate_draft("phone:chat", &json!({})).is_err());

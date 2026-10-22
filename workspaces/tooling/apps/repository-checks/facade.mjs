@@ -849,6 +849,40 @@ function fastTierCommands(root) {
         ]
       : []),
     {
+      item: { name: "Rust-owned drafts", ecosystem: "cargo" },
+      label: "draft wire and legacy compatibility witnesses",
+      commands: [
+        [
+          "cargo",
+          [
+            "nextest",
+            "run",
+            "--locked",
+            "--no-tests",
+            "fail",
+            "--message-format",
+            "libtest-json-plus",
+            "-p",
+            "studio-client-core",
+            "-p",
+            "studio-runtime-http",
+            "--lib",
+            "-E",
+            nextestAnyOf([
+              "test(draft_receive_normalizes_shared_legacy_fixtures_without_rewriting_storage)",
+              "test(named_schema_draft_push_matches_shared_compatibility_fixtures)",
+              "test(stored_legacy_drafts_remain_readable_and_replaceable)",
+            ]),
+          ],
+        ],
+      ],
+      options: {
+        selector: "shared strict push and legacy receive fixtures",
+        reason:
+          "Keep new draft payloads compatible with native receive without rewriting stored legacy drafts.",
+      },
+    },
+    {
       item: { name: "studio-client-core", ecosystem: "cargo" },
       label: "keyed draft synchronization witness",
       commands: [
@@ -1473,6 +1507,7 @@ function fastTierCommands(root) {
               "test(account_worker::tests::continuation_start::capacity_retry_restart_unknown_reports_once_without_resending)",
               "test(agent_progress_schema_matches_strict_serde_contract)",
               "test(contracts::tests::generated_contracts_do_not_recreate_the_removed_backend)",
+              "test(contracts::tests::markdown_output_matches_rust_owned_schema)",
               "test(disk_space::tests::)",
               "test(archive_finished_)",
               "test(archive_finished_reason_survives_dispatch_and_receipt_replay)",

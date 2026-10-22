@@ -220,6 +220,19 @@ Native composer draft synchronization follows this flow:
 3. Combine simultaneous triggers and retain one follow-up when notified during a refresh.
 4. Keep idle windows quiet; closing the view removes listeners and pending refreshes.
 
+Draft payload compatibility follows this flow:
+
+1. Derive the server schema and web type from [DraftVersion](../workspaces/client/packages/client-domain/src/drafts.rs) with `pnpm run contracts:generate`.
+2. Validate new pushes against that schema; require a JavaScript-safe integer timestamp.
+3. Read historical drafts through the same Rust owner: missing or null timestamps become zero, and fractional timestamps are floored.
+4. Preserve stored payload bytes; read normalization never rewrites or drops a draft. `pnpm run contracts:check` rejects generated drift.
+
+Markdown rendering follows this flow:
+
+1. Parse in the client-domain Rust owner into typed blocks, nodes, and sentences.
+2. Serialize the same output through native IPC or WebAssembly.
+3. Generate the renderer types from those Rust structs with the existing contract commands.
+
 Deleting an agent chat removes it from the user list until the next agent message. Its participants retain their history.
 Deletion stops the selected agent and its descendants and removes them from the interface.
 Stored transcripts and project files remain on disk. Deleted agents cannot resume from late events or message retries.
@@ -1581,3 +1594,9 @@ change with both options. Cross-machine Claude cache reuse remains unverified.
 6. A resource version advances when its content digest changes; unchanged content causes no client re-read.
 7. Unknown, unavailable, evicted, or racing projections retain the safe refresh.
 8. Initial connections still receive every subscribed resource; publication receipts and retry identities stay unchanged.
+
+Progress contract generation follows this flow:
+
+1. Derive command progress and stall schemas from the Rust structs in [agent_progress.rs](../workspaces/runtime/packages/runtime-schema/src/agent_progress.rs).
+2. Refresh their OpenAPI components and the renderer types with `pnpm run contracts:generate`.
+3. Run `pnpm run contracts:check` to reject drift; HTTP routes continue to consume OpenAPI.
