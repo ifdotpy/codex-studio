@@ -823,6 +823,18 @@ pub(crate) fn table_exists(connection: &Connection, name: &str) -> StoreResult<b
     )?)
 }
 
+/// Whether `runtime_monitors` has its owner expression index. Its indexed JSON
+/// expressions reject malformed rows at write time, so a query bounded by that
+/// index needs no per-row `json_valid` guard. Legacy and test schemas without
+/// it may hold malformed rows and keep their guarded scans.
+pub(crate) fn monitor_owner_index_exists(connection: &Connection) -> StoreResult<bool> {
+    Ok(connection
+        .prepare_cached(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='index' AND name='runtime_monitor_agent_status')",
+        )?
+        .query_row([], |row| row.get(0))?)
+}
+
 fn projection_records(
     transaction: &Transaction<'_>,
     table: &str,
