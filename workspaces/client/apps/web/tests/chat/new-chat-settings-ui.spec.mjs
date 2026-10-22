@@ -1,5 +1,5 @@
 import { test, expect, spawnFixture, rustUiFixture } from "../playwright.mjs";
-import { chooseSetupValue } from "../../../../../runtime/apps/server/tests/setup-controls.mjs";
+import { chooseSetupValue } from "../fixtures/setup-controls.mjs";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

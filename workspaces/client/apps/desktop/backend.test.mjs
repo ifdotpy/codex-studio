@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { spawn } from "node:child_process";
 import { test } from "vitest";
 import {
   realpathSync,
@@ -9,10 +8,8 @@ import {
   writeFileSync,
   readFileSync,
   rmSync,
-  copyFileSync,
 } from "node:fs";
 import path from "node:path";
-import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { createRequire } from "node:module";
@@ -22,22 +19,17 @@ const {
   ensureBackend,
   backendBuild,
   updateStatus,
-  apiPython,
   backendExitStatus,
 } = createRequire(import.meta.url)("./backend.cjs");
 const repositoryRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   "../../../..",
 );
-const serverSource = path.join(
-  repositoryRoot,
-  "workspaces/runtime/apps/server/src",
-);
-
 const state = "/unused-studio-state";
 const record = {
   application: "codex-agents",
   protocol: 1,
+  backendKind: "rust",
   backendBuild: "b".repeat(64),
   pid: process.pid,
   stateDir: state,
@@ -51,45 +43,6 @@ test("desktop recognizes backend exit by signal during startup", () => {
   );
   assert.equal(backendExitStatus({ exitCode: 23, signalCode: null }), 23);
   assert.equal(backendExitStatus({ exitCode: null, signalCode: null }), null);
-});
-
-test("desktop honors an equipped explicit API interpreter", () => {
-  const root = mkdtempSync(path.join(tmpdir(), "studio-api-python-"));
-  const python = path.join(root, "python");
-  try {
-    writeFileSync(python, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
-    assert.equal(apiPython(root, { CODEX_AGENTS_PYTHON: python }), python);
-    writeFileSync(python, "#!/bin/sh\nexit 1\n", { mode: 0o755 });
-    assert.throws(
-      () => apiPython(root, { CODEX_AGENTS_PYTHON: python }),
-      /CODEX_AGENTS_PYTHON/,
-    );
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
-});
-
-test("desktop resolves the user-cache API environment by lock digest", () => {
-  const root = mkdtempSync(path.join(tmpdir(), "studio-api-python-cache-"));
-  const requirements = "fastapi==1\n";
-  const digest = createHash("sha256").update(requirements).digest("hex");
-  const python = path.join(
-    root,
-    "cache/codex-agents/python",
-    digest,
-    "bin/python",
-  );
-  try {
-    writeFileSync(path.join(root, "requirements.txt"), requirements);
-    mkdirSync(path.dirname(python), { recursive: true });
-    writeFileSync(python, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
-    assert.equal(
-      apiPython(root, { XDG_CACHE_HOME: path.join(root, "cache") }),
-      python,
-    );
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
 });
 
 async function serve(handler, run) {
@@ -179,6 +132,8 @@ test("incompatible identity and invalid JSON fail without retries", async () => 
   for (const body of [
     "not JSON",
     JSON.stringify({ ...record, stateDir: "/different" }),
+    JSON.stringify({ ...record, backendKind: "python" }),
+    JSON.stringify({ ...record, backendKind: undefined }),
     JSON.stringify({ ...record, protocol: 0 }),
     JSON.stringify({ ...record, protocol: 2 }),
     JSON.stringify({ ...record, backendBuild: undefined }),
@@ -210,7 +165,11 @@ test("a slow existing backend attaches without spawning a process", async () => 
       const result = await ensureBackend({
         resources: "/missing-desktop-assets",
         port: Number(new URL(origin).port),
-        env: { CODEX_AGENTS_STATE_DIR: canonicalState },
+        env: {
+          CODEX_AGENTS_STATE_DIR: canonicalState,
+          CODEX_RUNTIME_SERVER:
+            "/missing-desktop-assets/bin/studio-runtime-server",
+        },
       });
       assert.deepEqual(result, {
         ...data,
@@ -283,37 +242,27 @@ test.each([true, false])(
     );
     const canonicalState = path.join(root, "state");
     mkdirSync(canonicalState);
-    mkdirSync(path.join(root, "scripts"));
     mkdirSync(path.join(root, "web/dist"), { recursive: true });
     writeFileSync(path.join(root, "web/dist/index.html"), "fixture");
+    const runtime = path.join(root, "fixture-runtime");
     writeFileSync(
-      path.join(root, "scripts/codex-canvas"),
-      `
-import http.server, json, os, sys
-from pathlib import Path
-state = os.environ["CODEX_AGENTS_STATE_DIR"]
-Path(state, "fixture.pid").write_text(str(os.getpid()))
-class Handler(http.server.BaseHTTPRequestHandler):
-    def do_GET(self):
-        body = json.dumps({"application": "codex-agents", "protocol": 1,
-            "backendBuild": "b" * 64, "pid": os.getpid(), "stateDir": state,
-            "restartEnvironment": {key: os.environ[key] for key in
-                ("CODEX_HOME", "CODEX_CANVAS_CWD") if key in os.environ}}).encode()
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(body)
-http.server.HTTPServer(("127.0.0.1", int(sys.argv[-1])), Handler).serve_forever()
+      runtime,
+      `#!${process.execPath}
+const http = require("node:http"), fs = require("node:fs"), path = require("node:path");
+const state = process.env.CODEX_AGENTS_STATE_DIR;
+fs.writeFileSync(path.join(state, "fixture.pid"), String(process.pid));
+http.createServer((request, response) => response.end(JSON.stringify({
+  application:"codex-agents", protocol:1, backendKind:"rust", backendBuild:process.env.CODEX_BACKEND_BUILD,
+  pid:process.pid, stateDir:state,
+  restartEnvironment:Object.fromEntries(["CODEX_HOME", "CODEX_CANVAS_CWD"].filter(key => key in process.env).map(key => [key, process.env[key]]))
+}))).listen(Number(process.argv.at(-1)), "127.0.0.1");
 `,
+      { mode: 0o700 },
     );
     const portServer = createServer();
     await new Promise((resolve) => portServer.listen(0, "127.0.0.1", resolve));
     const port = portServer.address().port;
     await new Promise((resolve) => portServer.close(resolve));
-    const python =
-      process.env.CODEX_AGENTS_PYTHON ||
-      execFileSync("python3", ["-c", "import sys; print(sys.executable)"], {
-        encoding: "utf8",
-      }).trim();
     const saved = {
       version: 1,
       stateDir: canonicalState,
@@ -321,7 +270,6 @@ http.server.HTTPServer(("127.0.0.1", int(sys.argv[-1])), Handler).serve_forever(
       environment: {
         CODEX_CANVAS_CWD: "/saved-workspace",
         CODEX_BIN: "/usr/bin/true",
-        CODEX_AGENTS_PYTHON: python,
         PATH: process.env.PATH,
       },
       unsetEnvironment: ["CODEX_HOME"],
@@ -331,7 +279,8 @@ http.server.HTTPServer(("127.0.0.1", int(sys.argv[-1])), Handler).serve_forever(
     const env = {
       ...process.env,
       CODEX_AGENTS_STATE_DIR: canonicalState,
-      CODEX_AGENTS_PYTHON: python,
+      CODEX_AGENTS_PYTHON: "/nonexistent",
+      CODEX_RUNTIME_SERVER: runtime,
       CODEX_HOME: "/foreign-command-executor",
       CODEX_CANVAS_CWD: "/attaching-desktop",
       CODEX_BIN: "/usr/bin/true",
@@ -363,203 +312,6 @@ http.server.HTTPServer(("127.0.0.1", int(sys.argv[-1])), Handler).serve_forever(
   },
 );
 
-test("recovery and desktop attach to the same independently launched supervisor", async () => {
-  const root = mkdtempSync(path.join(tmpdir(), "srr-"));
-  const canonicalState = path.join(root, "state");
-  mkdirSync(canonicalState);
-  const portServer = createServer();
-  await new Promise((resolve) => portServer.listen(0, "127.0.0.1", resolve));
-  const port = portServer.address().port;
-  await new Promise((resolve) => portServer.close(resolve));
-  const resources = repositoryRoot;
-  const python =
-    process.env.CODEX_AGENTS_PYTHON ||
-    execFileSync("python3", ["-c", "import sys; print(sys.executable)"], {
-      encoding: "utf8",
-    }).trim();
-  const recoveryConfig = path.join(canonicalState, "background-recovery.json");
-  writeFileSync(
-    recoveryConfig,
-    JSON.stringify({
-      version: 1,
-      enabled: true,
-      supervisorEnabled: true,
-      stateDir: canonicalState,
-      resources,
-      python,
-      codex: "/usr/bin/true",
-      port,
-      environment: {},
-      unsetEnvironment: [],
-    }),
-  );
-  let recovery;
-  const recoveryOutput = [];
-  let backend;
-  let supervisor;
-  try {
-    // Model launchd starting the independent owner before either backend path.
-    spawn(
-      python,
-      [
-        "-B",
-        path.join(serverSource, "codex_process_supervisor.py"),
-        "--state",
-        canonicalState,
-      ],
-      {
-        stdio: "ignore",
-        env: {
-          ...process.env,
-          CODEX_AGENTS_STATE_DIR: canonicalState,
-          CODEX_AGENTS_SUPERVISOR_MODE: "1",
-        },
-      },
-    );
-    recovery = spawn(python, [
-      "-B",
-      path.join(
-        repositoryRoot,
-        "workspaces/client/apps/desktop/recover_backend.py",
-      ),
-      "--config",
-      recoveryConfig,
-    ]);
-    recovery.stdout.on("data", (chunk) =>
-      recoveryOutput.push(chunk.toString()),
-    );
-    recovery.stderr.on("data", (chunk) =>
-      recoveryOutput.push(chunk.toString()),
-    );
-    try {
-      const deadline = Date.now() + 15000;
-      let recoveredBackend;
-      while (Date.now() < deadline && !recoveredBackend) {
-        recoveredBackend = await identity(
-          `http://127.0.0.1:${port}`,
-          realpathSync(canonicalState),
-        );
-        if (!recoveredBackend)
-          await new Promise((resolve) => setTimeout(resolve, 50));
-      }
-      assert.ok(
-        recoveredBackend,
-        `Recovery did not start the backend: ${recoveryOutput.join("")}`,
-      );
-      backend = await ensureBackend({
-        resources,
-        port,
-        env: {
-          CODEX_AGENTS_STATE_DIR: canonicalState,
-          CODEX_BIN: "/usr/bin/true",
-          PATH: process.env.PATH,
-        },
-      });
-    } catch (error) {
-      let supervisorLog = "";
-      let canvasLog = "";
-      try {
-        supervisorLog = readFileSync(
-          path.join(canonicalState, "supervisor.log"),
-          "utf8",
-        );
-      } catch {}
-      try {
-        canvasLog = readFileSync(
-          path.join(canonicalState, "canvas.log"),
-          "utf8",
-        );
-      } catch {}
-      throw new Error(
-        `${error.message}\nRecovery service: ${recoveryOutput.join("")}\nSupervisor: ${supervisorLog}\nBackend: ${canvasLog}`,
-      );
-    }
-    assert.equal(backend.supervisorMode, true);
-    assert.equal(backend.stateDir, realpathSync(canonicalState));
-    assert.equal(recovery.exitCode, null);
-    const health = JSON.parse(
-      execFileSync(
-        python,
-        [
-          "-B",
-          path.join(serverSource, "codex_process_supervisor.py"),
-          "--status-json",
-          "--state",
-          canonicalState,
-        ],
-        {
-          encoding: "utf8",
-          env: { ...process.env, CODEX_AGENTS_STATE_DIR: canonicalState },
-        },
-      ),
-    );
-    assert.equal(health.stateDir, realpathSync(canonicalState));
-    assert.equal(health.recovery.blocked, null);
-  } finally {
-    if (recovery) {
-      recovery.kill("SIGTERM");
-      await new Promise((resolve) => {
-        if (recovery.exitCode !== null) return resolve();
-        recovery.once("exit", resolve);
-      });
-    }
-    let backendPid;
-    try {
-      const current = await identity(
-        `http://127.0.0.1:${port}`,
-        realpathSync(canonicalState),
-      );
-      if (current.stateDir === realpathSync(canonicalState)) {
-        backendPid = current.pid;
-        process.kill(current.pid, "SIGTERM");
-      }
-    } catch {}
-    if (backendPid) {
-      const deadline = Date.now() + 5000;
-      while (Date.now() < deadline) {
-        try {
-          execFileSync("/bin/ps", ["-p", String(backendPid), "-o", "stat="], {
-            stdio: "ignore",
-          });
-          await new Promise((resolve) => setTimeout(resolve, 50));
-        } catch {
-          break;
-        }
-      }
-    }
-    try {
-      supervisor = JSON.parse(
-        readFileSync(path.join(canonicalState, "supervisor.lock"), "utf8"),
-      );
-      process.kill(supervisor.pid, "SIGTERM");
-    } catch {}
-    if (supervisor?.pid) {
-      const deadline = Date.now() + 5000;
-      while (Date.now() < deadline) {
-        try {
-          execFileSync(
-            "/bin/ps",
-            ["-p", String(supervisor.pid), "-o", "stat="],
-            {
-              stdio: "ignore",
-            },
-          );
-          await new Promise((resolve) => setTimeout(resolve, 50));
-        } catch {
-          break;
-        }
-      }
-    }
-    rmSync(root, {
-      recursive: true,
-      force: true,
-      maxRetries: 20,
-      retryDelay: 50,
-    });
-  }
-  assert.equal(recovery?.exitCode, 0);
-});
-
 test("the desktop may attach to a diagnosed fallback generation", async () => {
   const canonicalState = realpathSync(tmpdir());
   const fallback = {
@@ -585,85 +337,35 @@ test("the desktop may attach to a diagnosed fallback generation", async () => {
   );
 });
 
-test("desktop status uses Python identity for match and mismatch decisions", () => {
-  const installed = backendBuild(repositoryRoot);
-  assert.deepEqual(updateStatus(repositoryRoot, { backendBuild: installed }), {
-    availableBackendBuild: installed,
-    updateRequired: false,
-  });
+test("desktop status hashes the Rust executable for match and mismatch decisions", () => {
+  const env = { CODEX_RUNTIME_SERVER: process.execPath };
+  const installed = backendBuild(repositoryRoot, env);
+  assert.equal(
+    installed,
+    createHash("sha256").update(readFileSync(process.execPath)).digest("hex"),
+  );
   assert.deepEqual(
-    updateStatus(repositoryRoot, { backendBuild: "a".repeat(64) }),
-    { availableBackendBuild: installed, updateRequired: true },
+    updateStatus(repositoryRoot, { backendBuild: installed }, env),
+    {
+      availableBackendBuild: installed,
+      updateRequired: false,
+    },
   );
-});
-
-test("the installed identity equals Python inventory on the real source tree", () => {
-  const installed = backendBuild(repositoryRoot);
-  const pythonInventory = execFileSync(
-    process.env.CODEX_AGENTS_PYTHON || "python3",
-    [
-      "-B",
-      "-c",
-      "import sys; sys.path.insert(0, sys.argv[1]); from codex_backend_identity import backend_build; print(backend_build(sys.argv[1]))",
-      serverSource,
-    ],
-    { encoding: "utf8" },
-  ).trim();
-  assert.equal(installed, pythonInventory);
-});
-
-test("packaged Resources/workspace/scripts remains an identity source", () => {
-  const root = mkdtempSync(path.join(tmpdir(), "studio-backend-package-"));
-  const scripts = path.join(root, "workspace/scripts");
-  mkdirSync(scripts, { recursive: true });
-  try {
-    for (const name of [
-      "codex_backend_identity.py",
-      "codex_source_inventory.py",
-      "codex_layout.py",
-    ])
-      copyFileSync(path.join(serverSource, name), path.join(scripts, name));
-    writeFileSync(path.join(scripts, "codex-canvas"), "# entry point\n");
-    writeFileSync(path.join(scripts, "runtime.py"), "VALUE = 1\n");
-    assert.match(backendBuild(path.join(root, "workspace")), /^[a-f0-9]{64}$/);
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
-});
-
-test("identity helper failure leaves the update decision unknown", () => {
-  const root = mkdtempSync(
-    path.join(tmpdir(), "studio-backend-helper-failure-"),
+  assert.deepEqual(
+    updateStatus(repositoryRoot, { backendBuild: "a".repeat(64) }, env),
+    {
+      availableBackendBuild: installed,
+      updateRequired: true,
+    },
   );
-  const python = path.join(root, "python");
-  try {
-    writeFileSync(
-      python,
-      '#!/bin/sh\nif [ "$1" = "-c" ]; then exit 0; fi\necho helper failed >&2\nexit 1\n',
-      { mode: 0o755 },
-    );
-    const errors = [];
-    const originalError = console.error;
-    console.error = (...values) => errors.push(values);
-    try {
-      assert.deepEqual(
-        updateStatus(repositoryRoot, record, { CODEX_AGENTS_PYTHON: python }),
-        { availableBackendBuild: null, updateRequired: null },
-      );
-    } finally {
-      console.error = originalError;
-    }
-    assert.equal(errors.length, 1);
-    assert.match(errors[0].join(" "), /helper failed/);
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
 });
 
 test("an app restart reports a pending backend update and preserves the owner", async () => {
   const stateRoot = mkdtempSync(path.join(tmpdir(), "studio-backend-reuse-"));
   const canonicalState = realpathSync(stateRoot);
-  const before = backendBuild(repositoryRoot);
+  const before = backendBuild(repositoryRoot, {
+    CODEX_RUNTIME_SERVER: process.execPath,
+  });
   try {
     for (const liveBuild of ["a".repeat(64), before]) {
       const data = {
@@ -678,7 +380,10 @@ test("an app restart reports a pending backend update and preserves the owner", 
             resources: repositoryRoot,
             port: Number(new URL(origin).port),
             // No executable paths or built UI. Spawning would fail the check.
-            env: { CODEX_AGENTS_STATE_DIR: canonicalState },
+            env: {
+              CODEX_AGENTS_STATE_DIR: canonicalState,
+              CODEX_RUNTIME_SERVER: process.execPath,
+            },
           });
           assert.equal(result.pid, process.pid);
           assert.equal(result.owned, false);
@@ -693,8 +398,45 @@ test("an app restart reports a pending backend update and preserves the owner", 
 });
 
 test("unavailable source cannot be reported as a current backend", () => {
-  assert.deepEqual(updateStatus("/missing-desktop-source", record), {
+  // Pin the server path: the checkout target/debug fallback may hold a build.
+  const env = {
+    CODEX_RUNTIME_SERVER: "/missing-desktop-source/bin/studio-runtime-server",
+  };
+  assert.deepEqual(updateStatus("/missing-desktop-source", record, env), {
     availableBackendBuild: null,
     updateRequired: null,
   });
+});
+
+test("Rust startup consumes the desktop identity and restart environment contracts", () => {
+  const require = createRequire(import.meta.url);
+  const {
+    desktopProtocolVersion,
+    backendBuildHexLength,
+  } = require("./backend.cjs");
+  const {
+    restartKeys,
+    restartEnvironmentVersion,
+  } = require("./restart-environment.cjs");
+  const rust = readFileSync(
+    path.join(
+      repositoryRoot,
+      "workspaces/client/packages/client-core/src/startup.rs",
+    ),
+    "utf8",
+  );
+  const constant = (name) =>
+    Number(rust.match(new RegExp(`const ${name}: \\w+ = (\\d+);`))?.[1]);
+  assert.equal(constant("DESKTOP_PROTOCOL_VERSION"), desktopProtocolVersion);
+  assert.equal(constant("BACKEND_BUILD_HEX_LENGTH"), backendBuildHexLength);
+  assert.equal(
+    constant("RESTART_ENVIRONMENT_VERSION"),
+    restartEnvironmentVersion,
+  );
+  const keys = [
+    ...rust
+      .match(/const RESTART_KEYS:[\s\S]*?= &\[([\s\S]*?)\];/)[1]
+      .matchAll(/"([^"]+)"/g),
+  ].map((match) => match[1]);
+  assert.deepEqual(keys, restartKeys);
 });

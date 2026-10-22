@@ -1,0 +1,158 @@
+[
+  {
+    "options": {},
+    "result": { "customModels": [], "launchArgs": "" },
+    "home": "/tmp/o-ud4slhc8/home"
+  },
+  {
+    "options": { "unknown": 1 },
+    "result": null,
+    "home": "/tmp/o-ud4slhc8/home"
+  },
+  {
+    "options": { "autoCompactWindow": null },
+    "result": { "customModels": [], "launchArgs": "" },
+    "home": "/tmp/o-ud4slhc8/home"
+  },
+  {
+    "options": { "autoCompactWindow": "" },
+    "result": { "customModels": [], "launchArgs": "" },
+    "home": "/tmp/o-ud4slhc8/home"
+  },
+  {
+    "options": { "autoCompactWindow": "200000" },
+    "result": {
+      "customModels": [],
+      "autoCompactWindow": 200000,
+      "launchArgs": ""
+    },
+    "home": "/tmp/o-ud4slhc8/home"
+  },
+  {
+    "options": { "autoCompactWindow": 200000 },
+    "result": {
+      "customModels": [],
+      "autoCompactWindow": 200000,
+      "launchArgs": ""
+    },
+    "home": "/tmp/o-ud4slhc8/home"
+  },
+  {
+    "options": { "autoCompactWindow": true },
+    "result": null,
+    "home": "/tmp/o-ud4slhc8/home"
+  },
+  {
+    "options": { "autoCompactWindow": 99999 },
+    "result": null,
+    "home": "/tmp/o-ud4slhc8/home"
+  },
+  {
+    "options": { "autoCompactWindow": 1000001 },
+    "result": null,
+    "home": "/tmp/o-ud4slhc8/home"
+  },
+  {
+    "options": { "autoCompactWindow": 200000.0 },
+    "result": null,
+    "home": "/tmp/o-ud4slhc8/home"
+  },
+  {
+    "options": { "launchArgs": null },
+    "result": null,
+    "home": "/tmp/o-ud4slhc8/home"
+  },
+  {
+    "options": { "launchArgs": "" },
+    "result": { "customModels": [], "launchArgs": "" },
+    "home": "/tmp/o-ud4slhc8/home"
+  },
+  {
+    "options": { "launchArgs": "--verbose" },
+    "result": { "customModels": [], "launchArgs": "--verbose" },
+    "home": "/tmp/o-ud4slhc8/home"
+  },
+  {
+    "options": { "launchArgs": "--add-dir 'two words' --debug" },
+    "result": {
+      "customModels": [],
+      "launchArgs": "--add-dir 'two words' --debug"
+    },
+    "home": "/tmp/o-ud4slhc8/home"
+  },
+  {
+    "options": { "launchArgs": "--verbose --verbose" },
+    "result": null,
+    "home": "/tmp/o-ud4slhc8/home"
+  },
+  {
+    "options": { "launchArgs": "--resume" },
+    "result": null,
+    "home": "/tmp/o-ud4slhc8/home"
+  },
+  {
+    "options": { "launchArgs": "'" },
+    "result": null,
+    "home": "/tmp/o-ud4slhc8/home"
+  },
+  {
+    "options": { "customModels": ["fixture"] },
+    "result": {
+      "customModels": [{ "id": "fixture", "label": "fixture" }],
+      "launchArgs": ""
+    },
+    "home": "/tmp/o-ud4slhc8/home"
+  },
+  {
+    "options": { "customModels": [{ "id": "fixture", "label": "  Label  " }] },
+    "result": {
+      "customModels": [{ "id": "fixture", "label": "Label" }],
+      "launchArgs": ""
+    },
+    "home": "/tmp/o-ud4slhc8/home"
+  },
+  {
+    "options": { "customModels": [{ "id": "fixture", "label": 5 }] },
+    "result": null,
+    "home": "/tmp/o-ud4slhc8/home"
+  },
+  {
+    "options": { "customModels": ["bad id"] },
+    "result": null,
+    "home": "/tmp/o-ud4slhc8/home"
+  },
+  {
+    "options": { "customModels": ["same", "same"] },
+    "result": null,
+    "home": "/tmp/o-ud4slhc8/home"
+  },
+  {
+    "options": { "customModels": null },
+    "result": null,
+    "home": "/tmp/o-ud4slhc8/home"
+  },
+  {
+    "options": { "configDir": "~/fixtures/../profile" },
+    "result": {
+      "configDir": "/tmp/o-ud4slhc8/home/profile",
+      "customModels": [],
+      "launchArgs": ""
+    },
+    "home": "/tmp/o-ud4slhc8/home"
+  },
+  {
+    "options": { "configDir": "" },
+    "result": { "customModels": [], "launchArgs": "" },
+    "home": "/tmp/o-ud4slhc8/home"
+  },
+  {
+    "options": { "configDir": null },
+    "result": null,
+    "home": "/tmp/o-ud4slhc8/home"
+  },
+  {
+    "options": { "configDir": "bad\u0000path" },
+    "result": null,
+    "home": "/tmp/o-ud4slhc8/home"
+  }
+]

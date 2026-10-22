@@ -24,7 +24,7 @@ test("ux support ui", async ({ page: runnerPage }) => {
   let page;
   await writeFile(
     entry,
-    `<html><div id="root"></div><script type="module" src="${join(repo, "workspaces/runtime/apps/server/tests/fixtures/ux-support.tsx")}"></script></html>`,
+    `<html><div id="root"></div><script type="module" src="${join(repo, "workspaces/client/apps/web/tests/fixtures/ux-support.tsx")}"></script></html>`,
   );
   let server;
   try {
@@ -135,6 +135,8 @@ test("ux support ui", async ({ page: runnerPage }) => {
       if (path.startsWith("/api/sync/")) return route.continue();
       if (request.method() === "POST")
         writes.push({ path, body: request.postDataJSON() });
+      if (path === "/api/processes")
+        return route.fulfill({ json: { processes: [], responseTarget: null } });
       if (path === "/api/workspace/tasks") {
         const agent = new URL(request.url()).searchParams.get("agent");
         const tasks = workspaceTasks[agent] || [];

@@ -2,6 +2,8 @@
 """Keep the saved Studio backend available without taking over an occupied runtime."""
 import argparse
 import fcntl
+from dataclasses import dataclass
+from enum import StrEnum
 import hashlib
 import json
 import os
@@ -9,46 +11,23 @@ from pathlib import Path
 import signal
 import socket
 import subprocess
-import sys
 import time
 import urllib.error
 import urllib.request
 
 
-# The `backend` field of background-recovery.json selects the server this agent starts.
-# This module owns the field and validates it in `load_config`; the service writer in
-# codex_supervisor_service.py (RECOVERY_BACKEND_SELECTIONS) is checked against it by
-# test_codex_supervisor_service.py. A missing field means python.
-BACKEND_SELECTIONS = ("python", "rust")
 # Supervisor protocol version that the Rust backend uses to start providers. Owner:
 # workspaces/runtime/packages/runtime-process/src/protocol.rs (SUPERVISOR_PROTOCOL_V2);
 # recovery-test.py checks this copy against it.
 SUPERVISOR_PROTOCOL_V2 = 2
-# Bytes read for one supervisor handshake reply; the reply is one short JSON line.
-SUPERVISOR_HANDSHAKE_REPLY_BYTES = 64 * 1024
+# Owner: MAX_SUPERVISOR_FRAME_BYTES in runtime-process/src/supervisor_contract.rs.
+# recovery-test.py checks parity; includes the JSON line delimiter.
+MAX_SUPERVISOR_FRAME_BYTES = 33554432
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, *args, **kwargs):
         return None
-
-
-def backend_scripts(resources):
-    """Resolve either packaged resource names or the relocated source tree."""
-    root = Path(resources)
-    packaged = root / "scripts"
-    development = root / "workspaces" / "runtime" / "apps" / "server" / "src"
-    if (development / "codex-canvas").is_file():
-        return development
-    if (packaged / "codex-canvas").is_file() or (root / "studio-install.json").is_file():
-        return packaged
-    return root / "workspaces" / "runtime" / "apps" / "server" / "src"
-
-
-def renderer_dist(resources):
-    root = Path(resources)
-    development = root / "workspaces" / "client" / "apps" / "web" / "dist"
-    return development if (development / "index.html").is_file() else root / "web" / "dist"
 
 
 def identity(port, state, timeout=5):
@@ -61,7 +40,7 @@ def identity(port, state, timeout=5):
             return None
         raise
     if (data.get("application") != "codex-agents" or data.get("protocol") != 1
-            or data.get("stateDir") != str(state) or type(data.get("pid")) is not int
+            or data.get("backendKind") != "rust" or data.get("stateDir") != str(state) or type(data.get("pid")) is not int
             or data["pid"] < 1):
         raise RuntimeError("The backend identity does not match this recovery service.")
     os.kill(data["pid"], 0)
@@ -69,20 +48,9 @@ def identity(port, state, timeout=5):
 
 
 def backend_process_arguments(pid, resources):
-    """Reuse the packaged native process reader without parsing display text."""
-    scripts = backend_scripts(resources).resolve()
-    sys.path.insert(0, str(scripts))
-    try:
-        import codex_process_supervisor
-        if Path(codex_process_supervisor.__file__).resolve() != scripts / "codex_process_supervisor.py":
-            raise RuntimeError("The packaged process reader is unavailable.")
-        return codex_process_supervisor.process_launch_command(pid)
-    finally:
-        sys.path.remove(str(scripts))
-
-
-def backend_selection(config):
-    return config.get("backend", "python")
+    """Read exact native arguments through the desktop-owned process reader."""
+    from desktop_process import process_launch_command
+    return process_launch_command(pid)
 
 
 def rust_server(config):
@@ -104,22 +72,15 @@ def file_sha256(path):
 def verify_backend_process(data, config):
     """Prove the reported PID is the configured backend listening on this port."""
     pid = data["pid"]
-    rust = backend_selection(config) == "rust"
     try:
         arguments = backend_process_arguments(pid, config["resources"])
     except (OSError, ValueError, RuntimeError, ImportError) as error:
         raise RuntimeError(f"Cannot verify fallback backend PID {pid}") from error
-    if rust:
-        server = rust_server(config)
-        # The Rust server reports the SHA-256 of its own executable as backendBuild.
-        if (data.get("backendKind") != "rust" or not arguments
-                or Path(arguments[0]).resolve() != server.resolve()
-                or data.get("backendBuild") != file_sha256(server)):
-            raise RuntimeError("The reported backend PID is not the configured Rust server process.")
-    else:
-        script = (backend_scripts(config["resources"]) / "codex-canvas").resolve()
-        if str(script) not in arguments:
-            raise RuntimeError("The reported backend PID is not the packaged Codex Canvas process.")
+    server = rust_server(config)
+    if (data.get("backendKind") != "rust" or not arguments
+            or Path(arguments[0]).resolve() != server.resolve()
+            or data.get("backendBuild") != file_sha256(server)):
+        raise RuntimeError("The reported backend PID is not the configured Rust server process.")
     verify_listener(pid, config)
 
 
@@ -170,13 +131,11 @@ def load_config(filename, state):
         raise RuntimeError("The recovery supervisor setting is invalid.")
     if type(config.get("port")) is not int or not 1024 <= config["port"] <= 65535:
         raise RuntimeError("The recovery port is invalid.")
-    if config.get("backend", "python") not in BACKEND_SELECTIONS:
-        raise RuntimeError("The recovery backend selection must be python or rust.")
-    names = ["python", "codex", "resources"]
-    if config.get("backend") == "rust":
-        names.append("runtimeServer")
-        if config.get("supervisorEnabled") is True:
-            names.append("processSupervisor")
+    if config.get("backend", "rust") != "rust":
+        raise RuntimeError("The recovery backend must be rust.")
+    names = ["python", "codex", "resources", "runtimeServer"]
+    if config.get("supervisorEnabled") is True:
+        names.append("processSupervisor")
     for name in names:
         if type(config.get(name)) is not str or not Path(config[name]).is_absolute():
             raise RuntimeError(f"The recovery {name} path must be absolute.")
@@ -201,63 +160,71 @@ def launch_environment(config, state, supervisor_fallback=False):
     return env
 
 
-def supervisor_serves_protocol_v2(state):
-    """Ask the supervisor socket for protocol 2 as a probe; a probe takes no ownership."""
-    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
-        client.settimeout(2)
-        client.connect(str(state / "supervisor.sock"))
-        hello = {"protocol": SUPERVISOR_PROTOCOL_V2, "stateDir": str(state), "probe": True}
-        client.sendall((json.dumps(hello) + "\n").encode())
-        reply = b""
-        while not reply.endswith(b"\n") and len(reply) < SUPERVISOR_HANDSHAKE_REPLY_BYTES:
-            chunk = client.recv(4096)
-            if not chunk:
-                break
-            reply += chunk
-    if not reply.endswith(b"\n"):
-        raise OSError("The supervisor closed the protocol probe without a reply.")
-    answer = json.loads(reply)
-    return (isinstance(answer, dict) and answer.get("ok") is True
-            and answer.get("protocol") == SUPERVISOR_PROTOCOL_V2)
-
-
 def supervisor_tick(config, state, child=None):
     """Probe the separately supervised owner without taking over its lifecycle."""
     if config.get("supervisorEnabled") is not True:
         return child, "disabled"
-    script = backend_scripts(config["resources"]) / "codex_process_supervisor.py"
-    if not script.is_file():
-        raise RuntimeError("Supervisor mode is enabled but its packaged script is missing.")
-    if backend_selection(config) == "rust":
-        binary = Path(config.get("processSupervisor") or "")
-        if not binary.is_absolute() or not binary.is_file() or not os.access(binary, os.X_OK):
-            raise RuntimeError("Supervisor mode is enabled but the Rust process supervisor is missing.")
-        try:
-            v2 = supervisor_serves_protocol_v2(state)
-        except (OSError, ValueError):
-            # An absent or starting socket does not prove the owner is wrong or dead.
-            return child, "supervisor starting"
-        if not v2:
-            # A Python supervisor answers protocol 1 only. The Rust backend would start
-            # without a provider path, so it waits for the Rust supervisor job instead.
-            raise RuntimeError("The running process supervisor does not serve protocol 2; "
-                               "the Rust backend needs the Rust supervisor.")
-    # Both supervisors serve this protocol 1 health probe (the Rust one through supervisor_daemon.rs).
-    check = [config["python"], "-B", str(script), "--status-json", "--state", str(state)]
+    binary = Path(config.get("processSupervisor") or "")
+    if not binary.is_absolute() or not binary.is_file() or not os.access(binary, os.X_OK):
+        raise RuntimeError("Supervisor mode is enabled but the Rust process supervisor is missing.")
     try:
-        probe = subprocess.run(check, check=True, timeout=2, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                               text=True, env=launch_environment(config, state))
-        health = json.loads(probe.stdout)
-        recovery = health.get("recovery") or {}
-        if recovery.get("blocked"):
-            raise RuntimeError(recovery["blocked"])
-        if recovery.get("degraded") and recovery.get("fallbackReady"):
-            return child, "supervisor degraded"
-        return child, "supervisor ready"
-    except (OSError, subprocess.SubprocessError):
-        # A failed probe does not prove that the owner is dead. The dedicated
-        # supervisor LaunchAgent owns restart and keeps recovery probes passive.
+        health = supervisor_request(state, SupervisorAction.HEALTH)
+    except OSError:
+        # Failed probes never authorize replacing the separately supervised owner.
         return child, "supervisor starting"
+    recovery = health.get("recovery") or {}
+    if recovery.get("blocked"):
+        raise RuntimeError(recovery["blocked"])
+    if recovery.get("degraded") and recovery.get("fallbackReady"):
+        return child, "supervisor degraded"
+    return child, "supervisor ready"
+
+
+# Seconds allowed for an administrative supervisor exchange.
+SUPERVISOR_REQUEST_SECONDS = 2
+
+
+@dataclass(frozen=True)
+class SupervisorHello:
+    ok: bool = False
+    protocol: int | None = None
+    error: str | None = None
+
+
+@dataclass(frozen=True)
+class SupervisorReply:
+    requestId: int | None = None
+    result: dict[str, object] | None = None
+    error: str | None = None
+
+
+class SupervisorAction(StrEnum):
+    HEALTH = "health"
+    FINISH_FALLBACK = "finishFallback"
+
+
+def supervisor_request(state: Path, action: SupervisorAction) -> dict[str, object]:
+    """Use the Rust supervisor's administrative socket without taking ownership."""
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+        client.settimeout(SUPERVISOR_REQUEST_SECONDS)
+        client.connect(str(state / "supervisor.sock"))
+        with client.makefile("rwb") as stream:
+            def exchange(message: dict[str, object]) -> dict[str, object]:
+                stream.write((json.dumps(message) + "\n").encode())
+                stream.flush()
+                line = stream.readline(MAX_SUPERVISOR_FRAME_BYTES + 1)
+                if not line.endswith(b"\n") or len(line) > MAX_SUPERVISOR_FRAME_BYTES:
+                    raise RuntimeError("The supervisor reply exceeds its limit or is incomplete.")
+                return json.loads(line)
+
+            hello = SupervisorHello(**exchange({"protocol": SUPERVISOR_PROTOCOL_V2,
+                              "stateDir": str(state), "probe": True}))
+            if hello.ok is not True or hello.protocol != SUPERVISOR_PROTOCOL_V2:
+                raise RuntimeError("The running process supervisor does not serve protocol 2.")
+            reply = SupervisorReply(**exchange({"requestId": 1, "action": action}))
+            if reply.requestId != 1 or reply.error is not None or reply.result is None:
+                raise RuntimeError(reply.error or "The supervisor reply does not match the request.")
+            return reply.result
 
 
 def tick(config, state, child=None, supervisor_fallback=False):
@@ -270,25 +237,11 @@ def tick(config, state, child=None, supervisor_fallback=False):
         verify_backend_process(existing, config)
         os.kill(existing["pid"], signal.SIGTERM)
         return None, "supervisor backend stopping for fallback"
-    selected = backend_selection(config)
     if existing:
-        kind = existing.get("backendKind") or "python"
-        if kind != selected:
-            # Another backend owns this state. Recovery never replaces it; the selection
-            # takes effect after an operator stops it (docs/restart-recovery.md).
-            return None, f"attached to {kind} backend; {selected} selected"
         return None, "attached"
     if not lease_available(state):
         return None, "waiting for runtime owner"
-    if selected == "rust":
-        # The Rust server finds its web assets next to its executable.
-        command = [str(rust_server(config)), "--port", str(config["port"])]
-    else:
-        resources = Path(config["resources"])
-        script = backend_scripts(resources) / "codex-canvas"
-        if not script.is_file() or not (renderer_dist(resources) / "index.html").is_file():
-            raise RuntimeError("The installed backend or web assets are unavailable.")
-        command = [config["python"], "-B", str(script), "--port", str(config["port"])]
+    command = [str(rust_server(config)), "--port", str(config["port"])]
     env = launch_environment(config, state, supervisor_fallback=supervisor_fallback)
     # A fresh Rust state accepts only a private canvas.log (accepted_private_file in
     # runtime-store fresh_state.rs); launchd starts this agent with umask 022.
@@ -345,23 +298,10 @@ UPDATE_RETRY_SECONDS = 60
 UPDATE_INSTALL_SECONDS = 1800
 
 
-def pending_update_name(resources):
-    """The staged-update file name from the packaged update module, or None without it."""
-    scripts = backend_scripts(resources).resolve()
-    sys.path.insert(0, str(scripts))
-    try:
-        import codex_peer_updates
-        return codex_peer_updates.PENDING_FILE
-    except ImportError:
-        return None
-    finally:
-        sys.path.remove(str(scripts))
-
-
 def update_tick(filename, config, state, run=subprocess.run):
     """Run the installer of this app when the backend staged an update from a paired server."""
-    name = pending_update_name(config["resources"])
-    if name is None or not (state / name).is_file():
+    from desktop_updates import PENDING_FILE
+    if not (state / PENDING_FILE).is_file():
         return None
     installer = Path(__file__).resolve().with_name("install_update.py")
     if not installer.is_file():
@@ -424,10 +364,7 @@ def run(filename, interval=5):
                     fallback_exited = (fallback_pid is not None and fallback_start is not None
                                        and process_start_time(fallback_pid) != fallback_start)
                     if fallback_exited:
-                        script = backend_scripts(config["resources"]) / "codex_process_supervisor.py"
-                        subprocess.run([config["python"], "-B", str(script), "--finish-fallback",
-                                        "--state", str(state)], check=True, timeout=3,
-                                       stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+                        supervisor_request(state, SupervisorAction.FINISH_FALLBACK)
                         fallback_pid = fallback_start = None
                         supervisor_status = "supervisor ready"
                         child, status = tick(config, state, None)
@@ -467,7 +404,7 @@ def run(filename, interval=5):
                         return
                 if update_status:
                     status = f"{status}; {update_status}"
-            except (OSError, ValueError, KeyError, RuntimeError, subprocess.SubprocessError) as error:
+            except (OSError, ValueError, TypeError, KeyError, RuntimeError, subprocess.SubprocessError) as error:
                 # An unavailable or uncertain owner never authorizes a replacement.
                 status = f"waiting: {error}"
             if status != previous:
@@ -486,6 +423,15 @@ def run(filename, interval=5):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", type=Path, required=True)
+    parser.add_argument("--config", type=Path)
+    parser.add_argument("--supervisor-health", action="store_true")
+    parser.add_argument("--state", type=Path)
     args = parser.parse_args()
-    run(args.config.resolve())
+    if args.supervisor_health:
+        if args.state is None:
+            parser.error("--supervisor-health requires --state")
+        print(json.dumps(supervisor_request(args.state.resolve(), SupervisorAction.HEALTH)))
+    elif args.config is None:
+        parser.error("--config is required")
+    else:
+        run(args.config.resolve())

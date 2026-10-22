@@ -50,11 +50,7 @@ assert.deepEqual(
   "The native application must use the canonical desktop icon.",
 );
 for (const file of [
-  "workspace/scripts/codex-canvas",
-  "workspace/scripts/codex_process_supervisor.py",
-  "workspace/bin/studio_operations_native.abi3.so",
   "workspace/web/dist/index.html",
-  "workspace/requirements.txt",
   "helpers/studio-speech",
   "helpers/recovery.cjs",
   "helpers/desktop-recovery/recovery.cjs",
@@ -79,20 +75,6 @@ assert.ok(Number.isFinite(stamp.builtAt) && stamp.builtAt > 0);
 execFileSync("codesign", ["--verify", "--deep", "--strict", bundle], {
   stdio: "inherit",
 });
-if (!process.env.CODEX_AGENTS_PYTHON)
-  throw new Error(
-    "Set CODEX_AGENTS_PYTHON to the prepared runtime interpreter.",
-  );
-execFileSync(
-  process.env.CODEX_AGENTS_PYTHON,
-  [
-    "-B",
-    "-c",
-    "import sys; sys.path.insert(0, sys.argv[1]); import codex_operations_adapter; import fastapi, httpx, pydantic, uvicorn",
-    path.join(workspace, "scripts"),
-  ],
-  { stdio: "inherit" },
-);
 console.log(
   JSON.stringify({
     result: "PASS",
@@ -100,6 +82,6 @@ console.log(
     executable,
     commit: stamp.commit,
     checks:
-      "bundle resources, Rust runtime executables, desktop icon, native Python adapter import, code signature",
+      "bundle resources, Rust runtime executables, desktop icon, code signature",
   }),
 );

@@ -42,16 +42,10 @@ recovery = load_recovery()
 
 
 def load_updates(resources):
-    """Import the shared update checks from the backend scripts of this installation."""
-    scripts = str(recovery.backend_scripts(resources).resolve())
-    if scripts not in sys.path:
-        sys.path.insert(0, scripts)
-    import codex_peer_updates
-    import codex_linux_vm
-    for module in (codex_peer_updates, codex_linux_vm):
-        if Path(module.__file__).resolve().parent != Path(scripts):
-            raise RuntimeError("The packaged update checks are unavailable.")
-    return codex_peer_updates, codex_linux_vm
+    """Use helpers shipped beside this installer, independent of the backend."""
+    import desktop_updates
+    import desktop_vm
+    return desktop_updates, desktop_vm
 
 
 def event(**fields):

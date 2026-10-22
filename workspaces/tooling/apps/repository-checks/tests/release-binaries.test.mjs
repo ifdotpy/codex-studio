@@ -57,14 +57,12 @@ test("names the shipped release artifacts for each Unix platform", () => {
     "codex-process-supervisor",
     "codex-diagnostics",
     "studio-peer-link",
-    "libstudio_operations_native.dylib",
   ]);
   assert.deepEqual(releaseArtifacts("linux"), [
     "studio-runtime-server",
     "codex-process-supervisor",
     "codex-diagnostics",
     "studio-peer-link",
-    "libstudio_operations_native.so",
   ]);
 });
 
@@ -218,7 +216,6 @@ test("the package flow runs the dev-profile host check unless CI is stated", () 
     plan(false).map((step) => step.label),
     [
       "signing check",
-      "runtime interpreter",
       "native host check",
       "release binaries",
       "package",
@@ -227,11 +224,19 @@ test("the package flow runs the dev-profile host check unless CI is stated", () 
     ],
   );
   assert.match(plan(false)[0].args[0], /desktop\/signing-check\.mjs$/);
-  assert.equal(plan(false)[2].args[0], "test-native-webview");
-  const skipped = plan(true)[2];
+  assert.equal(plan(false)[1].args[0], "test-native-webview");
+  const skipped = plan(true)[1];
   assert.equal(skipped.command, undefined);
   assert.match(skipped.skipped, new RegExp(commitA));
-  assert.equal(plan(true).length, 7);
+  assert.equal(plan(true).length, 6);
+  assert.equal(
+    plan(false).some(
+      (step) =>
+        step.resolvePython || step.needsPython || step.command === "python3",
+    ),
+    false,
+  );
+  assert.match(plan(false).at(-1).args[0], /check-package-start\.mjs$/);
   assert.equal(
     parseFlowArguments(["/tmp/out", "--hosted-ci-passed"]).hostedCiPassed,
     true,
