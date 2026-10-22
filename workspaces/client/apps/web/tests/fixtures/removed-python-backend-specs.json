@@ -381,5 +381,24 @@
       "progress-fit-browser: Python codex_progress_layout._report validator comparison only"
     ],
     "reason": "Renderer assertions retained; removed Python validator is no longer a supported backend."
+  },
+  {
+    "file": "src/servers/sidebarReviewRegressions.test.ts",
+    "tests": [
+      "a reorder with 4000 chats on each server passes the real backend validator: Python reorder_sidebar validation only"
+    ],
+    "reason": "Sidebar merge and reorder round-trip assertions remain."
+  },
+  {
+    "file": "package.json",
+    "tests": [
+      "test:token-rate: token-rate-contract.py; claude-bridge-contract.py Bridge.test_rate_uses_assistant_output_and_subtracts_persistent_query_total",
+      "test:ux: voice-validation-contract.py",
+      "test:ux-audit: ux-history-contract.py; account-disconnect-contract.py",
+      "test:mobile: mobile-state-contract.py",
+      "test:ux-recovery: sync-entities-contract.py",
+      "benchmark:prompt-composer:paired: historical Python baseline comparison"
+    ],
+    "reason": "Removed scripts invoke the retired Python backend; retained browser selectors use Rust or standalone renderer fixtures."
   }
 ]
