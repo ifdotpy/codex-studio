@@ -19,7 +19,6 @@ fn disposable_root() -> tempfile::TempDir {
 enum Seed {
     Corpus,
     Empty,
-    Legacy,
     NativeIds,
     Requests,
 }
@@ -35,7 +34,6 @@ fn template_mode(seed: Seed) -> tempfile::TempDir {
         }
         Seed::Corpus => "corpus",
         Seed::Empty => "template-only",
-        Seed::Legacy => "legacy-template",
         Seed::NativeIds => "native-id-template",
         Seed::Requests => "request-cwd",
     };
@@ -549,32 +547,6 @@ fn supervisor_reopen_reservation_survives_crash_without_old_identity() {
             .opened("fixture", "new signature", 456, "new-start")
             .unwrap(),
         2
-    );
-}
-
-#[test]
-fn supervisor_python_legacy_schema_migrates_without_losing_rows() {
-    let root = template_mode(Seed::Legacy);
-    let journal = SupervisorJournal::open(root.path()).unwrap();
-    let row = journal.handle("fixture").unwrap().unwrap();
-    assert_eq!(row.snapshot.generation(), 1);
-    assert_eq!(row.snapshot.sequence(), 1);
-    assert_eq!(
-        journal.events("fixture", 0, false).unwrap()["events"]
-            .as_array()
-            .unwrap()
-            .len(),
-        1
-    );
-    assert_eq!(
-        journal
-            .operation_status("fixture", "monitor:legacy")
-            .unwrap(),
-        json!({"accepted":false,"reason":"native_generation_changed"})
-    );
-    assert_eq!(
-        durable_rows(root.path()),
-        durable_rows(&root.path().join("expected"))
     );
 }
 

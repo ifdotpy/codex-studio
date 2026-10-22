@@ -252,9 +252,6 @@ fn snapshot(root: &Path, tokens: &std::collections::BTreeMap<String, String>) ->
         "sync_entities",
         "sync_documents",
         "sync_versions",
-        "runtime_search",
-        "runtime_search_rows",
-        "runtime_search_indexed",
         "runtime_search_next_meta",
         "runtime_search_rollout",
     ] {

@@ -1221,6 +1221,20 @@ async fn account_session_voice_approval_uses_the_shared_callback_lane() {
         })
         .await
         .expect("seed callback request and live actor");
+    let card: String = store
+        .test_reader()
+        .expect("fixture reader")
+        .query_row(
+            "SELECT record FROM runtime_requests WHERE id=?1",
+            [&callback_request_id],
+            |row| row.get(0),
+        )
+        .expect("callback card");
+    crate::callback_fixtures::seed_admission(
+        &store,
+        &serde_json::from_str(&card).expect("callback record"),
+    )
+    .await;
 
     let store = Arc::new(store);
     let reply_port = Arc::new(LiveCallbackReplyPort::default());
