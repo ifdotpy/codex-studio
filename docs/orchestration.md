@@ -1445,3 +1445,12 @@ change with both options. Cross-machine Claude cache reuse remains unverified.
 3. The lifecycle owner validates each final changed agent row and publishes its canonical renderer view once.
 4. Source state, receipts and renderer views commit together; a projection failure rolls them all back.
 5. Replaying committed journal identities returns the saved outcomes without publishing agents again.
+
+### Held child-result release
+
+1. The account registry captures wall time and monotonic time together before
+   reading the earliest held child-result deadline from SQLite.
+2. It converts the stored deadline using that same clock anchor, so waiting for
+   read admission or completion consumes the hold; an elapsed hold wakes at once.
+3. A failed read keeps the existing registry retry delay. The next wake remains
+   the earliest child-result release, archive, checkpoint, or worker retry.
