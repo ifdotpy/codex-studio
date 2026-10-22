@@ -213,6 +213,14 @@ The retained monitor port installs its startup resources once:
 2. A second installation returns an error and preserves the original resource.
 3. Monitor requests read those resources without taking a read lock.
 
+Monitor processing follows this flow:
+
+1. Stall and orphan scans each advance through bounded pages.
+2. A finished monitor scan stays finished while other scans and queued results continue.
+3. Staged orphan recovery requests reattach for the saved operation on the next pass.
+4. When a cycle finishes, even with an error, cursors reset. Wake notifications
+   received during scanning remain pending and start that next cycle.
+
 Agents use `orchestration_monitor` for all long commands, checks, and watchers.
 A settled turn with active owned commands stays in `waiting_on_monitor`. Each
 command queues one durable `monitor_exit` event when its outcome is decided,
