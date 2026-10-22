@@ -50,10 +50,7 @@ test("Ux Chat Ui", async ({
   const syncIdentity = syncIdentityFixture();
   const workspaceId = syncIdentity.workspaceId;
   const entry = join(temporary, "entry.tsx");
-  await writeFile(
-    entry,
-    `import "../../../../../workspaces/runtime/apps/server/tests/fixtures/ux-chat.tsx";`,
-  );
+  await writeFile(entry, `import "../tests/fixtures/ux-chat.tsx";`);
   let server;
   let vite;
   const syncStreams = new Set();
