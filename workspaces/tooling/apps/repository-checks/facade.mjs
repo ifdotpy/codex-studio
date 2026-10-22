@@ -875,6 +875,25 @@ function fastTierCommands(root) {
       },
     },
     {
+      item: { name: "desktop recovery helpers", ecosystem: "pnpm" },
+      label: "Rust desktop recovery witnesses",
+      commands: [
+        [
+          "node",
+          [
+            "--test",
+            "workspaces/client/apps/desktop/recovery-helper-witness.test.cjs",
+          ],
+        ],
+      ],
+      options: {
+        selector:
+          "Rust recovery lease, identity and supervisor socket boundaries",
+        reason:
+          "Check desktop recovery without Python backend imports or supervisor scripts.",
+      },
+    },
+    {
       item: server,
       label: "server safety witnesses",
       options: serverCategoryOptions("fast"),
