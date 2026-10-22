@@ -2,8 +2,8 @@
 //! queued start path (start gate, auth gate, admission) starts it like any other
 //! input. A claim is never permission to resend an unknown turn.
 use crate::continuation::{
-    ContinuationError, Decision, Effect, Result, Snapshot, account, flag, now_checked, patch,
-    present, remove, text,
+    ContinuationError, Decision, Effect, Result, Snapshot, WaitStatus, account, flag, now_checked,
+    patch, present, remove, text,
 };
 use crate::usage_resume::TASK_CHANGED;
 use serde_json::{Value, json};
@@ -142,7 +142,7 @@ pub fn transition(s: &Snapshot, action: Action<'_>, now: f64) -> Result<Decision
     let mut agent = s.agent.clone();
     let mut hold = None;
     // A start outcome belongs to the claimed follow-up of this retry, once.
-    let started = text(&r, "status") == "starting"
+    let start_pending = matches!(s.status(), Some(WaitStatus::Starting | WaitStatus::Unknown))
         && present(&r, "claimedAt")
         && !present(&r, "acceptedTurnId")
         && r.get("epoch") == agent.get("epoch")
@@ -211,20 +211,26 @@ pub fn transition(s: &Snapshot, action: Action<'_>, now: f64) -> Result<Decision
             hold = Some("account-excluded");
         }
         Action::Error { reason, unknown } => {
-            if !started {
+            if !start_pending || unknown && s.status() == Some(WaitStatus::Unknown) {
                 return Ok(Decision::default());
             }
             patch(
                 &mut r,
                 json!({"status":if unknown{"unknown"}else{"failed"},"dueAt":null,"reason":reason}),
             );
+            if s.status() == Some(WaitStatus::Starting) {
+                hold = Some(if unknown { "unknown" } else { "failed" });
+            }
         }
         Action::Accepted { turn_id } => {
-            if !started {
+            if !start_pending {
                 return Ok(Decision::default());
             }
             r["acceptedTurnId"] = json!(turn_id);
-            patch(&mut r, json!({"reason":null,"dueAt":null}));
+            patch(
+                &mut r,
+                json!({"status":"starting","reason":null,"dueAt":null}),
+            );
             agent["capacityRetryCount"] = json!(
                 agent
                     .get("capacityRetryCount")
