@@ -1004,6 +1004,11 @@ pub fn decode_agent_value(
         #[serde(rename = "status")]
         _status: &'a str,
     }
+    #[cfg(any(test, feature = "test-support"))]
+    crate::agent_volatile::publication_work::record(
+        row_id,
+        crate::agent_volatile::publication_work::Operation::Decode,
+    );
     let mut value: Value = serde_json::from_str(encoded).map_err(|_| {
         invalid_agent_field(
             row_id,

@@ -902,6 +902,36 @@ function fastTierCommands(root) {
       },
     },
     {
+      item: { name: "studio-runtime-services", ecosystem: "cargo" },
+      label: "agent decode ownership witness",
+      commands: [
+        [
+          "cargo",
+          [
+            "nextest",
+            "run",
+            "--locked",
+            "--no-tests",
+            "fail",
+            "--message-format",
+            "libtest-json-plus",
+            "-p",
+            "studio-runtime-services",
+            "--lib",
+            "-E",
+            nextestAnyOf([
+              "test(account_worker::tests::journal_publication::changed_agents_decode_once_through_final_publication)",
+            ]),
+          ],
+        ],
+      ],
+      options: {
+        selector: "journal final publication decode ownership",
+        reason:
+          "Check one decode and volatile merge per changed agent, no intermediate text round trip, no unrelated reads, and no replay work.",
+      },
+    },
+    {
       item: { name: "studio-runtime-store", ecosystem: "cargo" },
       label: "Rust state migration and SQL callback witnesses",
       commands: [

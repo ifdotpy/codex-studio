@@ -316,9 +316,17 @@ pub fn maintain_entity_projections_with_server_id(
         )
     })?;
     crate::diagnostics::measure_runtime_stage("projection.agent_entities", || {
+        let parsed = peer_agents
+            .iter()
+            .map(|(id, raw)| serde_json::from_str::<Value>(raw).map(|value| (id.as_str(), value)))
+            .collect::<Result<Vec<_>, _>>()?;
+        let agents = parsed
+            .iter()
+            .map(|(id, value)| (*id, value))
+            .collect::<Vec<_>>();
         publish_agents(
             transaction,
-            peer_agents,
+            &agents,
             source_records
                 .get("runtime_work")
                 .ok_or(StoreError::RecordContract(
@@ -466,6 +474,30 @@ pub fn maintain_entity_projections_with_server_id(
     Ok(())
 }
 
+/// A final agent row checked by the store decoder, kept in source row order.
+/// Private fields prevent publication callers from substituting unchecked text.
+#[derive(Clone, Debug)]
+pub struct CheckedAgentRow {
+    rowid: i64,
+    id: String,
+    value: Value,
+}
+
+impl CheckedAgentRow {
+    pub(crate) fn decode(
+        connection: &Connection,
+        rowid: i64,
+        id: &str,
+        raw: &str,
+    ) -> StoreResult<Self> {
+        Ok(Self {
+            rowid,
+            id: id.to_owned(),
+            value: studio_runtime_store::decode_agent_value(connection, id, raw)?,
+        })
+    }
+}
+
 /// Source rows one writer transaction changed, by table. Writers pass these
 /// ids so projection work is bounded by the change, not by stored history.
 #[derive(Clone, Debug, Default)]
@@ -473,9 +505,8 @@ pub struct EntityChanges {
     pub agents: BTreeSet<String>,
     pub requests: BTreeSet<String>,
     pub work: BTreeSet<String>,
-    /// Rows of `agents` this transaction already read and checked, as
-    /// (rowid, id, record); publication reads only the other agents.
-    pub checked_agents: Vec<(i64, String, String)>,
+    /// Final merged agent values already checked by this transaction.
+    pub checked_agents: Vec<CheckedAgentRow>,
 }
 
 /// Publish the renderer views that depend on `changes`, using the same view
@@ -497,29 +528,40 @@ pub fn publish_entity_changes(
             agent_ids.insert(owner.to_owned());
         }
     }
-    let agents = {
-        let mut unread = agent_ids.clone();
-        for (_, id, _) in &changes.checked_agents {
-            unread.remove(id);
-        }
-        let mut rows = rows_by_id(transaction, "runtime_agents", &unread)?;
-        rows.extend(changes.checked_agents.iter().cloned());
-        rows.sort_unstable_by_key(|(rowid, _, _)| *rowid);
-        rows.into_iter()
-            .map(|(_, id, raw)| (id, raw))
-            .collect::<Vec<_>>()
-    };
+    let mut unread = agent_ids.clone();
+    for row in &changes.checked_agents {
+        unread.remove(&row.id);
+    }
+    let additional_agents = rows_by_id(transaction, "runtime_agents", &unread)?
+        .into_iter()
+        .map(|(rowid, id, raw)| {
+            #[cfg(test)]
+            studio_runtime_store::agent_volatile::publication_work::record(
+                &id,
+                studio_runtime_store::agent_volatile::publication_work::Operation::Decode,
+            );
+            serde_json::from_str::<Value>(&raw).map(|value| CheckedAgentRow { rowid, id, value })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut ordered_agents = additional_agents
+        .iter()
+        .chain(&changes.checked_agents)
+        .collect::<Vec<_>>();
+    ordered_agents.sort_unstable_by_key(|row| row.rowid);
+    let agents = ordered_agents
+        .iter()
+        .map(|row| (row.id.as_str(), &row.value))
+        .collect::<Vec<_>>();
     let mut liveness_changed = BTreeSet::new();
     let mut changed_roots = BTreeSet::new();
-    for (id, raw) in &agents {
-        let record = serde_json::from_str::<Value>(raw)?;
+    for &(id, record) in &agents {
         let projected_live: bool = transaction.query_row(
             "SELECT EXISTS(SELECT 1 FROM sync_entities WHERE collection='agent' AND id=?1 AND deleted=0)",
             [id],
             |row| row.get(0),
         )?;
         if projected_live == truthy(record.get("deletedAt")) {
-            liveness_changed.insert(id.clone());
+            liveness_changed.insert(id.to_owned());
             if let Some(root) = record.get("rootId").and_then(Value::as_str) {
                 changed_roots.insert(root.to_owned());
             }
@@ -602,12 +644,7 @@ pub(crate) fn agents_changed_since(
             ))
         })?
         .collect::<Result<Vec<_>, _>>()?;
-    rows.into_iter()
-        .map(|(rowid, id, raw)| {
-            let raw = agent_volatile::merged_text(transaction, &id, raw)?;
-            Ok((rowid, id, raw))
-        })
-        .collect()
+    Ok(rows)
 }
 
 /// Valid stored rows for `ids`, in rowid order like the full rebuild.
@@ -657,7 +694,7 @@ fn rows_by_id(
 /// Publish agent views; `work` must hold every work item the agents own.
 fn publish_agents(
     transaction: &Transaction<'_>,
-    agents: &[(String, String)],
+    agents: &[(&str, &Value)],
     work: &[(String, String)],
     project_server_id: Option<&str>,
     validate: &impl Fn(&str, &str, &Value, bool) -> bool,
@@ -669,8 +706,7 @@ fn publish_agents(
         project_server_id,
     )?
     .0;
-    for (id, raw) in agents {
-        let record = serde_json::from_str::<Value>(raw)?;
+    for &(id, record) in agents {
         if truthy(record.get("deletedAt")) {
             retire_if_live(transaction, "agent", id, validate)?;
             continue;
@@ -678,7 +714,7 @@ fn publish_agents(
         let context = contexts.get(id).ok_or(StoreError::RecordContract(
             "agent projection context snapshot is incomplete",
         ))?;
-        if let Some(projected) = agent_entity_view(&record, context) {
+        if let Some(projected) = agent_entity_view(record, context) {
             put_projection(transaction, "agent", id, projected, false, validate)?;
         }
     }

@@ -27,19 +27,11 @@ pub struct AgentContextWork {
 /// Build all agent contexts from the already captured source rows in one pass.
 pub(crate) fn agent_view_contexts(
     transaction: &Transaction<'_>,
-    agents: &[(String, String)],
+    agents: &[(&str, &Value)],
     work_records: &[(String, String)],
     project_server_id: Option<&str>,
 ) -> StoreResult<(HashMap<String, AgentViewContext>, AgentContextWork)> {
-    let parsed_agents = agents
-        .iter()
-        .filter_map(|(id, raw)| {
-            serde_json::from_str::<Value>(raw)
-                .ok()
-                .map(|value| (id, value))
-        })
-        .collect::<Vec<_>>();
-    let lead_ids = parsed_agents
+    let lead_ids = agents
         .iter()
         .filter_map(|(id, record)| {
             let eligible = truthy(record.get("isLead"))
@@ -48,7 +40,7 @@ pub(crate) fn agent_view_contexts(
                 && record.get("status").and_then(Value::as_str) == Some("idle")
                 && !truthy(record.get("threadId"))
                 && !truthy(record.get("prompt"));
-            eligible.then_some(id.as_str())
+            eligible.then_some(*id)
         })
         .collect::<Vec<_>>();
     // Children decide `empty_lead` even when the caller passes only changed
@@ -188,11 +180,11 @@ pub(crate) fn agent_view_contexts(
             assigned.entry(owner.clone()).or_default().push(task);
         }
     }
-    let mut contexts = HashMap::with_capacity(parsed_agents.len());
-    for (id, record) in parsed_agents {
+    let mut contexts = HashMap::with_capacity(agents.len());
+    for &(id, record) in agents {
         let progress = crate::agent_progress::derive(
             transaction,
-            &record,
+            record,
             assigned.get(id).map(Vec::as_slice).unwrap_or_default(),
         )?;
         let empty_lead = truthy(record.get("isLead"))
@@ -206,7 +198,7 @@ pub(crate) fn agent_view_contexts(
             && !parent_ids.contains(id)
             && !monitor_agents.contains(id);
         contexts.insert(
-            id.clone(),
+            id.to_owned(),
             AgentViewContext {
                 project_server_id: project_server_id.map(str::to_owned),
                 launcher_alive: true,
@@ -694,6 +686,19 @@ mod room_preparation_tests {
         }
         let before_elapsed = before_started.elapsed();
         let after_started = std::time::Instant::now();
+        let decoded = agents
+            .iter()
+            .map(|(id, raw)| {
+                (
+                    id.as_str(),
+                    serde_json::from_str::<Value>(raw).expect("agent JSON"),
+                )
+            })
+            .collect::<Vec<_>>();
+        let agents = decoded
+            .iter()
+            .map(|(id, value)| (*id, value))
+            .collect::<Vec<_>>();
         let (after, work) = agent_view_contexts(&transaction, &agents, &work, None)
             .expect("bulk contexts are built");
         let after_elapsed = after_started.elapsed();
@@ -767,6 +772,19 @@ mod room_preparation_tests {
                 .any(|line| line.contains("runtime_monitor_agent_status")),
             "monitor owner lookup must use the owner index: {plan:?}"
         );
+        let decoded = agents
+            .iter()
+            .map(|(id, raw)| {
+                (
+                    id.as_str(),
+                    serde_json::from_str::<Value>(raw).expect("agent JSON"),
+                )
+            })
+            .collect::<Vec<_>>();
+        let agents = decoded
+            .iter()
+            .map(|(id, value)| (*id, value))
+            .collect::<Vec<_>>();
         let (contexts, _) =
             agent_view_contexts(&transaction, &agents, &[], None).expect("bulk contexts are built");
         assert!(!contexts["lead-busy"].empty_lead);
