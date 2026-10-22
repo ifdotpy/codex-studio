@@ -3,8 +3,6 @@ use serde_json::{Value, json};
 use studio_runtime_services::work_assignment_runtime::assign_in_transaction;
 use studio_runtime_store::{AgentId, AgentRecord, AgentRepository, WorkItemsRepository};
 
-use crate::prepared_python_support as prepared_python;
-
 fn database() -> Connection {
     let connection = Connection::open_in_memory().expect("memory SQLite opens");
     connection
@@ -158,120 +156,6 @@ fn spawn_assignment_rechecks_the_active_lead_and_same_team_child() {
     assert!(assign_in_transaction(&tx, "task", "child", &foreign, 12.5).is_err());
     tx.rollback().expect("foreign actor assignment rolls back");
     assert!(stored_work(&connection, "task")["owner"].is_null());
-}
-
-#[test]
-#[allow(clippy::disallowed_methods)]
-fn real_python_spawn_assignment_corpus_matches_complete_work_rows() {
-    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let source = manifest.join("../../apps/server/src");
-    let oracle = manifest.join("../../apps/server/tests/p16-spawn-assignment-oracle.py");
-    let output = std::process::Command::new(prepared_python::prepared_python(&source))
-        .arg(&oracle)
-        .output()
-        .expect("Python spawn oracle starts");
-    assert!(
-        output.status.success(),
-        "Python spawn oracle: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let stdout = String::from_utf8(output.stdout).expect("oracle output is UTF-8");
-    let cases: Vec<Value> = serde_json::from_str(stdout.lines().last().expect("oracle JSON line"))
-        .expect("Python writes assignment cases");
-    assert_eq!(cases.len(), 6);
-
-    for case in cases {
-        let before = case["before"].clone();
-        let id = before["id"].as_str().expect("work id");
-        let root = before["rootId"].as_str().expect("root id");
-        let connection = Connection::open_in_memory().expect("database opens");
-        connection.execute_batch(&studio_runtime_store::agent_columns::fixture_sql("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL); CREATE TABLE runtime_work(id TEXT PRIMARY KEY,record TEXT NOT NULL);")).expect("tables create");
-        connection
-            .execute_batch(studio_runtime_store::agent_volatile::agent_volatile_table_sql())
-            .expect("volatile agent table creates");
-        let lead = json!({"id":root,"rootId":root,"epoch":1,"status":"running","isLead":true,"autoWake":true});
-        connection
-            .execute(
-                "INSERT INTO runtime_agents VALUES (?1,?2)",
-                rusqlite::params![root, lead.to_string()],
-            )
-            .expect("lead inserts");
-        let actor = AgentRecord::from_value(lead).expect("lead deserializes");
-        let owner = case["after"]["owner"].as_str();
-        if case["error"].is_null() {
-            let child = json!({"id":owner,"rootId":root,"parentId":root,"epoch":2,"status":"starting","autoWake":true});
-            connection
-                .execute(
-                    "INSERT INTO runtime_agents VALUES (?1,?2)",
-                    rusqlite::params![owner.expect("owner"), child.to_string()],
-                )
-                .expect("spawned child inserts");
-        }
-        if case["name"] == "owned" {
-            let mut other = before.clone();
-            other["owner"] = json!("someone-else");
-            insert_work(&connection, &other);
-        } else if case["name"] == "accepted" || case["name"] == "review" {
-            insert_work(&connection, &before);
-        } else if case["name"] == "unknown" {
-            // The Python source wrote a task row, but spawn is asked to assign a missing id.
-            insert_work(&connection, &before);
-        } else {
-            insert_work(&connection, &before);
-        }
-        let result = {
-            let mut connection = connection;
-            let tx = connection.transaction().expect("transaction starts");
-            let task = if case["name"] == "unknown" {
-                "missing-task"
-            } else {
-                id
-            };
-            let result = assign_in_transaction(&tx, task, owner.unwrap_or("child"), &actor, 42.5);
-            if let Some(expected_error) = case["error"].as_str() {
-                assert!(result.is_err(), "{} must refuse", case["name"]);
-                let saved = stored_work(&tx, id);
-                assert_eq!(
-                    saved, before,
-                    "{} refusal preserves its full work row",
-                    case["name"]
-                );
-                tx.rollback().expect("refusal rolls back");
-                assert!(
-                    expected_error.contains("Unknown task_id")
-                        || expected_error.contains("accepted, under review or owned")
-                );
-                None
-            } else {
-                result.expect("Python accepted assignment");
-                let saved = stored_work(&tx, id);
-                assert_eq!(
-                    saved, case["after"],
-                    "{} matches Python complete work row",
-                    case["name"]
-                );
-                if case["name"] == "same-owner-replay" {
-                    let replay = assign_in_transaction(
-                        &tx,
-                        id,
-                        owner.expect("same-owner replay has an owner"),
-                        &actor,
-                        99.0,
-                    )
-                    .expect("same owner replay");
-                    assert!(!replay.changed);
-                    assert_eq!(
-                        stored_work(&tx, id),
-                        case["after"],
-                        "replay preserves version and updated timestamp"
-                    );
-                }
-                tx.commit().expect("assignment commits");
-                Some(())
-            }
-        };
-        assert_eq!(result.is_some(), case["error"].is_null());
-    }
 }
 
 #[test]

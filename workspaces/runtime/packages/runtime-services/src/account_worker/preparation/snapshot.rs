@@ -103,7 +103,6 @@ pub struct PreparationResources {
     /// The shared (base) Codex home whose `node_repl` and Chrome plugin the
     /// browser setup copies; empty leaves host Codex threads without a browser.
     pub shared_home: String,
-    pub server_source_root: PathBuf,
     pub claude_account_pin: Value,
     pub account_driver: Option<Arc<crate::account_driver::AccountDriver>>,
     /// The host's registry-backed session surface for preparation calls that
@@ -130,19 +129,13 @@ impl PreparationResources {
         let root =
             CanonicalPath::existing(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../.."))
                 .map_err(|_| invalid("repository root"))?;
-        Self::bundled_at(
-            account_home,
-            model_catalog,
-            root.to_path_buf(),
-            root.join("workspaces/runtime/apps/server/src"),
-        )
+        Self::bundled_at(account_home, model_catalog, root.to_path_buf())
     }
 
     pub fn bundled_at(
         account_home: String,
         model_catalog: ModelCatalogService,
         root: PathBuf,
-        server_source_root: PathBuf,
     ) -> Result<Self, WorkerError> {
         #[derive(Deserialize)]
         struct Bundled {
@@ -198,7 +191,6 @@ impl PreparationResources {
             account_home,
             filesystem_inputs: None,
             shared_home: String::new(),
-            server_source_root,
             claude_account_pin: Value::Null,
             account_driver: None,
             account_session: None,

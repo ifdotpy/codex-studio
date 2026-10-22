@@ -40,7 +40,6 @@ use tokio::time::timeout;
 
 const REQUEST_TIMEOUT_MS: u64 = 60_000;
 const HOST_RUNTIME_SHUTDOWN_WAIT: Duration = Duration::from_secs(5);
-const SERVER_SOURCE_RELATIVE: &str = "workspaces/runtime/apps/server/src";
 const CLAUDE_BRIDGE_RELATIVE: &str = "workspaces/providers/apps/claude-bridge";
 
 /// Installed root shared by host-side runtime components.
@@ -51,22 +50,10 @@ impl InstallRoot {
     pub(crate) fn workspace_root(&self) -> &Path {
         &self.0
     }
-    fn server_source(&self) -> PathBuf {
-        let packaged = self.0.join("scripts");
-        if packaged.join("claude_bridge").join("bridge.mjs").is_file() {
-            packaged
-        } else {
-            self.0.join(SERVER_SOURCE_RELATIVE)
-        }
-    }
-
     pub(crate) fn claude_bridge_dir(&self) -> PathBuf {
-        let server_source = self.server_source();
-        if server_source
-            .file_name()
-            .is_some_and(|name| name == "scripts")
-        {
-            server_source.join("claude_bridge")
+        let packaged = self.0.join("scripts/claude_bridge");
+        if packaged.join("bridge.mjs").is_file() {
+            packaged
         } else {
             self.0.join(CLAUDE_BRIDGE_RELATIVE)
         }
@@ -237,18 +224,10 @@ impl HostRuntime {
         let install_root = resolve_install_root()?;
         let catalog = state.model_catalog_handle();
         let resource_root = install_root.workspace_root().to_owned();
-        let server_source = install_root.server_source();
         *state = state.clone().with_vault_host_command();
         let mut resources = studio_runtime_process::blocking_pool::spawn_blocking(
             "runtime-server/host_runtime",
-            move || {
-                PreparationResources::bundled_at(
-                    String::new(),
-                    catalog,
-                    resource_root,
-                    server_source,
-                )
-            },
+            move || PreparationResources::bundled_at(String::new(), catalog, resource_root),
         )
         .await
         .map_err(|_| WorkerError::TaskFailed)??;
@@ -2018,14 +1997,12 @@ mod install_root_tests {
     use studio_runtime_store::RuntimeStore;
 
     #[test]
-    fn bridge_and_server_source_match_install_layout_in_both_modes() {
+    fn bridge_matches_install_layout_in_both_modes() {
         let source_checkout = studio_runtime_store::path_identity::CanonicalPath::existing(
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../.."),
         )
         .unwrap();
-        let python_source = source_checkout.join("workspaces/runtime/apps/server/src");
         let source_layout = InstallRoot(source_checkout.clone().to_path_buf());
-        assert_eq!(source_layout.server_source(), python_source);
         assert_eq!(
             source_layout.claude_bridge_dir(),
             source_checkout.join(CLAUDE_BRIDGE_RELATIVE)
@@ -2038,7 +2015,6 @@ mod install_root_tests {
         fs::create_dir_all(&packaged_bridge).unwrap();
         fs::write(packaged_bridge.join("bridge.mjs"), "").unwrap();
         let packaged_layout = InstallRoot(packaged_root);
-        assert_eq!(packaged_layout.server_source(), packaged_scripts);
         assert_eq!(
             packaged_layout.claude_bridge_dir(),
             packaged_scripts.join("claude_bridge")
@@ -2522,7 +2498,6 @@ mod voice_composition_tests {
             account_home: String::new(),
             shared_home: String::new(),
             filesystem_inputs: None,
-            server_source_root: directory.to_path_buf(),
             claude_account_pin: serde_json::Value::Null,
             account_driver: None,
             account_session: None,

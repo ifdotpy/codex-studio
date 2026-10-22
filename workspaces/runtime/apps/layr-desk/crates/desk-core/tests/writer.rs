@@ -1,15 +1,11 @@
-//! The writer against a fake layr (states as folders) and a fake bucket (objects as files): a
-//! port of python/test_vault_writer.py, where the reader rebuilds every pushed state. The cross
-//! tests run the Python writer and reader (python/, through tests/cross.py) on the same folders:
-//! the Python reader reads what this writer pushed, and each writer continues a state folder of
-//! the other. A writer with a signing key signs each tree, and the reader checks them.
+//! The writer against fake layr state folders and bucket objects. The reader rebuilds
+//! every pushed state, checks small deltas and odd names, and verifies signed trees.
 
 use anyhow::{bail, Result};
 use desk_core::sign::Signer;
 use desk_core::writer::{self, Bucket, Layr, Summary, Writer, MAX_DEPTH};
 use desk_core::{keys, zst, Policy, Reader, Store, VaultInfo};
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -187,7 +183,7 @@ impl Bucket for &FakeBucket {
 
 type Encrypt = fn(&[u8]) -> Result<Vec<u8>>;
 
-/// The reversible encryption of the Python tests, which tests/cross.py uses too.
+/// Reversible test encryption for inspecting fake bucket objects.
 fn fake_encrypt(data: &[u8]) -> Result<Vec<u8>> {
     Ok(std::iter::once(b'E')
         .chain(data.iter().rev().copied())
@@ -300,50 +296,6 @@ impl Test {
         };
         Reader::new(store, &self.identity, &names, policy).unwrap()
     }
-
-    /// The Python writer or reader on the folders of this test.
-    fn python(&self, args: &[&str]) -> Value {
-        let script = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/cross.py");
-        let output = std::process::Command::new("python3")
-            .arg(script)
-            .args(args)
-            .output()
-            .expect("python3 runs");
-        assert!(
-            output.status.success(),
-            "cross.py {args:?}: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        serde_json::from_slice(&output.stdout).unwrap()
-    }
-
-    fn python_push(&self, state: &str) -> Value {
-        self.python(&[
-            "push",
-            self.state_dir().to_str().unwrap(),
-            "proj",
-            self.layr.root.to_str().unwrap(),
-            self.bucket.root.to_str().unwrap(),
-            state,
-        ])
-    }
-
-    fn python_read(&self) -> Vec<Value> {
-        let read = self.python(&["read", "proj", self.bucket.root.to_str().unwrap()]);
-        read["states"].as_array().unwrap().clone()
-    }
-
-    fn header_line(&self, seq: u64, attempt: &str, fake: bool) -> Value {
-        let name = desk_core::format::name(seq, attempt, None);
-        let data = std::fs::read(self.bucket.root.join("proj/states").join(name)).unwrap();
-        let plain = if fake {
-            data[1..].iter().rev().copied().collect()
-        } else {
-            keys::decrypt(&self.identity, &data).unwrap()
-        };
-        let line = plain.split(|&b| b == b'\n').next().unwrap();
-        serde_json::from_slice(line).unwrap()
-    }
 }
 
 /// The files of one state (the latest when none).
@@ -359,35 +311,6 @@ async fn read(reader: &Reader<Objects>, state: Option<(u64, String)>) -> Files {
         out.insert(path, (data, mode));
     }
     out
-}
-
-fn sha(data: &[u8]) -> String {
-    hex::encode(Sha256::digest(data))
-}
-
-/// What the Python reader prints for one state, without the frame kinds.
-fn python_files(state: &Value) -> BTreeMap<String, (String, String)> {
-    state["files"]
-        .as_object()
-        .unwrap()
-        .iter()
-        .map(|(p, v)| {
-            (
-                p.clone(),
-                (
-                    v[0].as_str().unwrap().to_string(),
-                    v[1].as_str().unwrap().to_string(),
-                ),
-            )
-        })
-        .collect()
-}
-
-fn hashed(files: &Files) -> BTreeMap<String, (String, String)> {
-    files
-        .iter()
-        .map(|(p, (d, m))| (p.clone(), (sha(d), m.to_string())))
-        .collect()
 }
 
 fn pushed(summary: &Summary, seq: u64) {
@@ -666,8 +589,8 @@ async fn a_writer_with_a_key_signs_each_tree_from_its_first_push_on() {
 }
 
 #[tokio::test]
-async fn the_python_reader_reads_what_this_writer_pushed() {
-    let t = Test::new("python-reads");
+async fn signed_writer_states_are_readable_with_odd_names_and_small_deltas() {
+    let t = Test::new("signed-odd-names");
     // Signed trees: the Python reader ignores the signature, desk-core checks it.
     let key = signer(9);
     let writer = t.fake_writer().signed_by(signer(9));
@@ -692,93 +615,9 @@ async fn the_python_reader_reads_what_this_writer_pushed() {
     // The large file is a small delta, like `zstd --patch-from` makes it.
     assert!(summary.bytes.unwrap() < 20_000, "{summary:?}");
 
-    let states = t.python_read();
-    assert_eq!(states.len(), 2);
-    for (state, want) in states.iter().zip([&one, &two]) {
-        assert_eq!(state["canonical"], true);
-        assert_eq!(python_files(state), hashed(want));
-    }
-    assert_eq!(states[1]["header"]["tree"], "delta");
-    assert_eq!(
-        states[1]["files"]["large.txt"][2],
-        serde_json::json!(["delta", "full"])
-    );
-    assert_eq!(
-        states[1]["files"]["tab\there"][2],
-        serde_json::json!(["delta", "full"])
-    );
-    assert!(states[1]["header"]["sig"].is_string());
     // desk-core reads the same states.
     let reader = t.reader_with(true, Some(&key), Some(1));
     for ((seq, attempt), want) in reader.states().into_iter().zip([&one, &two]) {
         assert_eq!(&read(&reader, Some((seq, attempt))).await, want);
     }
-}
-
-#[tokio::test]
-async fn each_writer_continues_a_state_folder_of_the_other() {
-    let t = Test::new("takeover");
-    let source = source();
-    let state = |n: u32| {
-        // The Python writer cannot see a changed or added name with a tab or a line break after
-        // its first push, so those stay as the first state has them.
-        let mut files = odd_names(b" one");
-        let mut app = source.clone();
-        for i in 1..=n {
-            app.extend(format!("line {i}\n").as_bytes());
-        }
-        files.insert("app.py".into(), (app, "100644"));
-        files.insert(
-            format!("added {n} \u{e9}"),
-            (vec![b'x'; n as usize], "100644"),
-        );
-        files
-    };
-    for n in 1..=6 {
-        t.layr.commit(&format!("s{n}"), &state(n));
-    }
-    assert_eq!(t.python_push("s1")["seq"], 1);
-    assert_eq!(t.python_push("s2")["seq"], 2);
-    let python_tree = std::fs::read(t.state_dir().join("tree.json")).unwrap();
-
-    let writer = t.fake_writer();
-    let summary = writer.push("s3").await.unwrap();
-    pushed(&summary, 3);
-    assert_eq!(summary.note, None);
-    pushed(&writer.push("s4").await.unwrap(), 4);
-    let record = writer.record().unwrap().unwrap();
-    assert_eq!(record.since_full, 3);
-    // The Python writer continues this writer's folder in turn.
-    assert_eq!(t.python_push("s5")["seq"], 5);
-    pushed(&writer.push("s6").await.unwrap(), 6);
-
-    // Delta trees and file chains run across both writers.
-    let states = t.python_read();
-    assert_eq!(states.len(), 6);
-    for (n, state) in states.iter().enumerate() {
-        assert_eq!(state["canonical"], true);
-        assert_eq!(python_files(state), hashed(&state_files(&t, n + 1)));
-        let want = if n == 0 { "full" } else { "delta" };
-        assert_eq!(state["header"]["tree"], want, "state {}", n + 1);
-    }
-    assert_eq!(
-        states[5]["files"]["app.py"][2],
-        serde_json::json!(["delta", "delta", "delta", "delta", "delta", "full"])
-    );
-    let third = t.header_line(3, states[2]["attempt"].as_str().unwrap(), true);
-    assert_eq!(third["base"], serde_json::json!([2, states[1]["attempt"]]));
-    // The tree that the Python writer kept is the canonical tree this writer reads.
-    let reader = t.reader(true);
-    let (_, second) = reader
-        .tree(2, states[1]["attempt"].as_str().unwrap())
-        .await
-        .unwrap();
-    assert_eq!(*second, python_tree);
-    for (n, state) in reader.states().into_iter().enumerate() {
-        assert_eq!(read(&reader, Some(state)).await, state_files(&t, n + 1));
-    }
-}
-
-fn state_files(t: &Test, n: usize) -> Files {
-    t.layr.state(&format!("s{n}"))
 }

@@ -1,6 +1,6 @@
 //! Bounded host Git effects. The durable journal precedes every creation attempt.
 //!
-//! Like Python `apps/server/src/codex_worktree_creation.py:234`, worktree creation
+//! Worktree creation
 //! preserves repository hooks, filters and fsmonitor configuration. Only prompts and
 //! Git network transports are disabled. Tests configure hooks off in disposable repos.
 //! One state root per installation is guaranteed by RuntimeStore's ownership lock;

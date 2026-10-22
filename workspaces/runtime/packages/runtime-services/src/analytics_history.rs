@@ -490,9 +490,7 @@ async fn collect_path(
 /// Read one checkpoint without allowing one malformed stored row to stop the
 /// account-wide history importer. Invalid rows are replaced with a safe initial
 /// checkpoint that retains a value-free diagnostic for repair and display.
-/// Python reads the keyed row with `json.loads` in
-/// `apps/server/src/codex_analytics_history.py:627-638`; it does not validate
-/// the persisted checkpoint against the AnalyticsHistory schema at read time.
+/// Validate the persisted checkpoint against the AnalyticsHistory schema at read time.
 async fn read_history_checkpoint(
     store: &RuntimeStore,
     key: &str,
