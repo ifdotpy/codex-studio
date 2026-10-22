@@ -277,15 +277,13 @@ impl StdioProviderTaskFactory {
                     tokio::spawn(async move { drain_stderr(&mut stderr, log.as_ref()).await })
                 });
                 let stderr_available = stderr_drain.is_some();
+                // Pipes belong to the exchange, while this owner keeps the child
+                // available to wait independently of blocked writes or journal delivery.
+                let stdin = child.stdin().take();
+                let stdout = child.stdout().take();
                 let exchange = async {
-                    let stdin = child
-                        .stdin()
-                        .take()
-                        .ok_or(AdapterError::InvalidConfiguration)?;
-                    let stdout = child
-                        .stdout()
-                        .take()
-                        .ok_or(AdapterError::InvalidConfiguration)?;
+                    let stdin = stdin.ok_or(AdapterError::InvalidConfiguration)?;
+                    let stdout = stdout.ok_or(AdapterError::InvalidConfiguration)?;
                     if !stderr_available {
                         return Err(AdapterError::InvalidConfiguration);
                     }
@@ -317,13 +315,18 @@ impl StdioProviderTaskFactory {
                         None => exchange.await,
                     }
                 };
+                let pid = child.id();
                 let result = tokio::select! {
                     biased;
                     _ = Shutdown::cancelled(&mut stop) => Ok(()),
+                    // First retain immediately readable replies in the bounded journal.
+                    // A full journal must never prevent observing and reaping the child.
                     result = bounded => result,
+                    exited = child.wait() => exited
+                        .map_err(process_error)
+                        .and(Err(SupervisorError::ConnectionLost.into())),
                 };
                 // Always wait, including when the group already exited (ESRCH).
-                let pid = child.id();
                 let killed = child.start_kill();
                 let reaped = reap_with_deadline(pid, child.wait()).await;
                 let cleanup = killed

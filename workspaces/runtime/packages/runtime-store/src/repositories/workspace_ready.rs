@@ -183,12 +183,17 @@ impl WorkspacePaths {
                 .collect(),
         )
     }
+    /// `None` when a reservation names a path whose identity was not captured.
+    /// A provisioning destination needs no capture: the provisioning owner
+    /// builds it under the canonical repository root and refuses a linked
+    /// ancestor, so its recorded form is its identity. A sibling that starts
+    /// provisioning after this capture therefore leaves the capture valid.
     pub fn reservations(&self, snapshot: &WorkspaceSnapshot) -> Option<Vec<Reservation>> {
         let mut missing = false;
-        let result = reservations_with(snapshot, |value| {
+        let result = reservations_with(snapshot, |value, destination| {
             let path = PathBuf::from(value.as_str().unwrap_or("/"));
             self.0.get(&path).cloned().unwrap_or_else(|| {
-                missing = true;
+                missing |= !destination;
                 path
             })
         });
@@ -199,7 +204,7 @@ impl WorkspacePaths {
 /// Resolve paths with the path identity owner; unresolved paths remain
 /// evidence rather than disappearing.
 pub fn reservations(snapshot: &WorkspaceSnapshot) -> Vec<Reservation> {
-    reservations_with(snapshot, |v| {
+    reservations_with(snapshot, |v, _| {
         let path = PathBuf::from(v.as_str().unwrap_or("/"));
         crate::path_identity::resolve(&path)
             .map(crate::path_identity::CanonicalPath::into_path_buf)
@@ -207,9 +212,11 @@ pub fn reservations(snapshot: &WorkspaceSnapshot) -> Vec<Reservation> {
     })
 }
 
+/// `path` resolves a recorded path; its flag says whether the path is a
+/// provisioning destination.
 fn reservations_with(
     snapshot: &WorkspaceSnapshot,
-    mut path: impl FnMut(&Value) -> PathBuf,
+    mut path: impl FnMut(&Value, bool) -> PathBuf,
 ) -> Vec<Reservation> {
     let mut result = Vec::new();
     for other in &snapshot.agents {
@@ -227,8 +234,10 @@ fn reservations_with(
                 });
             // A provision reserves its destination; the agent's cwd is still the source.
             let cwd = match (kind, op) {
-                ("provision", Some(op)) => path(&op.record["cwd"]),
-                _ => path(&other.record["cwd"]),
+                ("provision", Some(op)) => {
+                    path(&op.record["cwd"], op.record["kind"] == "provision")
+                }
+                _ => path(&other.record["cwd"], false),
             };
             result.push(Reservation {
                 agent: other.id.clone(),
@@ -247,7 +256,7 @@ fn reservations_with(
         }
         result.push(Reservation {
             agent: op.record["agent"].as_str().unwrap_or_default().into(),
-            cwd: path(&op.record["cwd"]),
+            cwd: path(&op.record["cwd"], op.record["kind"] == "provision"),
             operation: op.record["kind"].as_str().unwrap_or_default().into(),
             id: Some(op.id.clone()),
             phase: op.record["phase"].as_str().map(str::to_owned),

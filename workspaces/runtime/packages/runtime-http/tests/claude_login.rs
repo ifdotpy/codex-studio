@@ -1,5 +1,4 @@
-#[path = "../../runtime-services/tests/claude_runtime/login_fixture.rs"]
-mod fixture;
+use crate::login_fixtures as fixture;
 use axum::{
     body::{Body, to_bytes},
     extract::ConnectInfo,

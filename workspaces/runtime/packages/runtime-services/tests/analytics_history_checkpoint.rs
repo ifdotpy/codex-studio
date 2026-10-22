@@ -1,7 +1,6 @@
+use crate::analytics_fixtures as common;
 use serde_json::{Value, json};
 use std::fs;
-#[path = "analytics_capture/common.rs"]
-mod common;
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
@@ -30,7 +29,8 @@ fn fixture_directory() -> tempfile::TempDir {
         .expect("disposable fixture directory")
 }
 fn fixture() -> (tempfile::TempDir, Value) {
-    static TEMPLATE: OnceLock<(tempfile::TempDir, Value)> = OnceLock::new();
+    static TEMPLATE: OnceLock<(crate::prepared_python_support::StateTemplate, Value)> =
+        OnceLock::new();
     let (root, agent) = TEMPLATE.get_or_init(|| {
         let root = fixture_directory();
         let path = root.path().to_owned();
@@ -41,27 +41,28 @@ fn fixture() -> (tempfile::TempDir, Value) {
                 .join()
                 .expect("seed fixture state")
         });
-        (root, agent)
+        let copy = fixture_directory();
+        for name in ["canvas.sqlite3", "analytics.sqlite3"] {
+            let target = copy.path().join(name);
+            rusqlite::Connection::open(root.path().join(name))
+                .expect("open template")
+                .execute(
+                    "VACUUM INTO ?1",
+                    [target.to_str().expect("UTF-8 fixture path")],
+                )
+                .expect("clone template with its WAL pages");
+            rusqlite::Connection::open(&target)
+                .expect("open clone")
+                .pragma_update(None, "journal_mode", "WAL")
+                .expect("clone uses WAL");
+        }
+        (
+            crate::prepared_python_support::StateTemplate::capture(copy.path()),
+            agent,
+        )
     });
     let copy = fixture_directory();
-    for name in ["canvas.sqlite3", "analytics.sqlite3"] {
-        // A copy of the main file alone loses the rows that are still in the
-        // write-ahead log when the seed store closes in the background.
-        let target = copy.path().join(name);
-        rusqlite::Connection::open(root.path().join(name))
-            .expect("open template")
-            .execute(
-                "VACUUM INTO ?1",
-                [target.to_str().expect("UTF-8 fixture path")],
-            )
-            .expect("clone template");
-        // VACUUM INTO writes a rollback-journal file; the store requires WAL.
-        let mode: String = rusqlite::Connection::open(&target)
-            .expect("open clone")
-            .pragma_update_and_check(None, "journal_mode", "WAL", |row| row.get(0))
-            .expect("clone uses WAL");
-        assert_eq!(mode, "wal");
-    }
+    root.write(copy.path());
     (copy, agent.clone())
 }
 fn file(root: &Path, lines: &[Value], suffix: &[u8]) -> PathBuf {
@@ -1023,7 +1024,13 @@ async fn terminal_error_repair_is_idempotent_for_exact_and_ambiguous_notices() {
         };
         repair_terminal_errors(&store).await.expect("Rust repair");
         let repaired = snapshot(&store);
+        let admissions = store.writer_admissions();
         repair_terminal_errors(&store).await.expect("second repair");
+        assert_eq!(
+            store.writer_admissions(),
+            admissions,
+            "completed repair must not enter the Canvas writer"
+        );
         assert_eq!(snapshot(&store), repaired, "{thread:?}");
     }
 }

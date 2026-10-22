@@ -77,7 +77,7 @@ export default function AgentPhase({
     writing: "Writing",
     tool: "Using tools",
     running: "Working",
-    starting: "Starting",
+    starting: startWaitLabel(agent) || "Starting",
     "folder-wait": "Waiting to prepare folder",
     "folder-prepare": "Preparing folder",
     acknowledgement: "Waiting for Codex",

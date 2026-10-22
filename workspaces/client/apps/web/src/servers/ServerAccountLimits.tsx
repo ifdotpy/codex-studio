@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { errorText } from "../api";
 import AccountStartThrottle from "../components/AccountStartThrottle";
+import AccountGroup from "../components/AccountGroup";
 import { accountLimitView } from "../components/AccountTiles";
 import { AccountCapacityView, type Account } from "../components/Accounts";
 import type { AccountLimitsSnapshot } from "../usage/accountUsage";
@@ -187,8 +188,8 @@ export function AccountLimitsAcrossServers({
   );
 }
 
-/** Turn start limits are a setting of one Studio server, stored on that
- * server's account, so the request goes to that server. */
+/** Turn start limits and the account group are settings of one Studio server,
+ * stored on that server's account, so the request goes to that server. */
 export function ServerTurnStartLimits({
   source,
   onSaved,
@@ -199,6 +200,11 @@ export function ServerTurnStartLimits({
   return (
     <ServerScope services={source.services}>
       <AccountStartThrottle
+        account={source.account}
+        serverLabel={source.serverLabel}
+        onSaved={(state) => onSaved(state.accounts)}
+      />
+      <AccountGroup
         account={source.account}
         serverLabel={source.serverLabel}
         onSaved={(state) => onSaved(state.accounts)}

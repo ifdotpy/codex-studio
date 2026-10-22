@@ -35,6 +35,7 @@ class MobileOriginContract(unittest.TestCase):
         # Exercise the fixture's state file independently of the operator override.
         self.enterContext(patch.dict(os.environ, {PUBLIC_ORIGIN_ENVIRONMENT: ""}))
         self.temp = tempfile.TemporaryDirectory(prefix="studio-mobile-origin-")
+        self.addCleanup(self.temp.cleanup)
         self.canvas = Canvas(Path(self.temp.name))
         self.server = make_server(self.canvas)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)

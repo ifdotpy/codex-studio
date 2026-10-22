@@ -121,7 +121,7 @@ class AccountsModelTests(unittest.TestCase):
     def test_account_snapshot_has_explicit_collections(self) -> None:
         result = AccountsResponse.model_validate({
             "accounts": [], "archivedAccounts": [], "defaultAccountKey": "default",
-            "logins": [], "supportsDisconnect": True, "supportsDelete": True,
+            "defaultAccountGroups": [], "logins": [], "supportsDisconnect": True, "supportsDelete": True,
         })
         self.assertEqual(result.defaultAccountKey, "default")
         with self.assertRaises(ValidationError):
@@ -482,6 +482,7 @@ class AccountsRouterTests(unittest.TestCase):
         self.cache = Path.home() / ".cache" / "codex-studio-fastapi" / "tests-tmp" / ("accounts-" + str(uuid4()))
         self.cache.mkdir(parents=True)
         self.tmp = tempfile.TemporaryDirectory(dir=self.cache)
+        self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
         self.home = self.root / "home"
         self.profile = self.home / ".codex"

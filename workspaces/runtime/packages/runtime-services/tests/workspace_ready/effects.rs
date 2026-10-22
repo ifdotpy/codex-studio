@@ -4,7 +4,6 @@ mod prepared_python_support;
 use super::*;
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
-use std::sync::{Mutex, OnceLock};
 use studio_runtime_store::path_identity::CanonicalPath;
 use studio_runtime_store::{AgentRecord, AgentRepository};
 
@@ -273,6 +272,7 @@ impl OracleWorker {
         let mut child = Command::new(python)
             .arg("-B")
             .arg(script)
+            .env("TMPDIR", root.path())
             .env("HOME", root.path().join("home"))
             .env("CODEX_HOME", root.path().join("codex"))
             .env("CLAUDE_CONFIG_DIR", root.path().join("claude"))
@@ -316,6 +316,21 @@ impl OracleWorker {
     }
 }
 
+impl Drop for OracleWorker {
+    fn drop(&mut self) {
+        if let Err(error) = self.child.kill() {
+            assert_eq!(
+                error.kind(),
+                std::io::ErrorKind::InvalidInput,
+                "stop oracle worker"
+            );
+        }
+        self.child
+            .wait()
+            .expect("reap oracle worker before removing its state");
+    }
+}
+
 fn oracle(root: &Path, mut request: Value) -> Value {
     for name in ["home", "codex", "claude"] {
         std::fs::create_dir_all(root.join(name)).expect("isolated home");
@@ -323,12 +338,7 @@ fn oracle(root: &Path, mut request: Value) -> Value {
     if request["command"] == "seed" {
         request["codexHome"] = json!(root.join("codex"));
     }
-    static WORKER: OnceLock<Mutex<OracleWorker>> = OnceLock::new();
-    WORKER
-        .get_or_init(|| Mutex::new(OracleWorker::start()))
-        .lock()
-        .expect("oracle worker mutex")
-        .request(request)
+    OracleWorker::start().request(request)
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -583,6 +593,7 @@ async fn deadline_after_durable_reservation_retains_evidence_and_checkpoint_fail
         context,
         plan.clone(),
         deadline,
+        GIT_TIMEOUT,
     )
     .await
     .expect("deadline classified");
@@ -633,9 +644,14 @@ async fn common_git_directory_serialization_defers_without_starting_another_effe
     let lock = repository_lock(&plan.identity.common_dir).expect("lock");
     let _guard = lock.lock().await;
     assert!(matches!(
-        prepare(std::sync::Arc::clone(&fixture.store), fixture.id.clone())
-            .await
-            .expect("defer"),
+        prepare_with_budget(
+            std::sync::Arc::clone(&fixture.store),
+            fixture.id.clone(),
+            GIT_TIMEOUT,
+            Duration::from_millis(200),
+        )
+        .await
+        .expect("defer"),
         WorkspaceDecision::Defer { .. }
     ));
     assert!(!plan.identity.destination.exists());
@@ -976,6 +992,7 @@ async fn parent_and_destination_reservations_block_but_progress_does_not() {
             context,
             plan,
             Instant::now() + std::time::Duration::from_secs(30),
+            GIT_TIMEOUT,
         )
         .await
         .expect("progress ignored"),
@@ -1000,7 +1017,7 @@ async fn checkpoint_window_revalidates_git_and_reservations_and_recovers_exact_r
             std::sync::Arc::clone(&fixture.store),
             plan.clone(),
             Ok(checkpoint),
-            Instant::now() + std::time::Duration::from_secs(30),
+            GIT_TIMEOUT,
         )
         .await
         .expect("publication");
@@ -1173,6 +1190,7 @@ async fn post_effect_symlink_escape_is_refused_without_cleanup() {
             context,
             plan.clone(),
             Instant::now() + std::time::Duration::from_secs(30),
+            GIT_TIMEOUT,
         )
         .await
         .expect("classified"),
@@ -1476,6 +1494,7 @@ async fn stale_reservation_precondition_never_starts_git_effect() {
             context,
             plan.clone(),
             Instant::now() + std::time::Duration::from_secs(30),
+            GIT_TIMEOUT,
         )
         .await
         .expect("defer"),
@@ -2001,12 +2020,12 @@ async fn git_failure_and_git_deadline_have_distinct_messages() {
 #[tokio::test]
 async fn concurrent_workers_and_lead_of_one_repository_all_reach_ready() {
     const WORKERS: usize = 40;
-    // The preparations queue on one repository lock, and each lock wait counts
-    // against its Git deadline. This test checks that concurrency refuses and
-    // defers nothing, not host speed: on a macOS host under shared disk load one
-    // preparation takes about one second, so the production 30-second deadline
-    // would defer the last ones. Unit: wall time per preparation.
-    const DEADLINE: std::time::Duration = std::time::Duration::from_secs(150);
+    // The preparations queue on one repository lock; the wait is not Git time.
+    // This test checks that concurrency refuses and defers nothing, not host
+    // speed: on a macOS host under shared disk load one preparation takes about
+    // one second, so the last of 40 children can wait longer than the production
+    // queue bound. Unit: wall time of one lock wait.
+    const QUEUE: std::time::Duration = std::time::Duration::from_secs(150);
     let fixture = Fixture::new().await;
     let seed = fixture.actor();
     let mut ids = vec![fixture.id.clone()];
@@ -2049,9 +2068,12 @@ async fn concurrent_workers_and_lead_of_one_repository_all_reach_ready() {
         .into_iter()
         .map(|id| {
             let store = std::sync::Arc::clone(&fixture.store);
-            tokio::spawn(
-                async move { (id.clone(), prepare_with_timeout(store, id, DEADLINE).await) },
-            )
+            tokio::spawn(async move {
+                (
+                    id.clone(),
+                    prepare_with_budget(store, id, GIT_TIMEOUT, QUEUE).await,
+                )
+            })
         })
         .collect::<Vec<_>>();
     for task in tasks {
@@ -2196,4 +2218,301 @@ async fn unrelated_reservation_started_after_path_capture_does_not_refuse_ready_
         })
         .await
         .expect("unrelated reservation permits the ready workspace");
+}
+
+/// Seed `count` more worktree children of the fixture repository, each its own
+/// root like the fixture actor, and return their identifiers.
+async fn seed_children(fixture: &Fixture, count: usize) -> Vec<String> {
+    let seed = fixture.actor();
+    let records = (1..=count)
+        .map(|n| {
+            let mut child = seed.clone();
+            child["id"] = json!(format!("child-{n}"));
+            child["rootId"] = child["id"].clone();
+            child
+        })
+        .collect::<Vec<_>>();
+    let ids = records
+        .iter()
+        .map(|r| r["id"].as_str().expect("id").to_owned())
+        .collect();
+    fixture
+        .store
+        .transaction(move |tx| {
+            for record in records {
+                let id = record["id"].as_str().expect("id").to_owned();
+                tx.execute("INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted) VALUES('agent',?1,1,'fixture',?2,0)",
+                    rusqlite::params![id, json!({"collection":"agent","id":id,"value":record}).to_string()])?;
+                AgentRepository::put(tx, &AgentRecord::from_value(record)?)?;
+            }
+            Ok(())
+        })
+        .await
+        .expect("seed children");
+    ids
+}
+
+/// Reserve the provisioning of `id` as its preparation does before `git worktree add`.
+async fn reserve_provision(store: &std::sync::Arc<RuntimeStore>, id: &str) -> ProvisionIdentity {
+    let reader = store.test_reader().expect("reader");
+    let snapshot = reservation_snapshot(&reader, id).expect("snapshot");
+    let journal = WorkspaceReadyRepository::journal(
+        &reader,
+        &provision_id(&actor(&snapshot).expect("actor")),
+    )
+    .expect("journal");
+    let WorkspaceDecision::Provision(plan) = observe(snapshot.clone(), journal, &git())
+        .expect("observe")
+        .decide()
+    else {
+        panic!("{id} must plan a worktree");
+    };
+    let paths = WorkspacePaths::capture(
+        &snapshot,
+        studio_runtime_store::AgentIndexedReads::admission_cwds(&reader)
+            .expect("paths")
+            .into_iter()
+            .flatten()
+            .map(PathBuf::from)
+            .chain([plan.identity.destination.to_path_buf()]),
+    );
+    let identity = plan.identity.clone();
+    assert!(
+        store
+            .transaction(move |tx| {
+                WorkspaceReadyRepository::reserve(tx, &snapshot, &identity, &paths, now())
+            })
+            .await
+            .expect("reserve"),
+        "{id} reserves its destination"
+    );
+    plan.identity
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn worktree_children_spawned_together_in_one_repository_all_start() {
+    const CHILDREN: usize = 4;
+    // The Git budget of one phase. The test holds the repository lock longer
+    // than this, as earlier siblings do in a burst; a lock wait that spends
+    // Git time leaves the queued children no budget.
+    let budget = Duration::from_secs(2);
+    let fixture = Fixture::new().await;
+    let mut ids = vec![fixture.id.clone()];
+    ids.extend(seed_children(&fixture, CHILDREN).await);
+    // The last child starts its provisioning while the others are ready.
+    let late = ids.pop().expect("late child");
+    let common = fixture.plan().identity.common_dir;
+    let lock = repository_lock(&common).expect("repository lock");
+    let held = lock.lock().await;
+    let tasks = ids
+        .iter()
+        .map(|id| {
+            let store = std::sync::Arc::clone(&fixture.store);
+            let id = id.clone();
+            tokio::spawn(prepare_with_budget(
+                store,
+                id,
+                budget,
+                REPOSITORY_QUEUE_TIMEOUT,
+            ))
+        })
+        .collect::<Vec<_>>();
+    // Each queued preparation holds one handle of the repository lock.
+    let guard = Instant::now() + Duration::from_secs(60);
+    while std::sync::Arc::strong_count(&lock) < ids.len() + 1
+        && !tasks.iter().any(tokio::task::JoinHandle::is_finished)
+    {
+        assert!(Instant::now() < guard, "children never queued");
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    tokio::time::sleep(budget + Duration::from_millis(500)).await;
+    drop(held);
+    let mut tokens = Vec::new();
+    for (id, task) in ids.iter().zip(tasks) {
+        match task.await.expect("preparation task") {
+            Ok(WorkspaceDecision::Ready { token }) => tokens.push((id.clone(), token)),
+            other => panic!("{id}: {other:?}"),
+        }
+    }
+    let late_plan = reserve_provision(&fixture.store, &late).await;
+    for (id, token) in tokens {
+        let cwd = fixture
+            .store
+            .transaction(move |tx| token.validate(tx))
+            .await
+            .expect("admission transaction")
+            .unwrap_or_else(|_| panic!("{id}: a sibling's provisioning made the token stale"));
+        assert!(
+            cwd.ends_with(Path::new(&id).join("project")),
+            "{id}: {cwd:?}"
+        );
+    }
+    assert_eq!(
+        WorkspaceReadyRepository::journal(
+            &fixture.store.test_reader().expect("read"),
+            &late_plan.id
+        )
+        .expect("journal")
+        .expect("late reservation")["phase"],
+        "local_mutation"
+    );
+}
+
+#[tokio::test]
+async fn ready_token_still_refuses_a_foreign_reservation_of_its_own_directory() {
+    let fixture = Fixture::new().await;
+    let WorkspaceDecision::Ready { token } =
+        prepare(std::sync::Arc::clone(&fixture.store), fixture.id.clone())
+            .await
+            .expect("ready")
+    else {
+        panic!("ready")
+    };
+    let destination = Path::new(fixture.actor()["cwd"].as_str().expect("cwd"))
+        .parent()
+        .expect("worktree root")
+        .to_owned();
+    // A provisioning record that claims the ready child's worktree blocks it,
+    // although the token captured no identity for that path.
+    fixture.store.transaction(move |tx| {
+        tx.execute("INSERT INTO runtime_workspace_operations(id,record) VALUES('provision:other:0',?1)",
+            [json!({"id":"provision:other:0","agent":"other","kind":"provision","phase":"local_mutation","cwd":destination}).to_string()])?;
+        Ok(())
+    }).await.expect("foreign reservation");
+    assert!(
+        fixture
+            .store
+            .transaction(move |tx| token.validate(tx))
+            .await
+            .expect("admission transaction")
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn worktree_finished_on_disk_after_the_deadline_is_adopted_and_a_dirty_one_refused() {
+    for dirty in [false, true] {
+        let fixture = Fixture::new().await;
+        let context = fixture.context();
+        let plan = fixture.plan();
+        // `git worktree add` finished on disk, and then the Git budget ran out
+        // before the effect confirmed the worktree.
+        git().create(&plan.identity).expect("worktree on disk");
+        if dirty {
+            std::fs::write(plan.identity.cwd.join("file"), "user change").expect("dirty");
+        }
+        let decision = provision(
+            std::sync::Arc::clone(&fixture.store),
+            context,
+            plan.clone(),
+            Instant::now(),
+            GIT_TIMEOUT,
+        )
+        .await
+        .expect("classified");
+        let journal = WorkspaceReadyRepository::journal(
+            &fixture.store.test_reader().expect("read"),
+            &plan.identity.id,
+        )
+        .expect("journal")
+        .expect("journal row");
+        if dirty {
+            assert_recovery(decision);
+            assert_eq!(fixture.actor()["worktreeReady"], false);
+            assert_eq!(journal["phase"], "recovery_required");
+            assert_eq!(
+                std::fs::read_to_string(plan.identity.cwd.join("file")).expect("user file"),
+                "user change"
+            );
+        } else {
+            assert_eq!(
+                admitted(&fixture, decision).await,
+                plan.identity.cwd.to_path_buf()
+            );
+            assert_eq!(fixture.actor()["worktreeReady"], true);
+            assert_eq!(journal["phase"], "completed");
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_message_to_a_child_whose_provision_failed_is_admitted_and_its_worktree_adopted() {
+    let fixture = Fixture::new().await;
+    let plan = fixture.plan();
+    // The live failure: `git worktree add` finished, and a later Git step of the
+    // effect ran out of time. Without adoption this leaves a recovery journal.
+    git().create(&plan.identity).expect("worktree on disk");
+    let identity = plan.identity.clone();
+    fixture.reserve(&identity).await;
+    fixture
+        .store
+        .transaction(move |tx| {
+            WorkspaceReadyRepository::uncertain(
+                tx,
+                &identity,
+                "Workspace Git deadline expired",
+                now(),
+            )
+        })
+        .await
+        .expect("recovery journal");
+    fixture.patch("status", json!("failed")).await;
+    fixture
+        .patch(
+            "error",
+            json!("WorkspaceRecoveryRequired: Provisioning did not establish a complete worktree"),
+        )
+        .await;
+    let room = fixture.id.clone();
+    let prepared = crate::message_admission::PreparedAdmission::read(
+        &fixture.store.test_reader().expect("read"),
+        &room,
+    )
+    .expect("SQL admission inputs")
+    .prepare()
+    .await
+    .expect("admission paths");
+    let posted = fixture
+        .store
+        .transaction_with_error(move |tx| {
+            crate::coordination::post_message_with_admission(
+                tx,
+                crate::coordination::PostManagedMessage {
+                    room: &room,
+                    id: "resume-message",
+                    text: "continue",
+                    delivery: studio_runtime_schema::delivery::DeliveryMoment::for_event(
+                        "user", "", None,
+                    )
+                    .expect("delivery"),
+                    assets: &[],
+                },
+                &prepared,
+            )
+        })
+        .await;
+    assert!(
+        posted.is_ok(),
+        "the child's own reservation refused its message: {posted:?}"
+    );
+    let decision = prepare(std::sync::Arc::clone(&fixture.store), fixture.id.clone())
+        .await
+        .expect("prepare");
+    assert_eq!(
+        admitted(&fixture, decision).await,
+        plan.identity.cwd.to_path_buf()
+    );
+    assert_eq!(fixture.actor()["workspaceOperation"], Value::Null);
+    let pending: Vec<String> = {
+        let reader = fixture.store.test_reader().expect("read");
+        let mut query = reader
+            .prepare("SELECT id FROM runtime_events WHERE status='pending' ORDER BY created")
+            .expect("query");
+        query
+            .query_map([], |row| row.get(0))
+            .expect("rows")
+            .collect::<Result<_, _>>()
+            .expect("ids")
+    };
+    assert_eq!(pending, ["workspace-input", "resume-message"]);
 }

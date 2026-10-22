@@ -351,7 +351,7 @@ mod tests {
     async fn pending_restart_cleanup_returns_retryable_error_without_terminal_writes() {
         let tmpfs = std::env::var_os("CS_TERMINAL_TEST_STATE_DIR")
             .map(std::path::PathBuf::from)
-            .unwrap_or_else(|| std::env::temp_dir().join("cs-terminals-test-state"));
+            .unwrap_or_else(std::env::temp_dir);
         std::fs::create_dir_all(&tmpfs).expect("tmpfs state parent");
         let root = tempfile::Builder::new()
             .prefix("terminal-http-gate-")

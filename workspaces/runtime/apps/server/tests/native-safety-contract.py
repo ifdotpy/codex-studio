@@ -70,6 +70,7 @@ class Server(fixture.FakeServer):
 class Safety(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
         self.runtime = make_runtime(Runtime, Path(self.temp.name), Server)
         self.server = self.runtime.connect()
         a = self.runtime.create({'name': 'Lead', 'cwd': self.temp.name, 'prompt': 'Work'})

@@ -28,6 +28,7 @@ def codex_runtime_tools():
 class SpawnTask(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
         self.rt = make_runtime(f.ControlledRuntime, Path(self.tmp.name), f.f.FakeServer)
         self.rt.catalog = lambda account='default': copy.deepcopy(f.CATALOG)
         self.addCleanup(patch.stopall)

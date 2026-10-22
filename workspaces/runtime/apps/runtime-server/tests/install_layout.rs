@@ -1,8 +1,7 @@
 #![cfg(unix)]
 #![allow(clippy::unwrap_used)]
 
-#[path = "../../../packages/runtime-services/tests/support/prepared_python.rs"]
-mod prepared_python;
+use crate::prepared_python_support as prepared_python;
 
 use std::{
     fs,

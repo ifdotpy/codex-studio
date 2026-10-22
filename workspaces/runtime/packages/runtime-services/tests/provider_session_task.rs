@@ -714,8 +714,7 @@ async fn exited_generation_entries_do_not_hold_back_the_initialize_reply() {
 }
 
 #[cfg(unix)]
-#[path = "../../runtime-process/tests/support/mod.rs"]
-mod support;
+use crate::process_support as support;
 
 #[cfg(target_os = "linux")]
 #[tokio::test]
@@ -855,6 +854,87 @@ async fn expired_serialized_request_is_not_sent_and_next_request_is_released() {
     loop {
         let event = session.events.recv().await.unwrap();
         if event.outcomes.iter().any(|outcome| matches!(outcome, SessionOutcome::Write { ticket: Some(ticket), outcome: WriteOutcome::Written, .. } if *ticket == third)) { break; }
+    }
+    pending(peer.commands.recv()).await;
+    session.checked_shutdown().await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn expiry_batch_preserves_all_queued_request_outcomes_in_order() {
+    // One expiry transition holds this entire batch; the running predecessor
+    // prevents queued writes until the session retires their expired tickets.
+    const EXPIRY_BATCH_REQUESTS: u64 = 128;
+    const QUEUED_TIMEOUT_MS: u64 = 5;
+    const RUNNING_TIMEOUT_MS: u64 = 100;
+    let (mut session, mut peer) = claude_ready().await;
+    let first = session
+        .control
+        .submit(
+            session
+                .control
+                .prepare(serialized(2, RUNNING_TIMEOUT_MS))
+                .await
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    written(write(&mut peer).await);
+    session.events.recv().await.unwrap();
+    let mut tickets = Vec::new();
+    for id in 3..3 + EXPIRY_BATCH_REQUESTS {
+        tickets.push(
+            session
+                .control
+                .submit(
+                    session
+                        .control
+                        .prepare(serialized(id, QUEUED_TIMEOUT_MS))
+                        .await
+                        .unwrap(),
+                )
+                .await
+                .unwrap(),
+        );
+    }
+    let successor = session
+        .control
+        .submit(
+            session
+                .control
+                .prepare(serialized(3 + EXPIRY_BATCH_REQUESTS, RUNNING_TIMEOUT_MS))
+                .await
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    pending(peer.commands.recv()).await;
+    tokio::time::advance(Duration::from_millis(QUEUED_TIMEOUT_MS)).await;
+    let expired = session.events.recv().await.unwrap();
+    assert_eq!(expired.outcomes.len(), tickets.len());
+    for (outcome, ticket) in expired.outcomes.iter().zip(&tickets) {
+        assert!(matches!(outcome, SessionOutcome::Write {
+            ticket: Some(actual), outcome: WriteOutcome::NotSent, ..
+        } if actual == ticket));
+    }
+    pending(peer.commands.recv()).await;
+    peer.events
+        .send(entry(
+            1,
+            QUEUED_TIMEOUT_MS,
+            JournalPayload::Frame(reply(first.id)),
+        ))
+        .await
+        .unwrap();
+    written(write(&mut peer).await);
+    loop {
+        let event = session.events.recv().await.unwrap();
+        if event.outcomes.iter().any(|outcome| {
+            matches!(outcome, SessionOutcome::Write {
+            ticket: Some(ticket), outcome: WriteOutcome::Written, ..
+        } if *ticket == successor)
+        }) {
+            break;
+        }
     }
     pending(peer.commands.recv()).await;
     session.checked_shutdown().await;
@@ -1678,6 +1758,66 @@ async fn recovered_lightweight_request_does_not_reserve_serialized_thread() {
         .submit(session.control.prepare(serialized(43, 1000)).await.unwrap())
         .await
         .unwrap();
+    written(write(&mut peer).await);
+    session.checked_shutdown().await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn active_barrier_holds_new_requests_but_not_callback_answers_or_interrupts() {
+    let (mut session, mut peer) = open().await;
+    ready(&mut session, &mut peer).await;
+    let control = session.control.clone();
+    // An unread event consumer keeps a journal prefix unconsumed.
+    for cursor in 1..=(LANE_CAPACITY * 2 + 1) as u64 {
+        peer.events
+            .send(entry(cursor, 0, JournalPayload::Stderr(json!({}))))
+            .await
+            .unwrap();
+    }
+    let barrier = tokio::spawn({
+        let control = control.clone();
+        async move { control.journal_barrier().await }
+    });
+    let held = tokio::spawn({
+        let control = control.clone();
+        async move { control.prepare(spec(7, 1000)).await }
+    });
+    for _ in 0..8 {
+        tokio::task::yield_now().await;
+    }
+    assert!(!barrier.is_finished());
+    assert!(!held.is_finished(), "a new request is held by the barrier");
+
+    let answer = control
+        .prepare_frame(
+            OperationId("callback:9".into()),
+            &reply(RequestId::Number(9)),
+        )
+        .unwrap();
+    control.submit_frame(answer).await.unwrap();
+    let interrupt = control
+        .prepare(RequestSpec {
+            id: RequestId::Number(8),
+            operation_id: OperationId("request:8".into()),
+            method: Method::TurnInterrupt,
+            params: json!({"threadId":"t","turnId":"u"}),
+            thread_id: Some("t".into()),
+            lightweight: true,
+            timeout_ms: 1000,
+        })
+        .await
+        .unwrap();
+    control.submit(interrupt).await.unwrap();
+    written(write(&mut peer).await);
+    assert!(!barrier.is_finished() && !held.is_finished());
+
+    // Consuming the journal prefix completes the barrier and releases the request.
+    while !(barrier.is_finished() && held.is_finished()) {
+        session.events.recv().await.unwrap();
+        tokio::task::yield_now().await;
+    }
+    barrier.await.unwrap().unwrap();
+    held.await.unwrap().unwrap();
     written(write(&mut peer).await);
     session.checked_shutdown().await;
 }

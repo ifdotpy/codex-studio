@@ -14,6 +14,22 @@ function defaultBrowserPath() {
   return join(homedir(), ".cache", "ms-playwright");
 }
 
+// Corepack's pnpm cache follows the caller's cache root, not the isolated
+// home below; without it pnpm would be downloaded on every run.
+function defaultCorepackHome() {
+  if (process.platform === "win32")
+    return join(
+      process.env.LOCALAPPDATA || join(homedir(), "AppData", "Local"),
+      "node",
+      "corepack",
+    );
+  return join(
+    process.env.XDG_CACHE_HOME || join(homedir(), ".cache"),
+    "node",
+    "corepack",
+  );
+}
+
 const args = process.argv.slice(2);
 const separatorIndex = args.indexOf("--");
 if (separatorIndex !== -1) args.splice(separatorIndex, 1);
@@ -21,9 +37,9 @@ if (separatorIndex !== -1) args.splice(separatorIndex, 1);
 const environment = { ...process.env };
 delete environment.BROWSER;
 environment.PLAYWRIGHT_BROWSERS_PATH ??= defaultBrowserPath();
+environment.COREPACK_HOME ??= defaultCorepackHome();
 const stateRoot = mkdtempSync(join(tmpdir(), "codex-playwright-"));
 const outputDirectory = join(stateRoot, "playwright-output");
-mkdirSync(outputDirectory);
 environment.PLAYWRIGHT_OUTPUT_DIR = outputDirectory;
 const isolatedHome = join(stateRoot, "home");
 const xdgDirectories = {
@@ -33,16 +49,16 @@ const xdgDirectories = {
   XDG_STATE_HOME: join(stateRoot, "state"),
   XDG_RUNTIME_DIR: join(stateRoot, "runtime"),
 };
-mkdirSync(isolatedHome);
-for (const [key, directory] of Object.entries(xdgDirectories)) {
-  mkdirSync(directory);
+for (const [key, directory] of Object.entries(xdgDirectories))
   environment[key] = directory;
-}
 environment.HOME = isolatedHome;
 environment.CODEX_HOME = join(isolatedHome, ".codex");
 environment.CLAUDE_CONFIG_DIR = join(isolatedHome, ".claude");
 
 try {
+  mkdirSync(outputDirectory);
+  mkdirSync(isolatedHome);
+  for (const directory of Object.values(xdgDirectories)) mkdirSync(directory);
   const result = spawnSync("pnpm", ["exec", "playwright", "test", ...args], {
     stdio: "inherit",
     env: environment,
@@ -50,8 +66,7 @@ try {
   if (result.error) throw result.error;
   process.exitCode = result.status ?? 1;
 } finally {
-  rmSync(isolatedHome, { recursive: true, force: true });
-  for (const directory of Object.values(xdgDirectories))
-    rmSync(directory, { recursive: true, force: true });
-  console.log(`Playwright output: ${outputDirectory}`);
+  if (process.env.KEEP_TEST_ARTIFACTS)
+    console.log(`Playwright output: ${outputDirectory}`);
+  else rmSync(stateRoot, { recursive: true, force: true });
 }

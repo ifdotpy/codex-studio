@@ -64,7 +64,10 @@ pub trait VmProviderLaunchResolver: Send + Sync {
     ) -> VmProviderAuthFuture<'_> {
         Box::pin(async {
             Err(WorkerError::PreparationPending(
-                "provider-session/vm-token-refresh".into(),
+                crate::account_worker::PreparationBlock::new(
+                    studio_runtime_schema::agent_progress::StartWaitReason::ProviderSession,
+                    "provider-session/vm-token-refresh",
+                ),
             ))
         })
     }
@@ -2012,7 +2015,8 @@ mod resource_tests {
 
     #[test]
     fn only_a_codex_worker_switches_off_the_homes_mcp_servers() {
-        let home = std::env::temp_dir().join(format!("worker-mcp-{}", std::process::id()));
+        let directory = tempfile::tempdir().expect("owned test directory");
+        let home = directory.path().to_path_buf();
         std::fs::create_dir_all(&home).expect("home");
         std::fs::write(
             home.join("config.toml"),
@@ -2041,7 +2045,6 @@ mod resource_tests {
             servers(json!({"id":"c", "parentId":"lead", "provider":"claude"})),
             None
         );
-        std::fs::remove_dir_all(&home).expect("cleanup");
     }
 
     #[test]

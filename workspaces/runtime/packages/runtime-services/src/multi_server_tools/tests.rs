@@ -23,7 +23,6 @@ const MOVED: &str = "a313b5da-674e-43d0-86b8-c4204bc46ed8";
 const LINK: &str = "fixture-remote-link";
 
 struct Seed {
-    _scratch: tempfile::TempDir,
     value: Value,
 }
 
@@ -62,7 +61,6 @@ fn seed() -> &'static Seed {
             "projectId": project.to_string_lossy(),
         });
         Seed {
-            _scratch: scratch,
             value,
         }
     })

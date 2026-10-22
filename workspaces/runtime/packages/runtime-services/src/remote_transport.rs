@@ -1744,17 +1744,11 @@ pub(crate) mod tests {
         .expect("fixed RFC Ed25519 fixture loads")
     }
 
-    pub(crate) async fn runtime_store_fixture() -> (PathBuf, Arc<RuntimeStore>) {
+    pub(crate) async fn runtime_store_fixture() -> (tempfile::TempDir, PathBuf, Arc<RuntimeStore>) {
         use std::fs;
-        use std::time::{SystemTime, UNIX_EPOCH};
 
-        let root = std::env::temp_dir().join(format!(
-            "studio-remote-transport-store-{}",
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("clock is after epoch")
-                .as_nanos()
-        ));
+        let directory = tempfile::tempdir().expect("owned test directory");
+        let root = directory.path().to_path_buf();
         fs::create_dir_all(&root).expect("temporary state directory creates");
         let snapshot: serde_json::Value = serde_json::from_str(include_str!(
             "../../runtime-store/src/runtime-state-schema.json"
@@ -1803,7 +1797,7 @@ pub(crate) mod tests {
         let store = RuntimeStore::open(Some(&root))
             .await
             .expect("schema fixture opens");
-        (root, Arc::new(store))
+        (directory, root, Arc::new(store))
     }
 
     #[test]
@@ -1869,13 +1863,9 @@ pub(crate) mod tests {
     #[test]
     fn multi_server_identity_loads_existing_private_owner_only_file_without_creating_one() {
         use std::fs;
-        use std::time::{SystemTime, UNIX_EPOCH};
 
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system clock is after the Unix epoch")
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!("studio-remote-identity-{unique}"));
+        let directory_guard = tempfile::tempdir().expect("owned test directory");
+        let root = directory_guard.path().to_path_buf();
         let directory = root.join("multi-server");
         fs::create_dir_all(&directory).expect("identity directory creates");
         #[cfg(unix)]
@@ -1910,7 +1900,6 @@ pub(crate) mod tests {
         let absent_root = root.join("absent-state");
         assert!(load_multi_server_identity(&absent_root).is_err());
         assert!(!absent_root.exists());
-        fs::remove_dir_all(root).expect("fixture identity tree is removed");
     }
 
     #[test]
@@ -2121,7 +2110,7 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn refusal_rolls_back_nonce_cleanup_through_the_service_transaction() {
-        let (root, store) = runtime_store_fixture().await;
+        let (_directory, _root, store) = runtime_store_fixture().await;
         let now = 1_700_000_000_i64;
         store
             .transaction(move |transaction| {
@@ -2200,12 +2189,11 @@ pub(crate) mod tests {
         assert_eq!(stale, 1, "pairing-limit refusal rolled back cleanup");
         drop(connection);
         drop(store);
-        std::fs::remove_dir_all(root).expect("temporary state is removed");
     }
 
     #[tokio::test]
     async fn invalid_stored_federation_identity_names_its_table_and_primary_key() {
-        let (root, store) = runtime_store_fixture().await;
+        let (_directory, _root, store) = runtime_store_fixture().await;
         store
             .transaction(|transaction| {
                 transaction.execute(
@@ -2227,12 +2215,11 @@ pub(crate) mod tests {
             } if key == "local"
         ));
         drop(store);
-        std::fs::remove_dir_all(root).expect("temporary state is removed");
     }
 
     #[tokio::test]
     async fn exchange_service_replays_saved_receipt_and_never_sends_unknown_after_restart() {
-        let (root, store) = runtime_store_fixture().await;
+        let (_directory, root, store) = runtime_store_fixture().await;
         let identity = identity();
         let public_key = spki_pem();
         let body = br#"{"action":"rename_server","label":"fixture"}"#;
@@ -2340,12 +2327,11 @@ pub(crate) mod tests {
         ));
         assert_eq!(sends, 1, "unknown request identity is never sent again");
         drop(store);
-        std::fs::remove_dir_all(root).expect("temporary state is removed");
     }
 
     #[tokio::test]
     async fn redacted_invitation_retry_reuses_the_same_request_and_recovers_its_secret() {
-        let (root, store) = runtime_store_fixture().await;
+        let (_directory, root, store) = runtime_store_fixture().await;
         let identity = identity();
         let public_key = spki_pem();
         let body = br#"{"action":"create_invite","requestId":"invite-request"}"#;
@@ -2421,7 +2407,6 @@ pub(crate) mod tests {
         assert_eq!(retry["invitation"]["token"], "fixture-secret");
         assert_eq!(sends, 2);
         drop(store);
-        std::fs::remove_dir_all(root).expect("temporary state is removed");
     }
 
     #[test]

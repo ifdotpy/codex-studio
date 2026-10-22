@@ -1,9 +1,7 @@
 #![allow(clippy::unwrap_used)]
 
-#[path = "multi_server/common.rs"]
-mod common;
-#[path = "support/prepared_python.rs"]
-pub(crate) mod prepared_python_support;
+use crate::multi_server_fixtures as common;
+use crate::prepared_python_support;
 use common::*;
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -1997,7 +1995,7 @@ async fn multi_server_corpus_witness() {
         serde_json::json!(studio_runtime_schema::multi_server_protocol::ACCESS_PROTOCOL_VERSION)
     );
 
-    let report = studio_runtime_store::check_state_readonly(fixture().root.path())
+    let report = studio_runtime_store::check_state_readonly(store.root())
         .expect("state-check accepts the real Python writers");
     let names: std::collections::BTreeSet<_> = report.tables.iter().map(|t| t.table).collect();
     assert_eq!(names.len(), report.tables.len(), "one report per table");

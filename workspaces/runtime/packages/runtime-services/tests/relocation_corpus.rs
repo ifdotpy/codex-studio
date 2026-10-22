@@ -1,8 +1,6 @@
 //! Python-produced snapshots exercised through the transaction consumer interfaces.
 
-#[allow(clippy::duplicate_mod)]
-#[path = "support/prepared_python.rs"]
-mod prepared_python_support;
+use crate::prepared_python_support;
 use rusqlite::params;
 use serde_json::{Value, json};
 use std::{fs, path::PathBuf, process::Command};
@@ -796,7 +794,11 @@ async fn location_process_loss_before_and_after_commit_is_recoverable() {
         let input = json!({"case":case,"local":fixture.data["local"],"now":fixture.data["now"],"committed":committed});
         fs::write(path.join("command.json"), input.to_string()).expect("immutable command fixture");
         let status = Command::new(std::env::current_exe().expect("test binary"))
-            .args(["--exact", "relocation_process_stop_child", "--nocapture"])
+            .args([
+                "--exact",
+                "relocation_corpus::relocation_process_stop_child",
+                "--nocapture",
+            ])
             .env("RELOCATION_CRASH_ROOT", &path)
             .status()
             .expect("crash fixture starts");

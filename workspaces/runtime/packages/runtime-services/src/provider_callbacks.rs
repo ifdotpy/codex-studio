@@ -69,11 +69,15 @@ pub struct ManagedCreationAccountCandidate {
     /// The account's start throttle limit on running turns (unit: turns);
     /// implicit worker selection prefers an account below it.
     pub max_running_turns: u64,
+    /// The account's group in account orders (see `crate::account_preference`).
+    pub group: Option<String>,
 }
 
 #[derive(Clone, Debug)]
 pub struct ManagedCreationAccountListing {
     pub accounts: Vec<ManagedCreationAccountCandidate>,
+    /// The default account order of projects without their own order.
+    pub default_account_groups: Vec<String>,
 }
 
 /// Narrow account read port used by managed child creation. The runtime server

@@ -1,6 +1,5 @@
 //! Message ingress at its transaction boundary, using Python-written databases.
-#[path = "support/prepared_python.rs"]
-mod python_test_support;
+use crate::prepared_python_support as python_test_support;
 
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -32,6 +31,7 @@ impl Oracle {
         .arg("-B")
         .arg(base.join("tests/wave7_p03_message_ingress/oracle.py"))
         .arg(root.path())
+        .env("TMPDIR", root.path())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
@@ -454,7 +454,11 @@ async fn arm_statement(
 #[allow(clippy::disallowed_methods)]
 fn crash_child(root: &Path, table: &str, operation: &str, point: &str, occurrence: usize) {
     let status = Command::new(std::env::current_exe().expect("test binary"))
-        .args(["--exact", "ingress_crash_child", "--nocapture"])
+        .args([
+            "--exact",
+            "wave7_p03_message_ingress::ingress_crash_child",
+            "--nocapture",
+        ])
         .env("P03_CRASH_ROOT", root)
         .env("P03_CRASH_TABLE", table)
         .env("P03_CRASH_OPERATION", operation)

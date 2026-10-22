@@ -1,4 +1,5 @@
 [package]
+autotests = false
 name = "studio-runtime-process"
 version.workspace = true
 edition.workspace = true
@@ -36,3 +37,7 @@ tempfile = { workspace = true }
 
 [lints]
 workspace = true
+
+[[test]]
+name = "integration"
+path = "tests/integration.rs"

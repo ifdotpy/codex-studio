@@ -398,14 +398,15 @@ impl Worker {
                 .filter(|pending| {
                     pending.result_cursor > 0
                         && self.managed_callback_cursors.iter().any(
-                            |(actor, actor_epoch, callback_cursor)| {
+                            |(generation, actor, actor_epoch, callback_cursor)| {
                                 // Callback ownership follows the transport lane.
                                 // Host requests can still carry an authorized actor,
                                 // but their replies are journaled on the host session.
                                 let transport_epoch = pending.actor_id.as_ref().and_then(|_| {
                                     pending.call.actor.as_ref().map(|owner| owner.epoch)
                                 });
-                                actor == &pending.actor_id
+                                *generation == self.generation.0
+                                    && actor == &pending.actor_id
                                     && *actor_epoch == transport_epoch
                                     && *callback_cursor < pending.result_cursor
                             },

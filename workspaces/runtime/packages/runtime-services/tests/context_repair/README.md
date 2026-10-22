@@ -12,7 +12,7 @@ reads. The effect adapter is `context_repair::recover`. It uses `RuntimeStore`
 transactions and rechecks the complete snapshot and cached connection identity
 before writing. No provider call occurs in a transaction.
 
-Run `cargo nextest run -p studio-runtime-services --test context_repair_corpus`
+Run `cargo nextest run -p studio-runtime-services --test integration -E 'test(/^context_repair_corpus::/)'`
 with the isolated equipped Python selected by `CODEX_AGENTS_PYTHON` or
 `STUDIO_HTTP_BACKEND_PYTHON`. The oracle imports the shared provider-home guard.
 It never constructs Runtime, opens real provider history, or runs a provider.
@@ -20,7 +20,7 @@ The extracted recurring decision block is pinned by its enclosing function hash.
 Historical batch tests call Python's actual capture and acceptance functions.
 The default fail-point witness uses SQLite in memory. Set
 `STUDIO_RUNTIME_CORPUS_FULL=1` for the durable restart matrix, or run
-`just test-rust-runtime-corpora -p studio-runtime-services --test context_repair_corpus`; this is an
+`just test-rust-runtime-corpora -p studio-runtime-services --test integration -E 'test(/^context_repair_corpus::/)'`; this is an
 explicit opt-in run because filesystem durability can exceed the fast budget.
 
 ## Integration ports
@@ -80,7 +80,7 @@ necessary after cutover.
 ## Mutation evidence
 
 `mutations.json` names each seeded rule change. Use the unchanged shared runner
-with `--manifest` pointing here and `--filter binary(context_repair_corpus)`.
+with `--manifest` pointing here and `--filter test(/^context_repair_corpus::/)`.
 The runner builds a disposable copy and counts only failed tests as detections.
 Build failures and unavailable fixture infrastructure do not count.
 

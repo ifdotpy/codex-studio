@@ -77,7 +77,7 @@ pub(super) fn apply(
         }
         if let Some(next) = decision.agent {
             *agent = next;
-            persist_agent(tx, &id, agent, publication)?;
+            persist_agent(tx, &id, agent)?;
         }
         return Ok(Some(DispatchOutcome::Written));
     }
@@ -103,14 +103,14 @@ pub(super) fn apply(
         if dependency == NotificationDependency::Realtime {
             // With no configured voice session, Python retains these as thread events.
             update_common_agent_fields(agent, method, p, at)?;
-            persist_agent(tx, &id, agent, publication)?;
+            persist_agent(tx, &id, agent)?;
         } else if dependency == NotificationDependency::ThreadUnloaded
             && agent["nativeRelease"]["threadId"] == p["threadId"]
             && !agent["nativeRelease"].is_null()
         {
             agent["nativeRelease"]["closedAt"] = json!(at);
             agent["nativeRelease"]["resetPending"] = json!(false);
-            persist_agent(tx, &id, agent, publication)?;
+            persist_agent(tx, &id, agent)?;
         }
         return Ok(Some(required(dependency)));
     }
@@ -118,7 +118,7 @@ pub(super) fn apply(
         let before = agent.clone();
         questions::resolved(tx, agent, p, account, identity.generation, at)?;
         if *agent != before {
-            persist_agent(tx, &id, agent, publication)?;
+            persist_agent(tx, &id, agent)?;
         }
         return Ok(Some(DispatchOutcome::Written));
     }
@@ -198,7 +198,7 @@ pub(super) fn apply(
                 };
                 *agent = accepted_agent;
                 update_common_agent_fields(agent, method, p, at)?;
-                persist_agent(tx, &id, agent, publication)?;
+                persist_agent(tx, &id, agent)?;
                 return Ok(Some(DispatchOutcome::Written));
             }
             if stale {
@@ -341,7 +341,7 @@ pub(super) fn apply(
         _ => {}
     }
     update_common_agent_fields(agent, method, p, at)?;
-    persist_agent(tx, &id, agent, publication)?;
+    persist_agent(tx, &id, agent)?;
     Ok(Some(DispatchOutcome::Written))
 }
 fn turn(agent: &Value, params: &Value) -> Value {

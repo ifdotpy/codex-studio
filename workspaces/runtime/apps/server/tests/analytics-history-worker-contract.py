@@ -63,6 +63,7 @@ class WorkerTests(unittest.TestCase):
     def setUp(self):
         import tempfile
         self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
         self.f = SignalFixture(self.temp.name)
         self.f.factory = AppServer
         self.f.path.write_bytes(f.line('session_meta', {'id': f.THREAD}) +

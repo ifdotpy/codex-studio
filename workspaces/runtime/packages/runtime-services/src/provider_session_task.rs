@@ -1,6 +1,11 @@
 //! A bounded Tokio session. Protocol decisions belong to the single SessionState;
 //! journal settlement belongs to the durable consumer, including initialization.
-use std::{collections::BTreeMap, future::Future, pin::Pin, sync::Arc};
+use std::{
+    collections::{BTreeMap, VecDeque},
+    future::Future,
+    pin::Pin,
+    sync::Arc,
+};
 
 use futures_util::FutureExt;
 use serde_json::{Map, Value};
@@ -178,6 +183,8 @@ pub struct SessionHandle {
 pub struct SessionControl {
     clock: SessionClock,
     commands: mpsc::Sender<Command>,
+    /// Progress lane: callback answers and turn interrupts. See [`Command`].
+    priority: mpsc::Sender<Command>,
     settlements: mpsc::Sender<Settlement>,
     status: watch::Receiver<SessionStatus>,
     stop: Shutdown,
@@ -288,6 +295,7 @@ impl SessionHandle {
             },
         );
         let (commands, inbox) = mpsc::channel(LANE_CAPACITY);
+        let (priority, priority_inbox) = mpsc::channel(LANE_CAPACITY);
         let (settlements, settled) = mpsc::channel(LANE_CAPACITY);
         let (events, receiver) = mpsc::channel(LANE_CAPACITY);
         let (status, observed) = watch::channel(SessionStatus {
@@ -307,6 +315,7 @@ impl SessionHandle {
             handle,
             records,
             commands: inbox,
+            priority: priority_inbox,
             settled,
             events,
             status,
@@ -323,6 +332,7 @@ impl SessionHandle {
             control: SessionControl {
                 clock,
                 commands,
+                priority,
                 settlements,
                 status: observed.clone(),
                 stop: stop.clone(),
@@ -386,15 +396,16 @@ impl SessionControl {
             fields: Map::new(),
         });
         let write = PreparedWrite::new(spec.operation_id.clone(), &frame)?;
+        let spec_method = spec.method;
         let prepared = PreparedRequest {
             spec,
             prepared_at_ms: self.clock.now_ms(),
             write: Some(write),
             generation: self.status.borrow().generation,
-            owner: self.commands.clone(),
+            owner: self.lane(spec_method).clone(),
         };
         let (reply, receipt) = oneshot::channel();
-        self.commands
+        self.lane(spec_method)
             .send(Command::Prepare { prepared, reply })
             .await
             .map_err(|_| SessionTaskError::Closed)?;
@@ -405,11 +416,12 @@ impl SessionControl {
         &self,
         prepared: PreparedRequest,
     ) -> Result<RequestTicket, SessionTaskError> {
-        if !prepared.owner.same_channel(&self.commands) {
+        let lane = self.lane(prepared.spec.method);
+        if !prepared.owner.same_channel(lane) {
             return Err(SessionTaskError::Invalid);
         }
         let (reply, receipt) = oneshot::channel();
-        self.admission(Command::Request { prepared, reply }, receipt)
+        self.admission(lane, Command::Request { prepared, reply }, receipt)
             .await
     }
 
@@ -432,18 +444,28 @@ impl SessionControl {
 
     pub async fn submit_frame(&self, prepared: PreparedFrame) -> Result<(), SessionTaskError> {
         let (reply, receipt) = oneshot::channel();
-        self.admission(Command::Frame { prepared, reply }, receipt)
+        self.admission(&self.priority, Command::Frame { prepared, reply }, receipt)
             .await
+    }
+
+    /// Route by what the operation needs: turn interrupts keep the progress
+    /// lane, everything else that opens provider work uses the barrier-gated lane.
+    fn lane(&self, method: Method) -> &mpsc::Sender<Command> {
+        if method == Method::TurnInterrupt {
+            &self.priority
+        } else {
+            &self.commands
+        }
     }
 
     async fn admission<T>(
         &self,
+        lane: &mpsc::Sender<Command>,
         command: Command,
         receipt: oneshot::Receiver<Result<T, SessionTaskError>>,
     ) -> Result<T, SessionTaskError> {
         let mut guard = AdmissionGuard(Some(self.stop.clone()));
-        self.commands
-            .send(command)
+        lane.send(command)
             .await
             .map_err(|_| SessionTaskError::Closed)?;
         let result = receipt
@@ -507,6 +529,16 @@ struct Settlement {
     cursors: Vec<EventCursor>,
     reply: oneshot::Sender<Result<(), SessionTaskError>>,
 }
+/// Two bounded lanes feed the session task. `commands` carries `Barrier` and
+/// new provider work (`Prepare`/`Request`); a journal barrier holds it, so no
+/// new request is admitted while the barrier's journal prefix is unread. The
+/// priority lane carries only work that others wait on for progress: callback
+/// answers (`Frame`) and turn interrupts (`Prepare`/`Request` of
+/// `turn/interrupt`). It ignores the barrier and the journal-slot gate. Ordering
+/// rule: an answer or interrupt depends only on state the caller already holds
+/// (a journaled provider request, a known turn id), never on a command still
+/// queued on `commands`, so overtaking those commands is safe. Within one lane
+/// order is FIFO.
 enum Command {
     Barrier {
         reply: oneshot::Sender<Result<EventCursor, SessionTaskError>>,
@@ -564,6 +596,7 @@ struct SessionTask {
     handle: ProviderHandle,
     records: BTreeMap<RequestId, Record>,
     commands: mpsc::Receiver<Command>,
+    priority: mpsc::Receiver<Command>,
     settled: mpsc::Receiver<Settlement>,
     events: mpsc::Sender<SessionEvent>,
     status: watch::Sender<SessionStatus>,
@@ -579,7 +612,7 @@ struct SessionTask {
 struct Retained {
     pending: Option<SessionEvent>,
     control: Option<SessionEvent>,
-    actions: Vec<Action>,
+    actions: VecDeque<Action>,
     receipt: Option<(Flight, CommandReceipt)>,
     receipt_reported: bool,
     command: Option<Command>,
@@ -616,10 +649,14 @@ impl SessionTask {
         .await
         .unwrap_or(Err(SessionTaskError::TaskFailed));
         self.commands.close();
+        self.priority.close();
         if let Some(command) = self.retained.command.take() {
             reject_command(command);
         }
         while let Ok(command) = self.commands.try_recv() {
+            reject_command(command);
+        }
+        while let Ok(command) = self.priority.try_recv() {
             reject_command(command);
         }
         self.settled.close();
@@ -777,7 +814,7 @@ impl SessionTask {
                 } else if self.retained.control.is_none() {
                     // An old on-time reply may release a request that is expired
                     // now. Current time governs sending; arrival governs replies.
-                    self.retained.actions = self.state.expire(self.clock.now_ms()).1;
+                    self.retained.actions = self.state.expire(self.clock.now_ms()).1.into();
                     self.apply_actions(true)?;
                     let write = if self.retained.control.is_some() {
                         None
@@ -868,8 +905,16 @@ impl SessionTask {
                     if let Some((remaining, _)) = &mut barrier { *remaining = remaining.saturating_sub(1); }
                 }
                 _ = async { match due { Some(at) => tokio::time::sleep_until(at).await, None => std::future::pending().await } }, if due.is_some() && self.retained.pending.is_none() && self.retained.control.is_none() => {
-                    self.retained.actions = self.state.expire(self.clock.now_ms()).1;
+                    self.retained.actions = self.state.expire(self.clock.now_ms()).1.into();
                     self.apply_actions(true)?;
+                }
+                // The progress lane skips the barrier and the journal-slot gate: its
+                // commands touch no journal slot except through the control slot,
+                // which stays gated because new writes wait on it too.
+                command = self.priority.recv(), if self.retained.control.is_none() => {
+                    self.retained.command = command;
+                    if self.retained.command.is_none() { return Ok(()); }
+                    self.command(writes)?;
                 }
                 command = self.commands.recv(), if barrier.is_none() && self.retained.pending.is_none() && self.retained.control.is_none() => {
                     if let Some(Command::Barrier { reply }) = command {
@@ -907,7 +952,7 @@ impl SessionTask {
                 current: generation.0 == self.state.generation(),
             },
         );
-        self.retained.actions = self.state.expire(at).1;
+        self.retained.actions = self.state.expire(at).1.into();
         #[cfg(test)]
         tests::panic_at(4);
         self.apply_actions(false)?;
@@ -925,7 +970,7 @@ impl SessionTask {
                     _ => None,
                 });
             if let Some(frame) = frame {
-                self.retained.actions = self.state.receive_at(frame, at)?;
+                self.retained.actions = self.state.receive_at(frame, at)?.into();
                 #[cfg(test)]
                 tests::panic_at(2);
                 self.apply_actions(false)?;
@@ -1074,15 +1119,16 @@ impl SessionTask {
                 ready: false,
             },
         );
-        self.retained.actions = actions;
+        self.retained.actions = actions.into();
         self.apply_actions(true)?;
         Ok(ticket)
     }
 
     fn apply_actions(&mut self, control: bool) -> Result<(), SessionTaskError> {
-        // Keep the entire bounded transition batch outside fallible processing.
-        // Positive outcomes are retained before record removal or write release.
-        while let Some(action) = self.retained.actions.first().cloned() {
+        // Keep the current action retained until it is processed: an error or an
+        // unwind leaves it at the front for cleanup. Positive outcomes are
+        // retained before record removal or write release.
+        while let Some(action) = self.retained.actions.front().cloned() {
             match action {
                 Action::Write(frame) => match frame {
                     Frame::Request(request) => {
@@ -1121,7 +1167,7 @@ impl SessionTask {
                 }
                 Action::Dispatch(_) | Action::ThreadReleased { .. } => {}
             }
-            self.retained.actions.remove(0);
+            self.retained.actions.pop_front();
         }
         Ok(())
     }
@@ -1277,14 +1323,17 @@ impl SessionTask {
                     if ticket.method != Method::Initialize {
                         return Err(SessionTaskError::Invalid);
                     }
-                    self.retained.actions = self.state.receive_at(
-                        Frame::Response {
-                            id: ticket.id,
-                            body: ResponseBody::Result(value),
-                            fields: Map::new(),
-                        },
-                        self.clock.now_ms(),
-                    )?;
+                    self.retained.actions = self
+                        .state
+                        .receive_at(
+                            Frame::Response {
+                                id: ticket.id,
+                                body: ResponseBody::Result(value),
+                                fields: Map::new(),
+                            },
+                            self.clock.now_ms(),
+                        )?
+                        .into();
                     self.apply_actions(true)?;
                     if let Some(event) = &mut self.retained.control {
                         event.outcomes.retain(|o| !matches!(o, SessionOutcome::Resolved { ticket, .. } if ticket.method == Method::Initialize));
@@ -1302,7 +1351,7 @@ impl SessionTask {
                 if matches!(receipt, CommandReceipt::NotSent)
                     && let Some(ticket) = &ticket
                 {
-                    self.retained.actions = self.state.reject_unsent(ticket)?;
+                    self.retained.actions = self.state.reject_unsent(ticket)?.into();
                     self.apply_actions(true)?;
                 }
                 if initialized && matches!(receipt, CommandReceipt::Written { .. }) {

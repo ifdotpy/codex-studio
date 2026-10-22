@@ -26,6 +26,7 @@ from codex_sync_entities import sync_monitor_window
 class MonitorOutputContract(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="studio-monitor-output-")
+        self.addCleanup(self.temp.cleanup)
         self.runtime = make_runtime(Runtime, Path(self.temp.name), server_factory=lambda *_args: None)
         self.addCleanup(self.temp.cleanup)
         self.addCleanup(self.runtime.close)

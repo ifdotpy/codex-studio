@@ -69,6 +69,7 @@ class Fixture(PanelMixin):
 class ProgressContract(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="codex-progress-contract-")
+        self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
         self.runtime = Fixture(self.root)
         for key in ("first", "second"):

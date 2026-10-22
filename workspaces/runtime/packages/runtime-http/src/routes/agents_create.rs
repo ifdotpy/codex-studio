@@ -397,10 +397,17 @@ impl studio_runtime_services::provider_callbacks::ManagedCreationAccountRead
                     max_running_turns:
                         studio_runtime_services::account_start_gate::StartThrottle::of_record(row)
                             .max_running,
+                    group: row
+                        .get(studio_runtime_services::account_preference::ACCOUNT_GROUP_FIELD)
+                        .and_then(Value::as_str)
+                        .map(str::to_owned),
                 })
             })
             .collect();
-        Ok(ManagedCreationAccountListing { accounts })
+        Ok(ManagedCreationAccountListing {
+            accounts,
+            default_account_groups: snapshot.default_account_groups.clone(),
+        })
     }
 
     fn resolve_identity(
@@ -842,7 +849,7 @@ async fn lead_catalog_account(
         managed_creation_environment: None,
         validate: validation_callback(state),
     };
-    agents_create::creation_account_key(&context, &request)
+    agents_create::creation_account_key(&context, &request, true)
         .await
         .map_err(operation_error)
 }

@@ -242,12 +242,10 @@ fn recover_active_monitors(tx: &Transaction<'_>, now: f64) -> Result<usize, Moni
                 return Ok(false);
             }
             let decision = policy::restart_recovery(&snapshot, now)?;
+            let after = MonitorSnapshot::checked(decision.record.clone(), actor.value())?;
             repository::put(tx, decision.record)?;
             crate::agent_progress::publish_owner(tx, &actor.id.0)?;
-            crate::sync_policy::maintain_monitor_window(tx, &|_, _, view, deleted| {
-                deleted
-                    || studio_runtime_schema::validate("MonitorEntityDto", view).unwrap_or(false)
-            })?;
+            crate::sync_policy::publish_monitor_change(tx, Some(&snapshot), &after)?;
             Ok::<bool, MonitorError>(true)
         })();
         if let Err(error) = result {
@@ -467,12 +465,10 @@ pub async fn answer_approval(
                     )?;
                 }
             }
+            let after = MonitorSnapshot::checked(monitor.clone(), actor.value())?;
             repository::put(tx, monitor)?;
             crate::agent_progress::publish_owner(tx, &actor.id.0)?;
-            crate::sync_policy::maintain_monitor_window(tx, &|_, _, view, deleted| {
-                deleted
-                    || studio_runtime_schema::validate("MonitorEntityDto", view).unwrap_or(false)
-            })?;
+            crate::sync_policy::publish_monitor_change(tx, Some(&snapshot), &after)?;
             request["status"] = json!("answered");
             request["answerDecision"] = json!(decision);
             request["answerSignature"] = json!(event_write::request_signature(
@@ -720,7 +716,7 @@ pub fn apply_with_rule(
 ) -> Result<(), MonitorError> {
     event_write::refuse_remote(actor)?;
     // Validate before any write, including all optional fields preserved from Python.
-    MonitorSnapshot::checked(
+    let after = MonitorSnapshot::checked(
         decision.record.clone(),
         serde_json::to_value(actor).map_err(studio_runtime_store::StoreError::from)?,
     )?;
@@ -770,9 +766,7 @@ pub fn apply_with_rule(
     if before.record() != &decision.record {
         repository::put(tx, decision.record.clone())?;
         crate::agent_progress::publish_owner(tx, &actor.id.0)?;
-        crate::sync_policy::maintain_monitor_window(tx, &|_, _, view, deleted| {
-            deleted || studio_runtime_schema::validate("MonitorEntityDto", view).unwrap_or(false)
-        })?;
+        crate::sync_policy::publish_monitor_change(tx, Some(before), &after)?;
     }
     Ok(())
 }
@@ -994,6 +988,63 @@ pub async fn reconcile_unknown(
         .await
 }
 
+/// Running commands with a native operation, no rule, no reattach in progress
+/// and no queued event, after `after` in ID order. These are the only commands
+/// whose exit depends on a live waiter in the monitor port.
+pub async fn unqueued_running_ids(
+    store: &RuntimeStore,
+    after: Option<&str>,
+) -> Result<Vec<String>, MonitorError> {
+    let after = after.unwrap_or_default().to_owned();
+    store
+        .read_async("runtime-services/monitor_orphans", move |connection| {
+            let mut statement = connection.prepare_cached(
+                "SELECT id FROM runtime_monitors WHERE json_extract(record,'$.status')='running' AND json_type(record,'$.operation')='object' AND json_extract(record,'$.ruleId') IS NULL AND COALESCE(json_extract(record,'$.reattachRecovery.status'),'')!='running' AND COALESCE(json_array_length(record,'$.streamQueue'),0)=0 AND id>?1 ORDER BY id LIMIT ?2",
+            )?;
+            let ids = statement
+                .query_map((after.as_str(), MONITOR_TICK_BATCH as i64), |row| {
+                    row.get::<_, String>(0)
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok::<_, studio_runtime_store::StoreError>(ids)
+        })
+        .await
+        .map_err(MonitorError::from)
+}
+
+/// Stage the exact-identity reattach for a running command whose exit has no
+/// owner in this process: its request future ended, failed or was lost with an
+/// account worker. The next reattach pass asks the provider about the exact
+/// `monitor:<id>` operation and settles a gone process once. Returns whether
+/// the command was staged. A command whose state changed is left untouched.
+pub async fn reconcile_orphan(
+    store: &RuntimeStore,
+    id: &str,
+    now: f64,
+) -> Result<bool, MonitorError> {
+    let id = id.to_owned();
+    store
+        .transaction_with(move |tx| {
+            let (snapshot, actor) = snapshot(tx, &id)?;
+            let record = snapshot.record();
+            if record["status"] != "running"
+                || snapshot.operation().is_none()
+                || snapshot.recovering()
+                || record.get("ruleId").is_some_and(|rule| !rule.is_null())
+                || record
+                    .get("streamQueue")
+                    .and_then(Value::as_array)
+                    .is_some_and(|queue| !queue.is_empty())
+            {
+                return Ok(false);
+            }
+            let decision = policy::restart_recovery(&snapshot, now)?;
+            apply(tx, &snapshot, &actor, &decision, now)?;
+            Ok(true)
+        })
+        .await
+}
+
 /// Decide an active command's failed reattach as lost and enqueue its one result.
 /// Idempotent: a command with no running recovery is left untouched.
 pub async fn settle_reattach(
@@ -1141,9 +1192,8 @@ pub fn create_in_transaction(
             .ok_or_else(|| invalid(id, "request"))?;
         SyncDocumentsRepository::put_entity(tx, "request", approval.id(), view, false)?;
     }
-    crate::sync_policy::maintain_monitor_window(tx, &|_, _, view, deleted| {
-        deleted || studio_runtime_schema::validate("MonitorEntityDto", view).unwrap_or(false)
-    })?;
+    let after = MonitorSnapshot::checked(record.clone(), actor_value)?;
+    crate::sync_policy::publish_monitor_change(tx, None, &after)?;
     Ok(record)
 }
 
@@ -1156,9 +1206,8 @@ pub fn bind_rule_in_transaction(
     rule_id: &str,
     account_key: &str,
 ) -> Result<Value, MonitorError> {
-    let record = MonitorsRepository::get(tx, monitor_id)?
-        .ok_or(MonitorError::Refused("Unknown command watch"))?;
-    let mut value = record.value().clone();
+    let (before, actor) = snapshot(tx, monitor_id)?;
+    let mut value = before.record().clone();
     if !matches!(value["status"].as_str(), Some("starting" | "approval"))
         || (value
             .get("ruleId")
@@ -1175,10 +1224,9 @@ pub fn bind_rule_in_transaction(
     }
     value["ruleId"] = json!(rule_id);
     value["accountKey"] = json!(account_key);
+    let after = MonitorSnapshot::checked(value.clone(), actor.value())?;
     repository::put(tx, value.clone())?;
-    crate::sync_policy::maintain_monitor_window(tx, &|_, _, view, deleted| {
-        deleted || studio_runtime_schema::validate("MonitorEntityDto", view).unwrap_or(false)
-    })?;
+    crate::sync_policy::publish_monitor_change(tx, Some(&before), &after)?;
     Ok(value)
 }
 

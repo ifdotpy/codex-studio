@@ -1,6 +1,7 @@
 """Strict public DTOs for the durable sync projection and its streams."""
 
 from __future__ import annotations
+from codex_start_wait import StartWaitReason
 
 from typing import Annotated, Literal
 from typing_extensions import NotRequired, TypedDict
@@ -266,15 +267,11 @@ class AgentEntityCapacityRetryDto(ContractModel):
 
 
 class AgentEntityStartWaitDto(ContractModel):
-    """A queued turn that waits for its account's start throttle (see AccountStartThrottle).
-
-    `slot`: the account already runs `maxRunningTurns` turns. `pause`: the pause after
-    a burst lasts until `until` (Unix seconds). Valid while the agent is queued at `epoch`.
-    """
-    reason: Literal["slot", "pause"]
+    """The epoch-scoped admission owner and minimal detail, owned by runtime-schema."""
+    reason: StartWaitReason
     epoch: SafeInt
-    runningTurns: SafeInt
-    maxRunningTurns: SafeInt
+    runningTurns: SafeInt | None = None
+    maxRunningTurns: SafeInt | None = None
     until: float | None = None
 
 
@@ -1017,6 +1014,8 @@ class ProjectEntityDto(ContractModel):
     accountKey: str | None = None
     accountRevision: SafeInt | None = None
     accountKeys: list[str] | None = None
+    accountGroups: list[str] | None = None
+    accountGroupsRevision: SafeInt | None = None
     workerEnvironment: Literal["host", "linux"] | None = None
     workerEnvironmentRevision: SafeInt | None = None
     organizationRevision: SafeInt | None = None

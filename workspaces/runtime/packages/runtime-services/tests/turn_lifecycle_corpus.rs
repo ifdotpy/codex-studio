@@ -7,8 +7,7 @@
 //! scenario 16 (new_thread_freezes_settings_and_accepts_context); independent artifact
 //! creation is covered by scenario 17 (child_result_materializes_before_submission).
 //! SessionControl's actual wire/ACK and restart behavior remain worker tests.
-#[path = "support/prepared_python.rs"]
-mod prepared_python;
+use crate::prepared_python_support as prepared_python;
 use serde_json::{Value, json};
 use std::ffi::{OsStr, OsString};
 use std::fs;
@@ -63,6 +62,7 @@ impl Oracle {
             // Its Python bootstrap installs disposable homes before imports.
             .env_clear()
             .envs(isolated_oracle_environment(std::env::vars_os()))
+            .env("TMPDIR", root)
             .env("PYTHONDONTWRITEBYTECODE", "1")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -861,7 +861,7 @@ async fn python_written_turn_lifecycle_corpus() {
     }
     let report_path = std::env::var_os("LIFECYCLE_CORPUS_REPORT")
         .map(PathBuf::from)
-        .unwrap_or_else(|| std::env::temp_dir().join("turn-lifecycle-corpus-report.json"));
+        .unwrap_or_else(|| root.0.join("turn-lifecycle-corpus-report.json"));
     fs::write(
         &report_path,
         serde_json::to_vec_pretty(&report).expect("report JSON"),

@@ -95,6 +95,7 @@ pub(super) fn accounts_response(
         archived_accounts,
         default_account_key: serde_json::from_value(snapshot.default_account_key)
             .map_err(|_| crate::error::ApiError::internal())?,
+        default_account_groups: snapshot.default_account_groups,
         logins,
         supports_delete: true,
         supports_disconnect: true,

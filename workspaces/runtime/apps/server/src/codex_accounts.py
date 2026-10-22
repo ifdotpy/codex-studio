@@ -316,6 +316,8 @@ class AccountStore:
                 "archivedAccounts": [self._public(row)
                                      for key in keys if (row := self._row(key)).get("deleted")],
                 "defaultAccountKey": self.data["defaultAccountKey"],
+                # Account orders are a Rust backend feature; this server has none.
+                "defaultAccountGroups": [],
                 "logins": logins,
                 "supportsDisconnect": True,
                 "supportsDelete": True,

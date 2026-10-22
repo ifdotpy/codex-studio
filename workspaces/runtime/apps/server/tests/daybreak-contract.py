@@ -105,6 +105,7 @@ class DaybreakResolution(unittest.TestCase):
 class DaybreakRuntime(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix='daybreak-contract-')
+        self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
         # Native review requires a git repository.
         subprocess.run(['git', 'init', '-q', str(self.root)], check=True)

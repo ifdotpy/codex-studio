@@ -9,8 +9,7 @@ use studio_runtime_services::safety_buffering::{
     SafetyDecision, SafetySnapshot, active, decide_action, decide_restart,
 };
 
-#[path = "support/prepared_python.rs"]
-mod prepared_python;
+use crate::prepared_python_support as prepared_python;
 
 #[allow(clippy::disallowed_methods)]
 fn python_oracle() -> (Value, tempfile::TempDir) {

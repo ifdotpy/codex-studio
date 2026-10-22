@@ -5,6 +5,7 @@ import {
   affectedPlan,
   boundaryFindings,
   commandFor,
+  discover,
   execute,
   executeRecipe,
   evaluatePlaywrightReport,
@@ -28,9 +29,27 @@ import {
   utimesSync,
   writeFileSync,
   readFileSync,
+  readdirSync,
+  existsSync,
 } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+
+test("server runner resolves the checkout native module before shared packages", () => {
+  const runnerWitnessTimeoutMilliseconds = 10_000;
+  const result = spawnSync(
+    process.platform === "win32" ? "python" : "python3",
+    [
+      path.join(
+        process.cwd(),
+        "workspaces/runtime/apps/server/tests/server/test_fast_suite_selection.py",
+      ),
+      "FastSuiteSelection.test_runner_resolves_checkout_native_module_before_shared_environment",
+    ],
+    { encoding: "utf8", timeout: runnerWitnessTimeoutMilliseconds },
+  );
+  assert.equal(result.status, 0, result.stderr || String(result.error));
+});
 
 test("short and comprehensive recipes preserve their owned test boundaries", () => {
   const fast = recipePlan(process.cwd(), "test-fast");
@@ -40,6 +59,14 @@ test("short and comprehensive recipes preserve their owned test boundaries", () 
   assert.match(fast.command, /contracts-check/);
   for (const recipe of [fast, comprehensive]) {
     assert.match(recipe.command, /build-client-wasm\.mjs/);
+    assert.equal(
+      (recipe.command.match(/'studio-operations-python'/g) ?? []).length,
+      1,
+    );
+    assert.ok(
+      recipe.command.indexOf("studio-operations-python") <
+        recipe.command.indexOf("test-server.py"),
+    );
     assert.ok(
       recipe.command.indexOf("build-client-wasm.mjs") <
         recipe.command.indexOf("test-server.py"),
@@ -53,6 +80,11 @@ test("short and comprehensive recipes preserve their owned test boundaries", () 
     comprehensive.command.indexOf("studio-runtime-server") <
       comprehensive.command.indexOf("test-server.py"),
   );
+  assert.match(comprehensive.command, /['"]just['"] ['"]clippy-runtime['"]/);
+  assert.ok(
+    comprehensive.command.indexOf("build:bundle") <
+      comprehensive.command.indexOf("clippy-runtime"),
+  );
   assert.match(fast.command, /boundaries-check/);
   assert.match(
     fast.command,
@@ -62,7 +94,42 @@ test("short and comprehensive recipes preserve their owned test boundaries", () 
     fast.command,
     /migration_2026_10_21_removes_capacity_column_and_replaces_wake_index_once/,
   );
+  assert.match(fast.command, /server_exec::tests::snapshots_/);
+  assert.match(fast.command, /server_exec::tests::snapshot_write_failure_/);
+  assert.match(fast.command, /server_exec::tests::existing_start_fence_/);
+  assert.match(fast.command, /account_worker::tests::callback_handoff::/);
+  assert.match(fast.command, /callback_head_of_line/);
+  assert.match(fast.command, /sync_policy::tests::monitor_/);
+  assert.match(
+    fast.command,
+    /submission_manifest_boundaries_use_shared_limits/,
+  );
+  assert.match(
+    fast.command,
+    /nonempty_file_submission_rechecks_cwd_and_replays_without_filesystem_work/,
+  );
+  assert.match(
+    fast.command,
+    /active_barrier_holds_new_requests_but_not_callback_answers/,
+  );
   assert.match(fast.command, /test:unit:fast/);
+  assert.equal((fast.command.match(/'--test' 'integration'/g) ?? []).length, 5);
+  assert.match(
+    fast.command,
+    /killed_provider_is_reaped_with_full_journal_and_unobserved_write/,
+  );
+  assert.match(
+    fast.command,
+    /direct_child_sigkill_settles_unknown_without_resend/,
+  );
+  assert.match(fast.command, /test\(\/\^sql_callback_guard::\/\)/);
+  assert.match(fast.command, /test\(\/\^project_preparation::\/\)/);
+  assert.match(fast.command, /test\(\/\^monitor_start_preparation::\/\)/);
+  assert.match(fast.command, /test\(\/\^monitor_wake_guarantees::\/\)/);
+  assert.match(fast.command, /test\(monitor_completion_\)/);
+  assert.match(fast.command, /test\(reattached_exit_\)/);
+  assert.match(fast.command, /not binary\(integration\)/);
+  assert.doesNotMatch(fast.command, /binary\((?:sql_callback_guard|monitor_)/);
   assert.doesNotMatch(
     fast.command,
     /test:browser:smoke|--workspace|test-server-load|mutations/,
@@ -93,6 +160,42 @@ test("short and comprehensive recipes preserve their owned test boundaries", () 
     comprehensive.command,
     /test-server-load|runtime_load|mutations/,
   );
+});
+
+test("consolidated Rust targets register every integration test file once", () => {
+  const consolidated = discover(process.cwd()).filter(
+    (item) =>
+      item.ecosystem === "cargo" &&
+      existsSync(
+        path.join(path.dirname(item.manifest), "tests/integration.rs"),
+      ),
+  );
+  assert.ok(consolidated.length > 0);
+  for (const item of consolidated) {
+    const crate = path.dirname(item.manifest);
+    const manifest = readFileSync(item.manifest, "utf8");
+    assert.match(manifest, /^autotests = false$/m, item.name);
+    assert.match(
+      manifest,
+      /\[\[test\]\]\s+name = "integration"\s+path = "tests\/integration.rs"/,
+      item.name,
+    );
+    const facade = readFileSync(
+      path.join(crate, "tests/integration.rs"),
+      "utf8",
+    );
+    const modules = [...facade.matchAll(/^mod (\w+);$/gm)]
+      .map((match) => `${match[1]}.rs`)
+      .sort();
+    const files = readdirSync(path.join(crate, "tests"))
+      .filter((name) => name.endsWith(".rs") && name !== "integration.rs")
+      .sort();
+    assert.deepEqual(
+      modules,
+      files,
+      `${item.name}: register each test file in tests/integration.rs`,
+    );
+  }
 });
 
 test("unsafe Rust is limited to the purpose-listed modules", () => {
@@ -1230,28 +1333,79 @@ test("WASM preparation locates only the pinned CLI and builds before binding", (
   }
 });
 
-test("Playwright launcher removes the session BROWSER selector", () => {
+test("Playwright launcher clears BROWSER and removes state after success and failure", () => {
   const root = mkdtempSync(
     path.join(os.tmpdir(), "studio-browser-environment-"),
   );
   const witness = path.join(root, "pnpm");
-  writeFileSync(
-    witness,
-    `#!${process.execPath}\nif ('BROWSER' in process.env) process.exit(17); console.log('isolated browser');`,
-  );
-  chmodSync(witness, 0o755);
   try {
-    const result = spawnSync(
-      process.execPath,
-      ["workspaces/client/apps/web/scripts/run-browser-tests.mjs", "--list"],
-      {
-        encoding: "utf8",
-        env: { ...process.env, PATH: root, BROWSER: "/session/studio-browser" },
-      },
-    );
-    assert.equal(result.status, 0, result.stderr);
-    assert.match(result.stdout, /isolated browser/);
+    for (const status of [0, 19]) {
+      writeFileSync(
+        witness,
+        `#!${process.execPath}\nif ('BROWSER' in process.env) process.exit(17); console.log('isolated browser'); process.exit(${status});`,
+      );
+      chmodSync(witness, 0o755);
+      const result = spawnSync(
+        process.execPath,
+        ["workspaces/client/apps/web/scripts/run-browser-tests.mjs", "--list"],
+        {
+          encoding: "utf8",
+          env: {
+            ...process.env,
+            PATH: root,
+            TMPDIR: root,
+            KEEP_TEST_ARTIFACTS: "",
+            BROWSER: "/session/studio-browser",
+          },
+        },
+      );
+      assert.equal(result.status, status, result.stderr);
+      assert.match(result.stdout, /isolated browser/);
+      assert.deepEqual(readdirSync(root), ["pnpm"]);
+    }
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("tests retain temporary state ownership and follow the platform temp root", async () => {
+  const { temporaryStateFindings, repositoryTemporaryStateFindings } =
+    await import("../test-temp-state.mjs");
+  assert.deepEqual(repositoryTemporaryStateFindings(process.cwd()), []);
+  for (const source of [
+    `let root = tempfile::tempdir().unwrap().${"keep"}();`,
+    `let root = dir.\n${"into_path"}();`,
+    `tempfile::TempDir::${"keep"}(root);`,
+    `root.${"disable_cleanup"}(true);`,
+    "static ROOT: OnceLock<tempfile::TempDir> = OnceLock::new();",
+    "struct Template { root: tempfile::TempDir } static ROOT: OnceCell<Template> = OnceCell::const_new();",
+    `root = tempfile.TemporaryDirectory(dir="${"/" + "tmp"}")`,
+  ]) {
+    assert.equal(temporaryStateFindings("tests/example.rs", source).length, 1);
+  }
+  const fixture = `assert_eq!(normalize("${"/" + "tmp"}/example"), "example");`;
+  assert.deepEqual(
+    temporaryStateFindings("tests/example.rs", fixture, [fixture]),
+    [],
+  );
+  assert.equal(
+    temporaryStateFindings("tests/example.rs", `${fixture}\n${fixture}`, [
+      fixture,
+    ]).length,
+    1,
+  );
+  assert.deepEqual(
+    temporaryStateFindings(
+      "tests/example.rs",
+      "let root = tempfile::tempdir().unwrap();",
+    ),
+    [],
+  );
+  assert.deepEqual(
+    temporaryStateFindings(
+      "src/persistence.rs",
+      `let path = file.${"keep"}();`,
+    ),
+    [],
+  );
 });

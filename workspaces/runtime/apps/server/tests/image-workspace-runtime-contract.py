@@ -49,6 +49,7 @@ class ImageWorkspaceRuntime(unittest.TestCase):
 
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix='image-workspace-runtime-')
+        self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         self.repo = self.root / 'repo'
         shutil.copytree(self.repo_template, self.repo)

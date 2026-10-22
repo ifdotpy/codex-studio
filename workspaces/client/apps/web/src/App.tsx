@@ -1652,18 +1652,9 @@ export default function App({ active = true }: { active?: boolean }) {
           }
         : {}),
       ...(projectFolder ? { project_folder: projectFolder } : {}),
+      // Without settings, the server chooses the account and model from the
+      // project's account order.
       ...settings,
-      ...(!settings?.account_key &&
-      !projectBinding &&
-      cwd &&
-      data?.runtime?.projects?.find((project) => project.path === cwd)
-        ?.accountKey
-        ? {
-            account_key:
-              data.runtime?.projects?.find((project) => project.path === cwd)
-                ?.accountKey ?? undefined,
-          }
-        : {}),
     };
     const creationRequest = creation.current;
     if (!creationRequest) {

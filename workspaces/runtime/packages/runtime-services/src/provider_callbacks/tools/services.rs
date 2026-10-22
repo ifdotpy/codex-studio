@@ -83,10 +83,7 @@ impl crate::managed_host_tools::SendPort for ProductionPorts {
         // least eight characters that matches exactly one agent in the caller's
         // scope. An ambiguous or unknown ID is refused with its reason.
         let resolved;
-        let target = if matches!(target, "parent" | "lead" | "broadcast" | "all")
-            || target.starts_with("remote:")
-            || target.starts_with("federated:")
-        {
+        let target = if !crate::managed_host_tools::is_agent_target(target) {
             target
         } else {
             resolved = messages::resolve_agent(tx, &snapshot, target).map_err(callback_refusal)?;
@@ -191,32 +188,12 @@ fn is_descendant(
     sender_id: &str,
     target_id: &str,
 ) -> Result<bool, crate::managed_host_tools::Error> {
-    let records = records::all(tx, "runtime_agents")?;
-    let mut by_id = std::collections::BTreeMap::new();
-    for record in records {
-        let id = record
-            .get("id")
-            .and_then(Value::as_str)
-            .ok_or(crate::managed_host_tools::Error::Stale)?;
-        by_id.insert(id.to_owned(), record);
+    use crate::managed_host_tools::{AgentAncestry, agent_ancestry};
+    match agent_ancestry(tx, sender_id, target_id)? {
+        AgentAncestry::Descendant => Ok(true),
+        AgentAncestry::Unrelated => Ok(false),
+        AgentAncestry::Cycle => Err(crate::managed_host_tools::Error::Stale),
     }
-    let Some(mut cursor) = by_id.get(target_id) else {
-        return Ok(false);
-    };
-    let mut visited = std::collections::BTreeSet::new();
-    while let Some(parent) = cursor.get("parentId").and_then(Value::as_str) {
-        if parent == sender_id {
-            return Ok(true);
-        }
-        if !visited.insert(parent.to_owned()) {
-            return Err(crate::managed_host_tools::Error::Stale);
-        }
-        let Some(next) = by_id.get(parent) else {
-            return Ok(false);
-        };
-        cursor = next;
-    }
-    Ok(false)
 }
 
 impl crate::managed_host_tools::ChildCreationPort for ProductionPorts {

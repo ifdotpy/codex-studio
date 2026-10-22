@@ -40,6 +40,13 @@ bin directory, or in Studio's versioned UI cache. If absent, it fails with the
 matching Cargo install command. Cold compilation is outside the warm target.
 The warm target is 30 seconds. A prepared local run at `62b7076d` on 2026-10-18
 passed in 23.759 seconds; cold setup was excluded.
+Both local gates first build `studio-operations-python` in the debug profile.
+The server runner links that checkout artifact into each suite's private import
+path before shared site-packages. Artifact paths are owned by
+[`codex_operations_artifact.py`](../workspaces/runtime/apps/server/src/codex_operations_artifact.py);
+use the same `CARGO_TARGET_DIR` for a focused build and runner invocation.
+A missing checkout build fails with its build command; no shared Python install
+is updated or used as a fallback for tests.
 The short tier does not build the browser or contact a model provider.
 The tooling tests also check the prebuilt release binary contract of the native
 packagers (`release-binaries.test.mjs`): the same commit is accepted; another
@@ -50,7 +57,8 @@ Route-manifest extraction uses the ordinary Rust test profile and the same
 second optimized HTTP test binary solely to print route metadata.
 
 `just test-comprehensive` preserves the previous broad local recipe: default
-server suites, server bridge, workspace Rust nextest, web type and unit checks,
+server suites, server bridge, workspace Clippy (`just clippy-runtime`), workspace
+Rust nextest, web type and unit checks,
 tooling tests, and browser smoke. Run it locally on the exact commit before
 every push to `main`; the short tier does not replace this gate. Hosted CI continues its
 comprehensive check composition, split across server and Rust partitions,
@@ -89,7 +97,7 @@ without maintaining a second suite inventory.
 | Tier or purpose          | What it runs                                                                                                                                                                          | Just command                               |
 | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------ |
 | Short local safety tier  | Selected fixture-backed server witnesses, the Rust state migration witness, API unit and type checks, tooling and shared contract guards                                              | `just test-fast`                           |
-| Comprehensive local tier | Previous broad default server run, bridge, Rust nextest, web type and unit checks, tooling tests, browser smoke                                                                       | `just test-comprehensive`                  |
+| Comprehensive local tier | Previous broad default server run, bridge, Rust Clippy (`just clippy-runtime`), Rust nextest, web type and unit checks, tooling tests, browser smoke                                  | `just test-comprehensive`                  |
 | Hosted CI comprehensive  | Server shards, Rust partitions, broad non-Rust checks, and browser smoke                                                                                                              | Existing parallel workflow                 |
 | Browser smoke            | Modal/popover focus and layering, mobile composer geometry, receipt pagination, schema-cache checkpoint retention, account settings smoke, transcript scroll position during a stream | `just test-browser-smoke`                  |
 | Heavy server             | All suites in the heavy server list                                                                                                                                                   | `just test-server-heavy`                   |
@@ -107,6 +115,16 @@ The native file event check depends on the host FSEvents service and is manual.
 The comprehensive server tier covers watcher readiness, path collection, full-rescan requests,
 and scoped scanning with a deterministic helper. A native delivery timeout is
 reported as a failed manual check; it is not converted into a skip or a retry.
+
+Provider callback witnesses in the [short-tier selection](../workspaces/tooling/apps/repository-checks/facade.mjs)
+check the durable callback record of
+[the account worker](../workspaces/runtime/packages/runtime-services/src/account_worker/callback_record.rs):
+its state transitions, restart at every point between record commit, journal
+acknowledgement and answer write (no lost answer, no repeated answer), retirement
+of an ended generation's records, and an unanswered request followed by more
+events than the session's unsettled bound while another turn and a new thread
+complete. The running-handler and queued-answer limits are named constants of
+the account worker; reaching them delays only the start of a handler.
 
 Project preparation witnesses in the [short-tier selection](../workspaces/tooling/apps/repository-checks/facade.mjs)
 exercise agent execution changes between preparation and a project write, refuse
@@ -126,9 +144,8 @@ invalidate an otherwise authorized start.
 The Rust runtime differential corpora use one isolated Python JSON-lines oracle
 per test process and Python-written SQLite seed backups. Suites that use the
 shared `disposable_state_dir` test helper keep SQLite state and oracle scratch
-on a memory filesystem
-(`STUDIO_RUNTIME_CORPUS_TMP`, else Linux `/dev/shm`, else the temporary
-directory), because per-commit fsync on a disk-backed `TMPDIR` dominates their
+below the platform temporary directory. Set `TMPDIR` to a disposable memory
+filesystem when needed: per-commit fsync on a disk-backed directory dominates
 run time under shared I/O load. Default nextest runs
 explicit fast witnesses; its account-worker crash matrix covers four deterministic
 scenarios (normal transcript commit, submitted-before-written recovery, pending
@@ -253,6 +270,15 @@ lets a named case stay within one file. Cargo uses the positional case as a
 nextest test-name filter; `--name <pattern>` intersects another nextest
 test-name substring filter. Runner options after `--` remain available (for
 example, `just test studio-diagnostics tests::formatter_matches_python_json_dump_golden -- --exact`).
+The runtime services, HTTP, process, store, and server crates each link one
+`integration` test target. Their `tests/integration.rs` facades register the
+behavior files under `tests/`; add each new file as a module there. Tooling checks
+that every behavior file is registered exactly once. Select a module with
+`cargo nextest run -p studio-runtime-services --test integration -E 'test(/^monitor_recovery::/)'`
+or `cargo test -p studio-runtime-services --test integration monitor_recovery::`.
+Nextest still runs each test in its own process. Library tests keep their existing
+names and `--lib` selector.
+
 Cargo target selectors such as `--test compatibility` are routed to Cargo, for
 example `just test studio-diagnostics '' -- --test compatibility`. The server
 uses its runner's `--filter` suite selector. `just test-plan` prints the
@@ -803,3 +829,19 @@ checks. The [pre-commit hook](../.githooks/pre-commit) checks staged content onl
 it does not replace behavior tests.
 
 Runtime Clippy (`just clippy-runtime`) rejects blocking calls on Tokio threads, blocking filesystem calls in HTTP handlers, blocking lock guards or RefCell borrows held across awaits, and oversized inline futures; use async APIs, labeled `blocking_pool::spawn_blocking`, or a documented dedicated non-Tokio thread (policy: [runtime/clippy.toml](../workspaces/runtime/clippy.toml)).
+
+## Disposable test state
+
+Tests keep the `tempfile::TempDir` or Python `TemporaryDirectory` owner alive
+until stores and child processes close. Register Python cleanup immediately in
+`setUp` so a setup failure also removes state. Use the platform temporary root
+(`TMPDIR`), and cache fixture bytes instead of directories in static values.
+Playwright screenshots belong in its managed output directories.
+The tooling test [temporary-state guard](../workspaces/tooling/apps/repository-checks/test-temp-state.mjs)
+rejects cleanup-disabling calls and new hard-coded temporary paths. Its exact-line
+fixture inventory permits existing path-mapping and protocol examples, not new
+filesystem allocations. No new debug retention switch is provided.
+
+Browser and smoke fixtures remove their directories after success or failure.
+Set the existing `KEEP_TEST_ARTIFACTS` switch explicitly when debugging requires
+retained browser output.

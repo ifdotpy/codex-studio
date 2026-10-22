@@ -200,6 +200,7 @@ pub async fn replay_lead_request(
 pub async fn creation_account_key(
     context: &Context<'_>,
     request: &Creation,
+    lead: bool,
 ) -> Result<String, OperationError> {
     let requested_cwd = project_directory_async(request.cwd.clone()).await?;
     let previous_id = request.previous.clone();
@@ -228,7 +229,27 @@ pub async fn creation_account_key(
     } else {
         project_directory_default_async().await?
     };
-    account_key(context, request.account.clone(), cwd).await
+    if lead {
+        new_chat_account(
+            context,
+            request.account.clone(),
+            cwd,
+            requested_model(request),
+        )
+        .await
+    } else {
+        account_key(context, request.account.clone(), cwd).await
+    }
+}
+
+/// The non-empty model named by a creation request.
+fn requested_model(request: &Creation) -> Option<String> {
+    request
+        .intent
+        .get("model")
+        .and_then(Value::as_str)
+        .filter(|model| !model.trim().is_empty())
+        .map(str::to_owned)
 }
 
 pub async fn conversation_account_key(
@@ -416,7 +437,7 @@ async fn prepare_new_agent_admission(
     // catalog; child account selection is resolved from the parent at the
     // admission boundary (`codex_runtime.py:4876-4888`).
     let account = if request.parent.is_none() {
-        Some(creation_account_key(context, request).await?)
+        Some(creation_account_key(context, request, false).await?)
     } else {
         None
     };
@@ -702,16 +723,26 @@ async fn create(
     } else {
         None
     };
-    let account = account_key(context, request.account.clone(), cwd.clone()).await?;
+    let account = if draft {
+        new_chat_account(
+            context,
+            request.account.clone(),
+            cwd.clone(),
+            requested_model(&request),
+        )
+        .await?
+    } else {
+        account_key(context, request.account.clone(), cwd.clone()).await?
+    };
     let identity = account_identity(context, &account).await?;
     let provider = identity.provider.key().to_owned();
     let settings = if request.catalog || request.worker_catalog {
-        let model = request
+        let named_model = request
             .intent
             .get("model")
             .and_then(Value::as_str)
-            .filter(|model| !model.trim().is_empty())
-            .unwrap_or(crate::provider_adapter::default_model(identity.provider));
+            .filter(|model| !model.trim().is_empty());
+        let model = named_model.unwrap_or(new_chat_model(identity.provider, draft));
         let effort = request
             .intent
             .get("effort")
@@ -745,25 +776,37 @@ async fn create(
                 previous.as_ref()?.get("daybreakEnabled")?.as_bool()
             })
             .unwrap_or(false);
-        context
+        let catalog = context
             .catalog
             .as_deref()
             .ok_or(OperationError::Unavailable(
                 crate::model_catalog::MODEL_CATALOG_DEPENDENCY,
-            ))?
-            .resolve(
+            ))?;
+        let provider_default = crate::provider_adapter::default_model(identity.provider);
+        match catalog.resolve(
+            &account,
+            &identity,
+            model,
+            effort,
+            fast_mode,
+            daybreak_enabled,
+        ) {
+            // A catalog without the new-chat default model keeps the provider default.
+            Err(_) if named_model.is_none() && model != provider_default => catalog.resolve(
                 &account,
                 &identity,
-                model,
+                provider_default,
                 effort,
                 fast_mode,
                 daybreak_enabled,
-            )?
+            )?,
+            result => result?,
+        }
     } else {
         ExecutionSettings {
-            model: crate::provider_adapter::default_model(identity.provider).to_owned(),
-            effort: Some("medium".to_owned()),
-            native_effort: "medium".to_owned(),
+            model: new_chat_model(identity.provider, draft).to_owned(),
+            effort: Some(new_chat_effort(identity.provider, draft).to_owned()),
+            native_effort: new_chat_effort(identity.provider, draft).to_owned(),
             fast_mode: false,
             daybreak_enabled: false,
             cyber_access_program: "standard".to_owned(),
@@ -2476,6 +2519,71 @@ fn previous_lead(
         .transpose()
 }
 
+/// The startup account snapshot, or the live registry when a driver is present.
+fn account_snapshot(
+    context: &Context<'_>,
+) -> Result<crate::account_policy::AccountsSnapshot, OperationError> {
+    if let Some(driver) = context.driver.as_ref()
+        && let Ok(snapshot) = driver.snapshot()
+    {
+        return Ok(snapshot);
+    }
+    context
+        .accounts
+        .map(AccountPolicyState::accounts)
+        .ok_or(OperationError::Internal)
+}
+
+/// The deepest project whose folder holds `cwd` and whose record satisfies `filter`.
+fn project_for_cwd(
+    connection: &Connection,
+    cwd: &str,
+    filter: fn(&Value) -> bool,
+) -> Result<Option<Value>, OperationError> {
+    let mut statement = connection
+        .prepare("SELECT id,record FROM runtime_projects")
+        .map_err(|_| OperationError::Internal)?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(|_| OperationError::Internal)?;
+    let mut selected: Option<(usize, Value)> = None;
+    for row in rows {
+        let (id, raw) = row.map_err(|_| OperationError::Internal)?;
+        let invalid = || MutationError::InvalidStoredObject {
+            table: "runtime_projects",
+            id: id.clone(),
+        };
+        let record: Value = serde_json::from_str(&raw).map_err(|_| invalid())?;
+        if !record.is_object() || record.get("id").and_then(Value::as_str) != Some(id.as_str()) {
+            return Err(invalid().into());
+        }
+        let project_path = record
+            .get("path")
+            .and_then(Value::as_str)
+            .ok_or_else(invalid)?;
+        if !matches!(
+            record.get("accountKey"),
+            None | Some(Value::Null | Value::String(_))
+        ) {
+            return Err(invalid().into());
+        }
+        let path = PathBuf::from(project_path);
+        if PathBuf::from(cwd).starts_with(&path) && filter(&record) {
+            let depth = path.components().count();
+            if selected
+                .as_ref()
+                .is_none_or(|(old_depth, _)| depth > *old_depth)
+            {
+                selected = Some((depth, record));
+            }
+        }
+    }
+    Ok(selected.map(|(_, record)| record))
+}
+
+/// The project account of `cwd`, or the server default account.
 async fn account_key(
     context: &Context<'_>,
     requested: Option<String>,
@@ -2484,69 +2592,83 @@ async fn account_key(
     if let Some(account) = requested {
         return Ok(account);
     }
-    let default = context
-        .accounts
-        .as_ref()
-        .and_then(|policy| {
-            policy
-                .accounts()
-                .default_account_key
-                .as_str()
-                .map(str::to_owned)
-        })
-        .ok_or_else(|| OperationError::Internal)?;
+    let default = account_snapshot(context)?
+        .default_account_key
+        .as_str()
+        .map(str::to_owned)
+        .ok_or(OperationError::Internal)?;
     context
         .store
         .read_async::<_, OperationError>(
             "runtime-services/agents_create/account_key",
             move |connection| {
-                let mut statement = connection
-                    .prepare("SELECT id,record FROM runtime_projects")
-                    .map_err(|_| OperationError::Internal)?;
-                let rows = statement
-                    .query_map([], |row| {
-                        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                let project = project_for_cwd(connection, &cwd, |record| {
+                    record.get("accountKey").and_then(Value::as_str).is_some()
+                })?;
+                Ok(project
+                    .and_then(|record| {
+                        record
+                            .get("accountKey")
+                            .and_then(Value::as_str)
+                            .map(str::to_owned)
                     })
-                    .map_err(|_| OperationError::Internal)?;
-                let mut selected: Option<(usize, String)> = None;
-                for row in rows {
-                    let (id, raw) = row.map_err(|_| OperationError::Internal)?;
-                    let invalid = || MutationError::InvalidStoredObject {
-                        table: "runtime_projects",
-                        id: id.clone(),
-                    };
-                    let record: Value = serde_json::from_str(&raw).map_err(|_| invalid())?;
-                    if !record.is_object()
-                        || record.get("id").and_then(Value::as_str) != Some(id.as_str())
-                    {
-                        return Err(invalid().into());
-                    }
-                    let project_path = record
-                        .get("path")
-                        .and_then(Value::as_str)
-                        .ok_or_else(invalid)?;
-                    let project_account = match record.get("accountKey") {
-                        None | Some(Value::Null) => None,
-                        Some(Value::String(account)) => Some(account.as_str()),
-                        Some(_) => return Err(invalid().into()),
-                    };
-                    let path = PathBuf::from(project_path);
-                    if PathBuf::from(&cwd).starts_with(&path)
-                        && let Some(account) = project_account
-                    {
-                        let depth = path.components().count();
-                        if selected
-                            .as_ref()
-                            .is_none_or(|(old_depth, _)| depth > *old_depth)
-                        {
-                            selected = Some((depth, account.to_owned()));
-                        }
-                    }
-                }
-                Ok(selected.map_or(default, |(_, account)| account))
+                    .unwrap_or(default))
             },
         )
         .await
+}
+
+/// The account of a new chat: the requested account, else the default of the
+/// project's account order (see [`crate::account_preference::new_chat_default`]).
+async fn new_chat_account(
+    context: &Context<'_>,
+    requested: Option<String>,
+    cwd: String,
+    model: Option<String>,
+) -> Result<String, OperationError> {
+    if let Some(account) = requested {
+        return Ok(account);
+    }
+    let snapshot = account_snapshot(context)?;
+    let default = snapshot
+        .default_account_key
+        .as_str()
+        .map(str::to_owned)
+        .ok_or(OperationError::Internal)?;
+    let project = context
+        .store
+        .read_async::<_, OperationError>(
+            "runtime-services/agents_create/account_key",
+            move |connection| project_for_cwd(connection, &cwd, |_| true),
+        )
+        .await?;
+    Ok(crate::account_preference::new_chat_default(
+        &snapshot.accounts,
+        &default,
+        &snapshot.default_account_groups,
+        project.as_ref(),
+        model.as_deref(),
+    )
+    .account_key)
+}
+
+/// The effort of a new chat whose request names no execution settings.
+fn new_chat_effort(provider: studio_runtime_providers::ProviderKind, lead: bool) -> &'static str {
+    if lead && provider == studio_runtime_providers::ProviderKind::Claude {
+        studio_runtime_schema::shared_values::DEFAULT_CLAUDE_LEAD_EFFORT
+    } else {
+        "medium"
+    }
+}
+
+/// The model of a new chat whose request names no model: Claude Opus for a Claude
+/// orchestrator, else the provider's default model.
+fn new_chat_model(provider: studio_runtime_providers::ProviderKind, lead: bool) -> &'static str {
+    if lead && provider == studio_runtime_providers::ProviderKind::Claude {
+        studio_runtime_schema::shared_values::DEFAULT_CLAUDE_LEAD_MODEL
+    } else {
+        crate::provider_adapter::default_model(provider)
+    }
 }
 
 async fn account_identity(
@@ -2713,6 +2835,7 @@ async fn resolve_worker_defaults(
                     model,
                     excluded_account_keys,
                     project_account_keys: None,
+                    project_account_groups: None,
                     active_agents: &std::collections::HashMap::new(),
                 })
                 .map_err(|error| match error {
@@ -2836,6 +2959,7 @@ async fn resolve_review_defaults(
                     model,
                     excluded_account_keys,
                     project_account_keys: None,
+                    project_account_groups: None,
                     active_agents: &std::collections::HashMap::new(),
                 })
                 .map_err(|error| match error {
@@ -3318,6 +3442,7 @@ mod tests {
             deleted: false,
             duplicate: false,
             max_running_turns: studio_runtime_schema::shared_values::ACCOUNT_RUNNING_TURNS_MAX,
+            group: None,
         };
         ManagedFixture {
             accounts: AccountFixture {
@@ -3326,6 +3451,7 @@ mod tests {
                         candidate("claude-local", "claude", true),
                         candidate("default", "codex", true),
                     ],
+                    default_account_groups: Vec::new(),
                 },
             },
             catalog: CatalogFixture {
@@ -3944,7 +4070,7 @@ mod tests {
             ..Creation::default()
         };
         assert_eq!(
-            creation_account_key(&context, &creation)
+            creation_account_key(&context, &creation, true)
                 .await
                 .expect("creation account"),
             "project-account"
@@ -3954,6 +4080,126 @@ mod tests {
                 .await
                 .expect("conversation account"),
             "project-account"
+        );
+    }
+
+    /// A new chat prefers the project's account order and a Claude orchestrator;
+    /// a task agent and an existing chat keep the project account.
+    #[tokio::test]
+    async fn new_chat_account_follows_the_project_order_and_prefers_claude() {
+        let state = tempfile::tempdir().expect("temporary state");
+        let project = tempfile::tempdir().expect("existing project directory");
+        let project_path = studio_runtime_store::path_identity::resolve(project.path())
+            .expect("resolved project directory")
+            .to_string_lossy()
+            .into_owned();
+        let store = RuntimeStore::open(Some(state.path()))
+            .await
+            .expect("runtime store");
+        let write_path = project_path.clone();
+        store
+            .transaction(move |tx| {
+                tx.execute(
+                    "INSERT INTO runtime_projects(id,record) VALUES(?1,?2)",
+                    rusqlite::params![
+                        write_path,
+                        json!({
+                            "id": write_path,
+                            "path": write_path,
+                            "accountKey": "codex-work",
+                            "accountGroups": ["work", "own"]
+                        })
+                        .to_string()
+                    ],
+                )?;
+                tx.execute(
+                    "INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",
+                    rusqlite::params![
+                        "conversation",
+                        json!({"id":"conversation","accountKey":"claude-own"}).to_string()
+                    ],
+                )?;
+                Ok(())
+            })
+            .await
+            .expect("seed project and conversation");
+        // Claude profiles name their own config folders, so the credential watch
+        // stays inside the fixture.
+        let config = |name: &str| state.path().join(name).to_string_lossy().into_owned();
+        let registry = json!({"version":1,"defaultAccountKey":"codex-own","accounts":{
+            "codex-own":{"id":"codex-own","home":config("a"),"label":"A","source":"Codex CLI","status":"ready"},
+            "codex-work":{"id":"codex-work","home":config("b"),"label":"B","source":"Codex CLI","status":"ready"},
+            "claude-own":{"id":"claude-own","home":config("c"),"label":"C","source":"Claude Code","provider":"claude","status":"ready","claudeOptions":{"configDir":config("c")}},
+            "claude-work":{"id":"claude-work","home":config("d"),"label":"D","source":"Claude Code","provider":"claude","status":"ready","claudeOptions":{"configDir":config("d")}}
+        },"logins":{},"deleteReceipts":{}});
+        let registry_path = state.path().join("accounts/registry.json");
+        std::fs::create_dir_all(registry_path.parent().expect("registry parent"))
+            .expect("registry folder");
+        std::fs::write(&registry_path, registry.to_string()).expect("write registry");
+        std::fs::write(
+            registry_path.with_file_name(crate::account_preference::ACCOUNT_ORDER_FILE),
+            json!({"version":1,"defaultAccountGroups":["own"],"groups":{
+                "codex-own":"own","codex-work":"work","claude-own":"own","claude-work":"work"}})
+            .to_string(),
+        )
+        .expect("write account order");
+        let driver = std::sync::Arc::new(
+            crate::account_driver::AccountDriver::open(&registry_path).expect("open accounts"),
+        );
+        let validate = |_: &str, _: &Value| true;
+        let context = Context {
+            store: std::sync::Arc::new(store),
+            accounts: None,
+            driver: Some(driver),
+            catalog: None,
+            managed_creation_environment: None,
+            validate: std::sync::Arc::new(validate),
+        };
+        let creation = |model: Option<&str>| Creation {
+            cwd: Some(project_path.clone()),
+            intent: model.map_or_else(|| json!({}), |model| json!({"model": model})),
+            ..Creation::default()
+        };
+        let choose = |request: Creation, lead: bool| {
+            let context = &context;
+            async move {
+                creation_account_key(context, &request, lead)
+                    .await
+                    .expect("creation account")
+            }
+        };
+        // The project order puts "work" first, and a Claude account exists.
+        assert_eq!(choose(creation(None), true).await, "claude-work");
+        // A requested Codex model picks the first Codex account of the order.
+        assert_eq!(
+            choose(creation(Some("gpt-6-astra")), true).await,
+            "codex-work"
+        );
+        // An explicit account stays the choice.
+        let mut explicit = creation(None);
+        explicit.account = Some("claude-own".to_owned());
+        assert_eq!(choose(explicit, true).await, "claude-own");
+        // A task agent (not a new chat) keeps the project account.
+        assert_eq!(choose(creation(None), false).await, "codex-work");
+        // Moving an existing chat to the project keeps the project account rule.
+        assert_eq!(
+            conversation_account_key(&context, "conversation", None, Some(&project_path))
+                .await
+                .expect("conversation account"),
+            "codex-work"
+        );
+        assert_eq!(
+            new_chat_model(ProviderKind::Claude, true),
+            studio_runtime_schema::shared_values::DEFAULT_CLAUDE_LEAD_MODEL
+        );
+        assert_eq!(new_chat_effort(ProviderKind::Claude, true), "medium");
+        assert_eq!(
+            new_chat_model(ProviderKind::Codex, true),
+            DEFAULT_LEAD_MODEL
+        );
+        assert_eq!(
+            new_chat_model(ProviderKind::Claude, false),
+            crate::provider_adapter::default_model(ProviderKind::Claude)
         );
     }
 
@@ -4051,7 +4297,8 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn creation_rechecks_replay_and_previous_eligibility_after_controlled_interleaving() {
-        let root = std::env::temp_dir().join(format!("creation-recheck-{}", new_id().expect("id")));
+        let directory = tempfile::tempdir().expect("owned test directory");
+        let root = directory.path().to_path_buf();
         std::fs::create_dir_all(&root).expect("temporary state");
         let schema: Value = serde_json::from_str(include_str!(
             "../../../runtime-store/src/runtime-state-schema.json"
@@ -4249,6 +4496,5 @@ mod tests {
             );
         }
         drop(store);
-        std::fs::remove_dir_all(root).expect("remove temporary state");
     }
 }

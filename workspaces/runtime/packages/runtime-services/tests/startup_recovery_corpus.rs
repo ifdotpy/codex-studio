@@ -1,5 +1,4 @@
-#[path = "support/prepared_python.rs"]
-mod prepared_python;
+use crate::prepared_python_support as prepared_python;
 
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -10,12 +9,7 @@ use studio_runtime_store::RuntimeStore;
 const NOW: f64 = 2_000_000_000.0;
 
 fn state_root() -> tempfile::TempDir {
-    let root = std::env::temp_dir().join("cs-startup-recovery-corpus");
-    std::fs::create_dir_all(&root).expect("tmpfs startup corpus root");
-    tempfile::Builder::new()
-        .prefix("startup-recovery-")
-        .tempdir_in(root)
-        .expect("tmpfs Python-written state")
+    prepared_python::disposable_state_dir()
 }
 
 #[allow(clippy::disallowed_methods)]
@@ -43,7 +37,7 @@ fn oracle(root: &Path, command: &str) -> Value {
         .env("XDG_CACHE_HOME", cache)
         .env("STUDIO_TEST_ISOLATION_ROOT", isolation.path())
         .env("PATH", "/usr/local/bin:/usr/bin:/bin")
-        .env("TMPDIR", std::env::temp_dir())
+        .env("TMPDIR", isolation.path())
         .env(
             "CODEX_NODE",
             std::env::var_os("CODEX_NODE").unwrap_or_else(|| "node".into()),

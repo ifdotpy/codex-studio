@@ -1,8 +1,5 @@
-#[allow(clippy::duplicate_mod)]
-#[path = "support/prepared_python.rs"]
-mod prepared_python_support;
-#[path = "support/projections.rs"]
-mod projections;
+use crate::prepared_python_support;
+use crate::projection_fixtures as projections;
 use rusqlite::{Connection, params};
 use serde_json::{Value, json};
 use std::{

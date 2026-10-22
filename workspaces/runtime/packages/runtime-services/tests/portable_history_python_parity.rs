@@ -1,5 +1,4 @@
-#[path = "support/prepared_python.rs"]
-mod prepared_python;
+use crate::prepared_python_support as prepared_python;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};

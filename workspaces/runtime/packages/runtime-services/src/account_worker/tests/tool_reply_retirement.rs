@@ -136,7 +136,7 @@ async fn tool_call(peer: &mut Peer, index: usize) -> (u64, Wire) {
     (cursor, callback)
 }
 
-async fn answered_tool_call(peer: &mut Peer, index: usize) {
+async fn answered_tool_call(state: &State, peer: &mut Peer, index: usize) {
     let (cursor, callback) = tool_call(peer, index).await;
     callback
         .receipt
@@ -147,6 +147,7 @@ async fn answered_tool_call(peer: &mut Peer, index: usize) {
         .ok()
         .expect("callback write receipt receiver");
     peer.acknowledged(cursor).await;
+    callbacks_retired(state).await;
 }
 
 /// Former leak: 128 unwritten replies of the live turn made the next call
@@ -195,7 +196,7 @@ async fn scenario_prepared_replies_of_the_live_turn_do_not_fail_a_tool_call(
         .await
         .expect("seed prepared replies of the live turn");
     for index in 0..=FORMER_REPLY_CAP {
-        answered_tool_call(&mut peer, index).await;
+        answered_tool_call(&state, &mut peer, index).await;
     }
     assert_eq!(
         reply_rows(&state).await,
@@ -270,16 +271,16 @@ async fn claude_no_write_outcome_leaves_a_reply_row() {
         .await;
 }
 
-/// With no reply row, only the worker's callback journal fence stops a second
-/// send: a replay of a tool call whose write ended Unknown must end the worker
-/// as CallbackUnknown and write nothing to the provider.
+/// With no reply row, only the callback record stops a second send: a replay
+/// of a tool call whose write ended Unknown writes nothing to the provider and
+/// keeps the record as uncertain.
 async fn scenario_replay_after_an_unknown_write_never_sends_the_reply_again(
     provider: studio_runtime_providers::ProviderKind,
 ) {
     let state = State::new().await;
     let mut peer = Peer::new();
     let mut worker = running_tool_turn(&state, &mut peer, provider).await;
-    let (_cursor, callback) = tool_call(&mut peer, 0).await;
+    let (cursor, callback) = tool_call(&mut peer, 0).await;
     let frame = json!({
         "id":"tool-call-0",
         "method":"item/tool/call",
@@ -304,16 +305,10 @@ async fn scenario_replay_after_an_unknown_write_never_sends_the_reply_again(
         "{completion:?}"
     );
     let mut replay = Peer::new();
-    let mut worker = provider_worker(&state, &mut replay, provider).await;
+    let worker = provider_worker(&state, &mut replay, provider).await;
     replay.cursor = peer.cursor - 1;
     replay.frame(frame).await;
-    let completion = tokio::time::timeout(std::time::Duration::from_secs(120), worker.completion())
-        .await
-        .expect("replay completion deadline");
-    assert!(
-        matches!(completion, Err(WorkerError::CallbackUnknown)),
-        "an unknown callback write stays unknown on replay: {completion:?}"
-    );
+    worker_barrier(&worker).await;
     let mut sent = Vec::new();
     while let Ok(write) = replay.writes.try_recv() {
         sent.push(write.value);
@@ -322,11 +317,23 @@ async fn scenario_replay_after_an_unknown_write_never_sends_the_reply_again(
         sent.iter().all(|write| write["id"] != "tool-call-0"),
         "the reply is never written twice: {sent:?}"
     );
-    assert!(
-        replay.acks.try_recv().is_err(),
-        "the unknown cursor is not acknowledged"
-    );
     assert_eq!(reply_rows(&state).await, (0, 0));
+    let record = state
+        .bridge
+        .run(move |store| async move {
+            store
+                .transaction_with(move |tx| {
+                    Ok(["accepted", "submitted", "unknown"].map(|phase| {
+                        store::receipt(tx, &format!("callback:default:1:{cursor}"), phase)
+                            .expect("callback phase")
+                            .is_some()
+                    }))
+                })
+                .await
+        })
+        .await
+        .unwrap();
+    assert_eq!(record, [true; 3], "the uncertain record stays held");
 }
 
 #[tokio::test]

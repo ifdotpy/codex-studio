@@ -193,7 +193,9 @@ async fn child_result_release_at(
             tokio::time::Instant::now() + Duration::from_secs_f64((deadline - now).max(0.0))
         }),
         Err(error) => {
-            eprintln!("account registry child result release read deferred: {error}");
+            studio_runtime_services::diagnostics::log_stderr(format_args!(
+                "account registry child result release read deferred: {error}"
+            ));
             Some(tokio::time::Instant::now() + RETRY_DELAY)
         }
     }
@@ -1014,7 +1016,9 @@ impl AccountRegistry {
             .insert(completion_account.clone(), completion_id);
         self.worker_completions.push(Box::pin(async move {
             if finished.wait_for(|done| *done).await.is_err() {
-                eprintln!("account worker ended before publishing its completion signal");
+                studio_runtime_services::diagnostics::log_stderr(format_args!(
+                    "account worker ended before publishing its completion signal"
+                ));
             }
             (completion_account, completion_id)
         }));
@@ -1042,7 +1046,9 @@ impl AccountRegistry {
             // starting the replacement so concurrent ensures still own one worker.
             if worker.shutdown().await.is_err() {
                 // Completion was observed; the failed worker no longer owns a live session.
-                eprintln!("account worker exited with an error before replacement");
+                studio_runtime_services::diagnostics::log_stderr(format_args!(
+                    "account worker exited with an error before replacement"
+                ));
             }
         }
         self.start(account).await?;
@@ -1075,15 +1081,29 @@ impl AccountRegistry {
             && !self.workers.contains_key(account)
         {
             if image_recovery {
-                eprintln!(
+                studio_runtime_services::diagnostics::log_stderr(format_args!(
                     "account registry refused recovery for account {account}: workspace-state/image-execution"
-                );
+                ));
             }
             return Ok(if page_was_full {
                 AccountPageDispatch::Continue
             } else {
                 AccountPageDispatch::Exhausted
             });
+        }
+        use studio_runtime_services::account_start_gate::{AgentStartWait, StartWaitReason};
+        // The registry owns provider startup, before a worker can claim input.
+        if !self.workers.contains_key(account) {
+            let waits = agents
+                .iter()
+                .map(|(agent, epoch)| {
+                    (
+                        agent.clone(),
+                        AgentStartWait::new(StartWaitReason::ProviderSession, *epoch),
+                    )
+                })
+                .collect();
+            studio_runtime_services::account_start_gate::show_blocked(&self.store, waits).await?;
         }
         if let Err(error) = self.start(account).await {
             return Ok(AccountPageDispatch::StartFailed(error));
@@ -1298,11 +1318,25 @@ impl AccountRegistry {
         shutdown: Option<&Shutdown>,
         failure: &mut Option<WorkerError>,
     ) -> Result<(), WorkerError> {
-        if self
+        if let Some(retry_at) = self
             .worker_retry_at
             .get(&account)
-            .is_some_and(|retry_at| *retry_at > tokio::time::Instant::now())
+            .filter(|retry_at| **retry_at > tokio::time::Instant::now())
         {
+            use studio_runtime_services::account_start_gate::{AgentStartWait, StartWaitReason};
+            let until = event_time()
+                + retry_at
+                    .saturating_duration_since(tokio::time::Instant::now())
+                    .as_secs_f64();
+            let waits = pending_agents
+                .iter()
+                .map(|(agent, epoch, _)| {
+                    let mut wait = AgentStartWait::new(StartWaitReason::ProviderSession, *epoch);
+                    wait.until = Some(until);
+                    (agent.clone(), wait)
+                })
+                .collect();
+            studio_runtime_services::account_start_gate::show_blocked(&self.store, waits).await?;
             return Ok(());
         }
         self.worker_retry_at.remove(&account);
@@ -1431,11 +1465,15 @@ impl AccountRegistry {
                             (Ok(()), false)
                         };
                     if let Err(error) = self.session_broker.remove_session(&account) {
-                        eprintln!("account session registry update failed: {error}");
+                        studio_runtime_services::diagnostics::log_stderr(format_args!(
+                            "account session registry update failed: {error}"
+                        ));
                     }
                     let clean_exit = result.is_ok();
                     if let Err(error) = result {
-                        eprintln!("account worker ended: {error}");
+                        studio_runtime_services::diagnostics::log_stderr(format_args!(
+                            "account worker ended: {error}"
+                        ));
                     }
                     if planned_idle_exit && clean_exit {
                         self.idle_dormant.insert(account.clone());
@@ -1475,7 +1513,9 @@ impl AccountRegistry {
                         // reconciliation failure; retain its backoff unchanged.
                         Ok(()) => {}
                         Err(error) => {
-                            eprintln!("account registry capacity resume deferred: {error}");
+                            studio_runtime_services::diagnostics::log_stderr(format_args!(
+                                "account registry capacity resume deferred: {error}"
+                            ));
                             if last_reconcile_error.is_none() {
                                 let capacity_retry = tokio::time::Instant::now() + retry_delay;
                                 retry_at =
@@ -1512,7 +1552,9 @@ impl AccountRegistry {
                         }
                     };
                     if request.response.send(response).is_err() {
-                        eprintln!("account-session requester stopped before receiving its result");
+                        studio_runtime_services::diagnostics::log_stderr(format_args!(
+                            "account-session requester stopped before receiving its result"
+                        ));
                     }
                     continue;
                 }
@@ -1531,7 +1573,9 @@ impl AccountRegistry {
                     let (checkpoint_succeeded, next_checkpoint) =
                         checkpoint_maintenance(store).await;
                     if !checkpoint_succeeded {
-                        eprintln!("account registry WAL checkpoint deferred after failure");
+                        studio_runtime_services::diagnostics::log_stderr(format_args!(
+                            "account registry WAL checkpoint deferred after failure"
+                        ));
                     }
                     next_checkpoint
                 }
@@ -1547,7 +1591,9 @@ impl AccountRegistry {
                     let (checkpoint_succeeded, next_checkpoint) =
                         checkpoint_maintenance(store).await;
                     if !checkpoint_succeeded {
-                        eprintln!("account registry WAL checkpoint deferred after commit wake");
+                        studio_runtime_services::diagnostics::log_stderr(format_args!(
+                            "account registry WAL checkpoint deferred after commit wake"
+                        ));
                     }
                     next_checkpoint
                 }
@@ -1561,7 +1607,9 @@ impl AccountRegistry {
                 Err(error) => {
                     let message = error.to_string();
                     if last_reconcile_error.as_deref() != Some(&message) {
-                        eprintln!("account registry reconciliation deferred: {message}");
+                        studio_runtime_services::diagnostics::log_stderr(format_args!(
+                            "account registry reconciliation deferred: {message}"
+                        ));
                         last_reconcile_error = Some(message);
                     }
                     retry_at = Some(tokio::time::Instant::now() + retry_delay);
@@ -1569,7 +1617,9 @@ impl AccountRegistry {
                 }
                 Ok(()) => {
                     if last_reconcile_error.take().is_some() {
-                        eprintln!("account registry reconciliation recovered");
+                        studio_runtime_services::diagnostics::log_stderr(format_args!(
+                            "account registry reconciliation recovered"
+                        ));
                     }
                     retry_delay = RETRY_DELAY;
                     let archive_retry_at = if !self.accepted_archive_tick_enabled {
@@ -1601,9 +1651,9 @@ impl AccountRegistry {
                             }
                             Ok(None) => None,
                             Err(error) => {
-                                eprintln!(
+                                studio_runtime_services::diagnostics::log_stderr(format_args!(
                                     "account registry archive deadline read deferred: {error}"
-                                );
+                                ));
                                 let retry_at = tokio::time::Instant::now() + RETRY_DELAY;
                                 archive_deadline_retry_at = Some(retry_at);
                                 Some(retry_at)
@@ -1635,10 +1685,10 @@ impl AccountRegistry {
                     failure.get_or_insert(error);
                 }
                 Err(_) => {
-                    eprintln!(
+                    studio_runtime_services::diagnostics::log_stderr(format_args!(
                         "runtime server detached an account worker after its {:.0}s shutdown bound",
                         ACCOUNT_WORKER_SHUTDOWN_WAIT.as_secs_f64()
-                    );
+                    ));
                     failure.get_or_insert(WorkerError::TaskFailed);
                 }
             }

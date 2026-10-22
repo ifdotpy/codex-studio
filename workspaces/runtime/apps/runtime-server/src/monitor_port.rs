@@ -101,7 +101,7 @@ pub(crate) struct RetainedMonitorPort {
     dispatch_wake: RwLock<Option<Arc<Notify>>>,
     input_replies: Mutex<BTreeMap<String, InputReply>>,
     /// Monitor IDs whose managed start runs in its own task.
-    starts: Mutex<BTreeSet<String>>,
+    starts: Arc<Mutex<BTreeSet<String>>>,
     /// Monitor IDs whose rule check launch runs in its own task.
     rule_checks: Arc<Mutex<BTreeSet<String>>>,
     /// Process IDs whose command/exec reply, the exit receipt, this process
@@ -109,18 +109,28 @@ pub(crate) struct RetainedMonitorPort {
     execs: Arc<Mutex<BTreeSet<String>>>,
     receipt_wake: Arc<Notify>,
     this: Weak<Self>,
+    /// Test gate for terminal write retries: the pause signals the first
+    /// notifier, then waits for the second instead of the backoff timer.
+    #[cfg(test)]
+    write_pause: Mutex<Option<(Arc<Notify>, Arc<Notify>)>>,
 }
 
 /// Removes an ID from its in-flight set when the owning future ends in any
-/// way: a waiting command/exec reply, or a detached rule check launch.
+/// way, also by a panic: a managed start, a waiting command/exec reply, or a
+/// detached rule check launch. It then wakes the monitor timer, whose orphan
+/// check settles a running command that this owner left without an outcome.
 struct InFlightId {
     set: Arc<Mutex<BTreeSet<String>>>,
     id: String,
+    wake: Option<Arc<Notify>>,
 }
 
 impl Drop for InFlightId {
     fn drop(&mut self) {
         lock(&self.set).remove(&self.id);
+        if let Some(wake) = &self.wake {
+            wake.notify_one();
+        }
     }
 }
 
@@ -144,12 +154,44 @@ impl RetainedMonitorPort {
             preparation: RwLock::new(None),
             dispatch_wake: RwLock::new(None),
             input_replies: Mutex::new(BTreeMap::new()),
-            starts: Mutex::new(BTreeSet::new()),
+            starts: Arc::new(Mutex::new(BTreeSet::new())),
             rule_checks: Arc::new(Mutex::new(BTreeSet::new())),
             execs: Arc::new(Mutex::new(BTreeSet::new())),
             receipt_wake,
             this: this.clone(),
+            #[cfg(test)]
+            write_pause: Mutex::new(None),
         })
+    }
+
+    /// Claim `id` in `set` for the current owner. `None` when it already has one.
+    fn claim(&self, set: &Arc<Mutex<BTreeSet<String>>>, id: &str) -> Option<InFlightId> {
+        lock(set).insert(id.to_owned()).then(|| InFlightId {
+            set: Arc::clone(set),
+            id: id.to_owned(),
+            wake: self
+                .dispatch_wake
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone(),
+        })
+    }
+
+    /// Enqueue a known command result. A full disk or another retryable store
+    /// failure holds the result in memory and tries the same idempotent write
+    /// again, so the exit code reaches the owner once the store accepts it.
+    async fn command_result_until_saved(
+        &self,
+        id: &str,
+        operation: &Operation,
+        response: ProviderResponse,
+    ) -> Result<(), MonitorError> {
+        studio_runtime_services::monitor_driver::retry_terminal_write(
+            self,
+            "monitor command result",
+            || self.command_result(id, operation, response.clone()),
+        )
+        .await
     }
 
     /// The only command-result enqueue path, shared by the first request and
@@ -198,31 +240,62 @@ impl RetainedMonitorPort {
             .this
             .upgrade()
             .ok_or(MonitorError::Unavailable("provider-session/monitor-result"))?;
-        if !lock(&self.execs).insert(id.to_owned()) {
+        let Some(guard) = self.claim(&self.execs, id) else {
             return Ok(());
-        }
-        let guard = InFlightId {
-            set: Arc::clone(&self.execs),
-            id: id.to_owned(),
         };
         let (id, operation) = (id.to_owned(), operation.clone());
         tokio::spawn(async move {
             let deadline = tokio::time::Instant::now() + timeout;
             let result = async {
+                let mut read_failures = 0_u32;
                 loop {
                     let changed = port.receipt_wake.notified();
                     tokio::pin!(changed);
                     changed.as_mut().enable();
-                    if let Some(response) =
-                        studio_runtime_services::account_worker::retained::monitor_result(
+                    let response =
+                        match studio_runtime_services::account_worker::retained::monitor_result(
                             &port.store,
                             &id,
                             &operation,
                         )
                         .await
-                        .map_err(|_| MonitorError::Unavailable("provider-session/monitor-result"))?
-                    {
-                        return port.command_result(&id, &operation, response).await;
+                        {
+                            Ok(response) => response,
+                            // A failed store read, for example on a full disk,
+                            // proves nothing about the command. Read again.
+                            Err(studio_runtime_services::account_worker::WorkerError::Store(
+                                error,
+                            )) => {
+                                read_failures = read_failures.saturating_add(1);
+                                studio_runtime_services::diagnostics::log_stderr(format_args!(
+                                    "monitor {id} retained exit read failed (attempt {read_failures}): {error}"
+                                ));
+                                tokio::time::timeout_at(
+                                    deadline,
+                                    tokio::time::sleep(
+                                        studio_runtime_services::monitor_driver::terminal_write_retry_delay(
+                                            read_failures,
+                                        ),
+                                    ),
+                                )
+                                .await
+                                .map_err(|_| {
+                                    MonitorError::Unavailable(
+                                        "provider-session/monitor-result-deadline",
+                                    )
+                                })?;
+                                continue;
+                            }
+                            Err(_) => {
+                                return Err(MonitorError::Unavailable(
+                                    "provider-session/monitor-result",
+                                ));
+                            }
+                        };
+                    if let Some(response) = response {
+                        return port
+                            .command_result_until_saved(&id, &operation, response)
+                            .await;
                     }
                     tokio::time::timeout_at(deadline, changed)
                         .await
@@ -232,31 +305,38 @@ impl RetainedMonitorPort {
                 }
             }
             .await;
-            drop(guard);
             if let Err(error) = result {
-                eprintln!("monitor {id} retained exit wait ended: {error}");
-                if let Err(error) = async {
-                    let now = studio_runtime_services::event_write::unix_time()?;
-                    studio_runtime_services::monitor_runtime::reconcile_unknown(
-                        &port.store,
-                        &id,
-                        now,
-                    )
-                    .await?;
-                    studio_runtime_services::monitor_runtime::settle_reattach(
-                        &port.store,
-                        &id,
-                        "retained_exit_unavailable",
-                        now,
-                    )
-                    .await
-                }
+                studio_runtime_services::diagnostics::log_stderr(format_args!(
+                    "monitor {id} retained exit wait ended: {error}"
+                ));
+                let (store, monitor_id) = (port.store.as_ref(), id.as_str());
+                if let Err(error) = studio_runtime_services::monitor_driver::retry_terminal_write(
+                    port.as_ref(),
+                    "monitor retained exit loss",
+                    || async move {
+                        let now = studio_runtime_services::event_write::unix_time()?;
+                        studio_runtime_services::monitor_runtime::reconcile_unknown(
+                            store, monitor_id, now,
+                        )
+                        .await?;
+                        studio_runtime_services::monitor_runtime::settle_reattach(
+                            store,
+                            monitor_id,
+                            "retained_exit_unavailable",
+                            now,
+                        )
+                        .await
+                    },
+                )
                 .await
                 {
-                    eprintln!("monitor {id} reconciliation was not recorded: {error}");
+                    studio_runtime_services::diagnostics::log_stderr(format_args!(
+                        "monitor {id} reconciliation was not recorded: {error}"
+                    ));
                 }
                 port.wake_dispatch();
             }
+            drop(guard);
         });
         Ok(())
     }
@@ -268,9 +348,9 @@ impl RetainedMonitorPort {
             .this
             .upgrade()
             .ok_or(MonitorError::Unavailable("provider-session/monitor-start"))?;
-        if !lock(&self.starts).insert(id.to_owned()) {
+        let Some(guard) = self.claim(&self.starts, id) else {
             return Ok(());
-        }
+        };
         let id = id.to_owned();
         tokio::spawn(async move {
             let retry = match port.dispatch_monitor_start(&id, now).await {
@@ -278,24 +358,27 @@ impl RetainedMonitorPort {
                 // Python finishes a managed monitor whose preparation is refused.
                 Err(MonitorError::Refused(reason)) => {
                     if let Err(error) = port.fail_unstarted_monitor(&id, reason).await {
-                        eprintln!("monitor {id} start refusal was not recorded: {error}");
+                        studio_runtime_services::diagnostics::log_stderr(format_args!(
+                            "monitor {id} start refusal was not recorded: {error}"
+                        ));
                         true
                     } else {
                         false
                     }
                 }
                 Err(error) => {
-                    eprintln!("monitor {id} start deferred: {error}");
+                    studio_runtime_services::diagnostics::log_stderr(format_args!(
+                        "monitor {id} start deferred: {error}"
+                    ));
                     true
                 }
             };
             if retry {
                 tokio::time::sleep(Duration::from_secs(MONITOR_START_RETRY_SECONDS)).await;
             }
-            lock(&port.starts).remove(&id);
-            if retry {
-                port.wake_dispatch();
-            }
+            // Releasing the start wakes the timer: it offers a deferred start
+            // again and settles a command that this start left without an owner.
+            drop(guard);
         });
         Ok(())
     }
@@ -318,13 +401,9 @@ impl RetainedMonitorPort {
                 error: "The monitor port is unavailable".into(),
             };
         };
-        if !lock(&self.rule_checks).insert(check.monitor_id.clone()) {
-            return CheckSubmission::Detached;
-        }
         // Removes the ID when the task ends in any way, also when it is aborted.
-        let in_flight = InFlightId {
-            set: Arc::clone(&self.rule_checks),
-            id: check.monitor_id.clone(),
+        let Some(in_flight) = self.claim(&self.rule_checks, &check.monitor_id) else {
+            return CheckSubmission::Detached;
         };
         let launched = launch(Arc::clone(&port), check.clone());
         let check = check.clone();
@@ -346,10 +425,10 @@ impl RetainedMonitorPort {
                 match settled {
                     Ok(()) => break,
                     Err(error) => {
-                        eprintln!(
+                        studio_runtime_services::diagnostics::log_stderr(format_args!(
                             "rule check {} outcome was not recorded: {error}",
                             check.monitor_id
-                        );
+                        ));
                         tokio::time::sleep(Duration::from_secs(RULE_CHECK_SETTLE_RETRY_SECONDS))
                             .await;
                     }
@@ -1040,6 +1119,31 @@ impl RetainedMonitorPort {
 }
 
 impl MonitorNative for RetainedMonitorPort {
+    #[cfg(test)]
+    fn terminal_write_pause<'a>(
+        &'a self,
+        attempt: u32,
+        _error: &'a MonitorError,
+    ) -> futures_util::future::BoxFuture<'a, ()> {
+        let gate = lock(&self.write_pause).clone();
+        Box::pin(async move {
+            match gate {
+                Some((paused, release)) => {
+                    paused.notify_one();
+                    release.notified().await;
+                }
+                None => {
+                    tokio::time::sleep(
+                        studio_runtime_services::monitor_driver::terminal_write_retry_delay(
+                            attempt,
+                        ),
+                    )
+                    .await;
+                }
+            }
+        })
+    }
+
     fn submit<'a>(
         &'a self,
         operation: &'a Operation,
@@ -1074,14 +1178,9 @@ impl MonitorNative for RetainedMonitorPort {
             };
             let process_id = params["processId"].as_str().unwrap_or_default().to_owned();
             // Only the request future below can deliver this command's exit.
-            let _exec_reply =
-                (method == Method::CommandExec && !process_id.is_empty()).then(|| {
-                    lock(&self.execs).insert(process_id.clone());
-                    InFlightId {
-                        set: Arc::clone(&self.execs),
-                        id: process_id.clone(),
-                    }
-                });
+            let _exec_reply = (method == Method::CommandExec && !process_id.is_empty())
+                .then(|| self.claim(&self.execs, &process_id))
+                .flatten();
             let result = self
                 .request(
                     operation,
@@ -1137,7 +1236,13 @@ impl MonitorNative for RetainedMonitorPort {
                 let Some(response) = receipt.result else {
                     return Submission::Unknown;
                 };
-                if self.command_result(id, operation, response).await.is_err() {
+                // The process ended with this result. Hold it until the store
+                // accepts it; only a definitive refusal leaves it Unknown.
+                if self
+                    .command_result_until_saved(id, operation, response)
+                    .await
+                    .is_err()
+                {
                     return Submission::Unknown;
                 }
             } else if method == Method::CommandExecWrite || method == Method::CommandExecResize {
@@ -1356,6 +1461,14 @@ impl MonitorPort for RetainedMonitorPort {
         })
     }
 
+    fn exit_owned(&self, id: &str) -> Option<bool> {
+        Some(
+            lock(&self.starts).contains(id)
+                || lock(&self.execs).contains(id)
+                || lock(&self.rule_checks).contains(id),
+        )
+    }
+
     fn await_exit(&self, snapshot: &MonitorSnapshot) -> Result<(), MonitorError> {
         let operation = snapshot
             .operation()
@@ -1446,7 +1559,9 @@ impl MonitorPort for RetainedMonitorPort {
                     .await
                     .is_err()
                 {
-                    eprintln!("monitor liveness probe result could not be persisted");
+                    studio_runtime_services::diagnostics::log_stderr(format_args!(
+                        "monitor liveness probe result could not be persisted"
+                    ));
                 } else if let Some(wake) = dispatch_wake {
                     wake.notify_one();
                 }
@@ -1719,6 +1834,133 @@ mod tests {
             "outputEventCount":0,"outputEventIds":[],"status":"starting","created":1.0,
             "exitCode":null,"tail":"","bytes":0,"interactive":false,"ruleId":null,
             "log":log.to_string_lossy(),"cancelRequested":false})
+    }
+
+    /// The process exited and the provider answered, but the store refused the
+    /// exit write, as a full disk does. The known exit code must be held and
+    /// written once the store accepts it, never turned into Unknown.
+    #[tokio::test]
+    async fn monitor_completion_exit_result_is_held_until_the_store_accepts_it() {
+        struct ExitedSession;
+        impl AccountSessionPort for ExitedSession {
+            fn current_scope(
+                &self,
+                account: &str,
+            ) -> Option<studio_runtime_services::account_session_runtime::ConnectionScope>
+            {
+                Some(
+                    studio_runtime_services::account_session_runtime::ConnectionScope {
+                        account: account.to_owned(),
+                        connection: "connection".into(),
+                        generation: 1,
+                    },
+                )
+            }
+            fn provider_request<'a>(
+                &'a self,
+                request: ProviderRequest,
+            ) -> studio_runtime_services::account_session_runtime::AccountSessionFuture<
+                'a,
+                SessionReceipt,
+            > {
+                Box::pin(async move {
+                    assert_eq!(request.method, Method::CommandExec);
+                    Ok(SessionReceipt {
+                        scope: request.expected_scope.clone().expect("scope"),
+                        operation: request.operation,
+                        ticket: None,
+                        certainty: RequestCertainty::Written,
+                        result: Some(ProviderResponse::Reply(json!({"exitCode":1}))),
+                        not_sent_reason: None,
+                        replayed: false,
+                    })
+                })
+            }
+            fn callback_barrier<'a>(
+                &'a self,
+                _: &'a str,
+                _: &'a studio_runtime_services::account_session_runtime::ConnectionScope,
+                _: Instant,
+            ) -> studio_runtime_services::account_session_runtime::AccountSessionFuture<'a, ()>
+            {
+                Box::pin(async { Ok(()) })
+            }
+        }
+        let root = tempfile::tempdir().expect("state root");
+        let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
+        let operation = Operation {
+            agent: "owner".into(),
+            epoch: 0,
+            account_key: "default".into(),
+            connection_id: "connection".into(),
+            evidence: BTreeMap::new(),
+        };
+        let mut watch = starting_watch(root.path(), "watch");
+        watch["status"] = json!("running");
+        watch["operation"] = serde_json::to_value(&operation).expect("operation");
+        let owner = owner(root.path(), true);
+        store
+            .transaction(move |tx| {
+                AgentRepository::put(tx, &AgentRecord::from_value(owner)?)?;
+                studio_runtime_store::Table::new(tx)
+                    .put(&studio_runtime_store::MonitorRecord::from_value(watch)?)?;
+                // Refuse every exit queue write until the disk is freed.
+                tx.execute_batch("CREATE TRIGGER fail_exit_write BEFORE UPDATE ON runtime_monitors WHEN json_extract(NEW.record,'$.streamQueue[0].kind')='exit' BEGIN SELECT RAISE(ABORT,'database or disk is full'); END;")?;
+                Ok::<_, studio_runtime_store::StoreError>(())
+            })
+            .await
+            .expect("running command and a full disk");
+        let port = RetainedMonitorPort::new(
+            Arc::clone(&store),
+            Arc::new(ExitedSession) as Arc<dyn AccountSessionPort>,
+        );
+        let (paused, release) = (Arc::new(Notify::new()), Arc::new(Notify::new()));
+        *lock(&port.write_pause) = Some((Arc::clone(&paused), Arc::clone(&release)));
+        let effect = Effect::Native {
+            identity: "monitor:watch".into(),
+            method: "command/exec",
+            params: json!({"processId":"watch","timeoutMs":60000}),
+        };
+        let submit_port = Arc::clone(&port);
+        let submission = tokio::spawn(async move {
+            matches!(
+                submit_port.submit(&operation, &effect).await,
+                Submission::Written
+            )
+        });
+        tokio::time::timeout(Duration::from_secs(10), paused.notified())
+            .await
+            .expect("the refused exit write waits to retry");
+        assert_eq!(
+            port.exit_owned("watch"),
+            Some(true),
+            "the held result keeps its owner"
+        );
+        store
+            .transaction(|tx| Ok(tx.execute_batch("DROP TRIGGER fail_exit_write")?))
+            .await
+            .expect("free the disk");
+        release.notify_one();
+        assert!(
+            tokio::time::timeout(Duration::from_secs(10), submission)
+                .await
+                .expect("submission ends")
+                .expect("submission task"),
+            "a held exit result is Written, not Unknown"
+        );
+        let record = store
+            .read_async("test/held-exit", |tx| MonitorsRepository::get(tx, "watch"))
+            .await
+            .expect("read")
+            .expect("watch");
+        let queue = record.value()["streamQueue"]
+            .as_array()
+            .expect("queue")
+            .clone();
+        assert_eq!(queue.len(), 1, "one exit result");
+        assert_eq!(queue[0]["kind"], "exit");
+        assert_eq!(queue[0]["code"], 1);
+        assert_eq!(port.exit_owned("watch"), Some(false));
     }
 
     #[tokio::test]

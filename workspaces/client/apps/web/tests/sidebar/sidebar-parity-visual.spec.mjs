@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { test, expect } from "../playwright.mjs";
 import { sidebarParityFixture } from "./sidebar-parity-fixture.mjs";
 
-const output = "/tmp/one-sidebar-visual";
+let output;
 const modes = [
   { name: "light", colorScheme: "light", width: 1440, height: 1000 },
   { name: "dark", colorScheme: "dark", width: 1440, height: 1000 },
@@ -235,7 +235,8 @@ async function menus(view, sidebar) {
 
 test.describe("sidebar visible parity", () => {
   test.describe.configure({ mode: "default" });
-  test.beforeAll(async () => {
+  test.beforeAll(async ({ browser: _browser }, testInfo) => {
+    output = testInfo.outputPath("sidebar-visual");
     await mkdir(output, { recursive: true });
     await writeFile(
       join(output, "index.md"),

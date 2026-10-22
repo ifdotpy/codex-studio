@@ -3,6 +3,7 @@ use crate::agent_management::{
     Action, ManagementError, ManagementSnapshot, Records, decide, decide_with_effects,
 };
 use rusqlite::OptionalExtension;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
 use studio_runtime_store::{RuntimeStore, Transaction, agent_management as repository};
@@ -24,25 +25,214 @@ pub async fn execute(
                     "Lifecycle committed; workspace cleanup remains pending",
                 )
             })?;
-        if let Some(agent_id) = result
-            .get("agent")
-            .and_then(|agent| agent.get("id"))
-            .and_then(Value::as_str)
-        {
-            let agent_id = studio_runtime_store::AgentId::from(agent_id);
-            let agent_archive = store
+        if let Action::Archive { target, .. } = action {
+            let target = studio_runtime_store::AgentId::from(target.as_str());
+            let current = store
                 .read_async(
                     "runtime-services/agent_management/archive_readback",
-                    move |tx| {
-                        Ok::<_, studio_runtime_store::StoreError>(
-                            studio_runtime_store::AgentRepository::get(tx, &agent_id)?
-                                .and_then(|agent| agent.value().get("agentArchive").cloned()),
-                        )
-                    },
+                    move |tx| studio_runtime_store::AgentRepository::get(tx, &target),
                 )
                 .await?;
-            if let Some(agent_archive) = agent_archive {
-                result["agent"]["agentArchive"] = agent_archive;
+            if let Some(current) = current {
+                let record = current.value();
+                let progress: ArchiveReadback = serde_json::from_value(record.clone())
+                    .map_err(studio_runtime_store::StoreError::from)?;
+                let pending = progress
+                    .agent_archive
+                    .as_ref()
+                    .is_some_and(|archive| archive.cleanup_pending);
+                let (worktree, workspace) = if pending {
+                    (
+                        serde_json::json!({"state":"pending","bytes":0}),
+                        Value::Null,
+                    )
+                } else {
+                    crate::agent_management::archived_cleanup_result(&record)
+                };
+                result["worktree"] = if !pending
+                    && !progress.worktree_ready
+                    && progress.cleaned_worktree.is_none()
+                {
+                    serde_json::json!({"state":"none","bytes":0})
+                } else {
+                    worktree
+                };
+                result["workspace"] = workspace;
+                result["agent"] = crate::agent_management::brief(&record);
+            }
+        }
+    }
+    Ok(result)
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ArchiveReadback {
+    agent_archive: Option<ArchiveCleanupProgress>,
+    #[serde(default)]
+    worktree_ready: bool,
+    cleaned_worktree: Option<serde::de::IgnoredAny>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ArchiveCleanupProgress {
+    #[serde(default)]
+    cleanup_pending: bool,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ArchiveFinishedResult {
+    pub archived: usize,
+    pub freed_bytes: u64,
+    pub unknown_bytes: usize,
+    pub kept: Vec<KeptWorker>,
+    pub unassigned_work: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct KeptWorker {
+    pub id: String,
+    pub reason: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum ArchiveStatus {
+    Archived,
+    Blocked,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ArchiveReply {
+    status: ArchiveStatus,
+    #[serde(default)]
+    blockers: Vec<ArchiveBlocker>,
+    #[serde(default)]
+    unassigned_work: Vec<String>,
+    worktree: Option<CleanupReply>,
+    workspace: Option<CleanupReply>,
+}
+
+#[derive(Deserialize)]
+struct ArchiveBlocker {
+    kind: crate::agent_management::ArchiveBlockerKind,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum CleanupState {
+    None,
+    Removed,
+    Missing,
+    Kept,
+    Archived,
+    Pending,
+    Conflict,
+}
+
+#[derive(Deserialize)]
+struct CleanupReply {
+    state: CleanupState,
+    bytes: Option<u64>,
+    reason: Option<String>,
+}
+
+/// Batch archive is orchestration of the existing per-worker owner, never a
+/// second deletion path. Partial progress is discoverable on archived records;
+/// a tool retry uses the caller's durable tool receipt rather than rerunning it.
+pub async fn archive_finished(
+    store: std::sync::Arc<RuntimeStore>,
+    actor: &str,
+    epoch: i64,
+    unassign_work: bool,
+    now: f64,
+) -> Result<ArchiveFinishedResult, ManagementError> {
+    let actor_id = actor.to_owned();
+    let candidates = store
+        .read_async(
+            "runtime-services/agent_management/archive_finished",
+            move |tx| {
+                let lead = studio_runtime_store::AgentRepository::get(
+                    tx,
+                    &studio_runtime_store::AgentId::from(actor_id.as_str()),
+                )?
+                .ok_or(ManagementError::Invalid("Unknown managed agent"))?;
+                let mut statement = tx
+                    .prepare_cached("SELECT id FROM runtime_agents WHERE root_id=?1")
+                    .map_err(studio_runtime_store::StoreError::from)?;
+                let ids = statement
+                    .query_map([&lead.root_id.0], |row| row.get::<_, String>(0))
+                    .and_then(Iterator::collect::<Result<std::collections::BTreeSet<_>, _>>)
+                    .map_err(studio_runtime_store::StoreError::from)?;
+                let agents = repository::read_agents(tx, &ids)?;
+                ManagementSnapshot::from_records(Records {
+                    tables: BTreeMap::from([("runtime_agents".into(), agents)]),
+                })?
+                .finished_descendants(&actor_id, epoch)
+            },
+        )
+        .await?;
+    let mut result = ArchiveFinishedResult::default();
+    for (id, record) in candidates {
+        let checked = studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-services/archive_finished/preflight",
+            move || crate::workspace_cleanup_runtime::check_archive_worktree(&record),
+        )
+        .await;
+        if !matches!(checked, Ok(Ok(()))) {
+            result.kept.push(KeptWorker { id, reason: "Worktree is dirty, unverified, missing, or contains another worktree; files were preserved".into() });
+            continue;
+        }
+        let reply = execute(
+            std::sync::Arc::clone(&store),
+            &Action::Archive {
+                actor: actor.to_owned(),
+                epoch,
+                target: id.clone(),
+                reason: "Finished worker cleanup".into(),
+                unassign_work,
+            },
+            now,
+        )
+        .await?;
+        let reply: ArchiveReply =
+            serde_json::from_value(reply).map_err(studio_runtime_store::StoreError::from)?;
+        match reply.status {
+            ArchiveStatus::Blocked => result.kept.push(KeptWorker {
+                id,
+                reason: reply
+                    .blockers
+                    .into_iter()
+                    .map(|blocker| blocker.kind.label())
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            }),
+            ArchiveStatus::Archived => {
+                result.archived += 1;
+                result.unassigned_work.extend(reply.unassigned_work);
+                if let Some(cleanup) = reply.workspace.or(reply.worktree) {
+                    match cleanup.state {
+                        CleanupState::Removed | CleanupState::Conflict => match cleanup.bytes {
+                            Some(bytes) => {
+                                result.freed_bytes = result.freed_bytes.saturating_add(bytes)
+                            }
+                            None => result.unknown_bytes += 1,
+                        },
+                        CleanupState::Kept | CleanupState::Pending => {
+                            result.kept.push(KeptWorker {
+                                id,
+                                reason: cleanup.reason.unwrap_or_else(|| {
+                                    "Workspace cleanup is held for inspection".into()
+                                }),
+                            })
+                        }
+                        CleanupState::None | CleanupState::Missing | CleanupState::Archived => {}
+                    }
+                }
             }
         }
     }
@@ -476,5 +666,161 @@ mod lifecycle_identity_tests {
 
         let modified = json!({"id":"other-attempt","submitted":true,"turnId":"turn","interrupt":{"requestTicket":"ticket","outcome":"unknown"}});
         assert!(!same_attempt_except_interrupt(&modified, &expected));
+    }
+}
+
+#[cfg(test)]
+mod archive_finished_tests {
+    use super::*;
+    use serde_json::json;
+    use std::sync::Arc;
+    use studio_runtime_store::{AgentId, AgentRecord, AgentRepository, Table, WorkItemRecord};
+
+    #[tokio::test]
+    async fn archive_finished_removes_accepted_worktree_and_target_and_keeps_dirty_work() {
+        let fixture = tempfile::tempdir().expect("fixture");
+        let repository = fixture.path().join("project");
+        std::fs::create_dir_all(&repository).expect("repository");
+        let git = |args: &[&str]| {
+            let output =
+                crate::bounded_child::run_without_git_environment(crate::bounded_child::Request {
+                    program: std::ffi::OsStr::new("git"),
+                    git_directory: Some(repository.as_os_str()),
+                    args,
+                    environment: &[("GIT_TERMINAL_PROMPT", "0")],
+                    input: None,
+                    stdout_limit: 64 * 1024,
+                    stderr_limit: 4096,
+                    timeout: std::time::Duration::from_secs(10),
+                })
+                .expect("bounded fixture Git succeeds");
+            assert!(!output.stdout.truncated);
+            String::from_utf8(output.stdout.bytes)
+                .expect("git UTF8")
+                .trim()
+                .to_owned()
+        };
+        git(&["init", "-q"]);
+        git(&["config", "user.name", "Disk Fixture"]);
+        git(&["config", "user.email", "disk@example.invalid"]);
+        std::fs::write(repository.join(".gitignore"), "target/\n.worktrees/\n")
+            .expect("ignore build output");
+        std::fs::write(repository.join("source.txt"), "committed\n").expect("source");
+        git(&["add", ".gitignore", "source.txt"]);
+        git(&["commit", "-qm", "Fixture"]);
+        let clean = repository.join(".worktrees/codex-agents/clean");
+        let dirty = repository.join(".worktrees/codex-agents/dirty");
+        git(&[
+            "worktree",
+            "add",
+            "-qb",
+            "clean",
+            clean.to_str().expect("path"),
+        ]);
+        git(&[
+            "worktree",
+            "add",
+            "-qb",
+            "dirty",
+            dirty.to_str().expect("path"),
+        ]);
+        std::fs::create_dir(clean.join("target")).expect("target");
+        std::fs::write(clean.join("target/fixture-output"), "build output").expect("output");
+        std::fs::write(dirty.join("source.txt"), "uncommitted work\n").expect("dirty source");
+        std::fs::create_dir(fixture.path().join("state")).expect("state directory");
+        let store = Arc::new(
+            RuntimeStore::open(Some(&fixture.path().join("state")))
+                .await
+                .expect("store"),
+        );
+        let clean_cwd = clean.clone();
+        let dirty_cwd = dirty.clone();
+        store.transaction_with_error(move |tx| {
+            for row in [
+                json!({"id":"lead", "rootId":"lead", "epoch":1, "status":"running", "isLead":true, "autoWake":true}),
+                json!({"id":"clean", "rootId":"lead", "parentId":"lead", "epoch":1, "status":"completed", "role":"implementer", "autoWake":true, "cwd":clean_cwd, "worktreeReady":true}),
+                json!({"id":"dirty", "rootId":"lead", "parentId":"lead", "epoch":1, "status":"completed", "autoWake":true, "cwd":dirty_cwd, "worktreeReady":true}),
+                json!({"id":"active", "rootId":"lead", "parentId":"lead", "epoch":1, "status":"running", "autoWake":true}),
+                json!({"id":"assigned", "rootId":"lead", "parentId":"lead", "epoch":1, "status":"completed", "autoWake":true}),
+            ] { AgentRepository::put(tx, &AgentRecord::from_value(row)?)?; }
+            for row in [
+                json!({"id":"accepted", "rootId":"lead", "owner":"clean", "status":"accepted", "version":1}),
+                json!({"id":"open", "rootId":"lead", "owner":"assigned", "status":"running", "version":1}),
+            ] { Table::<WorkItemRecord>::new(tx).put(&serde_json::from_value(row)?)?; }
+            Ok::<_, studio_runtime_store::StoreError>(())
+        }).await.expect("agents and tasks");
+        let result = archive_finished(Arc::clone(&store), "lead", 1, false, 20.0)
+            .await
+            .expect("archive batch");
+        assert_eq!(result.archived, 1);
+        assert_eq!(
+            result.unknown_bytes, 1,
+            "Git cleanup does not estimate deleted byte counts"
+        );
+        assert!(
+            !clean.exists(),
+            "worktree including ignored target is removed"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dirty.join("source.txt")).expect("preserved source"),
+            "uncommitted work\n"
+        );
+        assert!(result.kept.iter().any(|worker| worker.id == "dirty"));
+        assert!(
+            result
+                .kept
+                .iter()
+                .any(|worker| worker.id == "assigned" && worker.reason.contains("assigned_work"))
+        );
+        let archived_head = git(&["rev-parse", "refs/codex-agents/archive/clean"]);
+        assert_eq!(archived_head, git(&["rev-parse", "clean"]));
+        let repeat = archive_finished(Arc::clone(&store), "lead", 1, true, 21.0)
+            .await
+            .expect("next batch");
+        assert_eq!(repeat.archived, 1, "only newly unassigned worker archives");
+        assert_eq!(repeat.unassigned_work, vec!["open"]);
+        let active = store
+            .read_async("test/archive-active", |tx| {
+                AgentRepository::get(tx, &AgentId::from("active"))
+            })
+            .await
+            .expect("read active")
+            .expect("active");
+        assert!(!active.extra.contains_key("deletedAt"));
+        assert!(
+            archive_finished(Arc::clone(&store), "lead", 0, false, 22.0)
+                .await
+                .is_err(),
+            "stale lead epoch cannot manage workers"
+        );
+        assert!(
+            archive_finished(store, "dirty", 1, false, 22.0)
+                .await
+                .is_err(),
+            "worker cannot archive team"
+        );
+    }
+
+    #[tokio::test]
+    async fn archive_finished_archives_nested_finished_workers_deepest_first() {
+        let fixture = tempfile::tempdir().expect("fixture");
+        let store = Arc::new(
+            RuntimeStore::open(Some(fixture.path()))
+                .await
+                .expect("store"),
+        );
+        store.transaction_with_error(|tx| {
+            for row in [
+                json!({"id":"lead", "rootId":"lead", "epoch":1, "status":"running", "isLead":true, "autoWake":true}),
+                json!({"id":"parent", "rootId":"lead", "parentId":"lead", "epoch":1, "status":"completed"}),
+                json!({"id":"child", "rootId":"lead", "parentId":"parent", "epoch":1, "status":"completed"}),
+            ] { AgentRepository::put(tx, &AgentRecord::from_value(row)?)?; }
+            Ok::<_, studio_runtime_store::StoreError>(())
+        }).await.expect("team");
+        let result = archive_finished(store, "lead", 1, false, 20.0)
+            .await
+            .expect("nested cleanup");
+        assert_eq!(result.archived, 2);
+        assert!(result.kept.is_empty());
     }
 }

@@ -1,5 +1,4 @@
-#[path = "support/projections.rs"]
-mod projections;
+use crate::projection_fixtures as projections;
 use projections::full_rebuild;
 use rusqlite::{Connection, params};
 use serde_json::{Value, json};
@@ -936,7 +935,7 @@ async fn incremental_lifecycle_projection_matches_full_rebuild() {
 #[tokio::test]
 #[ignore = "manual projection benchmark on a 300k-task synthetic state"]
 async fn lifecycle_projection_benchmark_on_large_state() {
-    let scratch = std::env::var_os("TMPDIR").unwrap_or_else(|| "/dev/shm".into());
+    let scratch = std::env::temp_dir();
     // The live schema fixture carries Python-created task indexes; a state
     // directory created only by Rust has just the indexes Rust owns.
     for drop_unowned_task_indexes in [false, true] {
@@ -991,7 +990,7 @@ async fn lifecycle_projection_benchmark_on_large_state() {
 async fn delete_latency_on_live_shaped_state() {
     struct NoBroker;
     impl AccountSessionPort for NoBroker {}
-    let scratch = std::env::var_os("TMPDIR").unwrap_or_else(|| "/dev/shm".into());
+    let scratch = std::env::temp_dir();
     let root = tempfile::tempdir_in(&scratch).expect("root");
     let store = synthetic_store(root.path(), BENCHMARK_TEAMS_ROWS, BENCHMARK_TASKS_ROWS).await;
     store

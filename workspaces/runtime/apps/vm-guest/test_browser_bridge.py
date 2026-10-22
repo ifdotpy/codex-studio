@@ -179,7 +179,7 @@ class Listeners(unittest.TestCase):
 class Bridge(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         # A short folder: a macOS Unix socket path has at most 103 bytes.
-        self.root = Path(tempfile.mkdtemp(prefix="sb-", dir="/tmp"))
+        self.root = Path(self.enterContext(tempfile.TemporaryDirectory(prefix="sb-")))
         self.provider = FakeProvider()
         self.tools: list[FakeTool] = []
         self.owners: dict[int, int] = {}
@@ -418,7 +418,7 @@ class ServiceMethods(unittest.IsolatedAsyncioTestCase):
 
     async def asyncSetUp(self) -> None:
         from service import Service
-        self.root = Path(tempfile.mkdtemp(prefix="sbs-", dir="/tmp"))
+        self.root = Path(self.enterContext(tempfile.TemporaryDirectory(prefix="sbs-")))
         self.provider = FakeProvider()
         self.tool = FakeTool(self.provider, "aws")
         self.service = Service(self.root / "state", self.root / "store", self.root / "projects", self.root / "home",

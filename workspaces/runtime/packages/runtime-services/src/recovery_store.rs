@@ -724,11 +724,16 @@ impl CompletionWriter for LifecycleCompletionWriter {
                 }
                 let mut result =
                     json!({"status":"reconciled","turnId":turn_id,"outcome":turn["status"]});
-                let continuation = if restart {
-                    let continuation = (restart_can_continue(a, turn)
-                        && !uncertain(tx, id, epoch)?)
-                    .then(|| restart_continuation(tx, a, turn, turn_id))
-                    .transpose()?;
+                let continuation = (turn["status"] == "interrupted"
+                    && !legacy_claude_restart_interruption(turn)
+                    && (restart || *mode == CompletionMode::AutomaticConnection)
+                    && expected
+                        .automatic_turn()
+                        .is_some_and(|recovery| recovery.can_continue(turn_id))
+                    && !uncertain(tx, id, epoch)?)
+                .then(|| interrupted_continuation(tx, a, turn, turn_id))
+                .transpose()?;
+                if restart {
                     let completed = turn["status"] == "completed"
                         && crate::recovery::completion_permission(
                             expected,
@@ -741,13 +746,15 @@ impl CompletionWriter for LifecycleCompletionWriter {
                         completed,
                         self.at,
                     )?;
-                    if continuation.is_some() {
-                        result["continued"] = json!(true);
-                    }
-                    continuation
-                } else {
-                    None
-                };
+                }
+                if continuation.is_some() {
+                    updated["autoWake"] = json!(true);
+                    updated["error"] = Value::Null;
+                    updated["status"] = json!("queued");
+                    updated["connectionRecovery"]["automatic"] = json!(true);
+                    updated["connectionRecovery"]["continued"] = json!(true);
+                    result["continued"] = json!(true);
+                }
                 // The reconciled worker kept its permission and has input that
                 // arrived meanwhile: queue it as settle_terminal does. Python's
                 // scheduler takes such input; Rust wakes only `queued` workers
@@ -767,7 +774,7 @@ impl CompletionWriter for LifecycleCompletionWriter {
                     });
                 }
                 persist_request_result(a, &mut updated, &result);
-                // A continued restart turn stays with this worker, as in Python:
+                // A continued interrupted turn stays with this worker:
                 // no stopped-child notice and no work release.
                 if continuation.is_none() {
                     // This hook includes unresolved-operation holds and parent/work
@@ -814,22 +821,13 @@ impl CompletionWriter for LifecycleCompletionWriter {
 const LEGACY_CLAUDE_RESTART_ERROR: &str =
     "Claude connection ended. Review the saved transcript before continuing.";
 
-/// The native turn is confirmed interrupted and the worker kept permission.
-/// An uncertain status or a legacy synthetic interruption proves neither.
-fn restart_can_continue(agent: &Value, turn: &Value) -> bool {
-    let marker = &agent["restartRecovery"];
-    let error = turn["error"]
+/// A legacy synthetic interruption proves neither completion nor interruption,
+/// so automatic continuation must not treat it as a confirmed interruption.
+fn legacy_claude_restart_interruption(turn: &Value) -> bool {
+    turn["error"]
         .as_str()
-        .or_else(|| turn["error"]["message"].as_str());
-    turn["status"] == "interrupted"
-        && error != Some(LEGACY_CLAUDE_RESTART_ERROR)
-        && matches!(marker["stage"].as_str(), Some("pending" | "superseded"))
-        && marker["autoWake"] == true
-        && marker["turnId"] == turn["id"]
-        && ["epoch", "accountKey", "threadId"]
-            .iter()
-            .all(|key| marker[*key] == agent[*key])
-        && !crate::event_write::truthy(agent.get("nativeFailureHold"))
+        .or_else(|| turn["error"]["message"].as_str())
+        == Some(LEGACY_CLAUDE_RESTART_ERROR)
 }
 
 /// Close the restart marker after native history decided its turn. The
@@ -851,16 +849,6 @@ fn settle_restart(
     if let Some(event_id) = continuation_event {
         marker.insert("stage".into(), json!("continued"));
         marker.insert("eventId".into(), json!(event_id));
-        fields.insert("autoWake".into(), json!(true));
-        fields.insert("error".into(), Value::Null);
-        fields.insert("status".into(), json!("queued"));
-        if let Some(receipt) = fields
-            .get_mut("connectionRecovery")
-            .and_then(Value::as_object_mut)
-        {
-            receipt.insert("automatic".into(), json!(true));
-            receipt.insert("continued".into(), json!(true));
-        }
     } else {
         marker.insert("stage".into(), json!("finished"));
         if completed {
@@ -873,10 +861,9 @@ fn settle_restart(
     Ok(())
 }
 
-/// Python `codex_restart_recovery.continue_interrupted`: one follow-up with a
-/// stable id asks the worker to continue from its saved history and to check
-/// the commands that the restart stopped.
-fn restart_continuation(
+/// One follow-up with a stable id asks the agent to continue from saved history
+/// and check existing command effects before repeating an operation.
+fn interrupted_continuation(
     tx: &Transaction<'_>,
     agent: &Value,
     turn: &Value,
@@ -921,12 +908,13 @@ fn restart_continuation(
             work.push(name.chars().take(160).collect::<String>());
         }
     }
-    let mut message = "Studio restarted. The previous native turn is confirmed interrupted. \
+    let mut message =
+        "Studio connection was interrupted. The previous native turn is confirmed interrupted. \
         Continue the existing authorized task from its saved history. \
         Check existing results before repeating any operation."
-        .to_owned();
+            .to_owned();
     if !work.is_empty() {
-        message.push_str(" The restart stopped these commands; check their effects first: ");
+        message.push_str(" These commands may have stopped; check their effects first: ");
         message.push_str(&work.join("; "));
     }
     Ok((format!("restart:{id}:{epoch}:{turn_id}"), message))

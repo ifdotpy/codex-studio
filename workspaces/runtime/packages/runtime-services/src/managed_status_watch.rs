@@ -151,6 +151,7 @@ struct StatusPathInput {
 struct StatusPathSnapshot {
     inputs: Vec<StatusPathInput>,
     resolved: BTreeMap<String, String>,
+    storage: crate::disk_space::StorageReport,
 }
 
 /// Build a status snapshot and retain its revision in the same serialized
@@ -171,12 +172,16 @@ pub async fn model_directory(
         return Err(StatusError::InvalidArguments);
     }
     let read_actor = actor_id.to_owned();
-    let (root_id, inputs) = store
+    let (root_id, inputs, workspaces) = store
         .read_async("runtime-services/managed_status_watch", move |connection| {
             let actor = checked_actor(connection, &read_actor, actor_epoch)?;
             let root_id = actor.root_id.0;
             let inputs = status_path_inputs(connection, &root_id)?;
-            Ok::<_, StatusError>((root_id, inputs))
+            Ok::<_, StatusError>((
+                root_id,
+                inputs,
+                crate::disk_space::workspace_paths(connection)?,
+            ))
         })
         .await?;
     let resolved = inputs
@@ -189,7 +194,12 @@ pub async fn model_directory(
             .map_err(|_| StatusError::InvalidArguments)
         })
         .collect::<Result<BTreeMap<_, _>, _>>()?;
-    let paths = StatusPathSnapshot { inputs, resolved };
+    let storage = crate::disk_space::storage_report(store.root(), &workspaces);
+    let paths = StatusPathSnapshot {
+        inputs,
+        resolved,
+        storage,
+    };
     let actor_id = actor_id.to_owned();
     let args = args.clone();
     store
@@ -270,7 +280,20 @@ fn status_in_transaction(
     });
     let defaults = worker_defaults(root);
     let capacity = capacity_snapshot(tx, &team, root, paths)?;
-    let revision_source = json!([active_records, finished_counts, counts, defaults, capacity]);
+    // Storage samples are fresh metadata. Only admission state enters the list
+    // revision: fluctuating byte counts must not invalidate finished-page cursors.
+    let storage_held = paths
+        .storage
+        .hold_reason(crate::thread_prepare::Role::Implementer)
+        .is_some();
+    let revision_source = json!([
+        active_records,
+        finished_counts,
+        counts,
+        defaults,
+        capacity,
+        storage_held
+    ]);
     let revision = digest(&revision_source)?;
 
     let since_revision = args.get("since_revision").and_then(Value::as_str);
@@ -351,6 +374,7 @@ fn status_in_transaction(
         "finishedCounts": finished_counts,
         "workerDefaults": defaults,
         "capacity": capacity,
+        "storage": paths.storage,
     });
     if args.get("include_finished") == Some(&Value::Bool(true)) {
         let limit = match args.get("limit") {
@@ -494,48 +518,15 @@ fn capacity_snapshot(
         .iter()
         .filter(|agent| agent.status.as_str() == "queued")
     {
-        let record = agent.value();
         let id = agent.id.0.as_str();
-        let mut reasons = Vec::new();
-        if record.get("autoWake") != Some(&Value::Bool(true)) {
-            reasons.push("paused");
-        }
-        for field in ["nativeFailureHold", "accountTransferId"] {
-            if truthy(record.get(field)) {
-                reasons.push(field);
-            }
-        }
-        if crate::safety_buffering::active(&record).map_err(|_| StatusError::InvalidArguments)? {
-            reasons.push("safety_retry");
-        }
-        if crate::sync_views::native_thread_block(&record).is_some() {
-            reasons.push("native_thread_blocked");
-        }
-        let browser = record.get("browserRecovery").unwrap_or(&Value::Null);
-        if browser.get("stage").and_then(Value::as_str) == Some("reconnecting")
-            || (browser.get("stage").and_then(Value::as_str) == Some("pending")
-                && truthy(browser.get("nativeRequest")))
-        {
-            reasons.push("browser_recovery");
-        }
-        let blocking_agent = paths
+        let wait = crate::sync_views::agent_start_wait(&agent.value())
+            .map_err(|_| StatusError::InvalidArguments)?;
+        let mut row = json!({"id":id,"reasons":wait.into_iter().collect::<Vec<_>>()});
+        if let Some(blocker) = paths
             .resolved
             .get(id)
-            .and_then(|path| reservations.get(path));
-        if blocking_agent.is_some() {
-            reasons.push("workspace_operation");
-        }
-        if global_active >= global_limit as usize {
-            reasons.push("global_concurrency");
-        }
-        if id != root.id.0 && team_active >= root_concurrency as usize {
-            reasons.push("team_concurrency");
-        }
-        if reasons.is_empty() {
-            reasons.push("awaiting_dispatch");
-        }
-        let mut row = json!({"id":id,"reasons":reasons});
-        if let Some(blocker) = blocking_agent {
+            .and_then(|path| reservations.get(path))
+        {
             row["blockingAgent"] = json!(blocker);
         }
         queued.push(row);
@@ -1377,9 +1368,21 @@ mod tests {
         )
         .await
         .expect("status snapshot");
+        let storage: crate::disk_space::StorageReport =
+            serde_json::from_value(first["storage"].clone()).expect("typed filesystem report");
+        assert!(!storage.filesystems.is_empty());
+        assert!(storage.filesystems.iter().any(|volume| {
+            volume
+                .rules
+                .iter()
+                .any(|rule| rule.purpose == crate::disk_space::StoragePurpose::Workspace)
+        }));
         assert_eq!(first["capacity"]["teamLimit"], 2);
         assert_eq!(first["capacity"]["teamActive"], 1);
-        assert_eq!(first["capacity"]["queued"][0]["reasons"], json!(["paused"]));
+        assert_eq!(
+            first["capacity"]["queued"][0]["reasons"],
+            json!([{"reason":"paused","epoch":4}])
+        );
         assert_eq!(first["finished"]["total"], 2);
         assert_eq!(
             first["finished"]["items"].as_array().expect("page").len(),
@@ -1408,6 +1411,67 @@ mod tests {
         assert_eq!(replay["unchanged"], true);
         assert_eq!(replay["changes"], json!([]));
         assert_eq!(replay["workerDefaults"]["model"], "gpt-fixture");
+        store
+            .transaction_with(|tx| {
+                let mut agent = AgentRepository::get(tx, &"queued".into())?.expect("queued agent");
+                agent.extra.insert("autoWake".into(), json!(true));
+                AgentRepository::put(tx, &agent)
+            })
+            .await
+            .expect("enable queued owner");
+        use studio_runtime_schema::agent_progress::{AgentStartWait, StartWaitReason};
+        for reason in [
+            StartWaitReason::Pause,
+            StartWaitReason::Slot,
+            StartWaitReason::Disk,
+            StartWaitReason::ModelCatalog,
+            StartWaitReason::ProviderSession,
+            StartWaitReason::Dependency,
+        ] {
+            let mut wait = AgentStartWait::new(reason, 4);
+            if reason == StartWaitReason::Pause {
+                wait.until = Some(4000.0);
+            }
+            if reason == StartWaitReason::Slot {
+                wait.running_turns = Some(8);
+                wait.max_running_turns = Some(8);
+            }
+            crate::account_start_gate::show_blocked(&store, vec![("queued".into(), wait.clone())])
+                .await
+                .expect("owner publishes wait");
+            let status = model_directory(&store, "lead", 3, &json!({}), 103.0)
+                .await
+                .expect("typed wait status");
+            let view = store
+                .read_async("test/wait-view", |tx| {
+                    let agent = AgentRepository::get(tx, &"queued".into())?.expect("queued agent");
+                    Ok::<_, StoreError>(
+                        crate::sync_views::agent_entity_view(&agent.value(), &Default::default())
+                            .expect("sync wait view"),
+                    )
+                })
+                .await
+                .expect("read sync projection");
+            assert_eq!(status["capacity"]["queued"][0]["reasons"], json!([wait]));
+            assert_eq!(view["startWait"], json!(wait));
+        }
+        // A stale owner cannot replace the current epoch's blocker.
+        crate::account_start_gate::show_blocked(
+            &store,
+            vec![(
+                "queued".into(),
+                AgentStartWait::new(StartWaitReason::Disk, 3),
+            )],
+        )
+        .await
+        .expect("stale wait ignored");
+        let status = model_directory(&store, "lead", 3, &json!({}), 104.0)
+            .await
+            .expect("current wait");
+        assert_eq!(
+            status["capacity"]["queued"][0]["reasons"][0]["reason"],
+            "dependency"
+        );
     }
 
     #[tokio::test]

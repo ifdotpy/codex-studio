@@ -22,6 +22,7 @@ import codex_turn_item_links as links
 class TurnItemLinksContract(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
         self.path = Path(self.temp.name) / "canvas.sqlite3"
         self.db = sqlite3.connect(self.path)
         self.db.executescript(

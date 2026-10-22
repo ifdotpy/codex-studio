@@ -24,6 +24,8 @@ pub struct WorkerAccountRequest<'a> {
     pub model: &'a str,
     pub excluded_account_keys: &'a [String],
     pub project_account_keys: Option<&'a [String]>,
+    /// The project's own account order; `None` or empty uses the listing's default.
+    pub project_account_groups: Option<&'a [String]>,
     /// Working (not paused) agents per account key, including workers chosen earlier
     /// in the same batch. Implicit selection picks the fewest (unit: agents).
     pub active_agents: &'a std::collections::HashMap<String, i64>,
@@ -52,6 +54,7 @@ pub fn select_worker_account(
                 model,
                 excluded_account_keys,
                 project_account_keys,
+                project_account_groups,
                 active_agents,
             },
         model_available,
@@ -79,10 +82,15 @@ pub fn select_worker_account(
     }
 
     let listing = accounts.worker_accounts().map_err(account_read_error)?;
+    let groups = match project_account_groups.filter(|groups| !groups.is_empty()) {
+        Some(groups) => groups.to_vec(),
+        None => listing.default_account_groups.clone(),
+    };
     let candidates = ordered_worker_account_candidates(
         &listing,
         excluded_account_keys,
         project_account_keys,
+        &groups,
         active_agents,
     );
     let provider = worker_model_provider(model);
@@ -198,6 +206,7 @@ fn ordered_worker_account_candidates<'a>(
     listing: &'a crate::provider_callbacks::ManagedCreationAccountListing,
     excluded: &[String],
     project_keys: Option<&[String]>,
+    groups: &[String],
     active_agents: &std::collections::HashMap<String, i64>,
 ) -> Vec<&'a crate::provider_callbacks::ManagedCreationAccountCandidate> {
     let mut ordered = listing
@@ -216,7 +225,10 @@ fn ordered_worker_account_candidates<'a>(
     ordered.sort_by_key(|row| {
         let active = active_agents.get(&row.account_key).copied().unwrap_or(0);
         let full = u64::try_from(active).unwrap_or(0) >= row.max_running_turns;
-        (full, active, row.account_key.as_str())
+        // A full account sorts after every account with a free slot; then the
+        // project's account order; then the least loaded account.
+        let rank = crate::account_preference::group_rank(row.group.as_deref(), groups);
+        (full, rank, active, row.account_key.as_str())
     });
     ordered
 }
@@ -702,6 +714,42 @@ pub(super) async fn dispatch(
     Ok(Some(dispatched))
 }
 
+#[derive(serde::Deserialize)]
+#[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
+enum LifecycleRequest {
+    Archive {
+        agent_id: String,
+        #[serde(default, rename = "request_id")]
+        _request_id: Option<String>,
+        #[serde(default)]
+        reason: String,
+        #[serde(default)]
+        unassign_work: bool,
+    },
+    Restore {
+        agent_id: String,
+        #[serde(default, rename = "request_id")]
+        _request_id: Option<String>,
+        #[serde(default)]
+        unassign_work: bool,
+    },
+    ArchiveFinished {
+        #[serde(default, rename = "request_id")]
+        _request_id: Option<String>,
+        #[serde(default)]
+        unassign_work: bool,
+    },
+}
+
+enum LifecycleCommand {
+    Single(crate::agent_management::Action),
+    Finished {
+        actor: String,
+        epoch: i64,
+        unassign_work: bool,
+    },
+}
+
 /// Python `manage_agent` archive and restore. The shared lifecycle owner
 /// commits the decision, then completes the workspace cleanup it queued.
 async fn lifecycle_management(
@@ -729,29 +777,43 @@ async fn lifecycle_management(
             move |tx| {
                 let args = super::services::manage::resolved_args(tx, &actor_value, &args)
                     .map_err(callback_refusal)?;
-                let (action, unassign_work) =
-                    super::services::manage::checked_action(&args).map_err(callback_refusal)?;
-                let target = args["agent_id"]
-                    .as_str()
-                    .filter(|id| {
-                        studio_runtime_store::system_reads::get(tx, "runtime_agents", id)
-                            .is_ok_and(|agent| agent.is_some())
-                    })
-                    .ok_or(Error::Invalid("Unknown managed agent"))?
-                    .to_owned();
-                Ok::<_, Error>(if action == "archive" {
-                    crate::agent_management::Action::Archive {
-                        actor: actor_id,
-                        epoch,
-                        target,
-                        reason: args["reason"].as_str().unwrap_or_default().to_owned(),
+                let request: LifecycleRequest = serde_json::from_value(args)
+                    .map_err(|_| Error::Invalid("Invalid agent lifecycle arguments"))?;
+                Ok::<_, Error>(match request {
+                    LifecycleRequest::Archive {
+                        agent_id,
+                        reason,
                         unassign_work,
-                    }
-                } else {
-                    crate::agent_management::Action::Restore {
+                        ..
+                    } => LifecycleCommand::Single(crate::agent_management::Action::Archive {
                         actor: actor_id,
                         epoch,
-                        target,
+                        target: agent_id,
+                        reason,
+                        unassign_work,
+                    }),
+                    LifecycleRequest::Restore {
+                        agent_id,
+                        unassign_work,
+                        ..
+                    } => {
+                        if unassign_work {
+                            return Err(Error::Invalid(
+                                "unassign_work applies only to archive or archive_finished",
+                            ));
+                        }
+                        LifecycleCommand::Single(crate::agent_management::Action::Restore {
+                            actor: actor_id,
+                            epoch,
+                            target: agent_id,
+                        })
+                    }
+                    LifecycleRequest::ArchiveFinished { unassign_work, .. } => {
+                        LifecycleCommand::Finished {
+                            actor: actor_id,
+                            epoch,
+                            unassign_work,
+                        }
                     }
                 })
             },
@@ -763,7 +825,28 @@ async fn lifecycle_management(
         // These checks only read; a refusal proves that nothing was applied.
         Err(error) => return Ok(not_sent(error)),
     };
-    match crate::agent_management_store::execute(store, &action, now).await {
+    let outcome = match action {
+        LifecycleCommand::Single(action) => {
+            crate::agent_management_store::execute(store, &action, now).await
+        }
+        LifecycleCommand::Finished {
+            actor,
+            epoch,
+            unassign_work,
+        } => crate::agent_management_store::archive_finished(
+            store,
+            &actor,
+            epoch,
+            unassign_work,
+            now,
+        )
+        .await
+        .and_then(|result| {
+            serde_json::to_value(result)
+                .map_err(|error| crate::agent_management::ManagementError::Store(error.into()))
+        }),
+    };
+    match outcome {
         Ok(value) => Ok(written(value, Vec::new())),
         // Every decision refusal precedes its single writer transaction.
         Err(crate::agent_management::ManagementError::Invalid(message)) => {
@@ -1199,6 +1282,7 @@ mod account_identity_tests {
             deleted: false,
             duplicate: false,
             max_running_turns: studio_runtime_schema::shared_values::ACCOUNT_RUNNING_TURNS_MAX,
+            group: None,
         }
     }
 
@@ -1208,6 +1292,7 @@ mod account_identity_tests {
                 .iter()
                 .map(|(key, provider, ready)| candidate(key, *provider, *ready))
                 .collect(),
+            default_account_groups: Vec::new(),
         })
     }
 
@@ -1231,6 +1316,7 @@ mod account_identity_tests {
                 model,
                 excluded_account_keys: &[],
                 project_account_keys: None,
+                project_account_groups: None,
                 active_agents: counts,
             },
             model_available: &mut model_available,
@@ -1291,6 +1377,59 @@ mod account_identity_tests {
             pick(&mut |key| key == "offline" || key == "busy").expect("busy"),
             "busy"
         );
+    }
+
+    /// Workers prefer the project's account order (or the default order) over
+    /// load; a full or unavailable preferred account falls back to the next one.
+    #[test]
+    fn implicit_selection_follows_the_account_order_and_falls_back() {
+        use ProviderKind::Codex;
+        let mut listing = accounts(&[
+            ("own", Codex, true),
+            ("work", Codex, true),
+            ("plain", Codex, true),
+        ]);
+        listing.0.accounts[0].group = Some("own".to_owned());
+        listing.0.accounts[1].group = Some("work".to_owned());
+        listing.0.accounts[0].max_running_turns = 2;
+        listing.0.default_account_groups = vec!["own".to_owned(), "work".to_owned()];
+        let pick = |project: Option<&[String]>,
+                    counts: &Counts,
+                    available: &mut dyn FnMut(&str) -> bool| {
+            let mut model_available =
+                |key: &str, _: &ManagedAccountIdentity, _: &str| Ok(available(key));
+            select_worker_account(WorkerAccountSelection {
+                accounts: &listing,
+                request: WorkerAccountRequest {
+                    parent_account_key: "parent",
+                    requested_account_key: None,
+                    default_account_key: None,
+                    model: "gpt-5",
+                    excluded_account_keys: &[],
+                    project_account_keys: None,
+                    project_account_groups: project,
+                    active_agents: counts,
+                },
+                model_available: &mut model_available,
+            })
+            .map(|selected| selected.0)
+            .expect("selected")
+        };
+        let busy = Counts::from([("own".to_owned(), 1)]);
+        // The default order prefers "own" although "work" and "plain" are idle.
+        assert_eq!(pick(None, &busy, &mut |_| true), "own");
+        // An empty project order also uses the default order.
+        assert_eq!(pick(Some(&[]), &busy, &mut |_| true), "own");
+        // A project order replaces the default order.
+        let work = ["work".to_owned()];
+        assert_eq!(pick(Some(&work), &busy, &mut |_| true), "work");
+        // A full preferred account falls back to the next group.
+        let full = Counts::from([("own".to_owned(), 2)]);
+        assert_eq!(pick(None, &full, &mut |_| true), "work");
+        // An account without the model falls back to the next group.
+        assert_eq!(pick(None, &busy, &mut |key| key != "own"), "work");
+        // Accounts outside the order stay available.
+        assert_eq!(pick(None, &busy, &mut |key| key == "plain"), "plain");
     }
 
     #[test]

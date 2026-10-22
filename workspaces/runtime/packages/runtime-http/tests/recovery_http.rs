@@ -1,7 +1,6 @@
 //! Recovery reaches the retained account-session command through real HTTP.
 #![allow(clippy::unwrap_used)]
-#[path = "../../runtime-services/tests/wave7_p04_callback/fixture.rs"]
-mod fixture;
+use crate::callback_fixtures as fixture;
 
 use axum::{
     body::{Body, to_bytes},

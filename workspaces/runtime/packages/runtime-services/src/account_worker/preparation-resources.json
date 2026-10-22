@@ -648,8 +648,10 @@
           },
           "files": {
             "type": "array",
+            "maxItems": 500,
             "items": {
-              "type": "string"
+              "type": "string",
+              "maxLength": 4096
             }
           },
           "version": {

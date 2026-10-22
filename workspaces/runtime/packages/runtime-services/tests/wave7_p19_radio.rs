@@ -1,8 +1,7 @@
-#[path = "support/prepared_python.rs"]
-mod python_support;
+use crate::prepared_python_support as python_support;
 use rusqlite::types::Value as SqlValue;
 use serde_json::{Value, json};
-use std::{fs, path::Path, process::Command, sync::OnceLock};
+use std::{fs, path::Path, process::Command};
 use studio_runtime_services::{
     host_project_runtime::PreparedHost,
     projects::ProjectsError,
@@ -42,54 +41,50 @@ impl RadioIngress for Ingress {
     }
 }
 struct RadioCorpus {
+    _root: tempfile::TempDir,
     databases: Vec<(String, Vec<u8>)>,
     cases: Vec<Value>,
 }
-static CREATE_CASE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-
-fn corpus() -> &'static RadioCorpus {
-    static CORPUS: OnceLock<RadioCorpus> = OnceLock::new();
-    CORPUS.get_or_init(|| {
-        // Every test consumes the same input-independent cases. Generate once
-        // so parallel tests don't launch identical SQLite-heavy Python oracles.
-        let template = python_support::disposable_state_dir();
-        let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
-        let script = manifest.join("tests/wave7_p19/oracle.py");
-        let mut command = Command::new(python_support::prepared_python(
-            &manifest.join("../../apps/server/src"),
-        ));
-        command
-            .env("TMPDIR", python_support::disposable_state_parent())
-            .arg(&script)
-            .arg(template.path());
-        if std::env::var("STUDIO_RUNTIME_CORPUS_FULL").as_deref() == Ok("1") {
-            command.arg("--full");
-        }
-        let output = python_support::output_with_timeout(
-            &mut command,
-            &script,
-            python_support::PYTHON_ORACLE_TIMEOUT,
-        )
-        .unwrap_or_else(|error| panic!("could not run P19 Python oracle: {error}"));
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        let databases = ["canvas.sqlite3", "analytics.sqlite3"]
-            .into_iter()
-            .map(|name| {
-                (
-                    name.to_owned(),
-                    fs::read(template.path().join(name)).expect("template database"),
-                )
-            })
-            .collect();
-        RadioCorpus {
-            databases,
-            cases: serde_json::from_slice(&output.stdout).expect("corpus JSON"),
-        }
-    })
+fn corpus() -> RadioCorpus {
+    // Oracle paths remain below this test-owned root through restart replay.
+    let template = python_support::disposable_state_dir();
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let script = manifest.join("tests/wave7_p19/oracle.py");
+    let mut command = Command::new(python_support::prepared_python(
+        &manifest.join("../../apps/server/src"),
+    ));
+    command
+        .env("TMPDIR", template.path())
+        .arg(&script)
+        .arg(template.path());
+    if std::env::var("STUDIO_RUNTIME_CORPUS_FULL").as_deref() == Ok("1") {
+        command.arg("--full");
+    }
+    let output = python_support::output_with_timeout(
+        &mut command,
+        &script,
+        python_support::PYTHON_ORACLE_TIMEOUT,
+    )
+    .unwrap_or_else(|error| panic!("could not run P19 Python oracle: {error}"));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let databases = ["canvas.sqlite3", "analytics.sqlite3"]
+        .into_iter()
+        .map(|name| {
+            (
+                name.to_owned(),
+                fs::read(template.path().join(name)).expect("template database"),
+            )
+        })
+        .collect();
+    RadioCorpus {
+        databases,
+        cases: serde_json::from_slice(&output.stdout).expect("corpus JSON"),
+        _root: template,
+    }
 }
 fn copy_template(corpus: &RadioCorpus, root: &Path) {
     for (name, contents) in &corpus.databases {
@@ -289,17 +284,13 @@ async fn run(store: std::sync::Arc<RuntimeStore>, case: &Value) -> Result<Value,
             vec![json!({"id":"default","status":"ready","canAttemptNativeProof":true})],
         ).await,
         "create" => {
-            // The shared Python fixture names one filesystem path. Keep its
-            // create/remove lifetime atomic across parallel corpus consumers.
+            // Recreate the oracle project below the corpus owner for this test.
             {
-                let _guard = CREATE_CASE_LOCK.lock().await;
                 let path = case["body"]["path"].as_str().expect("project path");
                 fs::create_dir_all(path).expect("project directory");
                 let values: [Value; 2] = serde_json::from_value(case["drafts"].clone()).expect("Python drafts");
                 let drafts = values.map(|value| AgentRecord::from_value(value).expect("checked Python agent draft"));
-                let result = radio_runtime::create_with(std::sync::Arc::clone(&store), &case["body"], Box::new(Creation(drafts))).await;
-                fs::remove_dir(path).expect("remove fixture project directory");
-                result
+                radio_runtime::create_with(std::sync::Arc::clone(&store), &case["body"], Box::new(Creation(drafts))).await
             }
         },
         "project-binding" => store.transaction_with(move |db| {
@@ -342,7 +333,7 @@ async fn python_written_radio_corpus_and_restart_replay() {
     let corpus = corpus();
     for original_case in &corpus.cases {
         let root = python_support::disposable_state_dir();
-        copy_template(corpus, root.path());
+        copy_template(&corpus, root.path());
         let store = std::sync::Arc::new(RuntimeStore::open(Some(root.path())).await.expect("open"));
         seed(&store, &original_case["before"]).await;
         let result = run(std::sync::Arc::clone(&store), original_case).await;
@@ -481,7 +472,7 @@ async fn failpoints_rollback_floor_binding_answer_and_receipt_then_restart() {
         for table in tables {
             for boundary in ["BEFORE", "AFTER"] {
                 let root = python_support::disposable_state_dir();
-                copy_template(corpus, root.path());
+                copy_template(&corpus, root.path());
                 let store =
                     std::sync::Arc::new(RuntimeStore::open(Some(root.path())).await.expect("open"));
                 seed(&store, &original_case["before"]).await;
@@ -587,13 +578,14 @@ async fn answered_question_releases_one_continuation_and_malformed_rows_write_no
         .find(|c| c["name"] == "answer")
         .expect("answer");
     let root = python_support::disposable_state_dir();
-    copy_template(corpus, root.path());
+    copy_template(&corpus, root.path());
     let store = std::sync::Arc::new(RuntimeStore::open(Some(root.path())).await.expect("open"));
     seed(&store, &case["before"]).await;
     assert!(radio_runtime::holds_floor(&store.test_reader().expect("read"), "a").expect("floor"));
     let prepared = std::sync::Arc::new(PreparedHost::load(&store).await.expect("prepare"));
+    let question = case["body"]["question"].clone();
     store.transaction_with(move |db|->Result<(),ProjectsError> {
-        assert!(radio_runtime::route_question_answer(db,&prepared,&case["body"]["question"],"answer",None,1000.0)?);
+        assert!(radio_runtime::route_question_answer(db,&prepared,&question,"answer",None,1000.0)?);
         db.execute("UPDATE runtime_requests SET record=json_set(record,'$.status','answered') WHERE id='q'",[])?;
         Ok(())
     }).await.expect("P04 caller commits both writes");
@@ -658,7 +650,7 @@ async fn pending_interrupt_recovers_before_claim_and_unknown_is_never_resent() {
         .find(|case| case["name"] == "interrupt")
         .expect("interrupt");
     let root = python_support::disposable_state_dir();
-    copy_template(corpus, root.path());
+    copy_template(&corpus, root.path());
     let store = std::sync::Arc::new(RuntimeStore::open(Some(root.path())).await.expect("open"));
     seed(&store, &case["before"]).await;
     let prepared = std::sync::Arc::new(PreparedHost::load(&store).await.expect("prepare"));
@@ -722,7 +714,7 @@ async fn pending_interrupt_recovers_before_claim_and_unknown_is_never_resent() {
     // Simulate a crash after the durable claim commits but before transport
     // dispatch: recovery observes Unknown and the transport receives nothing.
     let crash_root = python_support::disposable_state_dir();
-    copy_template(corpus, crash_root.path());
+    copy_template(&corpus, crash_root.path());
     let crash_store = std::sync::Arc::new(
         RuntimeStore::open(Some(crash_root.path()))
             .await

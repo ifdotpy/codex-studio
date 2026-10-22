@@ -6,6 +6,9 @@ use std::sync::{Arc, OnceLock};
 
 use crate::event_write::truthy;
 
+/// Maximum last-answer text retained in an agent sync view. Unit: Unicode scalar values.
+pub(crate) const AGENT_SYNC_LAST_ANSWER_CHARS: usize = 4_000;
+
 const AGENT_SHORT_STRING_OBJECTS: &[&str] = &[
     "activity",
     "nativeStatus",
@@ -110,7 +113,8 @@ fn bound_sync_value(value: &Value, field: &str, agent_short_strings: bool) -> Va
                 match field {
                     "overview" => 9_000,
                     "error" | "tail" | "description" | "command" | "query" => 2_000,
-                    "text" | "lastAnswer" => 4_000,
+                    "lastAnswer" => AGENT_SYNC_LAST_ANSWER_CHARS,
+                    "text" => 4_000,
                     _ => 12_000,
                 }
             };
@@ -278,10 +282,81 @@ pub(crate) fn invalid_agent_view(id: &str, record: &Value, diagnostic: &str) -> 
     view
 }
 
+/// Canonical wait projection used by both sync/HTTP and lead status.
+pub(crate) fn agent_start_wait(
+    record: &Value,
+) -> Result<Option<studio_runtime_schema::agent_progress::AgentStartWait>, serde_json::Error> {
+    use studio_runtime_schema::agent_progress::{AgentStartWait, StartWaitReason};
+    // Older private native holds can carry a diagnostic object. Decode the
+    // envelope without exposing or inspecting its diagnostic fields.
+    #[derive(serde::Deserialize)]
+    #[serde(untagged)]
+    enum NativeHold {
+        Flag(bool),
+        Diagnostic(BTreeMap<String, serde::de::IgnoredAny>),
+    }
+    impl NativeHold {
+        fn active(self) -> bool {
+            match self {
+                Self::Flag(active) => active,
+                Self::Diagnostic(fields) => !fields.is_empty(),
+            }
+        }
+    }
+    // Agent records are open documents; this typed projection reads only wait ownership.
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Source {
+        status: Option<studio_runtime_store::AgentStatus>,
+        #[serde(default)]
+        epoch: i64,
+        #[serde(default)]
+        auto_wake: bool,
+        #[serde(default)]
+        native_failure_hold: Option<NativeHold>,
+        account_transfer_id: Option<String>,
+        start_wait: Option<AgentStartWait>,
+    }
+    let source: Source = serde_json::from_value(record.clone())?;
+    if !matches!(
+        source.status,
+        Some(
+            studio_runtime_store::AgentStatus::Queued | studio_runtime_store::AgentStatus::Starting
+        )
+    ) {
+        return Ok(None);
+    }
+    let persisted = source.start_wait.filter(|wait| wait.epoch == source.epoch);
+    if source.status == Some(studio_runtime_store::AgentStatus::Starting) {
+        return Ok(persisted);
+    }
+    let hold = if !source.auto_wake {
+        Some(StartWaitReason::Paused)
+    } else if source.native_failure_hold.is_some_and(NativeHold::active) {
+        Some(StartWaitReason::NativeFailure)
+    } else if source.account_transfer_id.is_some() {
+        Some(StartWaitReason::AccountTransfer)
+    } else {
+        None
+    };
+    Ok(Some(match hold {
+        Some(reason) => AgentStartWait::new(reason, source.epoch),
+        None => persisted
+            .unwrap_or_else(|| AgentStartWait::new(StartWaitReason::DispatchPending, source.epoch)),
+    }))
+}
+
 /// Build the managed renderer view from a record and explicit runtime context.
 pub fn agent_entity_view(record: &Value, context: &AgentViewContext) -> Option<Value> {
     let id = record.get("id").and_then(Value::as_str)?;
+    #[cfg(test)]
+    crate::scheduler::publication_work::projection(id);
     let mut view = record.as_object()?.clone();
+    view.insert(
+        studio_runtime_schema::agent_progress::START_WAIT_FIELD.into(),
+        serde_json::to_value(agent_start_wait(record).ok()?).ok()?,
+    );
+
     view.insert(
         "commandProgress".to_owned(),
         serde_json::to_value(&context.command_progress).ok()?,
@@ -423,6 +498,11 @@ fn active_agent<'a>(context: &'a RoomViewContext, id: &str) -> Option<&'a Value>
 pub fn room_entity_view(record: &Value, context: &RoomViewContext) -> Option<Value> {
     let kind = record.get("kind").and_then(Value::as_str)?;
     let mut view = record.as_object()?.clone();
+    view.insert(
+        studio_runtime_schema::agent_progress::START_WAIT_FIELD.into(),
+        serde_json::to_value(agent_start_wait(record).ok()?).ok()?,
+    );
+
     let members: Vec<String>;
     if kind == "federated" {
         let federation = context.federation.as_ref()?;
@@ -639,6 +719,11 @@ pub fn project_entity_view(
     vault: Option<&Value>,
 ) -> Option<Value> {
     let mut view = record.as_object()?.clone();
+    view.insert(
+        studio_runtime_schema::agent_progress::START_WAIT_FIELD.into(),
+        serde_json::to_value(agent_start_wait(record).ok()?).ok()?,
+    );
+
     if let Some(readiness) = readiness.filter(|value| truthy(Some(value))) {
         view.insert("layrReadiness".to_owned(), readiness.clone());
         if readiness.get("state").and_then(Value::as_str) == Some("ready") {

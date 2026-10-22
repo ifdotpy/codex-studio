@@ -82,17 +82,37 @@ pub enum MonitorError {
 }
 
 impl MonitorError {
-    /// Only a failed durable store boundary may stop the retained runtime task.
+    /// A failure at the durable store boundary, retryable or not.
     pub fn store_failure_for_task(&self) -> bool {
-        matches!(
-            self,
-            Self::Store(_)
-                | Self::Event(crate::event_write::EventWriteError::Store(_))
-                | Self::Rules(crate::rules_tick::RulesTickError::Store(_))
-                | Self::Rules(crate::rules_tick::RulesTickError::Event(
-                    crate::event_write::EventWriteError::Store(_)
-                ))
-        )
+        self.store_error().is_some()
+    }
+
+    /// Only a permanently failed durable store boundary may stop the retained
+    /// runtime task. A retryable store failure, for example a full disk, holds
+    /// the work and retries it from durable state.
+    pub fn stops_runtime_task(&self) -> bool {
+        self.store_error()
+            .is_some_and(|error| !retryable_store_error(error))
+    }
+
+    /// A store or file failure that a later attempt of the same idempotent
+    /// write can pass: a full disk, an unopenable database file, an I/O error,
+    /// a busy database or a lost commit response. Invalid stored state, schema
+    /// contracts and a lost state directory owner are not retryable.
+    pub fn retryable_store_failure(&self) -> bool {
+        matches!(self, Self::Io(_)) || self.store_error().is_some_and(retryable_store_error)
+    }
+
+    fn store_error(&self) -> Option<&studio_runtime_store::StoreError> {
+        match self {
+            Self::Store(error)
+            | Self::Event(crate::event_write::EventWriteError::Store(error))
+            | Self::Rules(crate::rules_tick::RulesTickError::Store(error))
+            | Self::Rules(crate::rules_tick::RulesTickError::Event(
+                crate::event_write::EventWriteError::Store(error),
+            )) => Some(error),
+            _ => None,
+        }
     }
 
     pub fn is_bad_delivery(&self) -> bool {
@@ -132,6 +152,17 @@ impl MonitorError {
             _ => false,
         }
     }
+}
+
+fn retryable_store_error(error: &studio_runtime_store::StoreError) -> bool {
+    matches!(
+        error,
+        studio_runtime_store::StoreError::Sqlite(_)
+            | studio_runtime_store::StoreError::CommitOutcomeUnknown(_)
+            | studio_runtime_store::StoreError::CommitActorOutcomeUnknown(_)
+            | studio_runtime_store::StoreError::StateDirectory(_)
+            | studio_runtime_store::StoreError::ReadTaskFailed
+    )
 }
 
 fn fatal_store_error(error: &studio_runtime_store::StoreError) -> bool {
@@ -294,6 +325,16 @@ impl MonitorSnapshot {
     }
     pub fn agent(&self) -> &str {
         &self.fields.agent
+    }
+    /// Only these fields can change selection in the canonical monitor window.
+    pub(crate) fn same_window_position(&self, other: &Self) -> bool {
+        self.fields.id == other.fields.id
+            && self.fields.agent == other.fields.agent
+            && self.fields.status == other.fields.status
+            && self.fields.created == other.fields.created
+    }
+    pub(crate) fn live_window_owner(&self) -> bool {
+        self.actor.deleted_at.is_none()
     }
     pub(crate) fn active(&self) -> bool {
         matches!(

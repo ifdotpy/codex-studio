@@ -3,6 +3,8 @@ mod agent_isolation;
 #[cfg(unix)]
 mod auth_hold;
 mod browser_skill;
+mod callback_handoff;
+mod callback_head_of_line;
 mod capacity_retry;
 mod claude_preparation;
 #[cfg(unix)]
@@ -11,8 +13,9 @@ mod exited_generation_callback;
 mod idle_unload;
 mod input_origin;
 mod journal_cost;
-mod limits_updates;
+mod journal_publication;
 mod late_thread_reply;
+mod limits_updates;
 mod login_completion;
 #[cfg(unix)]
 mod many_agents;
@@ -95,6 +98,9 @@ pub(super) struct Faults {
     /// A test holding the write side blocks every account-worker store
     /// operation at its start, before any SQL is submitted.
     pub(super) operation_gate: tokio::sync::RwLock<()>,
+    /// A test holding the write side keeps every managed tool callback handler
+    /// from answering: an accepted request whose answer is not produced yet.
+    pub(super) callback_gate: Arc<tokio::sync::RwLock<()>>,
 }
 type Boundary = (String, usize, Option<String>);
 type NamedBoundary = (String, usize, Option<String>, bool);
@@ -298,7 +304,7 @@ fn outcome_boundary_identity_is_stable_across_replay_interleaving() {
 fn test_root() -> PathBuf {
     std::env::var_os("STUDIO_ACCOUNT_TEST_ROOT")
         .map(PathBuf::from)
-        .unwrap_or_else(|| std::env::temp_dir().join("studio-account-worker-tests"))
+        .unwrap_or_else(std::env::temp_dir)
 }
 /// The one queued fixture agent every account-worker test starts from.
 const FIXTURE_AGENT_ID: &str = "fixture-agent";
@@ -454,7 +460,8 @@ impl Peer {
                                 }
                                 let (receipt, result) = oneshot::channel();
                                 tokio::select! {biased; _=Shutdown::cancelled(&mut stopped)=>break, sent=out.send(Wire {value:write.message().clone(),receipt})=>{sent.unwrap();}}
-                                tokio::select! {biased; _=Shutdown::cancelled(&mut stopped)=>break, r=result=>r.unwrap_or(CommandReceipt::Unknown)}
+                                // Preserve an available receipt when shutdown is also ready.
+                                tokio::select! {biased; r=result=>r.unwrap_or(CommandReceipt::Unknown), _=Shutdown::cancelled(&mut stopped)=>break}
                             }
                         };
                         let _ignored = reply.send(result);
@@ -1600,6 +1607,33 @@ async fn scenario_restart_after_submitted_before_written_recovers_unknown_withou
     worker.shutdown().await.unwrap();
 }
 
+/// Accepted callback records the account still owes an answer for.
+fn callback_records(state: &State) -> i64 {
+    state
+        .bridge
+        .store
+        .test_reader()
+        .expect("reader")
+        .query_row(
+            "SELECT count(*) FROM runtime_operation_receipts WHERE id LIKE 'account-worker:callback:%:accepted'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("callback records")
+}
+
+/// Wait until every written answer retired its record. The cursor settles with
+/// the batch, so an ACK says nothing about the answer's write outcome.
+async fn callbacks_retired(state: &State) {
+    tokio::time::timeout(std::time::Duration::from_secs(120), async {
+        while callback_records(state) > 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("written answers retire their records");
+}
+
 async fn unsupported_callback(method: &str) {
     let state = State::new().await;
     let mut peer = Peer::new();
@@ -1616,33 +1650,30 @@ async fn unsupported_callback(method: &str) {
         assert_eq!(wire.value["error"]["code"], -32601);
         assert_eq!(wire.value["error"]["data"]["kind"], "unsupported_callback");
     }
-    state
-        .bridge
-        .run(move |store| async move {
-            store
-                .transaction_with(move |tx| {
-                    assert!(
-                        store::receipt(
-                            tx,
-                            &store::journal_operation("default", 1, cursor),
-                            "settled"
-                        )?
-                        .is_some()
-                    );
-                    assert!(
-                        store::receipt(tx, &format!("callback:default:1:{cursor}"), "submitted")?
-                            .is_some()
-                    );
-                    Ok(())
+    // The request is accepted with its batch: its cursor settles at once and
+    // its record, not the cursor, owns the unwritten answer.
+    peer.acknowledged(cursor).await;
+    let record_phases = |state: &State| {
+        let bridge = state.bridge.clone();
+        async move {
+            bridge
+                .run(move |store| async move {
+                    store
+                        .transaction_with(move |tx| {
+                            let operation = format!("callback:default:1:{cursor}");
+                            Ok((
+                                store::checkpoint(tx, "default", 1)?,
+                                store::receipt(tx, &operation, "accepted")?.is_some(),
+                                store::receipt(tx, &operation, "submitted")?.is_some(),
+                            ))
+                        })
+                        .await
                 })
                 .await
-        })
-        .await
-        .unwrap();
-    assert!(
-        peer.acks.try_recv().is_err(),
-        "callback not ACKed before its answer is written"
-    );
+                .unwrap()
+        }
+    };
+    assert_eq!(record_phases(&state).await, (cursor, true, true));
     wire.receipt
         .send(CommandReceipt::Written {
             remote_id: None,
@@ -1650,7 +1681,12 @@ async fn unsupported_callback(method: &str) {
         })
         .ok()
         .unwrap();
-    peer.acknowledged(cursor).await;
+    callbacks_retired(&state).await;
+    assert_eq!(
+        record_phases(&state).await,
+        (cursor, false, false),
+        "a written answer retires its record"
+    );
     worker.shutdown().await.unwrap();
 }
 async fn scenario_unsupported_approval_is_answered_after_commit() {
@@ -2079,7 +2115,9 @@ async fn scenario_callback_unknown_write_is_not_resent_on_replay() {
         return;
     }
     assert!(matches!(completion, Err(WorkerError::CallbackUnknown)));
-    assert!(peer.acks.try_recv().is_err());
+    // The request was accepted with its batch, so its cursor settled before
+    // the answer was written; only its record keeps the uncertainty.
+    assert_eq!(peer.acks.try_recv().map(|ack| ack.0), Ok(1));
     if MATRIX.try_with(|_| ()).is_ok() {
         // Crash-matrix recovery owns the replay phases and records their exact
         // request frame/cursor; do not run an uninstrumented fixture recovery.
@@ -2088,23 +2126,29 @@ async fn scenario_callback_unknown_write_is_not_resent_on_replay() {
     let mut peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
     peer.frame(frame).await;
-    let completion = tokio::time::timeout(std::time::Duration::from_secs(120), worker.completion())
-        .await
-        .expect("callback completion deadline");
-    if MATRIX
-        .try_with(|context| {
-            context
-                .faults
-                .fired
-                .load(std::sync::atomic::Ordering::SeqCst)
+    worker_barrier(&worker).await;
+    assert!(
+        peer.writes.try_recv().is_err(),
+        "an uncertain answer is never sent again"
+    );
+    let phases = state
+        .bridge
+        .run(|store| async move {
+            store
+                .transaction_with(|tx| {
+                    let operation = "callback:default:1:1";
+                    Ok(["accepted", "submitted", "unknown"].map(|phase| {
+                        store::receipt(tx, operation, phase)
+                            .expect("callback phase")
+                            .is_some()
+                    }))
+                })
+                .await
         })
-        .unwrap_or(false)
-    {
-        return;
-    }
-    assert!(matches!(completion, Err(WorkerError::CallbackUnknown)));
-    assert!(peer.writes.try_recv().is_err());
-    assert!(peer.acks.try_recv().is_err());
+        .await
+        .unwrap();
+    assert_eq!(phases, [true; 3], "the uncertain record is kept");
+    worker.shutdown().await.unwrap();
 }
 
 async fn scenario_a_new_stop_can_retry_a_definitely_rejected_interrupt() {
@@ -3071,6 +3115,7 @@ async fn callback_replay_waits_for_initialization_before_admission() {
         .ok()
         .unwrap();
     peer.acknowledged(cursor).await;
+    callbacks_retired(&state).await;
     worker.shutdown().await.unwrap();
 }
 
@@ -3397,6 +3442,7 @@ async fn callback_burst_is_answered_without_worker_exit() {
     if acknowledged < BURST {
         peer.acknowledged_or_worker_exits(BURST, &mut worker).await;
     }
+    callbacks_retired(&state).await;
     assert!(!*worker.completion_signal().borrow());
     worker.shutdown().await.unwrap();
 }
@@ -5810,6 +5856,7 @@ async fn scenario_workspace_pending_reuses_reserved_attempt() {
     }
     let pending = state.record().await;
     assert_eq!(pending["status"], "starting");
+    assert_eq!(pending["startWait"]["reason"], "dependency");
     assert_eq!(
         pending["startAttempt"]["prepareError"],
         "workspace-readiness/pending"
@@ -5836,6 +5883,7 @@ async fn scenario_workspace_pending_reuses_reserved_attempt() {
     let ready = state.record().await;
     assert_eq!(ready["startAttempt"]["id"], pending["startAttempt"]["id"]);
     assert!(ready["startAttempt"].get("prepareError").is_none());
+    assert!(ready.get("startWait").is_none());
     peer.accepted(&turn).await;
     assert_eq!(state.event_status("input").await, "delivered");
     worker.shutdown().await.unwrap();

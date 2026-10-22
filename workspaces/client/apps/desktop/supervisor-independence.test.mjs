@@ -13,6 +13,7 @@ import {
   rmSync,
 } from "node:fs";
 import path from "node:path";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 
@@ -57,7 +58,7 @@ function waitFor(check, message, timeoutMs = 5000) {
 }
 
 test("desktop and recovery lifecycle changes preserve an active supervisor owner", async () => {
-  const fixture = mkdtempSync("/tmp/svo-");
+  const fixture = mkdtempSync(path.join(tmpdir(), "svo-"));
   const statePath = path.join(fixture, "state");
   mkdirSync(statePath);
   const state = realpathSync(statePath);

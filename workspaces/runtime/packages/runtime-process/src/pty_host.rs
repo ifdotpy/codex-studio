@@ -893,7 +893,6 @@ fn exit_code(status: ExitStatus) -> i32 {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
     #[cfg(target_os = "linux")]
     use std::sync::mpsc;
     use std::thread;
@@ -972,7 +971,8 @@ mod tests {
 
     #[test]
     fn backpressured_terminal_input_returns_uncertain_instead_of_blocking() {
-        let root = std::env::temp_dir().join(format!("pty-backpressure-{}", std::process::id()));
+        let directory = tempfile::tempdir().expect("owned test directory");
+        let root = directory.path().to_path_buf();
         std::fs::create_dir_all(&root).expect("create temporary working directory");
         let host = LocalPtyHost;
         let command = [
@@ -997,7 +997,6 @@ mod tests {
         .expect_err("non-reading shell must time out with uncertain delivery");
         assert!(matches!(error, PtyHostError::InputTimeout));
         host.close(session).expect("close test PTY");
-        std::fs::remove_dir_all(root).expect("remove temporary working directory");
     }
 
     #[cfg(target_os = "linux")]
@@ -1027,10 +1026,8 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn live_close_kills_handoff_group_after_try_wait_reaps_leader() {
-        let root = std::env::var_os("CS_TERMINAL_TEST_STATE_DIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| std::env::temp_dir().join("cs-terminals-test-state"))
-            .join("process-host");
+        let directory = tempfile::tempdir().expect("owned process-host test directory");
+        let root = directory.path().to_path_buf();
         std::fs::create_dir_all(&root).expect("tmpfs cwd");
         let cwd = root.join(format!("leader-{}", std::process::id()));
         std::fs::create_dir_all(&cwd).expect("isolated cwd");
@@ -1318,10 +1315,8 @@ mod tests {
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn failed_kill_signal_returns_error_and_retains_the_recovery_identity() {
-        let root = std::env::var_os("CS_TERMINAL_TEST_STATE_DIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| std::env::temp_dir().join("cs-terminals-test-state"))
-            .join("process-host");
+        let directory = tempfile::tempdir().expect("owned process-host test directory");
+        let root = directory.path().to_path_buf();
         std::fs::create_dir_all(&root).expect("tmpfs cwd");
         let cwd = root.join(format!("signal-failure-{}", std::process::id()));
         std::fs::create_dir_all(&cwd).expect("isolated cwd");

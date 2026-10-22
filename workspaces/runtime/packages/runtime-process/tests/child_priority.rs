@@ -118,7 +118,11 @@ fn environment_child_probe() {
 #[allow(clippy::disallowed_methods)]
 fn two_priority_failures_are_counted_without_emitting_io() {
     let output = Command::new(std::env::current_exe().expect("test executable"))
-        .args(["--exact", "environment_child_probe", "--nocapture"])
+        .args([
+            "--exact",
+            "child_priority::environment_child_probe",
+            "--nocapture",
+        ])
         .env("STUDIO_PRIORITY_PROBE", "failures")
         .output()
         .expect("failure probe completes");
@@ -174,7 +178,11 @@ fn environment_selects_background_by_default_and_normal_disables_it() {
     ] {
         let mut command = Command::new(std::env::current_exe().expect("test executable"));
         command
-            .args(["--exact", "environment_child_probe", "--nocapture"])
+            .args([
+                "--exact",
+                "child_priority::environment_child_probe",
+                "--nocapture",
+            ])
             .env("STUDIO_PRIORITY_PROBE", "1")
             .env_remove(CHILD_PRIORITY_ENV);
         if let Some(value) = value {
@@ -195,7 +203,11 @@ fn stream_child_honors_default_background_and_normal_for_child_and_grandchild() 
     for value in [None, Some("background"), Some("normal")] {
         let mut command = Command::new(std::env::current_exe().expect("test executable"));
         command
-            .args(["--exact", "environment_child_probe", "--nocapture"])
+            .args([
+                "--exact",
+                "child_priority::environment_child_probe",
+                "--nocapture",
+            ])
             .env("STUDIO_PRIORITY_PROBE", "stream")
             .env_remove(CHILD_PRIORITY_ENV);
         if let Some(value) = value {

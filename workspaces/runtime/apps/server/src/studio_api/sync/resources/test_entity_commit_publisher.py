@@ -60,6 +60,7 @@ class PublisherFixture(unittest.IsolatedAsyncioTestCase):
 
     async def asyncSetUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
         self.hub = ResourceHub("workspace-a")
         register_resource_hub(self.root, self.hub)

@@ -153,6 +153,19 @@ fn shared_values_ts() -> String {
                 "ACCOUNT_RUNNING_TURNS_MAX",
                 values::ACCOUNT_RUNNING_TURNS_MAX.to_string(),
             ),
+            ("ACCOUNT_GROUPS_MAX", values::ACCOUNT_GROUPS_MAX.to_string()),
+            (
+                "ACCOUNT_GROUP_PATTERN",
+                json_string(values::ACCOUNT_GROUP_PATTERN),
+            ),
+            (
+                "DEFAULT_CLAUDE_LEAD_MODEL",
+                json_string(values::DEFAULT_CLAUDE_LEAD_MODEL),
+            ),
+            (
+                "DEFAULT_CLAUDE_LEAD_EFFORT",
+                json_string(values::DEFAULT_CLAUDE_LEAD_EFFORT),
+            ),
         ],
     );
     ts_strings(
@@ -220,6 +233,18 @@ fn agent_progress_py() -> Result<String, String> {
         }
     }
     Ok(text)
+}
+
+/// The record model imports this leaf module without entering the sync package.
+fn start_wait_py() -> Result<String, String> {
+    let reasons = crate::agent_progress::StartWaitReason::ALL
+        .iter()
+        .map(|reason| serde_json::to_string(reason).map_err(|error| error.to_string()))
+        .collect::<Result<Vec<_>, _>>()?
+        .join(", ");
+    Ok(format!(
+        "# {HEADER}\nfrom typing import Literal\n\nStartWaitReason = Literal[{reasons}]\n"
+    ))
 }
 
 fn delivery_moment_ts() -> String {
@@ -375,12 +400,62 @@ fn expect_number(document: &Value, pointer: &str, expected: i64) -> Result<(), S
     }
 }
 
+fn expect_text(document: &Value, pointer: &str, expected: &str) -> Result<(), String> {
+    match document.pointer(pointer).and_then(Value::as_str) {
+        Some(actual) if actual == expected => Ok(()),
+        actual => Err(format!(
+            "{pointer} is {actual:?}; the Rust owner requires {expected:?}"
+        )),
+    }
+}
+
+/// Hold the account group requests to `ACCOUNT_GROUP_PATTERN` and `ACCOUNT_GROUPS_MAX`.
+fn check_account_group_parity(openapi: &Value) -> Result<(), String> {
+    let schemas = "/components/schemas";
+    for pointer in [
+        format!("{schemas}/AccountGroupRequest/properties/group/anyOf/1"),
+        format!("{schemas}/DefaultAccountGroupsRequest/properties/groups/items"),
+        format!("{schemas}/ProjectWriteRequest/properties/account_groups/anyOf/0/items"),
+    ] {
+        expect_text(
+            openapi,
+            &format!("{pointer}/pattern"),
+            values::ACCOUNT_GROUP_PATTERN,
+        )?;
+    }
+    for pointer in [
+        format!("{schemas}/DefaultAccountGroupsRequest/properties/groups"),
+        format!("{schemas}/ProjectWriteRequest/properties/account_groups/anyOf/0"),
+    ] {
+        expect_number(
+            openapi,
+            &format!("{pointer}/maxItems"),
+            values::ACCOUNT_GROUPS_MAX as i64,
+        )?;
+    }
+    Ok(())
+}
+
 /// Hold the committed OpenAPI document and persisted-state schemas to the Rust owners.
 pub fn check_schema_parity(openapi: &Value, account_transfer: &Value) -> Result<(), String> {
     check_delivery_parity(openapi)?;
     crate::task_results::check_schema_parity(openapi)?;
+    check_account_group_parity(openapi)?;
     crate::agent_progress::check_schema_parity(openapi)?;
     crate::task_gate::check_api_contract(openapi)?;
+    let expected = serde_json::to_value(crate::agent_progress::StartWaitReason::ALL)
+        .map_err(|error| error.to_string())?;
+    for pointer in [
+        "/components/schemas/AgentEntityStartWaitDto/properties/reason/enum",
+        "/components/schemas/StartWaitRecordResponse/properties/reason/enum",
+    ] {
+        if openapi.pointer(pointer) != Some(&expected) {
+            return Err(format!(
+                "{pointer} must match StartWaitReason in runtime-schema/src/agent_progress.rs"
+            ));
+        }
+    }
+
     expect_number(
         openapi,
         "/components/schemas/ManagedMessageBody/properties/assets/maxItems",
@@ -575,6 +650,10 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
             ),
         },
         Rendered {
+            path: "workspaces/runtime/apps/server/src/codex_start_wait.py".into(),
+            text: start_wait_py()?,
+        },
+        Rendered {
             path: "workspaces/runtime/apps/server/src/studio_api/sync/agent_progress_generated.py"
                 .into(),
             text: agent_progress_py()?,
@@ -592,6 +671,14 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
             text: format!(
                 "# {HEADER}\nMAX_TURN_ATTACHMENTS = {}\n",
                 values::MAX_TURN_ATTACHMENTS
+            ),
+        },
+        Rendered {
+            path: "workspaces/runtime/apps/server/src/codex_work_limits.py".into(),
+            text: format!(
+                "# {HEADER}\nTASK_SUBMISSION_MAX_FILES = {}\nTASK_SUBMISSION_PATH_MAX_CODEPOINTS = {}\n",
+                values::TASK_SUBMISSION_MAX_FILES,
+                values::TASK_SUBMISSION_PATH_MAX_CODEPOINTS,
             ),
         },
         Rendered {

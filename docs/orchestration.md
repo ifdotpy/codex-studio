@@ -74,6 +74,14 @@ an uncertain delivery for recovery, not permission to resend it. Historical
 spellings are read through the shared compatibility parser; new callers should
 use the canonical enum values.
 
+Provider session expiry keeps request order:
+
+1. The session collects the actions from one protocol transition in a FIFO queue.
+2. It consumes each action once and appends newly released actions to the queue.
+3. Expired unsent requests report `NotSent`; a live successor can run after its
+   predecessor releases the thread. Written requests retain uncertain identities.
+4. Pending outcomes and remaining actions stay owned by the session for shutdown.
+
 Workers appear on the right. Select a worker to read its conversation, then select **Lead** to return.
 On a narrow screen, **Team** opens the worker panel.
 Worker cards show the original assignment and the last report from a completed
@@ -170,6 +178,13 @@ have a native thread; existing sessions and transferred threads sync as well.
 Deleting an agent chat removes it from the user list until the next agent message. Its participants retain their history.
 Deletion stops the selected agent and its descendants and removes them from the interface.
 Stored transcripts and project files remain on disk. Deleted agents cannot resume from late events or message retries.
+Monitor projection updates follow this flow:
+
+1. Creation, status, owner, and creation-time changes select the canonical monitor window.
+2. Output, byte counts, and activity changes publish only that monitor's projection.
+3. Terminal monitors outside the window stay retired; owner deletion maintains the window.
+4. Source changes, projections, and tombstones commit in the same transaction.
+
 Agents use `orchestration_monitor` for all long commands, checks, and watchers.
 A settled turn with active owned commands stays in `waiting_on_monitor`. Each
 command queues one durable `monitor_exit` event when its outcome is decided,
@@ -193,6 +208,17 @@ and command monitors for the current chat and its descendants. Tool calls remain
 the conversation. It has no cross-team filter.
 The workspace API retains up to 100 completed task records and 100 completed
 monitor records within that chat. Active records remain available.
+
+Server command output snapshots follow one flow:
+
+1. The durable claim and start fence precede process creation.
+2. The command publishes its initial state, then coalesces changed output using
+   `SNAPSHOT_PUBLISH_INTERVAL` in
+   [server_exec.rs](../workspaces/runtime/packages/runtime-services/src/server_exec.rs).
+3. Idle commands keep their existing snapshot. Failed writes remain pending.
+4. Snapshot serialization, atomic replacement, and fsync run on the labeled
+   blocking pool. Each write finishes before another begins.
+5. The final snapshot finishes before the final record is saved and released.
 
 Inbox, workspace agent choices, and attention counts use the same lead tree.
 Two chats remain separate even when they use the same account or project folder.
@@ -235,6 +261,17 @@ Native file actions remain available when that limit prevents a preview.
 Table previews show at most 200 rows and 100 columns.
 Their text parser stops after 1,048,576 UTF-16 code units.
 Source and Save a copy retain the complete file within the file API limit.
+
+### Agent send routing
+
+1. The server checks the sender's current identity and epoch in the effect transaction.
+2. `parent`, `lead`, and `broadcast` use chat routing without ancestry reads.
+3. An agent ID or unique visible prefix resolves before descendant routing.
+4. The [shared ancestry check](../workspaces/runtime/packages/runtime-services/src/managed_host_tools.rs)
+   reads checked records by indexed ID along the target's parent chain, within the sender's root.
+5. A matching parent permits descendant input; a missing edge ends the check,
+   malformed edges and cycles refuse it, and other targets use authorized chat routing.
+6. The existing transaction saves effects and replay receipts together.
 
 ### Agent progress file
 
@@ -293,6 +330,17 @@ The runtime uses the installed `codex app-server` through JSON Lines on stdio.
 It uses the existing Codex account and configuration selected by `CODEX_HOME`.
 It does not replace the Codex model loop or require a Codex fork.
 The tested protocol version is Codex CLI 0.153.4.
+
+## Continuation cursor retries
+
+1. The existing continuation scheduler rotates through ready usage, capacity,
+   and authentication proof agents in bounded batches, advancing past failures.
+2. A staging failure preserves the cursor and applies the scheduler's existing
+   [failure backoff](../workspaces/runtime/apps/runtime-server/src/main.rs).
+   Commit notifications cannot bypass that cooldown; shutdown can interrupt it.
+3. Successful agents in the same batch still publish their changes. Each agent's
+   error is logged on first failure and when it changes, then cleared on success.
+   Later agents progress on subsequent batches even when earlier cursors fail.
 
 ## Agent and command lifecycle
 
@@ -371,6 +419,17 @@ Recovery reads and coordination use separate execution pools from model startup,
 slow tools, and monitor waits. Native response reads continue while ordered
 notification callbacks run. A command completion waits for its preceding output
 callbacks before the runtime records its final result.
+
+Task submission evidence follows one flow:
+
+1. Submit `files`, `revision`, `result`, and `checks` with the task ID.
+2. The server checks the file count and each path's Unicode code-point length
+   against `TASK_SUBMISSION_MAX_FILES` and `TASK_SUBMISSION_PATH_MAX_CODEPOINTS`
+   in the [shared value owner](../workspaces/runtime/packages/runtime-schema/src/shared_values.rs).
+3. The server resolves paths for the task owner and checks the same owner,
+   workspace, and complete file list before saving evidence. An exact replay
+   returns the saved result without resolving the files again.
+
 Work-board actions and result submissions use the coordination pool, including
 the workspace fallback for older threads.
 
@@ -379,6 +438,16 @@ retains the input reservation without submitting a turn. A late response resumes
 that exact batch only while its agent, account, connection and settings still match.
 Steer, Compact and Review also retain unknown outcomes after response timeouts.
 Late acknowledgements cannot resume a stopped agent or replace a newer turn.
+
+### Provider session lifetime
+
+1. The stdio child owner waits for process exit independently of stdin writes
+   and stdout journal delivery, including when either lane is blocked.
+2. Exit uses the existing bounded process-group cleanup and reap path, then
+   closes attachment status so the account session settles once.
+3. Known receipts and queued journal entries remain evidence; outstanding
+   requests keep their existing unknown or not-sent outcomes and are not resent.
+4. The account registry can start a new provider generation after session loss.
 
 ### Idle provider sessions
 
@@ -415,6 +484,14 @@ Idle checks follow provider events, committed ownership changes, and the next
 idle deadline. Pending local requests park the deadline until their completion
 event. Queued commands prevent process shutdown without erasing its idle time.
 The worker loop owns this reconciliation; it does not start periodic scans.
+
+Account worker shutdown settles callback answers through the session owner:
+
+1. Drain completed handlers and callback write events while the event lane is open.
+2. If the lane closes, join the session and settle its retained final outcomes
+   through the same callback receipt path. A closed lane alone is not a failure.
+3. Report an unknown write or failed cleanup to the caller; never resend an
+   answer whose write outcome is unknown.
 
 ## Token accounting and saved context
 
@@ -658,8 +735,29 @@ Increase the budget with `codex-control configure`, then send a new instruction 
 
 ### Full disk
 
-A full disk is a wait, not a failure. `codex_shared_values.py` owns the thresholds
-for the volume that holds the state directory. Both backends use them:
+The Rust backend's existing `DiskGate` owns storage admission and the typed
+`orchestration_status.storage.filesystems` report. It reports available bytes,
+filesystem identity, watched paths, and purpose-specific thresholds. Paths on the
+same filesystem share one sample; a new workspace uses its nearest existing
+parent. Reports include the state volume, live worker workspace volumes across
+teams, and configured build-output volumes. Configure external output locations
+with [`CODEX_WORKER_BUILD_ROOTS`](product-guide.md#state).
+
+Before claiming queued implementer input, the gate checks every watched workspace
+and build-output filesystem against
+[`WORKER_STORAGE_MIN_FREE_BYTES`](../workspaces/runtime/packages/runtime-services/src/disk_space.rs).
+A low or unreadable filesystem leaves the input queued with the original identity
+and publishes a storage-hold reason on the agent. The account worker rechecks
+using the existing disk recheck interval. The hold ends at the same floor;
+there is no additional worker hysteresis. Leads and reviewers remain available
+for cleanup. This admission check does not reserve disk capacity or interrupt
+running work. State-volume full-disk hysteresis and ENOSPC recovery remain as
+follows.
+
+A full disk is a wait, not a failure.
+[`shared_values.rs`](../workspaces/runtime/packages/runtime-schema/src/shared_values.rs)
+owns the thresholds for the volume that holds the state directory; Python
+consumes generated copies. Both backends use them:
 
 - Below `DISK_FULL_ENTER_FREE_BYTES` (1 GiB free), the disk is full. Studio
   starts no new turn and no automatic continuation. Queued input stays queued
@@ -682,6 +780,16 @@ for the volume that holds the state directory. Both backends use them:
 - Atomic file writes remove their temporary file on any failure and keep the
   previous file.
 
+### Capacity retry outcomes
+
+1. A temporary failure schedules one follow-up through the ordinary input queue.
+2. An accepted start binds the retry to that turn; its completion reports the result.
+3. A rejected start ends the retry as `failed` and sends one parent `child_result`.
+4. A lost start outcome, including across restart, ends the retry as `unknown`
+   and sends one parent recovery notice. The submitted input stays uncertain.
+5. Recovery never resends that input. A late acceptance can bind the same retry
+   to its existing turn; repeated recovery does not repeat the notice.
+
 ## Stop and recovery
 
 **Stop agent** stops only the selected agent. **Stop team** stops its lead and all
@@ -695,11 +803,16 @@ The runtime stores agents, events, transcripts, command watches and approval req
 in `runtime_*` tables in `canvas.sqlite3`. Existing chat tables remain intact.
 Only one runtime can own the state directory. SQLite uses write-ahead logging.
 
-After a server restart, queued input and verified interrupted work can resume.
-Continuation requires the original permission and authoritative native evidence.
-An unacknowledged delivery stays uncertain and is not replayed. Command watches
-without a definitive result remain lost. See [restart recovery](restart-recovery.md)
-for the persistence contract and exact limits.
+After a backend restart or provider disconnect:
+
+1. Leads and workers use the same automatic native-history check for their saved turn.
+2. An authorized turn confirmed interrupted gets one guarded follow-up to continue
+   its existing task; the original input is never sent again.
+3. Explicit Stop, pause, deletion, changed epochs and native failure holds block continuation.
+4. Unknown native outcomes stay held until native history proves what happened.
+5. Queued input keeps its order. Command watches without a definitive result remain lost.
+
+See [restart recovery](restart-recovery.md) for the persistence contract and limits.
 
 ## Codex features
 
@@ -1145,6 +1258,11 @@ the archive receipt. Repeated calls keep the same request result.
 `archive_finished` checks completed, failed, interrupted, and stopped paused
 descendants. It archives workers with safe workspaces or no workspace. The result reports
 the archive count, measured freed bytes, and a reason for each worker kept.
+The Rust backend runs the existing archive owner deepest-first. Safe Git cleanup
+removes the entire worktree, including ignored `target/` output, after preserving
+its commit under an archive ref. Dirty or unverified worktrees remain intact.
+Git does not measure removed byte counts; `unknownBytes` counts those removals
+instead of claiming a size. External build-output folders remain in place.
 The lead sees one reminder when three or more finished workers hold workspaces.
 Set `unassign_work=true` on `archive` or `archive_finished` to return open assigned
 tasks to the unassigned ready backlog. The archive and task changes commit in one
@@ -1288,3 +1406,31 @@ Studio does not upgrade a CLI during a move.
 Snapshot cache reuse depends on provider support and cache lifetime.
 The local Claude probe read 96.51% of input tokens from the cache after a folder
 change with both options. Cross-machine Claude cache reuse remains unverified.
+
+## Why an agent waits
+
+1. The admission owner records one [typed `startWait`](../workspaces/runtime/packages/runtime-schema/src/agent_progress.rs) for the current agent epoch.
+2. Account starts report a running-turn slot, burst pause deadline, or earlier start.
+3. Disk admission, model preparation, and provider startup report their own blockers.
+4. Other preparation dependencies report a dependency wait; input keeps its identity.
+5. Sync and `orchestration_status` use the same projection; `queued[].reasons` contains that wait object.
+6. The UI shows its reason. `until`, when present, is a retry deadline in Unix seconds.
+7. A claim clears gate waits; submission clears preparation waits. Other epochs and settled turns cannot display them.
+8. A dispatch handoff has no gate blocker yet; it is distinct from an owner holding work.
+
+### History observer lock boundaries
+
+1. The history watcher resolves filesystem metadata before coalescing events under
+   its pending-events mutex, so synchronous store observers can finish during a
+   slow metadata lookup.
+2. Legacy terminal-error repair reads its completion checkpoint before requesting
+   the Canvas writer. Pending repairs recheck the checkpoint inside the existing
+   analytics transaction before applying a page; completed repairs skip admission.
+
+### Agent publication in journal transactions
+
+1. The account worker applies a notification batch or stream flush in the existing lifecycle transaction.
+2. Dispatch stores normalized agent state, transcript changes, stream state and exact replay receipts.
+3. The lifecycle owner validates each final changed agent row and publishes its canonical renderer view once.
+4. Source state, receipts and renderer views commit together; a projection failure rolls them all back.
+5. Replaying committed journal identities returns the saved outcomes without publishing agents again.

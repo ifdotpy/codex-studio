@@ -1,4 +1,5 @@
 [package]
+autotests = false
 name = "studio-runtime-store"
 version.workspace = true
 edition.workspace = true
@@ -30,3 +31,7 @@ workspace = true
 [features]
 # Lets other crates' tests open an independent read-only canvas connection.
 test-support = []
+
+[[test]]
+name = "integration"
+path = "tests/integration.rs"

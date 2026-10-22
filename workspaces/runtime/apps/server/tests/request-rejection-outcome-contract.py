@@ -27,6 +27,7 @@ REJECTIONS = (
     ('orchestration_agent_manage', 'You can manage only your own descendant workers'),
     ('orchestration_message', 'Recipient conversation was deleted'),
     ('orchestration_task', 'Supply up to 50 file paths'),
+    ('orchestration_task', 'Submission files exceed shared count or path-length limits'),
 )
 
 
@@ -51,13 +52,14 @@ class RejectionOutcomes(unittest.TestCase):
 
     def test_historical_reconciliation_preserves_error_time_and_identity(self):
         for index, (tool, error) in enumerate(REJECTIONS):
-            row = self.failed_request(str(index), tool, error=error, legacy=True)
-            found = self.runtime.request_action('lead', {'action': 'get', 'request_id': row['id']})
-            self.assertEqual(found['outcome'], 'not_applied')
-            self.assertEqual(found['id'], row['id'])
-            self.assertEqual(found['result'], row['result'])
-            self.assertEqual(found['finished'], 123.0)
-            self.assertFalse(self.runtime.begin_tool_request(row['id']))
+            with self.subTest(tool=tool, error=error):
+                row = self.failed_request(str(index), tool, error=error, legacy=True)
+                found = self.runtime.request_action('lead', {'action': 'get', 'request_id': row['id']})
+                self.assertEqual(found['outcome'], 'not_applied')
+                self.assertEqual(found['id'], row['id'])
+                self.assertEqual(found['result'], row['result'])
+                self.assertEqual(found['finished'], 123.0)
+                self.assertFalse(self.runtime.begin_tool_request(row['id']))
 
     def test_committed_operation_overrides_each_validation_inference(self):
         for index, (tool, error) in enumerate(REJECTIONS):

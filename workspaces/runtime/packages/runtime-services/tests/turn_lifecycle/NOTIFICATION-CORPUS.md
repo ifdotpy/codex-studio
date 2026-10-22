@@ -10,7 +10,7 @@ checks open, stat, lstat, listdir and scandir against both forbidden homes.
 Run the default witnesses with an equipped, read-only `CODEX_AGENTS_PYTHON`:
 
 ```sh
-cargo nextest run -p studio-runtime-services --test notification_dispatch_corpus
+cargo nextest run -p studio-runtime-services --test integration -E 'test(/^notification_dispatch_corpus::/)'
 ```
 
 Run the full matrix explicitly as a manual heavy run:

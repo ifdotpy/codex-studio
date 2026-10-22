@@ -1,6 +1,5 @@
 //! Monitor admission uses current ownership while retaining prepared permissions.
-#[path = "monitors/fixtures.rs"]
-mod fixtures;
+use crate::monitor_fixtures as fixtures;
 use serde_json::{Value, json};
 use std::sync::Mutex;
 use studio_runtime_services::{

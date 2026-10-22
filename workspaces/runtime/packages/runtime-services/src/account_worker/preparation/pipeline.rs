@@ -617,7 +617,10 @@ pub(crate) const WORKSPACE_PENDING_REASON: &str = "workspace-readiness/pending";
 /// Pending reason of a turn that waits for a model catalog refresh.
 pub(crate) const CATALOG_PENDING_REASON: &str = "model-catalog/refresh-pending";
 fn catalog_pending() -> WorkerError {
-    WorkerError::PreparationPending(CATALOG_PENDING_REASON.into())
+    WorkerError::PreparationPending(super::super::PreparationBlock::new(
+        studio_runtime_schema::agent_progress::StartWaitReason::ModelCatalog,
+        CATALOG_PENDING_REASON,
+    ))
 }
 /// The admission of a record whose settings an accepted thread commit froze:
 /// it needs no catalog read and no transaction of its own.
@@ -935,7 +938,7 @@ async fn workspace_with_vm_action(
             prepared.map_err(|error| match error {
                 error @ (crate::native_actions::NativeError::Unknown
                 | crate::native_actions::NativeError::Unavailable(_)) => {
-                    WorkerError::PreparationPending(format!("workspace-readiness/{error}"))
+                    WorkerError::PreparationPending(format!("workspace-readiness/{error}").into())
                 }
                 error => refusal(error.to_string()),
             })?;
@@ -2177,6 +2180,10 @@ pub(crate) fn commit(
     {
         attempt.remove("prepareError");
     }
+    frozen
+        .as_object_mut()
+        .ok_or_else(|| invalid("agent"))?
+        .remove(studio_runtime_schema::agent_progress::START_WAIT_FIELD);
     let frozen = decode(frozen, &context.intent.agent_id)?;
     stage("turn_submission.commit.agent_put", || {
         AgentRepository::put(tx, &frozen)
@@ -2253,6 +2260,17 @@ fn materialize(root: &std::path::Path, relative: &str, body: &str) -> Result<Str
     Ok(target.to_string_lossy().into_owned())
 }
 
+/// The compilation owns the stamp of every row it prepares. A stamp from an earlier
+/// attempt that never delivered (a rejected steer batch has another first event) is
+/// replaced, never kept next to the new identity.
+fn stamp(meta: &mut Value, patch: &serde_json::Map<String, Value>) -> Option<()> {
+    let object = meta.as_object_mut()?;
+    object.remove("transcriptItemId");
+    object.remove("contextManifest");
+    object.extend(patch.clone());
+    Some(())
+}
+
 pub(crate) fn persist_compilation(
     tx: &Transaction<'_>,
     compiled: &turn::PreparedSubmission,
@@ -2262,9 +2280,7 @@ pub(crate) fn persist_compilation(
             studio_runtime_store::NotificationDispatchRepository::event_metadata(tx, id)?
                 .unwrap_or_else(|| json!({}));
         let original = meta.clone();
-        meta.as_object_mut()
-            .ok_or_else(|| invalid(id))?
-            .extend(patch.clone());
+        stamp(&mut meta, patch).ok_or_else(|| invalid(id))?;
         if meta == original {
             continue;
         }
@@ -2310,6 +2326,26 @@ pub(crate) fn commit_claude(
         submission,
     )?;
     Ok(true)
+}
+
+#[cfg(test)]
+mod stamp_tests {
+    use super::*;
+
+    #[test]
+    fn stale_stamp_of_an_undelivered_batch_is_replaced_not_kept() {
+        let mut meta = json!({"delivery":"current_turn","transcriptItemId":"a:fbce",
+            "contextManifest":{"sequence":284},"modelEventProjection":1});
+        let patch = serde_json::Map::from_iter([
+            ("modelEventProjection".into(), json!(1)),
+            ("transcriptItemId".into(), json!("a:ee89")),
+        ]);
+        stamp(&mut meta, &patch).expect("object metadata");
+        assert_eq!(
+            meta,
+            json!({"delivery":"current_turn","transcriptItemId":"a:ee89","modelEventProjection":1})
+        );
+    }
 }
 
 #[cfg(test)]

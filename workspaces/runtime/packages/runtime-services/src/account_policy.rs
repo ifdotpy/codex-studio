@@ -204,6 +204,9 @@ pub struct AccountsSnapshot {
     pub accounts: Vec<Value>,
     pub archived_accounts: Vec<Value>,
     pub default_account_key: Value,
+    /// The default account order (`defaultAccountGroups`) from the account order
+    /// file, see [`crate::account_preference::AccountOrder`].
+    pub default_account_groups: Vec<String>,
     pub logins: Vec<Value>,
     pub known_account_keys: HashSet<String>,
 }
@@ -412,6 +415,8 @@ pub(crate) fn project_registry_value(
         accounts,
         archived_accounts: archived,
         default_account_key: Value::String(default_account_key.to_owned()),
+        // The account order file supplies the default order (`AccountOrder::apply`).
+        default_account_groups: Vec::new(),
         logins,
         known_account_keys: known,
     })

@@ -446,6 +446,24 @@ fn plan(agent: &Value, action: CleanupAction) -> Result<Vec<CleanupEffect>, Work
     Ok(effects)
 }
 
+/// The batch archive preflight uses the same original-link, clean-tree and
+/// nested-worktree checks as the effect owner. Ignored build output is removable.
+pub(crate) fn check_archive_worktree(agent: &Value) -> Result<(), WorkspaceCleanupError> {
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Workspace {
+        #[serde(default)]
+        worktree_ready: bool,
+    }
+    let workspace: Workspace =
+        serde_json::from_value(agent.clone()).map_err(|_| WorkspaceCleanupError::InvalidRecord)?;
+    if workspace.worktree_ready {
+        let identity = worktree_identity(agent)?;
+        check_worktree(&identity).map_err(|_| WorkspaceCleanupError::NotSent)?;
+    }
+    Ok(())
+}
+
 fn worktree_identity(agent: &Value) -> Result<Value, WorkspaceCleanupError> {
     let id = agent
         .get("id")
@@ -1215,20 +1233,7 @@ mod tests {
     }
 
     async fn fixture() -> (tempfile::TempDir, Arc<RuntimeStore>) {
-        let tmpfs = std::env::var_os("CS_W9_CLEANUP_TEST_TMPFS")
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(|| {
-                if cfg!(target_os = "linux") {
-                    std::path::PathBuf::from("/dev/shm/cs-w9-cleanup-tmp")
-                } else {
-                    std::env::temp_dir()
-                }
-            });
-        std::fs::create_dir_all(&tmpfs).expect("tmpfs test parent exists");
-        let directory = tempfile::Builder::new()
-            .prefix("workspace-cleanup-")
-            .tempdir_in(tmpfs)
-            .expect("tmpfs state root creates");
+        let directory = tempfile::tempdir().expect("owned cleanup fixture directory");
         let root = directory.path();
         let schema: Value = serde_json::from_str(include_str!(
             "../../runtime-store/src/runtime-state-schema.json"

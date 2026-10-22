@@ -32,6 +32,12 @@ pub const MAX_SAFE_INTEGER: i64 = 9007199254740991;
 pub const MAX_USER_ATTACHMENT_BYTES: usize = 20971520;
 /// Maximum attachment items admitted across one provider turn's input batch.
 pub const MAX_TURN_ATTACHMENTS: usize = 8;
+// Task result evidence: keep complete manifests for broad changes (the reported
+// 73-file submission exceeded the former cap) without adding commit lookup semantics.
+/// Most file paths in one task result submission, in paths.
+pub const TASK_SUBMISSION_MAX_FILES: usize = 500;
+/// Longest submitted file path, in Unicode code points before trimming.
+pub const TASK_SUBMISSION_PATH_MAX_CODEPOINTS: usize = 4096;
 /// Largest managed user message, in Unicode code points (independent of UTF-8 bytes).
 pub const MAX_MANAGED_MESSAGE_CODEPOINTS: usize = 32000;
 /// Display label of `MAX_USER_ATTACHMENT_BYTES`.
@@ -160,6 +166,22 @@ pub const ACCOUNT_RUNNING_TURNS_DEFAULT_CLAUDE: u64 = 64;
 pub const ACCOUNT_RUNNING_TURNS_MIN: u64 = 1;
 /// Most running turns per account.
 pub const ACCOUNT_RUNNING_TURNS_MAX: u64 = 512;
+
+// Account groups and the account order of a project. An account can carry one group name
+// (for example "personal"). A project's account order is a list of group names; the
+// server default order applies to a project without its own order. Studio prefers the
+// accounts of the first group, then the next group, and so on; accounts of other groups
+// and accounts without a group come last. The order is a preference: every account stays
+// selectable, and Studio uses the next account when a preferred one is not available.
+// The decision cases are in `workspaces/client/contracts/account-preference.json`.
+/// A valid account group name: lowercase letters, digits, "-" and "_", 1 to 32 characters.
+pub const ACCOUNT_GROUP_PATTERN: &str = "^[a-z0-9][a-z0-9_-]{0,31}$";
+/// Most group names in one account order.
+pub const ACCOUNT_GROUPS_MAX: usize = 16;
+/// Model of a new chat on a Claude account when the request names no model.
+pub const DEFAULT_CLAUDE_LEAD_MODEL: &str = "claude-opus-5-5";
+/// Reasoning effort of a new Claude chat when the request names no model and no effort.
+pub const DEFAULT_CLAUDE_LEAD_EFFORT: &str = "medium";
 
 // Persisted agent errors for a turn whose provider connection ended. Connection recovery,
 // the scheduler, and the web "Check connection" action match these exact texts.

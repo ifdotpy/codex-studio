@@ -1,7 +1,6 @@
 //! Scripted provider consumer: real SQLite and Python-written actors, no provider.
 #![allow(clippy::unwrap_used)]
-#[path = "support/prepared_python.rs"]
-mod prepared_python;
+use crate::prepared_python_support as prepared_python;
 use serde_json::{Value, json};
 use std::{
     path::PathBuf,
@@ -16,7 +15,7 @@ type CaseFuture = std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>
 type Case = (&'static str, fn() -> CaseFuture);
 
 struct Template {
-    _scratch: tempfile::TempDir,
+    files: prepared_python::StateTemplate,
     value: Value,
 }
 fn template() -> &'static Template {
@@ -44,9 +43,11 @@ fn template() -> &'static Template {
             "oracle: {}",
             String::from_utf8_lossy(&output.stderr)
         );
-        let value = serde_json::from_slice(&output.stdout).unwrap();
+        let value: Value = serde_json::from_slice(&output.stdout).unwrap();
         Template {
-            _scratch: scratch,
+            files: prepared_python::StateTemplate::capture(&PathBuf::from(
+                value["template"].as_str().unwrap(),
+            )),
             value,
         }
     })
@@ -58,13 +59,7 @@ async fn fixture() -> (
 ) {
     let t = template();
     let directory = tempfile::tempdir().unwrap();
-    for name in ["canvas.sqlite3", "analytics.sqlite3"] {
-        std::fs::copy(
-            PathBuf::from(t.value["template"].as_str().unwrap()).join(name),
-            directory.path().join(name),
-        )
-        .unwrap();
-    }
+    t.files.write(directory.path());
     let store = std::sync::Arc::new(RuntimeStore::open(Some(directory.path())).await.unwrap());
     let actor = &t.value["agents"][0];
     let context = CallbackContext {

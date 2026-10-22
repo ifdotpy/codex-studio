@@ -10,16 +10,10 @@ use studio_runtime_store::{
     AgentRecord, AgentRepository, CaptureKind, CheckpointsRepository, RuntimeStore,
 };
 
-#[path = "support/prepared_python.rs"]
-mod prepared_python;
+use crate::prepared_python_support as prepared_python;
 
 fn temporary() -> tempfile::TempDir {
-    let parent = std::env::temp_dir().join("cs-rust-workspace-operations/fixtures");
-    std::fs::create_dir_all(&parent).expect("fixture parent");
-    tempfile::Builder::new()
-        .prefix("operations-")
-        .tempdir_in(parent)
-        .expect("isolated root")
+    prepared_python::disposable_state_dir()
 }
 fn oracle(root: &Path, request: Value) -> Value {
     let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src");
@@ -295,7 +289,7 @@ impl Fixture {
 }
 #[allow(clippy::disallowed_methods)]
 fn git(cwd: &Path, args: &[&str]) -> String {
-    assert!(cwd.starts_with(std::env::temp_dir().join("cs-rust-workspace-operations")));
+    assert!(cwd.starts_with(std::env::temp_dir()));
     let out = Command::new("git")
         .env_clear()
         .env("PATH", "/usr/bin:/bin")

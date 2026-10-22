@@ -100,7 +100,7 @@ def main():
         parser.error('--state-dir must identify a new directory')
     if args.provision_restart_check and args.existing_state:
         parser.error('--provision-restart-check requires a new VM')
-    with tempfile.TemporaryDirectory(prefix='studio-vm-native-', dir='/tmp') as name:
+    with tempfile.TemporaryDirectory(prefix='studio-vm-native-') as name:
         temporary = Path(name)
         helper = args.helper or temporary / 'studio-linux-vm'
         if not args.helper:

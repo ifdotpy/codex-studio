@@ -10,8 +10,7 @@ use studio_runtime_services::resource_notify::{
 };
 use studio_runtime_services::token_rate::TokenRateHub;
 
-#[path = "support/prepared_python.rs"]
-mod python;
+use crate::prepared_python_support as python;
 
 #[path = "support/token_rate_difference.rs"]
 mod token_rate_difference;

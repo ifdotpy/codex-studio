@@ -10,6 +10,7 @@
 pub mod account_auth_gate;
 pub mod account_driver;
 pub mod account_policy;
+pub mod account_preference;
 pub mod account_selection;
 pub mod account_session_runtime;
 pub mod account_start_gate;

@@ -56,6 +56,7 @@ def init_repo(root, name):
 class ImageIndexContract(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix='workspace-index-contract-')
+        self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         self.folder = self.root / 'repo'
         init_repo(self.folder, 'root')

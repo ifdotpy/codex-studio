@@ -1,6 +1,5 @@
 //! Differential radio-turn policy cases from Python-created room state.
-#[path = "support/prepared_python.rs"]
-mod python_test_support;
+use crate::prepared_python_support as python_test_support;
 use serde_json::{Value, json};
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;

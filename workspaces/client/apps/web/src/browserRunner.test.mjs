@@ -47,6 +47,10 @@ function assertIsolated(environment) {
   assert.notEqual(environment.XDG_CACHE_HOME, callerCache);
   assert.equal(environment.CODEX_HOME, join(environment.HOME, ".codex"));
   assert.equal(
+    environment.COREPACK_HOME,
+    join(callerCache, "node", "corepack"),
+  );
+  assert.equal(
     environment.CLAUDE_CONFIG_DIR,
     join(environment.HOME, ".claude"),
   );

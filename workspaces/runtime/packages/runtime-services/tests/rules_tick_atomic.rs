@@ -1,6 +1,4 @@
-#[allow(clippy::duplicate_mod)]
-#[path = "support/prepared_python.rs"]
-mod prepared_python_support;
+use crate::prepared_python_support;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Mutex;
@@ -18,10 +16,7 @@ use tempfile::TempDir;
 const NOW: f64 = 1_800_000_000.0;
 
 fn temporary_state() -> TempDir {
-    match std::env::var_os("RULES_TEST_TMPDIR") {
-        Some(root) => tempfile::tempdir_in(root).expect("owned test state root"),
-        None => tempfile::tempdir().expect("test state"),
-    }
+    prepared_python_support::disposable_state_dir()
 }
 
 struct Template(TempDir);
@@ -685,7 +680,8 @@ impl RuleMonitor for DurableMonitor<'_> {
 #[tokio::test]
 #[allow(clippy::disallowed_methods)]
 async fn committed_launch_intent_survives_process_exit_before_monitor_launch() {
-    const CASE: &str = "committed_launch_intent_survives_process_exit_before_monitor_launch";
+    const CASE: &str =
+        "rules_tick_atomic::committed_launch_intent_survives_process_exit_before_monitor_launch";
     if let Some(path) = std::env::var_os("RULES_CRASH_BEFORE_LAUNCH") {
         let store = RuntimeStore::open(Some(std::path::Path::new(&path)))
             .await

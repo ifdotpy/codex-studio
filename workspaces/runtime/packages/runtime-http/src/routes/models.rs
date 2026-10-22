@@ -440,6 +440,7 @@ mod tests {
             accounts: vec![account],
             archived_accounts: Vec::new(),
             default_account_key: json!("default"),
+            default_account_groups: Vec::new(),
             logins: Vec::new(),
             known_account_keys: HashSet::new(),
         }

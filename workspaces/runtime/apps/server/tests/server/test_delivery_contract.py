@@ -18,6 +18,7 @@ isolate_supervisor_environment()
 from codex_delivery import DeliveryMoment, event_delivery, normalize_delivery
 from codex_layout import REPOSITORY_ROOT
 from codex_shared_values import MAX_TURN_ATTACHMENTS
+from codex_work_limits import TASK_SUBMISSION_MAX_FILES, TASK_SUBMISSION_PATH_MAX_CODEPOINTS
 from codex_runtime import TOOLS
 from codex_wakeups import pending_batch
 from generate_delivery_tools import BUNDLED_RESOURCES, DELIVERY_TOOL_NAMES, stale_delivery_tools
@@ -35,6 +36,40 @@ class DeliveryContract(unittest.TestCase):
     worker = f.WorkspaceContract.worker
     agent_update = f.WorkspaceContract.agent_update
     start = f.WorkspaceContract.start
+
+    def test_task_submission_limits_match_rust_owner_and_tool_schema(self):
+        owner = REPOSITORY_ROOT / "workspaces/runtime/packages/runtime-schema/src/shared_values.rs"
+        for name, value in (
+            ("TASK_SUBMISSION_MAX_FILES", TASK_SUBMISSION_MAX_FILES),
+            ("TASK_SUBMISSION_PATH_MAX_CODEPOINTS", TASK_SUBMISSION_PATH_MAX_CODEPOINTS),
+        ):
+            self.assertIn(f"pub const {name}: usize = {value};", owner.read_text())
+            self.assertIn(name, (REPOSITORY_ROOT / "docs/orchestration.md").read_text())
+        task = next(tool for tool in TOOLS if tool["name"] == "orchestration_task")
+        files = task["inputSchema"]["properties"]["files"]
+        self.assertEqual(files["maxItems"], TASK_SUBMISSION_MAX_FILES)
+        self.assertEqual(files["items"]["maxLength"], TASK_SUBMISSION_PATH_MAX_CODEPOINTS)
+        self.assertEqual(stale_delivery_tools(json.loads(BUNDLED_RESOURCES.read_text())), [])
+
+    def test_task_submission_manifest_boundary_and_path_limit(self):
+        lead = self.lead()
+        for count in (51, 73, TASK_SUBMISSION_MAX_FILES):
+            with self.subTest(count=count):
+                task = self.runtime.work_action(lead["id"], {"action": "create", "title": "manifest"})
+                files = [f"src/file-{index}.rs" for index in range(count)]
+                submitted = self.runtime.work_action(lead["id"], {
+                    "action": "submit", "task_id": task["id"], "result": "done",
+                    "checks": "fixture", "revision": "fixture", "files": files,
+                })
+                self.assertEqual(submitted["results"][0]["files"], files)
+        task = self.runtime.work_action(lead["id"], {"action": "create", "title": "refuse"})
+        for files in (["src/file.rs"] * (TASK_SUBMISSION_MAX_FILES + 1),
+                      ["🦀" * (TASK_SUBMISSION_PATH_MAX_CODEPOINTS + 1)]):
+            with self.assertRaisesRegex(ValueError, "Submission files exceed"):
+                self.runtime.work_action(lead["id"], {
+                    "action": "submit", "task_id": task["id"], "result": "done",
+                    "checks": "fixture", "revision": "fixture", "files": files,
+                })
 
     def calls(self):
         return [params for method, params in self.runtime.server.calls if method == "turn/start"]

@@ -37,7 +37,8 @@ def fake_runuser(folder: Path) -> Path:
 
 class SecretBrokerTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
-        self.temp = tempfile.TemporaryDirectory(prefix="secrets-", dir="/tmp")
+        self.temp = tempfile.TemporaryDirectory(prefix="secrets-")
+        self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         (self.root / "store/projects" / PROJECT / "lines/main").mkdir(parents=True)
         self.broker = Broker(self.root / "state", self.root / "store", modules=())
@@ -160,7 +161,8 @@ class InjectionTests(unittest.IsolatedAsyncioTestCase):
     """Every agent process of the project starts with the secrets; no launch record has a value."""
 
     async def asyncSetUp(self):
-        self.temp = tempfile.TemporaryDirectory(prefix="inject-", dir="/tmp")
+        self.temp = tempfile.TemporaryDirectory(prefix="inject-")
+        self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name).resolve()
         self.state, self.store = self.root / "state", self.root / "store"
         self.line = self.store / "projects" / PROJECT / "lines/main"

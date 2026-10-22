@@ -229,7 +229,7 @@ impl studio_runtime_services::diagnostics::ProviderDiagnosticsPort for ProviderD
     }
 }
 
-/// Unresolved callback receipts and queued or running tool requests of each account
+/// Callback records still owing an answer and queued or running tool requests of each account
 /// (in the order given), and the idle-session limit shared by all of them.
 fn account_queue_counts(
     connection: &rusqlite::Connection,
@@ -240,12 +240,11 @@ fn account_queue_counts(
             connection,
         )?;
     let mut statement = connection.prepare_cached(
-        "SELECT COUNT(*) FROM runtime_operation_receipts submitted
-         WHERE submitted.id>=?1 AND submitted.id<?2
-           AND substr(submitted.id,-10)=':submitted'
-           AND NOT EXISTS (SELECT 1 FROM runtime_operation_receipts settled
-             WHERE settled.id=substr(submitted.id,1,length(submitted.id)-10)||':written'
-                OR settled.id=substr(submitted.id,1,length(submitted.id)-10)||':unknown')",
+        "SELECT COUNT(*) FROM runtime_operation_receipts accepted
+         WHERE accepted.id>=?1 AND accepted.id<?2
+           AND substr(accepted.id,-9)=':accepted'
+           AND NOT EXISTS (SELECT 1 FROM runtime_operation_receipts unknown
+             WHERE unknown.id=substr(accepted.id,1,length(accepted.id)-9)||':unknown')",
     )?;
     let counts = accounts
         .iter()
@@ -884,6 +883,8 @@ mod tests {
 
     #[tokio::test]
     async fn unknown_title_start_is_never_followed_by_another_write() {
+        let _cleanup =
+            super::TitleHome::new("title-request-unknown").expect("owned retained title fixture");
         let session = Arc::new(Session {
             requests: Mutex::new(Vec::new()),
             unknown_start: true,
@@ -1038,8 +1039,8 @@ mod tests {
                     [r#"{"id":"agent-a","accountKey":"account-a"}"#],
                 )?;
                 tx.execute(
-                    "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,'submitted','true')",
-                    ["account-worker:callback:account-a:1:3:submitted"],
+                    "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,'accepted','{}')",
+                    ["account-worker:callback:account-a:1:3:accepted"],
                 )?;
                 tx.execute(
                     "INSERT INTO runtime_tool_requests(id,record) VALUES('tool-a',?1)",

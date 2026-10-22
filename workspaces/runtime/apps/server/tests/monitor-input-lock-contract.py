@@ -100,6 +100,7 @@ class InputServer(fixture.FakeServer):
 class MonitorInputLockContract(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix='studio-monitor-input-')
+        self.addCleanup(self.temp.cleanup)
         self.runtime = make_runtime(QuietRuntime, Path(self.temp.name), InputServer)
         self.addCleanup(self.temp.cleanup)
         self.addCleanup(self.runtime.close)
