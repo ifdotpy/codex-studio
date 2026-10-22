@@ -314,9 +314,6 @@
     "({\"cwd\": \"/tmp\", \"command\": [\"true\"], \"output_limit\": 1}, False),",
     "({\"cwd\": \"/tmp\", \"command\": [\"true\"], \"output_limit\": 4194305}, False),"
   ],
-  "workspaces/runtime/packages/runtime-services/tests/title_generation/oracle.py": [
-    "return \"/tmp/title-oracle-home\""
-  ],
   "workspaces/runtime/packages/runtime-services/tests/voice_provider_corpus.rs": [
     "\"params\":{\"command\":\"printf safe\", \"cwd\":\"/tmp\"}"
   ],

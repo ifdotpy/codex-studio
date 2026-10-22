@@ -1,0 +1,65 @@
+{
+  "approval": {
+    "seq": 1,
+    "id": "approval-speech:oracle-approval:3fcc7966cb30c64e0f65c328890eaf96c6087774272a1dca1d27b1510b861cdc",
+    "agent": "agent",
+    "session": "",
+    "kind": "orchestrator",
+    "text": "Запрос разрешения. {\"command\": \"printf safe\", \"cwd\": \"/tmp\"}. Для подтверждения скажите «разрешаю».",
+    "item_id": "",
+    "previous_item_id": "",
+    "payload": "{\"fingerprint\": \"3fcc7966cb30c64e0f65c328890eaf96c6087774272a1dca1d27b1510b861cdc\", \"request_id\": \"oracle-approval\"}",
+    "created": 1792684677.3635924
+  },
+  "approvals": {
+    "requests": [
+      {
+        "agent": "agent",
+        "epoch": 0,
+        "id": "oracle-approval",
+        "method": "item/commandExecution/requestApproval",
+        "params": {
+          "command": "printf safe",
+          "cwd": "/tmp"
+        },
+        "status": "pending"
+      }
+    ]
+  },
+  "records": {
+    "records": [
+      {
+        "seq": 1,
+        "id": "approval-speech:oracle-approval:3fcc7966cb30c64e0f65c328890eaf96c6087774272a1dca1d27b1510b861cdc",
+        "agent": "agent",
+        "session": "",
+        "kind": "orchestrator",
+        "text": "Запрос разрешения. {\"command\": \"printf safe\", \"cwd\": \"/tmp\"}. Для подтверждения скажите «разрешаю».",
+        "item_id": "",
+        "previous_item_id": "",
+        "payload": "{\"fingerprint\": \"3fcc7966cb30c64e0f65c328890eaf96c6087774272a1dca1d27b1510b861cdc\", \"request_id\": \"oracle-approval\"}",
+        "created": 1792684677.3635924
+      }
+    ],
+    "cursor": 1,
+    "delivered": [],
+    "session": null
+  },
+  "rows": [
+    {
+      "seq": 1,
+      "id": "approval-speech:oracle-approval:3fcc7966cb30c64e0f65c328890eaf96c6087774272a1dca1d27b1510b861cdc",
+      "agent": "agent",
+      "session": "",
+      "kind": "orchestrator",
+      "text": "Запрос разрешения. {\"command\": \"printf safe\", \"cwd\": \"/tmp\"}. Для подтверждения скажите «разрешаю».",
+      "item_id": "",
+      "previous_item_id": "",
+      "payload": "{\"fingerprint\": \"3fcc7966cb30c64e0f65c328890eaf96c6087774272a1dca1d27b1510b861cdc\", \"request_id\": \"oracle-approval\"}",
+      "created": 1792684677.3635924
+    }
+  ],
+  "events": [],
+  "sync_entities": [],
+  "sync_documents": []
+}

@@ -1,7 +1,6 @@
-use crate::prepared_python_support as python_support;
 use rusqlite::types::Value as SqlValue;
 use serde_json::{Value, json};
-use std::{fs, path::Path, process::Command};
+use std::{fs, path::Path};
 use studio_runtime_services::{
     host_project_runtime::PreparedHost,
     projects::ProjectsError,
@@ -41,49 +40,24 @@ impl RadioIngress for Ingress {
     }
 }
 struct RadioCorpus {
-    _root: tempfile::TempDir,
     databases: Vec<(String, Vec<u8>)>,
     cases: Vec<Value>,
 }
 fn corpus() -> RadioCorpus {
-    // Oracle paths remain below this test-owned root through restart replay.
-    let template = python_support::disposable_state_dir();
-    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let script = manifest.join("tests/wave7_p19/oracle.py");
-    let mut command = Command::new(python_support::prepared_python(
-        &manifest.join("../../apps/server/src"),
-    ));
-    command
-        .env("TMPDIR", template.path())
-        .arg(&script)
-        .arg(template.path());
-    if std::env::var("STUDIO_RUNTIME_CORPUS_FULL").as_deref() == Ok("1") {
-        command.arg("--full");
-    }
-    let output = python_support::output_with_timeout(
-        &mut command,
-        &script,
-        python_support::PYTHON_ORACLE_TIMEOUT,
-    )
-    .unwrap_or_else(|error| panic!("could not run P19 Python oracle: {error}"));
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let databases = ["canvas.sqlite3", "analytics.sqlite3"]
-        .into_iter()
-        .map(|name| {
-            (
-                name.to_owned(),
-                fs::read(template.path().join(name)).expect("template database"),
-            )
-        })
-        .collect();
+    let bytes =
+        crate::media_auth_fixtures::state_bytes(include_str!("wave7_p19/initial-state.json"));
+    let expected = if std::env::var("STUDIO_RUNTIME_CORPUS_FULL").as_deref() == Ok("1") {
+        include_str!("wave7_p19/expected-full.json")
+    } else {
+        include_str!("wave7_p19/expected.json")
+    };
     RadioCorpus {
-        databases,
-        cases: serde_json::from_slice(&output.stdout).expect("corpus JSON"),
-        _root: template,
+        databases: ["canvas.sqlite3", "analytics.sqlite3"]
+            .into_iter()
+            .zip(bytes)
+            .map(|(name, bytes)| (name.to_owned(), bytes))
+            .collect(),
+        cases: serde_json::from_str(expected).expect("frozen radio corpus"),
     }
 }
 fn copy_template(corpus: &RadioCorpus, root: &Path) {
@@ -332,7 +306,7 @@ async fn run(store: std::sync::Arc<RuntimeStore>, case: &Value) -> Result<Value,
 async fn python_written_radio_corpus_and_restart_replay() {
     let corpus = corpus();
     for original_case in &corpus.cases {
-        let root = python_support::disposable_state_dir();
+        let root = tempfile::tempdir().expect("radio state directory");
         copy_template(&corpus, root.path());
         let store = std::sync::Arc::new(RuntimeStore::open(Some(root.path())).await.expect("open"));
         seed(&store, &original_case["before"]).await;
@@ -471,7 +445,7 @@ async fn failpoints_rollback_floor_binding_answer_and_receipt_then_restart() {
             .expect("case");
         for table in tables {
             for boundary in ["BEFORE", "AFTER"] {
-                let root = python_support::disposable_state_dir();
+                let root = tempfile::tempdir().expect("radio state directory");
                 copy_template(&corpus, root.path());
                 let store =
                     std::sync::Arc::new(RuntimeStore::open(Some(root.path())).await.expect("open"));
@@ -577,7 +551,7 @@ async fn answered_question_releases_one_continuation_and_malformed_rows_write_no
         .iter()
         .find(|c| c["name"] == "answer")
         .expect("answer");
-    let root = python_support::disposable_state_dir();
+    let root = tempfile::tempdir().expect("radio state directory");
     copy_template(&corpus, root.path());
     let store = std::sync::Arc::new(RuntimeStore::open(Some(root.path())).await.expect("open"));
     seed(&store, &case["before"]).await;
@@ -649,7 +623,7 @@ async fn pending_interrupt_recovers_before_claim_and_unknown_is_never_resent() {
         .iter()
         .find(|case| case["name"] == "interrupt")
         .expect("interrupt");
-    let root = python_support::disposable_state_dir();
+    let root = tempfile::tempdir().expect("radio state directory");
     copy_template(&corpus, root.path());
     let store = std::sync::Arc::new(RuntimeStore::open(Some(root.path())).await.expect("open"));
     seed(&store, &case["before"]).await;
@@ -713,7 +687,7 @@ async fn pending_interrupt_recovers_before_claim_and_unknown_is_never_resent() {
 
     // Simulate a crash after the durable claim commits but before transport
     // dispatch: recovery observes Unknown and the transport receives nothing.
-    let crash_root = python_support::disposable_state_dir();
+    let crash_root = tempfile::tempdir().expect("radio state directory");
     copy_template(&corpus, crash_root.path());
     let crash_store = std::sync::Arc::new(
         RuntimeStore::open(Some(crash_root.path()))

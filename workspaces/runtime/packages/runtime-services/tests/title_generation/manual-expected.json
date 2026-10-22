@@ -1,0 +1,36 @@
+{
+  "agent": {
+    "id": "title-agent",
+    "rootId": "title-agent",
+    "epoch": 1,
+    "status": "idle",
+    "cwd": "/fixture",
+    "name": "Manual title",
+    "isLead": false,
+    "accountKey": "default",
+    "model": "gpt-6",
+    "autoWake": false,
+    "provider": "codex",
+    "prompt": "Start the title fixture",
+    "needsTitle": false,
+    "manualName": true
+  },
+  "events": [],
+  "projection": [
+    [
+      "agent",
+      "title-agent",
+      1,
+      "015893e419ea2582deaaac63d59ba6ea15d8c68f530a2eaba9859a1a3b719e22",
+      "{\"collection\":\"agent\",\"id\":\"title-agent\",\"value\":{\"accountKey\":\"default\",\"autoWake\":false,\"canSend\":true,\"commandProgress\":[],\"cwd\":\"/fixture\",\"epoch\":1,\"id\":\"title-agent\",\"isLead\":false,\"kind\":\"agent\",\"launcherAlive\":true,\"manualName\":true,\"model\":\"gpt-6\",\"name\":\"Manual title\",\"nextTurnSettingsSupported\":true,\"overview\":{\"result\":\"\",\"resultFile\":null,\"resultTruncated\":false,\"resultTurnId\":null,\"task\":\"Start the title fixture\",\"taskTruncated\":false},\"provider\":\"codex\",\"readStateSupported\":true,\"rootId\":\"title-agent\",\"serverId\":null,\"source\":\"managed\",\"stall\":null,\"startWait\":null,\"status\":\"idle\"}}",
+      0
+    ]
+  ],
+  "receipts": [
+    [
+      "persisted-title",
+      "983b04d2909c03bf01846d4811b2f8fce0a5b8f0a276b16086cd8768bb1c6235",
+      "{\"id\": \"title-agent\", \"request_id\": \"persisted-title\", \"status\": \"failed\", \"error\": \"The chat name changed before the title was ready.\"}"
+    ]
+  ]
+}

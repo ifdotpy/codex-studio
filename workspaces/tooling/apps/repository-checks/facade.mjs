@@ -1105,6 +1105,7 @@ function fastTierCommands(root) {
             nextestAnyOf([
               "test(/^provider_session_task::active_barrier_holds_new_requests_but_not_callback_answers_or_interrupts$/)",
               "test(/^provider_session_task::expiry_batch_preserves_all_queued_request_outcomes_in_order$/)",
+              "test(/^wave9_safety_buffering_executor::comparison_normalizes_only_generated_identity_and_role_source_roots$/)",
             ]),
           ],
         ],

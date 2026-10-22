@@ -1,5 +1,4 @@
 use crate::login_fixtures as claude_fixture;
-use crate::prepared_python_support as python_test_support;
 
 use claude_fixture::{Fixture as ClaudeFixture, Script};
 use serde_json::{Value, json};
@@ -77,26 +76,8 @@ impl RetainedAccountSession for CodexSession {
     }
 }
 
-#[allow(clippy::disallowed_methods)]
 fn python_corpus() -> Value {
-    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src");
-    let python = python_test_support::prepared_python(&source);
-    let output = std::process::Command::new(python)
-        .args([
-            "-B",
-            concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/tests/wave9_login_parity_oracle.py"
-            ),
-        ])
-        .output()
-        .expect("launch isolated Python parity corpus");
-    assert!(
-        output.status.success(),
-        "Python login oracle failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    serde_json::from_slice(&output.stdout).expect("Python parity corpus JSON")
+    serde_json::from_str(include_str!("wave9_login_expected.json")).expect("frozen login corpus")
 }
 
 /// The resolved spelling of a fixture root. Rust and Python store some paths
