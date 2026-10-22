@@ -272,7 +272,9 @@ async fn apply(store: &RuntimeStore, case: &Value, prepared: &Value) -> Result<V
                 provider: "codex".into(),
             },
         ));
-        if let Some(service) = step["required_service"].as_str() {
+        if let Some(service) = step["required_service"].as_str()
+            && service != "accounts/rate-limits"
+        {
             assert_eq!(case["requires_service"], service);
             assert_eq!(index + 1, case["steps"].as_array().expect("steps").len());
             let agent_id = agent_id.to_owned();
@@ -1260,9 +1262,14 @@ async fn corpus(full: bool, runtime_effects: bool) {
         let first = apply(&store, case, prepared).await;
         let error = first.as_ref().err().cloned();
         if let Ok(value) = &first {
+            let expected_return = if case["requires_service"] == "accounts/rate-limits" {
+                json!([{"status":"ignored","reason":"account-journal/limits-observation"}])
+            } else {
+                case["return"].clone()
+            };
             assert_eq!(
                 value.get("outcomes").unwrap_or(value),
-                &case["return"],
+                &expected_return,
                 "{id}: entry-point result"
             );
             if case["pending_continuation_probe"] == true {
@@ -1310,6 +1317,37 @@ async fn corpus(full: bool, runtime_effects: bool) {
             continue;
         }
         if let Some(service) = case["requires_service"].as_str() {
+            if service == "accounts/rate-limits" {
+                // Rust ingests these notices through the durable account journal
+                // before thread dispatch. This corpus calls thread dispatch only.
+                // The worker tests in account_worker/tests/limits_updates.rs cover
+                // ingestion, connection identity, and replay suppression.
+                assert!(error.is_none(), "{id}: {error:?}");
+                let mut expected_dispatch = expected["beforeRefusal"].clone();
+                let digest =
+                    |value: Value| studio_runtime_store::sha256_hex(value.to_string().as_bytes());
+                let receipt = json!({
+                    "id":format!("provider-notification:{}", digest(json!({"providerHandle":"account:default","generation":7,"cursor":1}))),
+                    "signature":digest(json!({"agent":"agent","notification":case["steps"][0]["frame"]})),
+                    "result":{"status":"ignored","reason":"account-journal/limits-observation"}
+                });
+                expected_dispatch["runtime_operation_receipts"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(receipt);
+                assert_eq!(
+                    actual, expected_dispatch,
+                    "{id}: thread dispatch changed account state"
+                );
+                assert_ne!(
+                    expected["after"]["sync_entities"],
+                    expected["beforeRefusal"]["sync_entities"]
+                );
+                report.push(json!({"id":id,"contract":"account-journal owns rate-limit ingestion; thread dispatch ignores it","differences":[],"error":null,
+                    "seconds":{"seed":seeded,"apply":applied-seeded,"snapshot":started.elapsed().as_secs_f64()-applied}}));
+                green += 1;
+                continue;
+            }
             assert_eq!(
                 error.as_deref(),
                 Some(format!("Not implemented: requires {service}").as_str())
