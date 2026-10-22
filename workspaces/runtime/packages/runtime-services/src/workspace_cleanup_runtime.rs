@@ -2041,7 +2041,7 @@ mod tests {
                     "protocol.file.allow=always",
                     "submodule",
                     "add",
-                    nested_source.to_str().unwrap(),
+                    nested_source.to_str().expect("nested source path is UTF-8"),
                     "nested",
                 ],
             );
@@ -2068,7 +2068,7 @@ mod tests {
                 "protocol.file.allow=always",
                 "submodule",
                 "add",
-                source.to_str().unwrap(),
+                source.to_str().expect("source path is UTF-8"),
                 "module",
             ],
         );
@@ -2092,7 +2092,7 @@ mod tests {
                 "add",
                 "-qb",
                 "cleanup-agent",
-                root.to_str().unwrap(),
+                root.to_str().expect("worktree path is UTF-8"),
             ],
         );
         fixture_git(
@@ -2174,7 +2174,7 @@ mod tests {
         assert!(
             agent(&store)["workspaceCleanupIntent"]["receipt"]["reason"]
                 .as_str()
-                .unwrap()
+                .expect("cleanup refusal is text")
                 .contains("submodule")
         );
     }
@@ -2218,7 +2218,7 @@ mod tests {
         assert!(
             saved["workspaceCleanupIntent"]["receipt"]["reason"]
                 .as_str()
-                .unwrap()
+                .expect("saved refusal is text")
                 .contains(reason)
         );
     }
@@ -2265,7 +2265,8 @@ mod tests {
         let module = root.join("module");
         let recorded = fixture_git(&module, &["rev-parse", "HEAD"]);
         fixture_git(&module, &["checkout", "-qb", "worker"]);
-        std::fs::write(module.join("file.txt"), "local branch\n").unwrap();
+        std::fs::write(module.join("file.txt"), "local branch\n")
+            .expect("local branch file writes");
         fixture_git(&module, &["commit", "-qam", "local branch"]);
         fixture_git(&module, &["checkout", "--detach", &recorded]);
         assert_submodule_held(&store, &root, "local commits").await;
@@ -2282,7 +2283,8 @@ mod tests {
         let (_directory, store, _repository, root) = submodule_fixture_with_nested(true).await;
         let nested = root.join("module/nested");
         let recorded = fixture_git(&nested, &["rev-parse", "HEAD"]);
-        std::fs::write(nested.join("file.txt"), "nested worker data\n").unwrap();
+        std::fs::write(nested.join("file.txt"), "nested worker data\n")
+            .expect("nested worker file writes");
         fixture_git(&nested, &["commit", "-qam", "nested detached commit"]);
         let local = fixture_git(&nested, &["rev-parse", "HEAD"]);
         fixture_git(&nested, &["checkout", "--detach", &recorded]);
@@ -2301,37 +2303,41 @@ mod tests {
     async fn archive_keeps_submodule_recursive_modified_file() {
         let (_directory, store, _repository, root) = submodule_fixture_with_nested(true).await;
         let file = root.join("module/nested/file.txt");
-        std::fs::write(&file, "nested edit\n").unwrap();
+        std::fs::write(&file, "nested edit\n").expect("nested edit writes");
         assert_eq!(fixture_git(&root, &["status", "--porcelain"]), "");
         assert_submodule_held(&store, &root, "modified or untracked").await;
-        assert_eq!(std::fs::read_to_string(file).unwrap(), "nested edit\n");
+        assert_eq!(
+            std::fs::read_to_string(file).expect("nested edit remains readable"),
+            "nested edit\n"
+        );
     }
 
     #[tokio::test]
     async fn archive_keeps_submodule_unreadable_head() {
         let (_directory, store, _repository, root) = submodule_fixture().await;
         let gitdir = fixture_git(&root.join("module"), &["rev-parse", "--absolute-git-dir"]);
-        std::fs::write(std::path::Path::new(&gitdir).join("HEAD"), "invalid head\n").unwrap();
+        std::fs::write(std::path::Path::new(&gitdir).join("HEAD"), "invalid head\n")
+            .expect("invalid HEAD writes");
         assert_submodule_held(&store, &root, "cannot be read").await;
     }
 
     #[tokio::test]
     async fn archive_keeps_submodule_foreign_git_directory() {
         let (directory, store, _repository, root) = submodule_fixture().await;
-        let foreign =
-            std::fs::canonicalize(directory.path().join("submodule-source/.git")).unwrap();
+        let foreign = std::fs::canonicalize(directory.path().join("submodule-source/.git"))
+            .expect("foreign Git directory resolves");
         std::fs::write(
             root.join("module/.git"),
             format!("gitdir: {}\n", foreign.display()),
         )
-        .unwrap();
+        .expect("foreign Git link writes");
         assert_submodule_held(&store, &root, "foreign Git directory").await;
     }
 
     #[tokio::test]
     async fn archive_keeps_submodule_without_git_directory_and_with_files() {
         let (_directory, store, _repository, root) = submodule_fixture().await;
-        std::fs::remove_file(root.join("module/.git")).unwrap();
+        std::fs::remove_file(root.join("module/.git")).expect("submodule Git link removes");
         assert_submodule_held(&store, &root, "contains files but has no Git directory").await;
     }
 
@@ -2340,7 +2346,7 @@ mod tests {
         let (_directory, store, repository, root) = submodule_fixture().await;
         let identity = super::worktree_identity(&agent(&store)).expect("worktree identity");
         super::save_worktree_archive_ref(&identity).expect("clean parent ref saves");
-        std::fs::write(root.join("module/file.txt"), "late edit\n").unwrap();
+        std::fs::write(root.join("module/file.txt"), "late edit\n").expect("late edit writes");
         let error =
             super::remove_worktree(&identity).expect_err("new submodule edit blocks removal");
         assert!(matches!(error, EffectFailure::UnsafeSubmodule(_)));
@@ -2350,13 +2356,14 @@ mod tests {
                 &repository,
                 &["rev-parse", "refs/codex-agents/archive/cleanup-agent"]
             ),
-            identity["head"].as_str().unwrap()
+            identity["head"].as_str().expect("archive HEAD is text")
         );
     }
 
     fn record_local_submodule_commit(root: &std::path::Path) -> String {
         let module = root.join("module");
-        std::fs::write(module.join("file.txt"), "recorded local commit\n").unwrap();
+        std::fs::write(module.join("file.txt"), "recorded local commit\n")
+            .expect("local commit file writes");
         fixture_git(&module, &["commit", "-qam", "local submodule commit"]);
         let head = fixture_git(&module, &["rev-parse", "HEAD"]);
         fixture_git(
@@ -2424,7 +2431,7 @@ mod tests {
                 "-c",
                 "protocol.file.allow=always",
                 "fetch",
-                root.join("module").to_str().unwrap(),
+                root.join("module").to_str().expect("module path is UTF-8"),
                 &local,
             ],
         );
@@ -2455,14 +2462,15 @@ mod tests {
             std::path::Path::new(&gitdir).join("objects/info/alternates"),
             format!("{foreign}/objects\n"),
         )
-        .unwrap();
+        .expect("foreign object alternate writes");
         assert_submodule_held(&store, &root, "foreign Git directory or configuration").await;
     }
 
     #[tokio::test]
     async fn archive_keeps_submodule_with_unreadable_configuration() {
         let (_directory, store, _repository, root) = submodule_fixture().await;
-        std::fs::write(root.join(".gitmodules"), "[broken\n").unwrap();
+        std::fs::write(root.join(".gitmodules"), "[broken\n")
+            .expect("invalid Git configuration writes");
         assert_submodule_held(&store, &root, "cannot be read").await;
     }
 

@@ -990,7 +990,7 @@ fn stop_receipt_survivor_stays_uncertain_until_cancellation_or_acknowledgement()
 #[test]
 fn stop_receipt_cancels_the_initial_prompt_in_pending_dispatch() {
     let mut connection = database();
-    connection.execute("INSERT INTO runtime_events VALUES('initial','agent','user','first','delivered',0,4,'turn-1',NULL)", []).unwrap();
+    connection.execute("INSERT INTO runtime_events VALUES('initial','agent','user','first','delivered',0,4,'turn-1',NULL)", []).expect("initial prompt inserts");
     settle(&mut connection, |tx| {
         SchedulerRepository::settle_interrupt_inputs(
             tx,

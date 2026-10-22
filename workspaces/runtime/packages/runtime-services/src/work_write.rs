@@ -2170,9 +2170,9 @@ fn decide_accept(
     if let Some(reason) = override_reason {
         updated["decisions"]
             .as_array_mut()
-            .unwrap()
+            .expect("decision array exists after push")
             .last_mut()
-            .unwrap()["gateOverrideReason"] = json!(reason);
+            .expect("accepted decision exists after push")["gateOverrideReason"] = json!(reason);
     }
     updated["status"] = json!("accepted");
     updated["archive"] =
@@ -4343,8 +4343,8 @@ mod actor_tests {
         );
         assert_eq!(
             WorkItemsRepository::work_record(&tx, "gated")
-                .unwrap()
-                .unwrap()["status"],
+                .expect("gate query succeeds")
+                .expect("gate exists")["status"],
             "review"
         );
     }

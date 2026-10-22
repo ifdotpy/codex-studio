@@ -67,34 +67,6 @@ pub fn apply_tool_contract(name: &str, input: &mut serde_json::Map<String, Value
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn acceptance_gate_schema_and_parser_agree() {
-        let validator = crate::Validator::new(&input_schema()).unwrap();
-        for value in [
-            json!("true"),
-            json!({"command":"true"}),
-            json!({"command":"true","timeout_ms":MAX_TIMEOUT_MS}),
-            Value::Null,
-        ] {
-            assert!(validator.is_valid(&value));
-            assert!(parse(&value).is_ok());
-        }
-        for value in [
-            json!(""),
-            json!({"command":"true","timeout_ms":0}),
-            json!({"command":"true","timeout_ms":MAX_TIMEOUT_MS+1}),
-            json!({"command":"true","cwd":std::env::temp_dir()}),
-        ] {
-            assert!(!validator.is_valid(&value));
-            assert!(parse(&value).is_err());
-        }
-        assert!(parse(&json!("  ")).is_err());
-    }
-}
-
 /// OpenAPI fields consumed by the web. The generator checks these exact fields against this owner.
 pub fn apply_api_contract(document: &mut Value) {
     let schemas = &mut document["components"]["schemas"];
@@ -152,4 +124,33 @@ pub fn check_api_contract(document: &Value) -> Result<(), String> {
         return Err("Acceptance gate schema differs from runtime-schema/src/task_gate.rs".into());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn acceptance_gate_schema_and_parser_agree() {
+        let validator =
+            crate::Validator::new(&input_schema()).expect("acceptance gate schema compiles");
+        for value in [
+            json!("true"),
+            json!({"command":"true"}),
+            json!({"command":"true","timeout_ms":MAX_TIMEOUT_MS}),
+            Value::Null,
+        ] {
+            assert!(validator.is_valid(&value));
+            assert!(parse(&value).is_ok());
+        }
+        for value in [
+            json!(""),
+            json!({"command":"true","timeout_ms":0}),
+            json!({"command":"true","timeout_ms":MAX_TIMEOUT_MS+1}),
+            json!({"command":"true","cwd":std::env::temp_dir()}),
+        ] {
+            assert!(!validator.is_valid(&value));
+            assert!(parse(&value).is_err());
+        }
+        assert!(parse(&json!("  ")).is_err());
+    }
 }

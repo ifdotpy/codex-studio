@@ -1414,33 +1414,45 @@ mod child_turn_parent_tests {
         for provider in ["codex", "claude"] {
             let (_directory, store, intent) = seeded(provider).await;
             store.transaction(|tx| {
-                let mut child = AgentRepository::get(tx, &AgentId::from("child"))?.unwrap();
+                let mut child = AgentRepository::get(tx, &AgentId::from("child"))?.expect("child exists");
                 child.extra.insert("capabilityProfile".into(), json!({"maxTurns":1}));
                 AgentRepository::put(tx, &child)?;
                 tx.execute("INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) VALUES('next','child','followup','queued work','pending',2,1)", [])?;
                 Ok(())
-            }).await.unwrap();
+            }).await.expect("maxTurns fixture writes");
             assert!(finish(&store, &intent, "completed").await);
             assert!(
                 finish(&store, &intent, "completed").await,
                 "receipt replay succeeds"
             );
-            let child =
-                AgentRepository::get(&store.test_reader().unwrap(), &AgentId::from("child"))
-                    .unwrap()
-                    .unwrap()
-                    .value();
+            let child = AgentRepository::get(
+                &store.test_reader().expect("test reader opens"),
+                &AgentId::from("child"),
+            )
+            .expect("child query succeeds")
+            .expect("child exists")
+            .value();
             assert_eq!(child["completedWorkerTurns"], 1);
             assert_eq!(child["autoWake"], false);
             assert_eq!(child["terminalReason"], "worker_max_turns");
-            assert!(child["error"].as_str().unwrap().contains("maxTurns"));
+            assert!(
+                child["error"]
+                    .as_str()
+                    .expect("child error is text")
+                    .contains("maxTurns")
+            );
             let events = parent_events(&store);
             assert_eq!(events.len(), 1);
-            assert!(events[0].2["result"].as_str().unwrap().contains("maxTurns"));
+            assert!(
+                events[0].2["result"]
+                    .as_str()
+                    .expect("parent result is text")
+                    .contains("maxTurns")
+            );
             assert!(
                 claim_intent(&store, "child", 1, "blocked", 3.0)
                     .await
-                    .unwrap()
+                    .expect("blocked claim completes")
                     .is_none()
             );
             let system = store
@@ -1465,14 +1477,15 @@ mod child_turn_parent_tests {
                         "id":"manager","parentId":"lead","rootId":"lead","epoch":1,
                         "status":"completed","cwd":"/work","autoWake":true
                     }))
-                    .unwrap();
+                    .expect("manager fixture deserializes");
                     AgentRepository::put(tx, &manager)?;
-                    let mut child = AgentRepository::get(tx, &AgentId::from("child"))?.unwrap();
+                    let mut child =
+                        AgentRepository::get(tx, &AgentId::from("child"))?.expect("child exists");
                     child.extra.insert("parentId".into(), json!("manager"));
                     AgentRepository::put(tx, &child)
                 })
                 .await
-                .unwrap();
+                .expect("manager fixture writes");
             let parent_instruction = store
                 .transaction_with::<_, crate::coordination::CoordinationError>(|tx| {
                     crate::coordination::send_followup(
@@ -1492,7 +1505,7 @@ mod child_turn_parent_tests {
                 .await;
             assert!(
                 parent_instruction
-                    .unwrap_err()
+                    .expect_err("parent resume must fail at maxTurns")
                     .to_string()
                     .contains("maxTurns")
             );
@@ -1514,13 +1527,15 @@ mod child_turn_parent_tests {
                         )
                     })
                     .await
-                    .unwrap();
+                    .expect("lead reset succeeds");
             }
-            let reset =
-                AgentRepository::get(&store.test_reader().unwrap(), &AgentId::from("child"))
-                    .unwrap()
-                    .unwrap()
-                    .value();
+            let reset = AgentRepository::get(
+                &store.test_reader().expect("test reader opens"),
+                &AgentId::from("child"),
+            )
+            .expect("child query succeeds")
+            .expect("reset child exists")
+            .value();
             assert_eq!(reset["completedWorkerTurns"], 0);
             assert_eq!(reset["autoWake"], true);
             assert!(reset.get("terminalReason").is_none());
@@ -1529,7 +1544,7 @@ mod child_turn_parent_tests {
                     claim_preparation_in_transaction(tx, "child", 1, "resumed", 6.0)
                 })
                 .await
-                .unwrap()
+                .expect("resumed claim completes")
                 .is_some()
             );
         }
@@ -1541,20 +1556,23 @@ mod child_turn_parent_tests {
             let (_directory, store, intent) = seeded("codex").await;
             store
                 .transaction(|tx| {
-                    let mut child = AgentRepository::get(tx, &AgentId::from("child"))?.unwrap();
+                    let mut child =
+                        AgentRepository::get(tx, &AgentId::from("child"))?.expect("child exists");
                     child
                         .extra
                         .insert("capabilityProfile".into(), json!({"maxTurns":1}));
                     AgentRepository::put(tx, &child)
                 })
                 .await
-                .unwrap();
+                .expect("maxTurns fixture writes");
             assert!(finish(&store, &intent, status).await);
-            let child =
-                AgentRepository::get(&store.test_reader().unwrap(), &AgentId::from("child"))
-                    .unwrap()
-                    .unwrap()
-                    .value();
+            let child = AgentRepository::get(
+                &store.test_reader().expect("test reader opens"),
+                &AgentId::from("child"),
+            )
+            .expect("child query succeeds")
+            .expect("child exists")
+            .value();
             assert!(child.get("completedWorkerTurns").is_none());
             assert!(child.get("terminalReason").is_none());
         }

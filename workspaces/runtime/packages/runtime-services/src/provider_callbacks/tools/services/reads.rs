@@ -470,7 +470,7 @@ mod studio_input_tests {
 
     #[test]
     fn spilled_input_is_durable_paged_and_agent_owned() {
-        let root = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir().expect("temporary blob directory creates");
         let body = format!("{}END", "complaint 🦀\n".repeat(10_000));
         let hash = studio_runtime_store::sha256_hex(body.as_bytes());
         crate::payload_blobs::write_blobs(
@@ -481,24 +481,27 @@ mod studio_input_tests {
                 preview: Value::Null,
             }],
         )
-        .unwrap();
-        let mut connection = rusqlite::Connection::open_in_memory().unwrap();
-        let tx = connection.transaction().unwrap();
+        .expect("payload blob materializes");
+        let mut connection =
+            rusqlite::Connection::open_in_memory().expect("fixture database opens");
+        let tx = connection
+            .transaction()
+            .expect("fixture transaction starts");
         tx.execute_batch(
             "CREATE TABLE runtime_events(id TEXT,agent TEXT,kind TEXT,text TEXT,created REAL);
             CREATE TABLE runtime_event_meta(id TEXT,record TEXT);",
         )
-        .unwrap();
+        .expect("fixture tables create");
         tx.execute(
             "INSERT INTO runtime_events VALUES('wake','lead','user','continue',1)",
             [],
         )
-        .unwrap();
+        .expect("agent fixture inserts");
         tx.execute(
             "INSERT INTO runtime_event_meta VALUES('wake',?1)",
             [json!({"studioInput":{"sha256":hash,"size":body.len()}}).to_string()],
         )
-        .unwrap();
+        .expect("event metadata inserts");
         let snapshot = |id: &str| {
             CallbackSnapshot::from_record(
                 &json!({"id":id,"rootId":id,"epoch":1,"status":"running","autoWake":true,
@@ -514,7 +517,7 @@ mod studio_input_tests {
                     turn: "turn".into(),
                 },
             )
-            .unwrap()
+            .expect("input page loads")
         };
         let key = format!("studio-input:{hash}");
         let mut recovered = String::new();
@@ -527,8 +530,8 @@ mod studio_input_tests {
                 1.0,
                 root.path(),
             )
-            .unwrap();
-            recovered.push_str(page["text"].as_str().unwrap());
+            .expect("input page recovers");
+            recovered.push_str(page["text"].as_str().expect("page text is a string"));
             assert_eq!(page["outputRef"], key);
             let Some(next) = page["nextOffset"].as_u64() else {
                 break;
@@ -553,7 +556,12 @@ mod studio_input_tests {
             1.0,
             root.path(),
         )
-        .unwrap();
-        assert!(tail["text"].as_str().unwrap().ends_with("END"));
+        .expect("tail page loads");
+        assert!(
+            tail["text"]
+                .as_str()
+                .expect("tail text is a string")
+                .ends_with("END")
+        );
     }
 }

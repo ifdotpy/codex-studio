@@ -1565,7 +1565,8 @@ mod input_origin_tests {
             "status":"failed","exitCode":7,"monitorId":"gate-monitor","output":"x".repeat(12000)
         }}})
         .to_string();
-        let projected: Value = serde_json::from_str(&bound_event(&row, &row.text, 1000)).unwrap();
+        let projected: Value = serde_json::from_str(&bound_event(&row, &row.text, 1000))
+            .expect("bounded event remains valid JSON");
         assert_eq!(projected["task"], "gated-task");
         assert_eq!(projected["gate"]["status"], "failed");
         assert_eq!(projected["gate"]["exitCode"], 7);

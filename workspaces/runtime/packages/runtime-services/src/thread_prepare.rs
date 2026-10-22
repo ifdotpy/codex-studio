@@ -1072,11 +1072,11 @@ mod archive_finished_catalog_tests {
         }
         let bundled: Bundled =
             serde_json::from_str(include_str!("account_worker/preparation-resources.json"))
-                .unwrap();
+                .expect("bundled preparation resources parse");
         let legacy: Vec<ToolDefinition> = serde_json::from_str(include_str!(
             "../../../../../.agents/skills/codex-workspace/references/native-tools.json"
         ))
-        .unwrap();
+        .expect("native tool catalog parses");
         [
             ("preparation-resources.json", bundled.tools),
             ("native-tools.json", legacy),
@@ -1099,7 +1099,7 @@ mod archive_finished_catalog_tests {
                 session_tool: SessionTool::Move,
             },
         )
-        .unwrap()
+        .expect("tool catalog filters")
         .into_iter()
         .find(|tool| tool.name == "orchestration_agent_manage")
         .expect("the manage tool is in every agent catalog")
@@ -1110,7 +1110,7 @@ mod archive_finished_catalog_tests {
             .as_array()
             .expect("an action enum")
             .iter()
-            .map(|action| action.as_str().unwrap().to_owned())
+            .map(|action| action.as_str().expect("action name is text").to_owned())
             .collect()
     }
 

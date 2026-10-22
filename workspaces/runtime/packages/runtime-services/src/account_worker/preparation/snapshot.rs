@@ -1941,19 +1941,20 @@ mod resource_tests {
 
     #[test]
     fn capability_codex_mcp_selection_requires_named_servers_and_refuses_missing() {
-        let home = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().expect("temporary home creates");
         std::fs::write(
             home.path().join("config.toml"),
             "[mcp_servers.docs]\ncommand='docs'\n[mcp_servers.other]\ncommand='other'\n",
         )
-        .unwrap();
+        .expect("MCP configuration writes");
         let resources = PreparationResources::bundled(
             home.path().to_string_lossy().into_owned(),
             ModelCatalogService::new(),
         )
-        .unwrap();
+        .expect("bundled resources load");
         let mut worker = json!({"id":"worker","parentId":"lead","provider":"codex","capabilityProfile":{"mcpServers":["docs"]}});
-        let selected = guidance(&resources, &worker, home.path()).unwrap();
+        let selected =
+            guidance(&resources, &worker, home.path()).expect("named MCP server resolves");
         assert_eq!(
             selected.thread_config["mcp_servers"]["docs"],
             json!({"enabled":true,"required":true})
@@ -1965,19 +1966,20 @@ mod resource_tests {
         worker["capabilityProfile"]["mcpServers"] = json!(["missing"]);
         assert!(
             guidance(&resources, &worker, home.path())
-                .unwrap_err()
+                .expect_err("missing MCP server must fail")
                 .to_string()
                 .contains("missing")
         );
         worker["capabilityProfile"] = json!({"mcpServers":[]});
-        let none = guidance(&resources, &worker, home.path()).unwrap();
+        let none =
+            guidance(&resources, &worker, home.path()).expect("empty MCP selection resolves");
         assert!(none.browser.is_none());
         assert_eq!(none.thread_config["mcp_servers"]["docs"]["enabled"], false);
         for field in ["allowedTools", "disallowedTools", "skills"] {
             worker["capabilityProfile"] = json!({field:[]});
             assert!(
                 guidance(&resources, &worker, home.path())
-                    .unwrap_err()
+                    .expect_err("unsupported capability field must fail")
                     .to_string()
                     .contains(field)
             );
@@ -1987,7 +1989,7 @@ mod resource_tests {
             homes.shared.to_string_lossy().into_owned(),
             ModelCatalogService::new(),
         )
-        .unwrap();
+        .expect("browser resources load");
         browser_resources.shared_home = homes.shared.to_string_lossy().into_owned();
         for parent in [Value::Null, json!("lead")] {
             let browser = guidance(
@@ -1998,7 +2000,7 @@ mod resource_tests {
                 }),
                 homes.root.path(),
             )
-            .unwrap();
+            .expect("browser guidance resolves");
             assert!(browser.browser.is_some());
             assert!(!browser.thread_config.contains_key("mcp_servers.node_repl"));
             assert_eq!(
