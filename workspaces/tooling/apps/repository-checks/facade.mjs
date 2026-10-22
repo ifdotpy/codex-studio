@@ -860,6 +860,35 @@ function fastTierCommands(root) {
       options: serverCategoryOptions("fast"),
     },
     {
+      item: { name: "studio-runtime-services", ecosystem: "cargo" },
+      label: "journal agent publication witnesses",
+      commands: [
+        [
+          "cargo",
+          [
+            "nextest",
+            "run",
+            "--locked",
+            "--no-tests",
+            "fail",
+            "--message-format",
+            "libtest-json-plus",
+            "-p",
+            "studio-runtime-services",
+            "--lib",
+            "-E",
+            "test(account_worker::tests::journal_publication::)",
+          ],
+        ],
+      ],
+      options: {
+        selector:
+          "journal_publication per-agent call counts, rollback and replay",
+        reason:
+          "Check that notification and stream-flush batches project and validate each changed agent once inside their atomic journal transaction.",
+      },
+    },
+    {
       item: { name: "studio-runtime-store", ecosystem: "cargo" },
       label: "Rust state migration and SQL callback witnesses",
       commands: [

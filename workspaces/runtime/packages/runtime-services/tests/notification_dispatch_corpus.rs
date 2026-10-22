@@ -100,7 +100,7 @@ async fn apply(store: &RuntimeStore, case: &Value, prepared: &Value) -> Result<V
         NotificationStreamBuffer, ProviderDeliveryIdentity, PublicationContext,
         dispatch_notification_with_effects as dispatch_notification,
     };
-    let publication = PublicationContext::load(store).map_err(|e| e.to_string())?;
+    let publication = PublicationContext::default();
     if case["submission"] == true {
         use studio_runtime_services::notification_dispatch::{
             PreparedSubmission, SubmittedInput, record_user_submission,
@@ -128,14 +128,16 @@ async fn apply(store: &RuntimeStore, case: &Value, prepared: &Value) -> Result<V
         let rolled = Arc::new(Mutex::new(None));
         let submission_for_rollback = submission.clone();
         let rolled_capture = Arc::clone(&rolled);
-        let rollback: Result<(), studio_runtime_services::notification_dispatch::NotificationDispatchError> = store.transaction_with(move |tx| {
+        let rollback: Result<(), studio_runtime_services::notification_dispatch::NotificationDispatchError> = studio_runtime_services::scheduler::lifecycle_transaction_with(store, move |tx| {
             *rolled_capture.lock().expect("rollback result") = Some(record_user_submission(tx, "agent", &submission_for_rollback)?);
             Err(studio_runtime_services::notification_dispatch::NotificationDispatchError::InvalidNotification)
         }).await;
         assert!(rollback.is_err());
         let submission_for_result = submission.clone();
-        let result = store
-            .transaction_with(move |tx| record_user_submission(tx, "agent", &submission_for_result))
+        let result =
+            studio_runtime_services::scheduler::lifecycle_transaction_with(store, move |tx| {
+                record_user_submission(tx, "agent", &submission_for_result)
+            })
             .await
             .map_err(|e| e.to_string())?;
         assert_eq!(
@@ -146,7 +148,7 @@ async fn apply(store: &RuntimeStore, case: &Value, prepared: &Value) -> Result<V
         let submission_for_replay = submission.clone();
         let submission_for_conflicts = submission.clone();
         let result_for_conflicts = result.clone();
-        store.transaction_with(move |tx| {
+        studio_runtime_services::scheduler::lifecycle_transaction_with(store, move |tx| {
             let before = tx.total_changes();
             assert_eq!(record_user_submission(tx,"agent",&submission_for_replay)?,result_for_conflicts);
             assert_eq!(before, tx.total_changes(), "submission replay wrote");
@@ -161,7 +163,7 @@ async fn apply(store: &RuntimeStore, case: &Value, prepared: &Value) -> Result<V
         }).await.map_err(|e|e.to_string())?;
         let submission_for_delete = submission.clone();
         let result_for_delete = result.clone();
-        let deleted_replay: Result<(), studio_runtime_services::notification_dispatch::NotificationDispatchError> = store.transaction_with(move |tx| {
+        let deleted_replay: Result<(), studio_runtime_services::notification_dispatch::NotificationDispatchError> = studio_runtime_services::scheduler::lifecycle_transaction_with(store, move |tx| {
             tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.deletedAt',1234.5) WHERE id='agent'", []).map_err(studio_runtime_store::StoreError::from)?;
             let before = tx.total_changes();
             assert_eq!(record_user_submission(tx,"agent",&submission_for_delete)?,result_for_delete);
@@ -222,8 +224,8 @@ async fn apply(store: &RuntimeStore, case: &Value, prepared: &Value) -> Result<V
                 .await
                 .map_err(|e| e.to_string())?;
             let recover_for_rollback = Arc::clone(&recover);
-            let rollback: Result<(), NotificationDispatchError> = store
-                .transaction_with(move |tx| {
+            let rollback: Result<(), NotificationDispatchError> =
+                studio_runtime_services::scheduler::lifecycle_transaction_with(store, move |tx| {
                     recover_for_rollback(tx)?;
                     Err(NotificationDispatchError::InvalidNotification)
                 })
@@ -239,10 +241,11 @@ async fn apply(store: &RuntimeStore, case: &Value, prepared: &Value) -> Result<V
             );
             let recover_for_failpoints = Arc::clone(&recover);
             write_failpoints(store, move |tx| recover_for_failpoints(tx)).await?;
-            store
-                .transaction_with(move |tx| recover(tx))
-                .await
-                .map_err(|e| e.to_string())?;
+            studio_runtime_services::scheduler::lifecycle_transaction_with(store, move |tx| {
+                recover(tx)
+            })
+            .await
+            .map_err(|e| e.to_string())?;
             results.push(json!({"status":"written"}));
             continue;
         }
@@ -279,7 +282,7 @@ async fn apply(store: &RuntimeStore, case: &Value, prepared: &Value) -> Result<V
             let effects = Arc::clone(&effects);
             let service = service.to_owned();
             let case_id = case["id"].as_str().expect("case ID").to_owned();
-            return store.transaction_with(move |tx| {
+            return studio_runtime_services::scheduler::lifecycle_transaction_with(store, move |tx| {
                 let before = raw_rows(tx);
                 let error = dispatch_notification(
                     tx, &agent_id, &publication, &streams, &identity, &frame, 1234.5, effects.as_ref(),
@@ -300,7 +303,7 @@ async fn apply(store: &RuntimeStore, case: &Value, prepared: &Value) -> Result<V
             let identity = identity.clone();
             let frame = frame.clone();
             let effects = Arc::clone(&effects);
-            let refusal = store.transaction_with(move |tx| {
+            let refusal = studio_runtime_services::scheduler::lifecycle_transaction_with(store, move |tx| {
                 tx.execute_batch("CREATE TABLE corpus_caller(value TEXT); CREATE TEMP TRIGGER corpus_late_failure BEFORE INSERT ON runtime_operation_receipts BEGIN SELECT RAISE(ABORT, 'injected late failure'); END;").expect("late service failure trigger");
                 let before = raw_rows(tx);
                 let refusal = dispatch_notification(tx, &agent_id, &publication, &streams, &identity, &frame, 1234.5, effects.as_ref()).expect_err("late failure must reach the service caller");
@@ -356,7 +359,7 @@ async fn apply(store: &RuntimeStore, case: &Value, prepared: &Value) -> Result<V
         let rollback_frame = frame.clone();
         let rollback_effects = Arc::clone(&effects);
         let rolled_capture = Arc::clone(&rolled);
-        let rollback: Result<(), studio_runtime_services::notification_dispatch::NotificationDispatchError> = store.transaction_with(move |tx| {
+        let rollback: Result<(), studio_runtime_services::notification_dispatch::NotificationDispatchError> = studio_runtime_services::scheduler::lifecycle_transaction_with(store, move |tx| {
             *rolled_capture.lock().expect("rollback result") = Some(dispatch_notification(tx, &rollback_agent, &rollback_publication, &rollback_streams, &rollback_identity, &rollback_frame, 1234.5, rollback_effects.as_ref())?);
             Err(studio_runtime_services::notification_dispatch::NotificationDispatchError::InvalidNotification)
         }).await;
@@ -370,8 +373,7 @@ async fn apply(store: &RuntimeStore, case: &Value, prepared: &Value) -> Result<V
         let result_identity = identity.clone();
         let result_frame = frame.clone();
         let result_effects = Arc::clone(&effects);
-        let result = store
-            .transaction_with(move |tx| {
+        let result = studio_runtime_services::scheduler::lifecycle_transaction_with(store, move |tx| {
                 dispatch_notification(
                     tx,
                     &result_agent,
@@ -417,8 +419,8 @@ async fn apply(store: &RuntimeStore, case: &Value, prepared: &Value) -> Result<V
         let replay_identity = identity.clone();
         let replay_frame = frame.clone();
         let replay_effects = Arc::clone(&effects);
-        let replay = store
-            .transaction_with(move |tx| {
+        let replay =
+            studio_runtime_services::scheduler::lifecycle_transaction_with(store, move |tx| {
                 let before = tx.total_changes();
                 let replay = dispatch_notification(
                     tx,
@@ -460,7 +462,7 @@ async fn apply(store: &RuntimeStore, case: &Value, prepared: &Value) -> Result<V
         let conflict_identity = identity.clone();
         let conflict_frame = conflict.clone();
         let conflict_effects = Arc::clone(&effects);
-        store.transaction_with(move |tx| {
+        studio_runtime_services::scheduler::lifecycle_transaction_with(store, move |tx| {
             let before = tx.total_changes();
             assert!(matches!(dispatch_notification(tx,&conflict_agent,&conflict_publication,&conflict_streams,&conflict_identity,&conflict_frame,1234.5,conflict_effects.as_ref()), Err(studio_runtime_services::notification_dispatch::NotificationDispatchError::ConflictingDelivery)));
             assert_eq!(before,tx.total_changes());
@@ -782,7 +784,7 @@ async fn effect_failpoints(
     };
     use studio_runtime_services::notification_runtime_effects::RuntimeNotificationEffects;
     use studio_runtime_store::{StoreError, Transaction};
-    let publication = PublicationContext::load(store).map_err(|e| e.to_string())?;
+    let publication = PublicationContext::default();
     struct Failure(u8);
     impl NotificationEffects for Failure {
         fn capture_usage(
@@ -819,7 +821,7 @@ async fn effect_failpoints(
         let phase_publication = publication.clone();
         let phase_identity = identity.clone();
         let phase_frame = frame.clone();
-        let result: Result<(), Error> = store.transaction_with(move |tx| {
+        let result: Result<(), Error> = studio_runtime_services::scheduler::lifecycle_transaction_with(store, move |tx| {
             tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.movedFrom',json('{\"server\":\"remote\"}')) WHERE id='agent'", []).map_err(StoreError::from)?;
             let before = raw_rows(tx);
             let failure = Failure(phase);
@@ -867,7 +869,7 @@ async fn write_failpoints(
             let operation = Arc::clone(&operation);
             let writes_capture = Arc::clone(&writes);
             let baseline_error_capture = Arc::clone(&baseline_error);
-            let rolled_back: Result<(), NotificationDispatchError> = store.transaction_with(move |tx| {
+            let rolled_back: Result<(), NotificationDispatchError> = studio_runtime_services::scheduler::lifecycle_transaction_with(store, move |tx| {
                 tx.execute_batch("CREATE TEMP TABLE notification_write_trace(value INTEGER); CREATE TEMP TABLE notification_failure(ordinal INTEGER); INSERT INTO notification_failure VALUES(0);").expect("trace fixture");
                 tx.execute("UPDATE notification_failure SET ordinal=?1", [ordinal]).expect("failure ordinal");
                 let tables = tx.prepare("SELECT name FROM pragma_table_list WHERE schema='main' AND type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name").expect("ordinary tables").query_map([], |r|r.get::<_,String>(0)).expect("table names").collect::<Result<Vec<_>,_>>().expect("table names");
@@ -956,14 +958,14 @@ async fn flush(
     use studio_runtime_services::notification_dispatch::{
         NotificationDispatchError, PublicationContext, flush_notification_streams,
     };
-    let publication = PublicationContext::load(store).map_err(|e| e.to_string())?;
+    let publication = PublicationContext::default();
     let rolled = Arc::new(Mutex::new(None));
     let rollback_streams = streams.clone();
     let rollback_agent = agent_id.to_owned();
     let rollback_publication = publication.clone();
     let rolled_capture = Arc::clone(&rolled);
-    let rollback: Result<(), NotificationDispatchError> = store
-        .transaction_with(move |tx| {
+    let rollback: Result<(), NotificationDispatchError> =
+        studio_runtime_services::scheduler::lifecycle_transaction_with(store, move |tx| {
             *rolled_capture.lock().expect("rollback result") = Some(flush_notification_streams(
                 tx,
                 &rollback_agent,
@@ -978,18 +980,17 @@ async fn flush(
     let result_agent = agent_id.to_owned();
     let result_publication = publication.clone();
     let result_streams = streams.clone();
-    let result = store
-        .transaction_with(move |tx| {
-            flush_notification_streams(
-                tx,
-                &result_agent,
-                &result_publication,
-                &result_streams,
-                1234.5,
-            )
-        })
-        .await
-        .map_err(|e| e.to_string())?;
+    let result = studio_runtime_services::scheduler::lifecycle_transaction_with(store, move |tx| {
+        flush_notification_streams(
+            tx,
+            &result_agent,
+            &result_publication,
+            &result_streams,
+            1234.5,
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())?;
     assert_eq!(
         *rolled.lock().expect("rollback result"),
         Some(result.clone()),

@@ -6,6 +6,9 @@ use std::sync::{Arc, OnceLock};
 
 use crate::event_write::truthy;
 
+/// Maximum last-answer text retained in an agent sync view. Unit: Unicode scalar values.
+pub(crate) const AGENT_SYNC_LAST_ANSWER_CHARS: usize = 4_000;
+
 const AGENT_SHORT_STRING_OBJECTS: &[&str] = &[
     "activity",
     "nativeStatus",
@@ -110,7 +113,8 @@ fn bound_sync_value(value: &Value, field: &str, agent_short_strings: bool) -> Va
                 match field {
                     "overview" => 9_000,
                     "error" | "tail" | "description" | "command" | "query" => 2_000,
-                    "text" | "lastAnswer" => 4_000,
+                    "lastAnswer" => AGENT_SYNC_LAST_ANSWER_CHARS,
+                    "text" => 4_000,
                     _ => 12_000,
                 }
             };
@@ -345,6 +349,8 @@ pub(crate) fn agent_start_wait(
 /// Build the managed renderer view from a record and explicit runtime context.
 pub fn agent_entity_view(record: &Value, context: &AgentViewContext) -> Option<Value> {
     let id = record.get("id").and_then(Value::as_str)?;
+    #[cfg(test)]
+    crate::scheduler::publication_work::projection(id);
     let mut view = record.as_object()?.clone();
     view.insert(
         studio_runtime_schema::agent_progress::START_WAIT_FIELD.into(),

@@ -1414,7 +1414,7 @@ pub(super) async fn journal_batch(
     let account_for_read = account.to_owned();
     let (publication, limits_observation) =
         crate::diagnostics::measure_runtime_stage_async("journal.snapshot", async {
-            let publication = crate::notification_dispatch::PublicationContext::load(&store)?
+            let publication = crate::notification_dispatch::PublicationContext::default()
                 .with_native_source(native_source);
             let limits_observation = if needs_limits {
                 Some(
@@ -2895,13 +2895,7 @@ pub(super) async fn flush_streams(
     account: &str,
     delivered: Vec<DeliveredPublication>,
 ) -> Result<NotificationStreamBuffer, WorkerError> {
-    let read_store = Arc::clone(&store);
-    let publication = studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-services/account_worker_stream_snapshot",
-        move || crate::notification_dispatch::PublicationContext::load(&read_store),
-    )
-    .await
-    .map_err(|_| WorkerError::TaskFailed)??;
+    let publication = crate::notification_dispatch::PublicationContext::default();
     let account = account.to_owned();
     scheduler::lifecycle_transaction_with(&store, move |tx| {
         delete_delivered_publications(tx, &delivered)?;

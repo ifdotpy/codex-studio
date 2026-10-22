@@ -496,7 +496,6 @@ async fn publication_uses_the_identity_snapshot_loaded_before_serving() {
     state
         .bridge
         .run(|store| async move {
-            assert!(crate::notification_dispatch::PublicationContext::load(store.as_ref()).is_ok());
             let entered = Arc::new(std::sync::atomic::AtomicBool::new(false));
             let transaction_entered = Arc::clone(&entered);
             scheduler::lifecycle_transaction(store.as_ref(), move |_| {

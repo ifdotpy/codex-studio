@@ -12,6 +12,7 @@ mod continuation_start;
 mod exited_generation_callback;
 mod idle_unload;
 mod journal_cost;
+mod journal_publication;
 mod late_thread_reply;
 mod login_completion;
 #[cfg(unix)]

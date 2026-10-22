@@ -205,8 +205,10 @@ where
     lifecycle_transaction_with(store, change)
 }
 
+/// Single outer owner for atomic source writes and publication of changed agents.
+/// Custom errors preserve caller outcomes; projection failure rolls back the entire change.
 #[track_caller]
-pub(crate) fn lifecycle_transaction_with<T, E>(
+pub fn lifecycle_transaction_with<T, E>(
     store: &RuntimeStore,
     change: impl for<'transaction> FnOnce(&rusqlite::Transaction<'transaction>) -> Result<T, E>
     + Send
@@ -239,6 +241,8 @@ fn project_changed_agents(
     for (rowid, row_id, raw) in crate::sync_policy::agents_changed_since(tx, generation)? {
         // The row just read is checked as AgentRepository reads it, and
         // publication reuses it instead of reading it again.
+        #[cfg(test)]
+        publication_work::validation(&row_id);
         let error = match studio_runtime_store::decode_agent_value(tx, &row_id, &raw) {
             Ok(_) => {
                 changes.agents.insert(row_id.clone());
@@ -2043,5 +2047,47 @@ mod child_result_coalesce_tests {
             .await
             .expect("nothing is held");
         assert_eq!(event_ids(&intent), ["child:w1:turn-w1"]);
+    }
+}
+
+/// Writer-thread-local accounting of publication work, before hash deduplication.
+#[cfg(test)]
+pub(crate) mod publication_work {
+    use std::{cell::RefCell, collections::BTreeMap};
+
+    #[derive(Debug, Default, PartialEq, Eq)]
+    pub(crate) struct Calls {
+        pub projections: usize,
+        pub validations: usize,
+    }
+
+    thread_local! {
+        static CALLS: RefCell<Option<BTreeMap<String, Calls>>> = const { RefCell::new(None) };
+    }
+
+    pub(crate) fn start() {
+        CALLS.set(Some(BTreeMap::new()));
+    }
+
+    pub(crate) fn take() -> BTreeMap<String, Calls> {
+        CALLS
+            .take()
+            .expect("publication accounting started on this writer")
+    }
+
+    pub(crate) fn projection(id: &str) {
+        CALLS.with_borrow_mut(|calls| {
+            if let Some(calls) = calls {
+                calls.entry(id.to_owned()).or_default().projections += 1;
+            }
+        });
+    }
+
+    pub(crate) fn validation(id: &str) {
+        CALLS.with_borrow_mut(|calls| {
+            if let Some(calls) = calls {
+                calls.entry(id.to_owned()).or_default().validations += 1;
+            }
+        });
     }
 }
