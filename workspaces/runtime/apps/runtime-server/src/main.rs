@@ -765,7 +765,7 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
             Arc::clone(&registry_wake),
         ),
     );
-    monitor_port.set_dispatch_wake(monitor_runtime.dispatch_wake_handle());
+    monitor_port.set_dispatch_wake(monitor_runtime.dispatch_wake_handle())?;
     state = state.open_app_server_log();
     let lifecycle_ports: Arc<dyn studio_runtime_services::agent_lifecycle_runtime::LifecyclePorts> =
         Arc::new(
@@ -829,7 +829,7 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
         runtime
             .preparation_resources()
             .ok_or("monitor preparation resources are unavailable")?,
-    );
+    )?;
     let lifecycle_ports: Arc<dyn studio_runtime_services::agent_lifecycle_runtime::LifecyclePorts> =
         Arc::new(
             studio_runtime_services::lifecycle_effects::ProductionLifecyclePorts::new(

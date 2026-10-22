@@ -11,7 +11,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
-use std::sync::{Arc, Mutex, RwLock, Weak};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::{Duration, Instant};
 use tokio::sync::Notify;
 
@@ -95,10 +95,9 @@ struct CommandTiming {
 pub(crate) struct RetainedMonitorPort {
     store: Arc<RuntimeStore>,
     session: Arc<dyn AccountSessionPort>,
-    preparation: RwLock<
-        Option<Arc<studio_runtime_services::account_worker::preparation::PreparationResources>>,
-    >,
-    dispatch_wake: RwLock<Option<Arc<Notify>>>,
+    preparation:
+        OnceLock<Arc<studio_runtime_services::account_worker::preparation::PreparationResources>>,
+    dispatch_wake: OnceLock<Arc<Notify>>,
     input_replies: Mutex<BTreeMap<String, InputReply>>,
     /// Monitor IDs whose managed start runs in its own task.
     starts: Arc<Mutex<BTreeSet<String>>>,
@@ -151,8 +150,8 @@ impl RetainedMonitorPort {
         Arc::new_cyclic(|this| Self {
             store,
             session,
-            preparation: RwLock::new(None),
-            dispatch_wake: RwLock::new(None),
+            preparation: OnceLock::new(),
+            dispatch_wake: OnceLock::new(),
             input_replies: Mutex::new(BTreeMap::new()),
             starts: Arc::new(Mutex::new(BTreeSet::new())),
             rule_checks: Arc::new(Mutex::new(BTreeSet::new())),
@@ -169,11 +168,7 @@ impl RetainedMonitorPort {
         lock(set).insert(id.to_owned()).then(|| InFlightId {
             set: Arc::clone(set),
             id: id.to_owned(),
-            wake: self
-                .dispatch_wake
-                .read()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .clone(),
+            wake: self.dispatch_wake.get().cloned(),
         })
     }
 
@@ -498,20 +493,14 @@ impl RetainedMonitorPort {
             .await
     }
 
-    pub(crate) fn set_dispatch_wake(&self, wake: Arc<Notify>) {
-        *self
-            .dispatch_wake
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(wake);
+    pub(crate) fn set_dispatch_wake(&self, wake: Arc<Notify>) -> Result<(), MonitorError> {
+        self.dispatch_wake
+            .set(wake)
+            .map_err(|_| MonitorError::Refused("Monitor dispatch wake is already installed"))
     }
 
     fn wake_dispatch(&self) {
-        if let Some(wake) = self
-            .dispatch_wake
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .as_ref()
-        {
+        if let Some(wake) = self.dispatch_wake.get() {
             wake.notify_one();
         }
     }
@@ -519,11 +508,10 @@ impl RetainedMonitorPort {
     pub(crate) fn set_preparation_resources(
         &self,
         resources: Arc<studio_runtime_services::account_worker::preparation::PreparationResources>,
-    ) {
-        *self
-            .preparation
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(resources);
+    ) -> Result<(), MonitorError> {
+        self.preparation.set(resources).map_err(|_| {
+            MonitorError::Refused("Monitor preparation resources are already installed")
+        })
     }
 
     fn request<'a>(
@@ -647,9 +635,8 @@ impl RetainedMonitorPort {
         };
         let resources = self
             .preparation
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
+            .get()
+            .cloned()
             .ok_or(MonitorError::Unavailable(
                 "account-worker/monitor-preparation",
             ))?;
@@ -865,9 +852,8 @@ impl RetainedMonitorPort {
         }
         let resources = self
             .preparation
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
+            .get()
+            .cloned()
             .ok_or_else(|| "account-worker/monitor-preparation is unavailable".to_owned())?;
         let prepared_action =
             studio_runtime_services::account_worker::preparation::prepare_monitor_command(
@@ -1266,10 +1252,7 @@ impl MonitorNative for RetainedMonitorPort {
 
 impl RuleMonitor for RetainedMonitorPort {
     fn available(&self) -> bool {
-        self.preparation
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .is_some()
+        self.preparation.get().is_some()
     }
     fn launch<'a>(
         &'a self,
@@ -1505,19 +1488,14 @@ impl MonitorPort for RetainedMonitorPort {
                 .ok_or(MonitorError::Refused("Monitor operation is unavailable"))?;
             let resources = self
                 .preparation
-                .read()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .clone()
+                .get()
+                .cloned()
                 .ok_or(MonitorError::Unavailable(
                     "account-worker/monitor-preparation",
                 ))?;
             let store = Arc::clone(&self.store);
             let session = Arc::clone(&self.session);
-            let dispatch_wake = self
-                .dispatch_wake
-                .read()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .clone();
+            let dispatch_wake = self.dispatch_wake.get().cloned();
             let id = id.to_owned();
             let command = command.to_owned();
             let actor = serde_json::to_value(actor)
@@ -1774,6 +1752,49 @@ mod tests {
 
     struct NoSession;
     impl AccountSessionPort for NoSession {}
+
+    #[tokio::test]
+    async fn startup_resources_refuse_replacement() {
+        use studio_runtime_services::account_worker::preparation::PreparationResources;
+        use studio_runtime_services::model_catalog::ModelCatalogService;
+
+        let root = tempfile::tempdir().expect("root");
+        let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
+        let port = RetainedMonitorPort::new(store, Arc::new(NoSession));
+        let wake = Arc::new(Notify::new());
+        port.set_dispatch_wake(Arc::clone(&wake))
+            .expect("install wake");
+        assert!(port.set_dispatch_wake(Arc::new(Notify::new())).is_err());
+        assert!(Arc::ptr_eq(
+            port.dispatch_wake.get().expect("installed"),
+            &wake
+        ));
+
+        let resources = Arc::new(
+            PreparationResources::bundled(
+                root.path().to_string_lossy().into_owned(),
+                ModelCatalogService::new(),
+            )
+            .expect("resources"),
+        );
+        port.set_preparation_resources(Arc::clone(&resources))
+            .expect("install resources");
+        let replacement = Arc::new(
+            PreparationResources::bundled(
+                root.path().to_string_lossy().into_owned(),
+                ModelCatalogService::new(),
+            )
+            .expect("replacement resources"),
+        );
+        assert!(port.set_preparation_resources(replacement).is_err());
+        assert!(Arc::ptr_eq(
+            port.preparation.get().expect("installed"),
+            &resources
+        ));
+        port.wake_dispatch();
+        wake.notified().await;
+        assert!(RuleMonitor::available(port.as_ref()));
+    }
 
     /// A provider whose command/exec answers only when released, and whose
     /// terminate answer the test selects.
@@ -2096,7 +2117,7 @@ mod tests {
                     Arc::clone(&store),
                     Arc::clone(&session) as Arc<dyn AccountSessionPort>,
                 );
-                port.set_preparation_resources(Arc::new(studio_runtime_services::account_worker::preparation::PreparationResources::bundled(root.path().to_string_lossy().into(),studio_runtime_services::model_catalog::ModelCatalogService::new()).expect("resources")));
+                port.set_preparation_resources(Arc::new(studio_runtime_services::account_worker::preparation::PreparationResources::bundled(root.path().to_string_lossy().into(),studio_runtime_services::model_catalog::ModelCatalogService::new()).expect("resources"))).expect("install resources");
                 if replay_config {
                     let error = port
                         .dispatch_monitor_start("watch", now)
@@ -2115,7 +2136,8 @@ mod tests {
                     Arc::clone(&port) as Arc<dyn MonitorPort>,
                     Arc::new(Notify::new()),
                 );
-                port.set_dispatch_wake(runtime.dispatch_wake_handle());
+                port.set_dispatch_wake(runtime.dispatch_wake_handle())
+                    .expect("install wake");
                 let wake = runtime.dispatch_wake_handle();
                 tokio::time::timeout(Duration::from_secs(10), async {
                     loop {
@@ -2213,7 +2235,8 @@ mod tests {
                 .expect("reattach");
             let port = RetainedMonitorPort::new(Arc::clone(&store), Arc::new(NoSession));
             let wake = Arc::new(Notify::new());
-            port.set_dispatch_wake(Arc::clone(&wake));
+            port.set_dispatch_wake(Arc::clone(&wake))
+                .expect("install wake");
             async fn receipt(store: &RuntimeStore, key: String) {
                 store.transaction(move |tx| {
                     for (id, result) in [

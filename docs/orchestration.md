@@ -207,6 +207,12 @@ Monitor projection updates follow this flow:
 3. Terminal monitors outside the window stay retired; owner deletion maintains the window.
 4. Source changes, projections, and tombstones commit in the same transaction.
 
+The retained monitor port installs its startup resources once:
+
+1. Startup installs the dispatch notifier and command preparation resources.
+2. A second installation returns an error and preserves the original resource.
+3. Monitor requests read those resources without taking a read lock.
+
 Agents use `orchestration_monitor` for all long commands, checks, and watchers.
 A settled turn with active owned commands stays in `waiting_on_monitor`. Each
 command queues one durable `monitor_exit` event when its outcome is decided,
