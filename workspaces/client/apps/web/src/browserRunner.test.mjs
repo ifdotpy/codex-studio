@@ -47,6 +47,10 @@ function assertIsolated(environment) {
   assert.notEqual(environment.XDG_CACHE_HOME, callerCache);
   assert.equal(environment.CODEX_HOME, join(environment.HOME, ".codex"));
   assert.equal(
+    environment.COREPACK_HOME,
+    join(callerCache, "node", "corepack"),
+  );
+  assert.equal(
     environment.CLAUDE_CONFIG_DIR,
     join(environment.HOME, ".claude"),
   );
@@ -65,13 +69,11 @@ test("runs Playwright in an isolated home with no interpreter probe", async () =
   });
 
   await import("../scripts/run-browser-tests.mjs");
-  // The pinned CLI runs directly; Corepack cannot see its cache in the isolated home.
   assert.deepEqual(
     calls.map((call) => call.command),
-    [process.execPath],
+    ["pnpm"],
   );
-  assert.match(calls[0].args[0], /@playwright[\\/]test[\\/]cli\.js$/);
-  assert.deepEqual(calls[0].args.slice(1), ["test", "--list"]);
+  assert.deepEqual(calls[0].args, ["exec", "playwright", "test", "--list"]);
   assert.equal(process.exitCode, 0);
 });
 
