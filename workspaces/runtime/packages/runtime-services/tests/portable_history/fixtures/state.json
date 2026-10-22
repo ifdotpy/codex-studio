@@ -1,0 +1,18 @@
+{
+  "agent": "29935609-1946-4400-894e-402340cce1a3",
+  "epoch": 0,
+  "settings": {
+    "model": "gpt-6-astra",
+    "effort": "medium",
+    "nativeEffort": null,
+    "fastMode": false,
+    "yoloMode": true,
+    "profileInstructions": "",
+    "role": "orchestrator",
+    "daybreakEnabled": false,
+    "cyberAccessProgram": "standard",
+    "provider": "claude",
+    "workerDefaults": { "model": "fixture-model" },
+    "claudeOptions": { "thinking": "enabled" }
+  }
+}
