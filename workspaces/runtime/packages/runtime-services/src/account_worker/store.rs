@@ -803,6 +803,7 @@ pub(super) async fn submitted(
     } = evidence;
     let account = account.to_owned();
     let blocked_intent = context.intent.clone();
+    let blocked_method = context.method.clone();
     let result = scheduler::lifecycle_transaction_with(store, move |tx| {
         if receipt(tx, &context.operation, "submitted")?.is_some() {
             return Ok(false);
@@ -913,12 +914,50 @@ pub(super) async fn submitted(
     .await;
     match result {
         Err(WorkerError::PreparationRefused(reason)) => {
+            let reason = if preparation::snapshot_changed(&reason) {
+                let reason = changed_start_reason(&blocked_method, &reason);
+                if return_changed_start(store, &blocked_intent, &reason).await? {
+                    return Ok(false);
+                }
+                reason
+            } else {
+                reason
+            };
             scheduler::settle_start_outcome(store, &blocked_intent, TurnStart::Blocked { reason })
                 .await?;
             Ok(false)
         }
         result => result,
     }
+}
+
+/// Return the input batch of a start whose commit was refused because the
+/// agent state changed after its preparation. The refused commit rolled back
+/// and its request was never written, so a new preparation from the current
+/// state cannot repeat a message; the caller wakes the queued agent. Returns
+/// false when the start cannot return (see
+/// `SchedulerRepository::return_unstarted_input`, bounded per run).
+async fn return_changed_start(
+    store: &RuntimeStore,
+    intent: &TurnIntent,
+    reason: &str,
+) -> Result<bool, WorkerError> {
+    let identity = intent.identity();
+    let reason = reason.to_owned();
+    Ok(scheduler::lifecycle_transaction(store, move |tx| {
+        SchedulerRepository::return_unstarted_input(tx, &identity, &reason)
+    })
+    .await?)
+}
+
+/// The stored error of a start whose `method` request was refused at its
+/// commit because the agent state changed while Studio prepared it. `refusal`
+/// is the refusal code with the names of the changed fields.
+fn changed_start_reason(method: &str, refusal: &str) -> String {
+    format!(
+        "Provider did not send {method}: the agent state changed while Studio prepared it \
+         ({refusal}). The input is kept."
+    )
 }
 #[derive(Default)]
 pub(super) struct SettledOutcome {

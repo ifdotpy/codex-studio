@@ -26,6 +26,7 @@ mod publication_off_path;
 mod retained;
 mod settled_streams;
 mod settled_turn_tasks;
+mod snapshot_changed;
 mod stale_disconnect_recovery;
 mod start_throttle;
 mod steer;

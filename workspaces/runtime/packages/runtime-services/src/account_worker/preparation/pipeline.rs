@@ -597,6 +597,61 @@ fn selected_inputs_current(tx: &Transaction<'_>, intent: &TurnIntent) -> Result<
 }
 /// Refusal of a ready snapshot whose workspace token no longer validates.
 pub(crate) const WORKSPACE_TOKEN_STALE: &str = "workspace-readiness/token-stale";
+/// Refusal code of a turn commit whose recompiled submission differs from the
+/// prepared one. See [`snapshot_changed`].
+const TURN_SNAPSHOT_CHANGED: &str = "turn-preparation/snapshot-changed";
+/// Refusal code of a commit whose thread snapshot differs from the prepared one.
+/// See [`snapshot_changed`].
+const THREAD_SNAPSHOT_CHANGED: &str = "thread-preparation/snapshot-changed";
+
+/// Whether `reason` refuses a commit only because the state its request was
+/// prepared from changed before the commit (for a lead, a child result or team
+/// change). The commit wrote nothing and the request was not sent, so the
+/// start may prepare again from the current state.
+pub(crate) fn snapshot_changed(reason: &str) -> bool {
+    [TURN_SNAPSHOT_CHANGED, THREAD_SNAPSHOT_CHANGED]
+        .iter()
+        .any(|code| {
+            reason
+                .strip_prefix(code)
+                .is_some_and(|rest| rest.is_empty() || rest.starts_with(": "))
+        })
+}
+
+/// The refusal `code`, followed by the names of the changed `fields`.
+fn snapshot_changed_refusal(code: &str, fields: &[String]) -> WorkerError {
+    refusal(if fields.is_empty() {
+        code.to_owned()
+    } else {
+        format!("{code}: {}", fields.join(", "))
+    })
+}
+
+/// Names of the top-level fields whose serialized values differ. It never
+/// returns values: they can hold stored text.
+fn changed_fields(
+    before: &impl serde::Serialize,
+    after: &impl serde::Serialize,
+) -> Result<Vec<String>, WorkerError> {
+    let snapshot = |_| invalid("preparation snapshot");
+    let (Value::Object(before), Value::Object(after)) = (
+        serde_json::to_value(before).map_err(snapshot)?,
+        serde_json::to_value(after).map_err(snapshot)?,
+    ) else {
+        return Ok(Vec::new());
+    };
+    Ok(before
+        .iter()
+        .filter(|(key, value)| after.get(*key) != Some(*value))
+        .map(|(key, _)| key.clone())
+        .chain(
+            after
+                .keys()
+                .filter(|key| !before.contains_key(*key))
+                .cloned(),
+        )
+        .collect())
+}
 /// A workspace operation or the actor's readiness defers the turn.
 pub(crate) const WORKSPACE_PENDING_REASON: &str = "workspace-readiness/pending";
 /// Pending reason of a turn that waits for a model catalog refresh.
@@ -2117,11 +2172,17 @@ pub(crate) fn commit(
         .map_err(|e| refusal(e.to_string()))?;
         if stage("turn_submission.commit.compare", || {
             Ok::<_, WorkerError>(
-                serde_json::to_value(recompiled).map_err(|_| invalid("compiler result"))?
+                serde_json::to_value(&recompiled).map_err(|_| invalid("compiler result"))?
                     != serde_json::to_value(compiled).map_err(|_| invalid("compiler result"))?,
             )
         })? {
-            return Err(refusal("turn-preparation/snapshot-changed".into()));
+            // Name the changed compiler inputs; a change seen only in the
+            // output (its events) names the output fields instead.
+            let mut fields = changed_fields(baseline, &current_submission)?;
+            if fields.is_empty() {
+                fields = changed_fields(compiled, &recompiled)?;
+            }
+            return Err(snapshot_changed_refusal(TURN_SNAPSHOT_CHANGED, &fields));
         }
     }
     let current = stage("turn_submission.commit.thread_snapshot", || {
@@ -2136,7 +2197,10 @@ pub(crate) fn commit(
         )
     })?;
     if current != guard.thread {
-        return Err(refusal("thread-preparation/snapshot-changed".into()));
+        return Err(snapshot_changed_refusal(
+            THREAD_SNAPSHOT_CHANGED,
+            &changed_fields(&guard.thread, &current)?,
+        ));
     }
     if context.compiled.is_some() {
         continuation_gate(&current, &context.intent.attempt_id)?;
