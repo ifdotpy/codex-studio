@@ -937,6 +937,36 @@ function fastTierCommands(root) {
       },
     },
     {
+      item: { name: "studio-runtime-services", ecosystem: "cargo" },
+      label: "agent decode ownership witness",
+      commands: [
+        [
+          "cargo",
+          [
+            "nextest",
+            "run",
+            "--locked",
+            "--no-tests",
+            "fail",
+            "--message-format",
+            "libtest-json-plus",
+            "-p",
+            "studio-runtime-services",
+            "--lib",
+            "-E",
+            nextestAnyOf([
+              "test(account_worker::tests::journal_publication::changed_agents_decode_once_through_final_publication)",
+            ]),
+          ],
+        ],
+      ],
+      options: {
+        selector: "journal final publication decode ownership",
+        reason:
+          "Check one decode and volatile merge per changed agent, no intermediate text round trip, no unrelated reads, and no replay work.",
+      },
+    },
+    {
       item: { name: "studio-runtime-store", ecosystem: "cargo" },
       label: "Rust state migration and SQL callback witnesses",
       commands: [
@@ -1025,6 +1055,18 @@ function fastTierCommands(root) {
             "--lib",
             "-E",
             nextestAnyOf([
+              "test(callback_blob_read_allows_an_unrelated_writer)",
+              "test(callback_blob_actor_epoch_change_refuses_settlement)",
+              "test(callback_blob_changed_result_refuses_settlement)",
+              "test(callback_blob_late_result_refuses_stale_recovery)",
+              "test(callback_blob_abandoned_response_does_not_replay)",
+              "test(callback_blob_recovery_write_precedes_referencing_commit)",
+              "test(callback_blob_missing_file_does_not_settle_recovery)",
+              "test(callback_blob_corrupt_file_does_not_settle_recovery)",
+              "test(callback_blob_symlink_does_not_settle_recovery)",
+              "test(callback_panel_uses_one_file_snapshot_per_callback)",
+              "test(callback_request_expires_a_terminal_inline_result)",
+              "test(callback_request_invalid_action_preserves_tool_refusal)",
               "test(account_worker::tests::callback_handoff::)",
               "test(account_worker::tests::auth_hold::held_start_wakes_nothing_until_an_account_change)",
               "test(account_worker::tests::callback_head_of_line)",
@@ -1203,6 +1245,7 @@ function fastTierCommands(root) {
               "test(child_result_release_consumes_)",
               "test(/^history_runtime::tests::slow_filesystem_metadata_does_not_block_a_store_observer$/)",
               "test(/^analytics_history_checkpoint::terminal_error_repair_is_idempotent_for_exact_and_ambiguous_notices$/)",
+              "test(/^analytics_history_schedule::tests::/)",
               "test(/^monitor_start_preparation::/)",
               "test(/^monitor_wake_guarantees::/)",
               "(not binary(integration) & (test(monitor_completion_) | test(reattached_exit_)))",

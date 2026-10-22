@@ -441,6 +441,21 @@ pub(super) async fn production_ports(
     } else {
         None
     };
+    let call = ToolCall::parse(input, context)?;
+    let panel_guidance = if matches!(call.kind, ToolKind::Context) && call.args["topic"] == "panel"
+    {
+        let resources = config.preparation.clone();
+        Some(
+            studio_runtime_store::blocking_pool::spawn_blocking(
+                "runtime-services/callback-panel-guidance",
+                move || services::PanelGuidance::read(resources.as_deref()),
+            )
+            .await
+            .map_err(|_| CallbackError::Unknown)?,
+        )
+    } else {
+        None
+    };
     Ok(services::ProductionPorts::new(
         services::ProductionPortsConfig {
             context: context.clone(),
@@ -451,6 +466,7 @@ pub(super) async fn production_ports(
             runtime_ports: config.runtime_ports,
             state_root: store.state_dir().to_path_buf(),
             preparation: config.preparation,
+            panel_guidance,
         },
     ))
 }
@@ -580,10 +596,43 @@ async fn run_claimed(
             .await
             .map_err(|error| Box::new(ClaimFailure { error, operation }));
     }
+    let payloads = async {
+        if matches!(call.kind, ToolKind::Request | ToolKind::Read) {
+            let read_context = context.clone();
+            let read_call = call.clone();
+            let rows = store
+                .read_async("runtime-services/callback-payload-rows", move |tx| {
+                    let snapshot = storage::snapshot(tx, &read_context)?;
+                    snapshot.active()?;
+                    let selection = services::payload_selection(
+                        tx,
+                        &snapshot,
+                        read_call.kind,
+                        &read_call.args,
+                    )?
+                    .ok_or(CallbackError::Dependency("tool-request/prepared-payloads"))?;
+                    tool_requests::prepared::Rows::read(tx, &read_context.agent, selection)
+                        .map_err(CallbackError::from)
+                })
+                .await?;
+            let root = store.state_dir().to_path_buf();
+            Ok(Some(
+                studio_runtime_store::blocking_pool::spawn_blocking(
+                    "runtime-services/callback-payload-io",
+                    move || rows.prepare(&root, now),
+                )
+                .await
+                .map_err(|_| CallbackError::Unknown)?
+                .map_err(CallbackError::from)?,
+            ))
+        } else {
+            Ok(None)
+        }
+    }
+    .await;
     let context_for_local = context.clone();
     let call_for_local = call.clone();
     let ports_for_local = Arc::clone(ports);
-    let state_root = store.state_dir().to_path_buf();
     store
         .transaction_with(move |tx| {
             let context = &context_for_local;
@@ -597,13 +646,19 @@ async fn run_claimed(
                 if let Some(saved) = records::get(tx, "runtime_tool_results", &call.id)? {
                     return Ok((saved, Vec::new()));
                 }
+                if let Ok(Some(payloads)) = &payloads {
+                    let selection =
+                        services::payload_selection(tx, &snapshot, call.kind, &call.args)?
+                            .ok_or(CallbackError::Dependency("tool-request/prepared-payloads"))?;
+                    payloads.revalidate(tx, &context.agent, selection)?;
+                }
                 execute_once(
                     tx,
                     &snapshot,
                     call,
                     &mut record,
                     now,
-                    &state_root,
+                    payloads,
                     ports_for_local.as_ref(),
                 )
             };
@@ -729,16 +784,26 @@ fn execute_once(
     call: &ToolCall,
     record: &mut Value,
     now: f64,
-    state_root: &std::path::Path,
+    payloads: Result<Option<tool_requests::prepared::Payloads>, CallbackError>,
     ports: &(impl crate::managed_host_tools::Ports<Prepared = ()> + ?Sized),
 ) -> Result<(Value, Vec<crate::managed_host_tools::WakeSignal>), CallbackError> {
     put(tx, record)?;
     // A refusal rolls back its effects before recording a not-applied receipt.
     // Store failures roll back claim, effect, result and reply together.
     tx.execute_batch("SAVEPOINT callback_service")?;
-    let effect = services::execute(
-        tx, snapshot, call.kind, &call.name, &call.args, &call.id, now, state_root, ports,
-    );
+    let effect = payloads.and_then(|payloads| {
+        services::execute(
+            tx,
+            snapshot,
+            call.kind,
+            &call.name,
+            &call.args,
+            &call.id,
+            now,
+            payloads.as_ref(),
+            ports,
+        )
+    });
     let (mut value, signals) = match effect {
         Ok(staged) => {
             tx.execute_batch("RELEASE callback_service")?;

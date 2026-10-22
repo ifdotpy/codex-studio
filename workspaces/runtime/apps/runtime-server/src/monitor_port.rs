@@ -2660,6 +2660,10 @@ mod tests {
             .clone()
     }
 
+    /// Scheduler turns the launch task needs between its settlement write and
+    /// dropping its claim; it awaits nothing in between.
+    const CLAIM_RELEASE_YIELDS: usize = 64;
+
     async fn settled_rule(store: &RuntimeStore) -> Value {
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
@@ -2705,6 +2709,14 @@ mod tests {
         let settled = settled_rule(&store).await;
         assert_eq!(settled["inFlight"], false);
         assert_eq!(settled["error"], "The command was not started");
+        // The launch task records the outcome, then drops its in-flight claim;
+        // the settled row can be visible before that drop.
+        for _ in 0..CLAIM_RELEASE_YIELDS {
+            if lock(&port.rule_checks).is_empty() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
         assert!(lock(&port.rule_checks).is_empty());
         assert_eq!(
             port.reconcile_rule_check(&check).await,

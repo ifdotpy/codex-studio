@@ -144,6 +144,7 @@ async fn try_send_args_with(
         runtime_ports: empty_runtime_ports(),
         state_root: store.state_dir().to_path_buf(),
         preparation: None,
+        panel_guidance: None,
     });
     let raw: String = store
         .test_reader()
@@ -199,6 +200,7 @@ async fn production_release_notifies_the_registry_after_a_committed_send() {
         runtime_ports: empty_runtime_ports(),
         state_root: store.state_dir().to_path_buf(),
         preparation: None,
+        panel_guidance: None,
     });
     let mut notified = Box::pin(wake.notified());
     assert!(futures_util::FutureExt::now_or_never(notified.as_mut()).is_none());
@@ -266,6 +268,7 @@ async fn monitor_cancel_release_notifies_only_the_monitor_dispatcher() {
         runtime_ports: empty_runtime_ports(),
         state_root: store.state_dir().to_path_buf(),
         preparation: None,
+        panel_guidance: None,
     });
     let mut event_notified = Box::pin(event_wake.notified());
     let mut monitor_notified = Box::pin(monitor_wake.notified());
@@ -514,6 +517,7 @@ async fn an_ancestor_cancels_a_descendant_watch_and_others_are_refused_by_name()
             runtime_ports: empty_runtime_ports(),
             state_root: store.state_dir().to_path_buf(),
             preparation: None,
+            panel_guidance: None,
         });
         let args = json!({"action":"cancel","monitor_id":monitor});
         let request = request.to_owned();
@@ -862,4 +866,407 @@ fn empty_runtime_ports() -> crate::provider_callbacks::tools::ManagedToolRuntime
         work_action: None,
         late: Default::default(),
     }
+}
+
+#[derive(Clone, Copy)]
+enum BlobRace {
+    Unchanged,
+    ActorEpoch,
+    ResultReference,
+    LateResult,
+    Abandoned,
+    RecoveryWrite,
+    InlineExpiry,
+    InvalidAction,
+    Missing,
+    Corrupt,
+    #[cfg(unix)]
+    Symlink,
+}
+
+async fn callback_blob_case(race: BlobRace) {
+    use crate::payload_blobs::{TestIoGate, TestIoOperation};
+    use crate::provider_callbacks::{CallbackDecision, dispatch};
+    use studio_runtime_providers::{Frame, Method, RequestFrame, RequestId};
+    const HANG_GUARD: std::time::Duration = std::time::Duration::from_secs(10);
+    const LARGE_RESULT_BYTES: usize = 128 * 1024;
+    let (directory, oracle) = template();
+    let store = Arc::new(RuntimeStore::open(Some(directory.path())).await.unwrap());
+    let actor = &oracle["agents"][0];
+    let context = CallbackContext {
+        agent: actor["id"].as_str().unwrap().into(),
+        account: "default".into(),
+        connection: "connection".into(),
+        generation: 7,
+        epoch: 3,
+        thread: "thread-0".into(),
+        turn: "turn-0".into(),
+    };
+    let frame = |id: &str, tool: &str, args: Value| {
+        Frame::Request(RequestFrame {
+            id: RequestId::String(id.into()),
+            method: Method::ItemToolCall,
+            params: Some(
+                json!({"threadId":context.thread,"turnId":context.turn,"callId":id,"tool":tool,"arguments":args}),
+            ),
+            fields: Default::default(),
+        })
+    };
+    dispatch(
+        Arc::clone(&store),
+        &context,
+        &frame("saved", "orchestration_request", json!({"action":"list"})),
+        10.0,
+    )
+    .await
+    .unwrap();
+    if matches!(race, BlobRace::InvalidAction) {
+        let reply = dispatch(
+            Arc::clone(&store),
+            &context,
+            &frame(
+                "invalid",
+                "orchestration_request",
+                json!({"action":"invalid"}),
+            ),
+            11.0,
+        )
+        .await;
+        let Ok(CallbackDecision::Answer(reply)) = reply else {
+            panic!("invalid arguments must retain a tool refusal: {reply:?}")
+        };
+        let studio_runtime_providers::ResponseBody::Result(body) = reply.body else {
+            panic!("tool refusal body")
+        };
+        assert_eq!(body["success"], false);
+        return;
+    }
+    let mut result = json!({"success":true,"contentItems":[{"type":"inputText","text":"x".repeat(LARGE_RESULT_BYTES)}]});
+    if matches!(race, BlobRace::InlineExpiry) {
+        result["serverOutputExpiresAt"] = json!(10.0);
+    }
+    let decision = crate::payload_blobs::decide_externalize_result(&result).unwrap();
+    crate::payload_blobs::write_blobs(directory.path(), &decision.writes).unwrap();
+    let hash = &decision.writes[0].sha256;
+    let blob_path = directory
+        .path()
+        .join("blobs")
+        .join(&hash[..2])
+        .join(&hash[2..4])
+        .join(hash);
+    let recover = !matches!(
+        race,
+        BlobRace::Unchanged
+            | BlobRace::ActorEpoch
+            | BlobRace::ResultReference
+            | BlobRace::Abandoned
+            | BlobRace::InlineExpiry
+    );
+    let inline_result = matches!(race, BlobRace::InlineExpiry).then(|| result.to_string());
+    store.transaction(move |tx| {
+        tx.execute("UPDATE runtime_tool_results SET result=?1 WHERE id='thread-0:saved'", [decision.record.to_string()])?;
+        if let Some(result) = inline_result { tx.execute("UPDATE runtime_tool_requests SET record=json_set(record,'$.result',json(?1)) WHERE id='thread-0:saved'", [result])?; }
+        if recover {
+            tx.execute("UPDATE runtime_tool_requests SET record=json_remove(json_set(record,'$.stage','running','$.outcome','pending'),'$.result','$.finished') WHERE id='thread-0:saved'", [])?;
+        }
+        Ok(())
+    }).await.unwrap();
+    if matches!(race, BlobRace::InlineExpiry) {
+        let reply = dispatch(
+            Arc::clone(&store),
+            &context,
+            &frame(
+                "read",
+                "orchestration_request",
+                json!({"action":"get","request_id":"thread-0:saved"}),
+            ),
+            11.0,
+        )
+        .await
+        .unwrap();
+        let CallbackDecision::Answer(reply) = reply else {
+            panic!("request answer")
+        };
+        let studio_runtime_providers::ResponseBody::Result(body) = reply.body else {
+            panic!("request body")
+        };
+        let record: Value =
+            serde_json::from_str(body["contentItems"][0]["text"].as_str().unwrap()).unwrap();
+        assert!(
+            record["result"]["contentItems"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("expired"),
+            "{record}"
+        );
+        return;
+    }
+    match race {
+        BlobRace::Missing => std::fs::remove_file(&blob_path).unwrap(),
+        BlobRace::Corrupt => std::fs::write(&blob_path, b"invalid blob").unwrap(),
+        #[cfg(unix)]
+        BlobRace::Symlink => {
+            let original = directory.path().join("blob-original");
+            std::fs::rename(&blob_path, &original).unwrap();
+            std::os::unix::fs::symlink(original, &blob_path).unwrap();
+        }
+        _ => {}
+    }
+    let fault = matches!(race, BlobRace::Missing | BlobRace::Corrupt);
+    #[cfg(unix)]
+    let fault = fault || matches!(race, BlobRace::Symlink);
+    if fault {
+        let reply = dispatch(
+            Arc::clone(&store),
+            &context,
+            &frame(
+                "read",
+                "orchestration_read",
+                json!({"output_ref":"thread-0:saved"}),
+            ),
+            11.0,
+        )
+        .await;
+        assert!(matches!(reply, Err(CallbackError::Stored(_))), "{reply:?}");
+        let row = records::get(
+            &store.test_reader().unwrap(),
+            "runtime_tool_requests",
+            "thread-0:saved",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            row["stage"], "running",
+            "bad payload must not settle recovery"
+        );
+        return;
+    }
+    let alternate = if matches!(race, BlobRace::ResultReference) {
+        let result = json!({"success":true,"contentItems":[{"type":"inputText","text":"y".repeat(LARGE_RESULT_BYTES)}]});
+        let decision = crate::payload_blobs::decide_externalize_result(&result).unwrap();
+        crate::payload_blobs::write_blobs(directory.path(), &decision.writes).unwrap();
+        Some(decision.record)
+    } else {
+        None
+    };
+    let (entered, arrival) = tokio::sync::oneshot::channel();
+    let (release, blocked) = std::sync::mpsc::channel();
+    let operation = if matches!(race, BlobRace::RecoveryWrite) {
+        TestIoOperation::Write
+    } else {
+        TestIoOperation::Read
+    };
+    crate::payload_blobs::test_io_gates()
+        .lock()
+        .unwrap()
+        .insert(
+            (directory.path().to_path_buf(), operation),
+            TestIoGate {
+                entered,
+                release: blocked,
+            },
+        );
+    let read = if matches!(race, BlobRace::RecoveryWrite) {
+        frame(
+            "read",
+            "orchestration_request",
+            json!({"action":"get","request_id":"thread-0:saved"}),
+        )
+    } else {
+        frame(
+            "read",
+            "orchestration_read",
+            json!({"output_ref":"thread-0:saved"}),
+        )
+    };
+    let read_store = Arc::clone(&store);
+    let read_task = tokio::spawn(async move { dispatch(read_store, &context, &read, 11.0).await });
+    tokio::time::timeout(HANG_GUARD, arrival)
+        .await
+        .unwrap()
+        .unwrap();
+    let writer_store = Arc::clone(&store);
+    let mut writer = tokio::spawn(async move {
+        writer_store.transaction(move |tx| {
+        match race {
+            BlobRace::ActorEpoch => { tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.epoch',4,'$.turnEpoch',4) WHERE json_extract(record,'$.threadId')='thread-0'", [])?; }
+            BlobRace::ResultReference => { tx.execute("UPDATE runtime_tool_results SET result=?1 WHERE id='thread-0:saved'", [alternate.unwrap().to_string()])?; }
+            BlobRace::LateResult => { tx.execute("UPDATE runtime_tool_results SET result=?1 WHERE id='thread-0:saved'", [json!({"success":true,"contentItems":[{"type":"inputText","text":"late saved result"}]}).to_string()])?; }
+            _ => { tx.execute("UPDATE runtime_tool_requests SET record=record WHERE id='thread-0:saved'", [])?; }
+        }
+        Ok(())
+    }).await
+    });
+    let completed = tokio::time::timeout(HANG_GUARD, &mut writer).await;
+    if matches!(race, BlobRace::Abandoned) {
+        read_task.abort();
+    }
+    release.send(()).unwrap();
+    assert!(
+        completed.is_ok(),
+        "a gated blob read held the Canvas writer"
+    );
+    completed.unwrap().unwrap().unwrap();
+    if matches!(race, BlobRace::Abandoned) {
+        assert!(read_task.await.unwrap_err().is_cancelled());
+    } else {
+        let reply = read_task.await.unwrap();
+        match race {
+            BlobRace::ActorEpoch | BlobRace::ResultReference | BlobRace::LateResult => {
+                assert!(matches!(reply, Err(CallbackError::Stale)), "{reply:?}")
+            }
+            _ => assert!(
+                matches!(reply, Ok(CallbackDecision::Answer(_))),
+                "{reply:?}"
+            ),
+        }
+    }
+    let reader = store.test_reader().unwrap();
+    if matches!(race, BlobRace::RecoveryWrite) {
+        let raw = records::get(&reader, "runtime_tool_requests", "thread-0:saved")
+            .unwrap()
+            .unwrap();
+        assert_eq!(raw["stage"], "completed");
+        assert!(raw.get("_payloadBlobs").is_some());
+        let resolved = crate::payload_blobs::resolve_record(directory.path(), &raw).unwrap();
+        assert_eq!(
+            resolved["result"], result,
+            "referenced payload was durable at commit"
+        );
+    }
+    if matches!(race, BlobRace::LateResult) {
+        let raw = records::get(&reader, "runtime_tool_requests", "thread-0:saved")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            raw["stage"], "running",
+            "stale preparation must not settle the target receipt"
+        );
+        assert_eq!(
+            records::get(&reader, "runtime_tool_results", "thread-0:saved")
+                .unwrap()
+                .unwrap()["contentItems"][0]["text"],
+            "late saved result"
+        );
+    }
+}
+
+#[tokio::test]
+async fn callback_blob_read_allows_an_unrelated_writer() {
+    callback_blob_case(BlobRace::Unchanged).await;
+}
+#[tokio::test]
+async fn callback_blob_actor_epoch_change_refuses_settlement() {
+    callback_blob_case(BlobRace::ActorEpoch).await;
+}
+#[tokio::test]
+async fn callback_blob_changed_result_refuses_settlement() {
+    callback_blob_case(BlobRace::ResultReference).await;
+}
+#[tokio::test]
+async fn callback_blob_late_result_refuses_stale_recovery() {
+    callback_blob_case(BlobRace::LateResult).await;
+}
+#[tokio::test]
+async fn callback_blob_abandoned_response_does_not_replay() {
+    callback_blob_case(BlobRace::Abandoned).await;
+}
+#[tokio::test]
+async fn callback_blob_recovery_write_precedes_referencing_commit() {
+    callback_blob_case(BlobRace::RecoveryWrite).await;
+}
+
+#[tokio::test]
+async fn callback_blob_missing_file_does_not_settle_recovery() {
+    callback_blob_case(BlobRace::Missing).await;
+}
+#[tokio::test]
+async fn callback_blob_corrupt_file_does_not_settle_recovery() {
+    callback_blob_case(BlobRace::Corrupt).await;
+}
+#[cfg(unix)]
+#[tokio::test]
+async fn callback_blob_symlink_does_not_settle_recovery() {
+    callback_blob_case(BlobRace::Symlink).await;
+}
+
+#[tokio::test]
+async fn callback_panel_uses_one_file_snapshot_per_callback() {
+    use crate::provider_callbacks::{
+        CallbackDecision, ManagedToolPortsConfig, dispatch_with_managed_tools,
+    };
+    use studio_runtime_providers::{Frame, Method, RequestFrame, RequestId, ResponseBody};
+    let (directory, oracle) = template();
+    let store = Arc::new(RuntimeStore::open(Some(directory.path())).await.unwrap());
+    let context = CallbackContext {
+        agent: oracle["agents"][0]["id"].as_str().unwrap().into(),
+        account: "default".into(),
+        connection: "connection".into(),
+        generation: 7,
+        epoch: 3,
+        thread: "thread-0".into(),
+        turn: "turn-0".into(),
+    };
+    let mut resources = crate::account_worker::preparation::PreparationResources::bundled(
+        String::new(),
+        crate::model_catalog::ModelCatalogService::new(),
+    )
+    .unwrap();
+    resources.skills_root = directory.path().join("skills");
+    let guide = resources.skills_root.join(context::PANEL_GUIDANCE);
+    std::fs::create_dir_all(guide.parent().unwrap()).unwrap();
+    let resources = Arc::new(resources);
+    for content in ["first panel snapshot", "second panel snapshot"] {
+        std::fs::write(&guide, content).unwrap();
+        let frame = Frame::Request(RequestFrame {
+            id: RequestId::String(content.into()),
+            method: Method::ItemToolCall,
+            params: Some(
+                json!({"threadId":context.thread,"turnId":context.turn,"callId":content,"tool":"orchestration_context","arguments":{"topic":"panel"}}),
+            ),
+            fields: Default::default(),
+        });
+        let input = Input::from_frame(&frame).unwrap().unwrap();
+        let ports = crate::provider_callbacks::tools::production_ports(
+            &store,
+            &context,
+            &input,
+            ManagedToolPortsConfig {
+                wake: Arc::new(tokio::sync::Notify::new()),
+                monitor_dispatch_wake: Arc::new(tokio::sync::Notify::new()),
+                runtime_ports: empty_runtime_ports(),
+                preparation: Some(Arc::clone(&resources)),
+            },
+        )
+        .await
+        .unwrap();
+        std::fs::remove_file(&guide).unwrap();
+        let reply = dispatch_with_managed_tools(
+            Arc::clone(&store),
+            &context,
+            &frame,
+            11.0,
+            Arc::new(ports),
+        )
+        .await
+        .unwrap();
+        let CallbackDecision::Answer(reply) = reply else {
+            panic!("panel reply")
+        };
+        let ResponseBody::Result(body) = reply.body else {
+            panic!("panel result")
+        };
+        assert_eq!(body["success"], true, "{body}");
+        assert!(body.to_string().contains(content), "{body}");
+    }
+}
+
+#[tokio::test]
+async fn callback_request_expires_a_terminal_inline_result() {
+    callback_blob_case(BlobRace::InlineExpiry).await;
+}
+
+#[tokio::test]
+async fn callback_request_invalid_action_preserves_tool_refusal() {
+    callback_blob_case(BlobRace::InvalidAction).await;
 }

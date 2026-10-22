@@ -237,16 +237,18 @@ fn project_changed_agents(
     generation: i64,
     server_id: Option<&str>,
 ) -> Result<(), StoreError> {
+    #[cfg(test)]
+    let _scope = studio_runtime_store::agent_volatile::publication_work::scope();
     let mut changes = crate::sync_policy::EntityChanges::default();
     for (rowid, row_id, raw) in crate::sync_policy::agents_changed_since(tx, generation)? {
         // The row just read is checked as AgentRepository reads it, and
         // publication reuses it instead of reading it again.
         #[cfg(test)]
         publication_work::validation(&row_id);
-        let error = match studio_runtime_store::decode_agent_value(tx, &row_id, &raw) {
-            Ok(_) => {
+        let error = match crate::sync_policy::CheckedAgentRow::decode(tx, rowid, &row_id, &raw) {
+            Ok(agent) => {
                 changes.agents.insert(row_id.clone());
-                changes.checked_agents.push((rowid, row_id, raw));
+                changes.checked_agents.push(agent);
                 continue;
             }
             Err(error) => error,

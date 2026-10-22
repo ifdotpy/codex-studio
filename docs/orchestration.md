@@ -1485,9 +1485,10 @@ change with both options. Cross-machine Claude cache reuse remains unverified.
 
 1. The account worker applies a notification batch or stream flush in the existing lifecycle transaction.
 2. Dispatch stores normalized agent state, transcript changes, stream state and exact replay receipts.
-3. The lifecycle owner validates each final changed agent row and publishes its canonical renderer view once.
-4. Source state, receipts and renderer views commit together; a projection failure rolls them all back.
-5. Replaying committed journal identities returns the saved outcomes without publishing agents again.
+3. The lifecycle owner decodes, merges volatile fields and validates each final changed agent row once.
+4. Liveness, context and the canonical renderer view borrow that checked value in source row order; only storage and wire boundaries serialize it.
+5. Source state, receipts and renderer views commit together; a projection failure rolls them all back.
+6. Replaying committed journal identities returns the saved outcomes without decoding or publishing agents again.
 
 ### Held child-result release
 
@@ -1497,3 +1498,24 @@ change with both options. Cross-machine Claude cache reuse remains unverified.
    read admission or completion consumes the hold; an elapsed hold wakes at once.
 3. A failed read keeps the existing registry retry delay. The next wake remains
    the earliest child-result release, archive, checkpoint, or worker retry.
+
+### History scheduling
+
+1. The history runner ingests the initial roster in store row order.
+2. Store notifications validate changed rows and update the retained ready order.
+3. Each step selects one checked actor, preserving active priority, the active quota,
+   checked-time order and store-row ties; it does not rescan the roster.
+4. Partial imports remain ready; current imports wait for a notification.
+5. Input failures wait for relevant input, budget or profile changes; deletion
+   and retirement remove the actor and its scheduling state.
+
+### Callback saved-output reads
+
+1. The callback claims its exact request identity before reading saved output.
+2. A pooled SQL reader snapshots the selected receipts, results and blob references.
+3. Outside SQL, the payload owner reads and verifies blobs and durably writes any recovered output.
+4. The Canvas writer rechecks the active actor, claim owner, selection and complete raw rows.
+5. Changed epochs, references or late results refuse stale settlement without repeating the operation.
+6. The existing receipt owner atomically commits recovery and the callback result using prepared payloads only.
+7. Panel guidance is read once before its callback transaction; the transaction still checks lead authority.
+8. A lost response uses the saved request identity and existing uncertain-outcome recovery.
