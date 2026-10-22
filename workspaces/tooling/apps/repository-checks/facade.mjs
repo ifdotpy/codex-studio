@@ -825,7 +825,7 @@ function operationsModulePreparation() {
     commands: [
       ["cargo", ["build", "--locked", "-p", "studio-operations-python"]],
     ],
-    options: { allowZeroTests: true },
+    options: { allowZeroTests: true, buildOnly: true },
   };
 }
 
