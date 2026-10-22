@@ -7,6 +7,110 @@ use studio_runtime_process::{
 use tokio::time::Instant;
 
 const PROVIDER_STDERR_COMPLETION_TIMEOUT: Duration = Duration::from_secs(10);
+/// Bounds real-process progress in the independent exit witness; unit: wall time.
+#[cfg(target_os = "linux")]
+const PROVIDER_EXIT_HANG_GUARD: Duration = Duration::from_secs(10);
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn killed_provider_is_reaped_with_full_journal_and_unobserved_write() {
+    use studio_runtime_process::{
+        OperationId, child_priority::ChildPriority, provider_direct::DirectProviderTaskFactory,
+    };
+    use studio_runtime_providers::{Frame, Method, RequestFrame, RequestId, ResponseBody};
+    use tokio::sync::oneshot;
+
+    let root = tempfile::tempdir().expect("isolated provider cwd");
+    // Emit one known reply and enough frames to block journal delivery, then
+    // stop reading or answering. This is a bounded fixture, not an output flood.
+    let script = format!(
+        "import signal; print('{{\"id\":7,\"result\":{{}}}}',flush=True);\nfor _ in range({LANE_CAPACITY}): print('{{\"method\":\"ready\"}}',flush=True)\nsignal.pause()"
+    );
+    let handle = ProviderHandle::for_account("exit-with-full-lanes");
+    let launch = ProviderLaunchSpec::new(
+        vec!["python3".into(), "-c".into(), script],
+        BTreeMap::from([("PATH".into(), "/usr/bin:/bin".into())]),
+        root.path().to_path_buf(),
+    );
+    let options = OpenOptions {
+        clock: SessionClock::default(),
+        expected_generation: Some(Generation(1)),
+        launch: launch.clone(),
+    };
+    let shutdown = Shutdown::default();
+    let factory = DirectProviderTaskFactory::new(ChildPriority::Normal, None)
+        .prepare(handle.clone(), options, &shutdown)
+        .expect("direct launch prepared");
+    let mut attachment = factory
+        .open(
+            handle,
+            OpenOptions {
+                clock: SessionClock::default(),
+                expected_generation: Some(Generation(1)),
+                launch,
+            },
+            shutdown,
+        )
+        .await
+        .expect("persistent provider starts");
+    let child_pid = pid(&attachment);
+    tokio::time::timeout(PROVIDER_EXIT_HANG_GUARD, async {
+        let frame = Frame::Request(RequestFrame {
+            id: RequestId::Number(7),
+            method: Method::ModelList,
+            params: None,
+            fields: Default::default(),
+        });
+        let (reply, written) = oneshot::channel();
+        let (_observation, observed) = oneshot::channel();
+        attachment
+            .commands
+            .send(AdapterCommand::Write {
+                write: PreparedWrite::new(OperationId("held-write".into()), &frame).expect("frame"),
+                reply,
+                observed,
+            })
+            .await
+            .expect("write admitted");
+        assert!(matches!(
+            written.await.expect("retained receipt"),
+            CommandReceipt::Written { .. }
+        ));
+        while attachment.journal.len() < LANE_CAPACITY {
+            tokio::task::yield_now().await;
+        }
+        let owned_pid = rustix::process::Pid::from_raw(child_pid as i32).expect("owned pid");
+        rustix::process::kill_process(owned_pid, rustix::process::Signal::KILL)
+            .expect("kill fixture");
+        // Do not consume the journal or acknowledge the write. Only the owner
+        // observing wait() can close status and finish this attachment.
+        assert!(attachment.status.changed().await.is_err());
+        let exit = attachment.completion().await;
+        assert!(matches!(
+            exit.result,
+            Err(AdapterError::Supervisor(
+                studio_runtime_process::SupervisorError::ConnectionLost
+            ))
+        ));
+        assert!(exit.cleanup_error.is_none());
+        assert_reaped(child_pid);
+        let known = attachment
+            .journal
+            .recv()
+            .await
+            .expect("known reply retained");
+        assert!(matches!(
+            known.payload,
+            JournalPayload::Frame(Frame::Response {
+                id: RequestId::Number(7),
+                body: ResponseBody::Result(_),
+                ..
+            })
+        ));
+    })
+    .await
+    .expect("exit independent of full lanes");
+}
 
 async fn child(script: &str) -> ProviderAttachment {
     StdioProviderTaskFactory {

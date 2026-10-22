@@ -178,6 +178,13 @@ have a native thread; existing sessions and transferred threads sync as well.
 Deleting an agent chat removes it from the user list until the next agent message. Its participants retain their history.
 Deletion stops the selected agent and its descendants and removes them from the interface.
 Stored transcripts and project files remain on disk. Deleted agents cannot resume from late events or message retries.
+Monitor projection updates follow this flow:
+
+1. Creation, status, owner, and creation-time changes select the canonical monitor window.
+2. Output, byte counts, and activity changes publish only that monitor's projection.
+3. Terminal monitors outside the window stay retired; owner deletion maintains the window.
+4. Source changes, projections, and tombstones commit in the same transaction.
+
 Agents use `orchestration_monitor` for all long commands, checks, and watchers.
 A settled turn with active owned commands stays in `waiting_on_monitor`. Each
 command queues one durable `monitor_exit` event when its outcome is decided,
@@ -398,6 +405,16 @@ retains the input reservation without submitting a turn. A late response resumes
 that exact batch only while its agent, account, connection and settings still match.
 Steer, Compact and Review also retain unknown outcomes after response timeouts.
 Late acknowledgements cannot resume a stopped agent or replace a newer turn.
+
+### Provider session lifetime
+
+1. The stdio child owner waits for process exit independently of stdin writes
+   and stdout journal delivery, including when either lane is blocked.
+2. Exit uses the existing bounded process-group cleanup and reap path, then
+   closes attachment status so the account session settles once.
+3. Known receipts and queued journal entries remain evidence; outstanding
+   requests keep their existing unknown or not-sent outcomes and are not resent.
+4. The account registry can start a new provider generation after session loss.
 
 ### Idle provider sessions
 
@@ -1343,3 +1360,23 @@ Studio does not upgrade a CLI during a move.
 Snapshot cache reuse depends on provider support and cache lifetime.
 The local Claude probe read 96.51% of input tokens from the cache after a folder
 change with both options. Cross-machine Claude cache reuse remains unverified.
+
+## Why an agent waits
+
+1. The admission owner records one [typed `startWait`](../workspaces/runtime/packages/runtime-schema/src/agent_progress.rs) for the current agent epoch.
+2. Account starts report a running-turn slot, burst pause deadline, or earlier start.
+3. Disk admission, model preparation, and provider startup report their own blockers.
+4. Other preparation dependencies report a dependency wait; input keeps its identity.
+5. Sync and `orchestration_status` use the same projection; `queued[].reasons` contains that wait object.
+6. The UI shows its reason. `until`, when present, is a retry deadline in Unix seconds.
+7. A claim clears gate waits; submission clears preparation waits. Other epochs and settled turns cannot display them.
+8. A dispatch handoff has no gate blocker yet; it is distinct from an owner holding work.
+
+### History observer lock boundaries
+
+1. The history watcher resolves filesystem metadata before coalescing events under
+   its pending-events mutex, so synchronous store observers can finish during a
+   slow metadata lookup.
+2. Legacy terminal-error repair reads its completion checkpoint before requesting
+   the Canvas writer. Pending repairs recheck the checkpoint inside the existing
+   analytics transaction before applying a page; completed repairs skip admission.

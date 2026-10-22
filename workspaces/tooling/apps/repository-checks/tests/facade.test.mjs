@@ -56,6 +56,11 @@ test("short and comprehensive recipes preserve their owned test boundaries", () 
     comprehensive.command.indexOf("studio-runtime-server") <
       comprehensive.command.indexOf("test-server.py"),
   );
+  assert.match(comprehensive.command, /['"]just['"] ['"]clippy-runtime['"]/);
+  assert.ok(
+    comprehensive.command.indexOf("build:bundle") <
+      comprehensive.command.indexOf("clippy-runtime"),
+  );
   assert.match(fast.command, /boundaries-check/);
   assert.match(
     fast.command,
@@ -70,12 +75,21 @@ test("short and comprehensive recipes preserve their owned test boundaries", () 
   assert.match(fast.command, /server_exec::tests::existing_start_fence_/);
   assert.match(fast.command, /account_worker::tests::callback_handoff::/);
   assert.match(fast.command, /callback_head_of_line/);
+  assert.match(fast.command, /sync_policy::tests::monitor_/);
   assert.match(
     fast.command,
     /active_barrier_holds_new_requests_but_not_callback_answers/,
   );
   assert.match(fast.command, /test:unit:fast/);
-  assert.equal((fast.command.match(/'--test' 'integration'/g) ?? []).length, 4);
+  assert.equal((fast.command.match(/'--test' 'integration'/g) ?? []).length, 5);
+  assert.match(
+    fast.command,
+    /killed_provider_is_reaped_with_full_journal_and_unobserved_write/,
+  );
+  assert.match(
+    fast.command,
+    /direct_child_sigkill_settles_unknown_without_resend/,
+  );
   assert.match(fast.command, /test\(\/\^sql_callback_guard::\/\)/);
   assert.match(fast.command, /test\(\/\^project_preparation::\/\)/);
   assert.match(fast.command, /test\(\/\^monitor_start_preparation::\/\)/);

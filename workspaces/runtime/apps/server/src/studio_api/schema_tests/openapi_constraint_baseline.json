@@ -233,6 +233,30 @@
       "candidate": "['{\"$ref\":\"#/components/schemas/CapacityRetryCause\"}']"
     },
     {
+      "pointer": "/components/schemas/AgentEntityStartWaitDto/properties/maxRunningTurns",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/AgentEntityStartWaitDto/properties/maxRunningTurns",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
+      "pointer": "/components/schemas/AgentEntityStartWaitDto/properties/runningTurns",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/AgentEntityStartWaitDto/properties/runningTurns",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
       "pointer": "/components/schemas/AgentEntityStartWaitDto/properties/until",
       "constraint": "@nullable",
       "baseline": "None",

@@ -884,7 +884,9 @@ impl SchedulerRepository {
         )?;
         agent.status = AgentStatus::Starting;
         // The start gate's wait record (`startWait`) ends with the claim.
-        agent.extra.remove("startWait");
+        agent
+            .extra
+            .remove(studio_runtime_schema::agent_progress::START_WAIT_FIELD);
         agent.extra.insert("inFlight".to_owned(), Value::Bool(true));
         agent.extra.insert("turnId".to_owned(), Value::Null);
         agent.extra.insert("turnEpoch".to_owned(), json!(epoch));

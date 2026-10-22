@@ -50,7 +50,8 @@ Route-manifest extraction uses the ordinary Rust test profile and the same
 second optimized HTTP test binary solely to print route metadata.
 
 `just test-comprehensive` preserves the previous broad local recipe: default
-server suites, server bridge, workspace Rust nextest, web type and unit checks,
+server suites, server bridge, workspace Clippy (`just clippy-runtime`), workspace
+Rust nextest, web type and unit checks,
 tooling tests, and browser smoke. Run it locally on the exact commit before
 every push to `main`; the short tier does not replace this gate. Hosted CI continues its
 comprehensive check composition, split across server and Rust partitions,
@@ -89,7 +90,7 @@ without maintaining a second suite inventory.
 | Tier or purpose          | What it runs                                                                                                                                                                          | Just command                               |
 | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------ |
 | Short local safety tier  | Selected fixture-backed server witnesses, the Rust state migration witness, API unit and type checks, tooling and shared contract guards                                              | `just test-fast`                           |
-| Comprehensive local tier | Previous broad default server run, bridge, Rust nextest, web type and unit checks, tooling tests, browser smoke                                                                       | `just test-comprehensive`                  |
+| Comprehensive local tier | Previous broad default server run, bridge, Rust Clippy (`just clippy-runtime`), Rust nextest, web type and unit checks, tooling tests, browser smoke                                  | `just test-comprehensive`                  |
 | Hosted CI comprehensive  | Server shards, Rust partitions, broad non-Rust checks, and browser smoke                                                                                                              | Existing parallel workflow                 |
 | Browser smoke            | Modal/popover focus and layering, mobile composer geometry, receipt pagination, schema-cache checkpoint retention, account settings smoke, transcript scroll position during a stream | `just test-browser-smoke`                  |
 | Heavy server             | All suites in the heavy server list                                                                                                                                                   | `just test-server-heavy`                   |
