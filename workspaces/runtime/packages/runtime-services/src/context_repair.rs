@@ -11,7 +11,6 @@ use crate::account_session_runtime::{
     AccountSessionError, AccountSessionPort, ConnectionScope, ProviderRequest, ProviderResponse,
     RequestCertainty,
 };
-use crate::historical_input_receipts::HistoricalBatch;
 use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -276,9 +275,7 @@ pub struct RecoverySnapshot {
     agent: AgentRecord,
     events: Vec<InputRow>,
     connection: ConnectionIdentity,
-    raw_batches: Vec<Value>,
     pending: Option<Vec<Value>>,
-    batches: Vec<HistoricalBatch>,
 }
 
 impl RecoverySnapshot {
@@ -287,11 +284,10 @@ impl RecoverySnapshot {
         agent: Value,
         events: Vec<Value>,
         connection: ConnectionIdentity,
-        raw_batches: Vec<Value>,
         pending: Option<Vec<Value>>,
     ) -> Result<Self, RepairError> {
         validate_agent(&agent)?;
-        if serde_json::to_vec(&(&agent, &events, &pending, &raw_batches))
+        if serde_json::to_vec(&(&agent, &events, &pending))
             .map_err(|_| RepairError::Invalid("capture"))?
             .len()
             > MAX_CAPTURE_BYTES
@@ -350,17 +346,8 @@ impl RecoverySnapshot {
         {
             return Err(RepairError::Invalid("pending"));
         }
-        let batches = raw_batches
-            .iter()
-            .map(|source| HistoricalBatch::from_records(&agent, source))
-            .collect::<Result<Vec<_>, _>>()?
-            .into_iter()
-            .flatten()
-            .collect();
         Ok(Self {
-            raw_batches,
             pending,
-            batches,
             raw_agent: agent,
             raw_events: events,
             agent: parsed,
@@ -544,7 +531,6 @@ pub struct NativeHistory {
     thread_id: String,
     turns: Vec<Value>,
     state: Option<String>,
-    operations: Vec<Value>,
 }
 impl NativeHistory {
     pub fn from_records(
@@ -552,11 +538,10 @@ impl NativeHistory {
         thread_id: String,
         turns: Vec<Value>,
         state: Option<String>,
-        operations: Vec<Value>,
     ) -> Result<Self, RepairError> {
         if thread_id.is_empty()
             || turns.len() > MAX_TURNS
-            || serde_json::to_vec(&(&turns, &operations))
+            || serde_json::to_vec(&turns)
                 .map_err(|_| RepairError::Invalid("history"))?
                 .len()
                 > MAX_CAPTURE_BYTES
@@ -599,7 +584,6 @@ impl NativeHistory {
             thread_id,
             turns,
             state,
-            operations,
         })
     }
     pub fn turns(&self) -> &[Value] {
@@ -669,18 +653,6 @@ pub fn decide(snapshot: &RecoverySnapshot, history: &NativeHistory) -> Vec<Input
                         .or_default()
                         .push(turn["id"].as_str().unwrap_or_default().to_owned());
                 }
-            }
-        }
-    }
-    for batch in &snapshot.batches {
-        for (id, turn) in batch.accepted(
-            &history.turns,
-            &history.operations,
-            &format!("account:{}", history.connection.account_key),
-        ) {
-            let turns = found.entry(id).or_default();
-            if !turns.contains(&turn) {
-                turns.push(turn);
             }
         }
     }
@@ -838,9 +810,8 @@ pub fn capture(
     )?;
     let (agent, events) = ContextRepairRepository::capture(tx, agent, MAX_CAPTURE_BYTES)?
         .ok_or(RepairError::MissingAgent)?;
-    let batches = ContextRepairRepository::batches(tx, &agent, &events, MAX_CAPTURE_BYTES)?;
     let pending = ContextRepairRepository::pending(tx, &agent, MAX_CAPTURE_BYTES)?;
-    RecoverySnapshot::from_records(agent, events, connection, batches, pending)
+    RecoverySnapshot::from_records(agent, events, connection, pending)
 }
 
 /// Transaction-owned consumer used by the account worker and deterministic tests.
@@ -1883,7 +1854,7 @@ mod unbounded_batch_tests {
     use super::*;
 
     #[tokio::test]
-    async fn recovery_batch_pending_and_legacy_receipts_keep_a_thousand_members() {
+    async fn recovery_pending_keeps_a_thousand_members() {
         let directory = tempfile::tempdir().expect("disposable state");
         let store = RuntimeStore::open(Some(directory.path()))
             .await
@@ -1892,52 +1863,19 @@ mod unbounded_batch_tests {
         let agent = json!({"id":"agent","rootId":"agent","epoch":1,"accountKey":"default","threadId":"thread",
             "provider":"codex","model":"fixture","yoloMode":true,"status":"waiting","autoWake":true,
             "startAttempt":{"id":"attempt","events":ids,"submitted":false}});
-        let source = store.transaction_with(move |tx| -> Result<_,RepairError> {
+        store.transaction_with(move |tx| -> Result<_,RepairError> {
             ContextRepairRepository::put_agent(tx,&agent)?;
-            let mut inputs = Vec::new();
             for id in agent["startAttempt"]["events"].as_array().expect("fixture ids") {
                 tx.execute("INSERT INTO runtime_events(id,agent,epoch,kind,text,status,created,turn_id,error) VALUES (?1,'agent',1,'user','hi','pending',1.0,NULL,NULL)",[id.as_str().expect("fixture id")])?;
                 let metadata = json!({"transcriptItemId":"agent:e0","modelEventProjection":1,"contextManifest":{"epoch":["thread",0],"sequence":1,"versions":{}}});
                 tx.execute("INSERT INTO runtime_event_meta(id,record) VALUES (?1,?2)",rusqlite::params![id.as_str(),metadata.to_string()])?;
-                inputs.push(json!({"id":id,"text":"hi","at":1.0,"kind":"user"}));
             }
             let pending = ContextRepairRepository::pending(tx,&agent,MAX_CAPTURE_BYTES)?.expect("all pending identities");
             assert_eq!(pending.len(),1000);
             assert_eq!(pending.iter().map(|row|row["id"].clone()).collect::<Vec<_>>(),agent["startAttempt"]["events"].as_array().expect("ids").clone());
             assert!(ContextRepairRepository::pending(tx,&agent,1).is_err(),"byte bound stays enforced");
-            tx.execute("UPDATE runtime_events SET status='uncertain' WHERE agent='agent'",[])?;
-            let item = json!({"id":"agent:e0","role":"user","text":"batch","inputs":inputs,"assets":[]});
-            tx.execute("INSERT INTO runtime_items(id,agent,created,record) VALUES ('agent:e0','agent',1.0,?1)",[item.to_string()])?;
-            let events = vec![json!({"metadata":{"transcriptItemId":"agent:e0"}})];
-            let mut batches = ContextRepairRepository::batches(tx,&agent,&events,MAX_CAPTURE_BYTES)?;
-            assert_eq!(batches.len(),1);
-            assert!(ContextRepairRepository::batches(tx,&agent,&events,1).is_err(),"history byte bound stays enforced");
-            Ok((agent,batches.remove(0)))
-        }).await.expect("capture pending and legacy inputs");
-        let batch = HistoricalBatch::from_records(&source.0, &source.1)
-            .expect("valid source")
-            .expect("all batch members");
-        let turns = vec![
-            json!({"id":"turn","startOutcome":"accepted","clientUserMessageId":"e0",
-            "items":[{"id":"native-item","type":"userMessage","clientId":"e0","content":batch.params()["input"]}]}),
-        ];
-        let mut operations = vec![
-            json!({"handle":"account:default","operation_id":"turn:agent:e0:attempt:00000000-0000-4000-8000-000000000001",
-            "digest":batch.digest(),"native_id":1,"accepted":2.0}),
-        ];
-        let accepted = batch.accepted(&turns, &operations, "account:default");
-        assert_eq!(accepted.len(), ids.len());
-        assert!(
-            ids.iter()
-                .all(|id| accepted.get(id).is_some_and(|turn| turn == "turn"))
-        );
-        operations[0]["digest"] = json!("different-input");
-        assert!(
-            batch
-                .accepted(&turns, &operations, "account:default")
-                .is_empty(),
-            "exact receipt digest is still required"
-        );
+            Ok(())
+        }).await.expect("capture pending inputs");
     }
 
     #[tokio::test]
@@ -1976,7 +1914,6 @@ mod unbounded_batch_tests {
             "thread".into(),
             turns.clone(),
             Some("idle".into()),
-            vec![],
         )
         .expect("history");
         let decisions = decide(&captured, &history);
@@ -1996,7 +1933,6 @@ mod unbounded_batch_tests {
             "thread".into(),
             ambiguous,
             Some("idle".into()),
-            vec![],
         )
         .expect("ambiguous history");
         assert!(
@@ -2009,7 +1945,6 @@ mod unbounded_batch_tests {
                 captured.raw_agent.clone(),
                 oversized,
                 captured.connection.clone(),
-                vec![],
                 None
             )
             .is_err()

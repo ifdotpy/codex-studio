@@ -1065,40 +1065,34 @@ async fn provider_callbacks_python_visible_id_resolution() {
     }
 }
 
-async fn provider_callbacks_existing_python_card_uses_stored_identity() {
+#[tokio::test]
+async fn provider_callbacks_unjournaled_card_is_refused_without_writes() {
     let (_dir, store, context) = fixture().await;
     let card = &template().value["legacyCard"];
+    let id = card["id"].as_str().unwrap();
+    let read = || {
+        store
+            .test_reader()
+            .unwrap()
+            .query_row(
+                "SELECT record FROM runtime_requests WHERE id=?1",
+                [id],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap()
+    };
+    let before = read();
     let result = answer(
         &store,
         &context,
-        card["id"].as_str().unwrap(),
+        id,
         AnswerAuthority::User,
         &json!({"decision":"decline"}),
         20.0,
     )
-    .await
-    .unwrap();
-    assert_eq!(
-        result.identity.rpc_id,
-        serde_json::from_value(card["rpcId"].clone()).unwrap()
-    );
-    assert_eq!(body(&result), &json!({"decision":"decline"}));
-    delivery(&store, &result.identity, DeliveryOutcome::Submitted)
-        .await
-        .unwrap();
-    delivery(&store, &result.identity, DeliveryOutcome::Written)
-        .await
-        .unwrap();
-    let status: String = store
-        .test_reader()
-        .unwrap()
-        .query_row(
-            "SELECT json_extract(record,'$.status') FROM runtime_requests WHERE id=?1",
-            [card["id"].as_str().unwrap()],
-            |r| r.get(0),
-        )
-        .unwrap();
-    assert_eq!(status, "answered");
+    .await;
+    assert!(matches!(result, Err(CallbackError::Stale)));
+    assert_eq!(read(), before);
 }
 
 #[path = "provider_callbacks/review.rs"]
@@ -1154,9 +1148,6 @@ async fn provider_callbacks_corpus() {
         }),
         ("python_visible_id_resolution", || {
             Box::pin(provider_callbacks_python_visible_id_resolution())
-        }),
-        ("existing_python_card_uses_stored_identity", || {
-            Box::pin(provider_callbacks_existing_python_card_uses_stored_identity())
         }),
         ("review regressions", || {
             Box::pin(review_regressions::run_corpus())
