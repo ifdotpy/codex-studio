@@ -437,18 +437,28 @@ struct BrokerCallbackReplyPort {
     broker: AccountSessionBroker,
 }
 
+impl BrokerCallbackReplyPort {
+    fn session(
+        &self,
+        account: &str,
+    ) -> Option<studio_runtime_services::account_worker::retained::RetainedSessionPort> {
+        self.broker
+            .sessions
+            .read()
+            .ok()
+            .and_then(|sessions| sessions.get(account).cloned())
+    }
+}
+
 impl studio_runtime_services::callback_runtime::CallbackReplyPort for BrokerCallbackReplyPort {
+    /// The session must be the provider process that sent the callback; see
+    /// `RetainedSessionPort::serves_callback`.
     fn has_live_session(
         &self,
         context: &studio_runtime_services::provider_callbacks::CallbackContext,
     ) -> bool {
-        self.broker
-            .live_scope(&context.account)
-            .is_some_and(|scope| {
-                scope.account == context.account
-                    && scope.connection == context.connection
-                    && scope.generation == context.generation
-            })
+        self.session(&context.account)
+            .is_some_and(|session| session.serves_callback(context))
     }
 
     fn deliver<'a>(
@@ -457,61 +467,14 @@ impl studio_runtime_services::callback_runtime::CallbackReplyPort for BrokerCall
         deadline: Duration,
     ) -> studio_runtime_services::callback_runtime::CallbackReplyFuture<'a> {
         Box::pin(async move {
-            use studio_runtime_services::{
-                account_worker::retained::PortError,
-                callback_runtime::{ReplyOutcome, ReplyReceipt},
-                provider_session_task::WriteOutcome,
-                recovery_history::ConnectionScope,
-            };
-
             let identity = reply.identity.clone();
-            let context = &identity.context;
-            let expected = ConnectionScope {
-                account: context.account.clone(),
-                connection: context.connection.clone(),
-                generation: context.generation,
-            };
-            let session = self
-                .broker
-                .sessions
-                .read()
-                .ok()
-                .and_then(|sessions| sessions.get(&context.account).cloned());
-            let Some(session) =
-                session.filter(|session| session.is_live() && session.scope() == &expected)
-            else {
-                return Ok(ReplyReceipt {
+            let Some(session) = self.session(&identity.context.account) else {
+                return Ok(studio_runtime_services::callback_runtime::ReplyReceipt {
                     identity,
-                    outcome: ReplyOutcome::NotSent,
+                    outcome: studio_runtime_services::callback_runtime::ReplyOutcome::NotSent,
                 });
             };
-            let operation = identity.operation_id();
-            let frame = reply.frame();
-            let until = std::time::Instant::now() + deadline;
-            let outcome = session
-                .submit_committed_frame(&expected, operation, frame, until)
-                .await;
-            let outcome = match outcome {
-                Ok(WriteOutcome::Written) => ReplyOutcome::Written,
-                Ok(WriteOutcome::NotSent) => ReplyOutcome::NotSent,
-                Ok(WriteOutcome::Unknown) | Err(PortError::Unknown) => ReplyOutcome::Unknown,
-                Err(PortError::Identity | PortError::NotSent | PortError::Deadline) => {
-                    ReplyOutcome::NotSent
-                }
-                Err(PortError::Capacity) => {
-                    return Err(
-                        studio_runtime_services::provider_callbacks::CallbackError::Invalid(
-                            "Callback response queue is full",
-                        ),
-                    );
-                }
-                Err(_) => {
-                    return Err(
-                        studio_runtime_services::provider_callbacks::CallbackError::Unknown,
-                    );
-                }
-            };
-            Ok(ReplyReceipt { identity, outcome })
+            session.deliver_callback_reply(reply, deadline).await
         })
     }
 }

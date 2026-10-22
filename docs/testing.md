@@ -124,7 +124,11 @@ acknowledgement and answer write (no lost answer, no repeated answer), retiremen
 of an ended generation's records, and an unanswered request followed by more
 events than the session's unsettled bound while another turn and a new thread
 complete. The running-handler and queued-answer limits are named constants of
-the account worker; reaching them delays only the start of a handler.
+the account worker; reaching them delays only the start of a handler. The native
+request witnesses check that an approval or question of a lead waits as a card,
+that the user's answer reaches the provider once (also after a worker reattach),
+that a worker's question gets the orchestrator refusal, and that a card of an
+ended provider generation expires.
 
 Project preparation witnesses in the [short-tier selection](../workspaces/tooling/apps/repository-checks/facade.mjs)
 exercise agent execution changes between preparation and a project write, refuse
