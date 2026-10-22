@@ -255,3 +255,30 @@ const missingDraftTimestamp: DraftContract = {
 };
 void draftContract;
 void missingDraftTimestamp;
+
+// Both Markdown transports consume the serialized Rust parser output.
+import type {
+  MarkdownBlock,
+  MarkdownNode,
+  MarkdownTree,
+} from "./generated/rustOwned";
+const markdownNode: MarkdownNode = {
+  text: "Hello.",
+  sentences: [{ text: "Hello.", index: 0 }],
+};
+const markdownTree: MarkdownTree = { nodes: [markdownNode], length: 6 };
+const markdownBlocks: MarkdownBlock[] = [
+  markdownTree,
+  { kind: "mermaid", source: "graph TD; A-->B" },
+];
+// @ts-expect-error Rich Markdown blocks have a closed set of kinds.
+const invalidMarkdownBlock: MarkdownBlock = { kind: "script", source: "run()" };
+const markdownParserContract: Assert<
+  Equal<
+    Awaited<ReturnType<typeof import("./wasm/client").parseMarkdown>>,
+    MarkdownBlock[]
+  >
+> = true;
+void markdownBlocks;
+void invalidMarkdownBlock;
+void markdownParserContract;

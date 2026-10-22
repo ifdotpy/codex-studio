@@ -610,9 +610,15 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
             + "\n",
     });
     if with_api_types {
+        let mut generator = schemars::generate::SchemaSettings::draft2020_12()
+            .for_serialize()
+            .with(|settings| settings.definitions_path = "/components/schemas".into())
+            .into_generator();
+        generator.subschema_for::<studio_client_domain::drafts::DraftVersion>();
+        generator.subschema_for::<studio_client_domain::markdown::MarkdownBlock>();
         let document = serde_json::json!({
             "openapi":"3.1.0", "info":{"title":"Rust-owned contracts","version":"1"},
-            "paths":{}, "components":{"schemas":{"DraftVersion":draft_schema}}
+            "paths":{}, "components":{"schemas":generator.take_definitions(true)}
         });
         rendered.push(Rendered {
             path: web("rustOwned.ts"),
@@ -648,6 +654,34 @@ pub fn repository_root() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn markdown_output_matches_rust_owned_schema() {
+        use studio_client_domain::{markdown::MarkdownBlock, protocol::Request};
+        let schema = schemars::generate::SchemaSettings::draft2020_12()
+            .for_serialize()
+            .into_generator()
+            .into_root_schema_for::<Vec<MarkdownBlock>>();
+        let validator =
+            jsonschema::validator_for(schema.as_value()).expect("Markdown schema compiles");
+        for text in [
+            "# Hello 🦀. Next **sentence**.",
+            "```html\n<b>inert</b>\n```",
+            "```mermaid\ngraph TD; A-->B\n```",
+        ] {
+            let response = studio_client_domain::markdown::dispatch(&Request {
+                id: "markdown-contract".into(),
+                method: "markdown.parse".into(),
+                params: serde_json::json!({"text":text,"streaming":false}),
+            });
+            assert!(response.error.is_none());
+            assert!(validator.is_valid(&response.result.expect("serialized native output")));
+        }
+        assert!(!validator.is_valid(&serde_json::json!([{"kind":"script","source":"run()"}])));
+        assert!(!validator.is_valid(
+            &serde_json::json!([{"nodes":[{"sentences":[{"text":"x","index":"bad"}]}],"length":1}])
+        ));
+    }
 
     #[test]
     fn generated_contracts_do_not_recreate_the_removed_backend() {

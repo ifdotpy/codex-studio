@@ -7,7 +7,6 @@ export type paths = Record<string, never>;
 export type webhooks = Record<string, never>;
 export interface components {
   schemas: {
-    /** DraftVersion */
     DraftVersion: {
       alternatives?: string[];
       device: string;
@@ -25,6 +24,33 @@ export interface components {
     } & {
       [key: string]: unknown;
     };
+    MarkdownBlock:
+      | components["schemas"]["MarkdownTree"]
+      | {
+          kind: components["schemas"]["MarkdownKind"];
+          source: string;
+        };
+    /** @enum {string} */
+    MarkdownKind: "html" | "mermaid";
+    MarkdownNode: {
+      children?: components["schemas"]["MarkdownNode"][];
+      props?: {
+        [key: string]: string;
+      };
+      sentences?: components["schemas"]["MarkdownSentence"][];
+      tag?: string;
+      text?: string;
+    };
+    MarkdownSentence: {
+      /** Format: uint */
+      index: number;
+      text: string;
+    };
+    MarkdownTree: {
+      /** Format: uint */
+      length: number;
+      nodes: components["schemas"]["MarkdownNode"][];
+    };
   };
   responses: never;
   parameters: never;
@@ -36,3 +62,8 @@ export type $defs = Record<string, never>;
 export type operations = Record<string, never>;
 
 export type DraftVersion = components["schemas"]["DraftVersion"];
+export type MarkdownBlock = components["schemas"]["MarkdownBlock"];
+export type MarkdownKind = components["schemas"]["MarkdownKind"];
+export type MarkdownNode = components["schemas"]["MarkdownNode"];
+export type MarkdownSentence = components["schemas"]["MarkdownSentence"];
+export type MarkdownTree = components["schemas"]["MarkdownTree"];

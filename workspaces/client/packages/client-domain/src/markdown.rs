@@ -4,13 +4,13 @@ use html5ever::tokenizer::{
     BufferQueue, StartTag, Token, TokenSink, TokenSinkResult, Tokenizer, TokenizerOpts,
 };
 use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag};
+use schemars::JsonSchema;
 use serde::Serialize;
-use serde_json::{Value, json};
 use std::{cell::RefCell, collections::BTreeMap};
 use unicode_segmentation::UnicodeSegmentation;
 
-#[derive(Default, Serialize, Debug)]
-struct Node {
+#[derive(Default, Serialize, Debug, JsonSchema)]
+pub struct MarkdownNode {
     #[serde(skip_serializing_if = "String::is_empty")]
     tag: String,
     #[serde(skip_serializing_if = "String::is_empty")]
@@ -18,19 +18,45 @@ struct Node {
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     props: BTreeMap<String, String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    children: Vec<Node>,
+    children: Vec<MarkdownNode>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    sentences: Vec<Value>,
+    sentences: Vec<MarkdownSentence>,
 }
+#[derive(Serialize, Debug, JsonSchema)]
+struct MarkdownSentence {
+    text: String,
+    index: usize,
+}
+
+#[derive(Serialize, Debug, JsonSchema)]
+pub struct MarkdownTree {
+    nodes: Vec<MarkdownNode>,
+    length: usize,
+}
+
+#[derive(Serialize, Debug, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum MarkdownKind {
+    Html,
+    Mermaid,
+}
+
+#[derive(Serialize, Debug, JsonSchema)]
+#[serde(untagged)]
+pub enum MarkdownBlock {
+    Tree(MarkdownTree),
+    Rich { kind: MarkdownKind, source: String },
+}
+
 #[derive(Default)]
 struct Tree {
-    stack: Vec<Node>,
+    stack: Vec<MarkdownNode>,
     nodes: usize,
     error: Option<String>,
     blocked: Vec<String>,
 }
 impl Tree {
-    fn append(&mut self, node: Node) {
+    fn append(&mut self, node: MarkdownNode) {
         self.nodes += 1;
         if self.nodes > 100_000 {
             self.error = Some("This Markdown document has too many elements.".into());
@@ -186,9 +212,9 @@ impl TokenSink for Sink {
             return TokenSinkResult::Continue;
         }
         match token {
-            Token::CharacterTokens(text) => tree.append(Node {
+            Token::CharacterTokens(text) => tree.append(MarkdownNode {
                 text: text.to_string(),
-                ..Node::default()
+                ..MarkdownNode::default()
             }),
             Token::TagToken(tag) => {
                 let name = tag.name.as_ref();
@@ -197,9 +223,9 @@ impl TokenSink for Sink {
                     return TokenSinkResult::Continue;
                 }
                 if tag.kind == StartTag {
-                    let mut node = Node {
+                    let mut node = MarkdownNode {
                         tag: name.to_owned(),
-                        ..Node::default()
+                        ..MarkdownNode::default()
                     };
                     for attr in tag.attrs {
                         if !attr.name.ns.is_empty() {
@@ -248,7 +274,7 @@ impl TokenSink for Sink {
         TokenSinkResult::Continue
     }
 }
-fn segments(node: &mut Node, offset: &mut usize, literal: bool) {
+fn segments(node: &mut MarkdownNode, offset: &mut usize, literal: bool) {
     let literal = literal || matches!(node.tag.as_str(), "pre" | "code");
     if !node.text.is_empty() {
         if !literal && !node.text.trim().is_empty() {
@@ -258,7 +284,10 @@ fn segments(node: &mut Node, offset: &mut usize, literal: bool) {
                 .text
                 .split_sentence_bounds()
                 .map(|part| {
-                    let item = json!({"text":part,"index":start+local});
+                    let item = MarkdownSentence {
+                        text: part.into(),
+                        index: start + local,
+                    };
                     local += part.encode_utf16().count();
                     item
                 })
@@ -270,9 +299,9 @@ fn segments(node: &mut Node, offset: &mut usize, literal: bool) {
         segments(child, offset, literal);
     }
 }
-fn tree(html: String) -> Result<Value, String> {
+fn tree(html: String) -> Result<MarkdownTree, String> {
     let sink = Sink(RefCell::new(Tree {
-        stack: vec![Node::default()],
+        stack: vec![MarkdownNode::default()],
         ..Tree::default()
     }));
     let tokenizer = Tokenizer::new(sink, TokenizerOpts::default());
@@ -290,7 +319,10 @@ fn tree(html: String) -> Result<Value, String> {
     let mut root = tree.stack.pop().unwrap();
     let mut length = 0;
     segments(&mut root, &mut length, false);
-    Ok(json!({"nodes":root.children,"length":length}))
+    Ok(MarkdownTree {
+        nodes: root.children,
+        length,
+    })
 }
 fn closed_fence(raw: &str) -> bool {
     let lines: Vec<_> = raw.trim_end().lines().collect();
@@ -305,7 +337,7 @@ fn closed_fence(raw: &str) -> bool {
     let count = first.chars().take_while(|c| *c == ch).count();
     count >= 3 && last.len() >= count && last.chars().all(|c| c == ch)
 }
-pub fn parse(text: &str, streaming: bool) -> Result<Value, String> {
+pub fn parse(text: &str, streaming: bool) -> Result<Vec<MarkdownBlock>, String> {
     if text.len() > 8 * 1024 * 1024 {
         return Err("This Markdown document exceeds 8 MiB.".into());
     }
@@ -317,7 +349,7 @@ pub fn parse(text: &str, streaming: bool) -> Result<Value, String> {
             | Options::ENABLE_GFM,
     )
     .into_offset_iter();
-    let mut blocks: Vec<Value> = vec![];
+    let mut blocks: Vec<MarkdownBlock> = vec![];
     let mut group = vec![];
     let mut depth = 0usize;
     let mut start = 0;
@@ -345,9 +377,13 @@ pub fn parse(text: &str, streaming: bool) -> Result<Value, String> {
                     "html" | "mermaid"
                 ) && closed_fence(&text[start..end]) =>
             {
-                Some(lang.trim().to_ascii_lowercase())
+                Some(if lang.trim().eq_ignore_ascii_case("html") {
+                    MarkdownKind::Html
+                } else {
+                    MarkdownKind::Mermaid
+                })
             }
-            Some(Event::Start(Tag::HtmlBlock)) if !streaming => Some("html".into()),
+            Some(Event::Start(Tag::HtmlBlock)) if !streaming => Some(MarkdownKind::Html),
             _ => None,
         };
         if let Some(kind) = kind {
@@ -358,25 +394,26 @@ pub fn parse(text: &str, streaming: bool) -> Result<Value, String> {
                     _ => None,
                 })
                 .collect::<String>();
-            if raw_html && previous_raw_html {
-                let previous = blocks.last_mut().unwrap();
-                previous["source"] = json!(format!(
-                    "{}\n{}",
-                    previous["source"].as_str().unwrap(),
-                    source
-                ));
+            if raw_html
+                && previous_raw_html
+                && let Some(MarkdownBlock::Rich {
+                    source: previous, ..
+                }) = blocks.last_mut()
+            {
+                previous.push('\n');
+                previous.push_str(&source);
             } else {
-                blocks.push(json!({"kind":kind,"source":source}));
+                blocks.push(MarkdownBlock::Rich { kind, source });
             }
         } else {
             let mut html = String::new();
             pulldown_cmark::html::push_html(&mut html, group.drain(..));
-            blocks.push(tree(html)?);
+            blocks.push(MarkdownBlock::Tree(tree(html)?));
         }
         previous_raw_html = raw_html;
         group.clear();
     }
-    Ok(json!(blocks))
+    Ok(blocks)
 }
 pub fn dispatch(request: &Request) -> Response {
     let result = request.params["text"]
@@ -384,13 +421,26 @@ pub fn dispatch(request: &Request) -> Response {
         .ok_or_else(|| "Markdown text is required.".to_owned())
         .and_then(|text| parse(text, request.params["streaming"].as_bool().unwrap_or(false)));
     match result {
-        Ok(value) => Response::success(request.id.clone(), value),
+        Ok(value) => Response::success(
+            request.id.clone(),
+            serde_json::to_value(value)
+                .expect("the inert Markdown output contains only serializable fields"),
+        ),
         Err(error) => Response::failure(request.id.clone(), "markdown", error),
     }
 }
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::Value;
+
+    fn parse(text: &str, streaming: bool) -> Result<Value, String> {
+        super::parse(text, streaming).map(|blocks| serde_json::to_value(blocks).unwrap())
+    }
+    fn tree(html: String) -> Result<Value, String> {
+        super::tree(html).map(|tree| serde_json::to_value(tree).unwrap())
+    }
+
     #[test]
     fn markdown_has_structure_references_and_utf16_sentences() {
         let value=parse("# Title\n\n🦀 Привет. Next **bold** [link][ref].\n\n[ref]: https://example.test\n\n|A|B|\n|-|-|\n|1|2|",false).unwrap();

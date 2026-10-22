@@ -1431,6 +1431,7 @@ function fastTierCommands(root) {
               "test(account_worker::tests::continuation_start::capacity_retry_restart_unknown_reports_once_without_resending)",
               "test(agent_progress_schema_matches_strict_serde_contract)",
               "test(contracts::tests::generated_contracts_do_not_recreate_the_removed_backend)",
+              "test(contracts::tests::markdown_output_matches_rust_owned_schema)",
               "test(disk_space::tests::)",
               "test(archive_finished_)",
               "test(archive_finished_reason_survives_dispatch_and_receipt_replay)",

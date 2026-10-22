@@ -227,6 +227,12 @@ Draft payload compatibility follows this flow:
 3. Read historical drafts through the same Rust owner: missing or null timestamps become zero, and fractional timestamps are floored.
 4. Preserve stored payload bytes; read normalization never rewrites or drops a draft. `pnpm run contracts:check` rejects generated drift.
 
+Markdown rendering follows this flow:
+
+1. Parse in the client-domain Rust owner into typed blocks, nodes, and sentences.
+2. Serialize the same output through native IPC or WebAssembly.
+3. Generate the renderer types from those Rust structs with the existing contract commands.
+
 Deleting an agent chat removes it from the user list until the next agent message. Its participants retain their history.
 Deletion stops the selected agent and its descendants and removes them from the interface.
 Stored transcripts and project files remain on disk. Deleted agents cannot resume from late events or message retries.
