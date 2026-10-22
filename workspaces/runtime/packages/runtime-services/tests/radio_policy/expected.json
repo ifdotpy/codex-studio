@@ -1,0 +1,1008 @@
+{
+  "ready-peer-team": {
+    "allowed": true,
+    "denial": null,
+    "binding": null,
+    "python_bind_side_effect": null,
+    "records": {
+      "recipient_id": "a",
+      "rooms": {
+        "radio:07b95a17-e17c-41b2-966e-a4275f13fb3b": "{\"id\": \"radio:07b95a17-e17c-41b2-966e-a4275f13fb3b\", \"kind\": \"private\", \"members\": [\"a\", \"b\"], \"projectPath\": \"/tmp/tmpwhm04do3/tmpntf13l_m/one/project\", \"customName\": \"Team \\u00b7 Shared chat\", \"created\": 1792684477.24, \"userHidden\": false, \"radio\": {\"teamId\": \"07b95a17-e17c-41b2-966e-a4275f13fb3b\", \"revision\": 2, \"status\": \"waiting\", \"speaker\": \"a\", \"next\": [\"b\"], \"active\": {\"eventId\": \"radio-turn:3e90cc97-4cd9-4ef1-921f-c4643ad87bfd\", \"agentId\": \"a\", \"epoch\": 1, \"threadId\": \"native-a\", \"identity\": [\"native-a\", 1, 0], \"through\": 1}, \"error\": null, \"seen\": {}}, \"updated\": 1792684477.2423203}"
+      },
+      "agents": {
+        "a": "{\"id\": \"a\", \"isLead\": true, \"parentId\": null, \"rootId\": \"a\", \"cwd\": \"/tmp/tmpwhm04do3/tmpntf13l_m/one/project\", \"threadId\": \"native-a\", \"accountKey\": \"default\", \"history\": [\"original\"], \"autoWake\": true, \"epoch\": 1, \"name\": \"a\", \"status\": \"idle\", \"inFlight\": false}",
+        "b": "{\"id\": \"b\", \"isLead\": true, \"parentId\": null, \"rootId\": \"b\", \"cwd\": \"/tmp/tmpwhm04do3/tmpntf13l_m/one/project\", \"threadId\": \"native-b\", \"accountKey\": \"default\", \"history\": [\"original\"], \"autoWake\": true, \"epoch\": 1, \"name\": \"b\", \"status\": \"idle\", \"inFlight\": false}"
+      },
+      "projects": {
+        "/tmp/tmpwhm04do3/tmpntf13l_m/one/project": "{\"id\": \"/tmp/tmpwhm04do3/tmpntf13l_m/one/project\", \"path\": \"/tmp/tmpwhm04do3/tmpntf13l_m/one/project\", \"name\": \"project\", \"created\": 1792684477.2361107, \"accountKey\": \"default\", \"accountRevision\": 1, \"peerTeams\": [{\"id\": \"07b95a17-e17c-41b2-966e-a4275f13fb3b\", \"name\": \"Team\", \"members\": [\"a\", \"b\"]}], \"peerTeamsRevision\": 1, \"updated\": 1792684477.2380395}"
+      },
+      "resolved_paths": {
+        "/tmp/tmpwhm04do3/tmpntf13l_m/one/project": "/tmp/tmpwhm04do3/tmpntf13l_m/one/project"
+      }
+    },
+    "event_id": "radio-turn:3e90cc97-4cd9-4ef1-921f-c4643ad87bfd"
+  },
+  "direct-room": {
+    "allowed": true,
+    "denial": null,
+    "binding": null,
+    "python_bind_side_effect": null,
+    "records": {
+      "recipient_id": "a",
+      "rooms": {
+        "radio:73a57c42-4f87-4dee-a7df-59e753b4134f": "{\"id\": \"radio:73a57c42-4f87-4dee-a7df-59e753b4134f\", \"kind\": \"private\", \"members\": [\"a\", \"b\"], \"projectPath\": \"/tmp/tmpwhm04do3/tmp3ynjdzof/one/project\", \"customName\": \"Team \\u00b7 Shared chat\", \"created\": 1792684477.2495575, \"userHidden\": false, \"radio\": {\"teamId\": \"73a57c42-4f87-4dee-a7df-59e753b4134f\", \"revision\": 2, \"status\": \"waiting\", \"speaker\": \"a\", \"next\": [\"b\"], \"active\": {\"eventId\": \"radio-turn:7696526c-fdb3-4074-bc28-414d2a906762\", \"agentId\": \"a\", \"epoch\": 1, \"threadId\": \"native-a\", \"identity\": [\"native-a\", 1, 0], \"through\": 1}, \"error\": null, \"seen\": {}, \"direct\": true}, \"updated\": 1792684477.2515671}"
+      },
+      "agents": {
+        "a": "{\"id\": \"a\", \"isLead\": true, \"parentId\": null, \"rootId\": \"a\", \"cwd\": \"/tmp/tmpwhm04do3/tmp3ynjdzof/one/project\", \"threadId\": \"native-a\", \"accountKey\": \"default\", \"history\": [\"original\"], \"autoWake\": true, \"epoch\": 1, \"name\": \"a\", \"status\": \"idle\", \"inFlight\": false, \"sharedRoomId\": \"radio:73a57c42-4f87-4dee-a7df-59e753b4134f\"}",
+        "b": "{\"id\": \"b\", \"isLead\": true, \"parentId\": null, \"rootId\": \"b\", \"cwd\": \"/tmp/tmpwhm04do3/tmp3ynjdzof/one/project\", \"threadId\": \"native-b\", \"accountKey\": \"default\", \"history\": [\"original\"], \"autoWake\": true, \"epoch\": 1, \"name\": \"b\", \"status\": \"idle\", \"inFlight\": false, \"sharedRoomId\": \"radio:73a57c42-4f87-4dee-a7df-59e753b4134f\"}"
+      },
+      "projects": {},
+      "resolved_paths": {
+        "/tmp/tmpwhm04do3/tmp3ynjdzof/one/project": "/tmp/tmpwhm04do3/tmp3ynjdzof/one/project"
+      }
+    },
+    "event_id": "radio-turn:7696526c-fdb3-4074-bc28-414d2a906762"
+  },
+  "direct-room-duplicate-members": {
+    "allowed": false,
+    "denial": "The shared chat participants are no longer available in this project.",
+    "binding": null,
+    "python_bind_side_effect": null,
+    "records": {
+      "recipient_id": "a",
+      "rooms": {
+        "radio:a03a4e60-1ba7-47e9-a294-b81d910bec7c": "{\"id\": \"radio:a03a4e60-1ba7-47e9-a294-b81d910bec7c\", \"kind\": \"private\", \"members\": [\"a\", \"a\"], \"projectPath\": \"/tmp/tmpwhm04do3/tmpg7v5ij5x/one/project\", \"customName\": \"Team \\u00b7 Shared chat\", \"created\": 1792684477.258774, \"userHidden\": false, \"radio\": {\"teamId\": \"a03a4e60-1ba7-47e9-a294-b81d910bec7c\", \"revision\": 2, \"status\": \"waiting\", \"speaker\": \"a\", \"next\": [\"b\"], \"active\": {\"eventId\": \"radio-turn:8a3154e4-dc84-456f-89e1-375fb4aa545a\", \"agentId\": \"a\", \"epoch\": 1, \"threadId\": \"native-a\", \"identity\": [\"native-a\", 1, 0], \"through\": 1}, \"error\": null, \"seen\": {}, \"direct\": true}, \"updated\": 1792684477.2607672}"
+      },
+      "agents": {
+        "a": "{\"id\": \"a\", \"isLead\": true, \"parentId\": null, \"rootId\": \"a\", \"cwd\": \"/tmp/tmpwhm04do3/tmpg7v5ij5x/one/project\", \"threadId\": \"native-a\", \"accountKey\": \"default\", \"history\": [\"original\"], \"autoWake\": true, \"epoch\": 1, \"name\": \"a\", \"status\": \"idle\", \"inFlight\": false, \"sharedRoomId\": \"radio:a03a4e60-1ba7-47e9-a294-b81d910bec7c\"}"
+      },
+      "projects": {},
+      "resolved_paths": {
+        "/tmp/tmpwhm04do3/tmpg7v5ij5x/one/project": "/tmp/tmpwhm04do3/tmpg7v5ij5x/one/project"
+      }
+    },
+    "event_id": "radio-turn:8a3154e4-dc84-456f-89e1-375fb4aa545a"
+  },
+  "revoked-peer-team": {
+    "allowed": false,
+    "denial": "The shared chat membership changed. Its history stays with its original members.",
+    "binding": null,
+    "python_bind_side_effect": null,
+    "records": {
+      "recipient_id": "a",
+      "rooms": {
+        "radio:f97ab141-0085-4d24-8013-f86d0716c914": "{\"id\": \"radio:f97ab141-0085-4d24-8013-f86d0716c914\", \"kind\": \"private\", \"members\": [\"a\", \"b\"], \"projectPath\": \"/tmp/tmpwhm04do3/tmpk0f2toex/one/project\", \"customName\": \"Team \\u00b7 Shared chat\", \"created\": 1792684477.267645, \"userHidden\": false, \"radio\": {\"teamId\": \"f97ab141-0085-4d24-8013-f86d0716c914\", \"revision\": 2, \"status\": \"waiting\", \"speaker\": \"a\", \"next\": [\"b\"], \"active\": {\"eventId\": \"radio-turn:1afb8571-e038-4761-8b08-142c713f72ee\", \"agentId\": \"a\", \"epoch\": 1, \"threadId\": \"native-a\", \"identity\": [\"native-a\", 1, 0], \"through\": 1}, \"error\": null, \"seen\": {}}, \"updated\": 1792684477.2696898}"
+      },
+      "agents": {
+        "a": "{\"id\": \"a\", \"isLead\": true, \"parentId\": null, \"rootId\": \"a\", \"cwd\": \"/tmp/tmpwhm04do3/tmpk0f2toex/one/project\", \"threadId\": \"native-a\", \"accountKey\": \"default\", \"history\": [\"original\"], \"autoWake\": true, \"epoch\": 1, \"name\": \"a\", \"status\": \"idle\", \"inFlight\": false}",
+        "b": "{\"id\": \"b\", \"isLead\": true, \"parentId\": null, \"rootId\": \"b\", \"cwd\": \"/other-project\", \"threadId\": \"native-b\", \"accountKey\": \"default\", \"history\": [\"original\"], \"autoWake\": true, \"epoch\": 1, \"name\": \"b\", \"status\": \"idle\", \"inFlight\": false}"
+      },
+      "projects": {
+        "/tmp/tmpwhm04do3/tmpk0f2toex/one/project": "{\"id\": \"/tmp/tmpwhm04do3/tmpk0f2toex/one/project\", \"path\": \"/tmp/tmpwhm04do3/tmpk0f2toex/one/project\", \"name\": \"project\", \"created\": 1792684477.264056, \"accountKey\": \"default\", \"accountRevision\": 1, \"peerTeams\": [{\"id\": \"f97ab141-0085-4d24-8013-f86d0716c914\", \"name\": \"Team\", \"members\": [\"a\", \"b\"]}], \"peerTeamsRevision\": 1, \"updated\": 1792684477.2660904}"
+      },
+      "resolved_paths": {
+        "/tmp/tmpwhm04do3/tmpk0f2toex/one/project": "/tmp/tmpwhm04do3/tmpk0f2toex/one/project",
+        "/other-project": "/other-project"
+      }
+    },
+    "event_id": "radio-turn:1afb8571-e038-4761-8b08-142c713f72ee"
+  },
+  "peer-team-duplicate-members": {
+    "allowed": true,
+    "denial": null,
+    "binding": null,
+    "python_bind_side_effect": null,
+    "records": {
+      "recipient_id": "a",
+      "rooms": {
+        "radio:4b4fec8c-3263-48d5-9b9c-a86d69cedca8": "{\"id\": \"radio:4b4fec8c-3263-48d5-9b9c-a86d69cedca8\", \"kind\": \"private\", \"members\": [\"a\", \"b\"], \"projectPath\": \"/tmp/tmpwhm04do3/tmpn_hdoblg/one/project\", \"customName\": \"Team \\u00b7 Shared chat\", \"created\": 1792684477.2765687, \"userHidden\": false, \"radio\": {\"teamId\": \"4b4fec8c-3263-48d5-9b9c-a86d69cedca8\", \"revision\": 2, \"status\": \"waiting\", \"speaker\": \"a\", \"next\": [\"b\"], \"active\": {\"eventId\": \"radio-turn:b5b7d136-a772-4123-bbae-65f2127ae97d\", \"agentId\": \"a\", \"epoch\": 1, \"threadId\": \"native-a\", \"identity\": [\"native-a\", 1, 0], \"through\": 1}, \"error\": null, \"seen\": {}}, \"updated\": 1792684477.2785594}"
+      },
+      "agents": {
+        "a": "{\"id\": \"a\", \"isLead\": true, \"parentId\": null, \"rootId\": \"a\", \"cwd\": \"/tmp/tmpwhm04do3/tmpn_hdoblg/one/project\", \"threadId\": \"native-a\", \"accountKey\": \"default\", \"history\": [\"original\"], \"autoWake\": true, \"epoch\": 1, \"name\": \"a\", \"status\": \"idle\", \"inFlight\": false}",
+        "b": "{\"id\": \"b\", \"isLead\": true, \"parentId\": null, \"rootId\": \"b\", \"cwd\": \"/tmp/tmpwhm04do3/tmpn_hdoblg/one/project\", \"threadId\": \"native-b\", \"accountKey\": \"default\", \"history\": [\"original\"], \"autoWake\": true, \"epoch\": 1, \"name\": \"b\", \"status\": \"idle\", \"inFlight\": false}"
+      },
+      "projects": {
+        "/tmp/tmpwhm04do3/tmpn_hdoblg/one/project": "{\"id\": \"/tmp/tmpwhm04do3/tmpn_hdoblg/one/project\", \"path\": \"/tmp/tmpwhm04do3/tmpn_hdoblg/one/project\", \"name\": \"project\", \"created\": 1792684477.2732475, \"accountKey\": \"default\", \"accountRevision\": 1, \"peerTeams\": [{\"id\": \"4b4fec8c-3263-48d5-9b9c-a86d69cedca8\", \"name\": \"Team\", \"members\": [\"a\", \"a\", \"b\"]}], \"peerTeamsRevision\": 1, \"updated\": 1792684477.2750034}"
+      },
+      "resolved_paths": {
+        "/tmp/tmpwhm04do3/tmpn_hdoblg/one/project": "/tmp/tmpwhm04do3/tmpn_hdoblg/one/project"
+      }
+    },
+    "event_id": "radio-turn:b5b7d136-a772-4123-bbae-65f2127ae97d"
+  },
+  "stopped-recipient": {
+    "allowed": false,
+    "denial": "A participant is stopped. Resume that chat before sending.",
+    "binding": null,
+    "python_bind_side_effect": null,
+    "records": {
+      "recipient_id": "a",
+      "rooms": {
+        "radio:90cd7934-8247-450d-8d63-5e3a8fca0612": "{\"id\": \"radio:90cd7934-8247-450d-8d63-5e3a8fca0612\", \"kind\": \"private\", \"members\": [\"a\", \"b\"], \"projectPath\": \"/tmp/tmpwhm04do3/tmpzfuad5q8/one/project\", \"customName\": \"Team \\u00b7 Shared chat\", \"created\": 1792684477.2859085, \"userHidden\": false, \"radio\": {\"teamId\": \"90cd7934-8247-450d-8d63-5e3a8fca0612\", \"revision\": 2, \"status\": \"waiting\", \"speaker\": \"a\", \"next\": [\"b\"], \"active\": {\"eventId\": \"radio-turn:8dcef38a-d065-4c8b-aa8f-51988f27ef52\", \"agentId\": \"a\", \"epoch\": 1, \"threadId\": \"native-a\", \"identity\": [\"native-a\", 1, 0], \"through\": 1}, \"error\": null, \"seen\": {}}, \"updated\": 1792684477.2878838}"
+      },
+      "agents": {
+        "a": "{\"id\": \"a\", \"isLead\": true, \"parentId\": null, \"rootId\": \"a\", \"cwd\": \"/tmp/tmpwhm04do3/tmpzfuad5q8/one/project\", \"threadId\": \"native-a\", \"accountKey\": \"default\", \"history\": [\"original\"], \"autoWake\": false, \"epoch\": 1, \"name\": \"a\", \"status\": \"idle\", \"inFlight\": false}",
+        "b": "{\"id\": \"b\", \"isLead\": true, \"parentId\": null, \"rootId\": \"b\", \"cwd\": \"/tmp/tmpwhm04do3/tmpzfuad5q8/one/project\", \"threadId\": \"native-b\", \"accountKey\": \"default\", \"history\": [\"original\"], \"autoWake\": true, \"epoch\": 1, \"name\": \"b\", \"status\": \"idle\", \"inFlight\": false}"
+      },
+      "projects": {
+        "/tmp/tmpwhm04do3/tmpzfuad5q8/one/project": "{\"id\": \"/tmp/tmpwhm04do3/tmpzfuad5q8/one/project\", \"path\": \"/tmp/tmpwhm04do3/tmpzfuad5q8/one/project\", \"name\": \"project\", \"created\": 1792684477.2824337, \"accountKey\": \"default\", \"accountRevision\": 1, \"peerTeams\": [{\"id\": \"90cd7934-8247-450d-8d63-5e3a8fca0612\", \"name\": \"Team\", \"members\": [\"a\", \"b\"]}], \"peerTeamsRevision\": 1, \"updated\": 1792684477.28427}"
+      },
+      "resolved_paths": {
+        "/tmp/tmpwhm04do3/tmpzfuad5q8/one/project": "/tmp/tmpwhm04do3/tmpzfuad5q8/one/project"
+      }
+    },
+    "event_id": "radio-turn:8dcef38a-d065-4c8b-aa8f-51988f27ef52"
+  },
+  "stopped-peer": {
+    "allowed": false,
+    "denial": "A participant is stopped. Resume that chat before sending.",
+    "binding": null,
+    "python_bind_side_effect": null,
+    "records": {
+      "recipient_id": "a",
+      "rooms": {
+        "radio:9cada4e7-232c-446c-afaa-3f3cfdf431dc": "{\"id\": \"radio:9cada4e7-232c-446c-afaa-3f3cfdf431dc\", \"kind\": \"private\", \"members\": [\"a\", \"b\"], \"projectPath\": \"/tmp/tmpwhm04do3/tmpm6li5n7q/one/project\", \"customName\": \"Team \\u00b7 Shared chat\", \"created\": 1792684477.2954247, \"userHidden\": false, \"radio\": {\"teamId\": \"9cada4e7-232c-446c-afaa-3f3cfdf431dc\", \"revision\": 2, \"status\": \"waiting\", \"speaker\": \"a\", \"next\": [\"b\"], \"active\": {\"eventId\": \"radio-turn:f29484ef-8b2a-4395-82ae-6c1c110182df\", \"agentId\": \"a\", \"epoch\": 1, \"threadId\": \"native-a\", \"identity\": [\"native-a\", 1, 0], \"through\": 1}, \"error\": null, \"seen\": {}}, \"updated\": 1792684477.2974205}"
+      },
+      "agents": {
+        "a": "{\"id\": \"a\", \"isLead\": true, \"parentId\": null, \"rootId\": \"a\", \"cwd\": \"/tmp/tmpwhm04do3/tmpm6li5n7q/one/project\", \"threadId\": \"native-a\", \"accountKey\": \"default\", \"history\": [\"original\"], \"autoWake\": true, \"epoch\": 1, \"name\": \"a\", \"status\": \"idle\", \"inFlight\": false}",
+        "b": "{\"id\": \"b\", \"isLead\": true, \"parentId\": null, \"rootId\": \"b\", \"cwd\": \"/tmp/tmpwhm04do3/tmpm6li5n7q/one/project\", \"threadId\": \"native-b\", \"accountKey\": \"default\", \"history\": [\"original\"], \"autoWake\": false, \"epoch\": 1, \"name\": \"b\", \"status\": \"idle\", \"inFlight\": false}"
+      },
+      "projects": {
+        "/tmp/tmpwhm04do3/tmpm6li5n7q/one/project": "{\"id\": \"/tmp/tmpwhm04do3/tmpm6li5n7q/one/project\", \"path\": \"/tmp/tmpwhm04do3/tmpm6li5n7q/one/project\", \"name\": \"project\", \"created\": 1792684477.292116, \"accountKey\": \"default\", \"accountRevision\": 1, \"peerTeams\": [{\"id\": \"9cada4e7-232c-446c-afaa-3f3cfdf431dc\", \"name\": \"Team\", \"members\": [\"a\", \"b\"]}], \"peerTeamsRevision\": 1, \"updated\": 1792684477.2939901}"
+      },
+      "resolved_paths": {
+        "/tmp/tmpwhm04do3/tmpm6li5n7q/one/project": "/tmp/tmpwhm04do3/tmpm6li5n7q/one/project"
+      }
+    },
+    "event_id": "radio-turn:f29484ef-8b2a-4395-82ae-6c1c110182df"
+  },
+  "held-recipient": {
+    "allowed": false,
+    "denial": "A participant is stopped. Resume that chat before sending.",
+    "binding": null,
+    "python_bind_side_effect": null,
+    "records": {
+      "recipient_id": "a",
+      "rooms": {
+        "radio:42ee3c3b-11ff-4ab1-941d-905785e61f0f": "{\"id\": \"radio:42ee3c3b-11ff-4ab1-941d-905785e61f0f\", \"kind\": \"private\", \"members\": [\"a\", \"b\"], \"projectPath\": \"/tmp/tmpwhm04do3/tmp44buc2pf/one/project\", \"customName\": \"Team \\u00b7 Shared chat\", \"created\": 1792684477.3043535, \"userHidden\": false, \"radio\": {\"teamId\": \"42ee3c3b-11ff-4ab1-941d-905785e61f0f\", \"revision\": 2, \"status\": \"waiting\", \"speaker\": \"a\", \"next\": [\"b\"], \"active\": {\"eventId\": \"radio-turn:0c61aed1-edab-488d-a497-ad76e46399c4\", \"agentId\": \"a\", \"epoch\": 1, \"threadId\": \"native-a\", \"identity\": [\"native-a\", 1, 0], \"through\": 1}, \"error\": null, \"seen\": {}}, \"updated\": 1792684477.3063295}"
+      },
+      "agents": {
+        "a": "{\"id\": \"a\", \"isLead\": true, \"parentId\": null, \"rootId\": \"a\", \"cwd\": \"/tmp/tmpwhm04do3/tmp44buc2pf/one/project\", \"threadId\": \"native-a\", \"accountKey\": \"default\", \"history\": [\"original\"], \"autoWake\": true, \"epoch\": 1, \"name\": \"a\", \"status\": \"idle\", \"inFlight\": false, \"nativeFailureHold\": true}",
+        "b": "{\"id\": \"b\", \"isLead\": true, \"parentId\": null, \"rootId\": \"b\", \"cwd\": \"/tmp/tmpwhm04do3/tmp44buc2pf/one/project\", \"threadId\": \"native-b\", \"accountKey\": \"default\", \"history\": [\"original\"], \"autoWake\": true, \"epoch\": 1, \"name\": \"b\", \"status\": \"idle\", \"inFlight\": false}"
+      },
+      "projects": {
+        "/tmp/tmpwhm04do3/tmp44buc2pf/one/project": "{\"id\": \"/tmp/tmpwhm04do3/tmp44buc2pf/one/project\", \"path\": \"/tmp/tmpwhm04do3/tmp44buc2pf/one/project\", \"name\": \"project\", \"created\": 1792684477.301235, \"accountKey\": \"default\", \"accountRevision\": 1, \"peerTeams\": [{\"id\": \"42ee3c3b-11ff-4ab1-941d-905785e61f0f\", \"name\": \"Team\", \"members\": [\"a\", \"b\"]}], \"peerTeamsRevision\": 1, \"updated\": 1792684477.3029487}"
+      },
+      "resolved_paths": {
+        "/tmp/tmpwhm04do3/tmp44buc2pf/one/project": "/tmp/tmpwhm04do3/tmp44buc2pf/one/project"
+      }
+    },
+    "event_id": "radio-turn:0c61aed1-edab-488d-a497-ad76e46399c4"
+  },
+  "held-peer": {
+    "allowed": false,
+    "denial": "A participant is stopped. Resume that chat before sending.",
+    "binding": null,
+    "python_bind_side_effect": null,
+    "records": {
+      "recipient_id": "a",
+      "rooms": {
+        "radio:e638bbad-a37d-4446-9598-54ccc45973d2": "{\"id\": \"radio:e638bbad-a37d-4446-9598-54ccc45973d2\", \"kind\": \"private\", \"members\": [\"a\", \"b\"], \"projectPath\": \"/tmp/tmpwhm04do3/tmpo6tvwkit/one/project\", \"customName\": \"Team \\u00b7 Shared chat\", \"created\": 1792684477.3130429, \"userHidden\": false, \"radio\": {\"teamId\": \"e638bbad-a37d-4446-9598-54ccc45973d2\", \"revision\": 2, \"status\": \"waiting\", \"speaker\": \"a\", \"next\": [\"b\"], \"active\": {\"eventId\": \"radio-turn:8c762035-c11f-440c-b36e-0db195f9e04f\", \"agentId\": \"a\", \"epoch\": 1, \"threadId\": \"native-a\", \"identity\": [\"native-a\", 1, 0], \"through\": 1}, \"error\": null, \"seen\": {}}, \"updated\": 1792684477.3150127}"
+      },
+      "agents": {
+        "a": "{\"id\": \"a\", \"isLead\": true, \"parentId\": null, \"rootId\": \"a\", \"cwd\": \"/tmp/tmpwhm04do3/tmpo6tvwkit/one/project\", \"threadId\": \"native-a\", \"accountKey\": \"default\", \"history\": [\"original\"], \"autoWake\": true, \"epoch\": 1, \"name\": \"a\", \"status\": \"idle\", \"inFlight\": false}",
+        "b": "{\"id\": \"b\", \"isLead\": true, \"parentId\": null, \"rootId\": \"b\", \"cwd\": \"/tmp/tmpwhm04do3/tmpo6tvwkit/one/project\", \"threadId\": \"native-b\", \"accountKey\": \"default\", \"history\": [\"original\"], \"autoWake\": true, \"epoch\": 1, \"name\": \"b\", \"status\": \"idle\", \"inFlight\": false, \"nativeFailureHold\": true}"
+      },
+      "projects": {
+        "/tmp/tmpwhm04do3/tmpo6tvwkit/one/project": "{\"id\": \"/tmp/tmpwhm04do3/tmpo6tvwkit/one/project\", \"path\": \"/tmp/tmpwhm04do3/tmpo6tvwkit/one/project\", \"name\": \"project\", \"created\": 1792684477.3099267, \"accountKey\": \"default\", \"accountRevision\": 1, \"peerTeams\": [{\"id\": \"e638bbad-a37d-4446-9598-54ccc45973d2\", \"name\": \"Team\", \"members\": [\"a\", \"b\"]}], \"peerTeamsRevision\": 1, \"updated\": 1792684477.3116472}"
+      },
+      "resolved_paths": {
+        "/tmp/tmpwhm04do3/tmpo6tvwkit/one/project": "/tmp/tmpwhm04do3/tmpo6tvwkit/one/project"
+      }
+    },
+    "event_id": "radio-turn:8c762035-c11f-440c-b36e-0db195f9e04f"
+  },
+  "transferring-recipient": {
+    "allowed": false,
+    "denial": "A participant is being transferred or its native chat is unavailable.",
+    "binding": null,
+    "python_bind_side_effect": null,
+    "records": {
+      "recipient_id": "a",
+      "rooms": {
+        "radio:df4548f4-1fd2-4296-84cb-b01271c2fbe6": "{\"id\": \"radio:df4548f4-1fd2-4296-84cb-b01271c2fbe6\", \"kind\": \"private\", \"members\": [\"a\", \"b\"], \"projectPath\": \"/tmp/tmpwhm04do3/tmpbvxd8i8t/one/project\", \"customName\": \"Team \\u00b7 Shared chat\", \"created\": 1792684477.32183, \"userHidden\": false, \"radio\": {\"teamId\": \"df4548f4-1fd2-4296-84cb-b01271c2fbe6\", \"revision\": 2, \"status\": \"waiting\", \"speaker\": \"a\", \"next\": [\"b\"], \"active\": {\"eventId\": \"radio-turn:b0ca9080-8007-4728-a506-112fd1a5e47a\", \"agentId\": \"a\", \"epoch\": 1, \"threadId\": \"native-a\", \"identity\": [\"native-a\", 1, 0], \"through\": 1}, \"error\": null, \"seen\": {}}, \"updated\": 1792684477.3238847}"
+      },
+      "agents": {
+        "a": "{\"id\": \"a\", \"isLead\": true, \"parentId\": null, \"rootId\": \"a\", \"cwd\": \"/tmp/tmpwhm04do3/tmpbvxd8i8t/one/project\", \"threadId\": \"native-a\", \"accountKey\": \"default\", \"history\": [\"original\"], \"autoWake\": true, \"epoch\": 1, \"name\": \"a\", \"status\": \"idle\", \"inFlight\": false, \"accountTransferId\": \"transfer-1\"}",
+        "b": "{\"id\": \"b\", \"isLead\": true, \"parentId\": null, \"rootId\": \"b\", \"cwd\": \"/tmp/tmpwhm04do3/tmpbvxd8i8t/one/project\", \"threadId\": \"native-b\", \"accountKey\": \"default\", \"history\": [\"original\"], \"autoWake\": true, \"epoch\": 1, \"name\": \"b\", \"status\": \"idle\", \"inFlight\": false}"
+      },
+      "projects": {
+        "/tmp/tmpwhm04do3/tmpbvxd8i8t/one/project": "{\"id\": \"/tmp/tmpwhm04do3/tmpbvxd8i8t/one/project\", \"path\": \"/tmp/tmpwhm04do3/tmpbvxd8i8t/one/project\", \"name\": \"project\", \"created\": 1792684477.318719, \"accountKey\": \"default\", \"accountRevision\": 1, \"peerTeams\": [{\"id\": \"df4548f4-1fd2-4296-84cb-b01271c2fbe6\", \"name\": \"Team\", \"members\": [\"a\", \"b\"]}], \"peerTeamsRevision\": 1, \"updated\": 1792684477.3204377}"
+      },
+      "resolved_paths": {
+        "/tmp/tmpwhm04do3/tmpbvxd8i8t/one/project": "/tmp/tmpwhm04do3/tmpbvxd8i8t/one/project"
+      }
+    },
+    "event_id": "radio-turn:b0ca9080-8007-4728-a506-112fd1a5e47a"
+  },
+  "transferring-peer": {
+    "allowed": false,
+    "denial": "A participant is being transferred or its native chat is unavailable.",
+    "binding": null,
+    "python_bind_side_effect": null,
+    "records": {
+      "recipient_id": "a",
+      "rooms": {
+        "radio:dc564fb6-7fd8-47f7-a013-93615f159306": "{\"id\": \"radio:dc564fb6-7fd8-47f7-a013-93615f159306\", \"kind\": \"private\", \"members\": [\"a\", \"b\"], \"projectPath\": \"/tmp/tmpwhm04do3/tmpefxf_vsb/one/project\", \"customName\": \"Team \\u00b7 Shared chat\", \"created\": 1792684477.3304625, \"userHidden\": false, \"radio\": {\"teamId\": \"dc564fb6-7fd8-47f7-a013-93615f159306\", \"revision\": 2, \"status\": \"waiting\", \"speaker\": \"a\", \"next\": [\"b\"], \"active\": {\"eventId\": \"radio-turn:35fa603f-7893-481e-9ca0-f9f6843d99c0\", \"agentId\": \"a\", \"epoch\": 1, \"threadId\": \"native-a\", \"identity\": [\"native-a\", 1, 0], \"through\": 1}, \"error\": null, \"seen\": {}}, \"updated\": 1792684477.3324356}"
+      },
+      "agents": {
+        "a": "{\"id\": \"a\", \"isLead\": true, \"parentId\": null, \"rootId\": \"a\", \"cwd\": \"/tmp/tmpwhm04do3/tmpefxf_vsb/one/project\", \"threadId\": \"native-a\", \"accountKey\": \"default\", \"history\": [\"original\"], \"autoWake\": true, \"epoch\": 1, \"name\": \"a\", \"status\": \"idle\", \"inFlight\": false}",
+        "b": "{\"id\": \"b\", \"isLead\": true, \"parentId\": null, \"rootId\": \"b\", \"cwd\": \"/tmp/tmpwhm04do3/tmpefxf_vsb/one/project\", \"threadId\": \"native-b\", \"accountKey\": \"default\", \"history\": [\"original\"], \"autoWake\": true, \"epoch\": 1, \"name\": \"b\", \"status\": \"idle\", \"inFlight\": false, \"accountTransferId\": \"transfer-1\"}"
+      },
+      "projects": {
+        "/tmp/tmpwhm04do3/tmpefxf_vsb/one/project": "{\"id\": \"/tmp/tmpwhm04do3/tmpefxf_vsb/one/project\", \"path\": \"/tmp/tmpwhm04do3/tmpefxf_vsb/one/project\", \"name\": \"project\", \"created\": 1792684477.3273702, \"accountKey\": \"default\", \"accountRevision\": 1, \"peerTeams\": [{\"id\": \"dc564fb6-7fd8-47f7-a013-93615f159306\", \"name\": \"Team\", \"members\": [\"a\", \"b\"]}], \"peerTeamsRevision\": 1, \"updated\": 1792684477.3290699}"
+      },
+      "resolved_paths": {
+        "/tmp/tmpwhm04do3/tmpefxf_vsb/one/project": "/tmp/tmpwhm04do3/tmpefxf_vsb/one/project"
+      }
+    },
+    "event_id": "radio-turn:35fa603f-7893-481e-9ca0-f9f6843d99c0"
+  },
+  "native-thread-blocked-recipient": {
+    "allowed": false,
+    "denial": "A participant is being transferred or its native chat is unavailable.",
+    "binding": null,
+    "python_bind_side_effect": null,
+    "records": {
+      "recipient_id": "a",
+      "rooms": {
+        "radio:ad49fab5-b4fd-4d12-bd1b-8827ba3ebfb6": "{\"id\": \"radio:ad49fab5-b4fd-4d12-bd1b-8827ba3ebfb6\", \"kind\": \"private\", \"members\": [\"a\", \"b\"], \"projectPath\": \"/tmp/tmpwhm04do3/tmpfs72i5pe/one/project\", \"customName\": \"Team \\u00b7 Shared chat\", \"created\": 1792684477.3394518, \"userHidden\": false, \"radio\": {\"teamId\": \"ad49fab5-b4fd-4d12-bd1b-8827ba3ebfb6\", \"revision\": 2, \"status\": \"waiting\", \"speaker\": \"a\", \"next\": [\"b\"], \"active\": {\"eventId\": \"radio-turn:f0d8664e-0850-40c6-8677-b0ab80107f4a\", \"agentId\": \"a\", \"epoch\": 1, \"threadId\": \"native-a\", \"identity\": [\"native-a\", 1, 0], \"through\": 1}, \"error\": null, \"seen\": {}}, \"updated\": 1792684477.3414326}"
+      },
+      "agents": {
+        "a": "{\"id\": \"a\", \"isLead\": true, \"parentId\": null, \"rootId\": \"a\", \"cwd\": \"/tmp/tmpwhm04do3/tmpfs72i5pe/one/project\", \"threadId\": \"native-a\", \"accountKey\": \"default\", \"history\": [\"original\"], \"autoWake\": true, \"epoch\": 1, \"name\": \"a\", \"status\": \"idle\", \"inFlight\": false, \"nativeThreadBlock\": {\"reason\": \"pending\"}}",
+        "b": "{\"id\": \"b\", \"isLead\": true, \"parentId\": null, \"rootId\": \"b\", \"cwd\": \"/tmp/tmpwhm04do3/tmpfs72i5pe/one/project\", \"threadId\": \"native-b\", \"accountKey\": \"default\", \"history\": [\"original\"], \"autoWake\": true, \"epoch\": 1, \"name\": \"b\", \"status\": \"idle\", \"inFlight\": false}"
+      },
+      "projects": {
+        "/tmp/tmpwhm04do3/tmpfs72i5pe/one/project": "{\"id\": \"/tmp/tmpwhm04do3/tmpfs72i5pe/one/project\", \"path\": \"/tmp/tmpwhm04do3/tmpfs72i5pe/one/project\", \"name\": \"project\", \"created\": 1792684477.336231, \"accountKey\": \"default\", \"accountRevision\": 1, \"peerTeams\": [{\"id\": \"ad49fab5-b4fd-4d12-bd1b-8827ba3ebfb6\", \"name\": \"Team\", \"members\": [\"a\", \"b\"]}], \"peerTeamsRevision\": 1, \"updated\": 1792684477.337956}"
+      },
+      "resolved_paths": {
+        "/tmp/tmpwhm04do3/tmpfs72i5pe/one/project": "/tmp/tmpwhm04do3/tmpfs72i5pe/one/project"
+      }
+    },
+    "event_id": "radio-turn:f0d8664e-0850-40c6-8677-b0ab80107f4a"
+  },
+  "native-thread-blocked-peer": {
+    "allowed": false,
+    "denial": "A participant is being transferred or its native chat is unavailable.",
+    "binding": null,
+    "python_bind_side_effect": null,
+    "records": {
+      "recipient_id": "a",
+      "rooms": {
+        "radio:5e5adb90-7b5e-4501-b7a7-f18410423fcf": "{\"id\": \"radio:5e5adb90-7b5e-4501-b7a7-f18410423fcf\", \"kind\": \"private\", \"members\": [\"a\", \"b\"], \"projectPath\": \"/tmp/tmpwhm04do3/tmpsz8z2wh6/one/project\", \"customName\": \"Team \\u00b7 Shared chat\", \"created\": 1792684477.3489215, \"userHidden\": false, \"radio\": {\"teamId\": \"5e5adb90-7b5e-4501-b7a7-f18410423fcf\", \"revision\": 2, \"status\": \"waiting\", \"speaker\": \"a\", \"next\": [\"b\"], \"active\": {\"eventId\": \"radio-turn:ac25dc9e-972a-4232-8b78-d317c7fe566b\", \"agentId\": \"a\", \"epoch\": 1, \"threadId\": \"native-a\", \"identity\": [\"native-a\", 1, 0], \"through\": 1}, \"error\": null, \"seen\": {}}, \"updated\": 1792684477.350938}"
+      },
+      "agents": {
+        "a": "{\"id\": \"a\", \"isLead\": true, \"parentId\": null, \"rootId\": \"a\", \"cwd\": \"/tmp/tmpwhm04do3/tmpsz8z2wh6/one/project\", \"threadId\": \"native-a\", \"accountKey\": \"default\", \"history\": [\"original\"], \"autoWake\": true, \"epoch\": 1, \"name\": \"a\", \"status\": \"idle\", \"inFlight\": false}",
+        "b": "{\"id\": \"b\", \"isLead\": true, \"parentId\": null, \"rootId\": \"b\", \"cwd\": \"/tmp/tmpwhm04do3/tmpsz8z2wh6/one/project\", \"threadId\": \"native-b\", \"accountKey\": \"default\", \"history\": [\"original\"], \"autoWake\": true, \"epoch\": 1, \"name\": \"b\", \"status\": \"idle\", \"inFlight\": false, \"nativeThreadBlock\": {\"reason\": \"pending\"}}"
+      },
+      "projects": {
+        "/tmp/tmpwhm04do3/tmpsz8z2wh6/one/project": "{\"id\": \"/tmp/tmpwhm04do3/tmpsz8z2wh6/one/project\", \"path\": \"/tmp/tmpwhm04do3/tmpsz8z2wh6/one/project\", \"name\": \"project\", \"created\": 1792684477.3453836, \"accountKey\": \"default\", \"accountRevision\": 1, \"peerTeams\": [{\"id\": \"5e5adb90-7b5e-4501-b7a7-f18410423fcf\", \"name\": \"Team\", \"members\": [\"a\", \"b\"]}], \"peerTeamsRevision\": 1, \"updated\": 1792684477.3474178}"
+      },
+      "resolved_paths": {
+        "/tmp/tmpwhm04do3/tmpsz8z2wh6/one/project": "/tmp/tmpwhm04do3/tmpsz8z2wh6/one/project"
+      }
+    },
+    "event_id": "radio-turn:ac25dc9e-972a-4232-8b78-d317c7fe566b"
+  },
+  "blocked-room": {
+    "allowed": false,
+    "denial": "The shared turn is no longer authorized",
+    "binding": null,
+    "python_bind_side_effect": null,
+    "records": {
+      "recipient_id": "a",
+      "rooms": {
+        "radio:db25a9ab-abf6-4708-85ec-a9087e5de412": "{\"id\": \"radio:db25a9ab-abf6-4708-85ec-a9087e5de412\", \"kind\": \"private\", \"members\": [\"a\", \"b\"], \"projectPath\": \"/tmp/tmpwhm04do3/tmpnp_uti7k/one/project\", \"customName\": \"Team \\u00b7 Shared chat\", \"created\": 1792684477.3581517, \"userHidden\": false, \"radio\": {\"teamId\": \"db25a9ab-abf6-4708-85ec-a9087e5de412\", \"revision\": 2, \"status\": \"blocked\", \"speaker\": \"a\", \"next\": [\"b\"], \"active\": {\"eventId\": \"radio-turn:e272b129-e650-435a-8fcf-c58a8723af82\", \"agentId\": \"a\", \"epoch\": 1, \"threadId\": \"native-a\", \"identity\": [\"native-a\", 1, 0], \"through\": 1}, \"error\": null, \"seen\": {}}, \"updated\": 1792684477.360158}"
+      },
+      "agents": {
+        "a": "{\"id\": \"a\", \"isLead\": true, \"parentId\": null, \"rootId\": \"a\", \"cwd\": \"/tmp/tmpwhm04do3/tmpnp_uti7k/one/project\", \"threadId\": \"native-a\", \"accountKey\": \"default\", \"history\": [\"original\"], \"autoWake\": true, \"epoch\": 1, \"name\": \"a\", \"status\": \"idle\", \"inFlight\": false}",
+        "b": "{\"id\": \"b\", \"isLead\": true, \"parentId\": null, \"rootId\": \"b\", \"cwd\": \"/tmp/tmpwhm04do3/tmpnp_uti7k/one/project\", \"threadId\": \"native-b\", \"accountKey\": \"default\", \"history\": [\"original\"], \"autoWake\": true, \"epoch\": 1, \"name\": \"b\", \"status\": \"idle\", \"inFlight\": false}"
+      },
+      "projects": {
+        "/tmp/tmpwhm04do3/tmpnp_uti7k/one/project": "{\"id\": \"/tmp/tmpwhm04do3/tmpnp_uti7k/one/project\", \"path\": \"/tmp/tmpwhm04do3/tmpnp_uti7k/one/project\", \"name\": \"project\", \"created\": 1792684477.3548336, \"accountKey\": \"default\", \"accountRevision\": 1, \"peerTeams\": [{\"id\": \"db25a9ab-abf6-4708-85ec-a9087e5de412\", \"name\": \"Team\", \"members\": [\"a\", \"b\"]}], \"peerTeamsRevision\": 1, \"updated\": 1792684477.3566954}"
+      },
+      "resolved_paths": {
+        "/tmp/tmpwhm04do3/tmpnp_uti7k/one/project": "/tmp/tmpwhm04do3/tmpnp_uti7k/one/project"
+      }
+    },
+    "event_id": "radio-turn:e272b129-e650-435a-8fcf-c58a8723af82"
+  },
+  "stopping-room": {
+    "allowed": false,
+    "denial": "The shared turn is no longer authorized",
+    "binding": null,
+    "python_bind_side_effect": null,
+    "records": {
+      "recipient_id": "a",
+      "rooms": {
+        "radio:aad4b8bc-da87-47a0-8057-de02ac6d62a9": "{\"id\": \"radio:aad4b8bc-da87-47a0-8057-de02ac6d62a9\", \"kind\": \"private\", \"members\": [\"a\", \"b\"], \"projectPath\": \"/tmp/tmpwhm04do3/tmppy67v5ih/one/project\", \"customName\": \"Team \\u00b7 Shared chat\", \"created\": 1792684477.3672802, \"userHidden\": false, \"radio\": {\"teamId\": \"aad4b8bc-da87-47a0-8057-de02ac6d62a9\", \"revision\": 2, \"status\": \"stopping\", \"speaker\": \"a\", \"next\": [\"b\"], \"active\": {\"eventId\": \"radio-turn:f839d1ee-5e3d-4db3-aba0-46174858c0c8\", \"agentId\": \"a\", \"epoch\": 1, \"threadId\": \"native-a\", \"identity\": [\"native-a\", 1, 0], \"through\": 1}, \"error\": null, \"seen\": {}}, \"updated\": 1792684477.3693488}"
+      },
+      "agents": {
+        "a": "{\"id\": \"a\", \"isLead\": true, \"parentId\": null, \"rootId\": \"a\", \"cwd\": \"/tmp/tmpwhm04do3/tmppy67v5ih/one/project\", \"threadId\": \"native-a\", \"accountKey\": \"default\", \"history\": [\"original\"], \"autoWake\": true, \"epoch\": 1, \"name\": \"a\", \"status\": \"idle\", \"inFlight\": false}",
+        "b": "{\"id\": \"b\", \"isLead\": true, \"parentId\": null, \"rootId\": \"b\", \"cwd\": \"/tmp/tmpwhm04do3/tmppy67v5ih/one/project\", \"threadId\": \"native-b\", \"accountKey\": \"default\", \"history\": [\"original\"], \"autoWake\": true, \"epoch\": 1, \"name\": \"b\", \"status\": \"idle\", \"inFlight\": false}"
+      },
+      "projects": {
+        "/tmp/tmpwhm04do3/tmppy67v5ih/one/project": "{\"id\": \"/tmp/tmpwhm04do3/tmppy67v5ih/one/project\", \"path\": \"/tmp/tmpwhm04do3/tmppy67v5ih/one/project\", \"name\": \"project\", \"created\": 1792684477.363795, \"accountKey\": \"default\", \"accountRevision\": 1, \"peerTeams\": [{\"id\": \"aad4b8bc-da87-47a0-8057-de02ac6d62a9\", \"name\": \"Team\", \"members\": [\"a\", \"b\"]}], \"peerTeamsRevision\": 1, \"updated\": 1792684477.365537}"
+      },
+      "resolved_paths": {
+        "/tmp/tmpwhm04do3/tmppy67v5ih/one/project": "/tmp/tmpwhm04do3/tmppy67v5ih/one/project"
+      }
+    },
+    "event_id": "radio-turn:f839d1ee-5e3d-4db3-aba0-46174858c0c8"
+  },
+  "denied-blocked-binding-has-no-rust-write-intent": {
+    "allowed": false,
+    "denial": "The shared turn is no longer authorized",
+    "binding": {
+      "room_id": "radio:54e0be46-b4f1-44a7-b028-ca84ddb1f531",
+      "event_id": "radio-turn:aecbfbeb-adf2-49ea-a285-340033d73550",
+      "agent_id": "a",
+      "thread_id": "thread-radio",
+      "epoch": 1,
+      "compactions": 3
+    },
+    "python_bind_side_effect": {
+      "room_id": "radio:54e0be46-b4f1-44a7-b028-ca84ddb1f531",
+      "event_id": "radio-turn:aecbfbeb-adf2-49ea-a285-340033d73550",
+      "agent_id": "a",
+      "thread_id": "thread-radio",
+      "epoch": 1,
+      "compactions": 3
+    },
+    "records": {
+      "recipient_id": "a",
+      "rooms": {
+        "radio:54e0be46-b4f1-44a7-b028-ca84ddb1f531": "{\"id\": \"radio:54e0be46-b4f1-44a7-b028-ca84ddb1f531\", \"kind\": \"private\", \"members\": [\"a\", \"b\"], \"projectPath\": \"/tmp/tmpwhm04do3/tmpcsnfvvxt/one/project\", \"customName\": \"Team \\u00b7 Shared chat\", \"created\": 1792684477.376296, \"userHidden\": false, \"radio\": {\"teamId\": \"54e0be46-b4f1-44a7-b028-ca84ddb1f531\", \"revision\": 2, \"status\": \"blocked\", \"speaker\": \"a\", \"next\": [\"b\"], \"active\": {\"eventId\": \"radio-turn:aecbfbeb-adf2-49ea-a285-340033d73550\", \"agentId\": \"a\", \"epoch\": 1, \"threadId\": null, \"identity\": [\"native-a\", 1, 0], \"through\": 1}, \"error\": null, \"seen\": {}}, \"updated\": 1792684477.378362}"
+      },
+      "agents": {
+        "a": "{\"id\": \"a\", \"isLead\": true, \"parentId\": null, \"rootId\": \"a\", \"cwd\": \"/tmp/tmpwhm04do3/tmpcsnfvvxt/one/project\", \"threadId\": \"thread-radio\", \"accountKey\": \"default\", \"history\": [\"original\"], \"autoWake\": true, \"epoch\": 1, \"name\": \"a\", \"status\": \"idle\", \"inFlight\": false, \"compactions\": 3, \"startAttempt\": {\"events\": [\"radio-turn:aecbfbeb-adf2-49ea-a285-340033d73550\"], \"epoch\": 1, \"threadId\": null}}",
+        "b": "{\"id\": \"b\", \"isLead\": true, \"parentId\": null, \"rootId\": \"b\", \"cwd\": \"/tmp/tmpwhm04do3/tmpcsnfvvxt/one/project\", \"threadId\": \"native-b\", \"accountKey\": \"default\", \"history\": [\"original\"], \"autoWake\": true, \"epoch\": 1, \"name\": \"b\", \"status\": \"idle\", \"inFlight\": false}"
+      },
+      "projects": {
+        "/tmp/tmpwhm04do3/tmpcsnfvvxt/one/project": "{\"id\": \"/tmp/tmpwhm04do3/tmpcsnfvvxt/one/project\", \"path\": \"/tmp/tmpwhm04do3/tmpcsnfvvxt/one/project\", \"name\": \"project\", \"created\": 1792684477.3730786, \"accountKey\": \"default\", \"accountRevision\": 1, \"peerTeams\": [{\"id\": \"54e0be46-b4f1-44a7-b028-ca84ddb1f531\", \"name\": \"Team\", \"members\": [\"a\", \"b\"]}], \"peerTeamsRevision\": 1, \"updated\": 1792684477.3748305}"
+      },
+      "resolved_paths": {
+        "/tmp/tmpwhm04do3/tmpcsnfvvxt/one/project": "/tmp/tmpwhm04do3/tmpcsnfvvxt/one/project"
+      }
+    },
+    "event_id": "radio-turn:aecbfbeb-adf2-49ea-a285-340033d73550"
+  },
+  "denied-stopping-binding-has-no-rust-write-intent": {
+    "allowed": false,
+    "denial": "The shared turn is no longer authorized",
+    "binding": {
+      "room_id": "radio:65879396-01d5-41f9-a295-707173bb8073",
+      "event_id": "radio-turn:046acc39-83d3-41e2-860a-1dd114c1f381",
+      "agent_id": "a",
+      "thread_id": "thread-radio",
+      "epoch": 1,
+      "compactions": 3
+    },
+    "python_bind_side_effect": {
+      "room_id": "radio:65879396-01d5-41f9-a295-707173bb8073",
+      "event_id": "radio-turn:046acc39-83d3-41e2-860a-1dd114c1f381",
+      "agent_id": "a",
+      "thread_id": "thread-radio",
+      "epoch": 1,
+      "compactions": 3
+    },
+    "records": {
+      "recipient_id": "a",
+      "rooms": {
+        "radio:65879396-01d5-41f9-a295-707173bb8073": "{\"id\": \"radio:65879396-01d5-41f9-a295-707173bb8073\", \"kind\": \"private\", \"members\": [\"a\", \"b\"], \"projectPath\": \"/tmp/tmpwhm04do3/tmpulwy55za/one/project\", \"customName\": \"Team \\u00b7 Shared chat\", \"created\": 1792684477.3884795, \"userHidden\": false, \"radio\": {\"teamId\": \"65879396-01d5-41f9-a295-707173bb8073\", \"revision\": 2, \"status\": \"stopping\", \"speaker\": \"a\", \"next\": [\"b\"], \"active\": {\"eventId\": \"radio-turn:046acc39-83d3-41e2-860a-1dd114c1f381\", \"agentId\": \"a\", \"epoch\": 1, \"threadId\": null, \"identity\": [\"native-a\", 1, 0], \"through\": 1}, \"error\": null, \"seen\": {}}, \"updated\": 1792684477.3906484}"
+      },
+      "agents": {
+        "a": "{\"id\": \"a\", \"isLead\": true, \"parentId\": null, \"rootId\": \"a\", \"cwd\": \"/tmp/tmpwhm04do3/tmpulwy55za/one/project\", \"threadId\": \"thread-radio\", \"accountKey\": \"default\", \"history\": [\"original\"], \"autoWake\": true, \"epoch\": 1, \"name\": \"a\", \"status\": \"idle\", \"inFlight\": false, \"compactions\": 3, \"startAttempt\": {\"events\": [\"radio-turn:046acc39-83d3-41e2-860a-1dd114c1f381\"], \"epoch\": 1, \"threadId\": null}}",
+        "b": "{\"id\": \"b\", \"isLead\": true, \"parentId\": null, \"rootId\": \"b\", \"cwd\": \"/tmp/tmpwhm04do3/tmpulwy55za/one/project\", \"threadId\": \"native-b\", \"accountKey\": \"default\", \"history\": [\"original\"], \"autoWake\": true, \"epoch\": 1, \"name\": \"b\", \"status\": \"idle\", \"inFlight\": false}"
+      },
+      "projects": {
+        "/tmp/tmpwhm04do3/tmpulwy55za/one/project": "{\"id\": \"/tmp/tmpwhm04do3/tmpulwy55za/one/project\", \"path\": \"/tmp/tmpwhm04do3/tmpulwy55za/one/project\", \"name\": \"project\", \"created\": 1792684477.3830311, \"accountKey\": \"default\", \"accountRevision\": 1, \"peerTeams\": [{\"id\": \"65879396-01d5-41f9-a295-707173bb8073\", \"name\": \"Team\", \"members\": [\"a\", \"b\"]}], \"peerTeamsRevision\": 1, \"updated\": 1792684477.3863707}"
+      },
+      "resolved_paths": {
+        "/tmp/tmpwhm04do3/tmpulwy55za/one/project": "/tmp/tmpwhm04do3/tmpulwy55za/one/project"
+      }
+    },
+    "event_id": "radio-turn:046acc39-83d3-41e2-860a-1dd114c1f381"
+  },
+  "missing-receipt": {
+    "allowed": false,
+    "denial": "The shared turn has no active room receipt",
+    "binding": null,
+    "python_bind_side_effect": null,
+    "records": {
+      "recipient_id": "a",
+      "rooms": {
+        "radio:5069380d-d116-45af-b207-00641f9ed758": "{\"id\": \"radio:5069380d-d116-45af-b207-00641f9ed758\", \"kind\": \"private\", \"members\": [\"a\", \"b\"], \"projectPath\": \"/tmp/tmpwhm04do3/tmpyg6z33b4/one/project\", \"customName\": \"Team \\u00b7 Shared chat\", \"created\": 1792684477.3980796, \"userHidden\": false, \"radio\": {\"teamId\": \"5069380d-d116-45af-b207-00641f9ed758\", \"revision\": 2, \"status\": \"waiting\", \"speaker\": \"a\", \"next\": [\"b\"], \"active\": null, \"error\": null, \"seen\": {}}, \"updated\": 1792684477.4001203}"
+      },
+      "agents": {
+        "a": "{\"id\": \"a\", \"isLead\": true, \"parentId\": null, \"rootId\": \"a\", \"cwd\": \"/tmp/tmpwhm04do3/tmpyg6z33b4/one/project\", \"threadId\": \"native-a\", \"accountKey\": \"default\", \"history\": [\"original\"], \"autoWake\": true, \"epoch\": 1, \"name\": \"a\", \"status\": \"idle\", \"inFlight\": false}",
+        "b": "{\"id\": \"b\", \"isLead\": true, \"parentId\": null, \"rootId\": \"b\", \"cwd\": \"/tmp/tmpwhm04do3/tmpyg6z33b4/one/project\", \"threadId\": \"native-b\", \"accountKey\": \"default\", \"history\": [\"original\"], \"autoWake\": true, \"epoch\": 1, \"name\": \"b\", \"status\": \"idle\", \"inFlight\": false}"
+      },
+      "projects": {
+        "/tmp/tmpwhm04do3/tmpyg6z33b4/one/project": "{\"id\": \"/tmp/tmpwhm04do3/tmpyg6z33b4/one/project\", \"path\": \"/tmp/tmpwhm04do3/tmpyg6z33b4/one/project\", \"name\": \"project\", \"created\": 1792684477.3945196, \"accountKey\": \"default\", \"accountRevision\": 1, \"peerTeams\": [{\"id\": \"5069380d-d116-45af-b207-00641f9ed758\", \"name\": \"Team\", \"members\": [\"a\", \"b\"]}], \"peerTeamsRevision\": 1, \"updated\": 1792684477.3964813}"
+      },
+      "resolved_paths": {
+        "/tmp/tmpwhm04do3/tmpyg6z33b4/one/project": "/tmp/tmpwhm04do3/tmpyg6z33b4/one/project"
+      }
+    },
+    "event_id": "radio-turn:550c2e12-de8e-4475-8581-bcf61650f272"
+  },
+  "duplicate-active-receipt": {
+    "allowed": true,
+    "denial": null,
+    "binding": null,
+    "python_bind_side_effect": null,
+    "records": {
+      "recipient_id": "a",
+      "rooms": {
+        "radio:11ce5061-eca1-4218-948e-098ec793f412": "{\"id\": \"radio:11ce5061-eca1-4218-948e-098ec793f412\", \"kind\": \"private\", \"members\": [\"a\", \"b\"], \"projectPath\": \"/tmp/tmpwhm04do3/tmp8i8ia_ol/one/project\", \"customName\": \"Team \\u00b7 Shared chat\", \"created\": 1792684477.4071136, \"userHidden\": false, \"radio\": {\"teamId\": \"11ce5061-eca1-4218-948e-098ec793f412\", \"revision\": 2, \"status\": \"waiting\", \"speaker\": \"a\", \"next\": [\"b\"], \"active\": {\"eventId\": \"radio-turn:ce0700f7-6619-499f-a168-64c8596170d0\", \"agentId\": \"a\", \"epoch\": 1, \"threadId\": \"native-a\", \"identity\": [\"native-a\", 1, 0], \"through\": 1}, \"error\": null, \"seen\": {}}, \"updated\": 1792684477.4091325}",
+        "radio:11ce5061-eca1-4218-948e-098ec793f412:duplicate": "{\"id\": \"radio:11ce5061-eca1-4218-948e-098ec793f412:duplicate\", \"kind\": \"private\", \"members\": [\"a\", \"b\"], \"projectPath\": \"/tmp/tmpwhm04do3/tmp8i8ia_ol/one/project\", \"customName\": \"Team \\u00b7 Shared chat\", \"created\": 1792684477.4071136, \"userHidden\": false, \"radio\": {\"teamId\": \"11ce5061-eca1-4218-948e-098ec793f412\", \"revision\": 2, \"status\": \"waiting\", \"speaker\": \"a\", \"next\": [\"b\"], \"active\": {\"eventId\": \"radio-turn:ce0700f7-6619-499f-a168-64c8596170d0\", \"agentId\": \"a\", \"epoch\": 1, \"threadId\": \"native-a\", \"identity\": [\"native-a\", 1, 0], \"through\": 1}, \"error\": null, \"seen\": {}}, \"updated\": 1792684477.4091325}"
+      },
+      "agents": {
+        "a": "{\"id\": \"a\", \"isLead\": true, \"parentId\": null, \"rootId\": \"a\", \"cwd\": \"/tmp/tmpwhm04do3/tmp8i8ia_ol/one/project\", \"threadId\": \"native-a\", \"accountKey\": \"default\", \"history\": [\"original\"], \"autoWake\": true, \"epoch\": 1, \"name\": \"a\", \"status\": \"idle\", \"inFlight\": false}",
+        "b": "{\"id\": \"b\", \"isLead\": true, \"parentId\": null, \"rootId\": \"b\", \"cwd\": \"/tmp/tmpwhm04do3/tmp8i8ia_ol/one/project\", \"threadId\": \"native-b\", \"accountKey\": \"default\", \"history\": [\"original\"], \"autoWake\": true, \"epoch\": 1, \"name\": \"b\", \"status\": \"idle\", \"inFlight\": false}"
+      },
+      "projects": {
+        "/tmp/tmpwhm04do3/tmp8i8ia_ol/one/project": "{\"id\": \"/tmp/tmpwhm04do3/tmp8i8ia_ol/one/project\", \"path\": \"/tmp/tmpwhm04do3/tmp8i8ia_ol/one/project\", \"name\": \"project\", \"created\": 1792684477.4037256, \"accountKey\": \"default\", \"accountRevision\": 1, \"peerTeams\": [{\"id\": \"11ce5061-eca1-4218-948e-098ec793f412\", \"name\": \"Team\", \"members\": [\"a\", \"b\"]}], \"peerTeamsRevision\": 1, \"updated\": 1792684477.4055314}"
+      },
+      "resolved_paths": {
+        "/tmp/tmpwhm04do3/tmp8i8ia_ol/one/project": "/tmp/tmpwhm04do3/tmp8i8ia_ol/one/project"
+      }
+    },
+    "event_id": "radio-turn:ce0700f7-6619-499f-a168-64c8596170d0"
+  },
+  "first-thread-binding": {
+    "allowed": true,
+    "denial": null,
+    "binding": {
+      "room_id": "radio:373fc941-bcb0-4bf7-bc3e-fc697438385f",
+      "event_id": "radio-turn:5b5ea7ca-11aa-41e6-a610-6885c14cca51",
+      "agent_id": "a",
+      "thread_id": "thread-radio",
+      "epoch": 1,
+      "compactions": 3
+    },
+    "python_bind_side_effect": {
+      "room_id": "radio:373fc941-bcb0-4bf7-bc3e-fc697438385f",
+      "event_id": "radio-turn:5b5ea7ca-11aa-41e6-a610-6885c14cca51",
+      "agent_id": "a",
+      "thread_id": "thread-radio",
+      "epoch": 1,
+      "compactions": 3
+    },
+    "records": {
+      "recipient_id": "a",
+      "rooms": {
+        "radio:373fc941-bcb0-4bf7-bc3e-fc697438385f": "{\"id\": \"radio:373fc941-bcb0-4bf7-bc3e-fc697438385f\", \"kind\": \"private\", \"members\": [\"a\", \"b\"], \"projectPath\": \"/tmp/tmpwhm04do3/tmpl2lher1g/one/project\", \"customName\": \"Team \\u00b7 Shared chat\", \"created\": 1792684477.4159338, \"userHidden\": false, \"radio\": {\"teamId\": \"373fc941-bcb0-4bf7-bc3e-fc697438385f\", \"revision\": 2, \"status\": \"waiting\", \"speaker\": \"a\", \"next\": [\"b\"], \"active\": {\"eventId\": \"radio-turn:5b5ea7ca-11aa-41e6-a610-6885c14cca51\", \"agentId\": \"a\", \"epoch\": 1, \"threadId\": null, \"identity\": [\"native-a\", 1, 0], \"through\": 1}, \"error\": null, \"seen\": {}}, \"updated\": 1792684477.4178987}"
+      },
+      "agents": {
+        "a": "{\"id\": \"a\", \"isLead\": true, \"parentId\": null, \"rootId\": \"a\", \"cwd\": \"/tmp/tmpwhm04do3/tmpl2lher1g/one/project\", \"threadId\": \"thread-radio\", \"accountKey\": \"default\", \"history\": [\"original\"], \"autoWake\": true, \"epoch\": 1, \"name\": \"a\", \"status\": \"idle\", \"inFlight\": false, \"compactions\": 3, \"startAttempt\": {\"events\": [\"radio-turn:5b5ea7ca-11aa-41e6-a610-6885c14cca51\"], \"epoch\": 1, \"threadId\": null}}",
+        "b": "{\"id\": \"b\", \"isLead\": true, \"parentId\": null, \"rootId\": \"b\", \"cwd\": \"/tmp/tmpwhm04do3/tmpl2lher1g/one/project\", \"threadId\": \"native-b\", \"accountKey\": \"default\", \"history\": [\"original\"], \"autoWake\": true, \"epoch\": 1, \"name\": \"b\", \"status\": \"idle\", \"inFlight\": false}"
+      },
+      "projects": {
+        "/tmp/tmpwhm04do3/tmpl2lher1g/one/project": "{\"id\": \"/tmp/tmpwhm04do3/tmpl2lher1g/one/project\", \"path\": \"/tmp/tmpwhm04do3/tmpl2lher1g/one/project\", \"name\": \"project\", \"created\": 1792684477.4127367, \"accountKey\": \"default\", \"accountRevision\": 1, \"peerTeams\": [{\"id\": \"373fc941-bcb0-4bf7-bc3e-fc697438385f\", \"name\": \"Team\", \"members\": [\"a\", \"b\"]}], \"peerTeamsRevision\": 1, \"updated\": 1792684477.414447}"
+      },
+      "resolved_paths": {
+        "/tmp/tmpwhm04do3/tmpl2lher1g/one/project": "/tmp/tmpwhm04do3/tmpl2lher1g/one/project"
+      }
+    },
+    "event_id": "radio-turn:5b5ea7ca-11aa-41e6-a610-6885c14cca51"
+  },
+  "binding-wrong-event": {
+    "allowed": false,
+    "denial": "The shared turn is no longer authorized",
+    "binding": null,
+    "python_bind_side_effect": null,
+    "records": {
+      "recipient_id": "a",
+      "rooms": {
+        "radio:2063b427-d628-4f96-9843-13bdcd250007": "{\"id\": \"radio:2063b427-d628-4f96-9843-13bdcd250007\", \"kind\": \"private\", \"members\": [\"a\", \"b\"], \"projectPath\": \"/tmp/tmpwhm04do3/tmp5epn74gf/one/project\", \"customName\": \"Team \\u00b7 Shared chat\", \"created\": 1792684477.4250507, \"userHidden\": false, \"radio\": {\"teamId\": \"2063b427-d628-4f96-9843-13bdcd250007\", \"revision\": 2, \"status\": \"waiting\", \"speaker\": \"a\", \"next\": [\"b\"], \"active\": {\"eventId\": \"radio-turn:78ff8f1a-5c88-4b09-9df8-e10cf619e63a\", \"agentId\": \"a\", \"epoch\": 1, \"threadId\": null, \"identity\": [\"native-a\", 1, 0], \"through\": 1}, \"error\": null, \"seen\": {}}, \"updated\": 1792684477.4269857}"
+      },
+      "agents": {
+        "a": "{\"id\": \"a\", \"isLead\": true, \"parentId\": null, \"rootId\": \"a\", \"cwd\": \"/tmp/tmpwhm04do3/tmp5epn74gf/one/project\", \"threadId\": \"thread-radio\", \"accountKey\": \"default\", \"history\": [\"original\"], \"autoWake\": true, \"epoch\": 1, \"name\": \"a\", \"status\": \"idle\", \"inFlight\": false, \"compactions\": 3, \"startAttempt\": {\"events\": [\"other-event\"], \"epoch\": 1, \"threadId\": null}}",
+        "b": "{\"id\": \"b\", \"isLead\": true, \"parentId\": null, \"rootId\": \"b\", \"cwd\": \"/tmp/tmpwhm04do3/tmp5epn74gf/one/project\", \"threadId\": \"native-b\", \"accountKey\": \"default\", \"history\": [\"original\"], \"autoWake\": true, \"epoch\": 1, \"name\": \"b\", \"status\": \"idle\", \"inFlight\": false}"
+      },
+      "projects": {
+        "/tmp/tmpwhm04do3/tmp5epn74gf/one/project": "{\"id\": \"/tmp/tmpwhm04do3/tmp5epn74gf/one/project\", \"path\": \"/tmp/tmpwhm04do3/tmp5epn74gf/one/project\", \"name\": \"project\", \"created\": 1792684477.4217088, \"accountKey\": \"default\", \"accountRevision\": 1, \"peerTeams\": [{\"id\": \"2063b427-d628-4f96-9843-13bdcd250007\", \"name\": \"Team\", \"members\": [\"a\", \"b\"]}], \"peerTeamsRevision\": 1, \"updated\": 1792684477.42344}"
+      },
+      "resolved_paths": {
+        "/tmp/tmpwhm04do3/tmp5epn74gf/one/project": "/tmp/tmpwhm04do3/tmp5epn74gf/one/project"
+      }
+    },
+    "event_id": "radio-turn:78ff8f1a-5c88-4b09-9df8-e10cf619e63a"
+  },
+  "binding-wrong-epoch": {
+    "allowed": false,
+    "denial": "The shared turn is no longer authorized",
+    "binding": null,
+    "python_bind_side_effect": null,
+    "records": {
+      "recipient_id": "a",
+      "rooms": {
+        "radio:2723d5a5-595e-4d44-bb95-868a2d4f4658": "{\"id\": \"radio:2723d5a5-595e-4d44-bb95-868a2d4f4658\", \"kind\": \"private\", \"members\": [\"a\", \"b\"], \"projectPath\": \"/tmp/tmpwhm04do3/tmpavg26psf/one/project\", \"customName\": \"Team \\u00b7 Shared chat\", \"created\": 1792684477.4343576, \"userHidden\": false, \"radio\": {\"teamId\": \"2723d5a5-595e-4d44-bb95-868a2d4f4658\", \"revision\": 2, \"status\": \"waiting\", \"speaker\": \"a\", \"next\": [\"b\"], \"active\": {\"eventId\": \"radio-turn:36c5b69f-2628-4833-92b0-95cdf9654fe7\", \"agentId\": \"a\", \"epoch\": 1, \"threadId\": null, \"identity\": [\"native-a\", 1, 0], \"through\": 1}, \"error\": null, \"seen\": {}}, \"updated\": 1792684477.4367104}"
+      },
+      "agents": {
+        "a": "{\"id\": \"a\", \"isLead\": true, \"parentId\": null, \"rootId\": \"a\", \"cwd\": \"/tmp/tmpwhm04do3/tmpavg26psf/one/project\", \"threadId\": \"thread-radio\", \"accountKey\": \"default\", \"history\": [\"original\"], \"autoWake\": true, \"epoch\": 1, \"name\": \"a\", \"status\": \"idle\", \"inFlight\": false, \"compactions\": 3, \"startAttempt\": {\"events\": [\"radio-turn:36c5b69f-2628-4833-92b0-95cdf9654fe7\"], \"epoch\": 9, \"threadId\": null}}",
+        "b": "{\"id\": \"b\", \"isLead\": true, \"parentId\": null, \"rootId\": \"b\", \"cwd\": \"/tmp/tmpwhm04do3/tmpavg26psf/one/project\", \"threadId\": \"native-b\", \"accountKey\": \"default\", \"history\": [\"original\"], \"autoWake\": true, \"epoch\": 1, \"name\": \"b\", \"status\": \"idle\", \"inFlight\": false}"
+      },
+      "projects": {
+        "/tmp/tmpwhm04do3/tmpavg26psf/one/project": "{\"id\": \"/tmp/tmpwhm04do3/tmpavg26psf/one/project\", \"path\": \"/tmp/tmpwhm04do3/tmpavg26psf/one/project\", \"name\": \"project\", \"created\": 1792684477.4307065, \"accountKey\": \"default\", \"accountRevision\": 1, \"peerTeams\": [{\"id\": \"2723d5a5-595e-4d44-bb95-868a2d4f4658\", \"name\": \"Team\", \"members\": [\"a\", \"b\"]}], \"peerTeamsRevision\": 1, \"updated\": 1792684477.4328463}"
+      },
+      "resolved_paths": {
+        "/tmp/tmpwhm04do3/tmpavg26psf/one/project": "/tmp/tmpwhm04do3/tmpavg26psf/one/project"
+      }
+    },
+    "event_id": "radio-turn:36c5b69f-2628-4833-92b0-95cdf9654fe7"
+  },
+  "binding-wrong-thread": {
+    "allowed": false,
+    "denial": "The shared turn is no longer authorized",
+    "binding": null,
+    "python_bind_side_effect": null,
+    "records": {
+      "recipient_id": "a",
+      "rooms": {
+        "radio:0e3bcc8a-54b5-46ed-ad69-01a4c267a04a": "{\"id\": \"radio:0e3bcc8a-54b5-46ed-ad69-01a4c267a04a\", \"kind\": \"private\", \"members\": [\"a\", \"b\"], \"projectPath\": \"/tmp/tmpwhm04do3/tmpsp02m8t7/one/project\", \"customName\": \"Team \\u00b7 Shared chat\", \"created\": 1792684477.443906, \"userHidden\": false, \"radio\": {\"teamId\": \"0e3bcc8a-54b5-46ed-ad69-01a4c267a04a\", \"revision\": 2, \"status\": \"waiting\", \"speaker\": \"a\", \"next\": [\"b\"], \"active\": {\"eventId\": \"radio-turn:1fa7ab30-8e05-4cf7-a5ee-fc836b15daf0\", \"agentId\": \"a\", \"epoch\": 1, \"threadId\": null, \"identity\": [\"native-a\", 1, 0], \"through\": 1}, \"error\": null, \"seen\": {}}, \"updated\": 1792684477.4458635}"
+      },
+      "agents": {
+        "a": "{\"id\": \"a\", \"isLead\": true, \"parentId\": null, \"rootId\": \"a\", \"cwd\": \"/tmp/tmpwhm04do3/tmpsp02m8t7/one/project\", \"threadId\": \"thread-radio\", \"accountKey\": \"default\", \"history\": [\"original\"], \"autoWake\": true, \"epoch\": 1, \"name\": \"a\", \"status\": \"idle\", \"inFlight\": false, \"compactions\": 3, \"startAttempt\": {\"events\": [\"radio-turn:1fa7ab30-8e05-4cf7-a5ee-fc836b15daf0\"], \"epoch\": 1, \"threadId\": \"unrelated-thread\"}}",
+        "b": "{\"id\": \"b\", \"isLead\": true, \"parentId\": null, \"rootId\": \"b\", \"cwd\": \"/tmp/tmpwhm04do3/tmpsp02m8t7/one/project\", \"threadId\": \"native-b\", \"accountKey\": \"default\", \"history\": [\"original\"], \"autoWake\": true, \"epoch\": 1, \"name\": \"b\", \"status\": \"idle\", \"inFlight\": false}"
+      },
+      "projects": {
+        "/tmp/tmpwhm04do3/tmpsp02m8t7/one/project": "{\"id\": \"/tmp/tmpwhm04do3/tmpsp02m8t7/one/project\", \"path\": \"/tmp/tmpwhm04do3/tmpsp02m8t7/one/project\", \"name\": \"project\", \"created\": 1792684477.4407153, \"accountKey\": \"default\", \"accountRevision\": 1, \"peerTeams\": [{\"id\": \"0e3bcc8a-54b5-46ed-ad69-01a4c267a04a\", \"name\": \"Team\", \"members\": [\"a\", \"b\"]}], \"peerTeamsRevision\": 1, \"updated\": 1792684477.44249}"
+      },
+      "resolved_paths": {
+        "/tmp/tmpwhm04do3/tmpsp02m8t7/one/project": "/tmp/tmpwhm04do3/tmpsp02m8t7/one/project"
+      }
+    },
+    "event_id": "radio-turn:1fa7ab30-8e05-4cf7-a5ee-fc836b15daf0"
+  },
+  "compactions-null-binding": {
+    "allowed": true,
+    "denial": null,
+    "binding": {
+      "room_id": "radio:7b775e2a-f5e0-473d-bcd7-e4bd2e0740b0",
+      "event_id": "radio-turn:add90c13-f57c-45df-bf19-14741c742fc6",
+      "agent_id": "a",
+      "thread_id": "thread-radio",
+      "epoch": 1,
+      "compactions": null
+    },
+    "python_bind_side_effect": {
+      "room_id": "radio:7b775e2a-f5e0-473d-bcd7-e4bd2e0740b0",
+      "event_id": "radio-turn:add90c13-f57c-45df-bf19-14741c742fc6",
+      "agent_id": "a",
+      "thread_id": "thread-radio",
+      "epoch": 1,
+      "compactions": null
+    },
+    "records": {
+      "recipient_id": "a",
+      "rooms": {
+        "radio:7b775e2a-f5e0-473d-bcd7-e4bd2e0740b0": "{\"id\": \"radio:7b775e2a-f5e0-473d-bcd7-e4bd2e0740b0\", \"kind\": \"private\", \"members\": [\"a\", \"b\"], \"projectPath\": \"/tmp/tmpwhm04do3/tmpi7dm8c3k/one/project\", \"customName\": \"Team \\u00b7 Shared chat\", \"created\": 1792684477.4530423, \"userHidden\": false, \"radio\": {\"teamId\": \"7b775e2a-f5e0-473d-bcd7-e4bd2e0740b0\", \"revision\": 2, \"status\": \"waiting\", \"speaker\": \"a\", \"next\": [\"b\"], \"active\": {\"eventId\": \"radio-turn:add90c13-f57c-45df-bf19-14741c742fc6\", \"agentId\": \"a\", \"epoch\": 1, \"threadId\": null, \"identity\": [\"native-a\", 1, 0], \"through\": 1}, \"error\": null, \"seen\": {}}, \"updated\": 1792684477.4550195}"
+      },
+      "agents": {
+        "a": "{\"id\": \"a\", \"isLead\": true, \"parentId\": null, \"rootId\": \"a\", \"cwd\": \"/tmp/tmpwhm04do3/tmpi7dm8c3k/one/project\", \"threadId\": \"thread-radio\", \"accountKey\": \"default\", \"history\": [\"original\"], \"autoWake\": true, \"epoch\": 1, \"name\": \"a\", \"status\": \"idle\", \"inFlight\": false, \"compactions\": null, \"startAttempt\": {\"events\": [\"radio-turn:add90c13-f57c-45df-bf19-14741c742fc6\"], \"epoch\": 1, \"threadId\": null}}",
+        "b": "{\"id\": \"b\", \"isLead\": true, \"parentId\": null, \"rootId\": \"b\", \"cwd\": \"/tmp/tmpwhm04do3/tmpi7dm8c3k/one/project\", \"threadId\": \"native-b\", \"accountKey\": \"default\", \"history\": [\"original\"], \"autoWake\": true, \"epoch\": 1, \"name\": \"b\", \"status\": \"idle\", \"inFlight\": false}"
+      },
+      "projects": {
+        "/tmp/tmpwhm04do3/tmpi7dm8c3k/one/project": "{\"id\": \"/tmp/tmpwhm04do3/tmpi7dm8c3k/one/project\", \"path\": \"/tmp/tmpwhm04do3/tmpi7dm8c3k/one/project\", \"name\": \"project\", \"created\": 1792684477.4496808, \"accountKey\": \"default\", \"accountRevision\": 1, \"peerTeams\": [{\"id\": \"7b775e2a-f5e0-473d-bcd7-e4bd2e0740b0\", \"name\": \"Team\", \"members\": [\"a\", \"b\"]}], \"peerTeamsRevision\": 1, \"updated\": 1792684477.4514973}"
+      },
+      "resolved_paths": {
+        "/tmp/tmpwhm04do3/tmpi7dm8c3k/one/project": "/tmp/tmpwhm04do3/tmpi7dm8c3k/one/project"
+      }
+    },
+    "event_id": "radio-turn:add90c13-f57c-45df-bf19-14741c742fc6"
+  },
+  "missing-compactions-defaults-to-zero-on-binding": {
+    "allowed": true,
+    "denial": null,
+    "binding": {
+      "room_id": "radio:1d861e27-a7f3-41ba-abc6-b90ebb9cd65e",
+      "event_id": "radio-turn:0bb367c9-c850-43ba-b048-f17be900eee7",
+      "agent_id": "a",
+      "thread_id": "thread-radio",
+      "epoch": 1,
+      "compactions": 0
+    },
+    "python_bind_side_effect": {
+      "room_id": "radio:1d861e27-a7f3-41ba-abc6-b90ebb9cd65e",
+      "event_id": "radio-turn:0bb367c9-c850-43ba-b048-f17be900eee7",
+      "agent_id": "a",
+      "thread_id": "thread-radio",
+      "epoch": 1,
+      "compactions": 0
+    },
+    "records": {
+      "recipient_id": "a",
+      "rooms": {
+        "radio:1d861e27-a7f3-41ba-abc6-b90ebb9cd65e": "{\"id\": \"radio:1d861e27-a7f3-41ba-abc6-b90ebb9cd65e\", \"kind\": \"private\", \"members\": [\"a\", \"b\"], \"projectPath\": \"/tmp/tmpwhm04do3/tmpabfd6ib5/one/project\", \"customName\": \"Team \\u00b7 Shared chat\", \"created\": 1792684477.4620154, \"userHidden\": false, \"radio\": {\"teamId\": \"1d861e27-a7f3-41ba-abc6-b90ebb9cd65e\", \"revision\": 2, \"status\": \"waiting\", \"speaker\": \"a\", \"next\": [\"b\"], \"active\": {\"eventId\": \"radio-turn:0bb367c9-c850-43ba-b048-f17be900eee7\", \"agentId\": \"a\", \"epoch\": 1, \"threadId\": null, \"identity\": [\"native-a\", 1, 0], \"through\": 1}, \"error\": null, \"seen\": {}}, \"updated\": 1792684477.4641843}"
+      },
+      "agents": {
+        "a": "{\"id\": \"a\", \"isLead\": true, \"parentId\": null, \"rootId\": \"a\", \"cwd\": \"/tmp/tmpwhm04do3/tmpabfd6ib5/one/project\", \"threadId\": \"thread-radio\", \"accountKey\": \"default\", \"history\": [\"original\"], \"autoWake\": true, \"epoch\": 1, \"name\": \"a\", \"status\": \"idle\", \"inFlight\": false, \"startAttempt\": {\"events\": [\"radio-turn:0bb367c9-c850-43ba-b048-f17be900eee7\"], \"epoch\": 1, \"threadId\": null}}",
+        "b": "{\"id\": \"b\", \"isLead\": true, \"parentId\": null, \"rootId\": \"b\", \"cwd\": \"/tmp/tmpwhm04do3/tmpabfd6ib5/one/project\", \"threadId\": \"native-b\", \"accountKey\": \"default\", \"history\": [\"original\"], \"autoWake\": true, \"epoch\": 1, \"name\": \"b\", \"status\": \"idle\", \"inFlight\": false}"
+      },
+      "projects": {
+        "/tmp/tmpwhm04do3/tmpabfd6ib5/one/project": "{\"id\": \"/tmp/tmpwhm04do3/tmpabfd6ib5/one/project\", \"path\": \"/tmp/tmpwhm04do3/tmpabfd6ib5/one/project\", \"name\": \"project\", \"created\": 1792684477.4588208, \"accountKey\": \"default\", \"accountRevision\": 1, \"peerTeams\": [{\"id\": \"1d861e27-a7f3-41ba-abc6-b90ebb9cd65e\", \"name\": \"Team\", \"members\": [\"a\", \"b\"]}], \"peerTeamsRevision\": 1, \"updated\": 1792684477.4605827}"
+      },
+      "resolved_paths": {
+        "/tmp/tmpwhm04do3/tmpabfd6ib5/one/project": "/tmp/tmpwhm04do3/tmpabfd6ib5/one/project"
+      }
+    },
+    "event_id": "radio-turn:0bb367c9-c850-43ba-b048-f17be900eee7"
+  },
+  "active-thread-mismatch": {
+    "allowed": false,
+    "denial": "The shared turn is no longer authorized",
+    "binding": null,
+    "python_bind_side_effect": null,
+    "records": {
+      "recipient_id": "a",
+      "rooms": {
+        "radio:25c524e0-9287-4351-be18-5330e2c1c938": "{\"id\": \"radio:25c524e0-9287-4351-be18-5330e2c1c938\", \"kind\": \"private\", \"members\": [\"a\", \"b\"], \"projectPath\": \"/tmp/tmpwhm04do3/tmpqd3gkq0b/one/project\", \"customName\": \"Team \\u00b7 Shared chat\", \"created\": 1792684477.471605, \"userHidden\": false, \"radio\": {\"teamId\": \"25c524e0-9287-4351-be18-5330e2c1c938\", \"revision\": 2, \"status\": \"waiting\", \"speaker\": \"a\", \"next\": [\"b\"], \"active\": {\"eventId\": \"radio-turn:480717fd-dd83-468c-a7f2-8e80df1c82b5\", \"agentId\": \"a\", \"epoch\": 1, \"threadId\": \"other-thread\", \"identity\": [\"native-a\", 1, 0], \"through\": 1}, \"error\": null, \"seen\": {}}, \"updated\": 1792684477.4735432}"
+      },
+      "agents": {
+        "a": "{\"id\": \"a\", \"isLead\": true, \"parentId\": null, \"rootId\": \"a\", \"cwd\": \"/tmp/tmpwhm04do3/tmpqd3gkq0b/one/project\", \"threadId\": \"native-a\", \"accountKey\": \"default\", \"history\": [\"original\"], \"autoWake\": true, \"epoch\": 1, \"name\": \"a\", \"status\": \"idle\", \"inFlight\": false}",
+        "b": "{\"id\": \"b\", \"isLead\": true, \"parentId\": null, \"rootId\": \"b\", \"cwd\": \"/tmp/tmpwhm04do3/tmpqd3gkq0b/one/project\", \"threadId\": \"native-b\", \"accountKey\": \"default\", \"history\": [\"original\"], \"autoWake\": true, \"epoch\": 1, \"name\": \"b\", \"status\": \"idle\", \"inFlight\": false}"
+      },
+      "projects": {
+        "/tmp/tmpwhm04do3/tmpqd3gkq0b/one/project": "{\"id\": \"/tmp/tmpwhm04do3/tmpqd3gkq0b/one/project\", \"path\": \"/tmp/tmpwhm04do3/tmpqd3gkq0b/one/project\", \"name\": \"project\", \"created\": 1792684477.4682667, \"accountKey\": \"default\", \"accountRevision\": 1, \"peerTeams\": [{\"id\": \"25c524e0-9287-4351-be18-5330e2c1c938\", \"name\": \"Team\", \"members\": [\"a\", \"b\"]}], \"peerTeamsRevision\": 1, \"updated\": 1792684477.4701574}"
+      },
+      "resolved_paths": {
+        "/tmp/tmpwhm04do3/tmpqd3gkq0b/one/project": "/tmp/tmpwhm04do3/tmpqd3gkq0b/one/project"
+      }
+    },
+    "event_id": "radio-turn:480717fd-dd83-468c-a7f2-8e80df1c82b5"
+  },
+  "active-agent-mismatch": {
+    "allowed": false,
+    "denial": "The shared turn is no longer authorized",
+    "binding": null,
+    "python_bind_side_effect": null,
+    "records": {
+      "recipient_id": "a",
+      "rooms": {
+        "radio:75e98c84-60da-4e02-9d1c-1d81da0eef54": "{\"id\": \"radio:75e98c84-60da-4e02-9d1c-1d81da0eef54\", \"kind\": \"private\", \"members\": [\"a\", \"b\"], \"projectPath\": \"/tmp/tmpwhm04do3/tmppflvt3v1/one/project\", \"customName\": \"Team \\u00b7 Shared chat\", \"created\": 1792684477.4830694, \"userHidden\": false, \"radio\": {\"teamId\": \"75e98c84-60da-4e02-9d1c-1d81da0eef54\", \"revision\": 2, \"status\": \"waiting\", \"speaker\": \"a\", \"next\": [\"b\"], \"active\": {\"eventId\": \"radio-turn:d8fd05cb-85f4-40a6-857e-058268bfd98e\", \"agentId\": \"b\", \"epoch\": 1, \"threadId\": \"native-a\", \"identity\": [\"native-a\", 1, 0], \"through\": 1}, \"error\": null, \"seen\": {}}, \"updated\": 1792684477.4865038}"
+      },
+      "agents": {
+        "a": "{\"id\": \"a\", \"isLead\": true, \"parentId\": null, \"rootId\": \"a\", \"cwd\": \"/tmp/tmpwhm04do3/tmppflvt3v1/one/project\", \"threadId\": \"native-a\", \"accountKey\": \"default\", \"history\": [\"original\"], \"autoWake\": true, \"epoch\": 1, \"name\": \"a\", \"status\": \"idle\", \"inFlight\": false}",
+        "b": "{\"id\": \"b\", \"isLead\": true, \"parentId\": null, \"rootId\": \"b\", \"cwd\": \"/tmp/tmpwhm04do3/tmppflvt3v1/one/project\", \"threadId\": \"native-b\", \"accountKey\": \"default\", \"history\": [\"original\"], \"autoWake\": true, \"epoch\": 1, \"name\": \"b\", \"status\": \"idle\", \"inFlight\": false}"
+      },
+      "projects": {
+        "/tmp/tmpwhm04do3/tmppflvt3v1/one/project": "{\"id\": \"/tmp/tmpwhm04do3/tmppflvt3v1/one/project\", \"path\": \"/tmp/tmpwhm04do3/tmppflvt3v1/one/project\", \"name\": \"project\", \"created\": 1792684477.477615, \"accountKey\": \"default\", \"accountRevision\": 1, \"peerTeams\": [{\"id\": \"75e98c84-60da-4e02-9d1c-1d81da0eef54\", \"name\": \"Team\", \"members\": [\"a\", \"b\"]}], \"peerTeamsRevision\": 1, \"updated\": 1792684477.480704}"
+      },
+      "resolved_paths": {
+        "/tmp/tmpwhm04do3/tmppflvt3v1/one/project": "/tmp/tmpwhm04do3/tmppflvt3v1/one/project"
+      }
+    },
+    "event_id": "radio-turn:d8fd05cb-85f4-40a6-857e-058268bfd98e"
+  },
+  "active-epoch-mismatch": {
+    "allowed": false,
+    "denial": "The shared turn is no longer authorized",
+    "binding": null,
+    "python_bind_side_effect": null,
+    "records": {
+      "recipient_id": "a",
+      "rooms": {
+        "radio:51ea556d-c90c-4e77-a08d-0a2ebcb2b76c": "{\"id\": \"radio:51ea556d-c90c-4e77-a08d-0a2ebcb2b76c\", \"kind\": \"private\", \"members\": [\"a\", \"b\"], \"projectPath\": \"/tmp/tmpwhm04do3/tmpl2ccotz0/one/project\", \"customName\": \"Team \\u00b7 Shared chat\", \"created\": 1792684477.4982293, \"userHidden\": false, \"radio\": {\"teamId\": \"51ea556d-c90c-4e77-a08d-0a2ebcb2b76c\", \"revision\": 2, \"status\": \"waiting\", \"speaker\": \"a\", \"next\": [\"b\"], \"active\": {\"eventId\": \"radio-turn:e81ede88-3f23-461a-966e-95485d6ff547\", \"agentId\": \"a\", \"epoch\": 2, \"threadId\": \"native-a\", \"identity\": [\"native-a\", 1, 0], \"through\": 1}, \"error\": null, \"seen\": {}}, \"updated\": 1792684477.5016396}"
+      },
+      "agents": {
+        "a": "{\"id\": \"a\", \"isLead\": true, \"parentId\": null, \"rootId\": \"a\", \"cwd\": \"/tmp/tmpwhm04do3/tmpl2ccotz0/one/project\", \"threadId\": \"native-a\", \"accountKey\": \"default\", \"history\": [\"original\"], \"autoWake\": true, \"epoch\": 1, \"name\": \"a\", \"status\": \"idle\", \"inFlight\": false}",
+        "b": "{\"id\": \"b\", \"isLead\": true, \"parentId\": null, \"rootId\": \"b\", \"cwd\": \"/tmp/tmpwhm04do3/tmpl2ccotz0/one/project\", \"threadId\": \"native-b\", \"accountKey\": \"default\", \"history\": [\"original\"], \"autoWake\": true, \"epoch\": 1, \"name\": \"b\", \"status\": \"idle\", \"inFlight\": false}"
+      },
+      "projects": {
+        "/tmp/tmpwhm04do3/tmpl2ccotz0/one/project": "{\"id\": \"/tmp/tmpwhm04do3/tmpl2ccotz0/one/project\", \"path\": \"/tmp/tmpwhm04do3/tmpl2ccotz0/one/project\", \"name\": \"project\", \"created\": 1792684477.4927258, \"accountKey\": \"default\", \"accountRevision\": 1, \"peerTeams\": [{\"id\": \"51ea556d-c90c-4e77-a08d-0a2ebcb2b76c\", \"name\": \"Team\", \"members\": [\"a\", \"b\"]}], \"peerTeamsRevision\": 1, \"updated\": 1792684477.4958513}"
+      },
+      "resolved_paths": {
+        "/tmp/tmpwhm04do3/tmpl2ccotz0/one/project": "/tmp/tmpwhm04do3/tmpl2ccotz0/one/project"
+      }
+    },
+    "event_id": "radio-turn:e81ede88-3f23-461a-966e-95485d6ff547"
+  },
+  "direct-room-wrong-peer-link": {
+    "allowed": false,
+    "denial": "The shared chat participants are no longer available in this project.",
+    "binding": null,
+    "python_bind_side_effect": null,
+    "records": {
+      "recipient_id": "a",
+      "rooms": {
+        "radio:c17f68f7-4d85-420a-9568-3ac810463c83": "{\"id\": \"radio:c17f68f7-4d85-420a-9568-3ac810463c83\", \"kind\": \"private\", \"members\": [\"a\", \"b\"], \"projectPath\": \"/tmp/tmpwhm04do3/tmpxoh9u7js/one/project\", \"customName\": \"Team \\u00b7 Shared chat\", \"created\": 1792684477.5144043, \"userHidden\": false, \"radio\": {\"teamId\": \"c17f68f7-4d85-420a-9568-3ac810463c83\", \"revision\": 2, \"status\": \"waiting\", \"speaker\": \"a\", \"next\": [\"b\"], \"active\": {\"eventId\": \"radio-turn:b91ad4bd-0d1d-4bdc-a122-e9b67c886c4b\", \"agentId\": \"a\", \"epoch\": 1, \"threadId\": \"native-a\", \"identity\": [\"native-a\", 1, 0], \"through\": 1}, \"error\": null, \"seen\": {}, \"direct\": true}, \"updated\": 1792684477.5178566}"
+      },
+      "agents": {
+        "a": "{\"id\": \"a\", \"isLead\": true, \"parentId\": null, \"rootId\": \"a\", \"cwd\": \"/tmp/tmpwhm04do3/tmpxoh9u7js/one/project\", \"threadId\": \"native-a\", \"accountKey\": \"default\", \"history\": [\"original\"], \"autoWake\": true, \"epoch\": 1, \"name\": \"a\", \"status\": \"idle\", \"inFlight\": false, \"sharedRoomId\": \"radio:c17f68f7-4d85-420a-9568-3ac810463c83\"}",
+        "b": "{\"id\": \"b\", \"isLead\": true, \"parentId\": null, \"rootId\": \"b\", \"cwd\": \"/tmp/tmpwhm04do3/tmpxoh9u7js/one/project\", \"threadId\": \"native-b\", \"accountKey\": \"default\", \"history\": [\"original\"], \"autoWake\": true, \"epoch\": 1, \"name\": \"b\", \"status\": \"idle\", \"inFlight\": false, \"sharedRoomId\": \"other-room\"}"
+      },
+      "projects": {},
+      "resolved_paths": {
+        "/tmp/tmpwhm04do3/tmpxoh9u7js/one/project": "/tmp/tmpwhm04do3/tmpxoh9u7js/one/project"
+      }
+    },
+    "event_id": "radio-turn:b91ad4bd-0d1d-4bdc-a122-e9b67c886c4b"
+  },
+  "direct-room-missing-participant": {
+    "allowed": false,
+    "denial": "The shared chat participants are no longer available in this project.",
+    "binding": null,
+    "python_bind_side_effect": null,
+    "records": {
+      "recipient_id": "a",
+      "rooms": {
+        "radio:e03f56f1-08c8-4e5d-ab1b-9702fa026ddd": "{\"id\": \"radio:e03f56f1-08c8-4e5d-ab1b-9702fa026ddd\", \"kind\": \"private\", \"members\": [\"a\", \"missing-agent\"], \"projectPath\": \"/tmp/tmpwhm04do3/tmpdmp4ybmy/one/project\", \"customName\": \"Team \\u00b7 Shared chat\", \"created\": 1792684477.5257943, \"userHidden\": false, \"radio\": {\"teamId\": \"e03f56f1-08c8-4e5d-ab1b-9702fa026ddd\", \"revision\": 2, \"status\": \"waiting\", \"speaker\": \"a\", \"next\": [\"b\"], \"active\": {\"eventId\": \"radio-turn:db0c6b7a-856d-4108-87c1-872cc9cc8cf5\", \"agentId\": \"a\", \"epoch\": 1, \"threadId\": \"native-a\", \"identity\": [\"native-a\", 1, 0], \"through\": 1}, \"error\": null, \"seen\": {}, \"direct\": true}, \"updated\": 1792684477.527818}"
+      },
+      "agents": {
+        "a": "{\"id\": \"a\", \"isLead\": true, \"parentId\": null, \"rootId\": \"a\", \"cwd\": \"/tmp/tmpwhm04do3/tmpdmp4ybmy/one/project\", \"threadId\": \"native-a\", \"accountKey\": \"default\", \"history\": [\"original\"], \"autoWake\": true, \"epoch\": 1, \"name\": \"a\", \"status\": \"idle\", \"inFlight\": false, \"sharedRoomId\": \"radio:e03f56f1-08c8-4e5d-ab1b-9702fa026ddd\"}"
+      },
+      "projects": {},
+      "resolved_paths": {
+        "/tmp/tmpwhm04do3/tmpdmp4ybmy/one/project": "/tmp/tmpwhm04do3/tmpdmp4ybmy/one/project"
+      }
+    },
+    "event_id": "radio-turn:db0c6b7a-856d-4108-87c1-872cc9cc8cf5"
+  },
+  "room-extra-member": {
+    "allowed": false,
+    "denial": "The shared chat membership changed. Its history stays with its original members.",
+    "binding": null,
+    "python_bind_side_effect": null,
+    "records": {
+      "recipient_id": "a",
+      "rooms": {
+        "radio:3e9b78ef-0f6a-4ad8-bfa7-3ecfd9ff889a": "{\"id\": \"radio:3e9b78ef-0f6a-4ad8-bfa7-3ecfd9ff889a\", \"kind\": \"private\", \"members\": [\"a\", \"b\", \"c\"], \"projectPath\": \"/tmp/tmpwhm04do3/tmpv3je_ptu/one/project\", \"customName\": \"Team \\u00b7 Shared chat\", \"created\": 1792684477.53442, \"userHidden\": false, \"radio\": {\"teamId\": \"3e9b78ef-0f6a-4ad8-bfa7-3ecfd9ff889a\", \"revision\": 2, \"status\": \"waiting\", \"speaker\": \"a\", \"next\": [\"b\"], \"active\": {\"eventId\": \"radio-turn:4e71c019-28bf-4b7c-abe1-fb77ff0659c6\", \"agentId\": \"a\", \"epoch\": 1, \"threadId\": \"native-a\", \"identity\": [\"native-a\", 1, 0], \"through\": 1}, \"error\": null, \"seen\": {}}, \"updated\": 1792684477.5364704}"
+      },
+      "agents": {
+        "a": "{\"id\": \"a\", \"isLead\": true, \"parentId\": null, \"rootId\": \"a\", \"cwd\": \"/tmp/tmpwhm04do3/tmpv3je_ptu/one/project\", \"threadId\": \"native-a\", \"accountKey\": \"default\", \"history\": [\"original\"], \"autoWake\": true, \"epoch\": 1, \"name\": \"a\", \"status\": \"idle\", \"inFlight\": false}",
+        "b": "{\"id\": \"b\", \"isLead\": true, \"parentId\": null, \"rootId\": \"b\", \"cwd\": \"/tmp/tmpwhm04do3/tmpv3je_ptu/one/project\", \"threadId\": \"native-b\", \"accountKey\": \"default\", \"history\": [\"original\"], \"autoWake\": true, \"epoch\": 1, \"name\": \"b\", \"status\": \"idle\", \"inFlight\": false}",
+        "c": "{\"id\": \"c\", \"isLead\": true, \"parentId\": null, \"rootId\": \"c\", \"cwd\": \"/tmp/tmpwhm04do3/tmpv3je_ptu/one/project\", \"threadId\": \"native-c\", \"accountKey\": \"default\", \"history\": [\"original\"], \"autoWake\": true}"
+      },
+      "projects": {
+        "/tmp/tmpwhm04do3/tmpv3je_ptu/one/project": "{\"id\": \"/tmp/tmpwhm04do3/tmpv3je_ptu/one/project\", \"path\": \"/tmp/tmpwhm04do3/tmpv3je_ptu/one/project\", \"name\": \"project\", \"created\": 1792684477.5312247, \"accountKey\": \"default\", \"accountRevision\": 1, \"peerTeams\": [{\"id\": \"3e9b78ef-0f6a-4ad8-bfa7-3ecfd9ff889a\", \"name\": \"Team\", \"members\": [\"a\", \"b\"]}], \"peerTeamsRevision\": 1, \"updated\": 1792684477.5329597}"
+      },
+      "resolved_paths": {
+        "/tmp/tmpwhm04do3/tmpv3je_ptu/one/project": "/tmp/tmpwhm04do3/tmpv3je_ptu/one/project"
+      }
+    },
+    "event_id": "radio-turn:4e71c019-28bf-4b7c-abe1-fb77ff0659c6"
+  },
+  "recipient-transfer-empty-is-inactive": {
+    "allowed": true,
+    "denial": null,
+    "binding": null,
+    "python_bind_side_effect": null,
+    "records": {
+      "recipient_id": "a",
+      "rooms": {
+        "radio:365f2327-646b-48fe-b0b4-34a28835c5ab": "{\"id\": \"radio:365f2327-646b-48fe-b0b4-34a28835c5ab\", \"kind\": \"private\", \"members\": [\"a\", \"b\"], \"projectPath\": \"/tmp/tmpwhm04do3/tmp00rgfzz0/one/project\", \"customName\": \"Team \\u00b7 Shared chat\", \"created\": 1792684477.5435266, \"userHidden\": false, \"radio\": {\"teamId\": \"365f2327-646b-48fe-b0b4-34a28835c5ab\", \"revision\": 2, \"status\": \"waiting\", \"speaker\": \"a\", \"next\": [\"b\"], \"active\": {\"eventId\": \"radio-turn:b408eabe-ce02-427e-98b4-d451679825cc\", \"agentId\": \"a\", \"epoch\": 1, \"threadId\": \"native-a\", \"identity\": [\"native-a\", 1, 0], \"through\": 1}, \"error\": null, \"seen\": {}}, \"updated\": 1792684477.5458791}"
+      },
+      "agents": {
+        "a": "{\"id\": \"a\", \"isLead\": true, \"parentId\": null, \"rootId\": \"a\", \"cwd\": \"/tmp/tmpwhm04do3/tmp00rgfzz0/one/project\", \"threadId\": \"native-a\", \"accountKey\": \"default\", \"history\": [\"original\"], \"autoWake\": true, \"epoch\": 1, \"name\": \"a\", \"status\": \"idle\", \"inFlight\": false, \"accountTransferId\": \"\"}",
+        "b": "{\"id\": \"b\", \"isLead\": true, \"parentId\": null, \"rootId\": \"b\", \"cwd\": \"/tmp/tmpwhm04do3/tmp00rgfzz0/one/project\", \"threadId\": \"native-b\", \"accountKey\": \"default\", \"history\": [\"original\"], \"autoWake\": true, \"epoch\": 1, \"name\": \"b\", \"status\": \"idle\", \"inFlight\": false}"
+      },
+      "projects": {
+        "/tmp/tmpwhm04do3/tmp00rgfzz0/one/project": "{\"id\": \"/tmp/tmpwhm04do3/tmp00rgfzz0/one/project\", \"path\": \"/tmp/tmpwhm04do3/tmp00rgfzz0/one/project\", \"name\": \"project\", \"created\": 1792684477.5402462, \"accountKey\": \"default\", \"accountRevision\": 1, \"peerTeams\": [{\"id\": \"365f2327-646b-48fe-b0b4-34a28835c5ab\", \"name\": \"Team\", \"members\": [\"a\", \"b\"]}], \"peerTeamsRevision\": 1, \"updated\": 1792684477.5419853}"
+      },
+      "resolved_paths": {
+        "/tmp/tmpwhm04do3/tmp00rgfzz0/one/project": "/tmp/tmpwhm04do3/tmp00rgfzz0/one/project"
+      }
+    },
+    "event_id": "radio-turn:b408eabe-ce02-427e-98b4-d451679825cc"
+  },
+  "empty-native-block-is-inactive": {
+    "allowed": true,
+    "denial": null,
+    "binding": null,
+    "python_bind_side_effect": null,
+    "records": {
+      "recipient_id": "a",
+      "rooms": {
+        "radio:974d8fc3-2324-4d9a-a410-0337adcb34e1": "{\"id\": \"radio:974d8fc3-2324-4d9a-a410-0337adcb34e1\", \"kind\": \"private\", \"members\": [\"a\", \"b\"], \"projectPath\": \"/tmp/tmpwhm04do3/tmpgjv6x9fq/one/project\", \"customName\": \"Team \\u00b7 Shared chat\", \"created\": 1792684477.5576282, \"userHidden\": false, \"radio\": {\"teamId\": \"974d8fc3-2324-4d9a-a410-0337adcb34e1\", \"revision\": 2, \"status\": \"waiting\", \"speaker\": \"a\", \"next\": [\"b\"], \"active\": {\"eventId\": \"radio-turn:6a9b3ed0-d4b6-4aeb-8ed9-47cdaf1f02a5\", \"agentId\": \"a\", \"epoch\": 1, \"threadId\": \"native-a\", \"identity\": [\"native-a\", 1, 0], \"through\": 1}, \"error\": null, \"seen\": {}}, \"updated\": 1792684477.5596697}"
+      },
+      "agents": {
+        "a": "{\"id\": \"a\", \"isLead\": true, \"parentId\": null, \"rootId\": \"a\", \"cwd\": \"/tmp/tmpwhm04do3/tmpgjv6x9fq/one/project\", \"threadId\": \"native-a\", \"accountKey\": \"default\", \"history\": [\"original\"], \"autoWake\": true, \"epoch\": 1, \"name\": \"a\", \"status\": \"idle\", \"inFlight\": false, \"nativeThreadBlock\": {}}",
+        "b": "{\"id\": \"b\", \"isLead\": true, \"parentId\": null, \"rootId\": \"b\", \"cwd\": \"/tmp/tmpwhm04do3/tmpgjv6x9fq/one/project\", \"threadId\": \"native-b\", \"accountKey\": \"default\", \"history\": [\"original\"], \"autoWake\": true, \"epoch\": 1, \"name\": \"b\", \"status\": \"idle\", \"inFlight\": false}"
+      },
+      "projects": {
+        "/tmp/tmpwhm04do3/tmpgjv6x9fq/one/project": "{\"id\": \"/tmp/tmpwhm04do3/tmpgjv6x9fq/one/project\", \"path\": \"/tmp/tmpwhm04do3/tmpgjv6x9fq/one/project\", \"name\": \"project\", \"created\": 1792684477.5533192, \"accountKey\": \"default\", \"accountRevision\": 1, \"peerTeams\": [{\"id\": \"974d8fc3-2324-4d9a-a410-0337adcb34e1\", \"name\": \"Team\", \"members\": [\"a\", \"b\"]}], \"peerTeamsRevision\": 1, \"updated\": 1792684477.5559678}"
+      },
+      "resolved_paths": {
+        "/tmp/tmpwhm04do3/tmpgjv6x9fq/one/project": "/tmp/tmpwhm04do3/tmpgjv6x9fq/one/project"
+      }
+    },
+    "event_id": "radio-turn:6a9b3ed0-d4b6-4aeb-8ed9-47cdaf1f02a5"
+  },
+  "recipient-hold-empty-object-is-inactive": {
+    "allowed": true,
+    "denial": null,
+    "binding": null,
+    "python_bind_side_effect": null,
+    "records": {
+      "recipient_id": "a",
+      "rooms": {
+        "radio:5b421bb5-1ee2-4f7b-9620-0ea0ad2d4185": "{\"id\": \"radio:5b421bb5-1ee2-4f7b-9620-0ea0ad2d4185\", \"kind\": \"private\", \"members\": [\"a\", \"b\"], \"projectPath\": \"/tmp/tmpwhm04do3/tmp5i6sp_fr/one/project\", \"customName\": \"Team \\u00b7 Shared chat\", \"created\": 1792684477.5671089, \"userHidden\": false, \"radio\": {\"teamId\": \"5b421bb5-1ee2-4f7b-9620-0ea0ad2d4185\", \"revision\": 2, \"status\": \"waiting\", \"speaker\": \"a\", \"next\": [\"b\"], \"active\": {\"eventId\": \"radio-turn:ac83d67c-77eb-40a2-a28b-27b4366bbe29\", \"agentId\": \"a\", \"epoch\": 1, \"threadId\": \"native-a\", \"identity\": [\"native-a\", 1, 0], \"through\": 1}, \"error\": null, \"seen\": {}}, \"updated\": 1792684477.5692477}"
+      },
+      "agents": {
+        "a": "{\"id\": \"a\", \"isLead\": true, \"parentId\": null, \"rootId\": \"a\", \"cwd\": \"/tmp/tmpwhm04do3/tmp5i6sp_fr/one/project\", \"threadId\": \"native-a\", \"accountKey\": \"default\", \"history\": [\"original\"], \"autoWake\": true, \"epoch\": 1, \"name\": \"a\", \"status\": \"idle\", \"inFlight\": false, \"nativeFailureHold\": {}}",
+        "b": "{\"id\": \"b\", \"isLead\": true, \"parentId\": null, \"rootId\": \"b\", \"cwd\": \"/tmp/tmpwhm04do3/tmp5i6sp_fr/one/project\", \"threadId\": \"native-b\", \"accountKey\": \"default\", \"history\": [\"original\"], \"autoWake\": true, \"epoch\": 1, \"name\": \"b\", \"status\": \"idle\", \"inFlight\": false}"
+      },
+      "projects": {
+        "/tmp/tmpwhm04do3/tmp5i6sp_fr/one/project": "{\"id\": \"/tmp/tmpwhm04do3/tmp5i6sp_fr/one/project\", \"path\": \"/tmp/tmpwhm04do3/tmp5i6sp_fr/one/project\", \"name\": \"project\", \"created\": 1792684477.5635023, \"accountKey\": \"default\", \"accountRevision\": 1, \"peerTeams\": [{\"id\": \"5b421bb5-1ee2-4f7b-9620-0ea0ad2d4185\", \"name\": \"Team\", \"members\": [\"a\", \"b\"]}], \"peerTeamsRevision\": 1, \"updated\": 1792684477.5654798}"
+      },
+      "resolved_paths": {
+        "/tmp/tmpwhm04do3/tmp5i6sp_fr/one/project": "/tmp/tmpwhm04do3/tmp5i6sp_fr/one/project"
+      }
+    },
+    "event_id": "radio-turn:ac83d67c-77eb-40a2-a28b-27b4366bbe29"
+  },
+  "peer-hold-empty-object-is-inactive": {
+    "allowed": true,
+    "denial": null,
+    "binding": null,
+    "python_bind_side_effect": null,
+    "records": {
+      "recipient_id": "a",
+      "rooms": {
+        "radio:ed68f1d1-447f-4cd0-8a7a-f23f7407dcc1": "{\"id\": \"radio:ed68f1d1-447f-4cd0-8a7a-f23f7407dcc1\", \"kind\": \"private\", \"members\": [\"a\", \"b\"], \"projectPath\": \"/tmp/tmpwhm04do3/tmp7h1n8jqk/one/project\", \"customName\": \"Team \\u00b7 Shared chat\", \"created\": 1792684477.5774324, \"userHidden\": false, \"radio\": {\"teamId\": \"ed68f1d1-447f-4cd0-8a7a-f23f7407dcc1\", \"revision\": 2, \"status\": \"waiting\", \"speaker\": \"a\", \"next\": [\"b\"], \"active\": {\"eventId\": \"radio-turn:077fbd1e-d87f-4e8f-936f-ded1f58d841a\", \"agentId\": \"a\", \"epoch\": 1, \"threadId\": \"native-a\", \"identity\": [\"native-a\", 1, 0], \"through\": 1}, \"error\": null, \"seen\": {}}, \"updated\": 1792684477.5794234}"
+      },
+      "agents": {
+        "a": "{\"id\": \"a\", \"isLead\": true, \"parentId\": null, \"rootId\": \"a\", \"cwd\": \"/tmp/tmpwhm04do3/tmp7h1n8jqk/one/project\", \"threadId\": \"native-a\", \"accountKey\": \"default\", \"history\": [\"original\"], \"autoWake\": true, \"epoch\": 1, \"name\": \"a\", \"status\": \"idle\", \"inFlight\": false}",
+        "b": "{\"id\": \"b\", \"isLead\": true, \"parentId\": null, \"rootId\": \"b\", \"cwd\": \"/tmp/tmpwhm04do3/tmp7h1n8jqk/one/project\", \"threadId\": \"native-b\", \"accountKey\": \"default\", \"history\": [\"original\"], \"autoWake\": true, \"epoch\": 1, \"name\": \"b\", \"status\": \"idle\", \"inFlight\": false, \"nativeFailureHold\": {}}"
+      },
+      "projects": {
+        "/tmp/tmpwhm04do3/tmp7h1n8jqk/one/project": "{\"id\": \"/tmp/tmpwhm04do3/tmp7h1n8jqk/one/project\", \"path\": \"/tmp/tmpwhm04do3/tmp7h1n8jqk/one/project\", \"name\": \"project\", \"created\": 1792684477.5735393, \"accountKey\": \"default\", \"accountRevision\": 1, \"peerTeams\": [{\"id\": \"ed68f1d1-447f-4cd0-8a7a-f23f7407dcc1\", \"name\": \"Team\", \"members\": [\"a\", \"b\"]}], \"peerTeamsRevision\": 1, \"updated\": 1792684477.5754445}"
+      },
+      "resolved_paths": {
+        "/tmp/tmpwhm04do3/tmp7h1n8jqk/one/project": "/tmp/tmpwhm04do3/tmp7h1n8jqk/one/project"
+      }
+    },
+    "event_id": "radio-turn:077fbd1e-d87f-4e8f-936f-ded1f58d841a"
+  },
+  "binding-attempt-has-extra-event": {
+    "allowed": false,
+    "denial": "The shared turn is no longer authorized",
+    "binding": null,
+    "python_bind_side_effect": null,
+    "records": {
+      "recipient_id": "a",
+      "rooms": {
+        "radio:c48618c5-c844-4209-a4c0-b978eae53ea0": "{\"id\": \"radio:c48618c5-c844-4209-a4c0-b978eae53ea0\", \"kind\": \"private\", \"members\": [\"a\", \"b\"], \"projectPath\": \"/tmp/tmpwhm04do3/tmpu_9lfgvh/one/project\", \"customName\": \"Team \\u00b7 Shared chat\", \"created\": 1792684477.5867157, \"userHidden\": false, \"radio\": {\"teamId\": \"c48618c5-c844-4209-a4c0-b978eae53ea0\", \"revision\": 2, \"status\": \"waiting\", \"speaker\": \"a\", \"next\": [\"b\"], \"active\": {\"eventId\": \"radio-turn:c26f16e2-0875-4240-b099-25211d20ca4b\", \"agentId\": \"a\", \"epoch\": 1, \"threadId\": null, \"identity\": [\"native-a\", 1, 0], \"through\": 1}, \"error\": null, \"seen\": {}}, \"updated\": 1792684477.5887344}"
+      },
+      "agents": {
+        "a": "{\"id\": \"a\", \"isLead\": true, \"parentId\": null, \"rootId\": \"a\", \"cwd\": \"/tmp/tmpwhm04do3/tmpu_9lfgvh/one/project\", \"threadId\": \"thread-radio\", \"accountKey\": \"default\", \"history\": [\"original\"], \"autoWake\": true, \"epoch\": 1, \"name\": \"a\", \"status\": \"idle\", \"inFlight\": false, \"compactions\": 3, \"startAttempt\": {\"events\": [\"radio-event\", \"other-event\"], \"epoch\": 1, \"threadId\": null}}",
+        "b": "{\"id\": \"b\", \"isLead\": true, \"parentId\": null, \"rootId\": \"b\", \"cwd\": \"/tmp/tmpwhm04do3/tmpu_9lfgvh/one/project\", \"threadId\": \"native-b\", \"accountKey\": \"default\", \"history\": [\"original\"], \"autoWake\": true, \"epoch\": 1, \"name\": \"b\", \"status\": \"idle\", \"inFlight\": false}"
+      },
+      "projects": {
+        "/tmp/tmpwhm04do3/tmpu_9lfgvh/one/project": "{\"id\": \"/tmp/tmpwhm04do3/tmpu_9lfgvh/one/project\", \"path\": \"/tmp/tmpwhm04do3/tmpu_9lfgvh/one/project\", \"name\": \"project\", \"created\": 1792684477.5833771, \"accountKey\": \"default\", \"accountRevision\": 1, \"peerTeams\": [{\"id\": \"c48618c5-c844-4209-a4c0-b978eae53ea0\", \"name\": \"Team\", \"members\": [\"a\", \"b\"]}], \"peerTeamsRevision\": 1, \"updated\": 1792684477.5851579}"
+      },
+      "resolved_paths": {
+        "/tmp/tmpwhm04do3/tmpu_9lfgvh/one/project": "/tmp/tmpwhm04do3/tmpu_9lfgvh/one/project"
+      }
+    },
+    "event_id": "radio-turn:c26f16e2-0875-4240-b099-25211d20ca4b"
+  },
+  "binding-attempt-epoch-missing": {
+    "allowed": false,
+    "denial": "The shared turn is no longer authorized",
+    "binding": null,
+    "python_bind_side_effect": null,
+    "records": {
+      "recipient_id": "a",
+      "rooms": {
+        "radio:d4aba256-198b-46d9-bd76-9544e9aab7b9": "{\"id\": \"radio:d4aba256-198b-46d9-bd76-9544e9aab7b9\", \"kind\": \"private\", \"members\": [\"a\", \"b\"], \"projectPath\": \"/tmp/tmpwhm04do3/tmpubd01s_e/one/project\", \"customName\": \"Team \\u00b7 Shared chat\", \"created\": 1792684477.5956419, \"userHidden\": false, \"radio\": {\"teamId\": \"d4aba256-198b-46d9-bd76-9544e9aab7b9\", \"revision\": 2, \"status\": \"waiting\", \"speaker\": \"a\", \"next\": [\"b\"], \"active\": {\"eventId\": \"radio-turn:7fed638f-b78a-488a-94dd-1e67690e69eb\", \"agentId\": \"a\", \"epoch\": 1, \"threadId\": null, \"identity\": [\"native-a\", 1, 0], \"through\": 1}, \"error\": null, \"seen\": {}}, \"updated\": 1792684477.5976295}"
+      },
+      "agents": {
+        "a": "{\"id\": \"a\", \"isLead\": true, \"parentId\": null, \"rootId\": \"a\", \"cwd\": \"/tmp/tmpwhm04do3/tmpubd01s_e/one/project\", \"threadId\": \"thread-radio\", \"accountKey\": \"default\", \"history\": [\"original\"], \"autoWake\": true, \"epoch\": 1, \"name\": \"a\", \"status\": \"idle\", \"inFlight\": false, \"compactions\": 3, \"startAttempt\": {\"events\": [\"radio-turn:7fed638f-b78a-488a-94dd-1e67690e69eb\"], \"epoch\": null, \"threadId\": null}}",
+        "b": "{\"id\": \"b\", \"isLead\": true, \"parentId\": null, \"rootId\": \"b\", \"cwd\": \"/tmp/tmpwhm04do3/tmpubd01s_e/one/project\", \"threadId\": \"native-b\", \"accountKey\": \"default\", \"history\": [\"original\"], \"autoWake\": true, \"epoch\": 1, \"name\": \"b\", \"status\": \"idle\", \"inFlight\": false}"
+      },
+      "projects": {
+        "/tmp/tmpwhm04do3/tmpubd01s_e/one/project": "{\"id\": \"/tmp/tmpwhm04do3/tmpubd01s_e/one/project\", \"path\": \"/tmp/tmpwhm04do3/tmpubd01s_e/one/project\", \"name\": \"project\", \"created\": 1792684477.5924394, \"accountKey\": \"default\", \"accountRevision\": 1, \"peerTeams\": [{\"id\": \"d4aba256-198b-46d9-bd76-9544e9aab7b9\", \"name\": \"Team\", \"members\": [\"a\", \"b\"]}], \"peerTeamsRevision\": 1, \"updated\": 1792684477.5942068}"
+      },
+      "resolved_paths": {
+        "/tmp/tmpwhm04do3/tmpubd01s_e/one/project": "/tmp/tmpwhm04do3/tmpubd01s_e/one/project"
+      }
+    },
+    "event_id": "radio-turn:7fed638f-b78a-488a-94dd-1e67690e69eb"
+  },
+  "binding-agent-epoch-mismatch": {
+    "allowed": false,
+    "denial": "The shared turn is no longer authorized",
+    "binding": null,
+    "python_bind_side_effect": null,
+    "records": {
+      "recipient_id": "a",
+      "rooms": {
+        "radio:af9be7f7-1269-4ebf-95be-031cb6889fa0": "{\"id\": \"radio:af9be7f7-1269-4ebf-95be-031cb6889fa0\", \"kind\": \"private\", \"members\": [\"a\", \"b\"], \"projectPath\": \"/tmp/tmpwhm04do3/tmpy87zrhah/one/project\", \"customName\": \"Team \\u00b7 Shared chat\", \"created\": 1792684477.604656, \"userHidden\": false, \"radio\": {\"teamId\": \"af9be7f7-1269-4ebf-95be-031cb6889fa0\", \"revision\": 2, \"status\": \"waiting\", \"speaker\": \"a\", \"next\": [\"b\"], \"active\": {\"eventId\": \"radio-turn:e21eafea-f87f-4d0d-a113-25df44afebe9\", \"agentId\": \"a\", \"epoch\": 1, \"threadId\": null, \"identity\": [\"native-a\", 1, 0], \"through\": 1}, \"error\": null, \"seen\": {}}, \"updated\": 1792684477.6067135}"
+      },
+      "agents": {
+        "a": "{\"id\": \"a\", \"isLead\": true, \"parentId\": null, \"rootId\": \"a\", \"cwd\": \"/tmp/tmpwhm04do3/tmpy87zrhah/one/project\", \"threadId\": \"thread-radio\", \"accountKey\": \"default\", \"history\": [\"original\"], \"autoWake\": true, \"epoch\": 2, \"name\": \"a\", \"status\": \"idle\", \"inFlight\": false, \"compactions\": 3, \"startAttempt\": {\"events\": [\"radio-turn:e21eafea-f87f-4d0d-a113-25df44afebe9\"], \"epoch\": 1, \"threadId\": null}}",
+        "b": "{\"id\": \"b\", \"isLead\": true, \"parentId\": null, \"rootId\": \"b\", \"cwd\": \"/tmp/tmpwhm04do3/tmpy87zrhah/one/project\", \"threadId\": \"native-b\", \"accountKey\": \"default\", \"history\": [\"original\"], \"autoWake\": true, \"epoch\": 1, \"name\": \"b\", \"status\": \"idle\", \"inFlight\": false}"
+      },
+      "projects": {
+        "/tmp/tmpwhm04do3/tmpy87zrhah/one/project": "{\"id\": \"/tmp/tmpwhm04do3/tmpy87zrhah/one/project\", \"path\": \"/tmp/tmpwhm04do3/tmpy87zrhah/one/project\", \"name\": \"project\", \"created\": 1792684477.6013396, \"accountKey\": \"default\", \"accountRevision\": 1, \"peerTeams\": [{\"id\": \"af9be7f7-1269-4ebf-95be-031cb6889fa0\", \"name\": \"Team\", \"members\": [\"a\", \"b\"]}], \"peerTeamsRevision\": 1, \"updated\": 1792684477.6030815}"
+      },
+      "resolved_paths": {
+        "/tmp/tmpwhm04do3/tmpy87zrhah/one/project": "/tmp/tmpwhm04do3/tmpy87zrhah/one/project"
+      }
+    },
+    "event_id": "radio-turn:e21eafea-f87f-4d0d-a113-25df44afebe9"
+  },
+  "binding-agent-has-no-native-thread": {
+    "allowed": false,
+    "denial": "The shared turn is no longer authorized",
+    "binding": null,
+    "python_bind_side_effect": null,
+    "records": {
+      "recipient_id": "a",
+      "rooms": {
+        "radio:1a480366-d448-49d5-84cf-dd2d59af5be3": "{\"id\": \"radio:1a480366-d448-49d5-84cf-dd2d59af5be3\", \"kind\": \"private\", \"members\": [\"a\", \"b\"], \"projectPath\": \"/tmp/tmpwhm04do3/tmp155s19ve/one/project\", \"customName\": \"Team \\u00b7 Shared chat\", \"created\": 1792684477.614036, \"userHidden\": false, \"radio\": {\"teamId\": \"1a480366-d448-49d5-84cf-dd2d59af5be3\", \"revision\": 2, \"status\": \"waiting\", \"speaker\": \"a\", \"next\": [\"b\"], \"active\": {\"eventId\": \"radio-turn:7e7c9c7d-2a2e-4af1-b892-0087e47e74bb\", \"agentId\": \"a\", \"epoch\": 1, \"threadId\": \"native-a\", \"identity\": [\"native-a\", 1, 0], \"through\": 1}, \"error\": null, \"seen\": {}}, \"updated\": 1792684477.6159923}"
+      },
+      "agents": {
+        "a": "{\"id\": \"a\", \"isLead\": true, \"parentId\": null, \"rootId\": \"a\", \"cwd\": \"/tmp/tmpwhm04do3/tmp155s19ve/one/project\", \"threadId\": null, \"accountKey\": \"default\", \"history\": [\"original\"], \"autoWake\": true, \"epoch\": 1, \"name\": \"a\", \"status\": \"idle\", \"inFlight\": false}",
+        "b": "{\"id\": \"b\", \"isLead\": true, \"parentId\": null, \"rootId\": \"b\", \"cwd\": \"/tmp/tmpwhm04do3/tmp155s19ve/one/project\", \"threadId\": \"native-b\", \"accountKey\": \"default\", \"history\": [\"original\"], \"autoWake\": true, \"epoch\": 1, \"name\": \"b\", \"status\": \"idle\", \"inFlight\": false}"
+      },
+      "projects": {
+        "/tmp/tmpwhm04do3/tmp155s19ve/one/project": "{\"id\": \"/tmp/tmpwhm04do3/tmp155s19ve/one/project\", \"path\": \"/tmp/tmpwhm04do3/tmp155s19ve/one/project\", \"name\": \"project\", \"created\": 1792684477.6106427, \"accountKey\": \"default\", \"accountRevision\": 1, \"peerTeams\": [{\"id\": \"1a480366-d448-49d5-84cf-dd2d59af5be3\", \"name\": \"Team\", \"members\": [\"a\", \"b\"]}], \"peerTeamsRevision\": 1, \"updated\": 1792684477.6125476}"
+      },
+      "resolved_paths": {
+        "/tmp/tmpwhm04do3/tmp155s19ve/one/project": "/tmp/tmpwhm04do3/tmp155s19ve/one/project"
+      }
+    },
+    "event_id": "radio-turn:7e7c9c7d-2a2e-4af1-b892-0087e47e74bb"
+  },
+  "existing-thread-identity-allows-without-new-binding": {
+    "allowed": true,
+    "denial": null,
+    "binding": null,
+    "python_bind_side_effect": null,
+    "records": {
+      "recipient_id": "a",
+      "rooms": {
+        "radio:e47bd07b-b03b-458e-9040-578ce2c08d81": "{\"id\": \"radio:e47bd07b-b03b-458e-9040-578ce2c08d81\", \"kind\": \"private\", \"members\": [\"a\", \"b\"], \"projectPath\": \"/tmp/tmpwhm04do3/tmpjscpo0u1/one/project\", \"customName\": \"Team \\u00b7 Shared chat\", \"created\": 1792684477.6228864, \"userHidden\": false, \"radio\": {\"teamId\": \"e47bd07b-b03b-458e-9040-578ce2c08d81\", \"revision\": 2, \"status\": \"waiting\", \"speaker\": \"a\", \"next\": [\"b\"], \"active\": {\"eventId\": \"radio-turn:07ead24b-e6b9-4eee-abe2-02cff30c5541\", \"agentId\": \"a\", \"epoch\": 1, \"threadId\": \"native-a\", \"identity\": [\"native-a\", 1, 0], \"through\": 1}, \"error\": null, \"seen\": {}}, \"updated\": 1792684477.6248243}"
+      },
+      "agents": {
+        "a": "{\"id\": \"a\", \"isLead\": true, \"parentId\": null, \"rootId\": \"a\", \"cwd\": \"/tmp/tmpwhm04do3/tmpjscpo0u1/one/project\", \"threadId\": \"native-a\", \"accountKey\": \"default\", \"history\": [\"original\"], \"autoWake\": true, \"epoch\": 1, \"name\": \"a\", \"status\": \"idle\", \"inFlight\": false}",
+        "b": "{\"id\": \"b\", \"isLead\": true, \"parentId\": null, \"rootId\": \"b\", \"cwd\": \"/tmp/tmpwhm04do3/tmpjscpo0u1/one/project\", \"threadId\": \"native-b\", \"accountKey\": \"default\", \"history\": [\"original\"], \"autoWake\": true, \"epoch\": 1, \"name\": \"b\", \"status\": \"idle\", \"inFlight\": false}"
+      },
+      "projects": {
+        "/tmp/tmpwhm04do3/tmpjscpo0u1/one/project": "{\"id\": \"/tmp/tmpwhm04do3/tmpjscpo0u1/one/project\", \"path\": \"/tmp/tmpwhm04do3/tmpjscpo0u1/one/project\", \"name\": \"project\", \"created\": 1792684477.6195936, \"accountKey\": \"default\", \"accountRevision\": 1, \"peerTeams\": [{\"id\": \"e47bd07b-b03b-458e-9040-578ce2c08d81\", \"name\": \"Team\", \"members\": [\"a\", \"b\"]}], \"peerTeamsRevision\": 1, \"updated\": 1792684477.6214159}"
+      },
+      "resolved_paths": {
+        "/tmp/tmpwhm04do3/tmpjscpo0u1/one/project": "/tmp/tmpwhm04do3/tmpjscpo0u1/one/project"
+      }
+    },
+    "event_id": "radio-turn:07ead24b-e6b9-4eee-abe2-02cff30c5541"
+  },
+  "nonterminal-speaking-room-allows": {
+    "allowed": true,
+    "denial": null,
+    "binding": null,
+    "python_bind_side_effect": null,
+    "records": {
+      "recipient_id": "a",
+      "rooms": {
+        "radio:4146f12f-bb4c-446e-86b8-24777ec7a351": "{\"id\": \"radio:4146f12f-bb4c-446e-86b8-24777ec7a351\", \"kind\": \"private\", \"members\": [\"a\", \"b\"], \"projectPath\": \"/tmp/tmpwhm04do3/tmpobesfcjr/one/project\", \"customName\": \"Team \\u00b7 Shared chat\", \"created\": 1792684477.6320643, \"userHidden\": false, \"radio\": {\"teamId\": \"4146f12f-bb4c-446e-86b8-24777ec7a351\", \"revision\": 2, \"status\": \"speaking\", \"speaker\": \"a\", \"next\": [\"b\"], \"active\": {\"eventId\": \"radio-turn:28fd16fd-9cc7-4080-8a58-9922b273eabb\", \"agentId\": \"a\", \"epoch\": 1, \"threadId\": \"native-a\", \"identity\": [\"native-a\", 1, 0], \"through\": 1}, \"error\": null, \"seen\": {}}, \"updated\": 1792684477.6340308}"
+      },
+      "agents": {
+        "a": "{\"id\": \"a\", \"isLead\": true, \"parentId\": null, \"rootId\": \"a\", \"cwd\": \"/tmp/tmpwhm04do3/tmpobesfcjr/one/project\", \"threadId\": \"native-a\", \"accountKey\": \"default\", \"history\": [\"original\"], \"autoWake\": true, \"epoch\": 1, \"name\": \"a\", \"status\": \"idle\", \"inFlight\": false}",
+        "b": "{\"id\": \"b\", \"isLead\": true, \"parentId\": null, \"rootId\": \"b\", \"cwd\": \"/tmp/tmpwhm04do3/tmpobesfcjr/one/project\", \"threadId\": \"native-b\", \"accountKey\": \"default\", \"history\": [\"original\"], \"autoWake\": true, \"epoch\": 1, \"name\": \"b\", \"status\": \"idle\", \"inFlight\": false}"
+      },
+      "projects": {
+        "/tmp/tmpwhm04do3/tmpobesfcjr/one/project": "{\"id\": \"/tmp/tmpwhm04do3/tmpobesfcjr/one/project\", \"path\": \"/tmp/tmpwhm04do3/tmpobesfcjr/one/project\", \"name\": \"project\", \"created\": 1792684477.628783, \"accountKey\": \"default\", \"accountRevision\": 1, \"peerTeams\": [{\"id\": \"4146f12f-bb4c-446e-86b8-24777ec7a351\", \"name\": \"Team\", \"members\": [\"a\", \"b\"]}], \"peerTeamsRevision\": 1, \"updated\": 1792684477.6306002}"
+      },
+      "resolved_paths": {
+        "/tmp/tmpwhm04do3/tmpobesfcjr/one/project": "/tmp/tmpwhm04do3/tmpobesfcjr/one/project"
+      }
+    },
+    "event_id": "radio-turn:28fd16fd-9cc7-4080-8a58-9922b273eabb"
+  }
+}

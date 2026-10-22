@@ -18,12 +18,12 @@ room state machine.
 | binding       | Exact event, epoch, thread, compaction identity; no write intent on denial |    8 |   12 |
 
 `cases-full.json` contains only the additional cases; the full run includes both
-files. Every case invokes the real Python fixture writer and
-`codex_radio.validate_event`, then checks the Rust snapshot decision.
+files. Every case checks the Rust snapshot decision against the historical results in
+`expected.json`. The tests run without a Python interpreter.
 
 ## Excluded stateful rules
 
-These stay with the existing Python runtime and are deliberately outside this
+These belong to the stateful Rust runtime and are deliberately outside this
 snapshot API:
 
 - Queue construction, `send`, `pass`, and `stop` (`manage` and `tick`) write

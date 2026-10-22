@@ -1,0 +1,86 @@
+{
+  "tables": {
+    "voice_sessions": [
+      {
+        "id": "oracle-session",
+        "agent": "agent",
+        "created": 100.0,
+        "ended": null,
+        "sdp": "v=0\r\noffer",
+        "answer": "answer",
+        "native_thread": "thread",
+        "account_key": "account",
+        "connection_id": "receipt-matrix-connection",
+        "state": "stopping",
+        "error": null
+      }
+    ],
+    "voice_records": [
+      {
+        "seq": 1,
+        "id": "oracle-speech",
+        "agent": "agent",
+        "session": "oracle-session",
+        "kind": "orchestrator",
+        "text": "hello",
+        "item_id": "item",
+        "previous_item_id": "",
+        "payload": "{}",
+        "created": 100.0
+      }
+    ],
+    "voice_speech_requests": [
+      {
+        "id": "oracle-session:oracle-speech",
+        "session": "oracle-session",
+        "record_id": "oracle-speech",
+        "state": "submitted",
+        "error": null
+      }
+    ],
+    "runtime_events": [],
+    "sync_entities": [],
+    "sync_documents": []
+  },
+  "provider_calls": [
+    [
+      "thread/realtime/start",
+      {
+        "threadId": "thread",
+        "version": "v3",
+        "outputModality": "audio",
+        "realtimeSessionId": "oracle-session",
+        "clientManagedHandoffs": false,
+        "flushTranscriptTailOnSessionEnd": false,
+        "transport": {
+          "type": "webrtc",
+          "sdp": "v=0\r\noffer"
+        }
+      }
+    ],
+    [
+      "thread/realtime/appendSpeech",
+      {
+        "threadId": "thread",
+        "text": "hello"
+      }
+    ],
+    [
+      "thread/realtime/stop",
+      {
+        "threadId": "thread"
+      }
+    ]
+  ],
+  "agent": {
+    "id": "agent",
+    "rootId": "agent",
+    "epoch": 0,
+    "status": "idle",
+    "isLead": true,
+    "threadId": "thread",
+    "accountKey": "account",
+    "autoWake": true,
+    "turnEpoch": 0
+  }
+}
