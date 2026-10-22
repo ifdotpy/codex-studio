@@ -125,6 +125,7 @@ pub mod panels;
 pub mod payload_blobs;
 pub mod payload_store;
 pub mod peer_conversion;
+pub mod peer_updates;
 pub mod portable_history;
 pub mod pricing;
 pub mod process_controls;
