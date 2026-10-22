@@ -1284,9 +1284,16 @@ async fn automatic_recovery_case(restart: bool, child: bool, stopped: bool) {
             agent.status = studio_runtime_store::AgentStatus::Running;
             agent.extra.insert("turnId".into(), json!("old-turn"));
             agent.extra.insert("inFlight".into(), json!(true));
+            agent.extra.insert("startAttempt".into(), json!({
+                "id":"old-attempt", "accountKey":"default", "epoch":agent.epoch,
+                "threadId":"fake-thread-0", "turnId":"old-turn", "submitted":true,
+                "connectionGeneration":1, "events":["annotation:input"],
+                "activeAtReservation":false, "settingsFixed":true
+            }));
             AgentRepository::put(tx, &agent)?;
             tx.execute("UPDATE runtime_events SET status='delivered',turn_id='old-turn' WHERE id='annotation:input'", [])?;
-            studio_runtime_store::SchedulerRepository::disconnect_account(tx, "default", 1, 1.0, restart)?;
+            let interrupted = studio_runtime_store::SchedulerRepository::disconnect_account(tx, "default", 1, 1.0, restart)?;
+            assert_eq!(interrupted, vec![agent_id.clone()], "fixture turn must be disconnected");
             if stopped {
                 studio_runtime_store::SchedulerRepository::stop_agent(tx, &agent_id, "Explicit Stop")?;
             }
@@ -1303,7 +1310,7 @@ async fn automatic_recovery_case(restart: bool, child: bool, stopped: bool) {
             .unwrap()
             .insert("default".into());
     }
-    let mut peer = Peer::new();
+    let mut peer = Peer::identity("default", 2, None);
     let mut worker = peer.worker(state.bridge.clone()).await;
     if stopped {
         worker_barrier(&worker).await;
