@@ -26,6 +26,38 @@ pub struct InvalidRecoveryRecord {
 pub struct RecoverySnapshot {
     agent: Arc<Value>,
 }
+/// Proof from the recovery policy that this saved turn may be checked automatically.
+/// Private fields keep the account caller and completion writer on one eligibility owner.
+pub(crate) struct AutomaticTurnRecovery<'a> {
+    record: &'a Value,
+    kind: AutomaticTurnKind,
+}
+
+enum AutomaticTurnKind {
+    Restart,
+    Transport,
+}
+
+impl AutomaticTurnRecovery<'_> {
+    pub(crate) fn marker_key(&self) -> &'static str {
+        match self.kind {
+            AutomaticTurnKind::Restart => "restartRecovery",
+            AutomaticTurnKind::Transport => "disconnectRecovery",
+        }
+    }
+
+    pub(crate) fn can_continue(&self, turn_id: &str) -> bool {
+        let receipt = &self.record[self.marker_key()];
+        receipt["turnId"] == turn_id
+            && match self.kind {
+                AutomaticTurnKind::Restart => {
+                    matches!(receipt["stage"].as_str(), Some("pending" | "superseded"))
+                }
+                AutomaticTurnKind::Transport => true,
+            }
+    }
+}
+
 impl RecoverySnapshot {
     pub fn from_record(agent: Value) -> Result<Self, InvalidRecoveryRecord> {
         if !studio_runtime_schema::validate("RecoveryAgentRecord", &agent).map_err(|_| {
@@ -57,6 +89,21 @@ impl RecoverySnapshot {
     }
     pub fn eligibility(&self) -> Eligibility {
         eligibility(&self.agent)
+    }
+
+    pub(crate) fn automatic_turn(&self) -> Option<AutomaticTurnRecovery<'_>> {
+        let eligible = self.eligibility();
+        let kind = if eligible.restart_turn {
+            AutomaticTurnKind::Restart
+        } else if eligible.transport_turn {
+            AutomaticTurnKind::Transport
+        } else {
+            return None;
+        };
+        Some(AutomaticTurnRecovery {
+            record: self.record(),
+            kind,
+        })
     }
 
     /// Stable identity for one persisted disconnect/restart recovery. A later
