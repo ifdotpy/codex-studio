@@ -818,6 +818,17 @@ function webWasmPreparation(root) {
   };
 }
 
+function operationsModulePreparation() {
+  return {
+    item: { name: "native operations preparation", ecosystem: "cargo" },
+    label: "native operations preparation",
+    commands: [
+      ["cargo", ["build", "--locked", "-p", "studio-operations-python"]],
+    ],
+    options: { allowZeroTests: true },
+  };
+}
+
 function fastTierCommands(root) {
   const packages = discover(root);
   const server = serverPackage();
@@ -828,6 +839,7 @@ function fastTierCommands(root) {
     "workspaces/tooling/apps/repository-checks/facade.mjs",
   );
   return [
+    operationsModulePreparation(),
     webWasmPreparation(root),
     {
       item: { name: "schema and dependency guards", ecosystem: "pnpm" },
@@ -1049,6 +1061,7 @@ function comprehensiveTierCommands(root) {
   const bridge = packageTarget(packages, "studio-claude-bridge");
   const tooling = packageTarget(packages, "codex-studio-tooling");
   return [
+    operationsModulePreparation(),
     webWasmPreparation(root),
     {
       item: { name: "Rust HTTP fixture preparation", ecosystem: "cargo" },

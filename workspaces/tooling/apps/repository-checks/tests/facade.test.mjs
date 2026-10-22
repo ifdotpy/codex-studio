@@ -35,6 +35,22 @@ import {
 import os from "node:os";
 import path from "node:path";
 
+test("server runner resolves the checkout native module before shared packages", () => {
+  const runnerWitnessTimeoutMilliseconds = 10_000;
+  const result = spawnSync(
+    process.platform === "win32" ? "python" : "python3",
+    [
+      path.join(
+        process.cwd(),
+        "workspaces/runtime/apps/server/tests/server/test_fast_suite_selection.py",
+      ),
+      "FastSuiteSelection.test_runner_resolves_checkout_native_module_before_shared_environment",
+    ],
+    { encoding: "utf8", timeout: runnerWitnessTimeoutMilliseconds },
+  );
+  assert.equal(result.status, 0, result.stderr || String(result.error));
+});
+
 test("short and comprehensive recipes preserve their owned test boundaries", () => {
   const fast = recipePlan(process.cwd(), "test-fast");
   const comprehensive = recipePlan(process.cwd(), "test-comprehensive");
@@ -43,6 +59,14 @@ test("short and comprehensive recipes preserve their owned test boundaries", () 
   assert.match(fast.command, /contracts-check/);
   for (const recipe of [fast, comprehensive]) {
     assert.match(recipe.command, /build-client-wasm\.mjs/);
+    assert.equal(
+      (recipe.command.match(/'studio-operations-python'/g) ?? []).length,
+      1,
+    );
+    assert.ok(
+      recipe.command.indexOf("studio-operations-python") <
+        recipe.command.indexOf("test-server.py"),
+    );
     assert.ok(
       recipe.command.indexOf("build-client-wasm.mjs") <
         recipe.command.indexOf("test-server.py"),
