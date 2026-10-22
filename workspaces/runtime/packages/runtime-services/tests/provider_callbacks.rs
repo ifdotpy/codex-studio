@@ -1,12 +1,7 @@
-//! Scripted provider consumer: real SQLite and Python-written actors, no provider.
+//! Scripted provider consumer with real SQLite and frozen legacy actor records.
 #![allow(clippy::unwrap_used)]
-use crate::prepared_python_support as prepared_python;
 use serde_json::{Value, json};
-use std::{
-    path::PathBuf,
-    process::{Command, Stdio},
-    sync::OnceLock,
-};
+use std::sync::OnceLock;
 use studio_runtime_providers::{Frame, Method, RequestFrame, RequestId, ResponseBody};
 use studio_runtime_services::provider_callbacks::*;
 use studio_runtime_store::RuntimeStore;
@@ -15,52 +10,26 @@ type CaseFuture = std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>
 type Case = (&'static str, fn() -> CaseFuture);
 
 struct Template {
-    files: prepared_python::StateTemplate,
     value: Value,
 }
 fn template() -> &'static Template {
     static TEMPLATE: OnceLock<Template> = OnceLock::new();
-    TEMPLATE.get_or_init(|| {
-        let scratch = tempfile::tempdir().unwrap();
-        let script =
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/provider_callbacks/oracle.py");
-        let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src");
-        let environment = prepared_python::IsolatedTestEnvironment::new();
-        let mut command = Command::new(prepared_python::prepared_python(&source));
-        environment.apply(&mut command);
-        command
-            .arg(&script)
-            .arg(scratch.path())
-            .stdin(Stdio::null());
-        let output = prepared_python::output_with_timeout(
-            &mut command,
-            &script,
-            prepared_python::PYTHON_ORACLE_TIMEOUT,
-        )
-        .unwrap_or_else(|error| panic!("provider callbacks Python oracle: {error}"));
-        assert!(
-            output.status.success(),
-            "oracle: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        let value: Value = serde_json::from_slice(&output.stdout).unwrap();
-        Template {
-            files: prepared_python::StateTemplate::capture(&PathBuf::from(
-                value["template"].as_str().unwrap(),
-            )),
-            value,
-        }
+    TEMPLATE.get_or_init(|| Template {
+        value: serde_json::from_str(include_str!("provider_callbacks/expected.json"))
+            .expect("frozen callback expectations"),
     })
 }
+#[path = "provider_callbacks/fixture.rs"]
+mod frozen;
+
 async fn fixture() -> (
     tempfile::TempDir,
     std::sync::Arc<RuntimeStore>,
     CallbackContext,
 ) {
     let t = template();
-    let directory = tempfile::tempdir().unwrap();
-    t.files.write(directory.path());
-    let store = std::sync::Arc::new(RuntimeStore::open(Some(directory.path())).await.unwrap());
+    let (directory, store, _) = frozen::state().await;
+    let store = std::sync::Arc::new(store);
     let actor = &t.value["agents"][0];
     let context = CallbackContext {
         agent: actor["id"].as_str().unwrap().into(),

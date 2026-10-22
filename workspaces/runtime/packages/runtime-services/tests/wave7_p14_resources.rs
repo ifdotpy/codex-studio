@@ -1,7 +1,4 @@
 use serde_json::{Value, json};
-use std::io::Write;
-use std::path::Path;
-use std::process::{Command, Stdio};
 use std::sync::Arc;
 use studio_runtime_schema::TOKEN_RATE_MAX_ENTRIES;
 use studio_runtime_services::change_notifications::ChangeNotificationHub;
@@ -9,8 +6,6 @@ use studio_runtime_services::resource_notify::{
     MAX_NOTIFY_RECEIPTS, MAX_PUBLICATION_BYTES, ResourceNotifications, ResourceNotifyError,
 };
 use studio_runtime_services::token_rate::TokenRateHub;
-
-use crate::prepared_python_support as python;
 
 #[path = "support/token_rate_difference.rs"]
 mod token_rate_difference;
@@ -96,27 +91,12 @@ fn python_corpus_matches_complete_notify_and_token_publication_results() {
     cases.push(cases[0].clone()); // The initial receipt was evicted.
     cases.push(json!({"op":"restart"}));
     cases.push(cases[0].clone()); // Process-local identity scope resets.
-    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src");
-    let mut child = Command::new(python::prepared_python(&source))
-        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/wave7_p14_oracle.py"))
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("oracle starts");
-    child
-        .stdin
-        .take()
-        .expect("stdin")
-        .write_all(&serde_json::to_vec(&cases).expect("cases serialize"))
-        .expect("write cases");
-    let output = child.wait_with_output().expect("oracle finishes");
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let expected: Vec<Value> = serde_json::from_slice(&output.stdout).expect("oracle JSON");
+    let data = if std::env::var_os("STUDIO_RUNTIME_CORPUS_FULL").is_some() {
+        include_str!("wave7_p14_resources/expected-full.json")
+    } else {
+        include_str!("wave7_p14_resources/expected.json")
+    };
+    let expected: Vec<Value> = serde_json::from_str(data).expect("frozen publication results");
     assert_eq!(expected.len(), cases.len(), "oracle must return every case");
     let mut hub = Arc::new(ChangeNotificationHub::new());
     let mut publisher = ResourceNotifications::new(hub.clone());

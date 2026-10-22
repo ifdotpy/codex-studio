@@ -6,26 +6,21 @@ const { execFile } = require("node:child_process");
 const { promisify } = require("node:util");
 const installedApplicationPath =
   "/Applications/Codex Studio.app/Contents/Resources/app.asar";
-const { executable, stateDirectory } = require("./backend.cjs");
+const { executable, stateDirectory, runtimeServer } = require("./backend.cjs");
 const {
   restartKeys,
   savedLaunchEnvironment,
 } = require("./restart-environment.cjs");
 const runFile = promisify(execFile);
 
-function backendScripts(resources) {
-  const packaged = path.join(resources, "scripts");
-  const development = path.join(
-    resources,
-    "workspaces/runtime/apps/server/src",
-  );
-  if (fs.existsSync(path.join(development, "codex-canvas"))) return development;
-  if (
-    fs.existsSync(path.join(packaged, "codex-canvas")) ||
-    fs.existsSync(path.join(resources, "studio-install.json"))
-  )
-    return packaged;
-  return path.join(resources, "workspaces/runtime/apps/server/src");
+function processSupervisor(resources, env) {
+  const binary =
+    env.CODEX_PROCESS_SUPERVISOR ||
+    path.join(resources, "bin", "codex-process-supervisor");
+  if (!path.isAbsolute(binary))
+    throw new Error("The Rust process supervisor path must be absolute.");
+  fs.accessSync(binary, fs.constants.X_OK);
+  return binary;
 }
 
 function rendererIndex(resources) {
@@ -136,8 +131,8 @@ function launchAgent({ label, python, supervisor, config, state }) {
 <key>StandardErrorPath</key><string>${xml(path.join(state, "background-recovery.log"))}</string>
 </dict></plist>\n`;
 }
-function supervisorLaunchAgent({ label, python, supervisor, state }) {
-  const args = [python, "-B", supervisor, "--state", state, "--wait-for-lease"];
+function supervisorLaunchAgent({ label, supervisor, state }) {
+  const args = [supervisor, "--state", state, "--wait-for-lease"];
   return `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict>
 <key>Label</key><string>${xml(label)}</string>
 <key>ProgramArguments</key><array>${args.map((arg) => `<string>${xml(arg)}</string>`).join("")}</array>
@@ -155,7 +150,7 @@ async function assertRecoveryBootoutSafe({
   serviceInfo,
   files,
   python,
-  resources,
+  supervisor,
   run,
 }) {
   const serviceOutput =
@@ -171,7 +166,7 @@ async function assertRecoveryBootoutSafe({
   } catch (error) {
     if (error.code === "ENOENT") return;
     throw new Error(
-      `Cannot verify the legacy supervisor owner before stopping recovery: ${error.message}`,
+      `Cannot verify the supervisor owner before stopping recovery: ${error.message}`,
     );
   }
   if (
@@ -180,7 +175,7 @@ async function assertRecoveryBootoutSafe({
     typeof owner.startTime !== "string"
   )
     throw new Error(
-      "Cannot verify the legacy supervisor identity before stopping recovery.",
+      "Cannot verify the supervisor identity before stopping recovery.",
     );
   let parentOutput;
   try {
@@ -194,55 +189,45 @@ async function assertRecoveryBootoutSafe({
   } catch (error) {
     if (error.code === 1 && !String(error.stdout || "").trim()) return;
     throw new Error(
-      `Cannot verify whether the legacy supervisor belongs to recovery: ${error.message}`,
+      `Cannot verify whether the supervisor belongs to recovery: ${error.message}`,
     );
   }
   if (!parentOutput.trim()) return;
   if (!Number.isSafeInteger(Number(parentOutput.trim())))
     throw new Error(
-      "Cannot verify the legacy supervisor parent process before stopping recovery.",
+      "Cannot verify the supervisor parent process before stopping recovery.",
     );
   if (Number(parentOutput.trim()) !== jobPid) return;
 
   let health;
   try {
-    const script = path.resolve(
-      backendScripts(resources),
-      "codex_process_supervisor.py",
-    );
     const result = await run(python, [
       "-B",
-      script,
-      "--status-json",
+      path.resolve(supervisor),
+      "--supervisor-health",
       "--state",
       files.state,
     ]);
     health = JSON.parse(result?.stdout || "");
   } catch (error) {
     throw new Error(
-      `Cannot safely stop the recovery LaunchAgent while its legacy supervisor is live: ${error.message}`,
+      `Cannot safely stop the recovery LaunchAgent while its supervisor is live: ${error.message}`,
     );
   }
   if (!Array.isArray(health.handles))
     throw new Error(
-      "Cannot safely stop the recovery LaunchAgent while its legacy supervisor status is unavailable.",
+      "Cannot safely stop the recovery LaunchAgent while its supervisor status is unavailable.",
     );
   if (health.handles.length > 0)
     throw new Error(
-      `Cannot stop the recovery LaunchAgent while legacy supervisor pid ${owner.pid} owns ${health.handles.length} live handle(s). Wait for the owner to exit or all handles to close.`,
+      `Cannot stop the recovery LaunchAgent while supervisor pid ${owner.pid} owns ${health.handles.length} live handle(s). Wait for the owner to exit or all handles to close.`,
     );
 }
-async function ensureSupervisorAgent({ files, python, resources, uid, run }) {
-  const script = path.resolve(
-    backendScripts(resources),
-    "codex_process_supervisor.py",
-  );
-  fs.accessSync(script, fs.constants.R_OK);
+async function ensureSupervisorAgent({ files, binary, uid, run }) {
   fs.mkdirSync(path.dirname(files.supervisorPlist), { recursive: true });
   const nextPlist = supervisorLaunchAgent({
     label: files.supervisorLabel,
-    python,
-    supervisor: script,
+    supervisor: binary,
     state: files.state,
   });
   const temporary = `${files.supervisorPlist}.${process.pid}.tmp`;
@@ -324,26 +309,37 @@ async function configureRecovery({
     requestedSupervisorMode === undefined
       ? saved.supervisorEnabled === true
       : requestedSupervisorMode === "1";
-  // Python selection belongs to the launcher. Preserve the saved native environment.
-  if (!authoritative && env.CODEX_AGENTS_PYTHON !== undefined)
-    launchEnv.CODEX_AGENTS_PYTHON = env.CODEX_AGENTS_PYTHON;
+  // Python runs only the desktop helpers; backend binaries have their own owners.
   const interpreterEnv = { ...launchEnv, PATH: env.PATH };
-  const python =
-    enabled || supervisorEnabled ? executable("python3", interpreterEnv) : null;
-  const safetyPython = python || executable("python3", interpreterEnv);
-  // codex_supervisor_service.py owns the Rust selection and its supervisor job
-  // (docs/restart-recovery.md). The desktop keeps both and never writes a Python
-  // supervisor job over them.
+  delete interpreterEnv.CODEX_AGENTS_PYTHON;
+  const python = executable("python3", interpreterEnv);
   const rustSelection =
-    saved.backend === "rust"
+    enabled || supervisorEnabled
       ? {
           backend: "rust",
-          runtimeServer: saved.runtimeServer,
-          processSupervisor: saved.processSupervisor,
+          runtimeServer: runtimeServer(resources, {
+            ...launchEnv,
+            CODEX_RUNTIME_SERVER:
+              env.CODEX_RUNTIME_SERVER || saved.runtimeServer,
+          }),
+          ...(supervisorEnabled
+            ? {
+                processSupervisor: processSupervisor(resources, {
+                  ...env,
+                  CODEX_PROCESS_SUPERVISOR:
+                    env.CODEX_PROCESS_SUPERVISOR || saved.processSupervisor,
+                }),
+              }
+            : {}),
         }
       : {};
-  if (supervisorEnabled && !rustSelection.backend)
-    await ensureSupervisorAgent({ files, python, resources, uid, run });
+  if (supervisorEnabled && saved.backend !== "rust")
+    await ensureSupervisorAgent({
+      files,
+      binary: rustSelection.processSupervisor,
+      uid,
+      run,
+    });
   if (!enabled) {
     let serviceInfo;
     try {
@@ -362,8 +358,8 @@ async function configureRecovery({
     await assertRecoveryBootoutSafe({
       serviceInfo,
       files,
-      python: safetyPython,
-      resources,
+      python,
+      supervisor,
       run,
     });
     atomicJSON(files.config, {
@@ -380,7 +376,7 @@ async function configureRecovery({
   const codex = executable("codex", launchEnv);
   for (const filename of [
     supervisor,
-    path.join(backendScripts(resources), "codex-canvas"),
+    rustSelection.runtimeServer,
     rendererIndex(resources),
   ])
     fs.accessSync(filename, fs.constants.R_OK);
@@ -429,9 +425,7 @@ async function configureRecovery({
   // Save automatic interpreter and policy changes for the next registration.
   // The registered recovery process can keep its original interpreter.
   const retainedPythonPlist =
-    !interpreterEnv.CODEX_AGENTS_PYTHON &&
-    typeof saved.python === "string" &&
-    path.isAbsolute(saved.python)
+    typeof saved.python === "string" && path.isAbsolute(saved.python)
       ? launchAgent({
           ...files,
           python: saved.python,
@@ -450,8 +444,8 @@ async function configureRecovery({
     await assertRecoveryBootoutSafe({
       serviceInfo,
       files,
-      python: safetyPython,
-      resources,
+      python,
+      supervisor,
       run,
     });
   atomicJSON(files.config, config);

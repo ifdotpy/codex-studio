@@ -3,8 +3,8 @@ import { createRequire } from "node:module";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { modelValue } from "../../../../../runtime/apps/server/tests/model-picker.mjs";
-import { chooseSetupValue } from "../../../../../runtime/apps/server/tests/setup-controls.mjs";
+import { modelValue } from "../fixtures/model-picker.mjs";
+import { chooseSetupValue } from "../fixtures/setup-controls.mjs";
 import {
   handleEntitySyncFixtureRequest,
   test,

@@ -488,13 +488,6 @@ mod tests {
         );
     }
 
-    mod python {
-        include!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../runtime-services/tests/support/prepared_python.rs"
-        ));
-    }
-
     mod token_rate_difference {
         include!(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -503,40 +496,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stream_documents_match_python_resource_hub() {
-        use std::io::Write;
-        use std::path::Path;
-        use std::process::{Command, Stdio};
+    async fn stream_documents_match_frozen_resource_hub() {
         let rate = json!({"turnId":"turn", "active":false,"estimated":true,"rate":1.25,"outputTokens":400});
         let cases = json!([
             {"resources":[{"kind":"accounts"},{"kind":"session-cost","agentId":"agent"}],"sequence":0,"reconnect":false,"rates":{"rates":{},"teams":{}}},
             {"resources":[{"kind":"state"}],"sequence":42,"reconnect":true,"rates":{"rates":{"agent":rate},"teams":{"lead":{"agent":rate}}}}
         ]);
-        let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src");
-        let mut child = Command::new(python::prepared_python(&source))
-            .arg(
-                Path::new(env!("CARGO_MANIFEST_DIR"))
-                    .join("../runtime-services/tests/wave7_p14_oracle.py"),
-            )
-            .arg("documents")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .expect("oracle starts");
-        child
-            .stdin
-            .take()
-            .expect("stdin")
-            .write_all(cases.to_string().as_bytes())
-            .expect("cases written");
-        let output = child.wait_with_output().expect("oracle finishes");
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        let expected: Vec<Value> = serde_json::from_slice(&output.stdout).expect("oracle JSON");
+        let expected: Vec<Value> =
+            serde_json::from_str(include_str!("fixtures/sync_stream_documents.json"))
+                .expect("frozen reference documents");
         assert_eq!(expected.len(), cases.as_array().expect("cases").len());
         for (case, expected) in cases.as_array().expect("cases").iter().zip(expected) {
             let reason = if case["reconnect"] == true {
@@ -581,7 +549,7 @@ mod tests {
                 &expected["rates"],
                 &serde_json::from_str::<Value>(data).expect("JSON"),
                 &[],
-                "stream document oracle",
+                "frozen stream document",
             );
         }
     }
@@ -886,11 +854,8 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn post_publication_documents_match_python_with_interleaved_consumers() {
+    async fn post_publication_documents_match_frozen_interleaved_consumers() {
         use futures_util::{FutureExt, StreamExt};
-        use std::io::Write;
-        use std::path::Path;
-        use std::process::{Command, Stdio};
         let cases = json!([
             {"resources":[{"kind":"accounts"},{"kind":"queue","agentId":"agent"}],"steps":[
                 {"op":"notify","resources":[{"kind":"models"}]},{"op":"consume"},
@@ -907,31 +872,10 @@ mod tests {
                 {"op":"rates","body":test_rates(3)},{"op":"consume"}
             ]}
         ]);
-        let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src");
-        let mut child = Command::new(python::prepared_python(&source))
-            .arg(
-                Path::new(env!("CARGO_MANIFEST_DIR"))
-                    .join("../runtime-services/tests/wave7_p14_oracle.py"),
-            )
-            .arg("stream")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .expect("oracle");
-        child
-            .stdin
-            .take()
-            .expect("stdin")
-            .write_all(cases.to_string().as_bytes())
-            .expect("cases");
-        let output = child.wait_with_output().expect("oracle exits");
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        let expected: Vec<Vec<Value>> = serde_json::from_slice(&output.stdout).expect("documents");
+        let expected: Vec<Vec<Value>> =
+            serde_json::from_str(include_str!("fixtures/sync_stream_stream.json"))
+                .expect("frozen reference documents");
+        assert_eq!(expected.len(), cases.as_array().expect("cases").len());
         for (case, expected) in cases.as_array().expect("cases").iter().zip(expected) {
             let hub = Arc::new(ChangeNotificationHub::new());
             let tokens = Arc::new(TokenRateHub::with_change_hub(hub.clone()));
@@ -953,7 +897,7 @@ mod tests {
                         notifications.publish_once(&json!({"requestId":index.to_string(),"resources":step["resources"]})).expect("notify");
                     }
                     _ => {
-                        let expected = expected.next().expect("oracle consumption");
+                        let expected = expected.next().expect("fixture consumption");
                         if expected.is_null() {
                             assert!(
                                 events.next().now_or_never().is_none(),

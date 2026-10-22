@@ -2,27 +2,9 @@
 
 use super::*;
 
-#[path = "../../tests/support/prepared_python.rs"]
-mod prepared_python;
-
-/// Python `codex_server_exec` results for the same inputs
-/// (tests/server_exec/oracle.py).
-#[allow(clippy::disallowed_methods)]
+/// Frozen results from the former backend for the same buffer and request inputs.
 fn oracle() -> Value {
-    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let output = std::process::Command::new(prepared_python::prepared_python(
-        &manifest.join("../../apps/server/src"),
-    ))
-    .arg("-B")
-    .arg(manifest.join("tests/server_exec/oracle.py"))
-    .output()
-    .unwrap();
-    assert!(
-        output.status.success(),
-        "Python oracle: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    serde_json::from_slice(&output.stdout).unwrap()
+    serde_json::from_str(include_str!("../../tests/server_exec/expected.json")).unwrap()
 }
 
 fn hex(value: &Value) -> Vec<u8> {

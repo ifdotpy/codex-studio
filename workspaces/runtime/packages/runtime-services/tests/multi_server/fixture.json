@@ -1,0 +1,2430 @@
+{
+  "data": {
+    "browserCallback": {
+      "valid": {
+        "status": 200,
+        "contentType": "text/plain",
+        "body": "signed in",
+        "done": true
+      },
+      "wrongToken": {
+        "refused": "PermissionError",
+        "message": "The sign-in forward token is not valid"
+      },
+      "unknownBridge": {
+        "refused": "ValueError",
+        "message": "Unknown request"
+      }
+    },
+    "deliveryStates": [
+      {
+        "state": "waiting",
+        "row": {
+          "id": "python-waiting",
+          "signature": "d19c2887cdf6b0f2f212f97738bc54cfcd6ff9e2d19a880b6d167cc47d570a7a",
+          "state": "waiting",
+          "result": null,
+          "created_at": 1700000000.0,
+          "completed_at": 0.0,
+          "principal": "peer-server",
+          "actor": "fixture"
+        },
+        "envelope": {
+          "requestId": "python-waiting",
+          "action": "input",
+          "payload": {
+            "actor": "fixture"
+          }
+        },
+        "result": {
+          "requestId": "python-waiting",
+          "outcome": "applied",
+          "value": {
+            "applied": true
+          }
+        },
+        "calls": 1
+      },
+      {
+        "state": "running",
+        "row": {
+          "id": "python-running",
+          "signature": "d19c2887cdf6b0f2f212f97738bc54cfcd6ff9e2d19a880b6d167cc47d570a7a",
+          "state": "running",
+          "result": null,
+          "created_at": 1700000000.0,
+          "completed_at": 0.0,
+          "principal": "peer-server",
+          "actor": "fixture"
+        },
+        "envelope": {
+          "requestId": "python-running",
+          "action": "input",
+          "payload": {
+            "actor": "fixture"
+          }
+        },
+        "result": {
+          "requestId": "python-running",
+          "outcome": "unknown"
+        },
+        "calls": 0
+      },
+      {
+        "state": "complete",
+        "row": {
+          "id": "python-complete",
+          "signature": "d19c2887cdf6b0f2f212f97738bc54cfcd6ff9e2d19a880b6d167cc47d570a7a",
+          "state": "complete",
+          "result": "{\"outcome\":\"applied\",\"requestId\":\"python-complete\",\"value\":{\"applied\":true}}",
+          "created_at": 1700000000.0,
+          "completed_at": 1700000000.0,
+          "principal": "peer-server",
+          "actor": "fixture"
+        },
+        "envelope": {
+          "requestId": "python-complete",
+          "action": "input",
+          "payload": {
+            "actor": "fixture"
+          }
+        },
+        "result": {
+          "outcome": "applied",
+          "requestId": "python-complete",
+          "value": {
+            "applied": true
+          }
+        },
+        "calls": 0
+      }
+    ],
+    "execReceipt": {
+      "payload": {
+        "actor": "fixture-lead",
+        "command": ["true"],
+        "cwd": "/fixture",
+        "timeout": 30
+      },
+      "freshSent": [
+        {
+          "action": "exec",
+          "payload": {
+            "actor": "fixture-lead",
+            "command": ["true"],
+            "cwd": "/fixture",
+            "timeout": 30
+          },
+          "requestId": "fresh-exec"
+        }
+      ],
+      "freshRow": {
+        "id": "fresh-exec",
+        "server": "peer-server",
+        "body": "{\"action\":\"exec\",\"payload\":{\"actor\":\"fixture-lead\",\"receiptDigest\":\"f2b431e193fb02142da15042657955ad32d285c5551ab5894f682d5dcdceba11\"},\"requestId\":\"fresh-exec\"}",
+        "state": "queued",
+        "result": null,
+        "attempts": 1,
+        "next_at": 1700000005.0,
+        "error": "TimeoutError",
+        "created_at": 1700000000.0,
+        "completed_at": 0.0,
+        "fingerprint": "551a090e557dfcceab24ea2546777e5c35fedcd563496a3ec9d23bf4605203c7"
+      },
+      "probeSent": [
+        {
+          "requestId": "d01c243d-50a3-5637-bf8e-850951d5baf0",
+          "action": "exec_receipt",
+          "payload": {
+            "handle": "python-exec",
+            "actor": "fixture-lead",
+            "digest": "f2b431e193fb02142da15042657955ad32d285c5551ab5894f682d5dcdceba11"
+          }
+        }
+      ],
+      "pending": {
+        "id": "python-exec",
+        "server": "peer-server",
+        "body": "{\"action\":\"exec\",\"payload\":{\"actor\":\"fixture-lead\",\"receiptDigest\":\"f2b431e193fb02142da15042657955ad32d285c5551ab5894f682d5dcdceba11\"},\"requestId\":\"python-exec\"}",
+        "state": "queued",
+        "result": null,
+        "attempts": 2,
+        "next_at": 1700000010.0,
+        "error": "TimeoutError",
+        "created_at": 1700000000.0,
+        "completed_at": 0.0,
+        "fingerprint": "28a04601d14562e361fae038676da6a4885c38dfd4badc604b66a49adfc984a6"
+      },
+      "replies": {
+        "applied": {
+          "reply": {
+            "requestId": "d01c243d-50a3-5637-bf8e-850951d5baf0",
+            "outcome": "applied",
+            "value": {
+              "requestId": "python-exec",
+              "outcome": "applied",
+              "value": {
+                "handle": "python-exec",
+                "status": "exited",
+                "exitCode": 0
+              }
+            }
+          },
+          "result": {
+            "requestId": "python-exec",
+            "outcome": "applied",
+            "value": {
+              "handle": "python-exec",
+              "status": "exited",
+              "exitCode": 0
+            }
+          },
+          "sent": [
+            {
+              "requestId": "d01c243d-50a3-5637-bf8e-850951d5baf0",
+              "action": "exec_receipt",
+              "payload": {
+                "handle": "python-exec",
+                "actor": "fixture-lead",
+                "digest": "f2b431e193fb02142da15042657955ad32d285c5551ab5894f682d5dcdceba11"
+              }
+            }
+          ],
+          "row": {
+            "id": "python-exec",
+            "server": "peer-server",
+            "body": "{\"action\":\"exec\",\"payload\":{\"actor\":\"fixture-lead\",\"receiptDigest\":\"f2b431e193fb02142da15042657955ad32d285c5551ab5894f682d5dcdceba11\"},\"requestId\":\"python-exec\"}",
+            "state": "complete",
+            "result": "{\"outcome\":\"applied\",\"requestId\":\"python-exec\",\"value\":{\"exitCode\":0,\"handle\":\"python-exec\",\"status\":\"exited\"}}",
+            "attempts": 2,
+            "next_at": 1700000010.0,
+            "error": null,
+            "created_at": 1700000000.0,
+            "completed_at": 1700000000.0,
+            "fingerprint": "28a04601d14562e361fae038676da6a4885c38dfd4badc604b66a49adfc984a6"
+          }
+        },
+        "commandNotApplied": {
+          "reply": {
+            "requestId": "d01c243d-50a3-5637-bf8e-850951d5baf0",
+            "outcome": "applied",
+            "value": {
+              "requestId": "python-exec",
+              "outcome": "not_applied",
+              "error": "The command directory is unavailable"
+            }
+          },
+          "result": {
+            "requestId": "python-exec",
+            "outcome": "not_applied",
+            "error": "The command directory is unavailable"
+          },
+          "sent": [
+            {
+              "requestId": "d01c243d-50a3-5637-bf8e-850951d5baf0",
+              "action": "exec_receipt",
+              "payload": {
+                "handle": "python-exec",
+                "actor": "fixture-lead",
+                "digest": "f2b431e193fb02142da15042657955ad32d285c5551ab5894f682d5dcdceba11"
+              }
+            }
+          ],
+          "row": {
+            "id": "python-exec",
+            "server": "peer-server",
+            "body": "{\"action\":\"exec\",\"payload\":{\"actor\":\"fixture-lead\",\"receiptDigest\":\"f2b431e193fb02142da15042657955ad32d285c5551ab5894f682d5dcdceba11\"},\"requestId\":\"python-exec\"}",
+            "state": "complete",
+            "result": "{\"error\":\"The command directory is unavailable\",\"outcome\":\"not_applied\",\"requestId\":\"python-exec\"}",
+            "attempts": 2,
+            "next_at": 1700000010.0,
+            "error": null,
+            "created_at": 1700000000.0,
+            "completed_at": 1700000000.0,
+            "fingerprint": "28a04601d14562e361fae038676da6a4885c38dfd4badc604b66a49adfc984a6"
+          }
+        },
+        "commandUnknown": {
+          "reply": {
+            "requestId": "d01c243d-50a3-5637-bf8e-850951d5baf0",
+            "outcome": "applied",
+            "value": {
+              "requestId": "python-exec",
+              "outcome": "unknown"
+            }
+          },
+          "result": {
+            "requestId": "python-exec",
+            "outcome": "unknown"
+          },
+          "sent": [
+            {
+              "requestId": "d01c243d-50a3-5637-bf8e-850951d5baf0",
+              "action": "exec_receipt",
+              "payload": {
+                "handle": "python-exec",
+                "actor": "fixture-lead",
+                "digest": "f2b431e193fb02142da15042657955ad32d285c5551ab5894f682d5dcdceba11"
+              }
+            }
+          ],
+          "row": {
+            "id": "python-exec",
+            "server": "peer-server",
+            "body": "{\"action\":\"exec\",\"payload\":{\"actor\":\"fixture-lead\",\"receiptDigest\":\"f2b431e193fb02142da15042657955ad32d285c5551ab5894f682d5dcdceba11\"},\"requestId\":\"python-exec\"}",
+            "state": "queued",
+            "result": null,
+            "attempts": 3,
+            "next_at": 1700000020.0,
+            "error": null,
+            "created_at": 1700000000.0,
+            "completed_at": 0.0,
+            "fingerprint": "28a04601d14562e361fae038676da6a4885c38dfd4badc604b66a49adfc984a6"
+          }
+        },
+        "probeUnknown": {
+          "reply": {
+            "requestId": "d01c243d-50a3-5637-bf8e-850951d5baf0",
+            "outcome": "unknown"
+          },
+          "result": {
+            "requestId": "python-exec",
+            "outcome": "unknown"
+          },
+          "sent": [
+            {
+              "requestId": "d01c243d-50a3-5637-bf8e-850951d5baf0",
+              "action": "exec_receipt",
+              "payload": {
+                "handle": "python-exec",
+                "actor": "fixture-lead",
+                "digest": "f2b431e193fb02142da15042657955ad32d285c5551ab5894f682d5dcdceba11"
+              }
+            }
+          ],
+          "row": {
+            "id": "python-exec",
+            "server": "peer-server",
+            "body": "{\"action\":\"exec\",\"payload\":{\"actor\":\"fixture-lead\",\"receiptDigest\":\"f2b431e193fb02142da15042657955ad32d285c5551ab5894f682d5dcdceba11\"},\"requestId\":\"python-exec\"}",
+            "state": "queued",
+            "result": null,
+            "attempts": 3,
+            "next_at": 1700000020.0,
+            "error": null,
+            "created_at": 1700000000.0,
+            "completed_at": 0.0,
+            "fingerprint": "28a04601d14562e361fae038676da6a4885c38dfd4badc604b66a49adfc984a6"
+          }
+        },
+        "probeRefused": {
+          "reply": {
+            "requestId": "d01c243d-50a3-5637-bf8e-850951d5baf0",
+            "outcome": "not_applied",
+            "error": "The receipt fingerprint belongs to another request"
+          },
+          "result": {
+            "requestId": "python-exec",
+            "outcome": "unknown"
+          },
+          "sent": [
+            {
+              "requestId": "d01c243d-50a3-5637-bf8e-850951d5baf0",
+              "action": "exec_receipt",
+              "payload": {
+                "handle": "python-exec",
+                "actor": "fixture-lead",
+                "digest": "f2b431e193fb02142da15042657955ad32d285c5551ab5894f682d5dcdceba11"
+              }
+            }
+          ],
+          "row": {
+            "id": "python-exec",
+            "server": "peer-server",
+            "body": "{\"action\":\"exec\",\"payload\":{\"actor\":\"fixture-lead\",\"receiptDigest\":\"f2b431e193fb02142da15042657955ad32d285c5551ab5894f682d5dcdceba11\"},\"requestId\":\"python-exec\"}",
+            "state": "queued",
+            "result": null,
+            "attempts": 3,
+            "next_at": 1700000020.0,
+            "error": null,
+            "created_at": 1700000000.0,
+            "completed_at": 0.0,
+            "fingerprint": "28a04601d14562e361fae038676da6a4885c38dfd4badc604b66a49adfc984a6"
+          }
+        }
+      },
+      "probes": [
+        {
+          "name": "applied",
+          "principal": "peer-server",
+          "at": 1700000000,
+          "envelope": {
+            "requestId": "212d230d-95aa-5a18-b08b-478f68f9ac04",
+            "action": "exec_receipt",
+            "payload": {
+              "handle": "inbound-applied",
+              "actor": "peer-lead",
+              "digest": "3e1095c7dd4dc4d3879a7cacc2d28a318ffb3e4bb871a9433523c706decdfbcc"
+            }
+          },
+          "result": {
+            "requestId": "212d230d-95aa-5a18-b08b-478f68f9ac04",
+            "outcome": "applied",
+            "value": {
+              "outcome": "applied",
+              "requestId": "inbound-applied",
+              "value": {
+                "exitCode": 0,
+                "handle": "inbound-applied",
+                "outputExpiresAt": 1700000100,
+                "status": "exited"
+              }
+            }
+          },
+          "row": {
+            "signature": "d5d6e58a65e280a2c24468bed16f1ecd09c672761a09d901cd9a07b77de359bd",
+            "state": "complete",
+            "result": "{\"outcome\":\"applied\",\"requestId\":\"212d230d-95aa-5a18-b08b-478f68f9ac04\",\"value\":{\"outcome\":\"applied\",\"requestId\":\"inbound-applied\"}}",
+            "principal": "peer-server",
+            "actor": "peer-lead"
+          },
+          "keep": false,
+          "insertExec": false
+        },
+        {
+          "name": "expired",
+          "principal": "peer-server",
+          "at": 1700000200,
+          "envelope": {
+            "requestId": "212d230d-95aa-5a18-b08b-478f68f9ac04",
+            "action": "exec_receipt",
+            "payload": {
+              "handle": "inbound-applied",
+              "actor": "peer-lead",
+              "digest": "3e1095c7dd4dc4d3879a7cacc2d28a318ffb3e4bb871a9433523c706decdfbcc"
+            }
+          },
+          "result": {
+            "requestId": "212d230d-95aa-5a18-b08b-478f68f9ac04",
+            "outcome": "applied",
+            "value": {
+              "requestId": "inbound-applied",
+              "outcome": "unknown",
+              "expired": true,
+              "detail": "The receipt has expired. This identity cannot execute again."
+            }
+          },
+          "row": {
+            "signature": "d5d6e58a65e280a2c24468bed16f1ecd09c672761a09d901cd9a07b77de359bd",
+            "state": "complete",
+            "result": "{\"outcome\":\"applied\",\"requestId\":\"212d230d-95aa-5a18-b08b-478f68f9ac04\",\"value\":{\"outcome\":\"unknown\",\"requestId\":\"inbound-applied\"}}",
+            "principal": "peer-server",
+            "actor": "peer-lead"
+          },
+          "keep": false,
+          "insertExec": false
+        },
+        {
+          "name": "wrongActor",
+          "principal": "peer-server",
+          "at": 1700000000,
+          "envelope": {
+            "requestId": "212d230d-95aa-5a18-b08b-478f68f9ac04",
+            "action": "exec_receipt",
+            "payload": {
+              "handle": "inbound-applied",
+              "actor": "other-lead",
+              "digest": "3e1095c7dd4dc4d3879a7cacc2d28a318ffb3e4bb871a9433523c706decdfbcc"
+            }
+          },
+          "result": {
+            "requestId": "212d230d-95aa-5a18-b08b-478f68f9ac04",
+            "outcome": "not_applied",
+            "error": "The command receipt belongs to another actor or server"
+          },
+          "row": {
+            "signature": "878898d2ef6642b37a03e0dd2df915132700626dd8d672ddbc4990b5ac907eb7",
+            "state": "complete",
+            "result": "{\"error\":\"The command receipt belongs to another actor or server\",\"outcome\":\"not_applied\",\"requestId\":\"212d230d-95aa-5a18-b08b-478f68f9ac04\"}",
+            "principal": "peer-server",
+            "actor": "other-lead"
+          },
+          "keep": false,
+          "insertExec": false
+        },
+        {
+          "name": "localPrincipal",
+          "principal": "local-server",
+          "at": 1700000000,
+          "envelope": {
+            "requestId": "212d230d-95aa-5a18-b08b-478f68f9ac04",
+            "action": "exec_receipt",
+            "payload": {
+              "handle": "inbound-applied",
+              "actor": "peer-lead",
+              "digest": "3e1095c7dd4dc4d3879a7cacc2d28a318ffb3e4bb871a9433523c706decdfbcc"
+            }
+          },
+          "result": {
+            "requestId": "212d230d-95aa-5a18-b08b-478f68f9ac04",
+            "outcome": "not_applied",
+            "error": "The command receipt belongs to another actor or server"
+          },
+          "row": {
+            "signature": "0918de62b9a9c23c1349f4b30f3530972b1102478764f9533078015ddaf62101",
+            "state": "complete",
+            "result": "{\"error\":\"The command receipt belongs to another actor or server\",\"outcome\":\"not_applied\",\"requestId\":\"212d230d-95aa-5a18-b08b-478f68f9ac04\"}",
+            "principal": "local-server",
+            "actor": "peer-lead"
+          },
+          "keep": false,
+          "insertExec": false
+        },
+        {
+          "name": "wrongDigest",
+          "principal": "peer-server",
+          "at": 1700000000,
+          "envelope": {
+            "requestId": "212d230d-95aa-5a18-b08b-478f68f9ac04",
+            "action": "exec_receipt",
+            "payload": {
+              "handle": "inbound-applied",
+              "actor": "peer-lead",
+              "digest": "0000000000000000000000000000000000000000000000000000000000000000"
+            }
+          },
+          "result": {
+            "requestId": "212d230d-95aa-5a18-b08b-478f68f9ac04",
+            "outcome": "not_applied",
+            "error": "The receipt fingerprint belongs to another request"
+          },
+          "row": {
+            "signature": "69c1d43a2a66327459a0d8caec8a6407e2791fc6b00682f2829db8a921e1ca7b",
+            "state": "complete",
+            "result": "{\"error\":\"The receipt fingerprint belongs to another request\",\"outcome\":\"not_applied\",\"requestId\":\"212d230d-95aa-5a18-b08b-478f68f9ac04\"}",
+            "principal": "peer-server",
+            "actor": "peer-lead"
+          },
+          "keep": false,
+          "insertExec": false
+        },
+        {
+          "name": "unknownHandle",
+          "principal": "peer-server",
+          "at": 1700000000,
+          "envelope": {
+            "requestId": "da48211e-33a8-58f5-bc56-99f4d0b7dc25",
+            "action": "exec_receipt",
+            "payload": {
+              "handle": "inbound-missing",
+              "actor": "peer-lead",
+              "digest": "0000000000000000000000000000000000000000000000000000000000000000"
+            }
+          },
+          "result": {
+            "requestId": "da48211e-33a8-58f5-bc56-99f4d0b7dc25",
+            "outcome": "applied",
+            "value": {
+              "requestId": "inbound-missing",
+              "outcome": "unknown"
+            }
+          },
+          "row": {
+            "signature": "ee874430cbad44fd0c9ce1a3c145e968b61776f5eecfed2fa404a4c3325c6d3b",
+            "state": "complete",
+            "result": "{\"outcome\":\"applied\",\"requestId\":\"da48211e-33a8-58f5-bc56-99f4d0b7dc25\",\"value\":{\"outcome\":\"unknown\",\"requestId\":\"inbound-missing\"}}",
+            "principal": "peer-server",
+            "actor": "peer-lead"
+          },
+          "keep": false,
+          "insertExec": false
+        },
+        {
+          "name": "runningEvidence",
+          "principal": "peer-server",
+          "at": 1700000000,
+          "envelope": {
+            "requestId": "09a4108f-2021-5056-84c6-47c59e97e998",
+            "action": "exec_receipt",
+            "payload": {
+              "handle": "inbound-running",
+              "actor": "peer-lead",
+              "digest": "3e1095c7dd4dc4d3879a7cacc2d28a318ffb3e4bb871a9433523c706decdfbcc"
+            }
+          },
+          "result": {
+            "requestId": "09a4108f-2021-5056-84c6-47c59e97e998",
+            "outcome": "applied",
+            "value": {
+              "requestId": "inbound-running",
+              "outcome": "applied",
+              "value": {
+                "exitCode": 3,
+                "handle": "inbound-running",
+                "status": "exited"
+              }
+            }
+          },
+          "row": {
+            "signature": "1d6eaea9be160124a892b70d2076fef3293b981ff7e910ac08c9ddcbb10d4f33",
+            "state": "complete",
+            "result": "{\"outcome\":\"applied\",\"requestId\":\"09a4108f-2021-5056-84c6-47c59e97e998\",\"value\":{\"outcome\":\"applied\",\"requestId\":\"inbound-running\"}}",
+            "principal": "peer-server",
+            "actor": "peer-lead"
+          },
+          "keep": false,
+          "insertExec": false
+        },
+        {
+          "name": "startingEvidence",
+          "principal": "peer-server",
+          "at": 1700000000,
+          "envelope": {
+            "requestId": "ea244eca-ca3e-5199-9327-ed131b8e0811",
+            "action": "exec_receipt",
+            "payload": {
+              "handle": "inbound-starting",
+              "actor": "peer-lead",
+              "digest": "3e1095c7dd4dc4d3879a7cacc2d28a318ffb3e4bb871a9433523c706decdfbcc"
+            }
+          },
+          "result": {
+            "requestId": "ea244eca-ca3e-5199-9327-ed131b8e0811",
+            "outcome": "applied",
+            "value": {
+              "requestId": "inbound-starting",
+              "outcome": "unknown"
+            }
+          },
+          "row": {
+            "signature": "988524e335578b3e0c1e3b9b0fbbfaea7220438066745e6292b07d9062cafeb8",
+            "state": "complete",
+            "result": "{\"outcome\":\"applied\",\"requestId\":\"ea244eca-ca3e-5199-9327-ed131b8e0811\",\"value\":{\"outcome\":\"unknown\",\"requestId\":\"inbound-starting\"}}",
+            "principal": "peer-server",
+            "actor": "peer-lead"
+          },
+          "keep": false,
+          "insertExec": false
+        },
+        {
+          "name": "legacy",
+          "principal": "peer-server",
+          "at": 1700000000,
+          "envelope": {
+            "requestId": "b96d4214-8309-5e78-9266-4bdea7620e3d",
+            "action": "exec_receipt",
+            "payload": {
+              "handle": "inbound-legacy",
+              "actor": "peer-lead",
+              "digest": "3e1095c7dd4dc4d3879a7cacc2d28a318ffb3e4bb871a9433523c706decdfbcc"
+            }
+          },
+          "result": {
+            "requestId": "b96d4214-8309-5e78-9266-4bdea7620e3d",
+            "outcome": "applied",
+            "value": {
+              "outcome": "applied",
+              "requestId": "inbound-legacy",
+              "value": {
+                "handle": "inbound-legacy",
+                "status": "exited"
+              }
+            }
+          },
+          "row": {
+            "signature": "ebc2e737abb95eda2b4868d6b0ce182053f5a8eca83b5f2b5618c8c39fbce8bb",
+            "state": "complete",
+            "result": "{\"outcome\":\"applied\",\"requestId\":\"b96d4214-8309-5e78-9266-4bdea7620e3d\",\"value\":{\"outcome\":\"applied\",\"requestId\":\"inbound-legacy\"}}",
+            "principal": "peer-server",
+            "actor": "peer-lead"
+          },
+          "keep": false,
+          "insertExec": false
+        },
+        {
+          "name": "legacyOrphan",
+          "principal": "peer-server",
+          "at": 1700000000,
+          "envelope": {
+            "requestId": "34b12531-b1a0-5f78-8b3a-478927f9bc96",
+            "action": "exec_receipt",
+            "payload": {
+              "handle": "inbound-legacy-orphan",
+              "actor": "peer-lead",
+              "digest": "3e1095c7dd4dc4d3879a7cacc2d28a318ffb3e4bb871a9433523c706decdfbcc"
+            }
+          },
+          "result": {
+            "requestId": "34b12531-b1a0-5f78-8b3a-478927f9bc96",
+            "outcome": "not_applied",
+            "error": "The command receipt belongs to another actor or server"
+          },
+          "row": {
+            "signature": "8911eaa8515dd425e056b56eeac07e5830b1a6bc2bc573cf366b131313b25f2c",
+            "state": "complete",
+            "result": "{\"error\":\"The command receipt belongs to another actor or server\",\"outcome\":\"not_applied\",\"requestId\":\"34b12531-b1a0-5f78-8b3a-478927f9bc96\"}",
+            "principal": "peer-server",
+            "actor": "peer-lead"
+          },
+          "keep": false,
+          "insertExec": false
+        },
+        {
+          "name": "lateBefore",
+          "principal": "peer-server",
+          "at": 1700000000,
+          "envelope": {
+            "requestId": "49c864b1-6fba-5f06-8526-f27e189a5cca",
+            "action": "exec_receipt",
+            "payload": {
+              "handle": "inbound-late",
+              "actor": "peer-lead",
+              "digest": "3e1095c7dd4dc4d3879a7cacc2d28a318ffb3e4bb871a9433523c706decdfbcc"
+            }
+          },
+          "result": {
+            "requestId": "49c864b1-6fba-5f06-8526-f27e189a5cca",
+            "outcome": "applied",
+            "value": {
+              "requestId": "inbound-late",
+              "outcome": "unknown"
+            }
+          },
+          "row": {
+            "signature": "8c0045b29f7d40b0932b429318126a8e131bb7762c8ec8f254223ecb29046c95",
+            "state": "complete",
+            "result": "{\"outcome\":\"applied\",\"requestId\":\"49c864b1-6fba-5f06-8526-f27e189a5cca\",\"value\":{\"outcome\":\"unknown\",\"requestId\":\"inbound-late\"}}",
+            "principal": "peer-server",
+            "actor": "peer-lead"
+          },
+          "keep": true,
+          "insertExec": false
+        },
+        {
+          "name": "lateAfter",
+          "principal": "peer-server",
+          "at": 1700000000,
+          "envelope": {
+            "requestId": "49c864b1-6fba-5f06-8526-f27e189a5cca",
+            "action": "exec_receipt",
+            "payload": {
+              "handle": "inbound-late",
+              "actor": "peer-lead",
+              "digest": "3e1095c7dd4dc4d3879a7cacc2d28a318ffb3e4bb871a9433523c706decdfbcc"
+            }
+          },
+          "result": {
+            "requestId": "49c864b1-6fba-5f06-8526-f27e189a5cca",
+            "outcome": "applied",
+            "value": {
+              "requestId": "inbound-late",
+              "outcome": "applied",
+              "value": {
+                "exitCode": 1,
+                "handle": "inbound-late",
+                "status": "exited"
+              }
+            }
+          },
+          "row": {
+            "signature": "8c0045b29f7d40b0932b429318126a8e131bb7762c8ec8f254223ecb29046c95",
+            "state": "complete",
+            "result": "{\"outcome\":\"applied\",\"requestId\":\"49c864b1-6fba-5f06-8526-f27e189a5cca\",\"value\":{\"outcome\":\"applied\",\"requestId\":\"inbound-late\"}}",
+            "principal": "peer-server",
+            "actor": "peer-lead"
+          },
+          "keep": true,
+          "insertExec": true
+        },
+        {
+          "name": "conflict",
+          "principal": "peer-server",
+          "at": 1700000000,
+          "envelope": {
+            "requestId": "49c864b1-6fba-5f06-8526-f27e189a5cca",
+            "action": "exec_receipt",
+            "payload": {
+              "handle": "inbound-late",
+              "actor": "peer-lead",
+              "digest": "0000000000000000000000000000000000000000000000000000000000000000"
+            }
+          },
+          "result": {
+            "refused": "ValueError",
+            "message": "This request id has different content"
+          },
+          "row": {
+            "signature": "8c0045b29f7d40b0932b429318126a8e131bb7762c8ec8f254223ecb29046c95",
+            "state": "complete",
+            "result": "{\"outcome\":\"applied\",\"requestId\":\"49c864b1-6fba-5f06-8526-f27e189a5cca\",\"value\":{\"outcome\":\"applied\",\"requestId\":\"inbound-late\"}}",
+            "principal": "peer-server",
+            "actor": "peer-lead"
+          },
+          "keep": false,
+          "insertExec": false
+        }
+      ],
+      "lateRecord": {
+        "handle": "inbound-late",
+        "status": "exited",
+        "exitCode": 1
+      },
+      "events": [
+        {
+          "name": "missingLead",
+          "principal": "peer-server",
+          "lead": null,
+          "envelope": {
+            "requestId": "exec-exit-missing",
+            "action": "exec_event",
+            "payload": {
+              "actor": "fixture-lead",
+              "handle": "python-exec",
+              "record": {
+                "handle": "python-exec",
+                "status": "exited",
+                "exitCode": 0,
+                "duration": 1.25,
+                "error": null
+              }
+            }
+          },
+          "result": {
+            "requestId": "exec-exit-missing",
+            "outcome": "applied",
+            "value": {
+              "stored": false,
+              "detail": "The lead no longer exists"
+            }
+          }
+        },
+        {
+          "name": "deletedLead",
+          "principal": "peer-server",
+          "lead": {
+            "deletedAt": 1700000000
+          },
+          "envelope": {
+            "requestId": "exec-exit-deleted",
+            "action": "exec_event",
+            "payload": {
+              "actor": "fixture-lead",
+              "handle": "python-exec",
+              "record": {
+                "handle": "python-exec",
+                "status": "exited",
+                "exitCode": 0,
+                "duration": 1.25,
+                "error": null
+              }
+            }
+          },
+          "result": {
+            "requestId": "exec-exit-deleted",
+            "outcome": "applied",
+            "value": {
+              "stored": false,
+              "detail": "The lead was deleted"
+            }
+          }
+        },
+        {
+          "name": "stored",
+          "principal": "peer-server",
+          "lead": {},
+          "envelope": {
+            "requestId": "exec-exit-stored",
+            "action": "exec_event",
+            "payload": {
+              "actor": "fixture-lead",
+              "handle": "python-exec",
+              "record": {
+                "handle": "python-exec",
+                "status": "exited",
+                "exitCode": 0,
+                "duration": 1.25,
+                "error": null
+              }
+            }
+          },
+          "result": {
+            "requestId": "exec-exit-stored",
+            "outcome": "applied",
+            "value": {
+              "stored": true
+            }
+          }
+        },
+        {
+          "name": "replay",
+          "principal": "peer-server",
+          "lead": {},
+          "envelope": {
+            "requestId": "exec-exit-stored",
+            "action": "exec_event",
+            "payload": {
+              "actor": "fixture-lead",
+              "handle": "python-exec",
+              "record": {
+                "handle": "python-exec",
+                "status": "exited",
+                "exitCode": 0,
+                "duration": 1.25,
+                "error": null
+              }
+            }
+          },
+          "result": {
+            "outcome": "applied",
+            "requestId": "exec-exit-stored",
+            "value": {
+              "stored": true
+            }
+          }
+        },
+        {
+          "name": "wrongActor",
+          "principal": "peer-server",
+          "lead": {},
+          "envelope": {
+            "requestId": "exec-exit-actor",
+            "action": "exec_event",
+            "payload": {
+              "actor": "other-lead",
+              "handle": "python-exec",
+              "record": {
+                "handle": "python-exec",
+                "status": "exited",
+                "exitCode": 0,
+                "duration": 1.25,
+                "error": null
+              }
+            }
+          },
+          "result": {
+            "requestId": "exec-exit-actor",
+            "outcome": "not_applied",
+            "error": "The command handle belongs to another actor or server"
+          }
+        },
+        {
+          "name": "wrongServer",
+          "principal": "local-server",
+          "lead": {},
+          "envelope": {
+            "requestId": "exec-exit-server",
+            "action": "exec_event",
+            "payload": {
+              "actor": "fixture-lead",
+              "handle": "python-exec",
+              "record": {
+                "handle": "python-exec",
+                "status": "exited",
+                "exitCode": 0,
+                "duration": 1.25,
+                "error": null
+              }
+            }
+          },
+          "result": {
+            "requestId": "exec-exit-server",
+            "outcome": "not_applied",
+            "error": "The command handle belongs to another actor or server"
+          }
+        },
+        {
+          "name": "notExec",
+          "principal": "peer-server",
+          "lead": {},
+          "envelope": {
+            "requestId": "exec-exit-event",
+            "action": "exec_event",
+            "payload": {
+              "actor": "fixture-lead",
+              "handle": "python-event",
+              "record": {
+                "handle": "python-exec",
+                "status": "exited",
+                "exitCode": 0,
+                "duration": 1.25,
+                "error": null
+              }
+            }
+          },
+          "result": {
+            "requestId": "exec-exit-event",
+            "outcome": "not_applied",
+            "error": "The command handle belongs to another actor or server"
+          }
+        }
+      ],
+      "event": {
+        "agent": "fixture-lead",
+        "kind": "monitor_exit",
+        "text": "{\"detail\":\"Read output with orchestration_servers action=exec_read.\",\"duration\":1.25,\"error\":null,\"exitCode\":0,\"id\":\"python-exec\",\"serverId\":\"peer-server\",\"signal\":null,\"status\":\"exited\",\"timedOut\":false}",
+        "key": "exec-exit-stored"
+      }
+    },
+    "discoveryIdentity": {
+      "protocol": 1,
+      "serverId": "local-server",
+      "publicKey": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAoSuETv8bnfeg51yvweFCIVmGvgMUT1xx3HoGCsNgUso=\n-----END PUBLIC KEY-----\n",
+      "label": "Fixture server",
+      "origin": "https://local.fixture.ts.net",
+      "tailscaleUser": "owner@example.test",
+      "autoPair": true
+    },
+    "discoveryProbe": {
+      "protocol": 1,
+      "serverId": "discovered-peer",
+      "label": "Auto peer",
+      "origin": "https://peer.fixture.ts.net",
+      "publicKey": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAoSuETv8bnfeg51yvweFCIVmGvgMUT1xx3HoGCsNgUso=\n-----END PUBLIC KEY-----\n",
+      "tailscaleUser": "owner@example.test",
+      "autoPair": false
+    },
+    "discovered": {
+      "autoPair": false,
+      "clientId": "discovered-peer",
+      "created": 1700000000,
+      "id": "discovered-peer",
+      "kind": "server",
+      "label": "Auto peer",
+      "lastAccess": null,
+      "lastSeen": 1700000000,
+      "origin": "https://peer.fixture.ts.net",
+      "publicKey": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAoSuETv8bnfeg51yvweFCIVmGvgMUT1xx3HoGCsNgUso=\n-----END PUBLIC KEY-----\n",
+      "revoked": null,
+      "serverId": "discovered-peer",
+      "status": "discovered",
+      "tailscaleUser": "owner@example.test"
+    },
+    "freshPair": {
+      "name": "pair-ui",
+      "method": "POST",
+      "target": "/api/multi-server/v1/pair",
+      "raw": "{\"clientId\":\"new-client\",\"inviteId\":\"993f2bebcdf2445e8351b3e355dedfcb\",\"kind\":\"ui\",\"label\":\"New client\",\"origin\":null,\"protocol\":1,\"publicKey\":\"-----BEGIN PUBLIC KEY-----\\nMCowBQYDK2VwAyEAoSuETv8bnfeg51yvweFCIVmGvgMUT1xx3HoGCsNgUso=\\n-----END PUBLIC KEY-----\\n\",\"requestId\":\"request-a\",\"token\":\"MPZs7iZjn6xdQZjGZymFwhaATqonf7dKkSIMBRhuBOA\"}",
+      "headers": [
+        ["X-Studio-Client", "new-client"],
+        ["X-Studio-Server", "local-server"],
+        ["X-Studio-Timestamp", "1700000000"],
+        ["X-Studio-Nonce", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"],
+        ["X-Studio-Request-Id", "request-a"],
+        [
+          "X-Studio-Signature",
+          "VM49B1nGHYyyKadd4ZMLFEBXHiMl44UYY9HlI1S+1FYN5u/z3NOT0dMaJdO/xOxQwY/2Z/5Ks4pcT4V0Wgf3Cw=="
+        ]
+      ],
+      "clientId": "new-client",
+      "client": null,
+      "inviteId": "993f2bebcdf2445e8351b3e355dedfcb",
+      "invite": "{\"created\":1700000000,\"expires\":1700000900,\"inviteId\":\"993f2bebcdf2445e8351b3e355dedfcb\",\"label\":\"Fixture server\",\"origin\":\"https://local.fixture.ts.net\",\"protocol\":1,\"publicKey\":\"-----BEGIN PUBLIC KEY-----\\nMCowBQYDK2VwAyEAoSuETv8bnfeg51yvweFCIVmGvgMUT1xx3HoGCsNgUso=\\n-----END PUBLIC KEY-----\\n\",\"serverId\":\"local-server\",\"status\":\"open\",\"tailscaleUser\":\"owner@example.test\",\"tokenHash\":\"177497a4bcb1a53d4130d111f807bfac5f539c12787c1bd6fc8327a12e02ac9c\"}",
+      "owner": "owner@example.test",
+      "now": 1700000000.0,
+      "address": "100.64.0.2",
+      "logins": [],
+      "whois": {
+        "Node": {
+          "Name": "peer.fixture.ts.net.",
+          "Tags": []
+        },
+        "UserProfile": {
+          "LoginName": "owner@example.test"
+        }
+      },
+      "expected": {
+        "principal": {
+          "clientId": "new-client",
+          "kind": "ui",
+          "publicKey": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAoSuETv8bnfeg51yvweFCIVmGvgMUT1xx3HoGCsNgUso=\n-----END PUBLIC KEY-----\n",
+          "serverId": null,
+          "targetServerId": "local-server",
+          "requestId": "request-a",
+          "tailscaleUser": "owner@example.test",
+          "pairing": true,
+          "autoPairing": false
+        },
+        "clientWrite": null
+      },
+      "replayRefusal": {
+        "status": 401,
+        "code": "nonce_replay",
+        "error": "The request nonce was already used"
+      }
+    },
+    "candidates": [
+      "https://local.fixture.ts.net:8443",
+      "https://peer.fixture.ts.net",
+      "https://peer.fixture.ts.net:8443"
+    ],
+    "now": 1700000000,
+    "identity": {
+      "serverId": "local-server",
+      "publicKey": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAoSuETv8bnfeg51yvweFCIVmGvgMUT1xx3HoGCsNgUso=\n-----END PUBLIC KEY-----\n",
+      "label": "Fixture server",
+      "origin": "https://local.fixture.ts.net",
+      "tailscaleUser": null
+    },
+    "invitation": {
+      "protocol": 1,
+      "inviteId": "993f2bebcdf2445e8351b3e355dedfcb",
+      "serverId": "local-server",
+      "label": "Fixture server",
+      "origin": "https://local.fixture.ts.net",
+      "publicKey": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAoSuETv8bnfeg51yvweFCIVmGvgMUT1xx3HoGCsNgUso=\n-----END PUBLIC KEY-----\n",
+      "tailscaleUser": "owner@example.test",
+      "expires": 1700000900,
+      "token": "MPZs7iZjn6xdQZjGZymFwhaATqonf7dKkSIMBRhuBOA"
+    },
+    "client": "{\"clientId\":\"peer-server\",\"created\":1700000000,\"id\":\"peer-server\",\"kind\":\"server\",\"label\":\"Peer\",\"lastAccess\":1700000000,\"origin\":\"https://peer.fixture.ts.net\",\"pairingHash\":\"e03c826cecd8ff76c7264e21b104f48d0fa831dcd970dff98ba14a6f0d29c6cb\",\"pairingReceipt\":{\"clientId\":\"peer-server\",\"label\":\"Fixture server\",\"origin\":\"https://local.fixture.ts.net\",\"paired\":true,\"protocol\":1,\"publicKey\":\"-----BEGIN PUBLIC KEY-----\\nMCowBQYDK2VwAyEAoSuETv8bnfeg51yvweFCIVmGvgMUT1xx3HoGCsNgUso=\\n-----END PUBLIC KEY-----\\n\",\"serverId\":\"local-server\",\"tailscaleUser\":\"owner@example.test\"},\"pairingRequestId\":\"pair-peer\",\"publicKey\":\"-----BEGIN PUBLIC KEY-----\\nMCowBQYDK2VwAyEAoSuETv8bnfeg51yvweFCIVmGvgMUT1xx3HoGCsNgUso=\\n-----END PUBLIC KEY-----\\n\",\"revoked\":null,\"serverId\":\"peer-server\",\"status\":\"paired\",\"tailscaleUser\":\"owner@example.test\"}",
+    "invite": "{\"created\":1700000000,\"expires\":1700000900,\"inviteId\":\"993f2bebcdf2445e8351b3e355dedfcb\",\"label\":\"Fixture server\",\"origin\":\"https://local.fixture.ts.net\",\"protocol\":1,\"publicKey\":\"-----BEGIN PUBLIC KEY-----\\nMCowBQYDK2VwAyEAoSuETv8bnfeg51yvweFCIVmGvgMUT1xx3HoGCsNgUso=\\n-----END PUBLIC KEY-----\\n\",\"serverId\":\"local-server\",\"status\":\"open\",\"tailscaleUser\":\"owner@example.test\",\"tokenHash\":\"177497a4bcb1a53d4130d111f807bfac5f539c12787c1bd6fc8327a12e02ac9c\"}",
+    "status": {
+      "BackendState": "Running",
+      "Self": {
+        "UserID": 1,
+        "DNSName": "local.fixture.ts.net.",
+        "Tags": []
+      },
+      "User": {
+        "1": {
+          "LoginName": "owner@example.test"
+        }
+      },
+      "Peer": {
+        "peer": {
+          "UserID": 1,
+          "DNSName": "peer.fixture.ts.net.",
+          "Online": true,
+          "Tags": []
+        },
+        "foreign": {
+          "UserID": 2,
+          "DNSName": "foreign.fixture.ts.net.",
+          "Online": true
+        }
+      }
+    },
+    "whois": {
+      "Node": {
+        "Name": "peer.fixture.ts.net.",
+        "Tags": []
+      },
+      "UserProfile": {
+        "LoginName": "owner@example.test"
+      }
+    },
+    "auth": [
+      {
+        "name": "pair-ui",
+        "method": "POST",
+        "target": "/api/multi-server/v1/pair",
+        "raw": "{\"clientId\":\"new-client\",\"inviteId\":\"993f2bebcdf2445e8351b3e355dedfcb\",\"kind\":\"ui\",\"label\":\"New client\",\"origin\":null,\"protocol\":1,\"publicKey\":\"-----BEGIN PUBLIC KEY-----\\nMCowBQYDK2VwAyEAoSuETv8bnfeg51yvweFCIVmGvgMUT1xx3HoGCsNgUso=\\n-----END PUBLIC KEY-----\\n\",\"requestId\":\"request-a\",\"token\":\"MPZs7iZjn6xdQZjGZymFwhaATqonf7dKkSIMBRhuBOA\"}",
+        "headers": [
+          ["X-Studio-Client", "new-client"],
+          ["X-Studio-Server", "local-server"],
+          ["X-Studio-Timestamp", "1700000000"],
+          ["X-Studio-Nonce", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
+          ["X-Studio-Request-Id", "request-a"],
+          [
+            "X-Studio-Signature",
+            "Ca3dCvxoRIfIroOPnW0uIveDPMCxjkTQ03PY9Y97E4q8+xpsUzRRANII0mqCGTV4QnpideieMSGprnifgD2/CQ=="
+          ]
+        ],
+        "clientId": "new-client",
+        "client": null,
+        "inviteId": "993f2bebcdf2445e8351b3e355dedfcb",
+        "invite": "{\"created\":1700000000,\"expires\":1700000900,\"inviteId\":\"993f2bebcdf2445e8351b3e355dedfcb\",\"label\":\"Fixture server\",\"origin\":\"https://local.fixture.ts.net\",\"protocol\":1,\"publicKey\":\"-----BEGIN PUBLIC KEY-----\\nMCowBQYDK2VwAyEAoSuETv8bnfeg51yvweFCIVmGvgMUT1xx3HoGCsNgUso=\\n-----END PUBLIC KEY-----\\n\",\"serverId\":\"local-server\",\"status\":\"open\",\"tailscaleUser\":\"owner@example.test\",\"tokenHash\":\"177497a4bcb1a53d4130d111f807bfac5f539c12787c1bd6fc8327a12e02ac9c\"}",
+        "owner": "owner@example.test",
+        "now": 1700000000.0,
+        "address": "100.64.0.2",
+        "logins": [],
+        "whois": {
+          "Node": {
+            "Name": "peer.fixture.ts.net.",
+            "Tags": []
+          },
+          "UserProfile": {
+            "LoginName": "owner@example.test"
+          }
+        },
+        "expected": {
+          "principal": {
+            "clientId": "new-client",
+            "kind": "ui",
+            "publicKey": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAoSuETv8bnfeg51yvweFCIVmGvgMUT1xx3HoGCsNgUso=\n-----END PUBLIC KEY-----\n",
+            "serverId": null,
+            "targetServerId": "local-server",
+            "requestId": "request-a",
+            "tailscaleUser": "owner@example.test",
+            "pairing": true,
+            "autoPairing": false
+          },
+          "clientWrite": null
+        },
+        "replayRefusal": {
+          "status": 401,
+          "code": "nonce_replay",
+          "error": "The request nonce was already used"
+        }
+      },
+      {
+        "name": "normalized-origin-https://PEER.fixture.ts.net:443/",
+        "method": "POST",
+        "target": "/api/multi-server/v1/pair",
+        "raw": "{\"clientId\":\"new-client\",\"inviteId\":\"993f2bebcdf2445e8351b3e355dedfcb\",\"kind\":\"server\",\"label\":\"New server\",\"origin\":\"https://PEER.fixture.ts.net:443/\",\"protocol\":1,\"publicKey\":\"-----BEGIN PUBLIC KEY-----\\nMCowBQYDK2VwAyEAoSuETv8bnfeg51yvweFCIVmGvgMUT1xx3HoGCsNgUso=\\n-----END PUBLIC KEY-----\\n\",\"requestId\":\"request-a\",\"token\":\"MPZs7iZjn6xdQZjGZymFwhaATqonf7dKkSIMBRhuBOA\"}",
+        "headers": [
+          ["X-Studio-Client", "new-client"],
+          ["X-Studio-Server", "local-server"],
+          ["X-Studio-Timestamp", "1700000000"],
+          ["X-Studio-Nonce", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
+          ["X-Studio-Request-Id", "request-a"],
+          [
+            "X-Studio-Signature",
+            "cn8jYEwhfRsqhfmsP2lpmrE8e4YCKj03Ben9Ee6ZWqD7GZATUo9cHswPrrhqeT2v8POQ/VVoaaFcJdfsBq6eBg=="
+          ]
+        ],
+        "clientId": "new-client",
+        "client": null,
+        "inviteId": "993f2bebcdf2445e8351b3e355dedfcb",
+        "invite": "{\"created\":1700000000,\"expires\":1700000900,\"inviteId\":\"993f2bebcdf2445e8351b3e355dedfcb\",\"label\":\"Fixture server\",\"origin\":\"https://local.fixture.ts.net\",\"protocol\":1,\"publicKey\":\"-----BEGIN PUBLIC KEY-----\\nMCowBQYDK2VwAyEAoSuETv8bnfeg51yvweFCIVmGvgMUT1xx3HoGCsNgUso=\\n-----END PUBLIC KEY-----\\n\",\"serverId\":\"local-server\",\"status\":\"open\",\"tailscaleUser\":\"owner@example.test\",\"tokenHash\":\"177497a4bcb1a53d4130d111f807bfac5f539c12787c1bd6fc8327a12e02ac9c\"}",
+        "owner": "owner@example.test",
+        "now": 1700000000.0,
+        "address": "100.64.0.2",
+        "logins": [],
+        "whois": {
+          "Node": {
+            "Name": "peer.fixture.ts.net.",
+            "Tags": []
+          },
+          "UserProfile": {
+            "LoginName": "owner@example.test"
+          }
+        },
+        "expected": {
+          "principal": {
+            "clientId": "new-client",
+            "kind": "server",
+            "publicKey": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAoSuETv8bnfeg51yvweFCIVmGvgMUT1xx3HoGCsNgUso=\n-----END PUBLIC KEY-----\n",
+            "serverId": "new-client",
+            "targetServerId": "local-server",
+            "requestId": "request-a",
+            "tailscaleUser": "owner@example.test",
+            "pairing": true,
+            "autoPairing": false
+          },
+          "clientWrite": null
+        }
+      },
+      {
+        "name": "normalized-origin-https://peer.fixture.ts.net:8443/",
+        "method": "POST",
+        "target": "/api/multi-server/v1/pair",
+        "raw": "{\"clientId\":\"new-client\",\"inviteId\":\"993f2bebcdf2445e8351b3e355dedfcb\",\"kind\":\"server\",\"label\":\"New server\",\"origin\":\"https://peer.fixture.ts.net:8443/\",\"protocol\":1,\"publicKey\":\"-----BEGIN PUBLIC KEY-----\\nMCowBQYDK2VwAyEAoSuETv8bnfeg51yvweFCIVmGvgMUT1xx3HoGCsNgUso=\\n-----END PUBLIC KEY-----\\n\",\"requestId\":\"request-a\",\"token\":\"MPZs7iZjn6xdQZjGZymFwhaATqonf7dKkSIMBRhuBOA\"}",
+        "headers": [
+          ["X-Studio-Client", "new-client"],
+          ["X-Studio-Server", "local-server"],
+          ["X-Studio-Timestamp", "1700000000"],
+          ["X-Studio-Nonce", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
+          ["X-Studio-Request-Id", "request-a"],
+          [
+            "X-Studio-Signature",
+            "EKEPTWBk7X876K6nA5+7+gwXt4K8AXW1leWVlB7YEan9RK1R9dUCwO/us//WFaT/i7qBZOAlFr2/uAWhBzS5Aw=="
+          ]
+        ],
+        "clientId": "new-client",
+        "client": null,
+        "inviteId": "993f2bebcdf2445e8351b3e355dedfcb",
+        "invite": "{\"created\":1700000000,\"expires\":1700000900,\"inviteId\":\"993f2bebcdf2445e8351b3e355dedfcb\",\"label\":\"Fixture server\",\"origin\":\"https://local.fixture.ts.net\",\"protocol\":1,\"publicKey\":\"-----BEGIN PUBLIC KEY-----\\nMCowBQYDK2VwAyEAoSuETv8bnfeg51yvweFCIVmGvgMUT1xx3HoGCsNgUso=\\n-----END PUBLIC KEY-----\\n\",\"serverId\":\"local-server\",\"status\":\"open\",\"tailscaleUser\":\"owner@example.test\",\"tokenHash\":\"177497a4bcb1a53d4130d111f807bfac5f539c12787c1bd6fc8327a12e02ac9c\"}",
+        "owner": "owner@example.test",
+        "now": 1700000000.0,
+        "address": "100.64.0.2",
+        "logins": [],
+        "whois": {
+          "Node": {
+            "Name": "peer.fixture.ts.net.",
+            "Tags": []
+          },
+          "UserProfile": {
+            "LoginName": "owner@example.test"
+          }
+        },
+        "expected": {
+          "principal": {
+            "clientId": "new-client",
+            "kind": "server",
+            "publicKey": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAoSuETv8bnfeg51yvweFCIVmGvgMUT1xx3HoGCsNgUso=\n-----END PUBLIC KEY-----\n",
+            "serverId": "new-client",
+            "targetServerId": "local-server",
+            "requestId": "request-a",
+            "tailscaleUser": "owner@example.test",
+            "pairing": true,
+            "autoPairing": false
+          },
+          "clientWrite": null
+        }
+      },
+      {
+        "name": "status-server",
+        "method": "GET",
+        "target": "/api/multi-server/v1/status",
+        "raw": "",
+        "headers": [
+          ["X-Studio-Client", "peer-server"],
+          ["X-Studio-Server", "local-server"],
+          ["X-Studio-Timestamp", "1700000000"],
+          ["X-Studio-Nonce", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
+          ["X-Studio-Request-Id", "request-a"],
+          [
+            "X-Studio-Signature",
+            "uGDN3Rmjn6TlTsItxfEq7k06CuFguN7cyJhhgfJgcX8ucAHN0AG8y04iwc4JqnrZmbFiZGOkAuMajGM0DMtIBw=="
+          ]
+        ],
+        "clientId": "peer-server",
+        "client": "{\"clientId\":\"peer-server\",\"created\":1700000000,\"id\":\"peer-server\",\"kind\":\"server\",\"label\":\"Peer\",\"lastAccess\":1700000000,\"origin\":\"https://peer.fixture.ts.net\",\"pairingHash\":\"e03c826cecd8ff76c7264e21b104f48d0fa831dcd970dff98ba14a6f0d29c6cb\",\"pairingReceipt\":{\"clientId\":\"peer-server\",\"label\":\"Fixture server\",\"origin\":\"https://local.fixture.ts.net\",\"paired\":true,\"protocol\":1,\"publicKey\":\"-----BEGIN PUBLIC KEY-----\\nMCowBQYDK2VwAyEAoSuETv8bnfeg51yvweFCIVmGvgMUT1xx3HoGCsNgUso=\\n-----END PUBLIC KEY-----\\n\",\"serverId\":\"local-server\",\"tailscaleUser\":\"owner@example.test\"},\"pairingRequestId\":\"pair-peer\",\"publicKey\":\"-----BEGIN PUBLIC KEY-----\\nMCowBQYDK2VwAyEAoSuETv8bnfeg51yvweFCIVmGvgMUT1xx3HoGCsNgUso=\\n-----END PUBLIC KEY-----\\n\",\"revoked\":null,\"serverId\":\"peer-server\",\"status\":\"paired\",\"tailscaleUser\":\"owner@example.test\"}",
+        "inviteId": "993f2bebcdf2445e8351b3e355dedfcb",
+        "invite": "{\"created\":1700000000,\"expires\":1700000900,\"inviteId\":\"993f2bebcdf2445e8351b3e355dedfcb\",\"label\":\"Fixture server\",\"origin\":\"https://local.fixture.ts.net\",\"protocol\":1,\"publicKey\":\"-----BEGIN PUBLIC KEY-----\\nMCowBQYDK2VwAyEAoSuETv8bnfeg51yvweFCIVmGvgMUT1xx3HoGCsNgUso=\\n-----END PUBLIC KEY-----\\n\",\"serverId\":\"local-server\",\"status\":\"open\",\"tailscaleUser\":\"owner@example.test\",\"tokenHash\":\"177497a4bcb1a53d4130d111f807bfac5f539c12787c1bd6fc8327a12e02ac9c\"}",
+        "owner": "owner@example.test",
+        "now": 1700000000.0,
+        "address": "100.64.0.2",
+        "logins": [],
+        "whois": {
+          "Node": {
+            "Name": "peer.fixture.ts.net.",
+            "Tags": []
+          },
+          "UserProfile": {
+            "LoginName": "owner@example.test"
+          }
+        },
+        "expected": {
+          "principal": {
+            "clientId": "peer-server",
+            "created": 1700000000,
+            "id": "peer-server",
+            "kind": "server",
+            "label": "Peer",
+            "lastAccess": 1700000000,
+            "origin": "https://peer.fixture.ts.net",
+            "pairingHash": "e03c826cecd8ff76c7264e21b104f48d0fa831dcd970dff98ba14a6f0d29c6cb",
+            "pairingReceipt": {
+              "clientId": "peer-server",
+              "label": "Fixture server",
+              "origin": "https://local.fixture.ts.net",
+              "paired": true,
+              "protocol": 1,
+              "publicKey": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAoSuETv8bnfeg51yvweFCIVmGvgMUT1xx3HoGCsNgUso=\n-----END PUBLIC KEY-----\n",
+              "serverId": "local-server",
+              "tailscaleUser": "owner@example.test"
+            },
+            "pairingRequestId": "pair-peer",
+            "publicKey": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAoSuETv8bnfeg51yvweFCIVmGvgMUT1xx3HoGCsNgUso=\n-----END PUBLIC KEY-----\n",
+            "revoked": null,
+            "serverId": "peer-server",
+            "status": "paired",
+            "tailscaleUser": "owner@example.test",
+            "targetServerId": "local-server",
+            "requestId": "request-a",
+            "pairing": false,
+            "autoPairing": false
+          },
+          "clientWrite": {
+            "clientId": "peer-server",
+            "created": 1700000000,
+            "id": "peer-server",
+            "kind": "server",
+            "label": "Peer",
+            "lastAccess": 1700000000.0,
+            "origin": "https://peer.fixture.ts.net",
+            "pairingHash": "e03c826cecd8ff76c7264e21b104f48d0fa831dcd970dff98ba14a6f0d29c6cb",
+            "pairingReceipt": {
+              "clientId": "peer-server",
+              "label": "Fixture server",
+              "origin": "https://local.fixture.ts.net",
+              "paired": true,
+              "protocol": 1,
+              "publicKey": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAoSuETv8bnfeg51yvweFCIVmGvgMUT1xx3HoGCsNgUso=\n-----END PUBLIC KEY-----\n",
+              "serverId": "local-server",
+              "tailscaleUser": "owner@example.test"
+            },
+            "pairingRequestId": "pair-peer",
+            "publicKey": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAoSuETv8bnfeg51yvweFCIVmGvgMUT1xx3HoGCsNgUso=\n-----END PUBLIC KEY-----\n",
+            "revoked": null,
+            "serverId": "peer-server",
+            "status": "paired",
+            "tailscaleUser": "owner@example.test"
+          }
+        }
+      },
+      {
+        "name": "status-query",
+        "method": "GET",
+        "target": "/api/multi-server/v1/status?check=1",
+        "raw": "",
+        "headers": [
+          ["X-Studio-Client", "peer-server"],
+          ["X-Studio-Server", "local-server"],
+          ["X-Studio-Timestamp", "1700000000"],
+          ["X-Studio-Nonce", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
+          ["X-Studio-Request-Id", "request-a"],
+          [
+            "X-Studio-Signature",
+            "eRaZLemCP2/Op+ygc7wjgUudTorIpHum8NwNzQ4PV0rZPo4c5l7lmZFnJDtbCasOMq/KgyfO21GEvnG0X65PBg=="
+          ]
+        ],
+        "clientId": "peer-server",
+        "client": "{\"clientId\":\"peer-server\",\"created\":1700000000,\"id\":\"peer-server\",\"kind\":\"server\",\"label\":\"Peer\",\"lastAccess\":1700000000,\"origin\":\"https://peer.fixture.ts.net\",\"pairingHash\":\"e03c826cecd8ff76c7264e21b104f48d0fa831dcd970dff98ba14a6f0d29c6cb\",\"pairingReceipt\":{\"clientId\":\"peer-server\",\"label\":\"Fixture server\",\"origin\":\"https://local.fixture.ts.net\",\"paired\":true,\"protocol\":1,\"publicKey\":\"-----BEGIN PUBLIC KEY-----\\nMCowBQYDK2VwAyEAoSuETv8bnfeg51yvweFCIVmGvgMUT1xx3HoGCsNgUso=\\n-----END PUBLIC KEY-----\\n\",\"serverId\":\"local-server\",\"tailscaleUser\":\"owner@example.test\"},\"pairingRequestId\":\"pair-peer\",\"publicKey\":\"-----BEGIN PUBLIC KEY-----\\nMCowBQYDK2VwAyEAoSuETv8bnfeg51yvweFCIVmGvgMUT1xx3HoGCsNgUso=\\n-----END PUBLIC KEY-----\\n\",\"revoked\":null,\"serverId\":\"peer-server\",\"status\":\"paired\",\"tailscaleUser\":\"owner@example.test\"}",
+        "inviteId": "993f2bebcdf2445e8351b3e355dedfcb",
+        "invite": "{\"created\":1700000000,\"expires\":1700000900,\"inviteId\":\"993f2bebcdf2445e8351b3e355dedfcb\",\"label\":\"Fixture server\",\"origin\":\"https://local.fixture.ts.net\",\"protocol\":1,\"publicKey\":\"-----BEGIN PUBLIC KEY-----\\nMCowBQYDK2VwAyEAoSuETv8bnfeg51yvweFCIVmGvgMUT1xx3HoGCsNgUso=\\n-----END PUBLIC KEY-----\\n\",\"serverId\":\"local-server\",\"status\":\"open\",\"tailscaleUser\":\"owner@example.test\",\"tokenHash\":\"177497a4bcb1a53d4130d111f807bfac5f539c12787c1bd6fc8327a12e02ac9c\"}",
+        "owner": "owner@example.test",
+        "now": 1700000000.0,
+        "address": "100.64.0.2",
+        "logins": [],
+        "whois": {
+          "Node": {
+            "Name": "peer.fixture.ts.net.",
+            "Tags": []
+          },
+          "UserProfile": {
+            "LoginName": "owner@example.test"
+          }
+        },
+        "expected": {
+          "principal": {
+            "clientId": "peer-server",
+            "created": 1700000000,
+            "id": "peer-server",
+            "kind": "server",
+            "label": "Peer",
+            "lastAccess": 1700000000,
+            "origin": "https://peer.fixture.ts.net",
+            "pairingHash": "e03c826cecd8ff76c7264e21b104f48d0fa831dcd970dff98ba14a6f0d29c6cb",
+            "pairingReceipt": {
+              "clientId": "peer-server",
+              "label": "Fixture server",
+              "origin": "https://local.fixture.ts.net",
+              "paired": true,
+              "protocol": 1,
+              "publicKey": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAoSuETv8bnfeg51yvweFCIVmGvgMUT1xx3HoGCsNgUso=\n-----END PUBLIC KEY-----\n",
+              "serverId": "local-server",
+              "tailscaleUser": "owner@example.test"
+            },
+            "pairingRequestId": "pair-peer",
+            "publicKey": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAoSuETv8bnfeg51yvweFCIVmGvgMUT1xx3HoGCsNgUso=\n-----END PUBLIC KEY-----\n",
+            "revoked": null,
+            "serverId": "peer-server",
+            "status": "paired",
+            "tailscaleUser": "owner@example.test",
+            "targetServerId": "local-server",
+            "requestId": "request-a",
+            "pairing": false,
+            "autoPairing": false
+          },
+          "clientWrite": {
+            "clientId": "peer-server",
+            "created": 1700000000,
+            "id": "peer-server",
+            "kind": "server",
+            "label": "Peer",
+            "lastAccess": 1700000000.0,
+            "origin": "https://peer.fixture.ts.net",
+            "pairingHash": "e03c826cecd8ff76c7264e21b104f48d0fa831dcd970dff98ba14a6f0d29c6cb",
+            "pairingReceipt": {
+              "clientId": "peer-server",
+              "label": "Fixture server",
+              "origin": "https://local.fixture.ts.net",
+              "paired": true,
+              "protocol": 1,
+              "publicKey": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAoSuETv8bnfeg51yvweFCIVmGvgMUT1xx3HoGCsNgUso=\n-----END PUBLIC KEY-----\n",
+              "serverId": "local-server",
+              "tailscaleUser": "owner@example.test"
+            },
+            "pairingRequestId": "pair-peer",
+            "publicKey": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAoSuETv8bnfeg51yvweFCIVmGvgMUT1xx3HoGCsNgUso=\n-----END PUBLIC KEY-----\n",
+            "revoked": null,
+            "serverId": "peer-server",
+            "status": "paired",
+            "tailscaleUser": "owner@example.test"
+          }
+        }
+      },
+      {
+        "name": "invite-expiry-0.25",
+        "method": "POST",
+        "target": "/api/multi-server/v1/pair",
+        "raw": "{\"clientId\":\"new-client\",\"inviteId\":\"993f2bebcdf2445e8351b3e355dedfcb\",\"kind\":\"ui\",\"label\":\"New client\",\"origin\":null,\"protocol\":1,\"publicKey\":\"-----BEGIN PUBLIC KEY-----\\nMCowBQYDK2VwAyEAoSuETv8bnfeg51yvweFCIVmGvgMUT1xx3HoGCsNgUso=\\n-----END PUBLIC KEY-----\\n\",\"requestId\":\"request-a\",\"token\":\"MPZs7iZjn6xdQZjGZymFwhaATqonf7dKkSIMBRhuBOA\"}",
+        "headers": [
+          ["X-Studio-Client", "new-client"],
+          ["X-Studio-Server", "local-server"],
+          ["X-Studio-Timestamp", "1700000000"],
+          ["X-Studio-Nonce", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
+          ["X-Studio-Request-Id", "request-a"],
+          [
+            "X-Studio-Signature",
+            "Ca3dCvxoRIfIroOPnW0uIveDPMCxjkTQ03PY9Y97E4q8+xpsUzRRANII0mqCGTV4QnpideieMSGprnifgD2/CQ=="
+          ]
+        ],
+        "clientId": "new-client",
+        "client": null,
+        "inviteId": "993f2bebcdf2445e8351b3e355dedfcb",
+        "invite": "{\"created\":1700000000,\"expires\":1700000000.5,\"inviteId\":\"993f2bebcdf2445e8351b3e355dedfcb\",\"label\":\"Fixture server\",\"origin\":\"https://local.fixture.ts.net\",\"protocol\":1,\"publicKey\":\"-----BEGIN PUBLIC KEY-----\\nMCowBQYDK2VwAyEAoSuETv8bnfeg51yvweFCIVmGvgMUT1xx3HoGCsNgUso=\\n-----END PUBLIC KEY-----\\n\",\"serverId\":\"local-server\",\"status\":\"open\",\"tailscaleUser\":\"owner@example.test\",\"tokenHash\":\"177497a4bcb1a53d4130d111f807bfac5f539c12787c1bd6fc8327a12e02ac9c\"}",
+        "owner": "owner@example.test",
+        "now": 1700000000.25,
+        "address": "100.64.0.2",
+        "logins": [],
+        "whois": {
+          "Node": {
+            "Name": "peer.fixture.ts.net.",
+            "Tags": []
+          },
+          "UserProfile": {
+            "LoginName": "owner@example.test"
+          }
+        },
+        "expected": {
+          "principal": {
+            "clientId": "new-client",
+            "kind": "ui",
+            "publicKey": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAoSuETv8bnfeg51yvweFCIVmGvgMUT1xx3HoGCsNgUso=\n-----END PUBLIC KEY-----\n",
+            "serverId": null,
+            "targetServerId": "local-server",
+            "requestId": "request-a",
+            "tailscaleUser": "owner@example.test",
+            "pairing": true,
+            "autoPairing": false
+          },
+          "clientWrite": null
+        }
+      },
+      {
+        "name": "invite-expiry-0.5",
+        "method": "POST",
+        "target": "/api/multi-server/v1/pair",
+        "raw": "{\"clientId\":\"new-client\",\"inviteId\":\"993f2bebcdf2445e8351b3e355dedfcb\",\"kind\":\"ui\",\"label\":\"New client\",\"origin\":null,\"protocol\":1,\"publicKey\":\"-----BEGIN PUBLIC KEY-----\\nMCowBQYDK2VwAyEAoSuETv8bnfeg51yvweFCIVmGvgMUT1xx3HoGCsNgUso=\\n-----END PUBLIC KEY-----\\n\",\"requestId\":\"request-a\",\"token\":\"MPZs7iZjn6xdQZjGZymFwhaATqonf7dKkSIMBRhuBOA\"}",
+        "headers": [
+          ["X-Studio-Client", "new-client"],
+          ["X-Studio-Server", "local-server"],
+          ["X-Studio-Timestamp", "1700000000"],
+          ["X-Studio-Nonce", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
+          ["X-Studio-Request-Id", "request-a"],
+          [
+            "X-Studio-Signature",
+            "Ca3dCvxoRIfIroOPnW0uIveDPMCxjkTQ03PY9Y97E4q8+xpsUzRRANII0mqCGTV4QnpideieMSGprnifgD2/CQ=="
+          ]
+        ],
+        "clientId": "new-client",
+        "client": null,
+        "inviteId": "993f2bebcdf2445e8351b3e355dedfcb",
+        "invite": "{\"created\":1700000000,\"expires\":1700000000.5,\"inviteId\":\"993f2bebcdf2445e8351b3e355dedfcb\",\"label\":\"Fixture server\",\"origin\":\"https://local.fixture.ts.net\",\"protocol\":1,\"publicKey\":\"-----BEGIN PUBLIC KEY-----\\nMCowBQYDK2VwAyEAoSuETv8bnfeg51yvweFCIVmGvgMUT1xx3HoGCsNgUso=\\n-----END PUBLIC KEY-----\\n\",\"serverId\":\"local-server\",\"status\":\"open\",\"tailscaleUser\":\"owner@example.test\",\"tokenHash\":\"177497a4bcb1a53d4130d111f807bfac5f539c12787c1bd6fc8327a12e02ac9c\"}",
+        "owner": "owner@example.test",
+        "now": 1700000000.5,
+        "address": "100.64.0.2",
+        "logins": [],
+        "whois": {
+          "Node": {
+            "Name": "peer.fixture.ts.net.",
+            "Tags": []
+          },
+          "UserProfile": {
+            "LoginName": "owner@example.test"
+          }
+        },
+        "expected": {
+          "principal": {
+            "clientId": "new-client",
+            "kind": "ui",
+            "publicKey": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAoSuETv8bnfeg51yvweFCIVmGvgMUT1xx3HoGCsNgUso=\n-----END PUBLIC KEY-----\n",
+            "serverId": null,
+            "targetServerId": "local-server",
+            "requestId": "request-a",
+            "tailscaleUser": "owner@example.test",
+            "pairing": true,
+            "autoPairing": false
+          },
+          "clientWrite": null
+        }
+      },
+      {
+        "name": "invite-expiry-0.75",
+        "method": "POST",
+        "target": "/api/multi-server/v1/pair",
+        "raw": "{\"clientId\":\"new-client\",\"inviteId\":\"993f2bebcdf2445e8351b3e355dedfcb\",\"kind\":\"ui\",\"label\":\"New client\",\"origin\":null,\"protocol\":1,\"publicKey\":\"-----BEGIN PUBLIC KEY-----\\nMCowBQYDK2VwAyEAoSuETv8bnfeg51yvweFCIVmGvgMUT1xx3HoGCsNgUso=\\n-----END PUBLIC KEY-----\\n\",\"requestId\":\"request-a\",\"token\":\"MPZs7iZjn6xdQZjGZymFwhaATqonf7dKkSIMBRhuBOA\"}",
+        "headers": [
+          ["X-Studio-Client", "new-client"],
+          ["X-Studio-Server", "local-server"],
+          ["X-Studio-Timestamp", "1700000000"],
+          ["X-Studio-Nonce", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
+          ["X-Studio-Request-Id", "request-a"],
+          [
+            "X-Studio-Signature",
+            "Ca3dCvxoRIfIroOPnW0uIveDPMCxjkTQ03PY9Y97E4q8+xpsUzRRANII0mqCGTV4QnpideieMSGprnifgD2/CQ=="
+          ]
+        ],
+        "clientId": "new-client",
+        "client": null,
+        "inviteId": "993f2bebcdf2445e8351b3e355dedfcb",
+        "invite": "{\"created\":1700000000,\"expires\":1700000000.5,\"inviteId\":\"993f2bebcdf2445e8351b3e355dedfcb\",\"label\":\"Fixture server\",\"origin\":\"https://local.fixture.ts.net\",\"protocol\":1,\"publicKey\":\"-----BEGIN PUBLIC KEY-----\\nMCowBQYDK2VwAyEAoSuETv8bnfeg51yvweFCIVmGvgMUT1xx3HoGCsNgUso=\\n-----END PUBLIC KEY-----\\n\",\"serverId\":\"local-server\",\"status\":\"open\",\"tailscaleUser\":\"owner@example.test\",\"tokenHash\":\"177497a4bcb1a53d4130d111f807bfac5f539c12787c1bd6fc8327a12e02ac9c\"}",
+        "owner": "owner@example.test",
+        "now": 1700000000.75,
+        "address": "100.64.0.2",
+        "logins": [],
+        "whois": {
+          "Node": {
+            "Name": "peer.fixture.ts.net.",
+            "Tags": []
+          },
+          "UserProfile": {
+            "LoginName": "owner@example.test"
+          }
+        },
+        "refusal": {
+          "status": 403,
+          "code": "invite_unavailable",
+          "error": "The invitation is expired or was already used"
+        },
+        "noWrite": true
+      },
+      {
+        "name": "peer-tagged",
+        "method": "POST",
+        "target": "/api/multi-server/v1/pair",
+        "raw": "{\"clientId\":\"new-client\",\"inviteId\":\"993f2bebcdf2445e8351b3e355dedfcb\",\"kind\":\"ui\",\"label\":\"New client\",\"origin\":null,\"protocol\":1,\"publicKey\":\"-----BEGIN PUBLIC KEY-----\\nMCowBQYDK2VwAyEAoSuETv8bnfeg51yvweFCIVmGvgMUT1xx3HoGCsNgUso=\\n-----END PUBLIC KEY-----\\n\",\"requestId\":\"request-a\",\"token\":\"MPZs7iZjn6xdQZjGZymFwhaATqonf7dKkSIMBRhuBOA\"}",
+        "headers": [
+          ["X-Studio-Client", "new-client"],
+          ["X-Studio-Server", "local-server"],
+          ["X-Studio-Timestamp", "1700000000"],
+          ["X-Studio-Nonce", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
+          ["X-Studio-Request-Id", "request-a"],
+          [
+            "X-Studio-Signature",
+            "Ca3dCvxoRIfIroOPnW0uIveDPMCxjkTQ03PY9Y97E4q8+xpsUzRRANII0mqCGTV4QnpideieMSGprnifgD2/CQ=="
+          ]
+        ],
+        "clientId": "new-client",
+        "client": null,
+        "inviteId": "993f2bebcdf2445e8351b3e355dedfcb",
+        "invite": "{\"created\":1700000000,\"expires\":1700000900,\"inviteId\":\"993f2bebcdf2445e8351b3e355dedfcb\",\"label\":\"Fixture server\",\"origin\":\"https://local.fixture.ts.net\",\"protocol\":1,\"publicKey\":\"-----BEGIN PUBLIC KEY-----\\nMCowBQYDK2VwAyEAoSuETv8bnfeg51yvweFCIVmGvgMUT1xx3HoGCsNgUso=\\n-----END PUBLIC KEY-----\\n\",\"serverId\":\"local-server\",\"status\":\"open\",\"tailscaleUser\":\"owner@example.test\",\"tokenHash\":\"177497a4bcb1a53d4130d111f807bfac5f539c12787c1bd6fc8327a12e02ac9c\"}",
+        "owner": "owner@example.test",
+        "now": 1700000000.0,
+        "address": "100.64.0.2",
+        "logins": [],
+        "whois": {
+          "Node": {
+            "Name": "peer.fixture.ts.net.",
+            "Tags": ["tag:server"]
+          },
+          "UserProfile": {
+            "LoginName": "owner@example.test"
+          }
+        },
+        "refusal": {
+          "status": 403,
+          "code": "identity_unavailable",
+          "error": "The Tailscale client identity is unavailable"
+        },
+        "noWrite": true
+      },
+      {
+        "name": "outside-tailnet",
+        "method": "POST",
+        "target": "/api/multi-server/v1/pair",
+        "raw": "{\"clientId\":\"new-client\",\"inviteId\":\"993f2bebcdf2445e8351b3e355dedfcb\",\"kind\":\"ui\",\"label\":\"New client\",\"origin\":null,\"protocol\":1,\"publicKey\":\"-----BEGIN PUBLIC KEY-----\\nMCowBQYDK2VwAyEAoSuETv8bnfeg51yvweFCIVmGvgMUT1xx3HoGCsNgUso=\\n-----END PUBLIC KEY-----\\n\",\"requestId\":\"request-a\",\"token\":\"MPZs7iZjn6xdQZjGZymFwhaATqonf7dKkSIMBRhuBOA\"}",
+        "headers": [
+          ["X-Studio-Client", "new-client"],
+          ["X-Studio-Server", "local-server"],
+          ["X-Studio-Timestamp", "1700000000"],
+          ["X-Studio-Nonce", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
+          ["X-Studio-Request-Id", "request-a"],
+          [
+            "X-Studio-Signature",
+            "Ca3dCvxoRIfIroOPnW0uIveDPMCxjkTQ03PY9Y97E4q8+xpsUzRRANII0mqCGTV4QnpideieMSGprnifgD2/CQ=="
+          ]
+        ],
+        "clientId": "new-client",
+        "client": null,
+        "inviteId": "993f2bebcdf2445e8351b3e355dedfcb",
+        "invite": "{\"created\":1700000000,\"expires\":1700000900,\"inviteId\":\"993f2bebcdf2445e8351b3e355dedfcb\",\"label\":\"Fixture server\",\"origin\":\"https://local.fixture.ts.net\",\"protocol\":1,\"publicKey\":\"-----BEGIN PUBLIC KEY-----\\nMCowBQYDK2VwAyEAoSuETv8bnfeg51yvweFCIVmGvgMUT1xx3HoGCsNgUso=\\n-----END PUBLIC KEY-----\\n\",\"serverId\":\"local-server\",\"status\":\"open\",\"tailscaleUser\":\"owner@example.test\",\"tokenHash\":\"177497a4bcb1a53d4130d111f807bfac5f539c12787c1bd6fc8327a12e02ac9c\"}",
+        "owner": "owner@example.test",
+        "now": 1700000000.0,
+        "address": "127.0.0.1",
+        "logins": [],
+        "whois": {
+          "Node": {
+            "Name": "peer.fixture.ts.net.",
+            "Tags": []
+          },
+          "UserProfile": {
+            "LoginName": "owner@example.test"
+          }
+        },
+        "refusal": {
+          "status": 403,
+          "code": "identity_unavailable",
+          "error": "The Tailscale client identity is unavailable"
+        },
+        "noWrite": true
+      },
+      {
+        "name": "spoofed-login",
+        "method": "POST",
+        "target": "/api/multi-server/v1/pair",
+        "raw": "{\"clientId\":\"new-client\",\"inviteId\":\"993f2bebcdf2445e8351b3e355dedfcb\",\"kind\":\"ui\",\"label\":\"New client\",\"origin\":null,\"protocol\":1,\"publicKey\":\"-----BEGIN PUBLIC KEY-----\\nMCowBQYDK2VwAyEAoSuETv8bnfeg51yvweFCIVmGvgMUT1xx3HoGCsNgUso=\\n-----END PUBLIC KEY-----\\n\",\"requestId\":\"request-a\",\"token\":\"MPZs7iZjn6xdQZjGZymFwhaATqonf7dKkSIMBRhuBOA\"}",
+        "headers": [
+          ["X-Studio-Client", "new-client"],
+          ["X-Studio-Server", "local-server"],
+          ["X-Studio-Timestamp", "1700000000"],
+          ["X-Studio-Nonce", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
+          ["X-Studio-Request-Id", "request-a"],
+          [
+            "X-Studio-Signature",
+            "Ca3dCvxoRIfIroOPnW0uIveDPMCxjkTQ03PY9Y97E4q8+xpsUzRRANII0mqCGTV4QnpideieMSGprnifgD2/CQ=="
+          ]
+        ],
+        "clientId": "new-client",
+        "client": null,
+        "inviteId": "993f2bebcdf2445e8351b3e355dedfcb",
+        "invite": "{\"created\":1700000000,\"expires\":1700000900,\"inviteId\":\"993f2bebcdf2445e8351b3e355dedfcb\",\"label\":\"Fixture server\",\"origin\":\"https://local.fixture.ts.net\",\"protocol\":1,\"publicKey\":\"-----BEGIN PUBLIC KEY-----\\nMCowBQYDK2VwAyEAoSuETv8bnfeg51yvweFCIVmGvgMUT1xx3HoGCsNgUso=\\n-----END PUBLIC KEY-----\\n\",\"serverId\":\"local-server\",\"status\":\"open\",\"tailscaleUser\":\"owner@example.test\",\"tokenHash\":\"177497a4bcb1a53d4130d111f807bfac5f539c12787c1bd6fc8327a12e02ac9c\"}",
+        "owner": "owner@example.test",
+        "now": 1700000000.0,
+        "address": "100.64.0.2",
+        "logins": ["foreign@example.test"],
+        "whois": {
+          "Node": {
+            "Name": "peer.fixture.ts.net.",
+            "Tags": []
+          },
+          "UserProfile": {
+            "LoginName": "owner@example.test"
+          }
+        },
+        "refusal": {
+          "status": 403,
+          "code": "owner_mismatch",
+          "error": "The Tailscale identity does not match"
+        },
+        "noWrite": true
+      },
+      {
+        "name": "duplicate-login",
+        "method": "POST",
+        "target": "/api/multi-server/v1/pair",
+        "raw": "{\"clientId\":\"new-client\",\"inviteId\":\"993f2bebcdf2445e8351b3e355dedfcb\",\"kind\":\"ui\",\"label\":\"New client\",\"origin\":null,\"protocol\":1,\"publicKey\":\"-----BEGIN PUBLIC KEY-----\\nMCowBQYDK2VwAyEAoSuETv8bnfeg51yvweFCIVmGvgMUT1xx3HoGCsNgUso=\\n-----END PUBLIC KEY-----\\n\",\"requestId\":\"request-a\",\"token\":\"MPZs7iZjn6xdQZjGZymFwhaATqonf7dKkSIMBRhuBOA\"}",
+        "headers": [
+          ["X-Studio-Client", "new-client"],
+          ["X-Studio-Server", "local-server"],
+          ["X-Studio-Timestamp", "1700000000"],
+          ["X-Studio-Nonce", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
+          ["X-Studio-Request-Id", "request-a"],
+          [
+            "X-Studio-Signature",
+            "Ca3dCvxoRIfIroOPnW0uIveDPMCxjkTQ03PY9Y97E4q8+xpsUzRRANII0mqCGTV4QnpideieMSGprnifgD2/CQ=="
+          ]
+        ],
+        "clientId": "new-client",
+        "client": null,
+        "inviteId": "993f2bebcdf2445e8351b3e355dedfcb",
+        "invite": "{\"created\":1700000000,\"expires\":1700000900,\"inviteId\":\"993f2bebcdf2445e8351b3e355dedfcb\",\"label\":\"Fixture server\",\"origin\":\"https://local.fixture.ts.net\",\"protocol\":1,\"publicKey\":\"-----BEGIN PUBLIC KEY-----\\nMCowBQYDK2VwAyEAoSuETv8bnfeg51yvweFCIVmGvgMUT1xx3HoGCsNgUso=\\n-----END PUBLIC KEY-----\\n\",\"serverId\":\"local-server\",\"status\":\"open\",\"tailscaleUser\":\"owner@example.test\",\"tokenHash\":\"177497a4bcb1a53d4130d111f807bfac5f539c12787c1bd6fc8327a12e02ac9c\"}",
+        "owner": "owner@example.test",
+        "now": 1700000000.0,
+        "address": "100.64.0.2",
+        "logins": ["owner@example.test", "owner@example.test"],
+        "whois": {
+          "Node": {
+            "Name": "peer.fixture.ts.net.",
+            "Tags": []
+          },
+          "UserProfile": {
+            "LoginName": "owner@example.test"
+          }
+        },
+        "refusal": {
+          "status": 403,
+          "code": "owner_mismatch",
+          "error": "The Tailscale identity does not match"
+        },
+        "noWrite": true
+      },
+      {
+        "name": "revoked",
+        "method": "GET",
+        "target": "/api/multi-server/v1/status",
+        "raw": "",
+        "headers": [
+          ["X-Studio-Client", "peer-server"],
+          ["X-Studio-Server", "local-server"],
+          ["X-Studio-Timestamp", "1700000000"],
+          ["X-Studio-Nonce", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
+          ["X-Studio-Request-Id", "request-a"],
+          [
+            "X-Studio-Signature",
+            "uGDN3Rmjn6TlTsItxfEq7k06CuFguN7cyJhhgfJgcX8ucAHN0AG8y04iwc4JqnrZmbFiZGOkAuMajGM0DMtIBw=="
+          ]
+        ],
+        "clientId": "peer-server",
+        "client": "{\"clientId\":\"peer-server\",\"created\":1700000000,\"id\":\"peer-server\",\"kind\":\"server\",\"label\":\"Peer\",\"lastAccess\":1700000000,\"origin\":\"https://peer.fixture.ts.net\",\"pairingHash\":\"e03c826cecd8ff76c7264e21b104f48d0fa831dcd970dff98ba14a6f0d29c6cb\",\"pairingReceipt\":{\"clientId\":\"peer-server\",\"label\":\"Fixture server\",\"origin\":\"https://local.fixture.ts.net\",\"paired\":true,\"protocol\":1,\"publicKey\":\"-----BEGIN PUBLIC KEY-----\\nMCowBQYDK2VwAyEAoSuETv8bnfeg51yvweFCIVmGvgMUT1xx3HoGCsNgUso=\\n-----END PUBLIC KEY-----\\n\",\"serverId\":\"local-server\",\"tailscaleUser\":\"owner@example.test\"},\"pairingRequestId\":\"pair-peer\",\"publicKey\":\"-----BEGIN PUBLIC KEY-----\\nMCowBQYDK2VwAyEAoSuETv8bnfeg51yvweFCIVmGvgMUT1xx3HoGCsNgUso=\\n-----END PUBLIC KEY-----\\n\",\"revoked\":null,\"serverId\":\"peer-server\",\"status\":\"revoked\",\"tailscaleUser\":\"owner@example.test\"}",
+        "inviteId": "993f2bebcdf2445e8351b3e355dedfcb",
+        "invite": "{\"created\":1700000000,\"expires\":1700000900,\"inviteId\":\"993f2bebcdf2445e8351b3e355dedfcb\",\"label\":\"Fixture server\",\"origin\":\"https://local.fixture.ts.net\",\"protocol\":1,\"publicKey\":\"-----BEGIN PUBLIC KEY-----\\nMCowBQYDK2VwAyEAoSuETv8bnfeg51yvweFCIVmGvgMUT1xx3HoGCsNgUso=\\n-----END PUBLIC KEY-----\\n\",\"serverId\":\"local-server\",\"status\":\"open\",\"tailscaleUser\":\"owner@example.test\",\"tokenHash\":\"177497a4bcb1a53d4130d111f807bfac5f539c12787c1bd6fc8327a12e02ac9c\"}",
+        "owner": "owner@example.test",
+        "now": 1700000000.0,
+        "address": "100.64.0.2",
+        "logins": [],
+        "whois": {
+          "Node": {
+            "Name": "peer.fixture.ts.net.",
+            "Tags": []
+          },
+          "UserProfile": {
+            "LoginName": "owner@example.test"
+          }
+        },
+        "refusal": {
+          "status": 403,
+          "code": "client_revoked",
+          "error": "The client is not paired or is revoked"
+        },
+        "noWrite": true
+      },
+      {
+        "name": "unknown-client",
+        "method": "GET",
+        "target": "/api/multi-server/v1/status",
+        "raw": "",
+        "headers": [
+          ["X-Studio-Client", "peer-server"],
+          ["X-Studio-Server", "local-server"],
+          ["X-Studio-Timestamp", "1700000000"],
+          ["X-Studio-Nonce", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
+          ["X-Studio-Request-Id", "request-a"],
+          [
+            "X-Studio-Signature",
+            "uGDN3Rmjn6TlTsItxfEq7k06CuFguN7cyJhhgfJgcX8ucAHN0AG8y04iwc4JqnrZmbFiZGOkAuMajGM0DMtIBw=="
+          ]
+        ],
+        "clientId": "peer-server",
+        "client": null,
+        "inviteId": "993f2bebcdf2445e8351b3e355dedfcb",
+        "invite": "{\"created\":1700000000,\"expires\":1700000900,\"inviteId\":\"993f2bebcdf2445e8351b3e355dedfcb\",\"label\":\"Fixture server\",\"origin\":\"https://local.fixture.ts.net\",\"protocol\":1,\"publicKey\":\"-----BEGIN PUBLIC KEY-----\\nMCowBQYDK2VwAyEAoSuETv8bnfeg51yvweFCIVmGvgMUT1xx3HoGCsNgUso=\\n-----END PUBLIC KEY-----\\n\",\"serverId\":\"local-server\",\"status\":\"open\",\"tailscaleUser\":\"owner@example.test\",\"tokenHash\":\"177497a4bcb1a53d4130d111f807bfac5f539c12787c1bd6fc8327a12e02ac9c\"}",
+        "owner": "owner@example.test",
+        "now": 1700000000.0,
+        "address": "100.64.0.2",
+        "logins": [],
+        "whois": {
+          "Node": {
+            "Name": "peer.fixture.ts.net.",
+            "Tags": []
+          },
+          "UserProfile": {
+            "LoginName": "owner@example.test"
+          }
+        },
+        "refusal": {
+          "status": 403,
+          "code": "client_revoked",
+          "error": "The client is not paired or is revoked"
+        },
+        "noWrite": true
+      },
+      {
+        "name": "wrong-owner",
+        "method": "POST",
+        "target": "/api/multi-server/v1/pair",
+        "raw": "{\"clientId\":\"new-client\",\"inviteId\":\"993f2bebcdf2445e8351b3e355dedfcb\",\"kind\":\"ui\",\"label\":\"New client\",\"origin\":null,\"protocol\":1,\"publicKey\":\"-----BEGIN PUBLIC KEY-----\\nMCowBQYDK2VwAyEAoSuETv8bnfeg51yvweFCIVmGvgMUT1xx3HoGCsNgUso=\\n-----END PUBLIC KEY-----\\n\",\"requestId\":\"request-a\",\"token\":\"MPZs7iZjn6xdQZjGZymFwhaATqonf7dKkSIMBRhuBOA\"}",
+        "headers": [
+          ["X-Studio-Client", "new-client"],
+          ["X-Studio-Server", "local-server"],
+          ["X-Studio-Timestamp", "1700000000"],
+          ["X-Studio-Nonce", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
+          ["X-Studio-Request-Id", "request-a"],
+          [
+            "X-Studio-Signature",
+            "Ca3dCvxoRIfIroOPnW0uIveDPMCxjkTQ03PY9Y97E4q8+xpsUzRRANII0mqCGTV4QnpideieMSGprnifgD2/CQ=="
+          ]
+        ],
+        "clientId": "new-client",
+        "client": null,
+        "inviteId": "993f2bebcdf2445e8351b3e355dedfcb",
+        "invite": "{\"created\":1700000000,\"expires\":1700000900,\"inviteId\":\"993f2bebcdf2445e8351b3e355dedfcb\",\"label\":\"Fixture server\",\"origin\":\"https://local.fixture.ts.net\",\"protocol\":1,\"publicKey\":\"-----BEGIN PUBLIC KEY-----\\nMCowBQYDK2VwAyEAoSuETv8bnfeg51yvweFCIVmGvgMUT1xx3HoGCsNgUso=\\n-----END PUBLIC KEY-----\\n\",\"serverId\":\"local-server\",\"status\":\"open\",\"tailscaleUser\":\"owner@example.test\",\"tokenHash\":\"177497a4bcb1a53d4130d111f807bfac5f539c12787c1bd6fc8327a12e02ac9c\"}",
+        "owner": "foreign@example.test",
+        "now": 1700000000.0,
+        "address": "100.64.0.2",
+        "logins": [],
+        "whois": {
+          "Node": {
+            "Name": "peer.fixture.ts.net.",
+            "Tags": []
+          },
+          "UserProfile": {
+            "LoginName": "foreign@example.test"
+          }
+        },
+        "refusal": {
+          "status": 403,
+          "code": "owner_mismatch",
+          "error": "The Tailscale client must be the server owner"
+        },
+        "noWrite": true
+      },
+      {
+        "name": "future-clock",
+        "method": "POST",
+        "target": "/api/multi-server/v1/pair",
+        "raw": "{\"clientId\":\"new-client\",\"inviteId\":\"993f2bebcdf2445e8351b3e355dedfcb\",\"kind\":\"ui\",\"label\":\"New client\",\"origin\":null,\"protocol\":1,\"publicKey\":\"-----BEGIN PUBLIC KEY-----\\nMCowBQYDK2VwAyEAoSuETv8bnfeg51yvweFCIVmGvgMUT1xx3HoGCsNgUso=\\n-----END PUBLIC KEY-----\\n\",\"requestId\":\"request-a\",\"token\":\"MPZs7iZjn6xdQZjGZymFwhaATqonf7dKkSIMBRhuBOA\"}",
+        "headers": [
+          ["X-Studio-Client", "new-client"],
+          ["X-Studio-Server", "local-server"],
+          ["X-Studio-Timestamp", "1700000301"],
+          ["X-Studio-Nonce", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
+          ["X-Studio-Request-Id", "request-a"],
+          [
+            "X-Studio-Signature",
+            "P/e6eFu0a7dJGj/xZI+N1+te88fqkF0tnV9MmyWd4PCPpzIsyUB/+1/0pH8gPCqqm0unL+MLV5ieeHS6/SegBA=="
+          ]
+        ],
+        "clientId": "new-client",
+        "client": null,
+        "inviteId": "993f2bebcdf2445e8351b3e355dedfcb",
+        "invite": "{\"created\":1700000000,\"expires\":1700000900,\"inviteId\":\"993f2bebcdf2445e8351b3e355dedfcb\",\"label\":\"Fixture server\",\"origin\":\"https://local.fixture.ts.net\",\"protocol\":1,\"publicKey\":\"-----BEGIN PUBLIC KEY-----\\nMCowBQYDK2VwAyEAoSuETv8bnfeg51yvweFCIVmGvgMUT1xx3HoGCsNgUso=\\n-----END PUBLIC KEY-----\\n\",\"serverId\":\"local-server\",\"status\":\"open\",\"tailscaleUser\":\"owner@example.test\",\"tokenHash\":\"177497a4bcb1a53d4130d111f807bfac5f539c12787c1bd6fc8327a12e02ac9c\"}",
+        "owner": "owner@example.test",
+        "now": 1700000000.0,
+        "address": "100.64.0.2",
+        "logins": [],
+        "whois": {
+          "Node": {
+            "Name": "peer.fixture.ts.net.",
+            "Tags": []
+          },
+          "UserProfile": {
+            "LoginName": "owner@example.test"
+          }
+        },
+        "refusal": {
+          "status": 401,
+          "code": "clock_difference",
+          "error": "The request timestamp is outside the allowed clock difference"
+        },
+        "noWrite": true
+      },
+      {
+        "name": "past-clock",
+        "method": "POST",
+        "target": "/api/multi-server/v1/pair",
+        "raw": "{\"clientId\":\"new-client\",\"inviteId\":\"993f2bebcdf2445e8351b3e355dedfcb\",\"kind\":\"ui\",\"label\":\"New client\",\"origin\":null,\"protocol\":1,\"publicKey\":\"-----BEGIN PUBLIC KEY-----\\nMCowBQYDK2VwAyEAoSuETv8bnfeg51yvweFCIVmGvgMUT1xx3HoGCsNgUso=\\n-----END PUBLIC KEY-----\\n\",\"requestId\":\"request-a\",\"token\":\"MPZs7iZjn6xdQZjGZymFwhaATqonf7dKkSIMBRhuBOA\"}",
+        "headers": [
+          ["X-Studio-Client", "new-client"],
+          ["X-Studio-Server", "local-server"],
+          ["X-Studio-Timestamp", "1699999699"],
+          ["X-Studio-Nonce", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
+          ["X-Studio-Request-Id", "request-a"],
+          [
+            "X-Studio-Signature",
+            "lraVbjGCqBLTjEsLH+MCxTgTf3Gc1QPWz333gTQJkgm82UJoxVW1t29fDQYZgZxSBZWewV7s4cu0V4xbedgpDg=="
+          ]
+        ],
+        "clientId": "new-client",
+        "client": null,
+        "inviteId": "993f2bebcdf2445e8351b3e355dedfcb",
+        "invite": "{\"created\":1700000000,\"expires\":1700000900,\"inviteId\":\"993f2bebcdf2445e8351b3e355dedfcb\",\"label\":\"Fixture server\",\"origin\":\"https://local.fixture.ts.net\",\"protocol\":1,\"publicKey\":\"-----BEGIN PUBLIC KEY-----\\nMCowBQYDK2VwAyEAoSuETv8bnfeg51yvweFCIVmGvgMUT1xx3HoGCsNgUso=\\n-----END PUBLIC KEY-----\\n\",\"serverId\":\"local-server\",\"status\":\"open\",\"tailscaleUser\":\"owner@example.test\",\"tokenHash\":\"177497a4bcb1a53d4130d111f807bfac5f539c12787c1bd6fc8327a12e02ac9c\"}",
+        "owner": "owner@example.test",
+        "now": 1700000000.0,
+        "address": "100.64.0.2",
+        "logins": [],
+        "whois": {
+          "Node": {
+            "Name": "peer.fixture.ts.net.",
+            "Tags": []
+          },
+          "UserProfile": {
+            "LoginName": "owner@example.test"
+          }
+        },
+        "refusal": {
+          "status": 401,
+          "code": "clock_difference",
+          "error": "The request timestamp is outside the allowed clock difference"
+        },
+        "noWrite": true
+      },
+      {
+        "name": "clock-boundary",
+        "method": "POST",
+        "target": "/api/multi-server/v1/pair",
+        "raw": "{\"clientId\":\"new-client\",\"inviteId\":\"993f2bebcdf2445e8351b3e355dedfcb\",\"kind\":\"ui\",\"label\":\"New client\",\"origin\":null,\"protocol\":1,\"publicKey\":\"-----BEGIN PUBLIC KEY-----\\nMCowBQYDK2VwAyEAoSuETv8bnfeg51yvweFCIVmGvgMUT1xx3HoGCsNgUso=\\n-----END PUBLIC KEY-----\\n\",\"requestId\":\"request-a\",\"token\":\"MPZs7iZjn6xdQZjGZymFwhaATqonf7dKkSIMBRhuBOA\"}",
+        "headers": [
+          ["X-Studio-Client", "new-client"],
+          ["X-Studio-Server", "local-server"],
+          ["X-Studio-Timestamp", "1699999700"],
+          ["X-Studio-Nonce", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
+          ["X-Studio-Request-Id", "request-a"],
+          [
+            "X-Studio-Signature",
+            "zPOTktFyluEGIVTHbvIUOw0M2Sw2sMXjrJUQgYM6/kkjJGf8mJS5O9DVrZzy+dnc4jMPFan6sDQHxLk7zbadBg=="
+          ]
+        ],
+        "clientId": "new-client",
+        "client": null,
+        "inviteId": "993f2bebcdf2445e8351b3e355dedfcb",
+        "invite": "{\"created\":1700000000,\"expires\":1700000900,\"inviteId\":\"993f2bebcdf2445e8351b3e355dedfcb\",\"label\":\"Fixture server\",\"origin\":\"https://local.fixture.ts.net\",\"protocol\":1,\"publicKey\":\"-----BEGIN PUBLIC KEY-----\\nMCowBQYDK2VwAyEAoSuETv8bnfeg51yvweFCIVmGvgMUT1xx3HoGCsNgUso=\\n-----END PUBLIC KEY-----\\n\",\"serverId\":\"local-server\",\"status\":\"open\",\"tailscaleUser\":\"owner@example.test\",\"tokenHash\":\"177497a4bcb1a53d4130d111f807bfac5f539c12787c1bd6fc8327a12e02ac9c\"}",
+        "owner": "owner@example.test",
+        "now": 1700000000.0,
+        "address": "100.64.0.2",
+        "logins": [],
+        "whois": {
+          "Node": {
+            "Name": "peer.fixture.ts.net.",
+            "Tags": []
+          },
+          "UserProfile": {
+            "LoginName": "owner@example.test"
+          }
+        },
+        "expected": {
+          "principal": {
+            "clientId": "new-client",
+            "kind": "ui",
+            "publicKey": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAoSuETv8bnfeg51yvweFCIVmGvgMUT1xx3HoGCsNgUso=\n-----END PUBLIC KEY-----\n",
+            "serverId": null,
+            "targetServerId": "local-server",
+            "requestId": "request-a",
+            "tailscaleUser": "owner@example.test",
+            "pairing": true,
+            "autoPairing": false
+          },
+          "clientWrite": null
+        }
+      },
+      {
+        "name": "duplicate-header",
+        "method": "POST",
+        "target": "/api/multi-server/v1/pair",
+        "raw": "{\"clientId\":\"new-client\",\"inviteId\":\"993f2bebcdf2445e8351b3e355dedfcb\",\"kind\":\"ui\",\"label\":\"New client\",\"origin\":null,\"protocol\":1,\"publicKey\":\"-----BEGIN PUBLIC KEY-----\\nMCowBQYDK2VwAyEAoSuETv8bnfeg51yvweFCIVmGvgMUT1xx3HoGCsNgUso=\\n-----END PUBLIC KEY-----\\n\",\"requestId\":\"request-a\",\"token\":\"MPZs7iZjn6xdQZjGZymFwhaATqonf7dKkSIMBRhuBOA\"}",
+        "headers": [
+          ["X-Studio-Client", "new-client"],
+          ["X-Studio-Server", "local-server"],
+          ["X-Studio-Timestamp", "1700000000"],
+          ["X-Studio-Nonce", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
+          ["X-Studio-Request-Id", "request-a"],
+          [
+            "X-Studio-Signature",
+            "Ca3dCvxoRIfIroOPnW0uIveDPMCxjkTQ03PY9Y97E4q8+xpsUzRRANII0mqCGTV4QnpideieMSGprnifgD2/CQ=="
+          ],
+          ["X-Studio-Client", "new-client"]
+        ],
+        "clientId": "new-client",
+        "client": null,
+        "inviteId": "993f2bebcdf2445e8351b3e355dedfcb",
+        "invite": "{\"created\":1700000000,\"expires\":1700000900,\"inviteId\":\"993f2bebcdf2445e8351b3e355dedfcb\",\"label\":\"Fixture server\",\"origin\":\"https://local.fixture.ts.net\",\"protocol\":1,\"publicKey\":\"-----BEGIN PUBLIC KEY-----\\nMCowBQYDK2VwAyEAoSuETv8bnfeg51yvweFCIVmGvgMUT1xx3HoGCsNgUso=\\n-----END PUBLIC KEY-----\\n\",\"serverId\":\"local-server\",\"status\":\"open\",\"tailscaleUser\":\"owner@example.test\",\"tokenHash\":\"177497a4bcb1a53d4130d111f807bfac5f539c12787c1bd6fc8327a12e02ac9c\"}",
+        "owner": "owner@example.test",
+        "now": 1700000000.0,
+        "address": "100.64.0.2",
+        "logins": [],
+        "whois": {
+          "Node": {
+            "Name": "peer.fixture.ts.net.",
+            "Tags": []
+          },
+          "UserProfile": {
+            "LoginName": "owner@example.test"
+          }
+        },
+        "refusal": {
+          "status": 401,
+          "code": "invalid_credentials",
+          "error": "A single signed credential header is required"
+        },
+        "noWrite": true
+      },
+      {
+        "name": "foreign-target",
+        "method": "POST",
+        "target": "/api/multi-server/v1/pair",
+        "raw": "{\"clientId\":\"new-client\",\"inviteId\":\"993f2bebcdf2445e8351b3e355dedfcb\",\"kind\":\"ui\",\"label\":\"New client\",\"origin\":null,\"protocol\":1,\"publicKey\":\"-----BEGIN PUBLIC KEY-----\\nMCowBQYDK2VwAyEAoSuETv8bnfeg51yvweFCIVmGvgMUT1xx3HoGCsNgUso=\\n-----END PUBLIC KEY-----\\n\",\"requestId\":\"request-a\",\"token\":\"MPZs7iZjn6xdQZjGZymFwhaATqonf7dKkSIMBRhuBOA\"}",
+        "headers": [
+          ["X-Studio-Client", "new-client"],
+          ["X-Studio-Server", "foreign"],
+          ["X-Studio-Timestamp", "1700000000"],
+          ["X-Studio-Nonce", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
+          ["X-Studio-Request-Id", "request-a"],
+          [
+            "X-Studio-Signature",
+            "clYGOblJyJAJjHyC0BOL+CChEEAZ3fw7reNVySSvBj+dZHWQHgnteEewEfyNEMAEZj5HosDSHTGIAXn7KeBiBA=="
+          ]
+        ],
+        "clientId": "new-client",
+        "client": null,
+        "inviteId": "993f2bebcdf2445e8351b3e355dedfcb",
+        "invite": "{\"created\":1700000000,\"expires\":1700000900,\"inviteId\":\"993f2bebcdf2445e8351b3e355dedfcb\",\"label\":\"Fixture server\",\"origin\":\"https://local.fixture.ts.net\",\"protocol\":1,\"publicKey\":\"-----BEGIN PUBLIC KEY-----\\nMCowBQYDK2VwAyEAoSuETv8bnfeg51yvweFCIVmGvgMUT1xx3HoGCsNgUso=\\n-----END PUBLIC KEY-----\\n\",\"serverId\":\"local-server\",\"status\":\"open\",\"tailscaleUser\":\"owner@example.test\",\"tokenHash\":\"177497a4bcb1a53d4130d111f807bfac5f539c12787c1bd6fc8327a12e02ac9c\"}",
+        "owner": "owner@example.test",
+        "now": 1700000000.0,
+        "address": "100.64.0.2",
+        "logins": [],
+        "whois": {
+          "Node": {
+            "Name": "peer.fixture.ts.net.",
+            "Tags": []
+          },
+          "UserProfile": {
+            "LoginName": "owner@example.test"
+          }
+        },
+        "refusal": {
+          "status": 401,
+          "code": "server_mismatch",
+          "error": "The target server identity does not match"
+        },
+        "noWrite": true
+      },
+      {
+        "name": "bad-signature",
+        "method": "POST",
+        "target": "/api/multi-server/v1/pair",
+        "raw": "{\"clientId\":\"new-client\",\"inviteId\":\"993f2bebcdf2445e8351b3e355dedfcb\",\"kind\":\"ui\",\"label\":\"New client\",\"origin\":null,\"protocol\":1,\"publicKey\":\"-----BEGIN PUBLIC KEY-----\\nMCowBQYDK2VwAyEAoSuETv8bnfeg51yvweFCIVmGvgMUT1xx3HoGCsNgUso=\\n-----END PUBLIC KEY-----\\n\",\"requestId\":\"request-a\",\"token\":\"MPZs7iZjn6xdQZjGZymFwhaATqonf7dKkSIMBRhuBOA\"}",
+        "headers": [
+          ["X-Studio-Client", "new-client"],
+          ["X-Studio-Server", "local-server"],
+          ["X-Studio-Timestamp", "1700000000"],
+          ["X-Studio-Nonce", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
+          ["X-Studio-Request-Id", "request-a"],
+          [
+            "X-Studio-Signature",
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+          ]
+        ],
+        "clientId": "new-client",
+        "client": null,
+        "inviteId": "993f2bebcdf2445e8351b3e355dedfcb",
+        "invite": "{\"created\":1700000000,\"expires\":1700000900,\"inviteId\":\"993f2bebcdf2445e8351b3e355dedfcb\",\"label\":\"Fixture server\",\"origin\":\"https://local.fixture.ts.net\",\"protocol\":1,\"publicKey\":\"-----BEGIN PUBLIC KEY-----\\nMCowBQYDK2VwAyEAoSuETv8bnfeg51yvweFCIVmGvgMUT1xx3HoGCsNgUso=\\n-----END PUBLIC KEY-----\\n\",\"serverId\":\"local-server\",\"status\":\"open\",\"tailscaleUser\":\"owner@example.test\",\"tokenHash\":\"177497a4bcb1a53d4130d111f807bfac5f539c12787c1bd6fc8327a12e02ac9c\"}",
+        "owner": "owner@example.test",
+        "now": 1700000000.0,
+        "address": "100.64.0.2",
+        "logins": [],
+        "whois": {
+          "Node": {
+            "Name": "peer.fixture.ts.net.",
+            "Tags": []
+          },
+          "UserProfile": {
+            "LoginName": "owner@example.test"
+          }
+        },
+        "refusal": {
+          "status": 401,
+          "code": "invalid_signature",
+          "error": "The request signature is invalid"
+        },
+        "noWrite": true
+      },
+      {
+        "name": "bad-auto-signature",
+        "method": "POST",
+        "target": "/api/multi-server/v1/auto-pair",
+        "raw": "{\"label\":\"Auto peer\",\"origin\":\"https://peer.fixture.ts.net\",\"protocol\":1,\"publicKey\":\"-----BEGIN PUBLIC KEY-----\\nMCowBQYDK2VwAyEAoSuETv8bnfeg51yvweFCIVmGvgMUT1xx3HoGCsNgUso=\\n-----END PUBLIC KEY-----\\n\",\"requestId\":\"auto-request\",\"serverId\":\"auto-server\"}",
+        "headers": [
+          ["X-Studio-Client", "auto-server"],
+          ["X-Studio-Server", "local-server"],
+          ["X-Studio-Timestamp", "1700000000"],
+          ["X-Studio-Nonce", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
+          ["X-Studio-Request-Id", "auto-request"],
+          [
+            "X-Studio-Signature",
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+          ]
+        ],
+        "clientId": "auto-server",
+        "client": null,
+        "inviteId": "993f2bebcdf2445e8351b3e355dedfcb",
+        "invite": "{\"created\":1700000000,\"expires\":1700000900,\"inviteId\":\"993f2bebcdf2445e8351b3e355dedfcb\",\"label\":\"Fixture server\",\"origin\":\"https://local.fixture.ts.net\",\"protocol\":1,\"publicKey\":\"-----BEGIN PUBLIC KEY-----\\nMCowBQYDK2VwAyEAoSuETv8bnfeg51yvweFCIVmGvgMUT1xx3HoGCsNgUso=\\n-----END PUBLIC KEY-----\\n\",\"serverId\":\"local-server\",\"status\":\"open\",\"tailscaleUser\":\"owner@example.test\",\"tokenHash\":\"177497a4bcb1a53d4130d111f807bfac5f539c12787c1bd6fc8327a12e02ac9c\"}",
+        "owner": "owner@example.test",
+        "now": 1700000000.0,
+        "address": "100.64.0.2",
+        "logins": [],
+        "whois": {
+          "Node": {
+            "Name": "peer.fixture.ts.net.",
+            "Tags": []
+          },
+          "UserProfile": {
+            "LoginName": "owner@example.test"
+          }
+        },
+        "refusal": {
+          "status": 401,
+          "code": "invalid_signature",
+          "error": "The request signature is invalid"
+        },
+        "noWrite": true,
+        "probe": {
+          "protocol": 1,
+          "serverId": "auto-server",
+          "label": "Auto peer",
+          "origin": "https://peer.fixture.ts.net",
+          "publicKey": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAoSuETv8bnfeg51yvweFCIVmGvgMUT1xx3HoGCsNgUso=\n-----END PUBLIC KEY-----\n",
+          "tailscaleUser": "owner@example.test",
+          "autoPair": true
+        }
+      },
+      {
+        "name": "auto-pair",
+        "method": "POST",
+        "target": "/api/multi-server/v1/auto-pair",
+        "raw": "{\"label\":\"Auto peer\",\"origin\":\"https://peer.fixture.ts.net\",\"protocol\":1,\"publicKey\":\"-----BEGIN PUBLIC KEY-----\\nMCowBQYDK2VwAyEAoSuETv8bnfeg51yvweFCIVmGvgMUT1xx3HoGCsNgUso=\\n-----END PUBLIC KEY-----\\n\",\"requestId\":\"auto-request\",\"serverId\":\"auto-server\"}",
+        "headers": [
+          ["X-Studio-Client", "auto-server"],
+          ["X-Studio-Server", "local-server"],
+          ["X-Studio-Timestamp", "1700000000"],
+          ["X-Studio-Nonce", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
+          ["X-Studio-Request-Id", "auto-request"],
+          [
+            "X-Studio-Signature",
+            "F37HaouLrRvKfw1XD04cQOOK1VidDpWlw9/QgPPl+hOrAgOG3CZmF+iusVM4MAYtDTgFQC8DAmPiH/tqwYybCA=="
+          ]
+        ],
+        "clientId": "auto-server",
+        "client": null,
+        "inviteId": "993f2bebcdf2445e8351b3e355dedfcb",
+        "invite": "{\"created\":1700000000,\"expires\":1700000900,\"inviteId\":\"993f2bebcdf2445e8351b3e355dedfcb\",\"label\":\"Fixture server\",\"origin\":\"https://local.fixture.ts.net\",\"protocol\":1,\"publicKey\":\"-----BEGIN PUBLIC KEY-----\\nMCowBQYDK2VwAyEAoSuETv8bnfeg51yvweFCIVmGvgMUT1xx3HoGCsNgUso=\\n-----END PUBLIC KEY-----\\n\",\"serverId\":\"local-server\",\"status\":\"open\",\"tailscaleUser\":\"owner@example.test\",\"tokenHash\":\"177497a4bcb1a53d4130d111f807bfac5f539c12787c1bd6fc8327a12e02ac9c\"}",
+        "owner": "owner@example.test",
+        "now": 1700000000.0,
+        "address": "100.64.0.2",
+        "logins": [],
+        "whois": {
+          "Node": {
+            "Name": "peer.fixture.ts.net.",
+            "Tags": []
+          },
+          "UserProfile": {
+            "LoginName": "owner@example.test"
+          }
+        },
+        "expected": {
+          "principal": {
+            "clientId": "auto-server",
+            "kind": "server",
+            "publicKey": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAoSuETv8bnfeg51yvweFCIVmGvgMUT1xx3HoGCsNgUso=\n-----END PUBLIC KEY-----\n",
+            "serverId": "auto-server",
+            "targetServerId": "local-server",
+            "requestId": "auto-request",
+            "tailscaleUser": "owner@example.test",
+            "pairing": false,
+            "autoPairing": true
+          },
+          "clientWrite": null
+        },
+        "probe": {
+          "protocol": 1,
+          "serverId": "auto-server",
+          "label": "Auto peer",
+          "origin": "https://peer.fixture.ts.net",
+          "publicKey": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAoSuETv8bnfeg51yvweFCIVmGvgMUT1xx3HoGCsNgUso=\n-----END PUBLIC KEY-----\n",
+          "tailscaleUser": "owner@example.test",
+          "autoPair": true
+        }
+      },
+      {
+        "name": "auto-wrong-owner",
+        "method": "POST",
+        "target": "/api/multi-server/v1/auto-pair",
+        "raw": "{\"label\":\"Auto peer\",\"origin\":\"https://peer.fixture.ts.net\",\"protocol\":1,\"publicKey\":\"-----BEGIN PUBLIC KEY-----\\nMCowBQYDK2VwAyEAoSuETv8bnfeg51yvweFCIVmGvgMUT1xx3HoGCsNgUso=\\n-----END PUBLIC KEY-----\\n\",\"requestId\":\"auto-request\",\"serverId\":\"auto-server\"}",
+        "headers": [
+          ["X-Studio-Client", "auto-server"],
+          ["X-Studio-Server", "local-server"],
+          ["X-Studio-Timestamp", "1700000000"],
+          ["X-Studio-Nonce", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
+          ["X-Studio-Request-Id", "auto-request"],
+          [
+            "X-Studio-Signature",
+            "F37HaouLrRvKfw1XD04cQOOK1VidDpWlw9/QgPPl+hOrAgOG3CZmF+iusVM4MAYtDTgFQC8DAmPiH/tqwYybCA=="
+          ]
+        ],
+        "clientId": "auto-server",
+        "client": null,
+        "inviteId": "993f2bebcdf2445e8351b3e355dedfcb",
+        "invite": "{\"created\":1700000000,\"expires\":1700000900,\"inviteId\":\"993f2bebcdf2445e8351b3e355dedfcb\",\"label\":\"Fixture server\",\"origin\":\"https://local.fixture.ts.net\",\"protocol\":1,\"publicKey\":\"-----BEGIN PUBLIC KEY-----\\nMCowBQYDK2VwAyEAoSuETv8bnfeg51yvweFCIVmGvgMUT1xx3HoGCsNgUso=\\n-----END PUBLIC KEY-----\\n\",\"serverId\":\"local-server\",\"status\":\"open\",\"tailscaleUser\":\"owner@example.test\",\"tokenHash\":\"177497a4bcb1a53d4130d111f807bfac5f539c12787c1bd6fc8327a12e02ac9c\"}",
+        "owner": "foreign@example.test",
+        "now": 1700000000.0,
+        "address": "100.64.0.2",
+        "logins": [],
+        "whois": {
+          "Node": {
+            "Name": "peer.fixture.ts.net.",
+            "Tags": []
+          },
+          "UserProfile": {
+            "LoginName": "foreign@example.test"
+          }
+        },
+        "refusal": {
+          "status": 403,
+          "code": "owner_mismatch",
+          "error": "The Tailscale client must be the server owner"
+        },
+        "noWrite": true,
+        "probe": {
+          "protocol": 1,
+          "serverId": "auto-server",
+          "label": "Auto peer",
+          "origin": "https://peer.fixture.ts.net",
+          "publicKey": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAoSuETv8bnfeg51yvweFCIVmGvgMUT1xx3HoGCsNgUso=\n-----END PUBLIC KEY-----\n",
+          "tailscaleUser": "owner@example.test",
+          "autoPair": true
+        }
+      },
+      {
+        "name": "auto-revoked",
+        "method": "POST",
+        "target": "/api/multi-server/v1/auto-pair",
+        "raw": "{\"label\":\"Auto peer\",\"origin\":\"https://peer.fixture.ts.net\",\"protocol\":1,\"publicKey\":\"-----BEGIN PUBLIC KEY-----\\nMCowBQYDK2VwAyEAoSuETv8bnfeg51yvweFCIVmGvgMUT1xx3HoGCsNgUso=\\n-----END PUBLIC KEY-----\\n\",\"requestId\":\"auto-request\",\"serverId\":\"auto-server\"}",
+        "headers": [
+          ["X-Studio-Client", "auto-server"],
+          ["X-Studio-Server", "local-server"],
+          ["X-Studio-Timestamp", "1700000000"],
+          ["X-Studio-Nonce", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
+          ["X-Studio-Request-Id", "auto-request"],
+          [
+            "X-Studio-Signature",
+            "F37HaouLrRvKfw1XD04cQOOK1VidDpWlw9/QgPPl+hOrAgOG3CZmF+iusVM4MAYtDTgFQC8DAmPiH/tqwYybCA=="
+          ]
+        ],
+        "clientId": "auto-server",
+        "client": "{\"clientId\":\"auto-server\",\"created\":1700000000,\"id\":\"auto-server\",\"kind\":\"server\",\"label\":\"Peer\",\"lastAccess\":1700000000,\"origin\":\"https://peer.fixture.ts.net\",\"pairingHash\":\"e03c826cecd8ff76c7264e21b104f48d0fa831dcd970dff98ba14a6f0d29c6cb\",\"pairingReceipt\":{\"clientId\":\"peer-server\",\"label\":\"Fixture server\",\"origin\":\"https://local.fixture.ts.net\",\"paired\":true,\"protocol\":1,\"publicKey\":\"-----BEGIN PUBLIC KEY-----\\nMCowBQYDK2VwAyEAoSuETv8bnfeg51yvweFCIVmGvgMUT1xx3HoGCsNgUso=\\n-----END PUBLIC KEY-----\\n\",\"serverId\":\"local-server\",\"tailscaleUser\":\"owner@example.test\"},\"pairingRequestId\":\"pair-peer\",\"publicKey\":\"-----BEGIN PUBLIC KEY-----\\nMCowBQYDK2VwAyEAoSuETv8bnfeg51yvweFCIVmGvgMUT1xx3HoGCsNgUso=\\n-----END PUBLIC KEY-----\\n\",\"revoked\":null,\"serverId\":\"peer-server\",\"status\":\"revoked\",\"tailscaleUser\":\"owner@example.test\"}",
+        "inviteId": "993f2bebcdf2445e8351b3e355dedfcb",
+        "invite": "{\"created\":1700000000,\"expires\":1700000900,\"inviteId\":\"993f2bebcdf2445e8351b3e355dedfcb\",\"label\":\"Fixture server\",\"origin\":\"https://local.fixture.ts.net\",\"protocol\":1,\"publicKey\":\"-----BEGIN PUBLIC KEY-----\\nMCowBQYDK2VwAyEAoSuETv8bnfeg51yvweFCIVmGvgMUT1xx3HoGCsNgUso=\\n-----END PUBLIC KEY-----\\n\",\"serverId\":\"local-server\",\"status\":\"open\",\"tailscaleUser\":\"owner@example.test\",\"tokenHash\":\"177497a4bcb1a53d4130d111f807bfac5f539c12787c1bd6fc8327a12e02ac9c\"}",
+        "owner": "owner@example.test",
+        "now": 1700000000.0,
+        "address": "100.64.0.2",
+        "logins": [],
+        "whois": {
+          "Node": {
+            "Name": "peer.fixture.ts.net.",
+            "Tags": []
+          },
+          "UserProfile": {
+            "LoginName": "owner@example.test"
+          }
+        },
+        "refusal": {
+          "status": 403,
+          "code": "client_revoked",
+          "error": "The server is revoked"
+        },
+        "noWrite": true,
+        "probe": {
+          "protocol": 1,
+          "serverId": "auto-server",
+          "label": "Auto peer",
+          "origin": "https://peer.fixture.ts.net",
+          "publicKey": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAoSuETv8bnfeg51yvweFCIVmGvgMUT1xx3HoGCsNgUso=\n-----END PUBLIC KEY-----\n",
+          "tailscaleUser": "owner@example.test",
+          "autoPair": true
+        }
+      },
+      {
+        "name": "auto-key-change",
+        "method": "POST",
+        "target": "/api/multi-server/v1/auto-pair",
+        "raw": "{\"label\":\"Auto peer\",\"origin\":\"https://peer.fixture.ts.net\",\"protocol\":1,\"publicKey\":\"-----BEGIN PUBLIC KEY-----\\nMCowBQYDK2VwAyEAoSuETv8bnfeg51yvweFCIVmGvgMUT1xx3HoGCsNgUso=\\n-----END PUBLIC KEY-----\\n\",\"requestId\":\"auto-request\",\"serverId\":\"auto-server\"}",
+        "headers": [
+          ["X-Studio-Client", "auto-server"],
+          ["X-Studio-Server", "local-server"],
+          ["X-Studio-Timestamp", "1700000000"],
+          ["X-Studio-Nonce", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
+          ["X-Studio-Request-Id", "auto-request"],
+          [
+            "X-Studio-Signature",
+            "F37HaouLrRvKfw1XD04cQOOK1VidDpWlw9/QgPPl+hOrAgOG3CZmF+iusVM4MAYtDTgFQC8DAmPiH/tqwYybCA=="
+          ]
+        ],
+        "clientId": "auto-server",
+        "client": "{\"clientId\":\"auto-server\",\"created\":1700000000,\"id\":\"auto-server\",\"kind\":\"server\",\"label\":\"Peer\",\"lastAccess\":1700000000,\"origin\":\"https://peer.fixture.ts.net\",\"pairingHash\":\"e03c826cecd8ff76c7264e21b104f48d0fa831dcd970dff98ba14a6f0d29c6cb\",\"pairingReceipt\":{\"clientId\":\"peer-server\",\"label\":\"Fixture server\",\"origin\":\"https://local.fixture.ts.net\",\"paired\":true,\"protocol\":1,\"publicKey\":\"-----BEGIN PUBLIC KEY-----\\nMCowBQYDK2VwAyEAoSuETv8bnfeg51yvweFCIVmGvgMUT1xx3HoGCsNgUso=\\n-----END PUBLIC KEY-----\\n\",\"serverId\":\"local-server\",\"tailscaleUser\":\"owner@example.test\"},\"pairingRequestId\":\"pair-peer\",\"publicKey\":\"different\",\"revoked\":null,\"serverId\":\"peer-server\",\"status\":\"paired\",\"tailscaleUser\":\"owner@example.test\"}",
+        "inviteId": "993f2bebcdf2445e8351b3e355dedfcb",
+        "invite": "{\"created\":1700000000,\"expires\":1700000900,\"inviteId\":\"993f2bebcdf2445e8351b3e355dedfcb\",\"label\":\"Fixture server\",\"origin\":\"https://local.fixture.ts.net\",\"protocol\":1,\"publicKey\":\"-----BEGIN PUBLIC KEY-----\\nMCowBQYDK2VwAyEAoSuETv8bnfeg51yvweFCIVmGvgMUT1xx3HoGCsNgUso=\\n-----END PUBLIC KEY-----\\n\",\"serverId\":\"local-server\",\"status\":\"open\",\"tailscaleUser\":\"owner@example.test\",\"tokenHash\":\"177497a4bcb1a53d4130d111f807bfac5f539c12787c1bd6fc8327a12e02ac9c\"}",
+        "owner": "owner@example.test",
+        "now": 1700000000.0,
+        "address": "100.64.0.2",
+        "logins": [],
+        "whois": {
+          "Node": {
+            "Name": "peer.fixture.ts.net.",
+            "Tags": []
+          },
+          "UserProfile": {
+            "LoginName": "owner@example.test"
+          }
+        },
+        "refusal": {
+          "status": 403,
+          "code": "identity_mismatch",
+          "error": "The registered server identity differs"
+        },
+        "noWrite": true,
+        "probe": {
+          "protocol": 1,
+          "serverId": "auto-server",
+          "label": "Auto peer",
+          "origin": "https://peer.fixture.ts.net",
+          "publicKey": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAoSuETv8bnfeg51yvweFCIVmGvgMUT1xx3HoGCsNgUso=\n-----END PUBLIC KEY-----\n",
+          "tailscaleUser": "owner@example.test",
+          "autoPair": true
+        }
+      }
+    ],
+    "queued": {
+      "id": "python-queued",
+      "server": "peer-server",
+      "body": "{\"action\":\"browser_callback\",\"payload\":{\"actor\":\"fixture\",\"url\":\"http://127.0.0.1/callback\"},\"requestId\":\"python-queued\"}",
+      "state": "queued",
+      "result": null,
+      "attempts": 0,
+      "next_at": 0.0,
+      "error": null,
+      "created_at": 1700000000.0,
+      "completed_at": 0.0,
+      "fingerprint": "3d342ecbd56536ae9d87b5203ea61fd61791ecc44da755d868fccfcc21223ec1"
+    },
+    "eventQueued": {
+      "id": "python-event",
+      "server": "peer-server",
+      "body": "{\"action\":\"event\",\"payload\":{\"kind\":\"agent_message\",\"link\":\"fixture-link\",\"parentEpoch\":3,\"text\":\"owner monitor exit\"},\"requestId\":\"python-event\"}",
+      "state": "queued",
+      "result": null,
+      "attempts": 0,
+      "next_at": 0.0,
+      "error": null,
+      "created_at": 1700000000.0,
+      "completed_at": 0.0,
+      "fingerprint": "5319527d4437f8163b5438f9b328638637c64744d0661147edd922edaf7df947"
+    },
+    "eventRequest": {
+      "method": "POST",
+      "target": "/api/servers/orchestration",
+      "raw": "{\"action\":\"event\",\"payload\":{\"kind\":\"agent_message\",\"link\":\"fixture-link\",\"parentEpoch\":3,\"text\":\"signed owner event\"},\"requestId\":\"python-event-http\"}",
+      "headers": [
+        ["X-Studio-Client", "peer-server"],
+        ["X-Studio-Server", "local-server"],
+        ["X-Studio-Timestamp", "1700000000"],
+        ["X-Studio-Nonce", "cccccccccccccccccccccccccccccccc"],
+        ["X-Studio-Request-Id", "python-event-http"],
+        [
+          "X-Studio-Signature",
+          "gKpYhXydvRyNqJQzdsaRNikPrW7O8RrjqDYOIGbgNwEI7O1qDFDjwnQsyHYPia1av0H/cP3HfW7yQY1v6ySpCg=="
+        ]
+      ],
+      "address": "100.64.0.2",
+      "logins": ["owner@example.test"]
+    },
+    "pairReply": {
+      "protocol": 1,
+      "serverId": "local-server",
+      "publicKey": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAoSuETv8bnfeg51yvweFCIVmGvgMUT1xx3HoGCsNgUso=\n-----END PUBLIC KEY-----\n",
+      "label": "Fixture server",
+      "origin": "https://local.fixture.ts.net",
+      "tailscaleUser": "owner@example.test",
+      "clientId": "peer-server",
+      "paired": true
+    }
+  },
+  "canvas_sql": "DELETE FROM \"runtime_access_audit\";\nDELETE FROM \"runtime_access_clients\";\nDELETE FROM \"runtime_access_invites\";\nDELETE FROM \"runtime_access_receipts\";\nDELETE FROM \"runtime_requests\";\nDELETE FROM \"runtime_server_inbox\";\nDELETE FROM \"runtime_server_outbox\";\nDELETE FROM \"runtime_server_sequence\";\nDELETE FROM \"runtime_access_settings\";\nDELETE FROM \"runtime_access_discovered\";\nDELETE FROM \"runtime_server_exec\";\nINSERT INTO \"runtime_access_audit\" VALUES(1,'local','local','create_invite',1700000000.0);\nINSERT INTO \"runtime_access_audit\" VALUES(2,'peer-server','peer-server','pair',1700000000.0);\nINSERT INTO \"runtime_access_audit\" VALUES(3,'local','local','create_invite',1700000000.0);\nINSERT INTO \"runtime_access_clients\" VALUES('peer-server','{\"clientId\":\"peer-server\",\"created\":1700000000,\"id\":\"peer-server\",\"kind\":\"server\",\"label\":\"Peer\",\"lastAccess\":1700000000,\"origin\":\"https://peer.fixture.ts.net\",\"pairingHash\":\"e03c826cecd8ff76c7264e21b104f48d0fa831dcd970dff98ba14a6f0d29c6cb\",\"pairingReceipt\":{\"clientId\":\"peer-server\",\"label\":\"Fixture server\",\"origin\":\"https://local.fixture.ts.net\",\"paired\":true,\"protocol\":1,\"publicKey\":\"-----BEGIN PUBLIC KEY-----\\nMCowBQYDK2VwAyEAoSuETv8bnfeg51yvweFCIVmGvgMUT1xx3HoGCsNgUso=\\n-----END PUBLIC KEY-----\\n\",\"serverId\":\"local-server\",\"tailscaleUser\":\"owner@example.test\"},\"pairingRequestId\":\"pair-peer\",\"publicKey\":\"-----BEGIN PUBLIC KEY-----\\nMCowBQYDK2VwAyEAoSuETv8bnfeg51yvweFCIVmGvgMUT1xx3HoGCsNgUso=\\n-----END PUBLIC KEY-----\\n\",\"revoked\":null,\"serverId\":\"peer-server\",\"status\":\"paired\",\"tailscaleUser\":\"owner@example.test\",\"alias\":\"PEE\"}');\nINSERT INTO \"runtime_access_discovered\" VALUES('discovered-peer','{\"autoPair\":false,\"clientId\":\"discovered-peer\",\"created\":1700000000,\"id\":\"discovered-peer\",\"kind\":\"server\",\"label\":\"Auto peer\",\"lastAccess\":null,\"lastSeen\":1700000000,\"origin\":\"https://peer.fixture.ts.net\",\"publicKey\":\"-----BEGIN PUBLIC KEY-----\\nMCowBQYDK2VwAyEAoSuETv8bnfeg51yvweFCIVmGvgMUT1xx3HoGCsNgUso=\\n-----END PUBLIC KEY-----\\n\",\"revoked\":null,\"serverId\":\"discovered-peer\",\"status\":\"discovered\",\"tailscaleUser\":\"owner@example.test\"}');\nINSERT INTO \"runtime_access_invites\" VALUES('5c5fc5b49133451b94342d8c97af37a6','fixture-invite','911c2a5c53182fab23ec48e8b675d56595b7c0dc9c53f7e96fa8a92cabe4d4ed','{\"created\":1700000000,\"expires\":1700000900,\"inviteId\":\"5c5fc5b49133451b94342d8c97af37a6\",\"label\":\"Fixture server\",\"origin\":\"https://local.fixture.ts.net\",\"protocol\":1,\"publicKey\":\"-----BEGIN PUBLIC KEY-----\\nMCowBQYDK2VwAyEAoSuETv8bnfeg51yvweFCIVmGvgMUT1xx3HoGCsNgUso=\\n-----END PUBLIC KEY-----\\n\",\"serverId\":\"local-server\",\"status\":\"used\",\"tailscaleUser\":\"owner@example.test\",\"tokenHash\":\"df271a96d58e43040a505fb59be31fe2f5c24a444c6d0c860ea946247aef5300\"}');\nINSERT INTO \"runtime_access_invites\" VALUES('993f2bebcdf2445e8351b3e355dedfcb','second-invite','6fae1cc7f0d8d25cc8adc03c3529b60c1e82e0c51fd295565537406806fb366e','{\"created\":1700000000,\"expires\":1700000900,\"inviteId\":\"993f2bebcdf2445e8351b3e355dedfcb\",\"label\":\"Fixture server\",\"origin\":\"https://local.fixture.ts.net\",\"protocol\":1,\"publicKey\":\"-----BEGIN PUBLIC KEY-----\\nMCowBQYDK2VwAyEAoSuETv8bnfeg51yvweFCIVmGvgMUT1xx3HoGCsNgUso=\\n-----END PUBLIC KEY-----\\n\",\"serverId\":\"local-server\",\"status\":\"open\",\"tailscaleUser\":\"owner@example.test\",\"tokenHash\":\"177497a4bcb1a53d4130d111f807bfac5f539c12787c1bd6fc8327a12e02ac9c\"}');\nINSERT INTO \"runtime_access_receipts\" VALUES('peer-server','pair-peer','e03c826cecd8ff76c7264e21b104f48d0fa831dcd970dff98ba14a6f0d29c6cb','6ec5ef7deb5f435a8c7baa6ccaf092e4','pending','{\"created\":1700000000}');\nINSERT INTO \"runtime_access_settings\" VALUES(1,1);\nINSERT INTO \"runtime_requests\" VALUES('b5b90839-7763-52fb-ae5c-cf71e1037f56','{\"id\": \"b5b90839-7763-52fb-ae5c-cf71e1037f56\", \"method\": \"browser/open\", \"status\": \"answered\", \"params\": {\"bridgeId\": \"0123456789abcdef0123456789abcdef\", \"forward\": {\"tokenHash\": \"604b4f4d287ea90cdcc3fbb1311bc3921026e3fe624077ba2bced37ddf82107f\"}, \"redirect\": {\"host\": \"127.0.0.1\", \"port\": 12345}}}');\nINSERT INTO \"runtime_server_exec\" VALUES('inbound-running','peer-server','peer-lead','{\"exitCode\":3,\"handle\":\"inbound-running\",\"status\":\"exited\"}');\nINSERT INTO \"runtime_server_exec\" VALUES('inbound-starting','peer-server','peer-lead','{\"handle\":\"inbound-starting\",\"status\":\"starting\"}');\nINSERT INTO \"runtime_server_exec\" VALUES('inbound-legacy','peer-server','peer-lead','{\"handle\":\"inbound-legacy\",\"status\":\"exited\"}');\nINSERT INTO \"runtime_server_inbox\" VALUES('python-waiting','d19c2887cdf6b0f2f212f97738bc54cfcd6ff9e2d19a880b6d167cc47d570a7a','waiting',NULL,1700000000.0,0.0,'peer-server','fixture');\nINSERT INTO \"runtime_server_inbox\" VALUES('python-running','d19c2887cdf6b0f2f212f97738bc54cfcd6ff9e2d19a880b6d167cc47d570a7a','running',NULL,1700000000.0,0.0,'peer-server','fixture');\nINSERT INTO \"runtime_server_inbox\" VALUES('python-complete','d19c2887cdf6b0f2f212f97738bc54cfcd6ff9e2d19a880b6d167cc47d570a7a','complete','{\"outcome\":\"applied\",\"requestId\":\"python-complete\",\"value\":{\"applied\":true}}',1700000000.0,1700000000.0,'peer-server','fixture');\nINSERT INTO \"runtime_server_inbox\" VALUES('inbound-applied','3e1095c7dd4dc4d3879a7cacc2d28a318ffb3e4bb871a9433523c706decdfbcc','complete','{\"outcome\":\"applied\",\"requestId\":\"inbound-applied\",\"value\":{\"exitCode\":0,\"handle\":\"inbound-applied\",\"outputExpiresAt\":1700000100,\"status\":\"exited\"}}',1700000000.0,1700000000.0,'peer-server','peer-lead');\nINSERT INTO \"runtime_server_inbox\" VALUES('inbound-running','3e1095c7dd4dc4d3879a7cacc2d28a318ffb3e4bb871a9433523c706decdfbcc','running',NULL,1700000000.0,0.0,'peer-server','peer-lead');\nINSERT INTO \"runtime_server_inbox\" VALUES('inbound-starting','3e1095c7dd4dc4d3879a7cacc2d28a318ffb3e4bb871a9433523c706decdfbcc','running',NULL,1700000000.0,0.0,'peer-server','peer-lead');\nINSERT INTO \"runtime_server_inbox\" VALUES('inbound-late','3e1095c7dd4dc4d3879a7cacc2d28a318ffb3e4bb871a9433523c706decdfbcc','running',NULL,1700000000.0,0.0,'peer-server','peer-lead');\nINSERT INTO \"runtime_server_inbox\" VALUES('inbound-legacy','3e1095c7dd4dc4d3879a7cacc2d28a318ffb3e4bb871a9433523c706decdfbcc','complete','{\"outcome\":\"applied\",\"requestId\":\"inbound-legacy\",\"value\":{\"handle\":\"inbound-legacy\",\"status\":\"exited\"}}',1700000000.0,1700000000.0,NULL,NULL);\nINSERT INTO \"runtime_server_inbox\" VALUES('inbound-legacy-orphan','3e1095c7dd4dc4d3879a7cacc2d28a318ffb3e4bb871a9433523c706decdfbcc','complete','{\"outcome\":\"applied\",\"requestId\":\"inbound-legacy-orphan\",\"value\":{\"handle\":\"inbound-legacy-orphan\",\"status\":\"exited\"}}',1700000000.0,1700000000.0,NULL,NULL);\nINSERT INTO \"runtime_server_outbox\" VALUES('python-queued','peer-server','{\"action\":\"browser_callback\",\"payload\":{\"actor\":\"fixture\",\"url\":\"http://127.0.0.1/callback\"},\"requestId\":\"python-queued\"}','queued',NULL,0,0.0,NULL,1700000000.0,0.0,'3d342ecbd56536ae9d87b5203ea61fd61791ecc44da755d868fccfcc21223ec1');\nINSERT INTO \"runtime_server_outbox\" VALUES('python-event','peer-server','{\"action\":\"event\",\"payload\":{\"kind\":\"agent_message\",\"link\":\"fixture-link\",\"parentEpoch\":3,\"text\":\"owner monitor exit\"},\"requestId\":\"python-event\"}','queued',NULL,0,0.0,NULL,1700000000.0,0.0,'5319527d4437f8163b5438f9b328638637c64744d0661147edd922edaf7df947');\nINSERT INTO \"runtime_server_outbox\" VALUES('python-location','peer-server','{\"action\":\"add_location\",\"payload\":{\"path\":\"/fixture\",\"project\":\"fixture\",\"request\":{\"path\":\"/fixture\"}},\"requestId\":\"python-location\"}','queued',NULL,0,0.0,NULL,1700000000.0,0.0,'0620b9541e161c48b51f4919dbc613a6b975b1c3172637a1b9c2818ee8160e58');\nINSERT INTO \"runtime_server_outbox\" VALUES('python-input','peer-server','{\"action\":\"input\",\"payload\":{\"actor\":\"fixture\",\"text\":\"fixture\"},\"requestId\":\"python-input\"}','queued',NULL,0,0.0,NULL,1700000000.0,0.0,'082a049c63ba31edb6e005f2d430d16af133b3ac41f4d9a1b1839ff4a03c5c25');\nINSERT INTO \"runtime_server_outbox\" VALUES('python-exec','peer-server','{\"action\":\"exec\",\"payload\":{\"actor\":\"fixture-lead\",\"receiptDigest\":\"f2b431e193fb02142da15042657955ad32d285c5551ab5894f682d5dcdceba11\"},\"requestId\":\"python-exec\"}','queued',NULL,2,1700000010.0,'TimeoutError',1700000000.0,0.0,'28a04601d14562e361fae038676da6a4885c38dfd4badc604b66a49adfc984a6');\nINSERT INTO \"runtime_server_sequence\" VALUES(1,0);",
+  "signing_identity": {
+    "serverId": "local-server",
+    "label": "Fixture server",
+    "publicKey": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAoSuETv8bnfeg51yvweFCIVmGvgMUT1xx3HoGCsNgUso=\n-----END PUBLIC KEY-----\n",
+    "privateKey": "-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEILXxQ0u+Dx21h6bRIVLcKJf4nmrnnzoU9ORn4TjPJs+j\n-----END PRIVATE KEY-----\n"
+  }
+}

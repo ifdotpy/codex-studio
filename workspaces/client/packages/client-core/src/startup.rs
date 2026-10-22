@@ -1,5 +1,7 @@
 //! Desktop backend ownership rules ported from desktop/backend.cjs.
 use crate::backend::Backend;
+use serde::Deserialize;
+#[cfg(test)]
 use serde_json::Value;
 use std::{
     collections::BTreeMap,
@@ -17,6 +19,65 @@ use std::{
     time::Duration,
 };
 use tokio::time::{Instant, sleep};
+
+// Desktop HTTP identity mirrors backend.cjs; backend.test.mjs checks parity.
+// Backend builds are SHA-256 encoded as lowercase hex.
+const DESKTOP_PROTOCOL_VERSION: u8 = 1;
+const BACKEND_BUILD_HEX_LENGTH: usize = 64;
+// Version of persisted recovery environment records.
+const RESTART_ENVIRONMENT_VERSION: u8 = 1;
+
+#[derive(Debug, Deserialize, PartialEq, Eq)]
+enum DesktopApplication {
+    #[serde(rename = "codex-agents")]
+    Studio,
+}
+
+#[derive(Debug, Deserialize, PartialEq, Eq)]
+enum BackendKind {
+    #[serde(rename = "rust")]
+    Rust,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DesktopIdentity {
+    #[serde(rename = "application")]
+    _application: DesktopApplication,
+    protocol: u8,
+    #[serde(rename = "backendKind")]
+    _backend_kind: BackendKind,
+    backend_build: String,
+    pid: i32,
+    state_dir: PathBuf,
+    #[serde(default)]
+    pub supervisor_mode: bool,
+    #[serde(default)]
+    pub supervisor_fallback: bool,
+}
+
+// Recovery also contains settings owned by the platform recovery helper.
+#[derive(Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SavedRecovery {
+    version: Option<u8>,
+    state_dir: Option<PathBuf>,
+    #[serde(default, deserialize_with = "present")]
+    environment: Option<BTreeMap<String, String>>,
+    #[serde(default, deserialize_with = "present")]
+    unset_environment: Option<Vec<String>>,
+    #[serde(default)]
+    supervisor_enabled: bool,
+}
+
+// Missing launch fields describe preference-only records; explicit null is invalid.
+fn present<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    T::deserialize(deserializer).map(Some)
+}
 
 fn refused(error: &reqwest::Error) -> bool {
     let mut source: Option<&(dyn Error + 'static)> = Some(error);
@@ -37,7 +98,7 @@ pub async fn identity(
     state: &Path,
     attempt: Duration,
     total: Duration,
-) -> Result<Option<Value>, String> {
+) -> Result<Option<DesktopIdentity>, String> {
     let deadline = Instant::now() + total;
     let mut uncertain = false;
     loop {
@@ -49,26 +110,22 @@ pub async fn identity(
         let response: Result<(), reqwest::Error> = match response {
             Ok(response) => {
                 let status = response.status();
-                match response.json::<Value>().await {
+                match response.json::<DesktopIdentity>().await {
                     Ok(value) => {
-                        let pid = value["pid"]
-                            .as_i64()
-                            .filter(|pid| *pid > 0 && *pid <= i32::MAX as i64);
                         if !status.is_success()
-                            || value["application"] != "codex-agents"
-                            || value["protocol"] != 1
-                            || !value["backendBuild"].as_str().is_some_and(|build| {
-                                build.len() == 64
-                                    && build
-                                        .bytes()
-                                        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-                            })
-                            || pid.is_none()
-                            || value["stateDir"].as_str() != state.to_str()
+                            || value.protocol != DESKTOP_PROTOCOL_VERSION
+                            || value.backend_build.len() != BACKEND_BUILD_HEX_LENGTH
+                            || !value
+                                .backend_build
+                                .bytes()
+                                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+                            || value.pid <= 0
+                            || value.state_dir != state
                         {
                             return Err("The existing server is incompatible or uses another state directory.".into());
                         }
-                        if unsafe { libc::kill(pid.unwrap() as i32, 0) } != 0 {
+                        // SAFETY: identity parsing proves pid is a positive process identifier; signal 0 only probes existence.
+                        if unsafe { libc::kill(value.pid, 0) } != 0 {
                             return Err("The backend process is no longer available.".into());
                         }
                         return Ok(Some(value));
@@ -104,7 +161,6 @@ const RESTART_KEYS: &[&str] = &[
     "CODEX_CANVAS_CWD",
     "CODEX_CANVAS_CONCURRENCY",
     "CODEX_BIN",
-    "CODEX_AGENTS_PYTHON",
     "SHELL",
     "LANG",
     "LC_ALL",
@@ -114,49 +170,45 @@ const RESTART_KEYS: &[&str] = &[
 
 fn saved_environment(
     mut environment: Environment,
-    saved: &Value,
+    saved: &SavedRecovery,
     state: &Path,
 ) -> Result<Environment, String> {
-    if saved.get("environment").is_none() && saved.get("unsetEnvironment").is_none() {
+    if saved.environment.is_none() && saved.unset_environment.is_none() {
         return Ok(environment);
     }
     let invalid = || {
         "The saved restart environment is invalid or uses a different state directory.".to_owned()
     };
-    let values = saved["environment"].as_object().ok_or_else(invalid)?;
-    let unset = saved["unsetEnvironment"].as_array().ok_or_else(invalid)?;
-    if saved["version"] != 1 || saved["stateDir"].as_str() != state.to_str() {
+    let values = saved.environment.as_ref().ok_or_else(invalid)?;
+    let unset = saved.unset_environment.as_ref().ok_or_else(invalid)?;
+    if saved.version != Some(RESTART_ENVIRONMENT_VERSION)
+        || saved.state_dir.as_deref() != Some(state)
+    {
         return Err(invalid());
     }
-    for (key, value) in values {
-        if (key != "PATH" && !RESTART_KEYS.contains(&key.as_str())) || value.as_str().is_none() {
+    for key in values.keys() {
+        if key != "PATH" && !RESTART_KEYS.contains(&key.as_str()) {
             return Err(invalid());
         }
     }
     for key in unset {
-        let key = key.as_str().ok_or_else(invalid)?;
-        if !RESTART_KEYS.contains(&key) || values.contains_key(key) {
+        if !RESTART_KEYS.contains(&key.as_str()) || values.contains_key(key) {
             return Err(invalid());
         }
         environment.remove(std::ffi::OsStr::new(key));
     }
     for (key, value) in values {
-        environment.insert(key.into(), value.as_str().unwrap().into());
+        environment.insert(key.into(), value.into());
     }
+
     Ok(environment)
 }
 
-fn supervisor_mode(environment: &Environment, saved: &Value) -> Result<bool, String> {
-    if saved
-        .get("supervisorEnabled")
-        .is_some_and(|value| !value.is_boolean())
-    {
-        return Err("The saved supervisor setting is invalid.".into());
-    }
-    Ok(environment
+fn supervisor_mode(environment: &Environment, saved: &SavedRecovery) -> bool {
+    environment
         .get(std::ffi::OsStr::new("CODEX_AGENTS_SUPERVISOR_MODE"))
         .map(|value| value == "1")
-        .unwrap_or(saved["supervisorEnabled"] == true))
+        .unwrap_or(saved.supervisor_enabled)
 }
 
 fn executable(name: &str, key: &str, environment: &Environment) -> Result<PathBuf, String> {
@@ -183,86 +235,51 @@ fn executable(name: &str, key: &str, environment: &Environment) -> Result<PathBu
         .ok_or_else(|| format!("Install {name}, or set {key} to its absolute executable path."))
 }
 
-async fn check_command(
-    path: &Path,
-    args: &[&str],
-    environment: &Environment,
-    duration: Duration,
-) -> Result<(), String> {
-    let mut command = tokio::process::Command::new(path);
-    command
-        .args(args)
-        .env_clear()
-        .envs(environment)
-        .kill_on_drop(true)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    let status = tokio::time::timeout(duration, command.status())
-        .await
-        .map_err(|_| "The backend prerequisite check timed out.".to_owned())?
-        .map_err(|error| error.to_string())?;
-    if status.success() {
-        Ok(())
+fn runtime_server(resources: &Path, environment: &Environment) -> Result<PathBuf, String> {
+    if environment.contains_key(std::ffi::OsStr::new("CODEX_RUNTIME_SERVER")) {
+        return executable("studio-runtime-server", "CODEX_RUNTIME_SERVER", environment);
+    }
+    let name = if cfg!(windows) {
+        "studio-runtime-server.exe"
     } else {
-        Err("A backend prerequisite check failed.".into())
-    }
-}
-
-async fn api_python(resources: &Path, environment: &Environment) -> Result<PathBuf, String> {
-    const CHECK: &[&str] = &[
-        "-c",
-        "import sys; assert sys.version_info >= (3,11); import fastapi, httpx, pydantic, uvicorn",
+        "studio-runtime-server"
+    };
+    let candidates = [
+        resources.join("bin").join(name),
+        resources.join("target/release").join(name),
+        resources.join("target/debug").join(name),
     ];
-    if environment.contains_key(std::ffi::OsStr::new("CODEX_AGENTS_PYTHON")) {
-        let path = executable("python3", "CODEX_AGENTS_PYTHON", environment)?;
-        check_command(&path, CHECK, environment, Duration::from_secs(10)).await
-            .map_err(|_| "CODEX_AGENTS_PYTHON must provide Python 3.11+, FastAPI, Pydantic, Uvicorn and HTTPX.".to_owned())?;
-        return Ok(path);
-    }
-    let requirements = resources.join("requirements.txt");
-    if let Ok(bytes) = fs::read(requirements) {
-        use sha2::{Digest, Sha256};
-        let digest: String = Sha256::digest(bytes)
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect();
-        let cache = environment
-            .get(std::ffi::OsStr::new("XDG_CACHE_HOME"))
-            .map(PathBuf::from)
-            .or_else(|| {
-                environment.get(std::ffi::OsStr::new("HOME")).map(|home| {
-                    PathBuf::from(home).join(if cfg!(target_os = "macos") {
-                        "Library/Caches"
-                    } else {
-                        ".cache"
-                    })
-                })
-            });
-        if let Some(cache) = cache {
-            let path = cache
-                .join("codex-agents/python")
-                .join(digest)
-                .join("bin/python");
-            if path.is_file()
-                && check_command(&path, CHECK, environment, Duration::from_secs(10))
-                    .await
-                    .is_ok()
-            {
-                return Ok(path);
-            }
-        }
-    }
-    let path = executable("python3", "CODEX_AGENTS_PYTHON", environment)?;
-    check_command(&path, CHECK, environment, Duration::from_secs(10))
-        .await
-        .map_err(|_| {
-            "Prepare the managed Studio Python environment before starting the backend.".to_owned()
-        })?;
-    Ok(path)
+    candidates.into_iter().find(|path| fs::metadata(path).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0))
+        .ok_or_else(|| "The Rust runtime server is missing. Build or package studio-runtime-server, or set CODEX_RUNTIME_SERVER to its absolute executable path.".into())
 }
 
-pub async fn ensure(backend: &Backend, state: &Path, resources: &Path) -> Result<Value, String> {
+fn backend_build(binary: &Path) -> Result<String, String> {
+    use sha2::{Digest, Sha256};
+    use std::io::BufRead;
+    let file = fs::File::open(binary).map_err(|error| error.to_string())?;
+    let mut reader = io::BufReader::new(file);
+    let mut hash = Sha256::new();
+    loop {
+        let buffer = reader.fill_buf().map_err(|error| error.to_string())?;
+        if buffer.is_empty() {
+            break;
+        }
+        hash.update(buffer);
+        let length = buffer.len();
+        reader.consume(length);
+    }
+    Ok(hash
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect())
+}
+
+pub async fn ensure(
+    backend: &Backend,
+    state: &Path,
+    resources: &Path,
+) -> Result<DesktopIdentity, String> {
     ensure_with_environment(backend, state, resources, env::vars_os().collect()).await
 }
 
@@ -271,20 +288,20 @@ async fn ensure_with_environment(
     state: &Path,
     resources: &Path,
     environment: Environment,
-) -> Result<Value, String> {
+) -> Result<DesktopIdentity, String> {
     fs::create_dir_all(state).map_err(|e| e.to_string())?;
     let state = state.canonicalize().map_err(|e| e.to_string())?;
     let saved = match fs::read(state.join("background-recovery.json")) {
         Ok(bytes) => serde_json::from_slice(&bytes)
             .map_err(|e| format!("Cannot read backend recovery settings: {e}"))?,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Value::Null,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => SavedRecovery::default(),
         Err(error) => return Err(error.to_string()),
     };
-    let supervisor = supervisor_mode(&environment, &saved)?;
+    let supervisor = supervisor_mode(&environment, &saved);
     let attempt = Duration::from_secs(5);
     let total = Duration::from_secs(15);
     if let Some(value) = identity(backend, &state, attempt, total).await? {
-        if supervisor && value["supervisorMode"] != true && value["supervisorFallback"] != true {
+        if supervisor && !value.supervisor_mode && !value.supervisor_fallback {
             return Err("Supervisor mode is enabled, but the running backend does not use it. Use the coordinated restart preflight before attaching.".into());
         }
         backend.authorize();
@@ -294,16 +311,6 @@ async fn ensure_with_environment(
     let port = backend.port();
     if port < 1024 {
         return Err("Backend port must be between 1024 and 65535.".into());
-    }
-    let development = resources.join("workspaces/runtime/apps/server/src");
-    let scripts = if development.join("codex-canvas").is_file() {
-        development
-    } else {
-        resources.join("scripts")
-    };
-    let script = scripts.join("codex-canvas");
-    if !script.is_file() {
-        return Err("The packaged Python backend is missing.".into());
     }
     let renderer = if resources
         .join("workspaces/client/apps/web/dist/index.html")
@@ -316,22 +323,14 @@ async fn ensure_with_environment(
     if !renderer.is_file() {
         return Err("The packaged renderer is missing.".into());
     }
-    let python = api_python(resources, &environment).await?;
+    let runtime = runtime_server(resources, &environment)?;
+    let build = backend_build(&runtime)?;
     let codex = executable("codex", "CODEX_BIN", &environment)?;
     let node = executable("node", "CODEX_NODE", &environment)?;
     environment.insert(
         "CODEX_AGENTS_STATE_DIR".into(),
         state.clone().into_os_string(),
     );
-    if supervisor {
-        let supervisor_script = scripts.join("codex_process_supervisor.py");
-        let supervisor_script = supervisor_script
-            .to_str()
-            .ok_or("Invalid supervisor path.")?;
-        let state_text = state.to_str().ok_or("Invalid state path.")?;
-        check_command(&python, &["-B", supervisor_script, "--check", "--state", state_text], &environment, Duration::from_secs(10)).await
-            .map_err(|_| "Supervisor mode is enabled but no compatible supervisor is ready. The backend was not started.".to_owned())?;
-    }
     environment.insert(
         "CODEX_AGENTS_SUPERVISOR_MODE".into(),
         if supervisor { "1" } else { "0" }.into(),
@@ -349,6 +348,7 @@ async fn ensure_with_environment(
         "PATH".into(),
         env::join_paths(paths).map_err(|e| e.to_string())?,
     );
+    environment.insert("CODEX_BACKEND_BUILD".into(), build.clone().into());
     let home = environment
         .get(std::ffi::OsStr::new("HOME"))
         .ok_or("Missing home directory.")?;
@@ -359,10 +359,8 @@ async fn ensure_with_environment(
         .mode(0o600)
         .open(&log)
         .map_err(|e| e.to_string())?;
-    let mut command = Command::new(python);
+    let mut command = Command::new(runtime);
     command
-        .arg("-B")
-        .arg(script)
         .arg("--port")
         .arg(port.to_string())
         .current_dir(home)
@@ -384,7 +382,13 @@ async fn ensure_with_environment(
     for _ in 0..100 {
         sleep(Duration::from_millis(100)).await;
         if let Some(value) = identity(backend, &state, attempt, total).await? {
-            fs::write(state.join("canvas.pid"), format!("{}\n", value["pid"]))
+            if value.backend_build != build {
+                return Err(
+                    "The started Rust backend identity does not match the selected executable."
+                        .into(),
+                );
+            }
+            fs::write(state.join("canvas.pid"), format!("{}\n", value.pid))
                 .map_err(|e| e.to_string())?;
             backend.authorize();
             return Ok(value);
@@ -413,7 +417,12 @@ mod tests {
             ("HOME".into(), "/home/user".into()),
         ]);
         let saved = serde_json::json!({"version":1, "stateDir":"/state", "environment":{"CODEX_BIN":"/bin/codex", "PATH":"/bin"}, "unsetEnvironment":["CODEX_HOME"]});
-        let restored = saved_environment(environment.clone(), &saved, Path::new("/state")).unwrap();
+        let restored = saved_environment(
+            environment.clone(),
+            &serde_json::from_value(saved.clone()).unwrap(),
+            Path::new("/state"),
+        )
+        .unwrap();
         assert!(!restored.contains_key(std::ffi::OsStr::new("CODEX_HOME")));
         assert_eq!(
             restored.get(std::ffi::OsStr::new("HOME")).unwrap(),
@@ -423,7 +432,14 @@ mod tests {
             restored.get(std::ffi::OsStr::new("CODEX_BIN")).unwrap(),
             "/bin/codex"
         );
-        assert!(saved_environment(environment.clone(), &saved, Path::new("/other")).is_err());
+        assert!(
+            saved_environment(
+                environment.clone(),
+                &serde_json::from_value(saved.clone()).unwrap(),
+                Path::new("/other")
+            )
+            .is_err()
+        );
         for (key, value) in [
             ("environment", serde_json::json!({"UNAPPROVED":"value"})),
             ("unsetEnvironment", serde_json::json!(["PATH"])),
@@ -431,62 +447,58 @@ mod tests {
         ] {
             let mut invalid = saved.clone();
             invalid[key] = value;
-            assert!(saved_environment(environment.clone(), &invalid, Path::new("/state")).is_err());
+            assert!(
+                saved_environment(
+                    environment.clone(),
+                    &serde_json::from_value(invalid).unwrap(),
+                    Path::new("/state")
+                )
+                .is_err()
+            );
         }
         assert!(
-            supervisor_mode(
-                &environment,
-                &serde_json::json!({"supervisorEnabled":"yes"})
-            )
-            .is_err()
+            serde_json::from_value::<SavedRecovery>(serde_json::json!({"supervisorEnabled":"yes"}))
+                .is_err()
         );
-        assert!(
-            supervisor_mode(&environment, &serde_json::json!({"supervisorEnabled":true})).unwrap()
-        );
+        for invalid in [
+            serde_json::json!({"environment":null}),
+            serde_json::json!({"unsetEnvironment":null}),
+            serde_json::json!({"supervisorEnabled":null}),
+        ] {
+            assert!(serde_json::from_value::<SavedRecovery>(invalid).is_err());
+        }
+        assert!(supervisor_mode(
+            &environment,
+            &serde_json::from_value(serde_json::json!({"supervisorEnabled":true})).unwrap()
+        ));
     }
 
     #[tokio::test]
     async fn startup_uses_saved_environment_attaches_once_and_requires_supervisor() {
         let directory = tempfile::tempdir().unwrap();
         let root = directory.path().canonicalize().unwrap();
-        let scripts = root.join("scripts");
-        fs::create_dir_all(&scripts).unwrap();
         fs::create_dir_all(root.join("web/dist")).unwrap();
         fs::write(root.join("web/dist/index.html"), "fixture").unwrap();
-        // The launcher fixture uses only Python's standard library. Stub imports
-        // test prerequisite invocation without modifying any installed environment.
-        for name in ["fastapi", "httpx", "pydantic", "uvicorn"] {
-            fs::write(scripts.join(format!("{name}.py")), "").unwrap();
-        }
-        fs::write(scripts.join("codex-canvas"), r#"
-import http.server, json, os, sys, threading
-from pathlib import Path
-state = Path(os.environ['CODEX_AGENTS_STATE_DIR'])
-(state / 'launched.json').write_text(json.dumps({'home':os.environ.get('CODEX_HOME'), 'language':os.environ.get('LANG')}))
-class Handler(http.server.BaseHTTPRequestHandler):
-    def log_message(self, *args): pass
-    def do_GET(self):
-        body = json.dumps({'application':'codex-agents','protocol':1,'pid':os.getpid(),'stateDir':str(state),'backendBuild':'a'*64}).encode()
-        self.send_response(200)
-        self.send_header('Content-Length',str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
-server = http.server.HTTPServer(('127.0.0.1',int(sys.argv[-1])),Handler)
-threading.Timer(15, lambda: os._exit(0)).start()
-server.serve_forever()
-"#).unwrap();
         let mut environment: Environment = env::vars_os().collect();
-        let python_key = if environment.contains_key(std::ffi::OsStr::new("STUDIO_FIXTURE_PYTHON"))
-        {
-            "STUDIO_FIXTURE_PYTHON"
-        } else {
-            "CODEX_AGENTS_PYTHON"
-        };
-        let python = executable("python3", python_key, &environment).unwrap();
-        environment.insert("CODEX_AGENTS_PYTHON".into(), python.into_os_string());
-        environment.insert("CODEX_BIN".into(), "/usr/bin/true".into());
-        environment.insert("CODEX_NODE".into(), "/usr/bin/true".into());
-        environment.insert("PYTHONPATH".into(), scripts.into_os_string());
+        let node = executable("node", "CODEX_NODE", &environment).unwrap();
+        let runtime = root.join("fixture-runtime");
+        fs::write(&runtime, format!(r#"#!{}
+const http = require("node:http"), fs = require("node:fs"), path = require("node:path");
+const state = process.env.CODEX_AGENTS_STATE_DIR;
+fs.writeFileSync(path.join(state, "launched.json"), JSON.stringify({{home: process.env.CODEX_HOME ?? null, language: process.env.LANG}}));
+http.createServer((request, response) => {{
+  const body = JSON.stringify({{application:"codex-agents", protocol:1, backendKind:"rust", pid:process.pid, stateDir:state, backendBuild:process.env.CODEX_BACKEND_BUILD}});
+  response.setHeader("Content-Length", Buffer.byteLength(body));
+  response.end(body);
+}}).listen(Number(process.argv.at(-1)), "127.0.0.1");
+const fixtureLifetimeMs = 15000;
+setTimeout(() => process.exit(0), fixtureLifetimeMs);
+"#, node.display())).unwrap();
+        fs::set_permissions(&runtime, fs::Permissions::from_mode(0o700)).unwrap();
+        environment.insert("CODEX_RUNTIME_SERVER".into(), runtime.into_os_string());
+        environment.insert("CODEX_AGENTS_PYTHON".into(), "/nonexistent".into());
+        environment.insert("CODEX_BIN".into(), node.clone().into_os_string());
+        environment.insert("CODEX_NODE".into(), node.into_os_string());
         environment.insert("CODEX_HOME".into(), "must-not-inherit".into());
         environment.insert("CODEX_AGENTS_SUPERVISOR_MODE".into(), "0".into());
         let state = root.join("state");
@@ -508,11 +520,11 @@ server.serve_forever()
                 }
             }
         }
-        let _process = FixtureProcess(first["pid"].as_i64().unwrap() as i32);
+        let _process = FixtureProcess(first.pid);
         let second = ensure_with_environment(&backend, &state, &root, environment.clone())
             .await
             .unwrap();
-        assert_eq!(first["pid"], second["pid"]);
+        assert_eq!(first.pid, second.pid);
         let launched: Value =
             serde_json::from_slice(&fs::read(state.join("launched.json")).unwrap()).unwrap();
         assert!(launched["home"].is_null());
@@ -525,12 +537,6 @@ server.serve_forever()
                 .contains("coordinated restart")
         );
         drop(_process);
-        assert!(
-            ensure_with_environment(&backend, &state, &root, environment)
-                .await
-                .unwrap_err()
-                .contains("no compatible supervisor")
-        );
     }
 
     #[tokio::test]
@@ -547,7 +553,7 @@ server.serve_forever()
             ] {
                 let (mut stream, _) = listener.accept().await.unwrap();
                 read_http(&mut stream).await;
-                reply(&mut stream, &serde_json::json!({"application":"codex-agents", "protocol":1, "pid":std::process::id(), "stateDir":"/expected", "backendBuild":build}).to_string()).await;
+                reply(&mut stream, &serde_json::json!({"application":"codex-agents", "protocol":1, "backendKind":"rust", "pid":std::process::id(), "stateDir":"/expected", "backendBuild":build}).to_string()).await;
             }
         });
         for valid in [false, false, true] {
@@ -575,7 +581,7 @@ server.serve_forever()
         let server = tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.unwrap();
             read_http(&mut stream).await;
-            reply(&mut stream,&serde_json::json!({"application":"codex-agents","protocol":1,"pid":std::process::id(),"stateDir":"/other", "backendBuild":"a".repeat(64)}).to_string()).await;
+            reply(&mut stream,&serde_json::json!({"application":"codex-agents","protocol":1,"backendKind":"rust","pid":std::process::id(),"stateDir":"/other", "backendBuild":"a".repeat(64)}).to_string()).await;
         });
         assert!(
             identity(

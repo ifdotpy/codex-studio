@@ -1,0 +1,44 @@
+{
+  "owner": {
+    "id": "owner",
+    "rootId": "owner",
+    "epoch": 7,
+    "status": "idle",
+    "autoWake": true,
+    "isLead": true,
+    "accountKey": "fixture",
+    "threadId": "thread-fixture",
+    "role": "orchestrator",
+    "approvalPolicy": "never",
+    "sandbox": {
+      "type": "workspaceWrite",
+      "writableRoots": []
+    }
+  },
+  "rule": {
+    "id": "rule",
+    "agent": "owner",
+    "rootId": "owner",
+    "epoch": 7,
+    "name": "Watch 東京",
+    "kind": "interval",
+    "intervalSeconds": 60,
+    "nextAt": 1800000000.0,
+    "at": 1800000000.0,
+    "path": null,
+    "event": "worker_completed",
+    "command": "",
+    "stallTimeoutSeconds": 0,
+    "livenessCommand": "",
+    "fileActivityAt": 1800000000.0,
+    "fileGeneration": 0,
+    "stallWakeGeneration": -1,
+    "text": "Continue 🦀",
+    "status": "active",
+    "created": 1800000000.0,
+    "inFlight": false,
+    "checks": 0,
+    "wakes": 0,
+    "fingerprint": null
+  }
+}

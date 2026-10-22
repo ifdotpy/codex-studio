@@ -281,7 +281,7 @@ const FEATURE_SCHEMA: &str = r#"
 
 /// Task-retention marker table (`payload-v1:tasks` and older Python markers).
 /// `FEATURE_SCHEMA` creates its current shape: the base columns, then the
-/// added columns, as `payload_marker_columns_match_python_owner` checks.
+/// added columns, as `payload_marker_columns_match_feature_schema` checks.
 const PAYLOAD_MIGRATIONS_TABLE: &str = "runtime_payload_migrations";
 /// Columns of the original Python marker table. Older states have only these.
 #[cfg(test)]
@@ -464,19 +464,7 @@ mod tests {
     }
 
     #[test]
-    fn payload_marker_columns_match_python_owner() {
-        let python = include_str!("../../../apps/server/src/codex_payload_migrate.py");
-        let python = compact(python);
-        assert!(
-            python.contains(super::PAYLOAD_MIGRATIONS_BASE_COLUMNS),
-            "codex_payload_migrate.py base marker columns differ"
-        );
-        for (name, declaration) in super::PAYLOAD_MIGRATIONS_ADDED_COLUMNS {
-            assert!(
-                python.contains(&format!("(\"{name}\", \"{declaration}\")")),
-                "codex_payload_migrate.py does not add {name} {declaration}"
-            );
-        }
+    fn payload_marker_columns_match_feature_schema() {
         let added = super::PAYLOAD_MIGRATIONS_ADDED_COLUMNS
             .iter()
             .map(|(name, declaration)| format!("{name} {declaration}"))

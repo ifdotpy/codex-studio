@@ -113,3 +113,5 @@ pub(crate) mod process_support;
 
 #[path = "support/projections.rs"]
 pub(crate) mod projection_fixtures;
+
+pub(crate) use callback_fixtures::frozen as recovery_fixtures;

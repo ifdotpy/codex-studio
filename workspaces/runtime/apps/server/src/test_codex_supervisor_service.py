@@ -96,14 +96,6 @@ class Services(unittest.TestCase):
         server.chmod(0o755)
         return server
 
-    def test_backend_selection_matches_the_desktop_owner(self) -> None:
-        owner = (REPOSITORY_ROOT / 'workspaces/client/apps/desktop/backend.cjs').read_text()
-        self.assertIn(f'const backendSelectionEnv = "{service.BACKEND_SELECTION_ENV}";', owner)
-        self.assertIn('selected !== "python" && selected !== "rust"', owner)
-        self.assertEqual(service.backend_selection({}), 'python')
-        self.assertEqual(service.backend_selection({service.BACKEND_SELECTION_ENV: 'rust'}), 'rust')
-        with self.assertRaisesRegex(ValueError, 'python or rust'):
-            service.backend_selection({service.BACKEND_SELECTION_ENV: 'go'})
 
     def test_rust_unit_runs_the_server_without_the_python_supervisor(self) -> None:
         server = self.rust_server()
@@ -340,13 +332,6 @@ class Services(unittest.TestCase):
         (self.state / 'background-recovery.json').write_bytes(data)
         return data
 
-    def test_recovery_backend_selection_matches_the_recovery_owner(self) -> None:
-        spec = importlib.util.spec_from_file_location(
-            'recover_backend_owner', REPOSITORY_ROOT / 'workspaces/client/apps/desktop/recover_backend.py')
-        assert spec and spec.loader
-        owner = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(owner)
-        self.assertEqual(service.RECOVERY_BACKEND_SELECTIONS, owner.BACKEND_SELECTIONS)
 
     def test_rust_macos_installs_the_rust_supervisor_and_recovery_selection(self) -> None:
         environment = self.rust_binaries()

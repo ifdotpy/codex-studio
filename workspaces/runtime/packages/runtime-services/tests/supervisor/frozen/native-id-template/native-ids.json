@@ -1,0 +1,78 @@
+{
+  "writes": [
+    {
+      "operation": "reply:claude",
+      "native": "claude:803e6306-e6a7-4116-bcd3-bb677560a582",
+      "message": {
+        "id": "claude:803e6306-e6a7-4116-bcd3-bb677560a582",
+        "result": { "decision": "accept" }
+      }
+    },
+    {
+      "operation": "monitor:text",
+      "native": "claude:monitor",
+      "message": { "id": "claude:monitor", "method": "echo" }
+    },
+    {
+      "operation": "monitor:integer",
+      "native": 41,
+      "message": { "id": 41, "method": "echo" }
+    },
+    {
+      "operation": "notification",
+      "native": null,
+      "message": { "method": "initialized" }
+    },
+    {
+      "operation": "reply:integer",
+      "native": 7,
+      "message": { "id": 7, "result": {} }
+    }
+  ],
+  "results": {
+    "reply:claude": {
+      "accepted": true,
+      "duplicate": false,
+      "remoteId": "claude:803e6306-e6a7-4116-bcd3-bb677560a582",
+      "durableMs": 0.0
+    },
+    "monitor:text": {
+      "accepted": true,
+      "duplicate": false,
+      "remoteId": "claude:monitor",
+      "durableMs": 0.0
+    },
+    "monitor:integer": {
+      "accepted": true,
+      "duplicate": false,
+      "remoteId": 1,
+      "durableMs": 0.0
+    },
+    "notification": {
+      "accepted": true,
+      "duplicate": false,
+      "remoteId": null,
+      "durableMs": 0.0
+    },
+    "reply:integer": {
+      "accepted": true,
+      "duplicate": false,
+      "remoteId": 7,
+      "durableMs": 0.0
+    }
+  },
+  "status": {
+    "monitor:text": { "accepted": false, "reason": "rpc_identity_missing" },
+    "monitor:integer": { "accepted": true, "nativeId": 1, "response": null }
+  },
+  "stdin": [
+    {
+      "id": "claude:803e6306-e6a7-4116-bcd3-bb677560a582",
+      "result": { "decision": "accept" }
+    },
+    { "id": "claude:monitor", "method": "echo" },
+    { "id": 1, "method": "echo" },
+    { "method": "initialized" },
+    { "id": 7, "result": {} }
+  ]
+}

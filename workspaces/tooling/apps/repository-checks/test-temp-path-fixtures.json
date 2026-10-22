@@ -287,31 +287,11 @@
     "\"-C\\n/tmp/workspace\\nstatus\\n--porcelain=v1\\n-z\\n{}\\n\",",
     "\"/tmp/workspace\","
   ],
-  "workspaces/runtime/packages/runtime-services/tests/portable_history/producer.py": [
-    "\"assets\": [{\"path\": '/tmp/asset \"quoted\" 日本語.png'}],"
-  ],
-  "workspaces/runtime/packages/runtime-services/tests/portable_history/store_producer.py": [
-    "\"assets\": [{\"path\": '/tmp/archive-fixture \"日本語.png'}],"
-  ],
   "workspaces/runtime/packages/runtime-services/tests/provider_session_task.rs": [
     "launch: ProviderLaunchSpec::new(vec![\"fake\".into()], BTreeMap::new(), \"/tmp\".into()),"
   ],
-  "workspaces/runtime/packages/runtime-services/tests/server_exec/oracle.py": [
-    "({\"cwd\": \"/tmp\", \"command\": [\"true\"]}, False),",
-    "({\"cwd\": \"/tmp\", \"command\": \"echo hi\", \"env\": {\"A_B\": \"1\"}, \"timeout\": 30, \"output_limit\": 2}, False),",
-    "({\"cwd\": \"/tmp/../etc\", \"command\": [\"true\"]}, False),",
-    "({\"cwd\": \"/tmp\", \"command\": \"\"}, False),",
-    "({\"cwd\": \"/tmp\", \"command\": []}, False),",
-    "({\"cwd\": \"/tmp\", \"command\": [\"\"]}, False),",
-    "({\"cwd\": \"/tmp\", \"command\": [\"a\\u0000\"]}, False),",
-    "({\"cwd\": \"/tmp\", \"command\": [\"true\"], \"env\": {\"1A\": \"x\"}}, False),",
-    "({\"cwd\": \"/tmp\", \"command\": [\"true\"], \"env\": {\"A\": 1}}, False),",
-    "({\"cwd\": \"/tmp\", \"command\": [\"true\"], \"timeout\": 0}, False),",
-    "({\"cwd\": \"/tmp\", \"command\": [\"true\"], \"timeout\": 1801}, False),",
-    "({\"cwd\": \"/tmp\", \"command\": [\"true\"], \"timeout\": True}, False),",
-    "({\"cwd\": \"/tmp\", \"command\": [\"true\"], \"timeout\": 2.0}, False),",
-    "({\"cwd\": \"/tmp\", \"command\": [\"true\"], \"output_limit\": 1}, False),",
-    "({\"cwd\": \"/tmp\", \"command\": [\"true\"], \"output_limit\": 4194305}, False),"
+  "workspaces/runtime/packages/runtime-services/tests/title_generation/oracle.py": [
+    "return \"/tmp/title-oracle-home\""
   ],
   "workspaces/runtime/packages/runtime-services/tests/voice_provider_corpus.rs": [
     "\"params\":{\"command\":\"printf safe\", \"cwd\":\"/tmp\"}"

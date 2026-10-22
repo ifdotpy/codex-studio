@@ -1,9 +1,8 @@
-use crate::prepared_python_support as prepared_python;
-
 use rusqlite::{Connection, params};
+use serde::Deserialize;
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
 use std::path::Path;
-use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::time::Duration;
 use studio_runtime_services::{
@@ -84,29 +83,75 @@ fn seed(root: &Path) {
     std::fs::write(project.join("sync/status.json"), json!({"state":"conflict","conflicts":["file.txt"],"choices":[],"withAgent":[],"deletes":0}).to_string()).expect("sync status");
 }
 
-#[allow(clippy::disallowed_methods)]
-fn oracle(root: &Path, choice: &str) -> Value {
-    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src");
-    let python = prepared_python::prepared_python(&source);
-    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/vm_macsync_oracle.py");
-    let output = Command::new("timeout")
-        .arg("120")
-        .arg(python)
-        .arg("-B")
-        .arg(script)
-        .arg(root.join("state"))
-        .arg(choice)
-        .env("HOME", root.join("home"))
-        .env("PATH", "/usr/bin:/bin")
-        .stderr(Stdio::piped())
-        .output()
-        .expect("guarded Python oracle starts");
-    assert!(
-        output.status.success(),
-        "Python oracle failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    serde_json::from_slice(&output.stdout).expect("Python corpus output JSON")
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ResolutionFixture {
+    settings_read: Value,
+    settings_set: Value,
+    configured: Value,
+    resolved: Value,
+    events: Vec<EventFixture>,
+    event_metadata: BTreeMap<String, Value>,
+    guest_calls: Vec<GuestCallFixture>,
+    persisted: BTreeMap<String, Value>,
+    mac_file: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct EventFixture {
+    id: String,
+    agent: String,
+    kind: String,
+    text: String,
+    #[serde(rename = "status")]
+    _status: String,
+    #[serde(rename = "created")]
+    _created: f64,
+    epoch: i64,
+    #[serde(rename = "turnId")]
+    _turn_id: Option<String>,
+    #[serde(rename = "error")]
+    _error: Option<String>,
+}
+
+#[derive(Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct GuestCallFixture {
+    method: String,
+    params: Value,
+    request_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct MemoryFixture {
+    error: String,
+    settings_before: Value,
+    settings_after: Value,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PreflightFixture {
+    preflights: Vec<Value>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Fixtures {
+    vm: ResolutionFixture,
+    mac: ResolutionFixture,
+    agent: ResolutionFixture,
+    #[serde(rename = "memory-ceiling")]
+    memory: MemoryFixture,
+    #[serde(rename = "write-space-preflight")]
+    preflight: PreflightFixture,
+}
+
+fn fixtures() -> Fixtures {
+    serde_json::from_str(include_str!("vm_macsync_fixtures.json"))
+        .expect("frozen Python VM and Mac sync corpus")
 }
 
 fn runtime_database(path: &Path) -> Connection {
@@ -169,14 +214,15 @@ fn clean_manifest_mtime(value: &mut Value) {
 }
 
 #[test]
-fn real_python_vm_and_mac_functions_match_rust_for_each_resolution_choice() {
-    for choice in ["vm", "mac", "agent"] {
-        let python_root = tempfile::tempdir().expect("Python fixture root");
+fn vm_and_mac_functions_match_frozen_corpus_for_each_resolution_choice() {
+    let fixtures = fixtures();
+    for (choice, expected) in [
+        ("vm", fixtures.vm),
+        ("mac", fixtures.mac),
+        ("agent", fixtures.agent),
+    ] {
         let rust_root = tempfile::tempdir().expect("Rust fixture root");
-        seed(python_root.path());
         seed(rust_root.path());
-        std::fs::create_dir_all(python_root.path().join("home")).expect("isolated HOME");
-        let expected = oracle(python_root.path(), choice);
 
         let state = rust_root.path().join("state");
         let guest = FakeGuest(std::sync::Mutex::new(Vec::new()));
@@ -226,15 +272,15 @@ fn real_python_vm_and_mac_functions_match_rust_for_each_resolution_choice() {
         }
 
         assert_eq!(
-            settings_read, expected["settingsRead"],
+            settings_read, expected.settings_read,
             "settings read ({choice})"
         );
         assert_eq!(
-            settings_set, expected["settingsSet"],
+            settings_set, expected.settings_set,
             "settings write ({choice})"
         );
         let mut actual_configured = configured;
-        let mut expected_configured = expected["configured"].clone();
+        let mut expected_configured = expected.configured.clone();
         clean_time(&mut actual_configured);
         clean_time(&mut expected_configured);
         assert_eq!(
@@ -242,20 +288,20 @@ fn real_python_vm_and_mac_functions_match_rust_for_each_resolution_choice() {
             "config persisted state ({choice})"
         );
         let mut actual_response = resolved.response;
-        let mut expected_response = expected["resolved"].clone();
+        let mut expected_response = expected.resolved.clone();
         clean_time(&mut actual_response);
         clean_time(&mut expected_response);
         assert_eq!(
             actual_response, expected_response,
             "resolve response ({choice})"
         );
-        let python_state = python_root.path().join("state/layr-projects/p1/sync");
         let rust_sync = state.join("layr-projects/p1/sync");
         for name in ["manifest.json", "held.json", "status.json", "config.json"] {
-            let left: Value = serde_json::from_slice(
-                &std::fs::read(python_state.join(name)).expect("Python persisted file"),
-            )
-            .expect("Python JSON");
+            let left = expected
+                .persisted
+                .get(name)
+                .expect("frozen persisted file")
+                .clone();
             let right: Value = serde_json::from_slice(
                 &std::fs::read(rust_sync.join(name)).expect("Rust persisted file"),
             )
@@ -268,16 +314,6 @@ fn real_python_vm_and_mac_functions_match_rust_for_each_resolution_choice() {
                 #[cfg(unix)]
                 {
                     use std::os::unix::fs::MetadataExt;
-                    let python_mtime =
-                        std::fs::metadata(python_root.path().join("state/mac-folder/file.txt"))
-                            .expect("Python synced file metadata")
-                            .mtime_nsec() as i128
-                            + std::fs::metadata(
-                                python_root.path().join("state/mac-folder/file.txt"),
-                            )
-                            .expect("Python synced file metadata")
-                            .mtime() as i128
-                                * 1_000_000_000;
                     let rust_mtime =
                         std::fs::metadata(rust_root.path().join("state/mac-folder/file.txt"))
                             .expect("Rust synced file metadata")
@@ -286,12 +322,6 @@ fn real_python_vm_and_mac_functions_match_rust_for_each_resolution_choice() {
                                 .expect("Rust synced file metadata")
                                 .mtime() as i128
                                 * 1_000_000_000;
-                    assert_eq!(
-                        left["file.txt"]["m"]
-                            .as_i64()
-                            .expect("Python manifest mtime") as i128,
-                        python_mtime
-                    );
                     assert_eq!(
                         right["file.txt"]["m"]
                             .as_i64()
@@ -305,22 +335,16 @@ fn real_python_vm_and_mac_functions_match_rust_for_each_resolution_choice() {
             assert_eq!(left, right, "persisted {name} ({choice})");
         }
         assert_eq!(
-            std::fs::read(python_root.path().join("state/mac-folder/file.txt"))
-                .expect("Python Mac file"),
+            expected.mac_file.as_bytes(),
             std::fs::read(rust_root.path().join("state/mac-folder/file.txt"))
                 .expect("Rust Mac file"),
             "Mac file ({choice})"
         );
-        let python_sync_calls: Vec<Value> = expected["guestCalls"]
-            .as_array()
-            .expect("Python guest calls")
+        let frozen_sync_calls: Vec<Value> = expected
+            .guest_calls
             .iter()
-            .filter(|call| {
-                call["method"]
-                    .as_str()
-                    .is_some_and(|name| name.starts_with("sync.mac."))
-            })
-            .cloned()
+            .filter(|call| call.method.starts_with("sync.mac."))
+            .map(|call| serde_json::to_value(call).expect("guest call JSON"))
             .collect();
         let rust_sync_calls: Vec<Value> = guest
             .0
@@ -331,13 +355,12 @@ fn real_python_vm_and_mac_functions_match_rust_for_each_resolution_choice() {
             .map(|(method, params, id)| json!({"method":method,"params":params,"requestId":id}))
             .collect();
         assert_eq!(
-            rust_sync_calls, python_sync_calls,
+            rust_sync_calls, frozen_sync_calls,
             "fake guest RPC corpus ({choice})"
         );
         if choice == "agent" {
-            let expected_event = &expected["events"][0];
-            let expected_meta =
-                &expected["eventMetadata"][expected_event["id"].as_str().expect("event id")];
+            let expected_event = &expected.events[0];
+            let expected_meta = &expected.event_metadata[&expected_event.id];
             let database = Connection::open(rust_root.path().join("runtime.sqlite"))
                 .expect("read Rust P03 database");
             let (id, agent, kind, text, status, epoch): (
@@ -363,12 +386,12 @@ fn real_python_vm_and_mac_functions_match_rust_for_each_resolution_choice() {
                     },
                 )
                 .expect("Rust P03 row");
-            assert_eq!(id, expected_event["id"]);
-            assert_eq!(agent, expected_event["agent"]);
-            assert_eq!(kind, expected_event["kind"]);
-            assert_eq!(text, expected_event["text"]);
+            assert_eq!(id, expected_event.id);
+            assert_eq!(agent, expected_event.agent);
+            assert_eq!(kind, expected_event.kind);
+            assert_eq!(text, expected_event.text);
             assert_eq!(status, "pending");
-            assert_eq!(epoch, expected_event["epoch"]);
+            assert_eq!(epoch, expected_event.epoch);
             let metadata: String = database
                 .query_row(
                     "SELECT record FROM runtime_event_meta WHERE id=?1",
@@ -389,13 +412,10 @@ fn real_python_vm_and_mac_functions_match_rust_for_each_resolution_choice() {
 }
 
 #[test]
-fn python_and_rust_reject_darwin_memory_over_the_host_ceiling_before_persisting() {
-    let python_root = tempfile::tempdir().expect("Python fixture root");
+fn darwin_memory_over_the_host_ceiling_is_rejected_before_persisting() {
     let rust_root = tempfile::tempdir().expect("Rust fixture root");
-    seed(python_root.path());
     seed(rust_root.path());
-    std::fs::create_dir_all(python_root.path().join("home")).expect("isolated HOME");
-    let expected = oracle(python_root.path(), "memory-ceiling");
+    let expected = fixtures().memory;
 
     let settings_dir = rust_root.path().join("state/linux-vm");
     let before = std::fs::read(settings_dir.join("settings.json")).expect("seeded settings");
@@ -413,10 +433,10 @@ fn python_and_rust_reject_darwin_memory_over_the_host_ceiling_before_persisting(
     )
     .expect_err("settings over Darwin host limit are rejected");
 
-    assert_eq!(error.to_string(), expected["error"]);
+    assert_eq!(error.to_string(), expected.error);
     assert_eq!(
         serde_json::from_slice::<Value>(&before).expect("Rust seed JSON"),
-        expected["settingsBefore"]
+        expected.settings_before
     );
     assert_eq!(
         std::fs::read(settings_dir.join("settings.json")).expect("unchanged Rust settings"),
@@ -428,7 +448,7 @@ fn python_and_rust_reject_darwin_memory_over_the_host_ceiling_before_persisting(
             &std::fs::read(settings_dir.join("settings.json")).expect("persisted Rust settings"),
         )
         .expect("Rust settings JSON"),
-        expected["settingsAfter"]
+        expected.settings_after
     );
     assert!(guest.0.lock().expect("guest call log").is_empty());
 }
@@ -443,14 +463,11 @@ impl GuestSpaceProbe for EmptyDisk {
 
 #[cfg(unix)]
 #[test]
-fn python_and_rust_write_space_preflight_refuse_before_opening_the_guest_socket() {
+fn write_space_preflight_refuses_before_opening_the_guest_socket() {
     use std::os::unix::net::UnixListener;
 
-    let python_root = tempfile::tempdir().expect("Python fixture root");
     let rust_root = tempfile::tempdir().expect("Rust fixture root");
-    seed(python_root.path());
-    std::fs::create_dir_all(python_root.path().join("home")).expect("isolated HOME");
-    let expected = oracle(python_root.path(), "write-space-preflight");
+    let expected = fixtures().preflight;
 
     let mut actual_preflights = Vec::new();
     for (index, method) in [
@@ -493,8 +510,7 @@ fn python_and_rust_write_space_preflight_refuse_before_opening_the_guest_socket(
     }
 
     assert_eq!(
-        Value::Array(actual_preflights),
-        expected["preflights"],
+        actual_preflights, expected.preflights,
         "Python and Rust refuse all disk-consuming guest RPCs before socket connect"
     );
 }

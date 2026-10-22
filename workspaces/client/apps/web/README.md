@@ -25,7 +25,7 @@ pnpm run build
 ```
 
 From the repository root, start the selected backend and open
-<http://127.0.0.1:4620>. The Python and Rust servers serve this app's `dist/`.
+<http://127.0.0.1:4620>. The Rust server serves this app's `dist/`.
 Build output is local and ignored by Git. Rebuild it after a frontend change.
 The server reports a missing build instead of serving an older client.
 
@@ -273,19 +273,16 @@ transcript.
 Desktop alerts require an explicit browser permission. The inbox remains available
 when that permission is absent. Browser notification delivery depends on system settings.
 
-Backend regression commands run from the repository root:
+Regression commands run from the repository root:
 
-```bash
-python3 -B workspaces/runtime/apps/server/tests/runtime-contract.py
-python3 -B workspaces/runtime/apps/server/tests/canvas-contract.py
-python3 -B workspaces/runtime/apps/server/tests/workspace-contract.py
-python3 -B workspaces/runtime/apps/server/tests/workspace-races.py
-python3 -B workspaces/runtime/apps/server/tests/workspace-protocol.py
-python3 -B workspaces/runtime/apps/server/tests/workspace-native-turn.py
+```sh
+just test-fast
+pnpm --filter codex-agents-web run test:browser:smoke
 ```
 
-The last two checks use the installed Codex binary with temporary state. The native
-turn check supplies a local Responses fixture and blocks external traffic.
+Browser fixtures live in `tests/fixtures` and run the Rust server or standalone
+renderer components. Removed Python backend specs and their test names are recorded
+in `tests/fixtures/removed-python-backend-specs.json`.
 
 The background panel includes all active processes and the latest 100 completed
 monitors and tool records. Older monitor records and logs remain on disk. Expected
@@ -337,7 +334,6 @@ this receipt. Review an unconfirmed outcome before sending another instruction.
 Targeted checks:
 
 ```sh
-python3 workspaces/runtime/apps/server/tests/connection-recovery-contract.py
 pnpm --filter codex-agents-web run test:browser -- disconnect-recovery-ui.spec.mjs
 ```
 

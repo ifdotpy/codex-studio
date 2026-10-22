@@ -1,4 +1,3 @@
-use crate::prepared_python_support;
 use crate::projection_fixtures as projections;
 use rusqlite::{Connection, params};
 use serde_json::{Value, json};
@@ -6,7 +5,6 @@ use std::{
     collections::BTreeMap,
     fs,
     path::Path,
-    process::Command,
     sync::{Arc, Mutex},
 };
 use studio_runtime_providers::{RequestId, RequestTicket};
@@ -70,20 +68,9 @@ fn template(root: &Path) {
             .expect("fixture schema commits once");
     }
 }
-#[allow(clippy::disallowed_methods)]
 fn cases() -> Vec<Value> {
-    let output = Command::new(prepared_python_support::prepared_python(
-        &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
-    ))
-    .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/wave7_p10_lifecycle/oracle.py"))
-    .output()
-    .expect("oracle");
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    serde_json::from_slice(&output.stdout).expect("cases")
+    serde_json::from_str(include_str!("wave7_p10_lifecycle/cases.json"))
+        .expect("frozen lifecycle cases")
 }
 async fn seed(store: &RuntimeStore, records: Records) {
     store.transaction(move |tx| {

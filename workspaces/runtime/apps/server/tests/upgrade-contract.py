@@ -397,23 +397,6 @@ class RustUpgradeContract(unittest.TestCase):
 
 
 class SupervisorUpgradeContract(unittest.TestCase):
-    def test_legacy_recovery_config_without_setting_keeps_supervisor_disabled(self):
-        with tempfile.TemporaryDirectory(prefix="studio-upgrade-contract-") as directory:
-            state = Path(directory).resolve()
-            config = {
-                "version": 1, "stateDir": str(state), "enabled": True,
-                "port": 4620, "python": sys.executable, "codex": "/usr/bin/true",
-                "resources": str(ROOT),
-                "environment": {"CODEX_AGENTS_SUPERVISOR_MODE": "1"},
-                "unsetEnvironment": [],
-            }
-            filename = state / "background-recovery.json"
-            filename.write_text(json.dumps(config))
-            loaded = recover_backend.load_config(filename, state)
-            with patch.dict(os.environ, {"HOME": str(state)}, clear=True):
-                env = recover_backend.launch_environment(loaded, state)
-            self.assertNotIn("CODEX_AGENTS_SUPERVISOR_MODE", env)
-            self.assertEqual(recover_backend.supervisor_tick(loaded, state)[1], "disabled")
 
     def test_saved_true_requires_supervisor_before_any_appserver_spawn(self):
         with tempfile.TemporaryDirectory(prefix="studio-upgrade-contract-") as directory:

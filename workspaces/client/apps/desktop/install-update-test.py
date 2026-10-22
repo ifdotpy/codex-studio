@@ -15,11 +15,11 @@ from unittest.mock import patch
 
 HERE = Path(__file__).resolve().parent
 REPOSITORY_ROOT = HERE.parents[3]
-sys.path.insert(0, str(REPOSITORY_ROOT / "workspaces/runtime/apps/server/src"))
+sys.path.insert(0, str(HERE))
 spec = importlib.util.spec_from_file_location("install_update", HERE / "install_update.py")
 installer = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(installer)
-import codex_peer_updates as updates  # noqa: E402
+import desktop_updates as updates  # noqa: E402
 
 OLD = {"version": 1, "builtAt": 1791900000.5, "commit": "a" * 40, "commitTime": 1791899000, "branch": "main"}
 NEW = {"version": 1, "builtAt": 1791980000.25, "commit": "b" * 40, "commitTime": 1791979000, "branch": "main"}
@@ -294,46 +294,19 @@ class InstallUpdate(unittest.TestCase):
                          "not restarted: The reported backend PID is not the packaged Codex Canvas process.")
 
 
-SERVER_SOURCE = REPOSITORY_ROOT / "workspaces/runtime/apps/server/src"
 CHECK_OUTPUT = subprocess.check_output
-# A fixture backend: serves the /api/desktop identity of this state directory. Its arguments name
-# the packaged codex-canvas script, as the backend that the installed app starts.
-FIXTURE_BACKEND = """
-import http.server, json, os, sys
-state = sys.argv[2]
-class Identity(http.server.BaseHTTPRequestHandler):
-    def do_GET(self):
-        body = json.dumps({"application": "codex-agents", "protocol": 1, "stateDir": state,
-                           "pid": os.getpid()}).encode()
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
-    def log_message(self, *args):
-        pass
-server = http.server.HTTPServer(("127.0.0.1", 0), Identity)
-print(server.server_address[1], flush=True)
-server.serve_forever()
-"""
 
 
-def make_packaged_app(app, build, changes=None):
-    """An app with the packaged backend scripts; `changes` appends text to named scripts."""
+def make_packaged_app(app, build, executable='/bin/sleep'):
+    """A native executable fixture at the packaged Rust server path."""
     make_app(app, build)
-    scripts = app / "Contents/Resources/workspace/scripts"
-    scripts.mkdir(parents=True)
-    for source in SERVER_SOURCE.iterdir():
-        if source.is_file():
-            shutil.copy2(source, scripts / source.name)
-    for name, text in (changes or {}).items():
-        with (scripts / name).open("a") as stream:
-            stream.write(text)
-    return scripts
+    binary = app / 'Contents/Resources/studio-runtime-server'
+    shutil.copy2(executable, binary)
+    return binary
 
 
 class BackendRestartAfterSwap(unittest.TestCase):
-    """The real backend check runs while the new app is in place and this run's modules are old."""
+    """Prove the old native executable before the swap, then stop its unchanged PID."""
 
     def setUp(self):
         temporary = tempfile.TemporaryDirectory(prefix="studio-install-restart-")
@@ -344,25 +317,19 @@ class BackendRestartAfterSwap(unittest.TestCase):
         self.state.mkdir()
         self.applications.mkdir()
         self.installed = self.applications / "Codex Studio.app"
-        scripts = make_packaged_app(self.installed, OLD)
-        # The new build adds a shared value and a module that this run has not imported uses it.
+        binary = make_packaged_app(self.installed, OLD)
         staged = self.state / "updates" / str(NEW["builtAt"]) / "Codex Studio.app"
-        make_packaged_app(staged, NEW, {
-            "codex_shared_values.py": "\nSWAP_TEST_NEW_VALUE = 1\n",
-            "codex_process_supervisor.py": "\nfrom codex_shared_values import SWAP_TEST_NEW_VALUE\n",
-        })
+        make_packaged_app(staged, NEW, '/bin/cat')
         updates.write_json(self.state / updates.PENDING_FILE,
                            {"id": "update-1", "app": str(staged), "build": NEW, "from": "server"})
-        self.backend = subprocess.Popen(
-            [sys.executable, "-c", FIXTURE_BACKEND, str(scripts / "codex-canvas"), str(self.state)],
-            stdout=subprocess.PIPE, text=True)
+        self.backend = subprocess.Popen([str(binary), '60'])
         self.addCleanup(self.backend.wait, 10)
         self.addCleanup(self.backend.kill)
-        port = int(self.backend.stdout.readline())
-        self.backend.stdout.close()
-        # Reap the backend when it exits, so the installer sees the exit.
         threading.Thread(target=self.backend.wait, daemon=True).start()
-        self.config = {"port": port, "resources": str(scripts.parent), "supervisorEnabled": True}
+        self.config = {"port": 4620, "resources": str(binary.parent), "supervisorEnabled": True,
+                       "backend": "rust", "runtimeServer": str(binary)}
+        self.identity = {"pid": self.backend.pid, "backendKind": "rust",
+                         "backendBuild": installer.recovery.file_sha256(binary)}
         environment = patch.dict(os.environ, {"CODEX_LINUX_VM_STATE_DIR": str(self.state / "linux-vm")})
         environment.start()
         self.addCleanup(environment.stop)
@@ -373,13 +340,11 @@ class BackendRestartAfterSwap(unittest.TestCase):
             return f"{self.backend.pid}\n"
         return CHECK_OUTPUT(argv, **options)
 
-    def test_backend_restarts_after_a_swap_that_changes_shared_modules(self):
-        # Start like the installer process: no packaged module is imported yet.
-        with patch.dict(sys.modules), patch.object(sys, "path", list(sys.path)), \
+    def test_native_backend_stops_after_a_swap_that_changes_its_executable(self):
+        # HTTP identity and platform-specific lsof are boundary fixtures; native argv,
+        # executable hash, PID start-time verification and termination run for real.
+        with patch.object(installer.recovery, 'identity', return_value=self.identity), \
                 patch.object(installer.recovery.subprocess, "check_output", self.listeners):
-            for name, module in list(sys.modules.items()):
-                if Path(getattr(module, "__file__", None) or "/").parent == SERVER_SOURCE:
-                    del sys.modules[name]
             code, _ = installer.install(self.state, self.config, applications=self.applications,
                                         run=FakeMac().run, sleep=lambda seconds: None)
         self.assertEqual(code, installer.INSTALLED)

@@ -532,7 +532,6 @@ mod tests {
     use tempfile::TempDir;
 
     use super::PtyTerminalSession;
-    use crate::agents_create;
     use crate::terminal_driver::{TerminalEvent, TerminalNotification, TerminalSession};
 
     fn terminal_cwd() -> TempDir {
@@ -889,11 +888,17 @@ mod tests {
     #[test]
     fn terminal_child_environment_key_set_matches_python_launch_path() {
         let cwd = terminal_cwd();
-        let source =
-            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src");
-        let python = agents_create::prepared_python(&source);
-        let oracle = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/terminal_environment_oracle.py");
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct EnvironmentCase {
+            supervisor: bool,
+            backend_overrides: bool,
+            locale: String,
+            keys: BTreeSet<String>,
+        }
+        let cases: Vec<EnvironmentCase> =
+            serde_json::from_str(include_str!("../tests/terminal_environment_corpus.json"))
+                .expect("frozen terminal launch environments");
         let raw_key = OsString::from_vec(b"STUDIO_RAW_\xff".to_vec());
         for supervisor in [false, true] {
             for backend_overrides in [false, true] {
@@ -982,29 +987,14 @@ mod tests {
                     base.insert("__CF_USER_TEXT_ENCODING".into(), "0x0:0:0".into());
                     let rust_env =
                         studio_runtime_process::terminal_environment_from(&base, supervisor);
-                    let mut python_command = Command::new(python.as_os_str());
-                    python_command
-                        .env_clear()
-                        .envs(&base)
-                        .arg(&oracle)
-                        .arg(source.as_os_str())
-                        .arg(cwd.path())
-                        .arg(cwd.path().join("private-codex-home"));
-                    let python_output = python_command
-                        .output()
-                        .expect("run Python environment oracle");
-                    assert!(
-                        python_output.status.success(),
-                        "Python launch oracle failed: {}",
-                        String::from_utf8_lossy(&python_output.stderr)
-                    );
-                    let python_keys = python_output
-                        .stdout
-                        .split(|byte| *byte == b'\n')
-                        .filter(|key| !key.is_empty())
-                        .map(Vec::from)
-                        .collect::<BTreeSet<_>>();
-
+                    let expected = cases
+                        .iter()
+                        .find(|case| {
+                            case.supervisor == supervisor
+                                && case.backend_overrides == backend_overrides
+                                && case.locale == locale_case
+                        })
+                        .expect("recorded environment matrix case");
                     // This matrix checks child environment semantics, not PTY
                     // hangup timing. Capture the short-lived probe through pipes,
                     // as the Python oracle does. The live terminal tests above
@@ -1038,14 +1028,14 @@ mod tests {
                         .iter()
                         .map(|key| encode(key))
                         .collect::<BTreeSet<_>>();
-                    let python_keys = python_keys
-                        .iter()
-                        .map(|key| {
-                            String::from_utf8(key.clone()).expect("base64 key output is ASCII")
-                        })
+                    let expected_keys = expected.keys.clone();
+                    #[cfg(target_os = "macos")]
+                    let expected_keys = expected_keys
+                        .into_iter()
+                        .chain(std::iter::once(encode(b"__CF_USER_TEXT_ENCODING")))
                         .collect::<BTreeSet<_>>();
                     assert_eq!(
-                        rust_keys, python_keys,
+                        rust_keys, expected_keys,
                         "environment keys differ (supervisor={supervisor}, backend-overrides={backend_overrides}, locale={locale_case})"
                     );
                     assert!(
@@ -1437,7 +1427,7 @@ mod tests {
                 json!({
                     "processHandle":"surviving-job-session",
                     "cwd":cwd.path(),
-                    "command":["/bin/bash","-c",r#"set -m; /usr/bin/python3 -c 'import signal; signal.signal(signal.SIGTERM, signal.SIG_IGN); print("JOB_READY", flush=True); signal.pause()' & job=$!; echo CHILD_PID:$job; wait"#],
+                    "command":["/bin/bash","-c",r#"set -m; /bin/sh -c 'trap "" TERM; echo JOB_READY; exec /bin/sleep infinity' & job=$!; echo CHILD_PID:$job; wait"#],
                     "env":{"TERM":"xterm-256color","COLORTERM":"truecolor"},
                     "size":{"cols":100,"rows":28}
                 }),
