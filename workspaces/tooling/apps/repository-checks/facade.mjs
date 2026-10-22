@@ -156,6 +156,13 @@ const BOUNDARY_ALLOWLIST = [
       "The fast tier checks the release-binaries commit and SHA-256 manifest contract of the desktop packagers and the native package flow, which have no fast-tier test runner of their own.",
   },
   {
+    importer: "codex-studio-tooling",
+    file: "workspaces/tooling/apps/repository-checks/tests/signing-check.test.mjs",
+    specifier: "../../../../client/apps/desktop/**",
+    reason:
+      "The fast tier checks the signing check and the unlock error contract of the desktop packager with a fake security tool, because the desktop package has no fast-tier test runner of its own.",
+  },
+  {
     importer: "codex-agents-web",
     file: "tests/**",
     specifier: "../../../../../runtime/apps/server/tests/**",
@@ -1026,40 +1033,46 @@ function fastTierCommands(root) {
           "Check that a provider request is durably accepted with its journal batch, that its record owns the answer through every crash point without a repeated answer, and that an unanswered request never stops provider events or new work, and that a stamp left by an undelivered steer batch is replaced instead of holding the agent. Monitor output must publish exactly one monitor projection while preserving window membership and rollback. Task submissions keep limits, workspace ownership and replay at the shared manifest bound. Native-history recovery continues authorized workers once, preserves explicit Stop, and never replays uncertain input.",
       },
     },
-    {
-      item: { name: "provider process exit", ecosystem: "cargo" },
-      label: "independent provider reaping witnesses",
-      commands: [
-        [
-          "cargo",
-          [
-            "nextest",
-            "run",
-            "--locked",
-            "--no-tests",
-            "fail",
-            "--message-format",
-            "libtest-json-plus",
-            "-p",
-            "studio-runtime-process",
-            "-p",
-            "studio-runtime-server",
-            "--test",
-            "integration",
-            "-E",
-            nextestAnyOf([
-              "test(/^provider_stdio::killed_provider_is_reaped_with_full_journal_and_unobserved_write$/)",
-              "test(/^wave7_p01_registry::direct_child_sigkill_settles_unknown_without_resend$/)",
-            ]),
-          ],
-        ],
-      ],
-      options: {
-        selector: "full stdio lanes and direct provider SIGKILL recovery",
-        reason:
-          "Check that child reaping and account session loss do not wait for blocked I/O, and that the registry starts a new generation without resending an uncertain turn.",
-      },
-    },
+    // These witnesses are Linux only (#[cfg(target_os = "linux")]); on another
+    // host nextest selects zero tests, so the step runs only on Linux.
+    ...(process.platform === "linux"
+      ? [
+          {
+            item: { name: "provider process exit", ecosystem: "cargo" },
+            label: "independent provider reaping witnesses",
+            commands: [
+              [
+                "cargo",
+                [
+                  "nextest",
+                  "run",
+                  "--locked",
+                  "--no-tests",
+                  "fail",
+                  "--message-format",
+                  "libtest-json-plus",
+                  "-p",
+                  "studio-runtime-process",
+                  "-p",
+                  "studio-runtime-server",
+                  "--test",
+                  "integration",
+                  "-E",
+                  nextestAnyOf([
+                    "test(/^provider_stdio::killed_provider_is_reaped_with_full_journal_and_unobserved_write$/)",
+                    "test(/^wave7_p01_registry::direct_child_sigkill_settles_unknown_without_resend$/)",
+                  ]),
+                ],
+              ],
+            ],
+            options: {
+              selector: "full stdio lanes and direct provider SIGKILL recovery",
+              reason:
+                "Check that child reaping and account session loss do not wait for blocked I/O, and that the registry starts a new generation without resending an uncertain turn.",
+            },
+          },
+        ]
+      : []),
     {
       item: { name: "project preparation", ecosystem: "cargo" },
       label: "project preparation conflict witnesses",

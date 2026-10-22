@@ -30,6 +30,7 @@ function privateUnlockContract() {
   const password = `synthetic "value"\\with ' space;$()`;
   let secret = password;
   let status = 0;
+  let stderr = "";
   let calls = 0;
   const keychain = `/fixture/Studio "safe"\\name.keychain-db`;
   fs.readFileSync = (filename, options) =>
@@ -54,7 +55,7 @@ function privateUnlockContract() {
         "\n",
     );
     assert.equal(JSON.stringify(args).includes(secret), false);
-    return { status, stdout: secret, stderr: secret };
+    return { status, stdout: secret, stderr };
   };
   childProcess.execFileSync = (command, args) => {
     assert.equal(command, "security");
@@ -64,13 +65,28 @@ function privateUnlockContract() {
   syncBuiltinESMExports();
   try {
     assert.equal(signingIdentity({}), identity);
-    status = 1;
+    status = 51;
+    stderr = `security: SecKeychainUnlock ${keychain}: The user name or passphrase you entered is not correct.\nunlock-keychain: returned -25293\n`;
     assert.throws(
       () => signingIdentity({}),
       (error) =>
         error.message ===
-          "Could not unlock the dedicated Studio signing keychain." &&
+          `Could not unlock the dedicated Studio signing keychain ${keychain}: The user name or passphrase you entered is not correct.` &&
         !String(error.stack).includes(password),
+    );
+    // A defensive redaction covers a message that echoes the password.
+    stderr = `security: unexpected ${password} and ${password.replace(/[\\"]/g, "\\$&")}\n`;
+    assert.throws(
+      () => signingIdentity({}),
+      (error) =>
+        error.message ===
+          `Could not unlock the dedicated Studio signing keychain ${keychain}: unexpected [redacted] and [redacted].` &&
+        !error.message.includes("synthetic"),
+    );
+    stderr = "";
+    assert.throws(
+      () => signingIdentity({}),
+      /security exited with status 51\.$/,
     );
     const previousCalls = calls;
     secret = "synthetic\nfind-generic-password";

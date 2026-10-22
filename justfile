@@ -19,7 +19,11 @@ build-release-binaries dir="":
 verify-release-binaries dir="":
     @node workspaces/client/apps/desktop/release-binaries.mjs verify {{quote(dir)}}
 
-[doc("Native package cycle (signs with the configured identity): host check, release binaries once per commit, package, package checks. Flag --hosted-ci-passed skips the dev-profile host check.")]
+[doc("Check the package signing setup in seconds: configuration, file modes, keychain unlock, identity. Prints PASS or the exact FAIL reason, never the password. Run it before package-native.")]
+signing-check:
+    @node workspaces/client/apps/desktop/signing-check.mjs
+
+[doc("Native package cycle (checks signing first, then signs with the configured identity): host check, release binaries once per commit, package, package checks. Flag --hosted-ci-passed skips the dev-profile host check.")]
 package-native out *flags:
     @node workspaces/client/apps/native/package-flow.mjs {{quote(out)}} {{flags}}
 

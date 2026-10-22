@@ -48,8 +48,12 @@ ROOT_MARKER = "studio-smoke-owner.json"
 # launch_environment); the smoke backend must not inherit them from this shell.
 ROUTING_ENVIRONMENT = ("CODEX_AGENTS_SUPERVISOR_MODE", "CODEX_AGENTS_STATE_DIR",
                        "CODEX_AGENTS_SUPERVISOR_FALLBACK", "CODEX_WORKSPACE_STORE")
-# Seconds between the two supervisor samples of the acknowledgement check.
-ACK_SAMPLE_SECONDS = 3.0
+# Longest time, in seconds, that the acknowledgement check waits for the acknowledged
+# cursor of a handle with pending events to move. A busy backend acknowledges late, so
+# only a cursor that does not move in this window is a stall.
+ACK_STALL_SECONDS = 20.0
+# Seconds between two supervisor samples of the acknowledgement check.
+ACK_POLL_SECONDS = 1.0
 # Seconds that each flow may take. Flows run one after another.
 STACK_START_SECONDS = 120.0
 MODELS_SECONDS = 90.0
@@ -167,6 +171,41 @@ def process_age(pid: int) -> str:
     return result.stdout.strip() or "?"
 
 
+def supervisor_handles(desktop: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Map handle id to handle from one /api/desktop reading."""
+    return {h["id"]: h for h in (desktop.get("supervisor") or {}).get("handles", [])}
+
+
+def acknowledgement_stalls(first: dict[str, dict[str, Any]],
+                           sample: Callable[[], dict[str, dict[str, Any]]], *,
+                           window: float = ACK_STALL_SECONDS, poll: float = ACK_POLL_SECONDS,
+                           sleep: Callable[[float], None] = time.sleep,
+                           clock: Callable[[], float] = time.monotonic,
+                           ) -> tuple[list[str], dict[str, dict[str, Any]]]:
+    """Return the stalled handles and the last sample.
+
+    Pending output is normal while the backend works. A handle is stalled only when
+    it had pending events in the first sample and its acknowledged cursor did not
+    change in any sample until the window ends. The check samples until each such
+    handle shows progress, has no pending events, or closes. It only reads.
+    """
+    waiting = {name: h["acknowledged"] for name, h in first.items()
+               if h["sequence"] > h["acknowledged"]}
+    latest = first
+    deadline = clock() + window
+    while waiting and clock() < deadline:
+        sleep(poll)
+        latest = sample()
+        for name in list(waiting):
+            handle = latest.get(name)
+            if handle is None or handle["acknowledged"] != waiting[name] \
+                    or handle["sequence"] == handle["acknowledged"]:
+                del waiting[name]
+    return [f"{name}: {latest[name]['sequence'] - latest[name]['acknowledged']} events pending and "
+            f"the acknowledged cursor stayed at {cursor} for {window:.0f} s"
+            for name, cursor in waiting.items()], latest
+
+
 # Part 1: read-only checks of the live server.
 
 class LiveChecks:
@@ -275,22 +314,13 @@ class LiveChecks:
     def acknowledgements(self) -> str:
         if self.config.get("supervisorEnabled") is not True:
             return "supervisor mode is off"
-        first = {h["id"]: h for h in (self.desktop.get("supervisor") or {}).get("handles", [])}
-        time.sleep(ACK_SAMPLE_SECONDS)
-        later = {h["id"]: h for h in (self.get("/api/desktop").get("supervisor") or {}).get("handles", [])}
-        stalled = []
-        for name, handle in later.items():
-            pending = handle["sequence"] - handle["acknowledged"]
-            before = first.get(name)
-            # Pending output is normal while the backend works; it is stalled when the
-            # acknowledged cursor did not reach the earlier sample's sequence.
-            if pending > 0 and before is not None and before["sequence"] > before["acknowledged"] \
-                    and handle["acknowledged"] < before["sequence"]:
-                stalled.append(f"{name}: {pending} events unacknowledged for {ACK_SAMPLE_SECONDS:.0f} s")
+        first = supervisor_handles(self.desktop)
+        stalled, latest = acknowledgement_stalls(
+            first, lambda: supervisor_handles(self.get("/api/desktop")))
         if stalled:
             raise CheckFailed("; ".join(stalled))
-        total = sum(h["sequence"] - h["acknowledged"] for h in later.values())
-        return f"no stalled acknowledgements ({total} pending now, {len(later)} handles)"
+        total = sum(h["sequence"] - h["acknowledged"] for h in latest.values())
+        return f"no stalled acknowledgements ({total} pending now, {len(latest)} handles)"
 
     def renderer(self) -> str:
         opener = self.bundle.client._DIRECT_OPENER

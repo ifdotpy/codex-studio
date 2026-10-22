@@ -1060,3 +1060,87 @@ fn preparation_release_id(s: &Snapshot) -> Option<String> {
         None
     }
 }
+
+#[cfg(test)]
+mod archive_finished_catalog_tests {
+    use super::*;
+
+    fn catalogs() -> [(&'static str, Vec<ToolDefinition>); 2] {
+        #[derive(Deserialize)]
+        struct Bundled {
+            tools: Vec<ToolDefinition>,
+        }
+        let bundled: Bundled =
+            serde_json::from_str(include_str!("account_worker/preparation-resources.json"))
+                .unwrap();
+        let legacy: Vec<ToolDefinition> = serde_json::from_str(include_str!(
+            "../../../../../.agents/skills/codex-workspace/references/native-tools.json"
+        ))
+        .unwrap();
+        [
+            ("preparation-resources.json", bundled.tools),
+            ("native-tools.json", legacy),
+        ]
+    }
+
+    fn manage_tool(
+        tools: &[ToolDefinition],
+        provider: ProviderKind,
+        is_lead: bool,
+    ) -> ToolDefinition {
+        filter_tool_definitions(
+            tools,
+            &CatalogFilter {
+                provider,
+                is_lead,
+                can_delegate: true,
+                federation_enabled: false,
+                cwd: "",
+                session_tool: SessionTool::Move,
+            },
+        )
+        .unwrap()
+        .into_iter()
+        .find(|tool| tool.name == "orchestration_agent_manage")
+        .expect("the manage tool is in every agent catalog")
+    }
+
+    fn actions(tool: &ToolDefinition) -> Vec<String> {
+        tool.input_schema["properties"]["action"]["enum"]
+            .as_array()
+            .expect("an action enum")
+            .iter()
+            .map(|action| action.as_str().unwrap().to_owned())
+            .collect()
+    }
+
+    #[test]
+    fn archive_finished_is_offered_to_codex_and_claude_leads_only() {
+        // The lead turn reminder names this action (turn_prepare.rs), so each
+        // catalog that a lead can receive must list it in schema and description.
+        for (catalog, tools) in catalogs() {
+            for provider in [ProviderKind::Codex, ProviderKind::Claude] {
+                let lead = manage_tool(&tools, provider, true);
+                assert!(
+                    actions(&lead)
+                        .iter()
+                        .any(|action| action == "archive_finished"),
+                    "{catalog} {provider:?} lead schema"
+                );
+                assert!(
+                    lead.description
+                        .contains("archive_finished archives finished descendants"),
+                    "{catalog} {provider:?} lead description"
+                );
+                let worker = manage_tool(&tools, provider, false);
+                assert!(
+                    !actions(&worker)
+                        .iter()
+                        .any(|action| action == "archive_finished"),
+                    "{catalog} {provider:?} worker schema"
+                );
+                assert!(!worker.description.contains("archive_finished"));
+            }
+        }
+    }
+}

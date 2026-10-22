@@ -776,7 +776,7 @@ so it cannot change it:
 | `live backend`   | `verify_backend_process` of the installed `recover_backend.py` proves that the PID runs the bundle's configured backend and owns the listener. |
 | `live accounts`  | Every account of `/api/accounts` has a cached limit reading (`/api/limits?cached=1`), an unavailable reason, or a status other than `ready`.   |
 | `live providers` | Every supervised provider handle has a running PID and output reader, without backpressure or journal errors.                                  |
-| `live acks`      | No handle keeps unacknowledged events for 3 seconds.                                                                                           |
+| `live acks`      | No handle with pending events keeps its acknowledged cursor still for `ACK_STALL_SECONDS`.                                                     |
 | `live renderer`  | The served page has the `studio-build` of the bundle's `web/dist/index.html`, and its module script loads.                                     |
 
 A limit read with a cold cache asks the provider once, as the window does.
