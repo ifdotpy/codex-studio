@@ -1,0 +1,1618 @@
+[
+  {
+    "name": "exact",
+    "agent": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 0,
+      "status": "completed",
+      "provider": "codex",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": null,
+      "inFlight": false
+    },
+    "task": {
+      "id": "agent:item",
+      "agent": "agent",
+      "itemId": "item",
+      "turnId": "turn",
+      "type": "dynamicToolCall",
+      "kind": "tool",
+      "status": "running",
+      "created": 1.0
+    },
+    "receipt": {
+      "id": "receipt",
+      "agent": "agent",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": "turn",
+      "callId": "item",
+      "finished": 2.0,
+      "stage": "completed",
+      "outcome": "applied",
+      "result": {
+        "success": true,
+        "contentItems": [
+          {
+            "type": "inputText",
+            "text": "saved output"
+          }
+        ]
+      }
+    },
+    "aliases": [],
+    "selected": {
+      "id": "receipt",
+      "agent": "agent",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": "turn",
+      "callId": "item",
+      "finished": 2.0,
+      "stage": "completed",
+      "outcome": "applied",
+      "result": {
+        "success": true,
+        "contentItems": [
+          {
+            "type": "inputText",
+            "text": "saved output"
+          }
+        ]
+      }
+    },
+    "proof": {
+      "id": "item",
+      "type": "dynamicToolCall",
+      "status": "completed",
+      "success": true,
+      "contentItems": [
+        {
+          "type": "inputText",
+          "text": "saved output"
+        }
+      ]
+    }
+  },
+  {
+    "name": "foreign-id",
+    "agent": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 0,
+      "status": "completed",
+      "provider": "codex",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": null,
+      "inFlight": false
+    },
+    "task": {
+      "id": "agent:item",
+      "agent": "agent",
+      "itemId": "item",
+      "turnId": "turn",
+      "type": "dynamicToolCall",
+      "kind": "tool",
+      "status": "running",
+      "created": 1.0
+    },
+    "receipt": {
+      "id": "foreign",
+      "agent": "agent",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": "turn",
+      "callId": "item",
+      "finished": 2.0,
+      "stage": "completed",
+      "outcome": "applied",
+      "result": {
+        "success": true,
+        "contentItems": [
+          {
+            "type": "inputText",
+            "text": "saved output"
+          }
+        ]
+      }
+    },
+    "aliases": [],
+    "selected": null,
+    "proof": null
+  },
+  {
+    "name": "foreign-agent",
+    "agent": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 0,
+      "status": "completed",
+      "provider": "codex",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": null,
+      "inFlight": false
+    },
+    "task": {
+      "id": "agent:item",
+      "agent": "agent",
+      "itemId": "item",
+      "turnId": "turn",
+      "type": "dynamicToolCall",
+      "kind": "tool",
+      "status": "running",
+      "created": 1.0
+    },
+    "receipt": {
+      "id": "receipt",
+      "agent": "foreign",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": "turn",
+      "callId": "item",
+      "finished": 2.0,
+      "stage": "completed",
+      "outcome": "applied",
+      "result": {
+        "success": true,
+        "contentItems": [
+          {
+            "type": "inputText",
+            "text": "saved output"
+          }
+        ]
+      }
+    },
+    "aliases": [],
+    "selected": null,
+    "proof": null
+  },
+  {
+    "name": "foreign-accountKey",
+    "agent": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 0,
+      "status": "completed",
+      "provider": "codex",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": null,
+      "inFlight": false
+    },
+    "task": {
+      "id": "agent:item",
+      "agent": "agent",
+      "itemId": "item",
+      "turnId": "turn",
+      "type": "dynamicToolCall",
+      "kind": "tool",
+      "status": "running",
+      "created": 1.0
+    },
+    "receipt": {
+      "id": "receipt",
+      "agent": "agent",
+      "accountKey": "foreign",
+      "threadId": "thread",
+      "turnId": "turn",
+      "callId": "item",
+      "finished": 2.0,
+      "stage": "completed",
+      "outcome": "applied",
+      "result": {
+        "success": true,
+        "contentItems": [
+          {
+            "type": "inputText",
+            "text": "saved output"
+          }
+        ]
+      }
+    },
+    "aliases": [],
+    "selected": null,
+    "proof": null
+  },
+  {
+    "name": "foreign-threadId",
+    "agent": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 0,
+      "status": "completed",
+      "provider": "codex",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": null,
+      "inFlight": false
+    },
+    "task": {
+      "id": "agent:item",
+      "agent": "agent",
+      "itemId": "item",
+      "turnId": "turn",
+      "type": "dynamicToolCall",
+      "kind": "tool",
+      "status": "running",
+      "created": 1.0
+    },
+    "receipt": {
+      "id": "receipt",
+      "agent": "agent",
+      "accountKey": "default",
+      "threadId": "foreign",
+      "turnId": "turn",
+      "callId": "item",
+      "finished": 2.0,
+      "stage": "completed",
+      "outcome": "applied",
+      "result": {
+        "success": true,
+        "contentItems": [
+          {
+            "type": "inputText",
+            "text": "saved output"
+          }
+        ]
+      }
+    },
+    "aliases": [],
+    "selected": null,
+    "proof": null
+  },
+  {
+    "name": "foreign-turnId",
+    "agent": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 0,
+      "status": "completed",
+      "provider": "codex",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": null,
+      "inFlight": false
+    },
+    "task": {
+      "id": "agent:item",
+      "agent": "agent",
+      "itemId": "item",
+      "turnId": "turn",
+      "type": "dynamicToolCall",
+      "kind": "tool",
+      "status": "running",
+      "created": 1.0
+    },
+    "receipt": {
+      "id": "receipt",
+      "agent": "agent",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": "foreign",
+      "callId": "item",
+      "finished": 2.0,
+      "stage": "completed",
+      "outcome": "applied",
+      "result": {
+        "success": true,
+        "contentItems": [
+          {
+            "type": "inputText",
+            "text": "saved output"
+          }
+        ]
+      }
+    },
+    "aliases": [],
+    "selected": null,
+    "proof": null
+  },
+  {
+    "name": "foreign-callId",
+    "agent": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 0,
+      "status": "completed",
+      "provider": "codex",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": null,
+      "inFlight": false
+    },
+    "task": {
+      "id": "agent:item",
+      "agent": "agent",
+      "itemId": "item",
+      "turnId": "turn",
+      "type": "dynamicToolCall",
+      "kind": "tool",
+      "status": "running",
+      "created": 1.0
+    },
+    "receipt": {
+      "id": "receipt",
+      "agent": "agent",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": "turn",
+      "callId": "foreign",
+      "finished": 2.0,
+      "stage": "completed",
+      "outcome": "applied",
+      "result": {
+        "success": true,
+        "contentItems": [
+          {
+            "type": "inputText",
+            "text": "saved output"
+          }
+        ]
+      }
+    },
+    "aliases": [],
+    "selected": null,
+    "proof": null
+  },
+  {
+    "name": "queued-unknown-True",
+    "agent": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 0,
+      "status": "completed",
+      "provider": "codex",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": null,
+      "inFlight": false
+    },
+    "task": {
+      "id": "agent:item",
+      "agent": "agent",
+      "itemId": "item",
+      "turnId": "turn",
+      "type": "dynamicToolCall",
+      "kind": "tool",
+      "status": "running",
+      "created": 1.0
+    },
+    "receipt": {
+      "id": "receipt",
+      "agent": "agent",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": "turn",
+      "callId": "item",
+      "finished": 2.0,
+      "stage": "queued",
+      "outcome": "unknown",
+      "result": {
+        "success": true
+      }
+    },
+    "aliases": [],
+    "selected": null,
+    "proof": null
+  },
+  {
+    "name": "queued-unknown-False",
+    "agent": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 0,
+      "status": "completed",
+      "provider": "codex",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": null,
+      "inFlight": false
+    },
+    "task": {
+      "id": "agent:item",
+      "agent": "agent",
+      "itemId": "item",
+      "turnId": "turn",
+      "type": "dynamicToolCall",
+      "kind": "tool",
+      "status": "running",
+      "created": 1.0
+    },
+    "receipt": {
+      "id": "receipt",
+      "agent": "agent",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": "turn",
+      "callId": "item",
+      "finished": 2.0,
+      "stage": "queued",
+      "outcome": "unknown",
+      "result": {
+        "success": false
+      }
+    },
+    "aliases": [],
+    "selected": null,
+    "proof": null
+  },
+  {
+    "name": "queued-applied-True",
+    "agent": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 0,
+      "status": "completed",
+      "provider": "codex",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": null,
+      "inFlight": false
+    },
+    "task": {
+      "id": "agent:item",
+      "agent": "agent",
+      "itemId": "item",
+      "turnId": "turn",
+      "type": "dynamicToolCall",
+      "kind": "tool",
+      "status": "running",
+      "created": 1.0
+    },
+    "receipt": {
+      "id": "receipt",
+      "agent": "agent",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": "turn",
+      "callId": "item",
+      "finished": 2.0,
+      "stage": "queued",
+      "outcome": "applied",
+      "result": {
+        "success": true
+      }
+    },
+    "aliases": [],
+    "selected": null,
+    "proof": null
+  },
+  {
+    "name": "queued-applied-False",
+    "agent": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 0,
+      "status": "completed",
+      "provider": "codex",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": null,
+      "inFlight": false
+    },
+    "task": {
+      "id": "agent:item",
+      "agent": "agent",
+      "itemId": "item",
+      "turnId": "turn",
+      "type": "dynamicToolCall",
+      "kind": "tool",
+      "status": "running",
+      "created": 1.0
+    },
+    "receipt": {
+      "id": "receipt",
+      "agent": "agent",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": "turn",
+      "callId": "item",
+      "finished": 2.0,
+      "stage": "queued",
+      "outcome": "applied",
+      "result": {
+        "success": false
+      }
+    },
+    "aliases": [],
+    "selected": null,
+    "proof": null
+  },
+  {
+    "name": "queued-not_applied-True",
+    "agent": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 0,
+      "status": "completed",
+      "provider": "codex",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": null,
+      "inFlight": false
+    },
+    "task": {
+      "id": "agent:item",
+      "agent": "agent",
+      "itemId": "item",
+      "turnId": "turn",
+      "type": "dynamicToolCall",
+      "kind": "tool",
+      "status": "running",
+      "created": 1.0
+    },
+    "receipt": {
+      "id": "receipt",
+      "agent": "agent",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": "turn",
+      "callId": "item",
+      "finished": 2.0,
+      "stage": "queued",
+      "outcome": "not_applied",
+      "result": {
+        "success": true
+      }
+    },
+    "aliases": [],
+    "selected": null,
+    "proof": null
+  },
+  {
+    "name": "queued-not_applied-False",
+    "agent": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 0,
+      "status": "completed",
+      "provider": "codex",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": null,
+      "inFlight": false
+    },
+    "task": {
+      "id": "agent:item",
+      "agent": "agent",
+      "itemId": "item",
+      "turnId": "turn",
+      "type": "dynamicToolCall",
+      "kind": "tool",
+      "status": "running",
+      "created": 1.0
+    },
+    "receipt": {
+      "id": "receipt",
+      "agent": "agent",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": "turn",
+      "callId": "item",
+      "finished": 2.0,
+      "stage": "queued",
+      "outcome": "not_applied",
+      "result": {
+        "success": false
+      }
+    },
+    "aliases": [],
+    "selected": null,
+    "proof": null
+  },
+  {
+    "name": "running-unknown-True",
+    "agent": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 0,
+      "status": "completed",
+      "provider": "codex",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": null,
+      "inFlight": false
+    },
+    "task": {
+      "id": "agent:item",
+      "agent": "agent",
+      "itemId": "item",
+      "turnId": "turn",
+      "type": "dynamicToolCall",
+      "kind": "tool",
+      "status": "running",
+      "created": 1.0
+    },
+    "receipt": {
+      "id": "receipt",
+      "agent": "agent",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": "turn",
+      "callId": "item",
+      "finished": 2.0,
+      "stage": "running",
+      "outcome": "unknown",
+      "result": {
+        "success": true
+      }
+    },
+    "aliases": [],
+    "selected": null,
+    "proof": null
+  },
+  {
+    "name": "running-unknown-False",
+    "agent": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 0,
+      "status": "completed",
+      "provider": "codex",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": null,
+      "inFlight": false
+    },
+    "task": {
+      "id": "agent:item",
+      "agent": "agent",
+      "itemId": "item",
+      "turnId": "turn",
+      "type": "dynamicToolCall",
+      "kind": "tool",
+      "status": "running",
+      "created": 1.0
+    },
+    "receipt": {
+      "id": "receipt",
+      "agent": "agent",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": "turn",
+      "callId": "item",
+      "finished": 2.0,
+      "stage": "running",
+      "outcome": "unknown",
+      "result": {
+        "success": false
+      }
+    },
+    "aliases": [],
+    "selected": null,
+    "proof": null
+  },
+  {
+    "name": "running-applied-True",
+    "agent": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 0,
+      "status": "completed",
+      "provider": "codex",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": null,
+      "inFlight": false
+    },
+    "task": {
+      "id": "agent:item",
+      "agent": "agent",
+      "itemId": "item",
+      "turnId": "turn",
+      "type": "dynamicToolCall",
+      "kind": "tool",
+      "status": "running",
+      "created": 1.0
+    },
+    "receipt": {
+      "id": "receipt",
+      "agent": "agent",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": "turn",
+      "callId": "item",
+      "finished": 2.0,
+      "stage": "running",
+      "outcome": "applied",
+      "result": {
+        "success": true
+      }
+    },
+    "aliases": [],
+    "selected": null,
+    "proof": null
+  },
+  {
+    "name": "running-applied-False",
+    "agent": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 0,
+      "status": "completed",
+      "provider": "codex",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": null,
+      "inFlight": false
+    },
+    "task": {
+      "id": "agent:item",
+      "agent": "agent",
+      "itemId": "item",
+      "turnId": "turn",
+      "type": "dynamicToolCall",
+      "kind": "tool",
+      "status": "running",
+      "created": 1.0
+    },
+    "receipt": {
+      "id": "receipt",
+      "agent": "agent",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": "turn",
+      "callId": "item",
+      "finished": 2.0,
+      "stage": "running",
+      "outcome": "applied",
+      "result": {
+        "success": false
+      }
+    },
+    "aliases": [],
+    "selected": null,
+    "proof": null
+  },
+  {
+    "name": "running-not_applied-True",
+    "agent": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 0,
+      "status": "completed",
+      "provider": "codex",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": null,
+      "inFlight": false
+    },
+    "task": {
+      "id": "agent:item",
+      "agent": "agent",
+      "itemId": "item",
+      "turnId": "turn",
+      "type": "dynamicToolCall",
+      "kind": "tool",
+      "status": "running",
+      "created": 1.0
+    },
+    "receipt": {
+      "id": "receipt",
+      "agent": "agent",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": "turn",
+      "callId": "item",
+      "finished": 2.0,
+      "stage": "running",
+      "outcome": "not_applied",
+      "result": {
+        "success": true
+      }
+    },
+    "aliases": [],
+    "selected": null,
+    "proof": null
+  },
+  {
+    "name": "running-not_applied-False",
+    "agent": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 0,
+      "status": "completed",
+      "provider": "codex",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": null,
+      "inFlight": false
+    },
+    "task": {
+      "id": "agent:item",
+      "agent": "agent",
+      "itemId": "item",
+      "turnId": "turn",
+      "type": "dynamicToolCall",
+      "kind": "tool",
+      "status": "running",
+      "created": 1.0
+    },
+    "receipt": {
+      "id": "receipt",
+      "agent": "agent",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": "turn",
+      "callId": "item",
+      "finished": 2.0,
+      "stage": "running",
+      "outcome": "not_applied",
+      "result": {
+        "success": false
+      }
+    },
+    "aliases": [],
+    "selected": null,
+    "proof": null
+  },
+  {
+    "name": "failed-unknown-True",
+    "agent": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 0,
+      "status": "completed",
+      "provider": "codex",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": null,
+      "inFlight": false
+    },
+    "task": {
+      "id": "agent:item",
+      "agent": "agent",
+      "itemId": "item",
+      "turnId": "turn",
+      "type": "dynamicToolCall",
+      "kind": "tool",
+      "status": "running",
+      "created": 1.0
+    },
+    "receipt": {
+      "id": "receipt",
+      "agent": "agent",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": "turn",
+      "callId": "item",
+      "finished": 2.0,
+      "stage": "failed",
+      "outcome": "unknown",
+      "result": {
+        "success": true
+      }
+    },
+    "aliases": [],
+    "selected": null,
+    "proof": null
+  },
+  {
+    "name": "failed-unknown-False",
+    "agent": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 0,
+      "status": "completed",
+      "provider": "codex",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": null,
+      "inFlight": false
+    },
+    "task": {
+      "id": "agent:item",
+      "agent": "agent",
+      "itemId": "item",
+      "turnId": "turn",
+      "type": "dynamicToolCall",
+      "kind": "tool",
+      "status": "running",
+      "created": 1.0
+    },
+    "receipt": {
+      "id": "receipt",
+      "agent": "agent",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": "turn",
+      "callId": "item",
+      "finished": 2.0,
+      "stage": "failed",
+      "outcome": "unknown",
+      "result": {
+        "success": false
+      }
+    },
+    "aliases": [],
+    "selected": null,
+    "proof": null
+  },
+  {
+    "name": "failed-applied-True",
+    "agent": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 0,
+      "status": "completed",
+      "provider": "codex",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": null,
+      "inFlight": false
+    },
+    "task": {
+      "id": "agent:item",
+      "agent": "agent",
+      "itemId": "item",
+      "turnId": "turn",
+      "type": "dynamicToolCall",
+      "kind": "tool",
+      "status": "running",
+      "created": 1.0
+    },
+    "receipt": {
+      "id": "receipt",
+      "agent": "agent",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": "turn",
+      "callId": "item",
+      "finished": 2.0,
+      "stage": "failed",
+      "outcome": "applied",
+      "result": {
+        "success": true
+      }
+    },
+    "aliases": [],
+    "selected": null,
+    "proof": null
+  },
+  {
+    "name": "failed-applied-False",
+    "agent": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 0,
+      "status": "completed",
+      "provider": "codex",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": null,
+      "inFlight": false
+    },
+    "task": {
+      "id": "agent:item",
+      "agent": "agent",
+      "itemId": "item",
+      "turnId": "turn",
+      "type": "dynamicToolCall",
+      "kind": "tool",
+      "status": "running",
+      "created": 1.0
+    },
+    "receipt": {
+      "id": "receipt",
+      "agent": "agent",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": "turn",
+      "callId": "item",
+      "finished": 2.0,
+      "stage": "failed",
+      "outcome": "applied",
+      "result": {
+        "success": false
+      }
+    },
+    "aliases": [],
+    "selected": null,
+    "proof": null
+  },
+  {
+    "name": "failed-not_applied-True",
+    "agent": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 0,
+      "status": "completed",
+      "provider": "codex",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": null,
+      "inFlight": false
+    },
+    "task": {
+      "id": "agent:item",
+      "agent": "agent",
+      "itemId": "item",
+      "turnId": "turn",
+      "type": "dynamicToolCall",
+      "kind": "tool",
+      "status": "running",
+      "created": 1.0
+    },
+    "receipt": {
+      "id": "receipt",
+      "agent": "agent",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": "turn",
+      "callId": "item",
+      "finished": 2.0,
+      "stage": "failed",
+      "outcome": "not_applied",
+      "result": {
+        "success": true
+      }
+    },
+    "aliases": [],
+    "selected": {
+      "id": "receipt",
+      "agent": "agent",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": "turn",
+      "callId": "item",
+      "finished": 2.0,
+      "stage": "failed",
+      "outcome": "not_applied",
+      "result": {
+        "success": true
+      }
+    },
+    "proof": null
+  },
+  {
+    "name": "failed-not_applied-False",
+    "agent": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 0,
+      "status": "completed",
+      "provider": "codex",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": null,
+      "inFlight": false
+    },
+    "task": {
+      "id": "agent:item",
+      "agent": "agent",
+      "itemId": "item",
+      "turnId": "turn",
+      "type": "dynamicToolCall",
+      "kind": "tool",
+      "status": "running",
+      "created": 1.0
+    },
+    "receipt": {
+      "id": "receipt",
+      "agent": "agent",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": "turn",
+      "callId": "item",
+      "finished": 2.0,
+      "stage": "failed",
+      "outcome": "not_applied",
+      "result": {
+        "success": false
+      }
+    },
+    "aliases": [],
+    "selected": {
+      "id": "receipt",
+      "agent": "agent",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": "turn",
+      "callId": "item",
+      "finished": 2.0,
+      "stage": "failed",
+      "outcome": "not_applied",
+      "result": {
+        "success": false
+      }
+    },
+    "proof": {
+      "id": "item",
+      "type": "dynamicToolCall",
+      "status": "completed",
+      "success": false,
+      "contentItems": []
+    }
+  },
+  {
+    "name": "completed-unknown-True",
+    "agent": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 0,
+      "status": "completed",
+      "provider": "codex",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": null,
+      "inFlight": false
+    },
+    "task": {
+      "id": "agent:item",
+      "agent": "agent",
+      "itemId": "item",
+      "turnId": "turn",
+      "type": "dynamicToolCall",
+      "kind": "tool",
+      "status": "running",
+      "created": 1.0
+    },
+    "receipt": {
+      "id": "receipt",
+      "agent": "agent",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": "turn",
+      "callId": "item",
+      "finished": 2.0,
+      "stage": "completed",
+      "outcome": "unknown",
+      "result": {
+        "success": true
+      }
+    },
+    "aliases": [],
+    "selected": null,
+    "proof": null
+  },
+  {
+    "name": "completed-unknown-False",
+    "agent": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 0,
+      "status": "completed",
+      "provider": "codex",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": null,
+      "inFlight": false
+    },
+    "task": {
+      "id": "agent:item",
+      "agent": "agent",
+      "itemId": "item",
+      "turnId": "turn",
+      "type": "dynamicToolCall",
+      "kind": "tool",
+      "status": "running",
+      "created": 1.0
+    },
+    "receipt": {
+      "id": "receipt",
+      "agent": "agent",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": "turn",
+      "callId": "item",
+      "finished": 2.0,
+      "stage": "completed",
+      "outcome": "unknown",
+      "result": {
+        "success": false
+      }
+    },
+    "aliases": [],
+    "selected": null,
+    "proof": null
+  },
+  {
+    "name": "completed-applied-True",
+    "agent": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 0,
+      "status": "completed",
+      "provider": "codex",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": null,
+      "inFlight": false
+    },
+    "task": {
+      "id": "agent:item",
+      "agent": "agent",
+      "itemId": "item",
+      "turnId": "turn",
+      "type": "dynamicToolCall",
+      "kind": "tool",
+      "status": "running",
+      "created": 1.0
+    },
+    "receipt": {
+      "id": "receipt",
+      "agent": "agent",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": "turn",
+      "callId": "item",
+      "finished": 2.0,
+      "stage": "completed",
+      "outcome": "applied",
+      "result": {
+        "success": true
+      }
+    },
+    "aliases": [],
+    "selected": {
+      "id": "receipt",
+      "agent": "agent",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": "turn",
+      "callId": "item",
+      "finished": 2.0,
+      "stage": "completed",
+      "outcome": "applied",
+      "result": {
+        "success": true
+      }
+    },
+    "proof": {
+      "id": "item",
+      "type": "dynamicToolCall",
+      "status": "completed",
+      "success": true,
+      "contentItems": []
+    }
+  },
+  {
+    "name": "completed-applied-False",
+    "agent": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 0,
+      "status": "completed",
+      "provider": "codex",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": null,
+      "inFlight": false
+    },
+    "task": {
+      "id": "agent:item",
+      "agent": "agent",
+      "itemId": "item",
+      "turnId": "turn",
+      "type": "dynamicToolCall",
+      "kind": "tool",
+      "status": "running",
+      "created": 1.0
+    },
+    "receipt": {
+      "id": "receipt",
+      "agent": "agent",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": "turn",
+      "callId": "item",
+      "finished": 2.0,
+      "stage": "completed",
+      "outcome": "applied",
+      "result": {
+        "success": false
+      }
+    },
+    "aliases": [],
+    "selected": {
+      "id": "receipt",
+      "agent": "agent",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": "turn",
+      "callId": "item",
+      "finished": 2.0,
+      "stage": "completed",
+      "outcome": "applied",
+      "result": {
+        "success": false
+      }
+    },
+    "proof": {
+      "id": "item",
+      "type": "dynamicToolCall",
+      "status": "completed",
+      "success": false,
+      "contentItems": []
+    }
+  },
+  {
+    "name": "completed-not_applied-True",
+    "agent": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 0,
+      "status": "completed",
+      "provider": "codex",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": null,
+      "inFlight": false
+    },
+    "task": {
+      "id": "agent:item",
+      "agent": "agent",
+      "itemId": "item",
+      "turnId": "turn",
+      "type": "dynamicToolCall",
+      "kind": "tool",
+      "status": "running",
+      "created": 1.0
+    },
+    "receipt": {
+      "id": "receipt",
+      "agent": "agent",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": "turn",
+      "callId": "item",
+      "finished": 2.0,
+      "stage": "completed",
+      "outcome": "not_applied",
+      "result": {
+        "success": true
+      }
+    },
+    "aliases": [],
+    "selected": {
+      "id": "receipt",
+      "agent": "agent",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": "turn",
+      "callId": "item",
+      "finished": 2.0,
+      "stage": "completed",
+      "outcome": "not_applied",
+      "result": {
+        "success": true
+      }
+    },
+    "proof": null
+  },
+  {
+    "name": "completed-not_applied-False",
+    "agent": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 0,
+      "status": "completed",
+      "provider": "codex",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": null,
+      "inFlight": false
+    },
+    "task": {
+      "id": "agent:item",
+      "agent": "agent",
+      "itemId": "item",
+      "turnId": "turn",
+      "type": "dynamicToolCall",
+      "kind": "tool",
+      "status": "running",
+      "created": 1.0
+    },
+    "receipt": {
+      "id": "receipt",
+      "agent": "agent",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": "turn",
+      "callId": "item",
+      "finished": 2.0,
+      "stage": "completed",
+      "outcome": "not_applied",
+      "result": {
+        "success": false
+      }
+    },
+    "aliases": [],
+    "selected": {
+      "id": "receipt",
+      "agent": "agent",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": "turn",
+      "callId": "item",
+      "finished": 2.0,
+      "stage": "completed",
+      "outcome": "not_applied",
+      "result": {
+        "success": false
+      }
+    },
+    "proof": {
+      "id": "item",
+      "type": "dynamicToolCall",
+      "status": "completed",
+      "success": false,
+      "contentItems": []
+    }
+  },
+  {
+    "name": "unfinished",
+    "agent": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 0,
+      "status": "completed",
+      "provider": "codex",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": null,
+      "inFlight": false
+    },
+    "task": {
+      "id": "agent:item",
+      "agent": "agent",
+      "itemId": "item",
+      "turnId": "turn",
+      "type": "dynamicToolCall",
+      "kind": "tool",
+      "status": "running",
+      "created": 1.0
+    },
+    "receipt": {
+      "id": "receipt",
+      "agent": "agent",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": "turn",
+      "callId": "item",
+      "finished": null,
+      "stage": "completed",
+      "outcome": "applied",
+      "result": {
+        "success": true,
+        "contentItems": [
+          {
+            "type": "inputText",
+            "text": "saved output"
+          }
+        ]
+      }
+    },
+    "aliases": [],
+    "selected": null,
+    "proof": null
+  },
+  {
+    "name": "ambiguous",
+    "agent": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 0,
+      "status": "completed",
+      "provider": "codex",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": null,
+      "inFlight": false
+    },
+    "task": {
+      "id": "agent:item",
+      "agent": "agent",
+      "itemId": "item",
+      "turnId": "turn",
+      "type": "dynamicToolCall",
+      "kind": "tool",
+      "status": "running",
+      "created": 1.0
+    },
+    "receipt": {
+      "id": "receipt",
+      "agent": "agent",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": "turn",
+      "callId": "item",
+      "finished": 2.0,
+      "stage": "completed",
+      "outcome": "applied",
+      "result": {
+        "success": true,
+        "contentItems": [
+          {
+            "type": "inputText",
+            "text": "saved output"
+          }
+        ]
+      }
+    },
+    "aliases": ["receipt", "foreign"],
+    "selected": null,
+    "proof": null
+  },
+  {
+    "name": "alias",
+    "agent": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 0,
+      "status": "completed",
+      "provider": "codex",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": null,
+      "inFlight": false
+    },
+    "task": {
+      "id": "agent:item",
+      "agent": "agent",
+      "itemId": "item",
+      "turnId": "turn",
+      "type": "dynamicToolCall",
+      "kind": "tool",
+      "status": "running",
+      "created": 1.0
+    },
+    "receipt": {
+      "id": "receipt",
+      "agent": "agent",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": "turn",
+      "callId": "item",
+      "finished": 2.0,
+      "stage": "completed",
+      "outcome": "applied",
+      "result": {
+        "success": true,
+        "contentItems": [
+          {
+            "type": "inputText",
+            "text": "saved output"
+          }
+        ]
+      }
+    },
+    "aliases": ["receipt"],
+    "selected": {
+      "id": "receipt",
+      "agent": "agent",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": "turn",
+      "callId": "item",
+      "finished": 2.0,
+      "stage": "completed",
+      "outcome": "applied",
+      "result": {
+        "success": true,
+        "contentItems": [
+          {
+            "type": "inputText",
+            "text": "saved output"
+          }
+        ]
+      }
+    },
+    "proof": {
+      "id": "item",
+      "type": "dynamicToolCall",
+      "status": "completed",
+      "success": true,
+      "contentItems": [
+        {
+          "type": "inputText",
+          "text": "saved output"
+        }
+      ]
+    }
+  }
+]

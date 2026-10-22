@@ -112,7 +112,7 @@ pending cards and holds uncertain answers. Resolution uses
 
 ## Evidence
 
-`wave7_p04_callback_runtime` compares complete Python answer, deletion and
+`wave7_p04_callback_runtime` compares frozen historical answer, deletion and
 resolution records (30 + 21 + 12 cases). `wave7_p04_review` adds four rejected or
 unknown deliveries, twelve absent/null/invalid choices and three Python race cases.
 Answer/delete comparisons include actors and the complete logical application
@@ -122,7 +122,10 @@ replay invariants are asserted separately. Sync sequence/hash bookkeeping is
 normalized to published entity values; the actor invalidation counter compares
 increments. No shared no-write exclusion was changed.
 The reviewed contract deliberately preserves the winner of completion/resolution
-races where the Python oracle demonstrates a subsequent overwrite.
+races where the historical oracle demonstrates a subsequent overwrite.
+`expected.json` and the text SQL seeds were captured from revision `96c6b55c`.
+The shared fixture restores them with Rust and SQLite; its service and HTTP
+consumers run with `CODEX_AGENTS_PYTHON=/nonexistent`.
 
 Both answer and cancellation restart at eleven distinct boundaries: before
 admission, admission, journal binding, answer intent, Submitted persistence,
@@ -135,9 +138,5 @@ agent, epoch, account, connection, generation, attempt, RPC, thread and turn.
 `wave7_p04_callback_http` crosses actual middleware/generated DTOs and includes
 an enabled Rust backend listening on an ephemeral loopback TCP port: native
 answers succeed and explicit-null decisions refuse without writes.
-`wave7-p04-native-http-contract.py` proves the corresponding null refusal through
-the real Python HTTP backend with exact no-write snapshots. Standalone contracts
-remain in `rust-questions-write-http-contract.py` and
-`rust-tool-requests-http-contract.py`. The oracle imports the shared guard and
-never starts a provider. `account_worker::tests::native_requests` drives the worker wiring with a
+`account_worker::tests::native_requests` drives the worker wiring with a
 fake provider; no fixture proves a live model request.

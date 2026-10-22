@@ -1175,6 +1175,7 @@ function fastTierCommands(root) {
             nextestAnyOf([
               "test(/^provider_session_task::active_barrier_holds_new_requests_but_not_callback_answers_or_interrupts$/)",
               "test(/^provider_session_task::expiry_batch_preserves_all_queued_request_outcomes_in_order$/)",
+              "test(/^turn_lifecycle_corpus::fast_witnesses_cover_transitions_states_and_review_findings$/)",
             ]),
           ],
         ],

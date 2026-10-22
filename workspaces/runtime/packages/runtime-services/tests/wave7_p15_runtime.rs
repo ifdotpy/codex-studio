@@ -1,11 +1,8 @@
-//! P15 uses Python-written records and the real Python oracle via the canonical fixture.
+//! P15 verifies monitor effects against frozen reference records.
 use crate::monitor_runtime_fixtures as fixtures;
-use crate::prepared_python_support;
 
 use base64::Engine;
 use serde_json::{Value, json};
-use std::path::Path;
-use std::process::Command;
 use std::sync::Arc;
 use std::time::Duration;
 use studio_runtime_services::{
@@ -59,25 +56,12 @@ fn delivery(case: &Value, cursor: &str, event: MonitorEvent) -> Delivery {
     }
 }
 
-#[allow(clippy::disallowed_methods)]
 fn rule_case(name: &str) -> Value {
-    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let python = prepared_python_support::prepared_python(&manifest.join("../../apps/server/src"));
-    let output = Command::new(python)
-        .arg("-B")
-        .arg(manifest.join("tests/rules_engine/oracle.py"))
-        .output()
-        .expect("rules oracle starts");
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    serde_json::from_slice::<Vec<Value>>(&output.stdout)
-        .expect("rules oracle JSON")
+    serde_json::from_str::<Vec<Value>>(include_str!("rules_engine/expected.json"))
+        .expect("frozen rule cases")
         .into_iter()
         .find(|case| case["name"] == name)
-        .unwrap_or_else(|| panic!("rules oracle case {name}"))
+        .unwrap_or_else(|| panic!("rule case {name}"))
 }
 
 fn due_rule_case() -> Value {
@@ -593,20 +577,11 @@ async fn monitor_completion_commits_the_python_rule_result_and_wake_atomically()
     use studio_runtime_store::{RuleRecord, RulesRepository};
     let root = fixtures::tempdir();
     fixtures::corpus(root.path());
-    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let output = std::process::Command::new(prepared_python_support::prepared_python(
-        &manifest.join("../../apps/server/src"),
-    ))
-    .arg(manifest.join("tests/wave7_p15_oracle.py"))
-    .arg(root.path())
-    .output()
-    .expect("rule oracle");
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let cases: Vec<Value> = serde_json::from_slice(&output.stdout).expect("rule corpus");
+    let cases: Vec<Value> = serde_json::from_str(
+        &include_str!("wave7_p15_support/completions.json")
+            .replace("@FIXTURE_ROOT@", &root.path().to_string_lossy()),
+    )
+    .expect("frozen rule completions");
     assert_eq!(cases.len(), 9);
     for (number, case) in cases.iter().enumerate() {
         let store = Arc::new(fixtures::store(root.path(), &format!("rule-{number}")).await);

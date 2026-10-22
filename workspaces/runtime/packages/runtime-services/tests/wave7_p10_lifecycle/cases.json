@@ -1,0 +1,5535 @@
+[
+  {
+    "name": "idle-False",
+    "records": {
+      "tables": {
+        "runtime_agents": [
+          {
+            "id": "lead",
+            "rootId": "lead",
+            "parentId": null,
+            "epoch": 3,
+            "status": "idle",
+            "name": "Lead",
+            "cwd": "/fixture",
+            "isLead": true,
+            "autoWake": true,
+            "inFlight": false,
+            "created": 1.0,
+            "concurrency": 32,
+            "subagentConcurrencyVersion": 2,
+            "agentMode": "multi",
+            "agentModeRevision": 0,
+            "agentModeSupported": true,
+            "maxAgentsExplicit": false,
+            "parkedEvent": "ready",
+            "parkAfterTurn": true,
+            "parkReceipt": {
+              "event": "ready",
+              "epoch": 3,
+              "sequence": 1
+            },
+            "capacityRetryCount": 2
+          },
+          {
+            "id": "worker",
+            "rootId": "lead",
+            "parentId": "lead",
+            "epoch": 8,
+            "status": "completed",
+            "name": "Worker",
+            "cwd": "/fixture",
+            "isLead": false,
+            "autoWake": true,
+            "inFlight": false,
+            "created": 1.0
+          },
+          {
+            "id": "unrelated",
+            "rootId": "lead",
+            "parentId": "missing",
+            "epoch": 8,
+            "status": "completed",
+            "name": "Worker",
+            "cwd": "/fixture",
+            "isLead": false,
+            "autoWake": true,
+            "inFlight": false,
+            "created": 1.0
+          },
+          {
+            "id": "grandchild",
+            "rootId": "legacy-other-root",
+            "parentId": "worker",
+            "epoch": 8,
+            "status": "completed",
+            "name": "Worker",
+            "cwd": "/fixture",
+            "isLead": false,
+            "autoWake": true,
+            "inFlight": false,
+            "created": 1.0
+          }
+        ],
+        "runtime_work": [],
+        "runtime_requests": [
+          {
+            "id": "question",
+            "agent": "lead",
+            "status": "pending",
+            "method": "agent/asyncQuestion"
+          }
+        ],
+        "runtime_monitors": [],
+        "runtime_tasks": [],
+        "runtime_tool_requests": [],
+        "runtime_events": [
+          {
+            "id": "pending",
+            "agent": "lead",
+            "status": "pending",
+            "epoch": 3
+          },
+          {
+            "id": "reserved",
+            "agent": "lead",
+            "status": "reserved",
+            "epoch": 3
+          },
+          {
+            "id": "dispatching",
+            "agent": "lead",
+            "status": "dispatching",
+            "epoch": 3
+          },
+          {
+            "id": "uncertain",
+            "agent": "lead",
+            "status": "uncertain",
+            "epoch": 3
+          }
+        ]
+      }
+    },
+    "action": {
+      "action": "stop",
+      "target": "lead",
+      "descendants": false
+    },
+    "now": 1234567.5,
+    "expected": {
+      "result": {
+        "stopped": ["lead"]
+      },
+      "records": {
+        "tables": {
+          "runtime_agents": [
+            {
+              "id": "lead",
+              "rootId": "lead",
+              "parentId": null,
+              "epoch": 4,
+              "status": "paused",
+              "name": "Lead",
+              "cwd": "/fixture",
+              "isLead": true,
+              "autoWake": false,
+              "inFlight": false,
+              "created": 1.0,
+              "concurrency": 32,
+              "subagentConcurrencyVersion": 2,
+              "agentMode": "multi",
+              "agentModeRevision": 0,
+              "agentModeSupported": true,
+              "maxAgentsExplicit": false,
+              "error": "Stopped by user",
+              "cancelledPark": {
+                "event": "ready",
+                "epoch": 3,
+                "sequence": 1,
+                "cancelledAtEpoch": 4
+              }
+            },
+            {
+              "id": "worker",
+              "rootId": "lead",
+              "parentId": "lead",
+              "epoch": 8,
+              "status": "completed",
+              "name": "Worker",
+              "cwd": "/fixture",
+              "isLead": false,
+              "autoWake": true,
+              "inFlight": false,
+              "created": 1.0
+            },
+            {
+              "id": "unrelated",
+              "rootId": "lead",
+              "parentId": "missing",
+              "epoch": 8,
+              "status": "completed",
+              "name": "Worker",
+              "cwd": "/fixture",
+              "isLead": false,
+              "autoWake": true,
+              "inFlight": false,
+              "created": 1.0
+            },
+            {
+              "id": "grandchild",
+              "rootId": "legacy-other-root",
+              "parentId": "worker",
+              "epoch": 8,
+              "status": "completed",
+              "name": "Worker",
+              "cwd": "/fixture",
+              "isLead": false,
+              "autoWake": true,
+              "inFlight": false,
+              "created": 1.0
+            }
+          ],
+          "runtime_work": [],
+          "runtime_requests": [
+            {
+              "id": "question",
+              "agent": "lead",
+              "status": "expired",
+              "method": "agent/asyncQuestion"
+            }
+          ],
+          "runtime_monitors": [],
+          "runtime_tasks": [],
+          "runtime_tool_requests": [],
+          "runtime_events": [
+            {
+              "id": "pending",
+              "agent": "lead",
+              "status": "cancelled",
+              "epoch": 3
+            },
+            {
+              "id": "reserved",
+              "agent": "lead",
+              "status": "reserved",
+              "epoch": 3
+            },
+            {
+              "id": "dispatching",
+              "agent": "lead",
+              "status": "dispatching",
+              "epoch": 3
+            },
+            {
+              "id": "uncertain",
+              "agent": "lead",
+              "status": "uncertain",
+              "epoch": 3
+            }
+          ]
+        }
+      },
+      "notifications": [],
+      "notificationPayloads": [],
+      "syncEntities": [
+        [
+          "agent",
+          "grandchild",
+          "{\"collection\":\"agent\",\"id\":\"grandchild\",\"value\":{\"autoWake\":true,\"canSend\":true,\"commandProgress\":[],\"created\":1.0,\"cwd\":\"/fixture\",\"epoch\":8,\"id\":\"grandchild\",\"inFlight\":false,\"isLead\":false,\"kind\":\"agent\",\"launcherAlive\":true,\"name\":\"Worker\",\"nextTurnSettingsSupported\":true,\"overview\":{\"result\":\"\",\"resultFile\":null,\"resultTruncated\":false,\"resultTurnId\":null,\"task\":\"\",\"taskTruncated\":false},\"parentId\":\"worker\",\"readStateSupported\":true,\"rootId\":\"legacy-other-root\",\"serverId\":null,\"source\":\"managed\",\"stall\":null,\"startWait\":null,\"status\":\"completed\"}}",
+          0
+        ],
+        [
+          "agent",
+          "lead",
+          "{\"collection\":\"agent\",\"id\":\"lead\",\"value\":{\"agentMode\":\"multi\",\"agentModeRevision\":0,\"agentModeSupported\":true,\"autoWake\":false,\"canSend\":true,\"commandProgress\":[],\"concurrency\":32,\"created\":1.0,\"cwd\":\"/fixture\",\"empty\":false,\"epoch\":4,\"error\":\"Stopped by user\",\"id\":\"lead\",\"inFlight\":false,\"isLead\":true,\"kind\":\"agent\",\"launcherAlive\":true,\"name\":\"Lead\",\"nextTurnSettingsSupported\":true,\"parentId\":null,\"readStateSupported\":true,\"rootId\":\"lead\",\"serverId\":null,\"source\":\"managed\",\"stall\":null,\"startWait\":null,\"status\":\"paused\",\"subagentConcurrencyVersion\":2}}",
+          0
+        ],
+        [
+          "agent",
+          "unrelated",
+          "{\"collection\":\"agent\",\"id\":\"unrelated\",\"value\":{\"autoWake\":true,\"canSend\":true,\"commandProgress\":[],\"created\":1.0,\"cwd\":\"/fixture\",\"epoch\":8,\"id\":\"unrelated\",\"inFlight\":false,\"isLead\":false,\"kind\":\"agent\",\"launcherAlive\":true,\"name\":\"Worker\",\"nextTurnSettingsSupported\":true,\"overview\":{\"result\":\"\",\"resultFile\":null,\"resultTruncated\":false,\"resultTurnId\":null,\"task\":\"\",\"taskTruncated\":false},\"parentId\":\"missing\",\"readStateSupported\":true,\"rootId\":\"lead\",\"serverId\":null,\"source\":\"managed\",\"stall\":null,\"startWait\":null,\"status\":\"completed\"}}",
+          0
+        ],
+        [
+          "agent",
+          "worker",
+          "{\"collection\":\"agent\",\"id\":\"worker\",\"value\":{\"autoWake\":true,\"canSend\":true,\"commandProgress\":[],\"created\":1.0,\"cwd\":\"/fixture\",\"epoch\":8,\"id\":\"worker\",\"inFlight\":false,\"isLead\":false,\"kind\":\"agent\",\"launcherAlive\":true,\"name\":\"Worker\",\"nextTurnSettingsSupported\":true,\"overview\":{\"result\":\"\",\"resultFile\":null,\"resultTruncated\":false,\"resultTurnId\":null,\"task\":\"\",\"taskTruncated\":false},\"parentId\":\"lead\",\"readStateSupported\":true,\"rootId\":\"lead\",\"serverId\":null,\"source\":\"managed\",\"stall\":null,\"startWait\":null,\"status\":\"completed\"}}",
+          0
+        ],
+        [
+          "event",
+          "dispatching",
+          "{\"collection\":\"event\",\"id\":\"dispatching\",\"value\":{\"agent\":\"lead\",\"created\":1.0,\"error\":null,\"id\":\"dispatching\",\"kind\":\"user\",\"status\":\"dispatching\"}}",
+          0
+        ],
+        [
+          "event",
+          "pending",
+          "{\"collection\":\"event\",\"id\":\"pending\",\"value\":{\"agent\":\"lead\",\"created\":1.0,\"error\":null,\"id\":\"pending\",\"kind\":\"user\",\"status\":\"cancelled\"}}",
+          0
+        ],
+        [
+          "event",
+          "reserved",
+          "{\"collection\":\"event\",\"id\":\"reserved\",\"value\":{\"agent\":\"lead\",\"created\":1.0,\"error\":null,\"id\":\"reserved\",\"kind\":\"user\",\"status\":\"reserved\"}}",
+          0
+        ],
+        [
+          "event",
+          "uncertain",
+          "{\"collection\":\"event\",\"id\":\"uncertain\",\"value\":{\"agent\":\"lead\",\"created\":1.0,\"error\":null,\"id\":\"uncertain\",\"kind\":\"user\",\"status\":\"uncertain\"}}",
+          0
+        ]
+      ]
+    },
+    "interrupted": [
+      {
+        "id": "lead",
+        "rootId": "lead",
+        "parentId": null,
+        "epoch": 4,
+        "status": "paused",
+        "name": "Lead",
+        "cwd": "/fixture",
+        "isLead": true,
+        "autoWake": false,
+        "inFlight": false,
+        "created": 1.0,
+        "concurrency": 32,
+        "subagentConcurrencyVersion": 2,
+        "agentMode": "multi",
+        "agentModeRevision": 0,
+        "agentModeSupported": true,
+        "maxAgentsExplicit": false,
+        "error": "Stopped by user",
+        "cancelledPark": {
+          "event": "ready",
+          "epoch": 3,
+          "sequence": 1,
+          "cancelledAtEpoch": 4
+        }
+      }
+    ]
+  },
+  {
+    "name": "idle-True",
+    "records": {
+      "tables": {
+        "runtime_agents": [
+          {
+            "id": "lead",
+            "rootId": "lead",
+            "parentId": null,
+            "epoch": 3,
+            "status": "idle",
+            "name": "Lead",
+            "cwd": "/fixture",
+            "isLead": true,
+            "autoWake": true,
+            "inFlight": false,
+            "created": 1.0,
+            "concurrency": 32,
+            "subagentConcurrencyVersion": 2,
+            "agentMode": "multi",
+            "agentModeRevision": 0,
+            "agentModeSupported": true,
+            "maxAgentsExplicit": false,
+            "parkedEvent": "ready",
+            "parkAfterTurn": true,
+            "parkReceipt": {
+              "event": "ready",
+              "epoch": 3,
+              "sequence": 1
+            },
+            "capacityRetryCount": 2
+          },
+          {
+            "id": "worker",
+            "rootId": "lead",
+            "parentId": "lead",
+            "epoch": 8,
+            "status": "completed",
+            "name": "Worker",
+            "cwd": "/fixture",
+            "isLead": false,
+            "autoWake": true,
+            "inFlight": false,
+            "created": 1.0
+          },
+          {
+            "id": "unrelated",
+            "rootId": "lead",
+            "parentId": "missing",
+            "epoch": 8,
+            "status": "completed",
+            "name": "Worker",
+            "cwd": "/fixture",
+            "isLead": false,
+            "autoWake": true,
+            "inFlight": false,
+            "created": 1.0
+          },
+          {
+            "id": "grandchild",
+            "rootId": "legacy-other-root",
+            "parentId": "worker",
+            "epoch": 8,
+            "status": "completed",
+            "name": "Worker",
+            "cwd": "/fixture",
+            "isLead": false,
+            "autoWake": true,
+            "inFlight": false,
+            "created": 1.0
+          }
+        ],
+        "runtime_work": [],
+        "runtime_requests": [
+          {
+            "id": "question",
+            "agent": "lead",
+            "status": "pending",
+            "method": "agent/asyncQuestion"
+          }
+        ],
+        "runtime_monitors": [],
+        "runtime_tasks": [],
+        "runtime_tool_requests": [],
+        "runtime_events": [
+          {
+            "id": "pending",
+            "agent": "lead",
+            "status": "pending",
+            "epoch": 3
+          },
+          {
+            "id": "reserved",
+            "agent": "lead",
+            "status": "reserved",
+            "epoch": 3
+          },
+          {
+            "id": "dispatching",
+            "agent": "lead",
+            "status": "dispatching",
+            "epoch": 3
+          },
+          {
+            "id": "uncertain",
+            "agent": "lead",
+            "status": "uncertain",
+            "epoch": 3
+          }
+        ]
+      }
+    },
+    "action": {
+      "action": "stop",
+      "target": "lead",
+      "descendants": true
+    },
+    "now": 1234567.5,
+    "expected": {
+      "result": {
+        "stopped": ["grandchild", "lead", "worker"]
+      },
+      "records": {
+        "tables": {
+          "runtime_agents": [
+            {
+              "id": "lead",
+              "rootId": "lead",
+              "parentId": null,
+              "epoch": 4,
+              "status": "paused",
+              "name": "Lead",
+              "cwd": "/fixture",
+              "isLead": true,
+              "autoWake": false,
+              "inFlight": false,
+              "created": 1.0,
+              "concurrency": 32,
+              "subagentConcurrencyVersion": 2,
+              "agentMode": "multi",
+              "agentModeRevision": 0,
+              "agentModeSupported": true,
+              "maxAgentsExplicit": false,
+              "error": "Stopped by user",
+              "cancelledPark": {
+                "event": "ready",
+                "epoch": 3,
+                "sequence": 1,
+                "cancelledAtEpoch": 4
+              }
+            },
+            {
+              "id": "worker",
+              "rootId": "lead",
+              "parentId": "lead",
+              "epoch": 9,
+              "status": "paused",
+              "name": "Worker",
+              "cwd": "/fixture",
+              "isLead": false,
+              "autoWake": false,
+              "inFlight": false,
+              "created": 1.0,
+              "error": "Stopped by user"
+            },
+            {
+              "id": "unrelated",
+              "rootId": "lead",
+              "parentId": "missing",
+              "epoch": 8,
+              "status": "completed",
+              "name": "Worker",
+              "cwd": "/fixture",
+              "isLead": false,
+              "autoWake": true,
+              "inFlight": false,
+              "created": 1.0
+            },
+            {
+              "id": "grandchild",
+              "rootId": "legacy-other-root",
+              "parentId": "worker",
+              "epoch": 9,
+              "status": "paused",
+              "name": "Worker",
+              "cwd": "/fixture",
+              "isLead": false,
+              "autoWake": false,
+              "inFlight": false,
+              "created": 1.0,
+              "error": "Stopped by user"
+            }
+          ],
+          "runtime_work": [],
+          "runtime_requests": [
+            {
+              "id": "question",
+              "agent": "lead",
+              "status": "expired",
+              "method": "agent/asyncQuestion"
+            }
+          ],
+          "runtime_monitors": [],
+          "runtime_tasks": [],
+          "runtime_tool_requests": [],
+          "runtime_events": [
+            {
+              "id": "pending",
+              "agent": "lead",
+              "status": "cancelled",
+              "epoch": 3
+            },
+            {
+              "id": "reserved",
+              "agent": "lead",
+              "status": "reserved",
+              "epoch": 3
+            },
+            {
+              "id": "dispatching",
+              "agent": "lead",
+              "status": "dispatching",
+              "epoch": 3
+            },
+            {
+              "id": "uncertain",
+              "agent": "lead",
+              "status": "uncertain",
+              "epoch": 3
+            }
+          ]
+        }
+      },
+      "notifications": [],
+      "notificationPayloads": [],
+      "syncEntities": [
+        [
+          "agent",
+          "grandchild",
+          "{\"collection\":\"agent\",\"id\":\"grandchild\",\"value\":{\"autoWake\":false,\"canSend\":true,\"commandProgress\":[],\"created\":1.0,\"cwd\":\"/fixture\",\"epoch\":9,\"error\":\"Stopped by user\",\"id\":\"grandchild\",\"inFlight\":false,\"isLead\":false,\"kind\":\"agent\",\"launcherAlive\":true,\"name\":\"Worker\",\"nextTurnSettingsSupported\":true,\"overview\":{\"result\":\"\",\"resultFile\":null,\"resultTruncated\":false,\"resultTurnId\":null,\"task\":\"\",\"taskTruncated\":false},\"parentId\":\"worker\",\"readStateSupported\":true,\"rootId\":\"legacy-other-root\",\"serverId\":null,\"source\":\"managed\",\"stall\":null,\"startWait\":null,\"status\":\"paused\"}}",
+          0
+        ],
+        [
+          "agent",
+          "lead",
+          "{\"collection\":\"agent\",\"id\":\"lead\",\"value\":{\"agentMode\":\"multi\",\"agentModeRevision\":0,\"agentModeSupported\":true,\"autoWake\":false,\"canSend\":true,\"commandProgress\":[],\"concurrency\":32,\"created\":1.0,\"cwd\":\"/fixture\",\"empty\":false,\"epoch\":4,\"error\":\"Stopped by user\",\"id\":\"lead\",\"inFlight\":false,\"isLead\":true,\"kind\":\"agent\",\"launcherAlive\":true,\"name\":\"Lead\",\"nextTurnSettingsSupported\":true,\"parentId\":null,\"readStateSupported\":true,\"rootId\":\"lead\",\"serverId\":null,\"source\":\"managed\",\"stall\":null,\"startWait\":null,\"status\":\"paused\",\"subagentConcurrencyVersion\":2}}",
+          0
+        ],
+        [
+          "agent",
+          "unrelated",
+          "{\"collection\":\"agent\",\"id\":\"unrelated\",\"value\":{\"autoWake\":true,\"canSend\":true,\"commandProgress\":[],\"created\":1.0,\"cwd\":\"/fixture\",\"epoch\":8,\"id\":\"unrelated\",\"inFlight\":false,\"isLead\":false,\"kind\":\"agent\",\"launcherAlive\":true,\"name\":\"Worker\",\"nextTurnSettingsSupported\":true,\"overview\":{\"result\":\"\",\"resultFile\":null,\"resultTruncated\":false,\"resultTurnId\":null,\"task\":\"\",\"taskTruncated\":false},\"parentId\":\"missing\",\"readStateSupported\":true,\"rootId\":\"lead\",\"serverId\":null,\"source\":\"managed\",\"stall\":null,\"startWait\":null,\"status\":\"completed\"}}",
+          0
+        ],
+        [
+          "agent",
+          "worker",
+          "{\"collection\":\"agent\",\"id\":\"worker\",\"value\":{\"autoWake\":false,\"canSend\":true,\"commandProgress\":[],\"created\":1.0,\"cwd\":\"/fixture\",\"epoch\":9,\"error\":\"Stopped by user\",\"id\":\"worker\",\"inFlight\":false,\"isLead\":false,\"kind\":\"agent\",\"launcherAlive\":true,\"name\":\"Worker\",\"nextTurnSettingsSupported\":true,\"overview\":{\"result\":\"\",\"resultFile\":null,\"resultTruncated\":false,\"resultTurnId\":null,\"task\":\"\",\"taskTruncated\":false},\"parentId\":\"lead\",\"readStateSupported\":true,\"rootId\":\"lead\",\"serverId\":null,\"source\":\"managed\",\"stall\":null,\"startWait\":null,\"status\":\"paused\"}}",
+          0
+        ],
+        [
+          "event",
+          "dispatching",
+          "{\"collection\":\"event\",\"id\":\"dispatching\",\"value\":{\"agent\":\"lead\",\"created\":1.0,\"error\":null,\"id\":\"dispatching\",\"kind\":\"user\",\"status\":\"dispatching\"}}",
+          0
+        ],
+        [
+          "event",
+          "pending",
+          "{\"collection\":\"event\",\"id\":\"pending\",\"value\":{\"agent\":\"lead\",\"created\":1.0,\"error\":null,\"id\":\"pending\",\"kind\":\"user\",\"status\":\"cancelled\"}}",
+          0
+        ],
+        [
+          "event",
+          "reserved",
+          "{\"collection\":\"event\",\"id\":\"reserved\",\"value\":{\"agent\":\"lead\",\"created\":1.0,\"error\":null,\"id\":\"reserved\",\"kind\":\"user\",\"status\":\"reserved\"}}",
+          0
+        ],
+        [
+          "event",
+          "uncertain",
+          "{\"collection\":\"event\",\"id\":\"uncertain\",\"value\":{\"agent\":\"lead\",\"created\":1.0,\"error\":null,\"id\":\"uncertain\",\"kind\":\"user\",\"status\":\"uncertain\"}}",
+          0
+        ]
+      ]
+    },
+    "interrupted": [
+      {
+        "id": "lead",
+        "rootId": "lead",
+        "parentId": null,
+        "epoch": 4,
+        "status": "paused",
+        "name": "Lead",
+        "cwd": "/fixture",
+        "isLead": true,
+        "autoWake": false,
+        "inFlight": false,
+        "created": 1.0,
+        "concurrency": 32,
+        "subagentConcurrencyVersion": 2,
+        "agentMode": "multi",
+        "agentModeRevision": 0,
+        "agentModeSupported": true,
+        "maxAgentsExplicit": false,
+        "error": "Stopped by user",
+        "cancelledPark": {
+          "event": "ready",
+          "epoch": 3,
+          "sequence": 1,
+          "cancelledAtEpoch": 4
+        }
+      },
+      {
+        "id": "worker",
+        "rootId": "lead",
+        "parentId": "lead",
+        "epoch": 9,
+        "status": "paused",
+        "name": "Worker",
+        "cwd": "/fixture",
+        "isLead": false,
+        "autoWake": false,
+        "inFlight": false,
+        "created": 1.0,
+        "error": "Stopped by user"
+      },
+      {
+        "id": "grandchild",
+        "rootId": "legacy-other-root",
+        "parentId": "worker",
+        "epoch": 9,
+        "status": "paused",
+        "name": "Worker",
+        "cwd": "/fixture",
+        "isLead": false,
+        "autoWake": false,
+        "inFlight": false,
+        "created": 1.0,
+        "error": "Stopped by user"
+      }
+    ]
+  },
+  {
+    "name": "preparing-False",
+    "records": {
+      "tables": {
+        "runtime_agents": [
+          {
+            "id": "lead",
+            "rootId": "lead",
+            "parentId": null,
+            "epoch": 3,
+            "status": "starting",
+            "name": "Lead",
+            "cwd": "/fixture",
+            "isLead": true,
+            "autoWake": true,
+            "inFlight": true,
+            "created": 1.0,
+            "concurrency": 32,
+            "subagentConcurrencyVersion": 2,
+            "agentMode": "multi",
+            "agentModeRevision": 0,
+            "agentModeSupported": true,
+            "maxAgentsExplicit": false,
+            "startAttempt": {
+              "id": "attempt",
+              "epoch": 3,
+              "submitted": false
+            },
+            "parkedEvent": "ready",
+            "parkAfterTurn": true,
+            "parkReceipt": {
+              "event": "ready",
+              "epoch": 3,
+              "sequence": 1
+            },
+            "capacityRetryCount": 2
+          },
+          {
+            "id": "worker",
+            "rootId": "lead",
+            "parentId": "lead",
+            "epoch": 8,
+            "status": "completed",
+            "name": "Worker",
+            "cwd": "/fixture",
+            "isLead": false,
+            "autoWake": true,
+            "inFlight": false,
+            "created": 1.0
+          },
+          {
+            "id": "unrelated",
+            "rootId": "lead",
+            "parentId": "missing",
+            "epoch": 8,
+            "status": "completed",
+            "name": "Worker",
+            "cwd": "/fixture",
+            "isLead": false,
+            "autoWake": true,
+            "inFlight": false,
+            "created": 1.0
+          },
+          {
+            "id": "grandchild",
+            "rootId": "legacy-other-root",
+            "parentId": "worker",
+            "epoch": 8,
+            "status": "completed",
+            "name": "Worker",
+            "cwd": "/fixture",
+            "isLead": false,
+            "autoWake": true,
+            "inFlight": false,
+            "created": 1.0
+          }
+        ],
+        "runtime_work": [],
+        "runtime_requests": [
+          {
+            "id": "question",
+            "agent": "lead",
+            "status": "pending",
+            "method": "agent/asyncQuestion"
+          }
+        ],
+        "runtime_monitors": [],
+        "runtime_tasks": [],
+        "runtime_tool_requests": [],
+        "runtime_events": [
+          {
+            "id": "pending",
+            "agent": "lead",
+            "status": "pending",
+            "epoch": 3
+          },
+          {
+            "id": "reserved",
+            "agent": "lead",
+            "status": "reserved",
+            "epoch": 3
+          },
+          {
+            "id": "dispatching",
+            "agent": "lead",
+            "status": "dispatching",
+            "epoch": 3
+          },
+          {
+            "id": "uncertain",
+            "agent": "lead",
+            "status": "uncertain",
+            "epoch": 3
+          }
+        ]
+      }
+    },
+    "action": {
+      "action": "stop",
+      "target": "lead",
+      "descendants": false
+    },
+    "now": 1234567.5,
+    "expected": {
+      "result": {
+        "stopped": ["lead"]
+      },
+      "records": {
+        "tables": {
+          "runtime_agents": [
+            {
+              "id": "lead",
+              "rootId": "lead",
+              "parentId": null,
+              "epoch": 4,
+              "status": "paused",
+              "name": "Lead",
+              "cwd": "/fixture",
+              "isLead": true,
+              "autoWake": false,
+              "inFlight": true,
+              "created": 1.0,
+              "concurrency": 32,
+              "subagentConcurrencyVersion": 2,
+              "agentMode": "multi",
+              "agentModeRevision": 0,
+              "agentModeSupported": true,
+              "maxAgentsExplicit": false,
+              "startAttempt": {
+                "id": "attempt",
+                "epoch": 3,
+                "submitted": false
+              },
+              "error": "Stopped by user",
+              "cancelledPark": {
+                "event": "ready",
+                "epoch": 3,
+                "sequence": 1,
+                "cancelledAtEpoch": 4
+              }
+            },
+            {
+              "id": "worker",
+              "rootId": "lead",
+              "parentId": "lead",
+              "epoch": 8,
+              "status": "completed",
+              "name": "Worker",
+              "cwd": "/fixture",
+              "isLead": false,
+              "autoWake": true,
+              "inFlight": false,
+              "created": 1.0
+            },
+            {
+              "id": "unrelated",
+              "rootId": "lead",
+              "parentId": "missing",
+              "epoch": 8,
+              "status": "completed",
+              "name": "Worker",
+              "cwd": "/fixture",
+              "isLead": false,
+              "autoWake": true,
+              "inFlight": false,
+              "created": 1.0
+            },
+            {
+              "id": "grandchild",
+              "rootId": "legacy-other-root",
+              "parentId": "worker",
+              "epoch": 8,
+              "status": "completed",
+              "name": "Worker",
+              "cwd": "/fixture",
+              "isLead": false,
+              "autoWake": true,
+              "inFlight": false,
+              "created": 1.0
+            }
+          ],
+          "runtime_work": [],
+          "runtime_requests": [
+            {
+              "id": "question",
+              "agent": "lead",
+              "status": "expired",
+              "method": "agent/asyncQuestion"
+            }
+          ],
+          "runtime_monitors": [],
+          "runtime_tasks": [],
+          "runtime_tool_requests": [],
+          "runtime_events": [
+            {
+              "id": "pending",
+              "agent": "lead",
+              "status": "cancelled",
+              "epoch": 3
+            },
+            {
+              "id": "reserved",
+              "agent": "lead",
+              "status": "reserved",
+              "epoch": 3
+            },
+            {
+              "id": "dispatching",
+              "agent": "lead",
+              "status": "dispatching",
+              "epoch": 3
+            },
+            {
+              "id": "uncertain",
+              "agent": "lead",
+              "status": "uncertain",
+              "epoch": 3
+            }
+          ]
+        }
+      },
+      "notifications": [],
+      "notificationPayloads": [],
+      "syncEntities": [
+        [
+          "agent",
+          "grandchild",
+          "{\"collection\":\"agent\",\"id\":\"grandchild\",\"value\":{\"autoWake\":true,\"canSend\":true,\"commandProgress\":[],\"created\":1.0,\"cwd\":\"/fixture\",\"epoch\":8,\"id\":\"grandchild\",\"inFlight\":false,\"isLead\":false,\"kind\":\"agent\",\"launcherAlive\":true,\"name\":\"Worker\",\"nextTurnSettingsSupported\":true,\"overview\":{\"result\":\"\",\"resultFile\":null,\"resultTruncated\":false,\"resultTurnId\":null,\"task\":\"\",\"taskTruncated\":false},\"parentId\":\"worker\",\"readStateSupported\":true,\"rootId\":\"legacy-other-root\",\"serverId\":null,\"source\":\"managed\",\"stall\":null,\"startWait\":null,\"status\":\"completed\"}}",
+          0
+        ],
+        [
+          "agent",
+          "lead",
+          "{\"collection\":\"agent\",\"id\":\"lead\",\"value\":{\"agentMode\":\"multi\",\"agentModeRevision\":0,\"agentModeSupported\":true,\"autoWake\":false,\"canSend\":true,\"commandProgress\":[],\"concurrency\":32,\"created\":1.0,\"cwd\":\"/fixture\",\"empty\":false,\"epoch\":4,\"error\":\"Stopped by user\",\"id\":\"lead\",\"inFlight\":true,\"isLead\":true,\"kind\":\"agent\",\"launcherAlive\":true,\"name\":\"Lead\",\"nextTurnSettingsSupported\":true,\"parentId\":null,\"readStateSupported\":true,\"rootId\":\"lead\",\"serverId\":null,\"source\":\"managed\",\"stall\":null,\"startAttempt\":{},\"startWait\":null,\"status\":\"paused\",\"subagentConcurrencyVersion\":2}}",
+          0
+        ],
+        [
+          "agent",
+          "unrelated",
+          "{\"collection\":\"agent\",\"id\":\"unrelated\",\"value\":{\"autoWake\":true,\"canSend\":true,\"commandProgress\":[],\"created\":1.0,\"cwd\":\"/fixture\",\"epoch\":8,\"id\":\"unrelated\",\"inFlight\":false,\"isLead\":false,\"kind\":\"agent\",\"launcherAlive\":true,\"name\":\"Worker\",\"nextTurnSettingsSupported\":true,\"overview\":{\"result\":\"\",\"resultFile\":null,\"resultTruncated\":false,\"resultTurnId\":null,\"task\":\"\",\"taskTruncated\":false},\"parentId\":\"missing\",\"readStateSupported\":true,\"rootId\":\"lead\",\"serverId\":null,\"source\":\"managed\",\"stall\":null,\"startWait\":null,\"status\":\"completed\"}}",
+          0
+        ],
+        [
+          "agent",
+          "worker",
+          "{\"collection\":\"agent\",\"id\":\"worker\",\"value\":{\"autoWake\":true,\"canSend\":true,\"commandProgress\":[],\"created\":1.0,\"cwd\":\"/fixture\",\"epoch\":8,\"id\":\"worker\",\"inFlight\":false,\"isLead\":false,\"kind\":\"agent\",\"launcherAlive\":true,\"name\":\"Worker\",\"nextTurnSettingsSupported\":true,\"overview\":{\"result\":\"\",\"resultFile\":null,\"resultTruncated\":false,\"resultTurnId\":null,\"task\":\"\",\"taskTruncated\":false},\"parentId\":\"lead\",\"readStateSupported\":true,\"rootId\":\"lead\",\"serverId\":null,\"source\":\"managed\",\"stall\":null,\"startWait\":null,\"status\":\"completed\"}}",
+          0
+        ],
+        [
+          "event",
+          "dispatching",
+          "{\"collection\":\"event\",\"id\":\"dispatching\",\"value\":{\"agent\":\"lead\",\"created\":1.0,\"error\":null,\"id\":\"dispatching\",\"kind\":\"user\",\"status\":\"dispatching\"}}",
+          0
+        ],
+        [
+          "event",
+          "pending",
+          "{\"collection\":\"event\",\"id\":\"pending\",\"value\":{\"agent\":\"lead\",\"created\":1.0,\"error\":null,\"id\":\"pending\",\"kind\":\"user\",\"status\":\"cancelled\"}}",
+          0
+        ],
+        [
+          "event",
+          "reserved",
+          "{\"collection\":\"event\",\"id\":\"reserved\",\"value\":{\"agent\":\"lead\",\"created\":1.0,\"error\":null,\"id\":\"reserved\",\"kind\":\"user\",\"status\":\"reserved\"}}",
+          0
+        ],
+        [
+          "event",
+          "uncertain",
+          "{\"collection\":\"event\",\"id\":\"uncertain\",\"value\":{\"agent\":\"lead\",\"created\":1.0,\"error\":null,\"id\":\"uncertain\",\"kind\":\"user\",\"status\":\"uncertain\"}}",
+          0
+        ]
+      ]
+    },
+    "interrupted": [
+      {
+        "id": "lead",
+        "rootId": "lead",
+        "parentId": null,
+        "epoch": 4,
+        "status": "paused",
+        "name": "Lead",
+        "cwd": "/fixture",
+        "isLead": true,
+        "autoWake": false,
+        "inFlight": true,
+        "created": 1.0,
+        "concurrency": 32,
+        "subagentConcurrencyVersion": 2,
+        "agentMode": "multi",
+        "agentModeRevision": 0,
+        "agentModeSupported": true,
+        "maxAgentsExplicit": false,
+        "startAttempt": {
+          "id": "attempt",
+          "epoch": 3,
+          "submitted": false
+        },
+        "error": "Stopped by user",
+        "cancelledPark": {
+          "event": "ready",
+          "epoch": 3,
+          "sequence": 1,
+          "cancelledAtEpoch": 4
+        }
+      }
+    ]
+  },
+  {
+    "name": "preparing-True",
+    "records": {
+      "tables": {
+        "runtime_agents": [
+          {
+            "id": "lead",
+            "rootId": "lead",
+            "parentId": null,
+            "epoch": 3,
+            "status": "starting",
+            "name": "Lead",
+            "cwd": "/fixture",
+            "isLead": true,
+            "autoWake": true,
+            "inFlight": true,
+            "created": 1.0,
+            "concurrency": 32,
+            "subagentConcurrencyVersion": 2,
+            "agentMode": "multi",
+            "agentModeRevision": 0,
+            "agentModeSupported": true,
+            "maxAgentsExplicit": false,
+            "startAttempt": {
+              "id": "attempt",
+              "epoch": 3,
+              "submitted": false
+            },
+            "parkedEvent": "ready",
+            "parkAfterTurn": true,
+            "parkReceipt": {
+              "event": "ready",
+              "epoch": 3,
+              "sequence": 1
+            },
+            "capacityRetryCount": 2
+          },
+          {
+            "id": "worker",
+            "rootId": "lead",
+            "parentId": "lead",
+            "epoch": 8,
+            "status": "completed",
+            "name": "Worker",
+            "cwd": "/fixture",
+            "isLead": false,
+            "autoWake": true,
+            "inFlight": false,
+            "created": 1.0
+          },
+          {
+            "id": "unrelated",
+            "rootId": "lead",
+            "parentId": "missing",
+            "epoch": 8,
+            "status": "completed",
+            "name": "Worker",
+            "cwd": "/fixture",
+            "isLead": false,
+            "autoWake": true,
+            "inFlight": false,
+            "created": 1.0
+          },
+          {
+            "id": "grandchild",
+            "rootId": "legacy-other-root",
+            "parentId": "worker",
+            "epoch": 8,
+            "status": "completed",
+            "name": "Worker",
+            "cwd": "/fixture",
+            "isLead": false,
+            "autoWake": true,
+            "inFlight": false,
+            "created": 1.0
+          }
+        ],
+        "runtime_work": [],
+        "runtime_requests": [
+          {
+            "id": "question",
+            "agent": "lead",
+            "status": "pending",
+            "method": "agent/asyncQuestion"
+          }
+        ],
+        "runtime_monitors": [],
+        "runtime_tasks": [],
+        "runtime_tool_requests": [],
+        "runtime_events": [
+          {
+            "id": "pending",
+            "agent": "lead",
+            "status": "pending",
+            "epoch": 3
+          },
+          {
+            "id": "reserved",
+            "agent": "lead",
+            "status": "reserved",
+            "epoch": 3
+          },
+          {
+            "id": "dispatching",
+            "agent": "lead",
+            "status": "dispatching",
+            "epoch": 3
+          },
+          {
+            "id": "uncertain",
+            "agent": "lead",
+            "status": "uncertain",
+            "epoch": 3
+          }
+        ]
+      }
+    },
+    "action": {
+      "action": "stop",
+      "target": "lead",
+      "descendants": true
+    },
+    "now": 1234567.5,
+    "expected": {
+      "result": {
+        "stopped": ["grandchild", "lead", "worker"]
+      },
+      "records": {
+        "tables": {
+          "runtime_agents": [
+            {
+              "id": "lead",
+              "rootId": "lead",
+              "parentId": null,
+              "epoch": 4,
+              "status": "paused",
+              "name": "Lead",
+              "cwd": "/fixture",
+              "isLead": true,
+              "autoWake": false,
+              "inFlight": true,
+              "created": 1.0,
+              "concurrency": 32,
+              "subagentConcurrencyVersion": 2,
+              "agentMode": "multi",
+              "agentModeRevision": 0,
+              "agentModeSupported": true,
+              "maxAgentsExplicit": false,
+              "startAttempt": {
+                "id": "attempt",
+                "epoch": 3,
+                "submitted": false
+              },
+              "error": "Stopped by user",
+              "cancelledPark": {
+                "event": "ready",
+                "epoch": 3,
+                "sequence": 1,
+                "cancelledAtEpoch": 4
+              }
+            },
+            {
+              "id": "worker",
+              "rootId": "lead",
+              "parentId": "lead",
+              "epoch": 9,
+              "status": "paused",
+              "name": "Worker",
+              "cwd": "/fixture",
+              "isLead": false,
+              "autoWake": false,
+              "inFlight": false,
+              "created": 1.0,
+              "error": "Stopped by user"
+            },
+            {
+              "id": "unrelated",
+              "rootId": "lead",
+              "parentId": "missing",
+              "epoch": 8,
+              "status": "completed",
+              "name": "Worker",
+              "cwd": "/fixture",
+              "isLead": false,
+              "autoWake": true,
+              "inFlight": false,
+              "created": 1.0
+            },
+            {
+              "id": "grandchild",
+              "rootId": "legacy-other-root",
+              "parentId": "worker",
+              "epoch": 9,
+              "status": "paused",
+              "name": "Worker",
+              "cwd": "/fixture",
+              "isLead": false,
+              "autoWake": false,
+              "inFlight": false,
+              "created": 1.0,
+              "error": "Stopped by user"
+            }
+          ],
+          "runtime_work": [],
+          "runtime_requests": [
+            {
+              "id": "question",
+              "agent": "lead",
+              "status": "expired",
+              "method": "agent/asyncQuestion"
+            }
+          ],
+          "runtime_monitors": [],
+          "runtime_tasks": [],
+          "runtime_tool_requests": [],
+          "runtime_events": [
+            {
+              "id": "pending",
+              "agent": "lead",
+              "status": "cancelled",
+              "epoch": 3
+            },
+            {
+              "id": "reserved",
+              "agent": "lead",
+              "status": "reserved",
+              "epoch": 3
+            },
+            {
+              "id": "dispatching",
+              "agent": "lead",
+              "status": "dispatching",
+              "epoch": 3
+            },
+            {
+              "id": "uncertain",
+              "agent": "lead",
+              "status": "uncertain",
+              "epoch": 3
+            }
+          ]
+        }
+      },
+      "notifications": [],
+      "notificationPayloads": [],
+      "syncEntities": [
+        [
+          "agent",
+          "grandchild",
+          "{\"collection\":\"agent\",\"id\":\"grandchild\",\"value\":{\"autoWake\":false,\"canSend\":true,\"commandProgress\":[],\"created\":1.0,\"cwd\":\"/fixture\",\"epoch\":9,\"error\":\"Stopped by user\",\"id\":\"grandchild\",\"inFlight\":false,\"isLead\":false,\"kind\":\"agent\",\"launcherAlive\":true,\"name\":\"Worker\",\"nextTurnSettingsSupported\":true,\"overview\":{\"result\":\"\",\"resultFile\":null,\"resultTruncated\":false,\"resultTurnId\":null,\"task\":\"\",\"taskTruncated\":false},\"parentId\":\"worker\",\"readStateSupported\":true,\"rootId\":\"legacy-other-root\",\"serverId\":null,\"source\":\"managed\",\"stall\":null,\"startWait\":null,\"status\":\"paused\"}}",
+          0
+        ],
+        [
+          "agent",
+          "lead",
+          "{\"collection\":\"agent\",\"id\":\"lead\",\"value\":{\"agentMode\":\"multi\",\"agentModeRevision\":0,\"agentModeSupported\":true,\"autoWake\":false,\"canSend\":true,\"commandProgress\":[],\"concurrency\":32,\"created\":1.0,\"cwd\":\"/fixture\",\"empty\":false,\"epoch\":4,\"error\":\"Stopped by user\",\"id\":\"lead\",\"inFlight\":true,\"isLead\":true,\"kind\":\"agent\",\"launcherAlive\":true,\"name\":\"Lead\",\"nextTurnSettingsSupported\":true,\"parentId\":null,\"readStateSupported\":true,\"rootId\":\"lead\",\"serverId\":null,\"source\":\"managed\",\"stall\":null,\"startAttempt\":{},\"startWait\":null,\"status\":\"paused\",\"subagentConcurrencyVersion\":2}}",
+          0
+        ],
+        [
+          "agent",
+          "unrelated",
+          "{\"collection\":\"agent\",\"id\":\"unrelated\",\"value\":{\"autoWake\":true,\"canSend\":true,\"commandProgress\":[],\"created\":1.0,\"cwd\":\"/fixture\",\"epoch\":8,\"id\":\"unrelated\",\"inFlight\":false,\"isLead\":false,\"kind\":\"agent\",\"launcherAlive\":true,\"name\":\"Worker\",\"nextTurnSettingsSupported\":true,\"overview\":{\"result\":\"\",\"resultFile\":null,\"resultTruncated\":false,\"resultTurnId\":null,\"task\":\"\",\"taskTruncated\":false},\"parentId\":\"missing\",\"readStateSupported\":true,\"rootId\":\"lead\",\"serverId\":null,\"source\":\"managed\",\"stall\":null,\"startWait\":null,\"status\":\"completed\"}}",
+          0
+        ],
+        [
+          "agent",
+          "worker",
+          "{\"collection\":\"agent\",\"id\":\"worker\",\"value\":{\"autoWake\":false,\"canSend\":true,\"commandProgress\":[],\"created\":1.0,\"cwd\":\"/fixture\",\"epoch\":9,\"error\":\"Stopped by user\",\"id\":\"worker\",\"inFlight\":false,\"isLead\":false,\"kind\":\"agent\",\"launcherAlive\":true,\"name\":\"Worker\",\"nextTurnSettingsSupported\":true,\"overview\":{\"result\":\"\",\"resultFile\":null,\"resultTruncated\":false,\"resultTurnId\":null,\"task\":\"\",\"taskTruncated\":false},\"parentId\":\"lead\",\"readStateSupported\":true,\"rootId\":\"lead\",\"serverId\":null,\"source\":\"managed\",\"stall\":null,\"startWait\":null,\"status\":\"paused\"}}",
+          0
+        ],
+        [
+          "event",
+          "dispatching",
+          "{\"collection\":\"event\",\"id\":\"dispatching\",\"value\":{\"agent\":\"lead\",\"created\":1.0,\"error\":null,\"id\":\"dispatching\",\"kind\":\"user\",\"status\":\"dispatching\"}}",
+          0
+        ],
+        [
+          "event",
+          "pending",
+          "{\"collection\":\"event\",\"id\":\"pending\",\"value\":{\"agent\":\"lead\",\"created\":1.0,\"error\":null,\"id\":\"pending\",\"kind\":\"user\",\"status\":\"cancelled\"}}",
+          0
+        ],
+        [
+          "event",
+          "reserved",
+          "{\"collection\":\"event\",\"id\":\"reserved\",\"value\":{\"agent\":\"lead\",\"created\":1.0,\"error\":null,\"id\":\"reserved\",\"kind\":\"user\",\"status\":\"reserved\"}}",
+          0
+        ],
+        [
+          "event",
+          "uncertain",
+          "{\"collection\":\"event\",\"id\":\"uncertain\",\"value\":{\"agent\":\"lead\",\"created\":1.0,\"error\":null,\"id\":\"uncertain\",\"kind\":\"user\",\"status\":\"uncertain\"}}",
+          0
+        ]
+      ]
+    },
+    "interrupted": [
+      {
+        "id": "lead",
+        "rootId": "lead",
+        "parentId": null,
+        "epoch": 4,
+        "status": "paused",
+        "name": "Lead",
+        "cwd": "/fixture",
+        "isLead": true,
+        "autoWake": false,
+        "inFlight": true,
+        "created": 1.0,
+        "concurrency": 32,
+        "subagentConcurrencyVersion": 2,
+        "agentMode": "multi",
+        "agentModeRevision": 0,
+        "agentModeSupported": true,
+        "maxAgentsExplicit": false,
+        "startAttempt": {
+          "id": "attempt",
+          "epoch": 3,
+          "submitted": false
+        },
+        "error": "Stopped by user",
+        "cancelledPark": {
+          "event": "ready",
+          "epoch": 3,
+          "sequence": 1,
+          "cancelledAtEpoch": 4
+        }
+      },
+      {
+        "id": "worker",
+        "rootId": "lead",
+        "parentId": "lead",
+        "epoch": 9,
+        "status": "paused",
+        "name": "Worker",
+        "cwd": "/fixture",
+        "isLead": false,
+        "autoWake": false,
+        "inFlight": false,
+        "created": 1.0,
+        "error": "Stopped by user"
+      },
+      {
+        "id": "grandchild",
+        "rootId": "legacy-other-root",
+        "parentId": "worker",
+        "epoch": 9,
+        "status": "paused",
+        "name": "Worker",
+        "cwd": "/fixture",
+        "isLead": false,
+        "autoWake": false,
+        "inFlight": false,
+        "created": 1.0,
+        "error": "Stopped by user"
+      }
+    ]
+  },
+  {
+    "name": "submitted-False",
+    "records": {
+      "tables": {
+        "runtime_agents": [
+          {
+            "id": "lead",
+            "rootId": "lead",
+            "parentId": null,
+            "epoch": 3,
+            "status": "starting",
+            "name": "Lead",
+            "cwd": "/fixture",
+            "isLead": true,
+            "autoWake": true,
+            "inFlight": true,
+            "created": 1.0,
+            "concurrency": 32,
+            "subagentConcurrencyVersion": 2,
+            "agentMode": "multi",
+            "agentModeRevision": 0,
+            "agentModeSupported": true,
+            "maxAgentsExplicit": false,
+            "startAttempt": {
+              "id": "attempt",
+              "epoch": 3,
+              "submitted": true,
+              "connectionGeneration": 7,
+              "connectionId": "fixture-connection",
+              "accountKey": "fixture-account",
+              "requestTicket": 91,
+              "events": []
+            },
+            "threadId": "thread",
+            "accountKey": "fixture-account",
+            "parkedEvent": "ready",
+            "parkAfterTurn": true,
+            "parkReceipt": {
+              "event": "ready",
+              "epoch": 3,
+              "sequence": 1
+            },
+            "capacityRetryCount": 2
+          },
+          {
+            "id": "worker",
+            "rootId": "lead",
+            "parentId": "lead",
+            "epoch": 8,
+            "status": "completed",
+            "name": "Worker",
+            "cwd": "/fixture",
+            "isLead": false,
+            "autoWake": true,
+            "inFlight": false,
+            "created": 1.0
+          },
+          {
+            "id": "unrelated",
+            "rootId": "lead",
+            "parentId": "missing",
+            "epoch": 8,
+            "status": "completed",
+            "name": "Worker",
+            "cwd": "/fixture",
+            "isLead": false,
+            "autoWake": true,
+            "inFlight": false,
+            "created": 1.0
+          },
+          {
+            "id": "grandchild",
+            "rootId": "legacy-other-root",
+            "parentId": "worker",
+            "epoch": 8,
+            "status": "completed",
+            "name": "Worker",
+            "cwd": "/fixture",
+            "isLead": false,
+            "autoWake": true,
+            "inFlight": false,
+            "created": 1.0
+          }
+        ],
+        "runtime_work": [],
+        "runtime_requests": [
+          {
+            "id": "question",
+            "agent": "lead",
+            "status": "pending",
+            "method": "agent/asyncQuestion"
+          }
+        ],
+        "runtime_monitors": [],
+        "runtime_tasks": [],
+        "runtime_tool_requests": [],
+        "runtime_events": [
+          {
+            "id": "pending",
+            "agent": "lead",
+            "status": "pending",
+            "epoch": 3
+          },
+          {
+            "id": "reserved",
+            "agent": "lead",
+            "status": "reserved",
+            "epoch": 3
+          },
+          {
+            "id": "dispatching",
+            "agent": "lead",
+            "status": "dispatching",
+            "epoch": 3
+          },
+          {
+            "id": "uncertain",
+            "agent": "lead",
+            "status": "uncertain",
+            "epoch": 3
+          }
+        ]
+      }
+    },
+    "action": {
+      "action": "stop",
+      "target": "lead",
+      "descendants": false
+    },
+    "now": 1234567.5,
+    "expected": {
+      "result": {
+        "stopped": ["lead"]
+      },
+      "records": {
+        "tables": {
+          "runtime_agents": [
+            {
+              "id": "lead",
+              "rootId": "lead",
+              "parentId": null,
+              "epoch": 4,
+              "status": "paused",
+              "name": "Lead",
+              "cwd": "/fixture",
+              "isLead": true,
+              "autoWake": false,
+              "inFlight": true,
+              "created": 1.0,
+              "concurrency": 32,
+              "subagentConcurrencyVersion": 2,
+              "agentMode": "multi",
+              "agentModeRevision": 0,
+              "agentModeSupported": true,
+              "maxAgentsExplicit": false,
+              "startAttempt": {
+                "id": "attempt",
+                "epoch": 3,
+                "submitted": true,
+                "connectionGeneration": 7,
+                "connectionId": "fixture-connection",
+                "accountKey": "fixture-account",
+                "requestTicket": 91,
+                "events": []
+              },
+              "threadId": "thread",
+              "accountKey": "fixture-account",
+              "error": "Stopped by user",
+              "cancelledPark": {
+                "event": "ready",
+                "epoch": 3,
+                "sequence": 1,
+                "cancelledAtEpoch": 4
+              }
+            },
+            {
+              "id": "worker",
+              "rootId": "lead",
+              "parentId": "lead",
+              "epoch": 8,
+              "status": "completed",
+              "name": "Worker",
+              "cwd": "/fixture",
+              "isLead": false,
+              "autoWake": true,
+              "inFlight": false,
+              "created": 1.0
+            },
+            {
+              "id": "unrelated",
+              "rootId": "lead",
+              "parentId": "missing",
+              "epoch": 8,
+              "status": "completed",
+              "name": "Worker",
+              "cwd": "/fixture",
+              "isLead": false,
+              "autoWake": true,
+              "inFlight": false,
+              "created": 1.0
+            },
+            {
+              "id": "grandchild",
+              "rootId": "legacy-other-root",
+              "parentId": "worker",
+              "epoch": 8,
+              "status": "completed",
+              "name": "Worker",
+              "cwd": "/fixture",
+              "isLead": false,
+              "autoWake": true,
+              "inFlight": false,
+              "created": 1.0
+            }
+          ],
+          "runtime_work": [],
+          "runtime_requests": [
+            {
+              "id": "question",
+              "agent": "lead",
+              "status": "expired",
+              "method": "agent/asyncQuestion"
+            }
+          ],
+          "runtime_monitors": [],
+          "runtime_tasks": [],
+          "runtime_tool_requests": [],
+          "runtime_events": [
+            {
+              "id": "pending",
+              "agent": "lead",
+              "status": "cancelled",
+              "epoch": 3
+            },
+            {
+              "id": "reserved",
+              "agent": "lead",
+              "status": "reserved",
+              "epoch": 3
+            },
+            {
+              "id": "dispatching",
+              "agent": "lead",
+              "status": "dispatching",
+              "epoch": 3
+            },
+            {
+              "id": "uncertain",
+              "agent": "lead",
+              "status": "uncertain",
+              "epoch": 3
+            }
+          ]
+        }
+      },
+      "notifications": [],
+      "notificationPayloads": [],
+      "syncEntities": [
+        [
+          "agent",
+          "grandchild",
+          "{\"collection\":\"agent\",\"id\":\"grandchild\",\"value\":{\"autoWake\":true,\"canSend\":true,\"commandProgress\":[],\"created\":1.0,\"cwd\":\"/fixture\",\"epoch\":8,\"id\":\"grandchild\",\"inFlight\":false,\"isLead\":false,\"kind\":\"agent\",\"launcherAlive\":true,\"name\":\"Worker\",\"nextTurnSettingsSupported\":true,\"overview\":{\"result\":\"\",\"resultFile\":null,\"resultTruncated\":false,\"resultTurnId\":null,\"task\":\"\",\"taskTruncated\":false},\"parentId\":\"worker\",\"readStateSupported\":true,\"rootId\":\"legacy-other-root\",\"serverId\":null,\"source\":\"managed\",\"stall\":null,\"startWait\":null,\"status\":\"completed\"}}",
+          0
+        ],
+        [
+          "agent",
+          "lead",
+          "{\"collection\":\"agent\",\"id\":\"lead\",\"value\":{\"accountKey\":\"fixture-account\",\"agentMode\":\"multi\",\"agentModeRevision\":0,\"agentModeSupported\":true,\"autoWake\":false,\"canSend\":true,\"commandProgress\":[],\"concurrency\":32,\"created\":1.0,\"cwd\":\"/fixture\",\"empty\":false,\"epoch\":4,\"error\":\"Stopped by user\",\"id\":\"lead\",\"inFlight\":true,\"isLead\":true,\"kind\":\"agent\",\"launcherAlive\":true,\"name\":\"Lead\",\"nextTurnSettingsSupported\":true,\"parentId\":null,\"readStateSupported\":true,\"rootId\":\"lead\",\"serverId\":null,\"source\":\"managed\",\"stall\":null,\"startAttempt\":{},\"startWait\":null,\"status\":\"paused\",\"subagentConcurrencyVersion\":2,\"threadId\":\"thread\"}}",
+          0
+        ],
+        [
+          "agent",
+          "unrelated",
+          "{\"collection\":\"agent\",\"id\":\"unrelated\",\"value\":{\"autoWake\":true,\"canSend\":true,\"commandProgress\":[],\"created\":1.0,\"cwd\":\"/fixture\",\"epoch\":8,\"id\":\"unrelated\",\"inFlight\":false,\"isLead\":false,\"kind\":\"agent\",\"launcherAlive\":true,\"name\":\"Worker\",\"nextTurnSettingsSupported\":true,\"overview\":{\"result\":\"\",\"resultFile\":null,\"resultTruncated\":false,\"resultTurnId\":null,\"task\":\"\",\"taskTruncated\":false},\"parentId\":\"missing\",\"readStateSupported\":true,\"rootId\":\"lead\",\"serverId\":null,\"source\":\"managed\",\"stall\":null,\"startWait\":null,\"status\":\"completed\"}}",
+          0
+        ],
+        [
+          "agent",
+          "worker",
+          "{\"collection\":\"agent\",\"id\":\"worker\",\"value\":{\"autoWake\":true,\"canSend\":true,\"commandProgress\":[],\"created\":1.0,\"cwd\":\"/fixture\",\"epoch\":8,\"id\":\"worker\",\"inFlight\":false,\"isLead\":false,\"kind\":\"agent\",\"launcherAlive\":true,\"name\":\"Worker\",\"nextTurnSettingsSupported\":true,\"overview\":{\"result\":\"\",\"resultFile\":null,\"resultTruncated\":false,\"resultTurnId\":null,\"task\":\"\",\"taskTruncated\":false},\"parentId\":\"lead\",\"readStateSupported\":true,\"rootId\":\"lead\",\"serverId\":null,\"source\":\"managed\",\"stall\":null,\"startWait\":null,\"status\":\"completed\"}}",
+          0
+        ],
+        [
+          "event",
+          "dispatching",
+          "{\"collection\":\"event\",\"id\":\"dispatching\",\"value\":{\"agent\":\"lead\",\"created\":1.0,\"error\":null,\"id\":\"dispatching\",\"kind\":\"user\",\"status\":\"dispatching\"}}",
+          0
+        ],
+        [
+          "event",
+          "pending",
+          "{\"collection\":\"event\",\"id\":\"pending\",\"value\":{\"agent\":\"lead\",\"created\":1.0,\"error\":null,\"id\":\"pending\",\"kind\":\"user\",\"status\":\"cancelled\"}}",
+          0
+        ],
+        [
+          "event",
+          "reserved",
+          "{\"collection\":\"event\",\"id\":\"reserved\",\"value\":{\"agent\":\"lead\",\"created\":1.0,\"error\":null,\"id\":\"reserved\",\"kind\":\"user\",\"status\":\"reserved\"}}",
+          0
+        ],
+        [
+          "event",
+          "uncertain",
+          "{\"collection\":\"event\",\"id\":\"uncertain\",\"value\":{\"agent\":\"lead\",\"created\":1.0,\"error\":null,\"id\":\"uncertain\",\"kind\":\"user\",\"status\":\"uncertain\"}}",
+          0
+        ]
+      ]
+    },
+    "interrupted": [
+      {
+        "id": "lead",
+        "rootId": "lead",
+        "parentId": null,
+        "epoch": 4,
+        "status": "paused",
+        "name": "Lead",
+        "cwd": "/fixture",
+        "isLead": true,
+        "autoWake": false,
+        "inFlight": true,
+        "created": 1.0,
+        "concurrency": 32,
+        "subagentConcurrencyVersion": 2,
+        "agentMode": "multi",
+        "agentModeRevision": 0,
+        "agentModeSupported": true,
+        "maxAgentsExplicit": false,
+        "startAttempt": {
+          "id": "attempt",
+          "epoch": 3,
+          "submitted": true,
+          "connectionGeneration": 7,
+          "connectionId": "fixture-connection",
+          "accountKey": "fixture-account",
+          "requestTicket": 91,
+          "events": []
+        },
+        "threadId": "thread",
+        "accountKey": "fixture-account",
+        "error": "Stopped by user",
+        "cancelledPark": {
+          "event": "ready",
+          "epoch": 3,
+          "sequence": 1,
+          "cancelledAtEpoch": 4
+        }
+      }
+    ]
+  },
+  {
+    "name": "submitted-True",
+    "records": {
+      "tables": {
+        "runtime_agents": [
+          {
+            "id": "lead",
+            "rootId": "lead",
+            "parentId": null,
+            "epoch": 3,
+            "status": "starting",
+            "name": "Lead",
+            "cwd": "/fixture",
+            "isLead": true,
+            "autoWake": true,
+            "inFlight": true,
+            "created": 1.0,
+            "concurrency": 32,
+            "subagentConcurrencyVersion": 2,
+            "agentMode": "multi",
+            "agentModeRevision": 0,
+            "agentModeSupported": true,
+            "maxAgentsExplicit": false,
+            "startAttempt": {
+              "id": "attempt",
+              "epoch": 3,
+              "submitted": true,
+              "connectionGeneration": 7,
+              "connectionId": "fixture-connection",
+              "accountKey": "fixture-account",
+              "requestTicket": 91,
+              "events": []
+            },
+            "threadId": "thread",
+            "accountKey": "fixture-account",
+            "parkedEvent": "ready",
+            "parkAfterTurn": true,
+            "parkReceipt": {
+              "event": "ready",
+              "epoch": 3,
+              "sequence": 1
+            },
+            "capacityRetryCount": 2
+          },
+          {
+            "id": "worker",
+            "rootId": "lead",
+            "parentId": "lead",
+            "epoch": 8,
+            "status": "completed",
+            "name": "Worker",
+            "cwd": "/fixture",
+            "isLead": false,
+            "autoWake": true,
+            "inFlight": false,
+            "created": 1.0
+          },
+          {
+            "id": "unrelated",
+            "rootId": "lead",
+            "parentId": "missing",
+            "epoch": 8,
+            "status": "completed",
+            "name": "Worker",
+            "cwd": "/fixture",
+            "isLead": false,
+            "autoWake": true,
+            "inFlight": false,
+            "created": 1.0
+          },
+          {
+            "id": "grandchild",
+            "rootId": "legacy-other-root",
+            "parentId": "worker",
+            "epoch": 8,
+            "status": "completed",
+            "name": "Worker",
+            "cwd": "/fixture",
+            "isLead": false,
+            "autoWake": true,
+            "inFlight": false,
+            "created": 1.0
+          }
+        ],
+        "runtime_work": [],
+        "runtime_requests": [
+          {
+            "id": "question",
+            "agent": "lead",
+            "status": "pending",
+            "method": "agent/asyncQuestion"
+          }
+        ],
+        "runtime_monitors": [],
+        "runtime_tasks": [],
+        "runtime_tool_requests": [],
+        "runtime_events": [
+          {
+            "id": "pending",
+            "agent": "lead",
+            "status": "pending",
+            "epoch": 3
+          },
+          {
+            "id": "reserved",
+            "agent": "lead",
+            "status": "reserved",
+            "epoch": 3
+          },
+          {
+            "id": "dispatching",
+            "agent": "lead",
+            "status": "dispatching",
+            "epoch": 3
+          },
+          {
+            "id": "uncertain",
+            "agent": "lead",
+            "status": "uncertain",
+            "epoch": 3
+          }
+        ]
+      }
+    },
+    "action": {
+      "action": "stop",
+      "target": "lead",
+      "descendants": true
+    },
+    "now": 1234567.5,
+    "expected": {
+      "result": {
+        "stopped": ["grandchild", "lead", "worker"]
+      },
+      "records": {
+        "tables": {
+          "runtime_agents": [
+            {
+              "id": "lead",
+              "rootId": "lead",
+              "parentId": null,
+              "epoch": 4,
+              "status": "paused",
+              "name": "Lead",
+              "cwd": "/fixture",
+              "isLead": true,
+              "autoWake": false,
+              "inFlight": true,
+              "created": 1.0,
+              "concurrency": 32,
+              "subagentConcurrencyVersion": 2,
+              "agentMode": "multi",
+              "agentModeRevision": 0,
+              "agentModeSupported": true,
+              "maxAgentsExplicit": false,
+              "startAttempt": {
+                "id": "attempt",
+                "epoch": 3,
+                "submitted": true,
+                "connectionGeneration": 7,
+                "connectionId": "fixture-connection",
+                "accountKey": "fixture-account",
+                "requestTicket": 91,
+                "events": []
+              },
+              "threadId": "thread",
+              "accountKey": "fixture-account",
+              "error": "Stopped by user",
+              "cancelledPark": {
+                "event": "ready",
+                "epoch": 3,
+                "sequence": 1,
+                "cancelledAtEpoch": 4
+              }
+            },
+            {
+              "id": "worker",
+              "rootId": "lead",
+              "parentId": "lead",
+              "epoch": 9,
+              "status": "paused",
+              "name": "Worker",
+              "cwd": "/fixture",
+              "isLead": false,
+              "autoWake": false,
+              "inFlight": false,
+              "created": 1.0,
+              "error": "Stopped by user"
+            },
+            {
+              "id": "unrelated",
+              "rootId": "lead",
+              "parentId": "missing",
+              "epoch": 8,
+              "status": "completed",
+              "name": "Worker",
+              "cwd": "/fixture",
+              "isLead": false,
+              "autoWake": true,
+              "inFlight": false,
+              "created": 1.0
+            },
+            {
+              "id": "grandchild",
+              "rootId": "legacy-other-root",
+              "parentId": "worker",
+              "epoch": 9,
+              "status": "paused",
+              "name": "Worker",
+              "cwd": "/fixture",
+              "isLead": false,
+              "autoWake": false,
+              "inFlight": false,
+              "created": 1.0,
+              "error": "Stopped by user"
+            }
+          ],
+          "runtime_work": [],
+          "runtime_requests": [
+            {
+              "id": "question",
+              "agent": "lead",
+              "status": "expired",
+              "method": "agent/asyncQuestion"
+            }
+          ],
+          "runtime_monitors": [],
+          "runtime_tasks": [],
+          "runtime_tool_requests": [],
+          "runtime_events": [
+            {
+              "id": "pending",
+              "agent": "lead",
+              "status": "cancelled",
+              "epoch": 3
+            },
+            {
+              "id": "reserved",
+              "agent": "lead",
+              "status": "reserved",
+              "epoch": 3
+            },
+            {
+              "id": "dispatching",
+              "agent": "lead",
+              "status": "dispatching",
+              "epoch": 3
+            },
+            {
+              "id": "uncertain",
+              "agent": "lead",
+              "status": "uncertain",
+              "epoch": 3
+            }
+          ]
+        }
+      },
+      "notifications": [],
+      "notificationPayloads": [],
+      "syncEntities": [
+        [
+          "agent",
+          "grandchild",
+          "{\"collection\":\"agent\",\"id\":\"grandchild\",\"value\":{\"autoWake\":false,\"canSend\":true,\"commandProgress\":[],\"created\":1.0,\"cwd\":\"/fixture\",\"epoch\":9,\"error\":\"Stopped by user\",\"id\":\"grandchild\",\"inFlight\":false,\"isLead\":false,\"kind\":\"agent\",\"launcherAlive\":true,\"name\":\"Worker\",\"nextTurnSettingsSupported\":true,\"overview\":{\"result\":\"\",\"resultFile\":null,\"resultTruncated\":false,\"resultTurnId\":null,\"task\":\"\",\"taskTruncated\":false},\"parentId\":\"worker\",\"readStateSupported\":true,\"rootId\":\"legacy-other-root\",\"serverId\":null,\"source\":\"managed\",\"stall\":null,\"startWait\":null,\"status\":\"paused\"}}",
+          0
+        ],
+        [
+          "agent",
+          "lead",
+          "{\"collection\":\"agent\",\"id\":\"lead\",\"value\":{\"accountKey\":\"fixture-account\",\"agentMode\":\"multi\",\"agentModeRevision\":0,\"agentModeSupported\":true,\"autoWake\":false,\"canSend\":true,\"commandProgress\":[],\"concurrency\":32,\"created\":1.0,\"cwd\":\"/fixture\",\"empty\":false,\"epoch\":4,\"error\":\"Stopped by user\",\"id\":\"lead\",\"inFlight\":true,\"isLead\":true,\"kind\":\"agent\",\"launcherAlive\":true,\"name\":\"Lead\",\"nextTurnSettingsSupported\":true,\"parentId\":null,\"readStateSupported\":true,\"rootId\":\"lead\",\"serverId\":null,\"source\":\"managed\",\"stall\":null,\"startAttempt\":{},\"startWait\":null,\"status\":\"paused\",\"subagentConcurrencyVersion\":2,\"threadId\":\"thread\"}}",
+          0
+        ],
+        [
+          "agent",
+          "unrelated",
+          "{\"collection\":\"agent\",\"id\":\"unrelated\",\"value\":{\"autoWake\":true,\"canSend\":true,\"commandProgress\":[],\"created\":1.0,\"cwd\":\"/fixture\",\"epoch\":8,\"id\":\"unrelated\",\"inFlight\":false,\"isLead\":false,\"kind\":\"agent\",\"launcherAlive\":true,\"name\":\"Worker\",\"nextTurnSettingsSupported\":true,\"overview\":{\"result\":\"\",\"resultFile\":null,\"resultTruncated\":false,\"resultTurnId\":null,\"task\":\"\",\"taskTruncated\":false},\"parentId\":\"missing\",\"readStateSupported\":true,\"rootId\":\"lead\",\"serverId\":null,\"source\":\"managed\",\"stall\":null,\"startWait\":null,\"status\":\"completed\"}}",
+          0
+        ],
+        [
+          "agent",
+          "worker",
+          "{\"collection\":\"agent\",\"id\":\"worker\",\"value\":{\"autoWake\":false,\"canSend\":true,\"commandProgress\":[],\"created\":1.0,\"cwd\":\"/fixture\",\"epoch\":9,\"error\":\"Stopped by user\",\"id\":\"worker\",\"inFlight\":false,\"isLead\":false,\"kind\":\"agent\",\"launcherAlive\":true,\"name\":\"Worker\",\"nextTurnSettingsSupported\":true,\"overview\":{\"result\":\"\",\"resultFile\":null,\"resultTruncated\":false,\"resultTurnId\":null,\"task\":\"\",\"taskTruncated\":false},\"parentId\":\"lead\",\"readStateSupported\":true,\"rootId\":\"lead\",\"serverId\":null,\"source\":\"managed\",\"stall\":null,\"startWait\":null,\"status\":\"paused\"}}",
+          0
+        ],
+        [
+          "event",
+          "dispatching",
+          "{\"collection\":\"event\",\"id\":\"dispatching\",\"value\":{\"agent\":\"lead\",\"created\":1.0,\"error\":null,\"id\":\"dispatching\",\"kind\":\"user\",\"status\":\"dispatching\"}}",
+          0
+        ],
+        [
+          "event",
+          "pending",
+          "{\"collection\":\"event\",\"id\":\"pending\",\"value\":{\"agent\":\"lead\",\"created\":1.0,\"error\":null,\"id\":\"pending\",\"kind\":\"user\",\"status\":\"cancelled\"}}",
+          0
+        ],
+        [
+          "event",
+          "reserved",
+          "{\"collection\":\"event\",\"id\":\"reserved\",\"value\":{\"agent\":\"lead\",\"created\":1.0,\"error\":null,\"id\":\"reserved\",\"kind\":\"user\",\"status\":\"reserved\"}}",
+          0
+        ],
+        [
+          "event",
+          "uncertain",
+          "{\"collection\":\"event\",\"id\":\"uncertain\",\"value\":{\"agent\":\"lead\",\"created\":1.0,\"error\":null,\"id\":\"uncertain\",\"kind\":\"user\",\"status\":\"uncertain\"}}",
+          0
+        ]
+      ]
+    },
+    "interrupted": [
+      {
+        "id": "lead",
+        "rootId": "lead",
+        "parentId": null,
+        "epoch": 4,
+        "status": "paused",
+        "name": "Lead",
+        "cwd": "/fixture",
+        "isLead": true,
+        "autoWake": false,
+        "inFlight": true,
+        "created": 1.0,
+        "concurrency": 32,
+        "subagentConcurrencyVersion": 2,
+        "agentMode": "multi",
+        "agentModeRevision": 0,
+        "agentModeSupported": true,
+        "maxAgentsExplicit": false,
+        "startAttempt": {
+          "id": "attempt",
+          "epoch": 3,
+          "submitted": true,
+          "connectionGeneration": 7,
+          "connectionId": "fixture-connection",
+          "accountKey": "fixture-account",
+          "requestTicket": 91,
+          "events": []
+        },
+        "threadId": "thread",
+        "accountKey": "fixture-account",
+        "error": "Stopped by user",
+        "cancelledPark": {
+          "event": "ready",
+          "epoch": 3,
+          "sequence": 1,
+          "cancelledAtEpoch": 4
+        }
+      },
+      {
+        "id": "worker",
+        "rootId": "lead",
+        "parentId": "lead",
+        "epoch": 9,
+        "status": "paused",
+        "name": "Worker",
+        "cwd": "/fixture",
+        "isLead": false,
+        "autoWake": false,
+        "inFlight": false,
+        "created": 1.0,
+        "error": "Stopped by user"
+      },
+      {
+        "id": "grandchild",
+        "rootId": "legacy-other-root",
+        "parentId": "worker",
+        "epoch": 9,
+        "status": "paused",
+        "name": "Worker",
+        "cwd": "/fixture",
+        "isLead": false,
+        "autoWake": false,
+        "inFlight": false,
+        "created": 1.0,
+        "error": "Stopped by user"
+      }
+    ]
+  },
+  {
+    "name": "unknown-False",
+    "records": {
+      "tables": {
+        "runtime_agents": [
+          {
+            "id": "lead",
+            "rootId": "lead",
+            "parentId": null,
+            "epoch": 3,
+            "status": "starting",
+            "name": "Lead",
+            "cwd": "/fixture",
+            "isLead": true,
+            "autoWake": true,
+            "inFlight": true,
+            "created": 1.0,
+            "concurrency": 32,
+            "subagentConcurrencyVersion": 2,
+            "agentMode": "multi",
+            "agentModeRevision": 0,
+            "agentModeSupported": true,
+            "maxAgentsExplicit": false,
+            "startAttempt": {
+              "id": "attempt",
+              "epoch": 3,
+              "submitted": true,
+              "connectionGeneration": 7,
+              "connectionId": "fixture-connection",
+              "accountKey": "fixture-account",
+              "requestTicket": 91,
+              "events": [],
+              "executionOutcome": "unknown"
+            },
+            "threadId": "thread",
+            "accountKey": "fixture-account",
+            "error": "turn/start response timed out; outcome unknown",
+            "parkedEvent": "ready",
+            "parkAfterTurn": true,
+            "parkReceipt": {
+              "event": "ready",
+              "epoch": 3,
+              "sequence": 1
+            },
+            "capacityRetryCount": 2
+          },
+          {
+            "id": "worker",
+            "rootId": "lead",
+            "parentId": "lead",
+            "epoch": 8,
+            "status": "completed",
+            "name": "Worker",
+            "cwd": "/fixture",
+            "isLead": false,
+            "autoWake": true,
+            "inFlight": false,
+            "created": 1.0
+          },
+          {
+            "id": "unrelated",
+            "rootId": "lead",
+            "parentId": "missing",
+            "epoch": 8,
+            "status": "completed",
+            "name": "Worker",
+            "cwd": "/fixture",
+            "isLead": false,
+            "autoWake": true,
+            "inFlight": false,
+            "created": 1.0
+          },
+          {
+            "id": "grandchild",
+            "rootId": "legacy-other-root",
+            "parentId": "worker",
+            "epoch": 8,
+            "status": "completed",
+            "name": "Worker",
+            "cwd": "/fixture",
+            "isLead": false,
+            "autoWake": true,
+            "inFlight": false,
+            "created": 1.0
+          }
+        ],
+        "runtime_work": [],
+        "runtime_requests": [
+          {
+            "id": "question",
+            "agent": "lead",
+            "status": "pending",
+            "method": "agent/asyncQuestion"
+          }
+        ],
+        "runtime_monitors": [],
+        "runtime_tasks": [],
+        "runtime_tool_requests": [],
+        "runtime_events": [
+          {
+            "id": "pending",
+            "agent": "lead",
+            "status": "pending",
+            "epoch": 3
+          },
+          {
+            "id": "reserved",
+            "agent": "lead",
+            "status": "reserved",
+            "epoch": 3
+          },
+          {
+            "id": "dispatching",
+            "agent": "lead",
+            "status": "dispatching",
+            "epoch": 3
+          },
+          {
+            "id": "uncertain",
+            "agent": "lead",
+            "status": "uncertain",
+            "epoch": 3
+          }
+        ]
+      }
+    },
+    "action": {
+      "action": "stop",
+      "target": "lead",
+      "descendants": false
+    },
+    "now": 1234567.5,
+    "expected": {
+      "result": {
+        "stopped": ["lead"]
+      },
+      "records": {
+        "tables": {
+          "runtime_agents": [
+            {
+              "id": "lead",
+              "rootId": "lead",
+              "parentId": null,
+              "epoch": 4,
+              "status": "paused",
+              "name": "Lead",
+              "cwd": "/fixture",
+              "isLead": true,
+              "autoWake": false,
+              "inFlight": true,
+              "created": 1.0,
+              "concurrency": 32,
+              "subagentConcurrencyVersion": 2,
+              "agentMode": "multi",
+              "agentModeRevision": 0,
+              "agentModeSupported": true,
+              "maxAgentsExplicit": false,
+              "startAttempt": {
+                "id": "attempt",
+                "epoch": 3,
+                "submitted": true,
+                "connectionGeneration": 7,
+                "connectionId": "fixture-connection",
+                "accountKey": "fixture-account",
+                "requestTicket": 91,
+                "events": [],
+                "executionOutcome": "unknown"
+              },
+              "threadId": "thread",
+              "accountKey": "fixture-account",
+              "error": "Stopped by user",
+              "cancelledPark": {
+                "event": "ready",
+                "epoch": 3,
+                "sequence": 1,
+                "cancelledAtEpoch": 4
+              }
+            },
+            {
+              "id": "worker",
+              "rootId": "lead",
+              "parentId": "lead",
+              "epoch": 8,
+              "status": "completed",
+              "name": "Worker",
+              "cwd": "/fixture",
+              "isLead": false,
+              "autoWake": true,
+              "inFlight": false,
+              "created": 1.0
+            },
+            {
+              "id": "unrelated",
+              "rootId": "lead",
+              "parentId": "missing",
+              "epoch": 8,
+              "status": "completed",
+              "name": "Worker",
+              "cwd": "/fixture",
+              "isLead": false,
+              "autoWake": true,
+              "inFlight": false,
+              "created": 1.0
+            },
+            {
+              "id": "grandchild",
+              "rootId": "legacy-other-root",
+              "parentId": "worker",
+              "epoch": 8,
+              "status": "completed",
+              "name": "Worker",
+              "cwd": "/fixture",
+              "isLead": false,
+              "autoWake": true,
+              "inFlight": false,
+              "created": 1.0
+            }
+          ],
+          "runtime_work": [],
+          "runtime_requests": [
+            {
+              "id": "question",
+              "agent": "lead",
+              "status": "expired",
+              "method": "agent/asyncQuestion"
+            }
+          ],
+          "runtime_monitors": [],
+          "runtime_tasks": [],
+          "runtime_tool_requests": [],
+          "runtime_events": [
+            {
+              "id": "pending",
+              "agent": "lead",
+              "status": "cancelled",
+              "epoch": 3
+            },
+            {
+              "id": "reserved",
+              "agent": "lead",
+              "status": "reserved",
+              "epoch": 3
+            },
+            {
+              "id": "dispatching",
+              "agent": "lead",
+              "status": "dispatching",
+              "epoch": 3
+            },
+            {
+              "id": "uncertain",
+              "agent": "lead",
+              "status": "uncertain",
+              "epoch": 3
+            }
+          ]
+        }
+      },
+      "notifications": [],
+      "notificationPayloads": [],
+      "syncEntities": [
+        [
+          "agent",
+          "grandchild",
+          "{\"collection\":\"agent\",\"id\":\"grandchild\",\"value\":{\"autoWake\":true,\"canSend\":true,\"commandProgress\":[],\"created\":1.0,\"cwd\":\"/fixture\",\"epoch\":8,\"id\":\"grandchild\",\"inFlight\":false,\"isLead\":false,\"kind\":\"agent\",\"launcherAlive\":true,\"name\":\"Worker\",\"nextTurnSettingsSupported\":true,\"overview\":{\"result\":\"\",\"resultFile\":null,\"resultTruncated\":false,\"resultTurnId\":null,\"task\":\"\",\"taskTruncated\":false},\"parentId\":\"worker\",\"readStateSupported\":true,\"rootId\":\"legacy-other-root\",\"serverId\":null,\"source\":\"managed\",\"stall\":null,\"startWait\":null,\"status\":\"completed\"}}",
+          0
+        ],
+        [
+          "agent",
+          "lead",
+          "{\"collection\":\"agent\",\"id\":\"lead\",\"value\":{\"accountKey\":\"fixture-account\",\"agentMode\":\"multi\",\"agentModeRevision\":0,\"agentModeSupported\":true,\"autoWake\":false,\"canSend\":true,\"commandProgress\":[],\"concurrency\":32,\"created\":1.0,\"cwd\":\"/fixture\",\"empty\":false,\"epoch\":4,\"error\":\"Stopped by user\",\"id\":\"lead\",\"inFlight\":true,\"isLead\":true,\"kind\":\"agent\",\"launcherAlive\":true,\"name\":\"Lead\",\"nextTurnSettingsSupported\":true,\"parentId\":null,\"readStateSupported\":true,\"rootId\":\"lead\",\"serverId\":null,\"source\":\"managed\",\"stall\":null,\"startAttempt\":{},\"startWait\":null,\"status\":\"paused\",\"subagentConcurrencyVersion\":2,\"threadId\":\"thread\"}}",
+          0
+        ],
+        [
+          "agent",
+          "unrelated",
+          "{\"collection\":\"agent\",\"id\":\"unrelated\",\"value\":{\"autoWake\":true,\"canSend\":true,\"commandProgress\":[],\"created\":1.0,\"cwd\":\"/fixture\",\"epoch\":8,\"id\":\"unrelated\",\"inFlight\":false,\"isLead\":false,\"kind\":\"agent\",\"launcherAlive\":true,\"name\":\"Worker\",\"nextTurnSettingsSupported\":true,\"overview\":{\"result\":\"\",\"resultFile\":null,\"resultTruncated\":false,\"resultTurnId\":null,\"task\":\"\",\"taskTruncated\":false},\"parentId\":\"missing\",\"readStateSupported\":true,\"rootId\":\"lead\",\"serverId\":null,\"source\":\"managed\",\"stall\":null,\"startWait\":null,\"status\":\"completed\"}}",
+          0
+        ],
+        [
+          "agent",
+          "worker",
+          "{\"collection\":\"agent\",\"id\":\"worker\",\"value\":{\"autoWake\":true,\"canSend\":true,\"commandProgress\":[],\"created\":1.0,\"cwd\":\"/fixture\",\"epoch\":8,\"id\":\"worker\",\"inFlight\":false,\"isLead\":false,\"kind\":\"agent\",\"launcherAlive\":true,\"name\":\"Worker\",\"nextTurnSettingsSupported\":true,\"overview\":{\"result\":\"\",\"resultFile\":null,\"resultTruncated\":false,\"resultTurnId\":null,\"task\":\"\",\"taskTruncated\":false},\"parentId\":\"lead\",\"readStateSupported\":true,\"rootId\":\"lead\",\"serverId\":null,\"source\":\"managed\",\"stall\":null,\"startWait\":null,\"status\":\"completed\"}}",
+          0
+        ],
+        [
+          "event",
+          "dispatching",
+          "{\"collection\":\"event\",\"id\":\"dispatching\",\"value\":{\"agent\":\"lead\",\"created\":1.0,\"error\":null,\"id\":\"dispatching\",\"kind\":\"user\",\"status\":\"dispatching\"}}",
+          0
+        ],
+        [
+          "event",
+          "pending",
+          "{\"collection\":\"event\",\"id\":\"pending\",\"value\":{\"agent\":\"lead\",\"created\":1.0,\"error\":null,\"id\":\"pending\",\"kind\":\"user\",\"status\":\"cancelled\"}}",
+          0
+        ],
+        [
+          "event",
+          "reserved",
+          "{\"collection\":\"event\",\"id\":\"reserved\",\"value\":{\"agent\":\"lead\",\"created\":1.0,\"error\":null,\"id\":\"reserved\",\"kind\":\"user\",\"status\":\"reserved\"}}",
+          0
+        ],
+        [
+          "event",
+          "uncertain",
+          "{\"collection\":\"event\",\"id\":\"uncertain\",\"value\":{\"agent\":\"lead\",\"created\":1.0,\"error\":null,\"id\":\"uncertain\",\"kind\":\"user\",\"status\":\"uncertain\"}}",
+          0
+        ]
+      ]
+    },
+    "interrupted": [
+      {
+        "id": "lead",
+        "rootId": "lead",
+        "parentId": null,
+        "epoch": 4,
+        "status": "paused",
+        "name": "Lead",
+        "cwd": "/fixture",
+        "isLead": true,
+        "autoWake": false,
+        "inFlight": true,
+        "created": 1.0,
+        "concurrency": 32,
+        "subagentConcurrencyVersion": 2,
+        "agentMode": "multi",
+        "agentModeRevision": 0,
+        "agentModeSupported": true,
+        "maxAgentsExplicit": false,
+        "startAttempt": {
+          "id": "attempt",
+          "epoch": 3,
+          "submitted": true,
+          "connectionGeneration": 7,
+          "connectionId": "fixture-connection",
+          "accountKey": "fixture-account",
+          "requestTicket": 91,
+          "events": [],
+          "executionOutcome": "unknown"
+        },
+        "threadId": "thread",
+        "accountKey": "fixture-account",
+        "error": "Stopped by user",
+        "cancelledPark": {
+          "event": "ready",
+          "epoch": 3,
+          "sequence": 1,
+          "cancelledAtEpoch": 4
+        }
+      }
+    ]
+  },
+  {
+    "name": "unknown-True",
+    "records": {
+      "tables": {
+        "runtime_agents": [
+          {
+            "id": "lead",
+            "rootId": "lead",
+            "parentId": null,
+            "epoch": 3,
+            "status": "starting",
+            "name": "Lead",
+            "cwd": "/fixture",
+            "isLead": true,
+            "autoWake": true,
+            "inFlight": true,
+            "created": 1.0,
+            "concurrency": 32,
+            "subagentConcurrencyVersion": 2,
+            "agentMode": "multi",
+            "agentModeRevision": 0,
+            "agentModeSupported": true,
+            "maxAgentsExplicit": false,
+            "startAttempt": {
+              "id": "attempt",
+              "epoch": 3,
+              "submitted": true,
+              "connectionGeneration": 7,
+              "connectionId": "fixture-connection",
+              "accountKey": "fixture-account",
+              "requestTicket": 91,
+              "events": [],
+              "executionOutcome": "unknown"
+            },
+            "threadId": "thread",
+            "accountKey": "fixture-account",
+            "error": "turn/start response timed out; outcome unknown",
+            "parkedEvent": "ready",
+            "parkAfterTurn": true,
+            "parkReceipt": {
+              "event": "ready",
+              "epoch": 3,
+              "sequence": 1
+            },
+            "capacityRetryCount": 2
+          },
+          {
+            "id": "worker",
+            "rootId": "lead",
+            "parentId": "lead",
+            "epoch": 8,
+            "status": "completed",
+            "name": "Worker",
+            "cwd": "/fixture",
+            "isLead": false,
+            "autoWake": true,
+            "inFlight": false,
+            "created": 1.0
+          },
+          {
+            "id": "unrelated",
+            "rootId": "lead",
+            "parentId": "missing",
+            "epoch": 8,
+            "status": "completed",
+            "name": "Worker",
+            "cwd": "/fixture",
+            "isLead": false,
+            "autoWake": true,
+            "inFlight": false,
+            "created": 1.0
+          },
+          {
+            "id": "grandchild",
+            "rootId": "legacy-other-root",
+            "parentId": "worker",
+            "epoch": 8,
+            "status": "completed",
+            "name": "Worker",
+            "cwd": "/fixture",
+            "isLead": false,
+            "autoWake": true,
+            "inFlight": false,
+            "created": 1.0
+          }
+        ],
+        "runtime_work": [],
+        "runtime_requests": [
+          {
+            "id": "question",
+            "agent": "lead",
+            "status": "pending",
+            "method": "agent/asyncQuestion"
+          }
+        ],
+        "runtime_monitors": [],
+        "runtime_tasks": [],
+        "runtime_tool_requests": [],
+        "runtime_events": [
+          {
+            "id": "pending",
+            "agent": "lead",
+            "status": "pending",
+            "epoch": 3
+          },
+          {
+            "id": "reserved",
+            "agent": "lead",
+            "status": "reserved",
+            "epoch": 3
+          },
+          {
+            "id": "dispatching",
+            "agent": "lead",
+            "status": "dispatching",
+            "epoch": 3
+          },
+          {
+            "id": "uncertain",
+            "agent": "lead",
+            "status": "uncertain",
+            "epoch": 3
+          }
+        ]
+      }
+    },
+    "action": {
+      "action": "stop",
+      "target": "lead",
+      "descendants": true
+    },
+    "now": 1234567.5,
+    "expected": {
+      "result": {
+        "stopped": ["grandchild", "lead", "worker"]
+      },
+      "records": {
+        "tables": {
+          "runtime_agents": [
+            {
+              "id": "lead",
+              "rootId": "lead",
+              "parentId": null,
+              "epoch": 4,
+              "status": "paused",
+              "name": "Lead",
+              "cwd": "/fixture",
+              "isLead": true,
+              "autoWake": false,
+              "inFlight": true,
+              "created": 1.0,
+              "concurrency": 32,
+              "subagentConcurrencyVersion": 2,
+              "agentMode": "multi",
+              "agentModeRevision": 0,
+              "agentModeSupported": true,
+              "maxAgentsExplicit": false,
+              "startAttempt": {
+                "id": "attempt",
+                "epoch": 3,
+                "submitted": true,
+                "connectionGeneration": 7,
+                "connectionId": "fixture-connection",
+                "accountKey": "fixture-account",
+                "requestTicket": 91,
+                "events": [],
+                "executionOutcome": "unknown"
+              },
+              "threadId": "thread",
+              "accountKey": "fixture-account",
+              "error": "Stopped by user",
+              "cancelledPark": {
+                "event": "ready",
+                "epoch": 3,
+                "sequence": 1,
+                "cancelledAtEpoch": 4
+              }
+            },
+            {
+              "id": "worker",
+              "rootId": "lead",
+              "parentId": "lead",
+              "epoch": 9,
+              "status": "paused",
+              "name": "Worker",
+              "cwd": "/fixture",
+              "isLead": false,
+              "autoWake": false,
+              "inFlight": false,
+              "created": 1.0,
+              "error": "Stopped by user"
+            },
+            {
+              "id": "unrelated",
+              "rootId": "lead",
+              "parentId": "missing",
+              "epoch": 8,
+              "status": "completed",
+              "name": "Worker",
+              "cwd": "/fixture",
+              "isLead": false,
+              "autoWake": true,
+              "inFlight": false,
+              "created": 1.0
+            },
+            {
+              "id": "grandchild",
+              "rootId": "legacy-other-root",
+              "parentId": "worker",
+              "epoch": 9,
+              "status": "paused",
+              "name": "Worker",
+              "cwd": "/fixture",
+              "isLead": false,
+              "autoWake": false,
+              "inFlight": false,
+              "created": 1.0,
+              "error": "Stopped by user"
+            }
+          ],
+          "runtime_work": [],
+          "runtime_requests": [
+            {
+              "id": "question",
+              "agent": "lead",
+              "status": "expired",
+              "method": "agent/asyncQuestion"
+            }
+          ],
+          "runtime_monitors": [],
+          "runtime_tasks": [],
+          "runtime_tool_requests": [],
+          "runtime_events": [
+            {
+              "id": "pending",
+              "agent": "lead",
+              "status": "cancelled",
+              "epoch": 3
+            },
+            {
+              "id": "reserved",
+              "agent": "lead",
+              "status": "reserved",
+              "epoch": 3
+            },
+            {
+              "id": "dispatching",
+              "agent": "lead",
+              "status": "dispatching",
+              "epoch": 3
+            },
+            {
+              "id": "uncertain",
+              "agent": "lead",
+              "status": "uncertain",
+              "epoch": 3
+            }
+          ]
+        }
+      },
+      "notifications": [],
+      "notificationPayloads": [],
+      "syncEntities": [
+        [
+          "agent",
+          "grandchild",
+          "{\"collection\":\"agent\",\"id\":\"grandchild\",\"value\":{\"autoWake\":false,\"canSend\":true,\"commandProgress\":[],\"created\":1.0,\"cwd\":\"/fixture\",\"epoch\":9,\"error\":\"Stopped by user\",\"id\":\"grandchild\",\"inFlight\":false,\"isLead\":false,\"kind\":\"agent\",\"launcherAlive\":true,\"name\":\"Worker\",\"nextTurnSettingsSupported\":true,\"overview\":{\"result\":\"\",\"resultFile\":null,\"resultTruncated\":false,\"resultTurnId\":null,\"task\":\"\",\"taskTruncated\":false},\"parentId\":\"worker\",\"readStateSupported\":true,\"rootId\":\"legacy-other-root\",\"serverId\":null,\"source\":\"managed\",\"stall\":null,\"startWait\":null,\"status\":\"paused\"}}",
+          0
+        ],
+        [
+          "agent",
+          "lead",
+          "{\"collection\":\"agent\",\"id\":\"lead\",\"value\":{\"accountKey\":\"fixture-account\",\"agentMode\":\"multi\",\"agentModeRevision\":0,\"agentModeSupported\":true,\"autoWake\":false,\"canSend\":true,\"commandProgress\":[],\"concurrency\":32,\"created\":1.0,\"cwd\":\"/fixture\",\"empty\":false,\"epoch\":4,\"error\":\"Stopped by user\",\"id\":\"lead\",\"inFlight\":true,\"isLead\":true,\"kind\":\"agent\",\"launcherAlive\":true,\"name\":\"Lead\",\"nextTurnSettingsSupported\":true,\"parentId\":null,\"readStateSupported\":true,\"rootId\":\"lead\",\"serverId\":null,\"source\":\"managed\",\"stall\":null,\"startAttempt\":{},\"startWait\":null,\"status\":\"paused\",\"subagentConcurrencyVersion\":2,\"threadId\":\"thread\"}}",
+          0
+        ],
+        [
+          "agent",
+          "unrelated",
+          "{\"collection\":\"agent\",\"id\":\"unrelated\",\"value\":{\"autoWake\":true,\"canSend\":true,\"commandProgress\":[],\"created\":1.0,\"cwd\":\"/fixture\",\"epoch\":8,\"id\":\"unrelated\",\"inFlight\":false,\"isLead\":false,\"kind\":\"agent\",\"launcherAlive\":true,\"name\":\"Worker\",\"nextTurnSettingsSupported\":true,\"overview\":{\"result\":\"\",\"resultFile\":null,\"resultTruncated\":false,\"resultTurnId\":null,\"task\":\"\",\"taskTruncated\":false},\"parentId\":\"missing\",\"readStateSupported\":true,\"rootId\":\"lead\",\"serverId\":null,\"source\":\"managed\",\"stall\":null,\"startWait\":null,\"status\":\"completed\"}}",
+          0
+        ],
+        [
+          "agent",
+          "worker",
+          "{\"collection\":\"agent\",\"id\":\"worker\",\"value\":{\"autoWake\":false,\"canSend\":true,\"commandProgress\":[],\"created\":1.0,\"cwd\":\"/fixture\",\"epoch\":9,\"error\":\"Stopped by user\",\"id\":\"worker\",\"inFlight\":false,\"isLead\":false,\"kind\":\"agent\",\"launcherAlive\":true,\"name\":\"Worker\",\"nextTurnSettingsSupported\":true,\"overview\":{\"result\":\"\",\"resultFile\":null,\"resultTruncated\":false,\"resultTurnId\":null,\"task\":\"\",\"taskTruncated\":false},\"parentId\":\"lead\",\"readStateSupported\":true,\"rootId\":\"lead\",\"serverId\":null,\"source\":\"managed\",\"stall\":null,\"startWait\":null,\"status\":\"paused\"}}",
+          0
+        ],
+        [
+          "event",
+          "dispatching",
+          "{\"collection\":\"event\",\"id\":\"dispatching\",\"value\":{\"agent\":\"lead\",\"created\":1.0,\"error\":null,\"id\":\"dispatching\",\"kind\":\"user\",\"status\":\"dispatching\"}}",
+          0
+        ],
+        [
+          "event",
+          "pending",
+          "{\"collection\":\"event\",\"id\":\"pending\",\"value\":{\"agent\":\"lead\",\"created\":1.0,\"error\":null,\"id\":\"pending\",\"kind\":\"user\",\"status\":\"cancelled\"}}",
+          0
+        ],
+        [
+          "event",
+          "reserved",
+          "{\"collection\":\"event\",\"id\":\"reserved\",\"value\":{\"agent\":\"lead\",\"created\":1.0,\"error\":null,\"id\":\"reserved\",\"kind\":\"user\",\"status\":\"reserved\"}}",
+          0
+        ],
+        [
+          "event",
+          "uncertain",
+          "{\"collection\":\"event\",\"id\":\"uncertain\",\"value\":{\"agent\":\"lead\",\"created\":1.0,\"error\":null,\"id\":\"uncertain\",\"kind\":\"user\",\"status\":\"uncertain\"}}",
+          0
+        ]
+      ]
+    },
+    "interrupted": [
+      {
+        "id": "lead",
+        "rootId": "lead",
+        "parentId": null,
+        "epoch": 4,
+        "status": "paused",
+        "name": "Lead",
+        "cwd": "/fixture",
+        "isLead": true,
+        "autoWake": false,
+        "inFlight": true,
+        "created": 1.0,
+        "concurrency": 32,
+        "subagentConcurrencyVersion": 2,
+        "agentMode": "multi",
+        "agentModeRevision": 0,
+        "agentModeSupported": true,
+        "maxAgentsExplicit": false,
+        "startAttempt": {
+          "id": "attempt",
+          "epoch": 3,
+          "submitted": true,
+          "connectionGeneration": 7,
+          "connectionId": "fixture-connection",
+          "accountKey": "fixture-account",
+          "requestTicket": 91,
+          "events": [],
+          "executionOutcome": "unknown"
+        },
+        "threadId": "thread",
+        "accountKey": "fixture-account",
+        "error": "Stopped by user",
+        "cancelledPark": {
+          "event": "ready",
+          "epoch": 3,
+          "sequence": 1,
+          "cancelledAtEpoch": 4
+        }
+      },
+      {
+        "id": "worker",
+        "rootId": "lead",
+        "parentId": "lead",
+        "epoch": 9,
+        "status": "paused",
+        "name": "Worker",
+        "cwd": "/fixture",
+        "isLead": false,
+        "autoWake": false,
+        "inFlight": false,
+        "created": 1.0,
+        "error": "Stopped by user"
+      },
+      {
+        "id": "grandchild",
+        "rootId": "legacy-other-root",
+        "parentId": "worker",
+        "epoch": 9,
+        "status": "paused",
+        "name": "Worker",
+        "cwd": "/fixture",
+        "isLead": false,
+        "autoWake": false,
+        "inFlight": false,
+        "created": 1.0,
+        "error": "Stopped by user"
+      }
+    ]
+  },
+  {
+    "name": "running-False",
+    "records": {
+      "tables": {
+        "runtime_agents": [
+          {
+            "id": "lead",
+            "rootId": "lead",
+            "parentId": null,
+            "epoch": 3,
+            "status": "running",
+            "name": "Lead",
+            "cwd": "/fixture",
+            "isLead": true,
+            "autoWake": true,
+            "inFlight": true,
+            "created": 1.0,
+            "concurrency": 32,
+            "subagentConcurrencyVersion": 2,
+            "agentMode": "multi",
+            "agentModeRevision": 0,
+            "agentModeSupported": true,
+            "maxAgentsExplicit": false,
+            "startAttempt": {
+              "id": "attempt",
+              "epoch": 3,
+              "submitted": true,
+              "connectionGeneration": 7,
+              "connectionId": "fixture-connection",
+              "accountKey": "fixture-account",
+              "requestTicket": 91,
+              "events": [],
+              "turnId": "turn"
+            },
+            "threadId": "thread",
+            "accountKey": "fixture-account",
+            "turnId": "turn",
+            "parkedEvent": "ready",
+            "parkAfterTurn": true,
+            "parkReceipt": {
+              "event": "ready",
+              "epoch": 3,
+              "sequence": 1
+            },
+            "capacityRetryCount": 2
+          },
+          {
+            "id": "worker",
+            "rootId": "lead",
+            "parentId": "lead",
+            "epoch": 8,
+            "status": "completed",
+            "name": "Worker",
+            "cwd": "/fixture",
+            "isLead": false,
+            "autoWake": true,
+            "inFlight": false,
+            "created": 1.0
+          },
+          {
+            "id": "unrelated",
+            "rootId": "lead",
+            "parentId": "missing",
+            "epoch": 8,
+            "status": "completed",
+            "name": "Worker",
+            "cwd": "/fixture",
+            "isLead": false,
+            "autoWake": true,
+            "inFlight": false,
+            "created": 1.0
+          },
+          {
+            "id": "grandchild",
+            "rootId": "legacy-other-root",
+            "parentId": "worker",
+            "epoch": 8,
+            "status": "completed",
+            "name": "Worker",
+            "cwd": "/fixture",
+            "isLead": false,
+            "autoWake": true,
+            "inFlight": false,
+            "created": 1.0
+          }
+        ],
+        "runtime_work": [],
+        "runtime_requests": [
+          {
+            "id": "question",
+            "agent": "lead",
+            "status": "pending",
+            "method": "agent/asyncQuestion"
+          }
+        ],
+        "runtime_monitors": [],
+        "runtime_tasks": [],
+        "runtime_tool_requests": [],
+        "runtime_events": [
+          {
+            "id": "pending",
+            "agent": "lead",
+            "status": "pending",
+            "epoch": 3
+          },
+          {
+            "id": "reserved",
+            "agent": "lead",
+            "status": "reserved",
+            "epoch": 3
+          },
+          {
+            "id": "dispatching",
+            "agent": "lead",
+            "status": "dispatching",
+            "epoch": 3
+          },
+          {
+            "id": "uncertain",
+            "agent": "lead",
+            "status": "uncertain",
+            "epoch": 3
+          }
+        ]
+      }
+    },
+    "action": {
+      "action": "stop",
+      "target": "lead",
+      "descendants": false
+    },
+    "now": 1234567.5,
+    "expected": {
+      "result": {
+        "stopped": ["lead"]
+      },
+      "records": {
+        "tables": {
+          "runtime_agents": [
+            {
+              "id": "lead",
+              "rootId": "lead",
+              "parentId": null,
+              "epoch": 4,
+              "status": "paused",
+              "name": "Lead",
+              "cwd": "/fixture",
+              "isLead": true,
+              "autoWake": false,
+              "inFlight": true,
+              "created": 1.0,
+              "concurrency": 32,
+              "subagentConcurrencyVersion": 2,
+              "agentMode": "multi",
+              "agentModeRevision": 0,
+              "agentModeSupported": true,
+              "maxAgentsExplicit": false,
+              "startAttempt": {
+                "id": "attempt",
+                "epoch": 3,
+                "submitted": true,
+                "connectionGeneration": 7,
+                "connectionId": "fixture-connection",
+                "accountKey": "fixture-account",
+                "requestTicket": 91,
+                "events": [],
+                "turnId": "turn"
+              },
+              "threadId": "thread",
+              "accountKey": "fixture-account",
+              "turnId": "turn",
+              "error": "Stopped by user",
+              "cancelledPark": {
+                "event": "ready",
+                "epoch": 3,
+                "sequence": 1,
+                "cancelledAtEpoch": 4
+              }
+            },
+            {
+              "id": "worker",
+              "rootId": "lead",
+              "parentId": "lead",
+              "epoch": 8,
+              "status": "completed",
+              "name": "Worker",
+              "cwd": "/fixture",
+              "isLead": false,
+              "autoWake": true,
+              "inFlight": false,
+              "created": 1.0
+            },
+            {
+              "id": "unrelated",
+              "rootId": "lead",
+              "parentId": "missing",
+              "epoch": 8,
+              "status": "completed",
+              "name": "Worker",
+              "cwd": "/fixture",
+              "isLead": false,
+              "autoWake": true,
+              "inFlight": false,
+              "created": 1.0
+            },
+            {
+              "id": "grandchild",
+              "rootId": "legacy-other-root",
+              "parentId": "worker",
+              "epoch": 8,
+              "status": "completed",
+              "name": "Worker",
+              "cwd": "/fixture",
+              "isLead": false,
+              "autoWake": true,
+              "inFlight": false,
+              "created": 1.0
+            }
+          ],
+          "runtime_work": [],
+          "runtime_requests": [
+            {
+              "id": "question",
+              "agent": "lead",
+              "status": "expired",
+              "method": "agent/asyncQuestion"
+            }
+          ],
+          "runtime_monitors": [],
+          "runtime_tasks": [],
+          "runtime_tool_requests": [],
+          "runtime_events": [
+            {
+              "id": "pending",
+              "agent": "lead",
+              "status": "cancelled",
+              "epoch": 3
+            },
+            {
+              "id": "reserved",
+              "agent": "lead",
+              "status": "reserved",
+              "epoch": 3
+            },
+            {
+              "id": "dispatching",
+              "agent": "lead",
+              "status": "dispatching",
+              "epoch": 3
+            },
+            {
+              "id": "uncertain",
+              "agent": "lead",
+              "status": "uncertain",
+              "epoch": 3
+            }
+          ]
+        }
+      },
+      "notifications": [],
+      "notificationPayloads": [],
+      "syncEntities": [
+        [
+          "agent",
+          "grandchild",
+          "{\"collection\":\"agent\",\"id\":\"grandchild\",\"value\":{\"autoWake\":true,\"canSend\":true,\"commandProgress\":[],\"created\":1.0,\"cwd\":\"/fixture\",\"epoch\":8,\"id\":\"grandchild\",\"inFlight\":false,\"isLead\":false,\"kind\":\"agent\",\"launcherAlive\":true,\"name\":\"Worker\",\"nextTurnSettingsSupported\":true,\"overview\":{\"result\":\"\",\"resultFile\":null,\"resultTruncated\":false,\"resultTurnId\":null,\"task\":\"\",\"taskTruncated\":false},\"parentId\":\"worker\",\"readStateSupported\":true,\"rootId\":\"legacy-other-root\",\"serverId\":null,\"source\":\"managed\",\"stall\":null,\"startWait\":null,\"status\":\"completed\"}}",
+          0
+        ],
+        [
+          "agent",
+          "lead",
+          "{\"collection\":\"agent\",\"id\":\"lead\",\"value\":{\"accountKey\":\"fixture-account\",\"agentMode\":\"multi\",\"agentModeRevision\":0,\"agentModeSupported\":true,\"autoWake\":false,\"canSend\":true,\"commandProgress\":[],\"concurrency\":32,\"created\":1.0,\"cwd\":\"/fixture\",\"empty\":false,\"epoch\":4,\"error\":\"Stopped by user\",\"id\":\"lead\",\"inFlight\":true,\"isLead\":true,\"kind\":\"agent\",\"launcherAlive\":true,\"name\":\"Lead\",\"nextTurnSettingsSupported\":true,\"parentId\":null,\"readStateSupported\":true,\"rootId\":\"lead\",\"serverId\":null,\"source\":\"managed\",\"stall\":null,\"startAttempt\":{},\"startWait\":null,\"status\":\"paused\",\"subagentConcurrencyVersion\":2,\"threadId\":\"thread\",\"turnId\":\"turn\"}}",
+          0
+        ],
+        [
+          "agent",
+          "unrelated",
+          "{\"collection\":\"agent\",\"id\":\"unrelated\",\"value\":{\"autoWake\":true,\"canSend\":true,\"commandProgress\":[],\"created\":1.0,\"cwd\":\"/fixture\",\"epoch\":8,\"id\":\"unrelated\",\"inFlight\":false,\"isLead\":false,\"kind\":\"agent\",\"launcherAlive\":true,\"name\":\"Worker\",\"nextTurnSettingsSupported\":true,\"overview\":{\"result\":\"\",\"resultFile\":null,\"resultTruncated\":false,\"resultTurnId\":null,\"task\":\"\",\"taskTruncated\":false},\"parentId\":\"missing\",\"readStateSupported\":true,\"rootId\":\"lead\",\"serverId\":null,\"source\":\"managed\",\"stall\":null,\"startWait\":null,\"status\":\"completed\"}}",
+          0
+        ],
+        [
+          "agent",
+          "worker",
+          "{\"collection\":\"agent\",\"id\":\"worker\",\"value\":{\"autoWake\":true,\"canSend\":true,\"commandProgress\":[],\"created\":1.0,\"cwd\":\"/fixture\",\"epoch\":8,\"id\":\"worker\",\"inFlight\":false,\"isLead\":false,\"kind\":\"agent\",\"launcherAlive\":true,\"name\":\"Worker\",\"nextTurnSettingsSupported\":true,\"overview\":{\"result\":\"\",\"resultFile\":null,\"resultTruncated\":false,\"resultTurnId\":null,\"task\":\"\",\"taskTruncated\":false},\"parentId\":\"lead\",\"readStateSupported\":true,\"rootId\":\"lead\",\"serverId\":null,\"source\":\"managed\",\"stall\":null,\"startWait\":null,\"status\":\"completed\"}}",
+          0
+        ],
+        [
+          "event",
+          "dispatching",
+          "{\"collection\":\"event\",\"id\":\"dispatching\",\"value\":{\"agent\":\"lead\",\"created\":1.0,\"error\":null,\"id\":\"dispatching\",\"kind\":\"user\",\"status\":\"dispatching\"}}",
+          0
+        ],
+        [
+          "event",
+          "pending",
+          "{\"collection\":\"event\",\"id\":\"pending\",\"value\":{\"agent\":\"lead\",\"created\":1.0,\"error\":null,\"id\":\"pending\",\"kind\":\"user\",\"status\":\"cancelled\"}}",
+          0
+        ],
+        [
+          "event",
+          "reserved",
+          "{\"collection\":\"event\",\"id\":\"reserved\",\"value\":{\"agent\":\"lead\",\"created\":1.0,\"error\":null,\"id\":\"reserved\",\"kind\":\"user\",\"status\":\"reserved\"}}",
+          0
+        ],
+        [
+          "event",
+          "uncertain",
+          "{\"collection\":\"event\",\"id\":\"uncertain\",\"value\":{\"agent\":\"lead\",\"created\":1.0,\"error\":null,\"id\":\"uncertain\",\"kind\":\"user\",\"status\":\"uncertain\"}}",
+          0
+        ]
+      ]
+    },
+    "interrupted": [
+      {
+        "id": "lead",
+        "rootId": "lead",
+        "parentId": null,
+        "epoch": 4,
+        "status": "paused",
+        "name": "Lead",
+        "cwd": "/fixture",
+        "isLead": true,
+        "autoWake": false,
+        "inFlight": true,
+        "created": 1.0,
+        "concurrency": 32,
+        "subagentConcurrencyVersion": 2,
+        "agentMode": "multi",
+        "agentModeRevision": 0,
+        "agentModeSupported": true,
+        "maxAgentsExplicit": false,
+        "startAttempt": {
+          "id": "attempt",
+          "epoch": 3,
+          "submitted": true,
+          "connectionGeneration": 7,
+          "connectionId": "fixture-connection",
+          "accountKey": "fixture-account",
+          "requestTicket": 91,
+          "events": [],
+          "turnId": "turn"
+        },
+        "threadId": "thread",
+        "accountKey": "fixture-account",
+        "turnId": "turn",
+        "error": "Stopped by user",
+        "cancelledPark": {
+          "event": "ready",
+          "epoch": 3,
+          "sequence": 1,
+          "cancelledAtEpoch": 4
+        }
+      }
+    ]
+  },
+  {
+    "name": "running-True",
+    "records": {
+      "tables": {
+        "runtime_agents": [
+          {
+            "id": "lead",
+            "rootId": "lead",
+            "parentId": null,
+            "epoch": 3,
+            "status": "running",
+            "name": "Lead",
+            "cwd": "/fixture",
+            "isLead": true,
+            "autoWake": true,
+            "inFlight": true,
+            "created": 1.0,
+            "concurrency": 32,
+            "subagentConcurrencyVersion": 2,
+            "agentMode": "multi",
+            "agentModeRevision": 0,
+            "agentModeSupported": true,
+            "maxAgentsExplicit": false,
+            "startAttempt": {
+              "id": "attempt",
+              "epoch": 3,
+              "submitted": true,
+              "connectionGeneration": 7,
+              "connectionId": "fixture-connection",
+              "accountKey": "fixture-account",
+              "requestTicket": 91,
+              "events": [],
+              "turnId": "turn"
+            },
+            "threadId": "thread",
+            "accountKey": "fixture-account",
+            "turnId": "turn",
+            "parkedEvent": "ready",
+            "parkAfterTurn": true,
+            "parkReceipt": {
+              "event": "ready",
+              "epoch": 3,
+              "sequence": 1
+            },
+            "capacityRetryCount": 2
+          },
+          {
+            "id": "worker",
+            "rootId": "lead",
+            "parentId": "lead",
+            "epoch": 8,
+            "status": "completed",
+            "name": "Worker",
+            "cwd": "/fixture",
+            "isLead": false,
+            "autoWake": true,
+            "inFlight": false,
+            "created": 1.0
+          },
+          {
+            "id": "unrelated",
+            "rootId": "lead",
+            "parentId": "missing",
+            "epoch": 8,
+            "status": "completed",
+            "name": "Worker",
+            "cwd": "/fixture",
+            "isLead": false,
+            "autoWake": true,
+            "inFlight": false,
+            "created": 1.0
+          },
+          {
+            "id": "grandchild",
+            "rootId": "legacy-other-root",
+            "parentId": "worker",
+            "epoch": 8,
+            "status": "completed",
+            "name": "Worker",
+            "cwd": "/fixture",
+            "isLead": false,
+            "autoWake": true,
+            "inFlight": false,
+            "created": 1.0
+          }
+        ],
+        "runtime_work": [],
+        "runtime_requests": [
+          {
+            "id": "question",
+            "agent": "lead",
+            "status": "pending",
+            "method": "agent/asyncQuestion"
+          }
+        ],
+        "runtime_monitors": [],
+        "runtime_tasks": [],
+        "runtime_tool_requests": [],
+        "runtime_events": [
+          {
+            "id": "pending",
+            "agent": "lead",
+            "status": "pending",
+            "epoch": 3
+          },
+          {
+            "id": "reserved",
+            "agent": "lead",
+            "status": "reserved",
+            "epoch": 3
+          },
+          {
+            "id": "dispatching",
+            "agent": "lead",
+            "status": "dispatching",
+            "epoch": 3
+          },
+          {
+            "id": "uncertain",
+            "agent": "lead",
+            "status": "uncertain",
+            "epoch": 3
+          }
+        ]
+      }
+    },
+    "action": {
+      "action": "stop",
+      "target": "lead",
+      "descendants": true
+    },
+    "now": 1234567.5,
+    "expected": {
+      "result": {
+        "stopped": ["grandchild", "lead", "worker"]
+      },
+      "records": {
+        "tables": {
+          "runtime_agents": [
+            {
+              "id": "lead",
+              "rootId": "lead",
+              "parentId": null,
+              "epoch": 4,
+              "status": "paused",
+              "name": "Lead",
+              "cwd": "/fixture",
+              "isLead": true,
+              "autoWake": false,
+              "inFlight": true,
+              "created": 1.0,
+              "concurrency": 32,
+              "subagentConcurrencyVersion": 2,
+              "agentMode": "multi",
+              "agentModeRevision": 0,
+              "agentModeSupported": true,
+              "maxAgentsExplicit": false,
+              "startAttempt": {
+                "id": "attempt",
+                "epoch": 3,
+                "submitted": true,
+                "connectionGeneration": 7,
+                "connectionId": "fixture-connection",
+                "accountKey": "fixture-account",
+                "requestTicket": 91,
+                "events": [],
+                "turnId": "turn"
+              },
+              "threadId": "thread",
+              "accountKey": "fixture-account",
+              "turnId": "turn",
+              "error": "Stopped by user",
+              "cancelledPark": {
+                "event": "ready",
+                "epoch": 3,
+                "sequence": 1,
+                "cancelledAtEpoch": 4
+              }
+            },
+            {
+              "id": "worker",
+              "rootId": "lead",
+              "parentId": "lead",
+              "epoch": 9,
+              "status": "paused",
+              "name": "Worker",
+              "cwd": "/fixture",
+              "isLead": false,
+              "autoWake": false,
+              "inFlight": false,
+              "created": 1.0,
+              "error": "Stopped by user"
+            },
+            {
+              "id": "unrelated",
+              "rootId": "lead",
+              "parentId": "missing",
+              "epoch": 8,
+              "status": "completed",
+              "name": "Worker",
+              "cwd": "/fixture",
+              "isLead": false,
+              "autoWake": true,
+              "inFlight": false,
+              "created": 1.0
+            },
+            {
+              "id": "grandchild",
+              "rootId": "legacy-other-root",
+              "parentId": "worker",
+              "epoch": 9,
+              "status": "paused",
+              "name": "Worker",
+              "cwd": "/fixture",
+              "isLead": false,
+              "autoWake": false,
+              "inFlight": false,
+              "created": 1.0,
+              "error": "Stopped by user"
+            }
+          ],
+          "runtime_work": [],
+          "runtime_requests": [
+            {
+              "id": "question",
+              "agent": "lead",
+              "status": "expired",
+              "method": "agent/asyncQuestion"
+            }
+          ],
+          "runtime_monitors": [],
+          "runtime_tasks": [],
+          "runtime_tool_requests": [],
+          "runtime_events": [
+            {
+              "id": "pending",
+              "agent": "lead",
+              "status": "cancelled",
+              "epoch": 3
+            },
+            {
+              "id": "reserved",
+              "agent": "lead",
+              "status": "reserved",
+              "epoch": 3
+            },
+            {
+              "id": "dispatching",
+              "agent": "lead",
+              "status": "dispatching",
+              "epoch": 3
+            },
+            {
+              "id": "uncertain",
+              "agent": "lead",
+              "status": "uncertain",
+              "epoch": 3
+            }
+          ]
+        }
+      },
+      "notifications": [],
+      "notificationPayloads": [],
+      "syncEntities": [
+        [
+          "agent",
+          "grandchild",
+          "{\"collection\":\"agent\",\"id\":\"grandchild\",\"value\":{\"autoWake\":false,\"canSend\":true,\"commandProgress\":[],\"created\":1.0,\"cwd\":\"/fixture\",\"epoch\":9,\"error\":\"Stopped by user\",\"id\":\"grandchild\",\"inFlight\":false,\"isLead\":false,\"kind\":\"agent\",\"launcherAlive\":true,\"name\":\"Worker\",\"nextTurnSettingsSupported\":true,\"overview\":{\"result\":\"\",\"resultFile\":null,\"resultTruncated\":false,\"resultTurnId\":null,\"task\":\"\",\"taskTruncated\":false},\"parentId\":\"worker\",\"readStateSupported\":true,\"rootId\":\"legacy-other-root\",\"serverId\":null,\"source\":\"managed\",\"stall\":null,\"startWait\":null,\"status\":\"paused\"}}",
+          0
+        ],
+        [
+          "agent",
+          "lead",
+          "{\"collection\":\"agent\",\"id\":\"lead\",\"value\":{\"accountKey\":\"fixture-account\",\"agentMode\":\"multi\",\"agentModeRevision\":0,\"agentModeSupported\":true,\"autoWake\":false,\"canSend\":true,\"commandProgress\":[],\"concurrency\":32,\"created\":1.0,\"cwd\":\"/fixture\",\"empty\":false,\"epoch\":4,\"error\":\"Stopped by user\",\"id\":\"lead\",\"inFlight\":true,\"isLead\":true,\"kind\":\"agent\",\"launcherAlive\":true,\"name\":\"Lead\",\"nextTurnSettingsSupported\":true,\"parentId\":null,\"readStateSupported\":true,\"rootId\":\"lead\",\"serverId\":null,\"source\":\"managed\",\"stall\":null,\"startAttempt\":{},\"startWait\":null,\"status\":\"paused\",\"subagentConcurrencyVersion\":2,\"threadId\":\"thread\",\"turnId\":\"turn\"}}",
+          0
+        ],
+        [
+          "agent",
+          "unrelated",
+          "{\"collection\":\"agent\",\"id\":\"unrelated\",\"value\":{\"autoWake\":true,\"canSend\":true,\"commandProgress\":[],\"created\":1.0,\"cwd\":\"/fixture\",\"epoch\":8,\"id\":\"unrelated\",\"inFlight\":false,\"isLead\":false,\"kind\":\"agent\",\"launcherAlive\":true,\"name\":\"Worker\",\"nextTurnSettingsSupported\":true,\"overview\":{\"result\":\"\",\"resultFile\":null,\"resultTruncated\":false,\"resultTurnId\":null,\"task\":\"\",\"taskTruncated\":false},\"parentId\":\"missing\",\"readStateSupported\":true,\"rootId\":\"lead\",\"serverId\":null,\"source\":\"managed\",\"stall\":null,\"startWait\":null,\"status\":\"completed\"}}",
+          0
+        ],
+        [
+          "agent",
+          "worker",
+          "{\"collection\":\"agent\",\"id\":\"worker\",\"value\":{\"autoWake\":false,\"canSend\":true,\"commandProgress\":[],\"created\":1.0,\"cwd\":\"/fixture\",\"epoch\":9,\"error\":\"Stopped by user\",\"id\":\"worker\",\"inFlight\":false,\"isLead\":false,\"kind\":\"agent\",\"launcherAlive\":true,\"name\":\"Worker\",\"nextTurnSettingsSupported\":true,\"overview\":{\"result\":\"\",\"resultFile\":null,\"resultTruncated\":false,\"resultTurnId\":null,\"task\":\"\",\"taskTruncated\":false},\"parentId\":\"lead\",\"readStateSupported\":true,\"rootId\":\"lead\",\"serverId\":null,\"source\":\"managed\",\"stall\":null,\"startWait\":null,\"status\":\"paused\"}}",
+          0
+        ],
+        [
+          "event",
+          "dispatching",
+          "{\"collection\":\"event\",\"id\":\"dispatching\",\"value\":{\"agent\":\"lead\",\"created\":1.0,\"error\":null,\"id\":\"dispatching\",\"kind\":\"user\",\"status\":\"dispatching\"}}",
+          0
+        ],
+        [
+          "event",
+          "pending",
+          "{\"collection\":\"event\",\"id\":\"pending\",\"value\":{\"agent\":\"lead\",\"created\":1.0,\"error\":null,\"id\":\"pending\",\"kind\":\"user\",\"status\":\"cancelled\"}}",
+          0
+        ],
+        [
+          "event",
+          "reserved",
+          "{\"collection\":\"event\",\"id\":\"reserved\",\"value\":{\"agent\":\"lead\",\"created\":1.0,\"error\":null,\"id\":\"reserved\",\"kind\":\"user\",\"status\":\"reserved\"}}",
+          0
+        ],
+        [
+          "event",
+          "uncertain",
+          "{\"collection\":\"event\",\"id\":\"uncertain\",\"value\":{\"agent\":\"lead\",\"created\":1.0,\"error\":null,\"id\":\"uncertain\",\"kind\":\"user\",\"status\":\"uncertain\"}}",
+          0
+        ]
+      ]
+    },
+    "interrupted": [
+      {
+        "id": "lead",
+        "rootId": "lead",
+        "parentId": null,
+        "epoch": 4,
+        "status": "paused",
+        "name": "Lead",
+        "cwd": "/fixture",
+        "isLead": true,
+        "autoWake": false,
+        "inFlight": true,
+        "created": 1.0,
+        "concurrency": 32,
+        "subagentConcurrencyVersion": 2,
+        "agentMode": "multi",
+        "agentModeRevision": 0,
+        "agentModeSupported": true,
+        "maxAgentsExplicit": false,
+        "startAttempt": {
+          "id": "attempt",
+          "epoch": 3,
+          "submitted": true,
+          "connectionGeneration": 7,
+          "connectionId": "fixture-connection",
+          "accountKey": "fixture-account",
+          "requestTicket": 91,
+          "events": [],
+          "turnId": "turn"
+        },
+        "threadId": "thread",
+        "accountKey": "fixture-account",
+        "turnId": "turn",
+        "error": "Stopped by user",
+        "cancelledPark": {
+          "event": "ready",
+          "epoch": 3,
+          "sequence": 1,
+          "cancelledAtEpoch": 4
+        }
+      },
+      {
+        "id": "worker",
+        "rootId": "lead",
+        "parentId": "lead",
+        "epoch": 9,
+        "status": "paused",
+        "name": "Worker",
+        "cwd": "/fixture",
+        "isLead": false,
+        "autoWake": false,
+        "inFlight": false,
+        "created": 1.0,
+        "error": "Stopped by user"
+      },
+      {
+        "id": "grandchild",
+        "rootId": "legacy-other-root",
+        "parentId": "worker",
+        "epoch": 9,
+        "status": "paused",
+        "name": "Worker",
+        "cwd": "/fixture",
+        "isLead": false,
+        "autoWake": false,
+        "inFlight": false,
+        "created": 1.0,
+        "error": "Stopped by user"
+      }
+    ]
+  },
+  {
+    "name": "stop-capacity-retry-unsubmitted",
+    "records": {
+      "tables": {
+        "runtime_agents": [
+          {
+            "id": "lead",
+            "rootId": "lead",
+            "parentId": null,
+            "epoch": 3,
+            "status": "starting",
+            "name": "Lead",
+            "cwd": "/fixture",
+            "isLead": true,
+            "autoWake": true,
+            "inFlight": true,
+            "created": 1.0,
+            "concurrency": 32,
+            "subagentConcurrencyVersion": 2,
+            "agentMode": "multi",
+            "agentModeRevision": 0,
+            "agentModeSupported": true,
+            "maxAgentsExplicit": false,
+            "capacityRetry": {
+              "id": "capacity-retry-1",
+              "status": "scheduled",
+              "dueAt": 1234577.5
+            },
+            "capacityRetryCount": 1,
+            "startAttempt": {
+              "id": "capacity-attempt-1",
+              "action": "capacity",
+              "submitted": false,
+              "capacityRetryId": "capacity-retry-1",
+              "accountKey": "fixture-account"
+            }
+          },
+          {
+            "id": "worker",
+            "rootId": "lead",
+            "parentId": "lead",
+            "epoch": 8,
+            "status": "completed",
+            "name": "Worker",
+            "cwd": "/fixture",
+            "isLead": false,
+            "autoWake": true,
+            "inFlight": false,
+            "created": 1.0
+          }
+        ],
+        "runtime_work": [],
+        "runtime_requests": [],
+        "runtime_monitors": [],
+        "runtime_tasks": [],
+        "runtime_tool_requests": [],
+        "runtime_events": []
+      }
+    },
+    "action": {
+      "action": "stop",
+      "target": "lead",
+      "descendants": false
+    },
+    "now": 1234567.5,
+    "expected": {
+      "result": {
+        "stopped": ["lead"]
+      },
+      "records": {
+        "tables": {
+          "runtime_agents": [
+            {
+              "id": "lead",
+              "rootId": "lead",
+              "parentId": null,
+              "epoch": 4,
+              "status": "paused",
+              "name": "Lead",
+              "cwd": "/fixture",
+              "isLead": true,
+              "autoWake": false,
+              "inFlight": false,
+              "created": 1.0,
+              "concurrency": 32,
+              "subagentConcurrencyVersion": 2,
+              "agentMode": "multi",
+              "agentModeRevision": 0,
+              "agentModeSupported": true,
+              "maxAgentsExplicit": false,
+              "error": "Stopped by user"
+            },
+            {
+              "id": "worker",
+              "rootId": "lead",
+              "parentId": "lead",
+              "epoch": 8,
+              "status": "completed",
+              "name": "Worker",
+              "cwd": "/fixture",
+              "isLead": false,
+              "autoWake": true,
+              "inFlight": false,
+              "created": 1.0
+            }
+          ],
+          "runtime_work": [],
+          "runtime_requests": [],
+          "runtime_monitors": [],
+          "runtime_tasks": [],
+          "runtime_tool_requests": [],
+          "runtime_events": []
+        }
+      },
+      "notifications": [],
+      "notificationPayloads": [],
+      "syncEntities": [
+        [
+          "agent",
+          "lead",
+          "{\"collection\":\"agent\",\"id\":\"lead\",\"value\":{\"agentMode\":\"multi\",\"agentModeRevision\":0,\"agentModeSupported\":true,\"autoWake\":false,\"canSend\":true,\"commandProgress\":[],\"concurrency\":32,\"created\":1.0,\"cwd\":\"/fixture\",\"empty\":false,\"epoch\":4,\"error\":\"Stopped by user\",\"id\":\"lead\",\"inFlight\":false,\"isLead\":true,\"kind\":\"agent\",\"launcherAlive\":true,\"name\":\"Lead\",\"nextTurnSettingsSupported\":true,\"parentId\":null,\"readStateSupported\":true,\"rootId\":\"lead\",\"serverId\":null,\"source\":\"managed\",\"stall\":null,\"startWait\":null,\"status\":\"paused\",\"subagentConcurrencyVersion\":2}}",
+          0
+        ],
+        [
+          "agent",
+          "worker",
+          "{\"collection\":\"agent\",\"id\":\"worker\",\"value\":{\"autoWake\":true,\"canSend\":true,\"commandProgress\":[],\"created\":1.0,\"cwd\":\"/fixture\",\"epoch\":8,\"id\":\"worker\",\"inFlight\":false,\"isLead\":false,\"kind\":\"agent\",\"launcherAlive\":true,\"name\":\"Worker\",\"nextTurnSettingsSupported\":true,\"overview\":{\"result\":\"\",\"resultFile\":null,\"resultTruncated\":false,\"resultTurnId\":null,\"task\":\"\",\"taskTruncated\":false},\"parentId\":\"lead\",\"readStateSupported\":true,\"rootId\":\"lead\",\"serverId\":null,\"source\":\"managed\",\"stall\":null,\"startWait\":null,\"status\":\"completed\"}}",
+          0
+        ]
+      ]
+    },
+    "interrupted": [
+      {
+        "id": "lead",
+        "rootId": "lead",
+        "parentId": null,
+        "epoch": 4,
+        "status": "paused",
+        "name": "Lead",
+        "cwd": "/fixture",
+        "isLead": true,
+        "autoWake": false,
+        "inFlight": false,
+        "created": 1.0,
+        "concurrency": 32,
+        "subagentConcurrencyVersion": 2,
+        "agentMode": "multi",
+        "agentModeRevision": 0,
+        "agentModeSupported": true,
+        "maxAgentsExplicit": false,
+        "error": "Stopped by user"
+      }
+    ]
+  },
+  {
+    "name": "delete-running",
+    "records": {
+      "tables": {
+        "runtime_agents": [
+          {
+            "id": "lead",
+            "rootId": "lead",
+            "parentId": null,
+            "epoch": 3,
+            "status": "running",
+            "name": "Lead",
+            "cwd": "/fixture",
+            "isLead": true,
+            "autoWake": true,
+            "inFlight": true,
+            "created": 1.0,
+            "concurrency": 32,
+            "subagentConcurrencyVersion": 2,
+            "agentMode": "multi",
+            "agentModeRevision": 0,
+            "agentModeSupported": true,
+            "maxAgentsExplicit": false,
+            "startAttempt": {
+              "id": "attempt",
+              "epoch": 3,
+              "submitted": true,
+              "connectionGeneration": 7,
+              "connectionId": "fixture-connection",
+              "accountKey": "fixture-account",
+              "requestTicket": 91,
+              "events": [],
+              "turnId": "turn"
+            },
+            "threadId": "thread",
+            "accountKey": "fixture-account",
+            "turnId": "turn",
+            "parkedEvent": "ready",
+            "parkAfterTurn": true,
+            "parkReceipt": {
+              "event": "ready",
+              "epoch": 3,
+              "sequence": 1
+            },
+            "capacityRetryCount": 2
+          },
+          {
+            "id": "worker",
+            "rootId": "lead",
+            "parentId": "lead",
+            "epoch": 8,
+            "status": "completed",
+            "name": "Worker",
+            "cwd": "/fixture",
+            "isLead": false,
+            "autoWake": true,
+            "inFlight": false,
+            "created": 1.0
+          },
+          {
+            "id": "unrelated",
+            "rootId": "lead",
+            "parentId": "missing",
+            "epoch": 8,
+            "status": "completed",
+            "name": "Worker",
+            "cwd": "/fixture",
+            "isLead": false,
+            "autoWake": true,
+            "inFlight": false,
+            "created": 1.0
+          },
+          {
+            "id": "grandchild",
+            "rootId": "legacy-other-root",
+            "parentId": "worker",
+            "epoch": 8,
+            "status": "completed",
+            "name": "Worker",
+            "cwd": "/fixture",
+            "isLead": false,
+            "autoWake": true,
+            "inFlight": false,
+            "created": 1.0
+          }
+        ],
+        "runtime_work": [],
+        "runtime_requests": [
+          {
+            "id": "question",
+            "agent": "lead",
+            "status": "pending",
+            "method": "agent/asyncQuestion"
+          }
+        ],
+        "runtime_monitors": [],
+        "runtime_tasks": [],
+        "runtime_tool_requests": [],
+        "runtime_events": [
+          {
+            "id": "pending",
+            "agent": "lead",
+            "status": "pending",
+            "epoch": 3
+          },
+          {
+            "id": "reserved",
+            "agent": "lead",
+            "status": "reserved",
+            "epoch": 3
+          },
+          {
+            "id": "dispatching",
+            "agent": "lead",
+            "status": "dispatching",
+            "epoch": 3
+          },
+          {
+            "id": "uncertain",
+            "agent": "lead",
+            "status": "uncertain",
+            "epoch": 3
+          }
+        ]
+      }
+    },
+    "action": {
+      "action": "delete",
+      "target": "lead"
+    },
+    "now": 1234567.5,
+    "expected": {
+      "result": {
+        "deleted": ["grandchild", "lead", "worker"]
+      },
+      "records": {
+        "tables": {
+          "runtime_agents": [
+            {
+              "id": "lead",
+              "rootId": "lead",
+              "parentId": null,
+              "epoch": 4,
+              "status": "paused",
+              "name": "Lead",
+              "cwd": "/fixture",
+              "isLead": true,
+              "autoWake": false,
+              "inFlight": false,
+              "created": 1.0,
+              "concurrency": 32,
+              "subagentConcurrencyVersion": 2,
+              "agentMode": "multi",
+              "agentModeRevision": 0,
+              "agentModeSupported": true,
+              "maxAgentsExplicit": false,
+              "startAttempt": {
+                "id": "attempt",
+                "epoch": 3,
+                "submitted": true,
+                "connectionGeneration": 7,
+                "connectionId": "fixture-connection",
+                "accountKey": "fixture-account",
+                "requestTicket": 91,
+                "events": [],
+                "turnId": "turn"
+              },
+              "threadId": "thread",
+              "accountKey": "fixture-account",
+              "turnId": null,
+              "deletedAt": 1234567.5,
+              "error": "Conversation deleted",
+              "cancelledPark": {
+                "event": "ready",
+                "epoch": 3,
+                "sequence": 1,
+                "cancelledAtEpoch": 4
+              },
+              "activity": null,
+              "activeTools": []
+            },
+            {
+              "id": "worker",
+              "rootId": "lead",
+              "parentId": "lead",
+              "epoch": 9,
+              "status": "paused",
+              "name": "Worker",
+              "cwd": "/fixture",
+              "isLead": false,
+              "autoWake": false,
+              "inFlight": false,
+              "created": 1.0,
+              "deletedAt": 1234567.5,
+              "error": "Conversation deleted"
+            },
+            {
+              "id": "unrelated",
+              "rootId": "lead",
+              "parentId": "missing",
+              "epoch": 8,
+              "status": "completed",
+              "name": "Worker",
+              "cwd": "/fixture",
+              "isLead": false,
+              "autoWake": true,
+              "inFlight": false,
+              "created": 1.0
+            },
+            {
+              "id": "grandchild",
+              "rootId": "legacy-other-root",
+              "parentId": "worker",
+              "epoch": 9,
+              "status": "paused",
+              "name": "Worker",
+              "cwd": "/fixture",
+              "isLead": false,
+              "autoWake": false,
+              "inFlight": false,
+              "created": 1.0,
+              "deletedAt": 1234567.5,
+              "error": "Conversation deleted"
+            }
+          ],
+          "runtime_work": [],
+          "runtime_requests": [
+            {
+              "id": "question",
+              "agent": "lead",
+              "status": "expired",
+              "method": "agent/asyncQuestion"
+            }
+          ],
+          "runtime_monitors": [],
+          "runtime_tasks": [],
+          "runtime_tool_requests": [],
+          "runtime_events": [
+            {
+              "id": "pending",
+              "agent": "lead",
+              "status": "cancelled",
+              "epoch": 3
+            },
+            {
+              "id": "reserved",
+              "agent": "lead",
+              "status": "reserved",
+              "epoch": 3
+            },
+            {
+              "id": "dispatching",
+              "agent": "lead",
+              "status": "dispatching",
+              "epoch": 3
+            },
+            {
+              "id": "uncertain",
+              "agent": "lead",
+              "status": "uncertain",
+              "epoch": 3
+            }
+          ]
+        }
+      },
+      "notifications": [],
+      "notificationPayloads": [],
+      "syncEntities": [
+        [
+          "agent",
+          "unrelated",
+          "{\"collection\":\"agent\",\"id\":\"unrelated\",\"value\":{\"autoWake\":true,\"canSend\":true,\"commandProgress\":[],\"created\":1.0,\"cwd\":\"/fixture\",\"epoch\":8,\"id\":\"unrelated\",\"inFlight\":false,\"isLead\":false,\"kind\":\"agent\",\"launcherAlive\":true,\"name\":\"Worker\",\"nextTurnSettingsSupported\":true,\"overview\":{\"result\":\"\",\"resultFile\":null,\"resultTruncated\":false,\"resultTurnId\":null,\"task\":\"\",\"taskTruncated\":false},\"parentId\":\"missing\",\"readStateSupported\":true,\"rootId\":\"lead\",\"serverId\":null,\"source\":\"managed\",\"stall\":null,\"startWait\":null,\"status\":\"completed\"}}",
+          0
+        ],
+        [
+          "event",
+          "dispatching",
+          "{\"collection\":\"event\",\"id\":\"dispatching\",\"value\":{\"agent\":\"lead\",\"created\":1.0,\"error\":null,\"id\":\"dispatching\",\"kind\":\"user\",\"status\":\"dispatching\"}}",
+          0
+        ],
+        [
+          "event",
+          "pending",
+          "{\"collection\":\"event\",\"id\":\"pending\",\"value\":{\"agent\":\"lead\",\"created\":1.0,\"error\":null,\"id\":\"pending\",\"kind\":\"user\",\"status\":\"cancelled\"}}",
+          0
+        ],
+        [
+          "event",
+          "reserved",
+          "{\"collection\":\"event\",\"id\":\"reserved\",\"value\":{\"agent\":\"lead\",\"created\":1.0,\"error\":null,\"id\":\"reserved\",\"kind\":\"user\",\"status\":\"reserved\"}}",
+          0
+        ],
+        [
+          "event",
+          "uncertain",
+          "{\"collection\":\"event\",\"id\":\"uncertain\",\"value\":{\"agent\":\"lead\",\"created\":1.0,\"error\":null,\"id\":\"uncertain\",\"kind\":\"user\",\"status\":\"uncertain\"}}",
+          0
+        ]
+      ]
+    },
+    "interrupted": [
+      {
+        "id": "lead",
+        "rootId": "lead",
+        "parentId": null,
+        "epoch": 4,
+        "status": "paused",
+        "name": "Lead",
+        "cwd": "/fixture",
+        "isLead": true,
+        "autoWake": false,
+        "inFlight": true,
+        "created": 1.0,
+        "concurrency": 32,
+        "subagentConcurrencyVersion": 2,
+        "agentMode": "multi",
+        "agentModeRevision": 0,
+        "agentModeSupported": true,
+        "maxAgentsExplicit": false,
+        "startAttempt": {
+          "id": "attempt",
+          "epoch": 3,
+          "submitted": true,
+          "connectionGeneration": 7,
+          "connectionId": "fixture-connection",
+          "accountKey": "fixture-account",
+          "requestTicket": 91,
+          "events": [],
+          "turnId": "turn"
+        },
+        "threadId": "thread",
+        "accountKey": "fixture-account",
+        "turnId": "turn",
+        "deletedAt": 1234567.5,
+        "error": "Conversation deleted",
+        "cancelledPark": {
+          "event": "ready",
+          "epoch": 3,
+          "sequence": 1,
+          "cancelledAtEpoch": 4
+        }
+      },
+      {
+        "id": "worker",
+        "rootId": "lead",
+        "parentId": "lead",
+        "epoch": 9,
+        "status": "paused",
+        "name": "Worker",
+        "cwd": "/fixture",
+        "isLead": false,
+        "autoWake": false,
+        "inFlight": false,
+        "created": 1.0,
+        "deletedAt": 1234567.5,
+        "error": "Conversation deleted"
+      },
+      {
+        "id": "grandchild",
+        "rootId": "legacy-other-root",
+        "parentId": "worker",
+        "epoch": 9,
+        "status": "paused",
+        "name": "Worker",
+        "cwd": "/fixture",
+        "isLead": false,
+        "autoWake": false,
+        "inFlight": false,
+        "created": 1.0,
+        "deletedAt": 1234567.5,
+        "error": "Conversation deleted"
+      }
+    ]
+  },
+  {
+    "name": "delete",
+    "records": {
+      "tables": {
+        "runtime_agents": [
+          {
+            "id": "lead",
+            "rootId": "lead",
+            "parentId": null,
+            "epoch": 3,
+            "status": "idle",
+            "name": "Lead",
+            "cwd": "/fixture",
+            "isLead": true,
+            "autoWake": true,
+            "inFlight": false,
+            "created": 1.0,
+            "concurrency": 32,
+            "subagentConcurrencyVersion": 2,
+            "agentMode": "multi",
+            "agentModeRevision": 0,
+            "agentModeSupported": true,
+            "maxAgentsExplicit": false
+          },
+          {
+            "id": "worker",
+            "rootId": "lead",
+            "parentId": "lead",
+            "epoch": 8,
+            "status": "completed",
+            "name": "Worker",
+            "cwd": "/fixture",
+            "isLead": false,
+            "autoWake": true,
+            "inFlight": false,
+            "created": 1.0
+          }
+        ],
+        "runtime_work": [],
+        "runtime_requests": [],
+        "runtime_monitors": [],
+        "runtime_tasks": [],
+        "runtime_tool_requests": [],
+        "runtime_events": []
+      }
+    },
+    "action": {
+      "action": "delete",
+      "target": "lead"
+    },
+    "now": 1234567.5,
+    "expected": {
+      "result": {
+        "deleted": ["lead", "worker"]
+      },
+      "records": {
+        "tables": {
+          "runtime_agents": [
+            {
+              "id": "lead",
+              "rootId": "lead",
+              "parentId": null,
+              "epoch": 4,
+              "status": "paused",
+              "name": "Lead",
+              "cwd": "/fixture",
+              "isLead": true,
+              "autoWake": false,
+              "inFlight": false,
+              "created": 1.0,
+              "concurrency": 32,
+              "subagentConcurrencyVersion": 2,
+              "agentMode": "multi",
+              "agentModeRevision": 0,
+              "agentModeSupported": true,
+              "maxAgentsExplicit": false,
+              "deletedAt": 1234567.5,
+              "error": "Conversation deleted"
+            },
+            {
+              "id": "worker",
+              "rootId": "lead",
+              "parentId": "lead",
+              "epoch": 9,
+              "status": "paused",
+              "name": "Worker",
+              "cwd": "/fixture",
+              "isLead": false,
+              "autoWake": false,
+              "inFlight": false,
+              "created": 1.0,
+              "deletedAt": 1234567.5,
+              "error": "Conversation deleted"
+            }
+          ],
+          "runtime_work": [],
+          "runtime_requests": [],
+          "runtime_monitors": [],
+          "runtime_tasks": [],
+          "runtime_tool_requests": [],
+          "runtime_events": []
+        }
+      },
+      "notifications": [],
+      "notificationPayloads": [],
+      "syncEntities": []
+    },
+    "interrupted": [
+      {
+        "id": "lead",
+        "rootId": "lead",
+        "parentId": null,
+        "epoch": 4,
+        "status": "paused",
+        "name": "Lead",
+        "cwd": "/fixture",
+        "isLead": true,
+        "autoWake": false,
+        "inFlight": false,
+        "created": 1.0,
+        "concurrency": 32,
+        "subagentConcurrencyVersion": 2,
+        "agentMode": "multi",
+        "agentModeRevision": 0,
+        "agentModeSupported": true,
+        "maxAgentsExplicit": false,
+        "deletedAt": 1234567.5,
+        "error": "Conversation deleted"
+      },
+      {
+        "id": "worker",
+        "rootId": "lead",
+        "parentId": "lead",
+        "epoch": 9,
+        "status": "paused",
+        "name": "Worker",
+        "cwd": "/fixture",
+        "isLead": false,
+        "autoWake": false,
+        "inFlight": false,
+        "created": 1.0,
+        "deletedAt": 1234567.5,
+        "error": "Conversation deleted"
+      }
+    ]
+  },
+  {
+    "name": "delete-replay",
+    "records": {
+      "tables": {
+        "runtime_agents": [
+          {
+            "id": "lead",
+            "rootId": "lead",
+            "parentId": null,
+            "epoch": 4,
+            "status": "paused",
+            "name": "Lead",
+            "cwd": "/fixture",
+            "isLead": true,
+            "autoWake": false,
+            "inFlight": false,
+            "created": 1.0,
+            "concurrency": 32,
+            "subagentConcurrencyVersion": 2,
+            "agentMode": "multi",
+            "agentModeRevision": 0,
+            "agentModeSupported": true,
+            "maxAgentsExplicit": false,
+            "deletedAt": 1234567.5,
+            "error": "Conversation deleted"
+          },
+          {
+            "id": "worker",
+            "rootId": "lead",
+            "parentId": "lead",
+            "epoch": 9,
+            "status": "paused",
+            "name": "Worker",
+            "cwd": "/fixture",
+            "isLead": false,
+            "autoWake": false,
+            "inFlight": false,
+            "created": 1.0,
+            "deletedAt": 1234567.5,
+            "error": "Conversation deleted"
+          }
+        ],
+        "runtime_work": [],
+        "runtime_requests": [],
+        "runtime_monitors": [],
+        "runtime_tasks": [],
+        "runtime_tool_requests": [],
+        "runtime_events": []
+      }
+    },
+    "action": {
+      "action": "delete",
+      "target": "lead"
+    },
+    "now": 1234567.5,
+    "expected": {
+      "result": {
+        "deleted": ["lead", "worker"]
+      },
+      "records": {
+        "tables": {
+          "runtime_agents": [
+            {
+              "id": "lead",
+              "rootId": "lead",
+              "parentId": null,
+              "epoch": 5,
+              "status": "paused",
+              "name": "Lead",
+              "cwd": "/fixture",
+              "isLead": true,
+              "autoWake": false,
+              "inFlight": false,
+              "created": 1.0,
+              "concurrency": 32,
+              "subagentConcurrencyVersion": 2,
+              "agentMode": "multi",
+              "agentModeRevision": 0,
+              "agentModeSupported": true,
+              "maxAgentsExplicit": false,
+              "deletedAt": 1234567.5,
+              "error": "Conversation deleted"
+            },
+            {
+              "id": "worker",
+              "rootId": "lead",
+              "parentId": "lead",
+              "epoch": 10,
+              "status": "paused",
+              "name": "Worker",
+              "cwd": "/fixture",
+              "isLead": false,
+              "autoWake": false,
+              "inFlight": false,
+              "created": 1.0,
+              "deletedAt": 1234567.5,
+              "error": "Conversation deleted"
+            }
+          ],
+          "runtime_work": [],
+          "runtime_requests": [],
+          "runtime_monitors": [],
+          "runtime_tasks": [],
+          "runtime_tool_requests": [],
+          "runtime_events": []
+        }
+      },
+      "notifications": [],
+      "notificationPayloads": [],
+      "syncEntities": []
+    },
+    "interrupted": [
+      {
+        "id": "lead",
+        "rootId": "lead",
+        "parentId": null,
+        "epoch": 5,
+        "status": "paused",
+        "name": "Lead",
+        "cwd": "/fixture",
+        "isLead": true,
+        "autoWake": false,
+        "inFlight": false,
+        "created": 1.0,
+        "concurrency": 32,
+        "subagentConcurrencyVersion": 2,
+        "agentMode": "multi",
+        "agentModeRevision": 0,
+        "agentModeSupported": true,
+        "maxAgentsExplicit": false,
+        "deletedAt": 1234567.5,
+        "error": "Conversation deleted"
+      },
+      {
+        "id": "worker",
+        "rootId": "lead",
+        "parentId": "lead",
+        "epoch": 10,
+        "status": "paused",
+        "name": "Worker",
+        "cwd": "/fixture",
+        "isLead": false,
+        "autoWake": false,
+        "inFlight": false,
+        "created": 1.0,
+        "deletedAt": 1234567.5,
+        "error": "Conversation deleted"
+      }
+    ]
+  },
+  {
+    "name": "stop-worker-notification",
+    "records": {
+      "tables": {
+        "runtime_agents": [
+          {
+            "id": "lead",
+            "rootId": "lead",
+            "parentId": null,
+            "epoch": 3,
+            "status": "idle",
+            "name": "Lead",
+            "cwd": "/fixture",
+            "isLead": true,
+            "autoWake": true,
+            "inFlight": false,
+            "created": 1.0,
+            "concurrency": 32,
+            "subagentConcurrencyVersion": 2,
+            "agentMode": "multi",
+            "agentModeRevision": 0,
+            "agentModeSupported": true,
+            "maxAgentsExplicit": false
+          },
+          {
+            "id": "worker",
+            "rootId": "lead",
+            "parentId": "lead",
+            "epoch": 8,
+            "status": "completed",
+            "name": "Worker",
+            "cwd": "/fixture",
+            "isLead": false,
+            "autoWake": true,
+            "inFlight": false,
+            "created": 1.0
+          }
+        ],
+        "runtime_work": [],
+        "runtime_requests": [],
+        "runtime_monitors": [],
+        "runtime_tasks": [],
+        "runtime_tool_requests": [],
+        "runtime_events": []
+      }
+    },
+    "action": {
+      "action": "stop",
+      "target": "worker",
+      "descendants": false
+    },
+    "now": 1234567.5,
+    "expected": {
+      "result": {
+        "stopped": ["worker"]
+      },
+      "records": {
+        "tables": {
+          "runtime_agents": [
+            {
+              "id": "lead",
+              "rootId": "lead",
+              "parentId": null,
+              "epoch": 3,
+              "status": "queued",
+              "name": "Lead",
+              "cwd": "/fixture",
+              "isLead": true,
+              "autoWake": true,
+              "inFlight": false,
+              "created": 1.0,
+              "concurrency": 32,
+              "subagentConcurrencyVersion": 2,
+              "agentMode": "multi",
+              "agentModeRevision": 0,
+              "agentModeSupported": true,
+              "maxAgentsExplicit": false
+            },
+            {
+              "id": "worker",
+              "rootId": "lead",
+              "parentId": "lead",
+              "epoch": 9,
+              "status": "paused",
+              "name": "Worker",
+              "cwd": "/fixture",
+              "isLead": false,
+              "autoWake": false,
+              "inFlight": false,
+              "created": 1.0,
+              "error": "Stopped by user"
+            }
+          ],
+          "runtime_work": [],
+          "runtime_requests": [],
+          "runtime_monitors": [],
+          "runtime_tasks": [],
+          "runtime_tool_requests": [],
+          "runtime_events": [
+            {
+              "id": "child-stop:worker:9:stop:stop",
+              "agent": "lead",
+              "status": "pending",
+              "epoch": 3
+            }
+          ]
+        }
+      },
+      "notifications": [["child-stop:worker:9:stop:stop", "lead", "pending"]],
+      "notificationPayloads": [
+        [
+          "child-stop:worker:9:stop:stop",
+          "{\"agent_id\": \"worker\", \"name\": \"Worker\", \"status\": \"paused\", \"reason\": \"Stopped by user\", \"result\": \"Stopped by user\", \"last_activity\": 1.0, \"task_id\": null, \"tasks\": [], \"result_submitted\": false, \"next_step\": \"send\", \"requested_by_lead\": false, \"cwd\": \"/fixture\", \"branch\": null, \"workspace\": {\"mode\": \"shared\", \"path\": \"/fixture\"}}"
+        ]
+      ],
+      "syncEntities": [
+        [
+          "agent",
+          "lead",
+          "{\"collection\":\"agent\",\"id\":\"lead\",\"value\":{\"agentMode\":\"multi\",\"agentModeRevision\":0,\"agentModeSupported\":true,\"autoWake\":true,\"canSend\":true,\"commandProgress\":[],\"concurrency\":32,\"created\":1.0,\"cwd\":\"/fixture\",\"empty\":false,\"epoch\":3,\"id\":\"lead\",\"inFlight\":false,\"isLead\":true,\"kind\":\"agent\",\"launcherAlive\":true,\"name\":\"Lead\",\"nextTurnSettingsSupported\":true,\"parentId\":null,\"readStateSupported\":true,\"rootId\":\"lead\",\"serverId\":null,\"source\":\"managed\",\"stall\":null,\"startWait\":{\"epoch\":3,\"reason\":\"dispatch_pending\"},\"status\":\"queued\",\"subagentConcurrencyVersion\":2}}",
+          0
+        ],
+        [
+          "agent",
+          "worker",
+          "{\"collection\":\"agent\",\"id\":\"worker\",\"value\":{\"autoWake\":false,\"canSend\":true,\"commandProgress\":[],\"created\":1.0,\"cwd\":\"/fixture\",\"epoch\":9,\"error\":\"Stopped by user\",\"id\":\"worker\",\"inFlight\":false,\"isLead\":false,\"kind\":\"agent\",\"launcherAlive\":true,\"name\":\"Worker\",\"nextTurnSettingsSupported\":true,\"overview\":{\"result\":\"\",\"resultFile\":null,\"resultTruncated\":false,\"resultTurnId\":null,\"task\":\"\",\"taskTruncated\":false},\"parentId\":\"lead\",\"readStateSupported\":true,\"rootId\":\"lead\",\"serverId\":null,\"source\":\"managed\",\"stall\":null,\"startWait\":null,\"status\":\"paused\"}}",
+          0
+        ],
+        [
+          "event",
+          "child-stop:worker:9:stop:stop",
+          "{\"collection\":\"event\",\"id\":\"child-stop:worker:9:stop:stop\",\"value\":{\"agent\":\"lead\",\"created\":1234567.5,\"error\":null,\"id\":\"child-stop:worker:9:stop:stop\",\"kind\":\"child_result\",\"status\":\"pending\"}}",
+          0
+        ]
+      ]
+    },
+    "interrupted": [
+      {
+        "id": "worker",
+        "rootId": "lead",
+        "parentId": "lead",
+        "epoch": 9,
+        "status": "paused",
+        "name": "Worker",
+        "cwd": "/fixture",
+        "isLead": false,
+        "autoWake": false,
+        "inFlight": false,
+        "created": 1.0,
+        "error": "Stopped by user"
+      }
+    ]
+  },
+  {
+    "name": "stop-worker-indirect",
+    "records": {
+      "tables": {
+        "runtime_agents": [
+          {
+            "id": "lead",
+            "rootId": "lead",
+            "parentId": null,
+            "epoch": 3,
+            "status": "idle",
+            "name": "Lead",
+            "cwd": "/fixture",
+            "isLead": true,
+            "autoWake": true,
+            "inFlight": false,
+            "created": 1.0,
+            "concurrency": 32,
+            "subagentConcurrencyVersion": 2,
+            "agentMode": "multi",
+            "agentModeRevision": 0,
+            "agentModeSupported": true,
+            "maxAgentsExplicit": false
+          },
+          {
+            "id": "worker",
+            "rootId": "lead",
+            "parentId": "lead",
+            "epoch": 8,
+            "status": "completed",
+            "name": "Worker",
+            "cwd": "/fixture",
+            "isLead": false,
+            "autoWake": true,
+            "inFlight": false,
+            "created": 1.0
+          }
+        ],
+        "runtime_work": [],
+        "runtime_requests": [],
+        "runtime_monitors": [],
+        "runtime_tasks": [],
+        "runtime_tool_requests": [],
+        "runtime_events": []
+      }
+    },
+    "action": {
+      "action": "stop",
+      "target": "lead",
+      "descendants": true
+    },
+    "now": 1234567.5,
+    "expected": {
+      "result": {
+        "stopped": ["lead", "worker"]
+      },
+      "records": {
+        "tables": {
+          "runtime_agents": [
+            {
+              "id": "lead",
+              "rootId": "lead",
+              "parentId": null,
+              "epoch": 4,
+              "status": "paused",
+              "name": "Lead",
+              "cwd": "/fixture",
+              "isLead": true,
+              "autoWake": false,
+              "inFlight": false,
+              "created": 1.0,
+              "concurrency": 32,
+              "subagentConcurrencyVersion": 2,
+              "agentMode": "multi",
+              "agentModeRevision": 0,
+              "agentModeSupported": true,
+              "maxAgentsExplicit": false,
+              "error": "Stopped by user"
+            },
+            {
+              "id": "worker",
+              "rootId": "lead",
+              "parentId": "lead",
+              "epoch": 9,
+              "status": "paused",
+              "name": "Worker",
+              "cwd": "/fixture",
+              "isLead": false,
+              "autoWake": false,
+              "inFlight": false,
+              "created": 1.0,
+              "error": "Stopped by user"
+            }
+          ],
+          "runtime_work": [],
+          "runtime_requests": [],
+          "runtime_monitors": [],
+          "runtime_tasks": [],
+          "runtime_tool_requests": [],
+          "runtime_events": []
+        }
+      },
+      "notifications": [],
+      "notificationPayloads": [],
+      "syncEntities": [
+        [
+          "agent",
+          "lead",
+          "{\"collection\":\"agent\",\"id\":\"lead\",\"value\":{\"agentMode\":\"multi\",\"agentModeRevision\":0,\"agentModeSupported\":true,\"autoWake\":false,\"canSend\":true,\"commandProgress\":[],\"concurrency\":32,\"created\":1.0,\"cwd\":\"/fixture\",\"empty\":false,\"epoch\":4,\"error\":\"Stopped by user\",\"id\":\"lead\",\"inFlight\":false,\"isLead\":true,\"kind\":\"agent\",\"launcherAlive\":true,\"name\":\"Lead\",\"nextTurnSettingsSupported\":true,\"parentId\":null,\"readStateSupported\":true,\"rootId\":\"lead\",\"serverId\":null,\"source\":\"managed\",\"stall\":null,\"startWait\":null,\"status\":\"paused\",\"subagentConcurrencyVersion\":2}}",
+          0
+        ],
+        [
+          "agent",
+          "worker",
+          "{\"collection\":\"agent\",\"id\":\"worker\",\"value\":{\"autoWake\":false,\"canSend\":true,\"commandProgress\":[],\"created\":1.0,\"cwd\":\"/fixture\",\"epoch\":9,\"error\":\"Stopped by user\",\"id\":\"worker\",\"inFlight\":false,\"isLead\":false,\"kind\":\"agent\",\"launcherAlive\":true,\"name\":\"Worker\",\"nextTurnSettingsSupported\":true,\"overview\":{\"result\":\"\",\"resultFile\":null,\"resultTruncated\":false,\"resultTurnId\":null,\"task\":\"\",\"taskTruncated\":false},\"parentId\":\"lead\",\"readStateSupported\":true,\"rootId\":\"lead\",\"serverId\":null,\"source\":\"managed\",\"stall\":null,\"startWait\":null,\"status\":\"paused\"}}",
+          0
+        ]
+      ]
+    },
+    "interrupted": [
+      {
+        "id": "lead",
+        "rootId": "lead",
+        "parentId": null,
+        "epoch": 4,
+        "status": "paused",
+        "name": "Lead",
+        "cwd": "/fixture",
+        "isLead": true,
+        "autoWake": false,
+        "inFlight": false,
+        "created": 1.0,
+        "concurrency": 32,
+        "subagentConcurrencyVersion": 2,
+        "agentMode": "multi",
+        "agentModeRevision": 0,
+        "agentModeSupported": true,
+        "maxAgentsExplicit": false,
+        "error": "Stopped by user"
+      },
+      {
+        "id": "worker",
+        "rootId": "lead",
+        "parentId": "lead",
+        "epoch": 9,
+        "status": "paused",
+        "name": "Worker",
+        "cwd": "/fixture",
+        "isLead": false,
+        "autoWake": false,
+        "inFlight": false,
+        "created": 1.0,
+        "error": "Stopped by user"
+      }
+    ]
+  },
+  {
+    "name": "stop-worker-notification-replay",
+    "records": {
+      "tables": {
+        "runtime_agents": [
+          {
+            "id": "lead",
+            "rootId": "lead",
+            "parentId": null,
+            "epoch": 3,
+            "status": "idle",
+            "name": "Lead",
+            "cwd": "/fixture",
+            "isLead": true,
+            "autoWake": true,
+            "inFlight": false,
+            "created": 1.0,
+            "concurrency": 32,
+            "subagentConcurrencyVersion": 2,
+            "agentMode": "multi",
+            "agentModeRevision": 0,
+            "agentModeSupported": true,
+            "maxAgentsExplicit": false
+          },
+          {
+            "id": "worker",
+            "rootId": "lead",
+            "parentId": "lead",
+            "epoch": 8,
+            "status": "completed",
+            "name": "Worker",
+            "cwd": "/fixture",
+            "isLead": false,
+            "autoWake": true,
+            "inFlight": false,
+            "created": 1.0
+          }
+        ],
+        "runtime_work": [],
+        "runtime_requests": [],
+        "runtime_monitors": [],
+        "runtime_tasks": [],
+        "runtime_tool_requests": [],
+        "runtime_events": []
+      }
+    },
+    "action": {
+      "action": "stop",
+      "target": "worker",
+      "descendants": false
+    },
+    "now": 1234567.5,
+    "expected": {
+      "result": {
+        "stopped": ["worker"]
+      },
+      "records": {
+        "tables": {
+          "runtime_agents": [
+            {
+              "id": "lead",
+              "rootId": "lead",
+              "parentId": null,
+              "epoch": 3,
+              "status": "queued",
+              "name": "Lead",
+              "cwd": "/fixture",
+              "isLead": true,
+              "autoWake": true,
+              "inFlight": false,
+              "created": 1.0,
+              "concurrency": 32,
+              "subagentConcurrencyVersion": 2,
+              "agentMode": "multi",
+              "agentModeRevision": 0,
+              "agentModeSupported": true,
+              "maxAgentsExplicit": false
+            },
+            {
+              "id": "worker",
+              "rootId": "lead",
+              "parentId": "lead",
+              "epoch": 10,
+              "status": "paused",
+              "name": "Worker",
+              "cwd": "/fixture",
+              "isLead": false,
+              "autoWake": false,
+              "inFlight": false,
+              "created": 1.0,
+              "error": "Stopped by user"
+            }
+          ],
+          "runtime_work": [],
+          "runtime_requests": [],
+          "runtime_monitors": [],
+          "runtime_tasks": [],
+          "runtime_tool_requests": [],
+          "runtime_events": [
+            {
+              "id": "child-stop:worker:9:stop:stop",
+              "agent": "lead",
+              "status": "pending",
+              "epoch": 3
+            },
+            {
+              "id": "child-stop:worker:10:stop:stop",
+              "agent": "lead",
+              "status": "pending",
+              "epoch": 3
+            }
+          ]
+        }
+      },
+      "notifications": [
+        ["child-stop:worker:10:stop:stop", "lead", "pending"],
+        ["child-stop:worker:9:stop:stop", "lead", "pending"]
+      ],
+      "notificationPayloads": [
+        [
+          "child-stop:worker:10:stop:stop",
+          "{\"agent_id\": \"worker\", \"name\": \"Worker\", \"status\": \"paused\", \"reason\": \"Stopped by user\", \"result\": \"Stopped by user\", \"last_activity\": 1.0, \"task_id\": null, \"tasks\": [], \"result_submitted\": false, \"next_step\": \"send\", \"requested_by_lead\": false, \"cwd\": \"/fixture\", \"branch\": null, \"workspace\": {\"mode\": \"shared\", \"path\": \"/fixture\"}}"
+        ],
+        [
+          "child-stop:worker:9:stop:stop",
+          "{\"agent_id\": \"worker\", \"name\": \"Worker\", \"status\": \"paused\", \"reason\": \"Stopped by user\", \"result\": \"Stopped by user\", \"last_activity\": 1.0, \"task_id\": null, \"tasks\": [], \"result_submitted\": false, \"next_step\": \"send\", \"requested_by_lead\": false, \"cwd\": \"/fixture\", \"branch\": null, \"workspace\": {\"mode\": \"shared\", \"path\": \"/fixture\"}}"
+        ]
+      ],
+      "syncEntities": [
+        [
+          "agent",
+          "lead",
+          "{\"collection\":\"agent\",\"id\":\"lead\",\"value\":{\"agentMode\":\"multi\",\"agentModeRevision\":0,\"agentModeSupported\":true,\"autoWake\":true,\"canSend\":true,\"commandProgress\":[],\"concurrency\":32,\"created\":1.0,\"cwd\":\"/fixture\",\"empty\":false,\"epoch\":3,\"id\":\"lead\",\"inFlight\":false,\"isLead\":true,\"kind\":\"agent\",\"launcherAlive\":true,\"name\":\"Lead\",\"nextTurnSettingsSupported\":true,\"parentId\":null,\"readStateSupported\":true,\"rootId\":\"lead\",\"serverId\":null,\"source\":\"managed\",\"stall\":null,\"startWait\":{\"epoch\":3,\"reason\":\"dispatch_pending\"},\"status\":\"queued\",\"subagentConcurrencyVersion\":2}}",
+          0
+        ],
+        [
+          "agent",
+          "worker",
+          "{\"collection\":\"agent\",\"id\":\"worker\",\"value\":{\"autoWake\":false,\"canSend\":true,\"commandProgress\":[],\"created\":1.0,\"cwd\":\"/fixture\",\"epoch\":10,\"error\":\"Stopped by user\",\"id\":\"worker\",\"inFlight\":false,\"isLead\":false,\"kind\":\"agent\",\"launcherAlive\":true,\"name\":\"Worker\",\"nextTurnSettingsSupported\":true,\"overview\":{\"result\":\"\",\"resultFile\":null,\"resultTruncated\":false,\"resultTurnId\":null,\"task\":\"\",\"taskTruncated\":false},\"parentId\":\"lead\",\"readStateSupported\":true,\"rootId\":\"lead\",\"serverId\":null,\"source\":\"managed\",\"stall\":null,\"startWait\":null,\"status\":\"paused\"}}",
+          0
+        ],
+        [
+          "event",
+          "child-stop:worker:10:stop:stop",
+          "{\"collection\":\"event\",\"id\":\"child-stop:worker:10:stop:stop\",\"value\":{\"agent\":\"lead\",\"created\":1234567.5,\"error\":null,\"id\":\"child-stop:worker:10:stop:stop\",\"kind\":\"child_result\",\"status\":\"pending\"}}",
+          0
+        ],
+        [
+          "event",
+          "child-stop:worker:9:stop:stop",
+          "{\"collection\":\"event\",\"id\":\"child-stop:worker:9:stop:stop\",\"value\":{\"agent\":\"lead\",\"created\":1234567.5,\"error\":null,\"id\":\"child-stop:worker:9:stop:stop\",\"kind\":\"child_result\",\"status\":\"pending\"}}",
+          0
+        ]
+      ]
+    },
+    "interrupted": [
+      {
+        "id": "worker",
+        "rootId": "lead",
+        "parentId": "lead",
+        "epoch": 9,
+        "status": "paused",
+        "name": "Worker",
+        "cwd": "/fixture",
+        "isLead": false,
+        "autoWake": false,
+        "inFlight": false,
+        "created": 1.0,
+        "error": "Stopped by user"
+      },
+      {
+        "id": "worker",
+        "rootId": "lead",
+        "parentId": "lead",
+        "epoch": 10,
+        "status": "paused",
+        "name": "Worker",
+        "cwd": "/fixture",
+        "isLead": false,
+        "autoWake": false,
+        "inFlight": false,
+        "created": 1.0,
+        "error": "Stopped by user"
+      }
+    ],
+    "actions": [
+      {
+        "action": "stop",
+        "target": "worker",
+        "descendants": false
+      },
+      {
+        "action": "stop",
+        "target": "worker",
+        "descendants": false
+      }
+    ]
+  },
+  {
+    "name": "delete-saved-voice",
+    "records": {
+      "tables": {
+        "runtime_agents": [
+          {
+            "id": "lead",
+            "rootId": "lead",
+            "parentId": null,
+            "epoch": 3,
+            "status": "idle",
+            "name": "Lead",
+            "cwd": "/fixture",
+            "isLead": true,
+            "autoWake": true,
+            "inFlight": false,
+            "created": 1.0,
+            "concurrency": 32,
+            "subagentConcurrencyVersion": 2,
+            "agentMode": "multi",
+            "agentModeRevision": 0,
+            "agentModeSupported": true,
+            "maxAgentsExplicit": false
+          },
+          {
+            "id": "worker",
+            "rootId": "lead",
+            "parentId": "lead",
+            "epoch": 8,
+            "status": "completed",
+            "name": "Worker",
+            "cwd": "/fixture",
+            "isLead": false,
+            "autoWake": true,
+            "inFlight": false,
+            "created": 1.0
+          }
+        ],
+        "runtime_work": [],
+        "runtime_requests": [],
+        "runtime_monitors": [],
+        "runtime_tasks": [],
+        "runtime_tool_requests": [],
+        "runtime_events": [],
+        "voice_sessions": [
+          {
+            "id": "ended-voice",
+            "agent": "lead",
+            "state": "ended",
+            "ended": 1234557.5
+          }
+        ]
+      }
+    },
+    "action": {
+      "action": "delete",
+      "target": "lead"
+    },
+    "now": 1234567.5,
+    "expected": {
+      "result": {
+        "deleted": ["lead", "worker"]
+      },
+      "records": {
+        "tables": {
+          "runtime_agents": [
+            {
+              "id": "lead",
+              "rootId": "lead",
+              "parentId": null,
+              "epoch": 4,
+              "status": "paused",
+              "name": "Lead",
+              "cwd": "/fixture",
+              "isLead": true,
+              "autoWake": false,
+              "inFlight": false,
+              "created": 1.0,
+              "concurrency": 32,
+              "subagentConcurrencyVersion": 2,
+              "agentMode": "multi",
+              "agentModeRevision": 0,
+              "agentModeSupported": true,
+              "maxAgentsExplicit": false,
+              "deletedAt": 1234567.5,
+              "error": "Conversation deleted"
+            },
+            {
+              "id": "worker",
+              "rootId": "lead",
+              "parentId": "lead",
+              "epoch": 9,
+              "status": "paused",
+              "name": "Worker",
+              "cwd": "/fixture",
+              "isLead": false,
+              "autoWake": false,
+              "inFlight": false,
+              "created": 1.0,
+              "deletedAt": 1234567.5,
+              "error": "Conversation deleted"
+            }
+          ],
+          "runtime_work": [],
+          "runtime_requests": [],
+          "runtime_monitors": [],
+          "runtime_tasks": [],
+          "runtime_tool_requests": [],
+          "runtime_events": [],
+          "voice_sessions": []
+        }
+      },
+      "notifications": [],
+      "notificationPayloads": [],
+      "syncEntities": []
+    },
+    "interrupted": [
+      {
+        "id": "lead",
+        "rootId": "lead",
+        "parentId": null,
+        "epoch": 4,
+        "status": "paused",
+        "name": "Lead",
+        "cwd": "/fixture",
+        "isLead": true,
+        "autoWake": false,
+        "inFlight": false,
+        "created": 1.0,
+        "concurrency": 32,
+        "subagentConcurrencyVersion": 2,
+        "agentMode": "multi",
+        "agentModeRevision": 0,
+        "agentModeSupported": true,
+        "maxAgentsExplicit": false,
+        "deletedAt": 1234567.5,
+        "error": "Conversation deleted"
+      },
+      {
+        "id": "worker",
+        "rootId": "lead",
+        "parentId": "lead",
+        "epoch": 9,
+        "status": "paused",
+        "name": "Worker",
+        "cwd": "/fixture",
+        "isLead": false,
+        "autoWake": false,
+        "inFlight": false,
+        "created": 1.0,
+        "deletedAt": 1234567.5,
+        "error": "Conversation deleted"
+      }
+    ]
+  },
+  {
+    "name": "delete-removed-image-workspace",
+    "records": {
+      "tables": {
+        "runtime_agents": [
+          {
+            "id": "lead",
+            "rootId": "lead",
+            "parentId": null,
+            "epoch": 3,
+            "status": "idle",
+            "name": "Lead",
+            "cwd": "/fixture",
+            "isLead": true,
+            "autoWake": true,
+            "inFlight": false,
+            "created": 1.0,
+            "concurrency": 32,
+            "subagentConcurrencyVersion": 2,
+            "agentMode": "multi",
+            "agentModeRevision": 0,
+            "agentModeSupported": true,
+            "maxAgentsExplicit": false
+          },
+          {
+            "id": "worker",
+            "rootId": "lead",
+            "parentId": "lead",
+            "epoch": 8,
+            "status": "completed",
+            "name": "Worker",
+            "cwd": "/fixture",
+            "isLead": false,
+            "autoWake": true,
+            "inFlight": false,
+            "created": 1.0,
+            "imageWorkspace": true,
+            "imageWorkspaceReady": true,
+            "imageWorkspacePhase": "removed"
+          }
+        ],
+        "runtime_work": [],
+        "runtime_requests": [],
+        "runtime_monitors": [],
+        "runtime_tasks": [],
+        "runtime_tool_requests": [],
+        "runtime_events": []
+      }
+    },
+    "action": {
+      "action": "delete",
+      "target": "lead"
+    },
+    "now": 1234567.5,
+    "expected": {
+      "result": {
+        "deleted": ["lead", "worker"]
+      },
+      "records": {
+        "tables": {
+          "runtime_agents": [
+            {
+              "id": "lead",
+              "rootId": "lead",
+              "parentId": null,
+              "epoch": 4,
+              "status": "paused",
+              "name": "Lead",
+              "cwd": "/fixture",
+              "isLead": true,
+              "autoWake": false,
+              "inFlight": false,
+              "created": 1.0,
+              "concurrency": 32,
+              "subagentConcurrencyVersion": 2,
+              "agentMode": "multi",
+              "agentModeRevision": 0,
+              "agentModeSupported": true,
+              "maxAgentsExplicit": false,
+              "deletedAt": 1234567.5,
+              "error": "Conversation deleted"
+            },
+            {
+              "id": "worker",
+              "rootId": "lead",
+              "parentId": "lead",
+              "epoch": 9,
+              "status": "paused",
+              "name": "Worker",
+              "cwd": "/fixture",
+              "isLead": false,
+              "autoWake": false,
+              "inFlight": false,
+              "created": 1.0,
+              "imageWorkspace": true,
+              "imageWorkspaceReady": true,
+              "imageWorkspacePhase": "removed",
+              "deletedAt": 1234567.5,
+              "error": "Conversation deleted"
+            }
+          ],
+          "runtime_work": [],
+          "runtime_requests": [],
+          "runtime_monitors": [],
+          "runtime_tasks": [],
+          "runtime_tool_requests": [],
+          "runtime_events": []
+        }
+      },
+      "notifications": [],
+      "notificationPayloads": [],
+      "syncEntities": []
+    },
+    "interrupted": [
+      {
+        "id": "lead",
+        "rootId": "lead",
+        "parentId": null,
+        "epoch": 4,
+        "status": "paused",
+        "name": "Lead",
+        "cwd": "/fixture",
+        "isLead": true,
+        "autoWake": false,
+        "inFlight": false,
+        "created": 1.0,
+        "concurrency": 32,
+        "subagentConcurrencyVersion": 2,
+        "agentMode": "multi",
+        "agentModeRevision": 0,
+        "agentModeSupported": true,
+        "maxAgentsExplicit": false,
+        "deletedAt": 1234567.5,
+        "error": "Conversation deleted"
+      },
+      {
+        "id": "worker",
+        "rootId": "lead",
+        "parentId": "lead",
+        "epoch": 9,
+        "status": "paused",
+        "name": "Worker",
+        "cwd": "/fixture",
+        "isLead": false,
+        "autoWake": false,
+        "inFlight": false,
+        "created": 1.0,
+        "imageWorkspace": true,
+        "imageWorkspaceReady": true,
+        "imageWorkspacePhase": "removed",
+        "deletedAt": 1234567.5,
+        "error": "Conversation deleted"
+      }
+    ]
+  },
+  {
+    "name": "delete-unrelated-open-work",
+    "records": {
+      "tables": {
+        "runtime_agents": [
+          {
+            "id": "lead",
+            "rootId": "lead",
+            "parentId": null,
+            "epoch": 3,
+            "status": "idle",
+            "name": "Lead",
+            "cwd": "/fixture",
+            "isLead": true,
+            "autoWake": true,
+            "inFlight": false,
+            "created": 1.0,
+            "concurrency": 32,
+            "subagentConcurrencyVersion": 2,
+            "agentMode": "multi",
+            "agentModeRevision": 0,
+            "agentModeSupported": true,
+            "maxAgentsExplicit": false
+          },
+          {
+            "id": "worker",
+            "rootId": "lead",
+            "parentId": "lead",
+            "epoch": 8,
+            "status": "completed",
+            "name": "Worker",
+            "cwd": "/fixture",
+            "isLead": false,
+            "autoWake": true,
+            "inFlight": false,
+            "created": 1.0
+          }
+        ],
+        "runtime_work": [
+          {
+            "id": "unrelated-work",
+            "owner": "outside",
+            "rootId": "outside",
+            "status": "ready",
+            "version": 1,
+            "title": "Unrelated",
+            "releases": []
+          }
+        ],
+        "runtime_requests": [],
+        "runtime_monitors": [],
+        "runtime_tasks": [],
+        "runtime_tool_requests": [],
+        "runtime_events": []
+      }
+    },
+    "action": {
+      "action": "delete",
+      "target": "lead"
+    },
+    "now": 1234567.5,
+    "expected": {
+      "result": {
+        "deleted": ["lead", "worker"]
+      },
+      "records": {
+        "tables": {
+          "runtime_agents": [
+            {
+              "id": "lead",
+              "rootId": "lead",
+              "parentId": null,
+              "epoch": 4,
+              "status": "paused",
+              "name": "Lead",
+              "cwd": "/fixture",
+              "isLead": true,
+              "autoWake": false,
+              "inFlight": false,
+              "created": 1.0,
+              "concurrency": 32,
+              "subagentConcurrencyVersion": 2,
+              "agentMode": "multi",
+              "agentModeRevision": 0,
+              "agentModeSupported": true,
+              "maxAgentsExplicit": false,
+              "deletedAt": 1234567.5,
+              "error": "Conversation deleted"
+            },
+            {
+              "id": "worker",
+              "rootId": "lead",
+              "parentId": "lead",
+              "epoch": 9,
+              "status": "paused",
+              "name": "Worker",
+              "cwd": "/fixture",
+              "isLead": false,
+              "autoWake": false,
+              "inFlight": false,
+              "created": 1.0,
+              "deletedAt": 1234567.5,
+              "error": "Conversation deleted"
+            }
+          ],
+          "runtime_work": [
+            {
+              "id": "unrelated-work",
+              "owner": "outside",
+              "rootId": "outside",
+              "status": "ready",
+              "version": 1,
+              "title": "Unrelated",
+              "releases": []
+            }
+          ],
+          "runtime_requests": [],
+          "runtime_monitors": [],
+          "runtime_tasks": [],
+          "runtime_tool_requests": [],
+          "runtime_events": []
+        }
+      },
+      "notifications": [],
+      "notificationPayloads": [],
+      "syncEntities": [
+        [
+          "work",
+          "unrelated-work",
+          "{\"collection\":\"work\",\"id\":\"unrelated-work\",\"value\":{\"id\":\"unrelated-work\",\"rootId\":\"outside\",\"status\":\"ready\",\"title\":\"Unrelated\"}}",
+          0
+        ]
+      ]
+    },
+    "interrupted": [
+      {
+        "id": "lead",
+        "rootId": "lead",
+        "parentId": null,
+        "epoch": 4,
+        "status": "paused",
+        "name": "Lead",
+        "cwd": "/fixture",
+        "isLead": true,
+        "autoWake": false,
+        "inFlight": false,
+        "created": 1.0,
+        "concurrency": 32,
+        "subagentConcurrencyVersion": 2,
+        "agentMode": "multi",
+        "agentModeRevision": 0,
+        "agentModeSupported": true,
+        "maxAgentsExplicit": false,
+        "deletedAt": 1234567.5,
+        "error": "Conversation deleted"
+      },
+      {
+        "id": "worker",
+        "rootId": "lead",
+        "parentId": "lead",
+        "epoch": 9,
+        "status": "paused",
+        "name": "Worker",
+        "cwd": "/fixture",
+        "isLead": false,
+        "autoWake": false,
+        "inFlight": false,
+        "created": 1.0,
+        "deletedAt": 1234567.5,
+        "error": "Conversation deleted"
+      }
+    ]
+  },
+  {
+    "name": "delete-worker-review-work",
+    "records": {
+      "tables": {
+        "runtime_agents": [
+          {
+            "id": "lead",
+            "rootId": "lead",
+            "parentId": null,
+            "epoch": 3,
+            "status": "idle",
+            "name": "Lead",
+            "cwd": "/fixture",
+            "isLead": true,
+            "autoWake": true,
+            "inFlight": false,
+            "created": 1.0,
+            "concurrency": 32,
+            "subagentConcurrencyVersion": 2,
+            "agentMode": "multi",
+            "agentModeRevision": 0,
+            "agentModeSupported": true,
+            "maxAgentsExplicit": false
+          },
+          {
+            "id": "worker",
+            "rootId": "lead",
+            "parentId": "lead",
+            "epoch": 8,
+            "status": "completed",
+            "name": "Worker",
+            "cwd": "/fixture",
+            "isLead": false,
+            "autoWake": true,
+            "inFlight": false,
+            "created": 1.0
+          }
+        ],
+        "runtime_work": [
+          {
+            "id": "worker-review",
+            "owner": "worker",
+            "rootId": "lead",
+            "status": "review",
+            "version": 1,
+            "title": "Under review",
+            "releases": []
+          }
+        ],
+        "runtime_requests": [],
+        "runtime_monitors": [],
+        "runtime_tasks": [],
+        "runtime_tool_requests": [],
+        "runtime_events": []
+      }
+    },
+    "action": {
+      "action": "delete",
+      "target": "lead"
+    },
+    "now": 1234567.5,
+    "expected": {
+      "result": {
+        "deleted": ["lead", "worker"]
+      },
+      "records": {
+        "tables": {
+          "runtime_agents": [
+            {
+              "id": "lead",
+              "rootId": "lead",
+              "parentId": null,
+              "epoch": 4,
+              "status": "paused",
+              "name": "Lead",
+              "cwd": "/fixture",
+              "isLead": true,
+              "autoWake": false,
+              "inFlight": false,
+              "created": 1.0,
+              "concurrency": 32,
+              "subagentConcurrencyVersion": 2,
+              "agentMode": "multi",
+              "agentModeRevision": 0,
+              "agentModeSupported": true,
+              "maxAgentsExplicit": false,
+              "deletedAt": 1234567.5,
+              "error": "Conversation deleted"
+            },
+            {
+              "id": "worker",
+              "rootId": "lead",
+              "parentId": "lead",
+              "epoch": 9,
+              "status": "paused",
+              "name": "Worker",
+              "cwd": "/fixture",
+              "isLead": false,
+              "autoWake": false,
+              "inFlight": false,
+              "created": 1.0,
+              "deletedAt": 1234567.5,
+              "error": "Conversation deleted"
+            }
+          ],
+          "runtime_work": [
+            {
+              "id": "worker-review",
+              "owner": "worker",
+              "rootId": "lead",
+              "status": "review",
+              "version": 1,
+              "title": "Under review",
+              "releases": []
+            }
+          ],
+          "runtime_requests": [],
+          "runtime_monitors": [],
+          "runtime_tasks": [],
+          "runtime_tool_requests": [],
+          "runtime_events": []
+        }
+      },
+      "notifications": [],
+      "notificationPayloads": [],
+      "syncEntities": [
+        [
+          "work",
+          "worker-review",
+          "{\"collection\":\"work\",\"id\":\"worker-review\",\"value\":{\"id\":\"worker-review\",\"rootId\":\"lead\",\"status\":\"review\",\"title\":\"Under review\"}}",
+          0
+        ]
+      ]
+    },
+    "interrupted": [
+      {
+        "id": "lead",
+        "rootId": "lead",
+        "parentId": null,
+        "epoch": 4,
+        "status": "paused",
+        "name": "Lead",
+        "cwd": "/fixture",
+        "isLead": true,
+        "autoWake": false,
+        "inFlight": false,
+        "created": 1.0,
+        "concurrency": 32,
+        "subagentConcurrencyVersion": 2,
+        "agentMode": "multi",
+        "agentModeRevision": 0,
+        "agentModeSupported": true,
+        "maxAgentsExplicit": false,
+        "deletedAt": 1234567.5,
+        "error": "Conversation deleted"
+      },
+      {
+        "id": "worker",
+        "rootId": "lead",
+        "parentId": "lead",
+        "epoch": 9,
+        "status": "paused",
+        "name": "Worker",
+        "cwd": "/fixture",
+        "isLead": false,
+        "autoWake": false,
+        "inFlight": false,
+        "created": 1.0,
+        "deletedAt": 1234567.5,
+        "error": "Conversation deleted"
+      }
+    ]
+  }
+]

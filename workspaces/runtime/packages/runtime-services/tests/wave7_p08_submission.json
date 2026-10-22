@@ -1,0 +1,1192 @@
+{
+  "values": [
+    {
+      "id": "attempt",
+      "epoch": 2,
+      "accountKey": "account",
+      "threadId": "thread",
+      "events": ["one", "two"],
+      "submitted": false,
+      "created": 110.0,
+      "settingsFixed": true,
+      "requestTicket": "request:attempt",
+      "connectionGeneration": 7
+    },
+    {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 2,
+      "status": "starting",
+      "provider": "claude",
+      "accountKey": "account",
+      "threadId": "thread",
+      "autoWake": true,
+      "cwd": "/fixture",
+      "role": "lead",
+      "isLead": true,
+      "model": "default",
+      "yoloMode": false,
+      "compactions": 0,
+      "events": 0,
+      "complaintsPresented": [],
+      "cyberAccessProgram": null,
+      "startAttempt": {
+        "$ref": 0
+      },
+      "inFlight": true
+    },
+    {
+      "id": "agent",
+      "record": {
+        "$ref": 1
+      }
+    },
+    [
+      {
+        "$ref": 2
+      }
+    ],
+    {
+      "id": "run:attempt",
+      "agent": "agent",
+      "accountKey": "account",
+      "epoch": 2,
+      "threadId": "thread",
+      "turnId": null,
+      "created": 110.0,
+      "status": "unsent",
+      "firstAttemptId": "attempt",
+      "rootAttemptId": null,
+      "latestAttemptId": "attempt"
+    },
+    {
+      "id": "run:attempt",
+      "agent": "agent",
+      "account": "account",
+      "epoch": 2,
+      "thread": "thread",
+      "turn": null,
+      "created": 110.0,
+      "record": {
+        "$ref": 4
+      }
+    },
+    [
+      {
+        "$ref": 5
+      }
+    ],
+    {
+      "id": "attempt",
+      "epoch": 2,
+      "accountKey": "account",
+      "threadId": "thread",
+      "events": ["one", "two"],
+      "submitted": false,
+      "created": 110.0,
+      "settingsFixed": true,
+      "requestTicket": "request:attempt",
+      "connectionGeneration": 7,
+      "runId": "run:attempt",
+      "submission": "unsent",
+      "prepareAttemptId": null,
+      "turnStatus": null,
+      "resultRunId": null
+    },
+    {
+      "id": "attempt",
+      "run": "run:attempt",
+      "record": {
+        "$ref": 7
+      }
+    },
+    [
+      {
+        "$ref": 8
+      }
+    ],
+    {
+      "id": "one",
+      "agent": "agent",
+      "epoch": 2,
+      "kind": "user",
+      "text": "original one",
+      "created": 100.0,
+      "status": "reserved",
+      "turn_id": null,
+      "error": null
+    },
+    {
+      "$base": 10,
+      "set": {
+        "id": "two",
+        "text": "original two",
+        "created": 101.0
+      }
+    },
+    [
+      {
+        "$ref": 10
+      },
+      {
+        "$ref": 11
+      }
+    ],
+    [
+      {
+        "id": "one",
+        "record": {
+          "modelEventProjection": 1
+        }
+      },
+      {
+        "id": "two",
+        "record": {
+          "modelEventProjection": 1
+        }
+      }
+    ],
+    {
+      "runtime_agents": {
+        "$ref": 3
+      },
+      "runtime_execution_runs": {
+        "$ref": 6
+      },
+      "runtime_execution_attempts": {
+        "$ref": 9
+      },
+      "runtime_execution_inputs": [
+        {
+          "run": "run:attempt",
+          "event": "one"
+        },
+        {
+          "run": "run:attempt",
+          "event": "two"
+        }
+      ],
+      "runtime_events": {
+        "$ref": 12
+      },
+      "runtime_event_meta": {
+        "$ref": 13
+      },
+      "runtime_items": [],
+      "runtime_item_fulltext": [],
+      "runtime_operation_receipts": []
+    },
+    {
+      "cwd": "/fixture",
+      "rootId": "agent",
+      "parentId": null,
+      "role": "lead",
+      "isLead": true,
+      "model": "default",
+      "effort": null,
+      "nativeEffort": null,
+      "fastMode": null,
+      "yoloMode": false,
+      "imageWorkspace": null,
+      "imageWorkspaceReady": null,
+      "compactions": 0
+    },
+    {
+      "threadId": "thread",
+      "model": "default",
+      "cwd": "/fixture",
+      "serviceTier": "default"
+    },
+    {
+      "id": "one",
+      "kind": "user",
+      "created": 100.0,
+      "assets": [],
+      "textHash": "47080470c1aeb2a10e9df746bc6abf3233a453c3b2cd52a5f14d9eb2a308587a"
+    },
+    {
+      "$base": 17,
+      "set": {
+        "id": "two",
+        "created": 101.0,
+        "textHash": "29e0e91a3bcefa7f8d341741d060590ce09bf596765a9e79d58a3b1cb66dbc1d"
+      }
+    },
+    [
+      {
+        "$ref": 17
+      },
+      {
+        "$ref": 18
+      }
+    ],
+    {
+      "input": [
+        {
+          "type": "text",
+          "text": "compiled original"
+        }
+      ],
+      "source": {
+        "$ref": 15
+      },
+      "clientUserMessageId": "one",
+      "configuration": {
+        "$ref": 16
+      },
+      "events": {
+        "$ref": 19
+      },
+      "transcriptItemId": "agent:one",
+      "textHash": "fd6be1c4d92b20cf9c6da3f5fcf44b5baff29ac8e949ea88259fd5597c545150"
+    },
+    {
+      "id": "attempt",
+      "epoch": 2,
+      "accountKey": "account",
+      "threadId": "thread",
+      "events": ["one", "two"],
+      "submitted": true,
+      "created": 110.0,
+      "settingsFixed": true,
+      "requestTicket": "request:attempt",
+      "connectionGeneration": 7,
+      "claudeInputRequest": {
+        "$ref": 20
+      },
+      "nativeOperationId": "turn:agent:one:attempt:attempt",
+      "connectionId": "connection",
+      "supervisorIdentity": null
+    },
+    {
+      "$base": 1,
+      "set": {
+        "startAttempt": {
+          "$ref": 21
+        }
+      }
+    },
+    {
+      "id": "agent",
+      "record": {
+        "$ref": 22
+      }
+    },
+    [
+      {
+        "$ref": 23
+      }
+    ],
+    {
+      "$base": 4,
+      "set": {
+        "status": "unknown"
+      }
+    },
+    {
+      "$base": 5,
+      "set": {
+        "record": {
+          "$ref": 25
+        }
+      }
+    },
+    [
+      {
+        "$ref": 26
+      }
+    ],
+    {
+      "id": "attempt",
+      "epoch": 2,
+      "accountKey": "account",
+      "threadId": "thread",
+      "events": ["one", "two"],
+      "submitted": true,
+      "created": 110.0,
+      "settingsFixed": true,
+      "requestTicket": "request:attempt",
+      "connectionGeneration": 7,
+      "claudeInputRequest": {
+        "$ref": 20
+      },
+      "nativeOperationId": "turn:agent:one:attempt:attempt",
+      "connectionId": "connection",
+      "supervisorIdentity": null,
+      "runId": "run:attempt",
+      "submission": "unknown",
+      "prepareAttemptId": null,
+      "turnStatus": null,
+      "resultRunId": null
+    },
+    {
+      "$base": 8,
+      "set": {
+        "record": {
+          "$ref": 28
+        }
+      }
+    },
+    [
+      {
+        "$ref": 29
+      }
+    ],
+    {
+      "$base": 10,
+      "set": {
+        "status": "dispatching"
+      }
+    },
+    {
+      "$base": 11,
+      "set": {
+        "status": "dispatching"
+      }
+    },
+    [
+      {
+        "$ref": 31
+      },
+      {
+        "$ref": 32
+      }
+    ],
+    [
+      {
+        "id": "one",
+        "record": {
+          "modelEventProjection": 1,
+          "transcriptItemId": "agent:one"
+        }
+      },
+      {
+        "id": "two",
+        "record": {
+          "modelEventProjection": 1,
+          "transcriptItemId": "agent:one"
+        }
+      }
+    ],
+    {
+      "id": "one",
+      "at": 100.0,
+      "kind": "user",
+      "text": "original one",
+      "truncated": false,
+      "assets": []
+    },
+    {
+      "$base": 35,
+      "set": {
+        "id": "two",
+        "at": 101.0,
+        "text": "original two"
+      }
+    },
+    [
+      {
+        "$ref": 35
+      },
+      {
+        "$ref": 36
+      }
+    ],
+    {
+      "id": "agent:one",
+      "role": "user",
+      "title": "User",
+      "text": "compiled original",
+      "truncated": false,
+      "at": 150.0,
+      "assets": [],
+      "inputs": {
+        "$ref": 37
+      }
+    },
+    {
+      "id": "agent:one",
+      "agent": "agent",
+      "record": {
+        "$ref": 38
+      },
+      "created": 150.0
+    },
+    [
+      {
+        "$ref": 39
+      }
+    ],
+    {
+      "$base": 14,
+      "set": {
+        "runtime_agents": {
+          "$ref": 24
+        },
+        "runtime_execution_runs": {
+          "$ref": 27
+        },
+        "runtime_execution_attempts": {
+          "$ref": 30
+        },
+        "runtime_events": {
+          "$ref": 33
+        },
+        "runtime_event_meta": {
+          "$ref": 34
+        },
+        "runtime_items": {
+          "$ref": 40
+        }
+      }
+    },
+    {
+      "threadId": "thread",
+      "model": "default",
+      "cwd": "/fixture",
+      "clientUserMessageId": "one",
+      "input": [
+        {
+          "type": "text",
+          "text": "compiled original"
+        }
+      ],
+      "dynamicTools": [
+        {
+          "name": "refreshed"
+        }
+      ],
+      "serviceTier": "default"
+    },
+    {
+      "path": "fresh-None.sqlite3",
+      "retry": false,
+      "fault": null,
+      "before": {
+        "$ref": 14
+      },
+      "after": {
+        "$ref": 41
+      },
+      "failed": false,
+      "params": {
+        "$ref": 42
+      }
+    },
+    "CREATE TABLE runtime_events(id TEXT PRIMARY KEY,agent TEXT,epoch INTEGER,kind TEXT,text TEXT,created REAL,status TEXT,turn_id TEXT,error TEXT)",
+    "CREATE TABLE runtime_execution_attempts (id TEXT PRIMARY KEY, run TEXT NOT NULL, record TEXT NOT NULL)",
+    "CREATE TABLE runtime_execution_effects (id TEXT PRIMARY KEY, run TEXT NOT NULL, kind TEXT NOT NULL, reference TEXT NOT NULL, record TEXT NOT NULL)",
+    "CREATE TABLE runtime_execution_inputs (run TEXT NOT NULL, event TEXT NOT NULL, PRIMARY KEY(run,event))",
+    "CREATE TABLE runtime_execution_nodes (id TEXT PRIMARY KEY, run TEXT NOT NULL, record TEXT NOT NULL)",
+    "CREATE TABLE runtime_execution_runs (id TEXT PRIMARY KEY, agent TEXT NOT NULL, account TEXT NOT NULL, epoch INTEGER NOT NULL, thread TEXT, turn TEXT, created REAL NOT NULL, record TEXT NOT NULL)",
+    "CREATE TABLE runtime_items(id TEXT PRIMARY KEY,agent TEXT,record TEXT,created REAL)",
+    "CREATE TABLE runtime_operation_receipts(id TEXT PRIMARY KEY,signature TEXT,result TEXT)",
+    "CREATE INDEX runtime_execution_run_agent ON runtime_execution_runs(agent,created DESC)",
+    "CREATE INDEX runtime_execution_run_created ON runtime_execution_runs(created DESC)",
+    "CREATE INDEX runtime_execution_run_message ON runtime_execution_runs(agent,thread,turn)",
+    "CREATE INDEX runtime_execution_run_native ON runtime_execution_runs(agent,account,thread,turn)",
+    [
+      "CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT)",
+      "CREATE TABLE runtime_event_meta(id TEXT PRIMARY KEY,record TEXT)",
+      {
+        "$ref": 44
+      },
+      {
+        "$ref": 45
+      },
+      {
+        "$ref": 46
+      },
+      {
+        "$ref": 47
+      },
+      {
+        "$ref": 48
+      },
+      {
+        "$ref": 49
+      },
+      "CREATE TABLE runtime_item_fulltext(id TEXT PRIMARY KEY,body TEXT)",
+      {
+        "$ref": 50
+      },
+      {
+        "$ref": 51
+      },
+      "CREATE TABLE runtime_tasks(id TEXT PRIMARY KEY,record TEXT)",
+      "CREATE INDEX runtime_execution_attempt_run ON runtime_execution_attempts(run)",
+      "CREATE INDEX runtime_execution_effect_run ON runtime_execution_effects(run)",
+      "CREATE INDEX runtime_execution_input_event ON runtime_execution_inputs(event)",
+      "CREATE INDEX runtime_execution_node_run ON runtime_execution_nodes(run)",
+      {
+        "$ref": 52
+      },
+      {
+        "$ref": 53
+      },
+      {
+        "$ref": 54
+      },
+      {
+        "$ref": 55
+      }
+    ],
+    "INSERT INTO \"runtime_agents\"(\"id\",\"record\") VALUES ('agent','{\"id\": \"agent\", \"rootId\": \"agent\", \"epoch\": 2, \"status\": \"starting\", \"provider\": \"claude\", \"accountKey\": \"account\", \"threadId\": \"thread\", \"autoWake\": true, \"cwd\": \"/fixture\", \"role\": \"lead\", \"isLead\": true, \"model\": \"default\", \"yoloMode\": false, \"compactions\": 0, \"events\": 0, \"complaintsPresented\": [], \"cyberAccessProgram\": null, \"startAttempt\": {\"id\": \"attempt\", \"epoch\": 2, \"accountKey\": \"account\", \"threadId\": \"thread\", \"events\": [\"one\", \"two\"], \"submitted\": false, \"created\": 110.0, \"settingsFixed\": true, \"requestTicket\": \"request:attempt\", \"connectionGeneration\": 7}, \"inFlight\": true}');",
+    "INSERT INTO \"runtime_event_meta\"(\"id\",\"record\") VALUES ('one','{\"modelEventProjection\": 1}');",
+    "INSERT INTO \"runtime_event_meta\"(\"id\",\"record\") VALUES ('two','{\"modelEventProjection\": 1}');",
+    "INSERT INTO \"runtime_events\"(\"id\",\"agent\",\"epoch\",\"kind\",\"text\",\"created\",\"status\",\"turn_id\",\"error\") VALUES ('one','agent',2,'user','original one',100.0,'reserved',NULL,NULL);",
+    "INSERT INTO \"runtime_events\"(\"id\",\"agent\",\"epoch\",\"kind\",\"text\",\"created\",\"status\",\"turn_id\",\"error\") VALUES ('two','agent',2,'user','original two',101.0,'reserved',NULL,NULL);",
+    "INSERT INTO \"runtime_execution_attempts\"(\"id\",\"run\",\"record\") VALUES ('attempt','run:attempt','{\"id\": \"attempt\", \"epoch\": 2, \"accountKey\": \"account\", \"threadId\": \"thread\", \"events\": [\"one\", \"two\"], \"submitted\": false, \"created\": 110.0, \"settingsFixed\": true, \"requestTicket\": \"request:attempt\", \"connectionGeneration\": 7, \"runId\": \"run:attempt\", \"submission\": \"unsent\", \"prepareAttemptId\": null, \"turnStatus\": null, \"resultRunId\": null}');",
+    "INSERT INTO \"runtime_execution_inputs\"(\"run\",\"event\") VALUES ('run:attempt','one');",
+    "INSERT INTO \"runtime_execution_inputs\"(\"run\",\"event\") VALUES ('run:attempt','two');",
+    "INSERT INTO \"runtime_execution_runs\"(\"id\",\"agent\",\"account\",\"epoch\",\"thread\",\"turn\",\"created\",\"record\") VALUES ('run:attempt','agent','account',2,'thread',NULL,110.0,'{\"id\": \"run:attempt\", \"agent\": \"agent\", \"accountKey\": \"account\", \"epoch\": 2, \"threadId\": \"thread\", \"turnId\": null, \"created\": 110.0, \"status\": \"unsent\", \"firstAttemptId\": \"attempt\", \"rootAttemptId\": null, \"latestAttemptId\": \"attempt\"}');",
+    [
+      {
+        "$ref": 57
+      },
+      {
+        "$ref": 58
+      },
+      {
+        "$ref": 59
+      },
+      {
+        "$ref": 60
+      },
+      {
+        "$ref": 61
+      },
+      {
+        "$ref": 62
+      },
+      {
+        "$ref": 63
+      },
+      {
+        "$ref": 64
+      },
+      {
+        "$ref": 65
+      }
+    ],
+    {
+      "schema": {
+        "$ref": 56
+      },
+      "data": {
+        "$ref": 66
+      }
+    },
+    {
+      "$base": 43,
+      "set": {
+        "path": "fresh-before_commit.sqlite3",
+        "fault": "before_commit",
+        "after": {
+          "$ref": 14
+        },
+        "failed": true,
+        "params": null
+      }
+    },
+    {
+      "$base": 68,
+      "set": {
+        "path": "fresh-after_commit.sqlite3",
+        "fault": "after_commit",
+        "after": {
+          "$ref": 41
+        }
+      }
+    },
+    {
+      "$base": 68,
+      "set": {
+        "path": "fresh-bind.sqlite3",
+        "fault": "bind"
+      }
+    },
+    {
+      "id": "attempt",
+      "epoch": 2,
+      "accountKey": "account",
+      "threadId": "thread",
+      "connectionId": "connection",
+      "nativeOperationId": "turn:agent:one:attempt:attempt",
+      "events": ["one", "two"],
+      "submitted": true,
+      "supervisorIdentity": null
+    },
+    {
+      "id": "retry",
+      "epoch": 2,
+      "accountKey": "account",
+      "threadId": "thread",
+      "events": ["one", "two"],
+      "submitted": false,
+      "created": 170.0,
+      "settingsFixed": true,
+      "requestTicket": "request:retry",
+      "connectionGeneration": 7,
+      "claudeRetryOf": "attempt"
+    },
+    {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 2,
+      "status": "starting",
+      "provider": "claude",
+      "accountKey": "account",
+      "threadId": "thread",
+      "autoWake": true,
+      "cwd": "/fixture",
+      "role": "lead",
+      "isLead": true,
+      "model": "default",
+      "yoloMode": false,
+      "compactions": 0,
+      "events": 0,
+      "complaintsPresented": [],
+      "cyberAccessProgram": null,
+      "inFlight": true,
+      "claudePreInputRetry": {
+        "$ref": 71
+      },
+      "turnId": null,
+      "error": null,
+      "startAttempt": {
+        "$ref": 72
+      }
+    },
+    {
+      "id": "agent",
+      "record": {
+        "$ref": 73
+      }
+    },
+    [
+      {
+        "$ref": 74
+      }
+    ],
+    {
+      "$base": 4,
+      "set": {
+        "latestAttemptId": "retry"
+      }
+    },
+    {
+      "$base": 5,
+      "set": {
+        "record": {
+          "$ref": 76
+        }
+      }
+    },
+    [
+      {
+        "$ref": 77
+      }
+    ],
+    {
+      "id": "attempt",
+      "epoch": 2,
+      "accountKey": "account",
+      "threadId": "thread",
+      "connectionId": "connection",
+      "nativeOperationId": "turn:agent:one:attempt:attempt",
+      "events": ["one", "two"],
+      "agent": "agent",
+      "turnId": null,
+      "outcome": "not_applied",
+      "retry": true
+    },
+    {
+      "id": "attempt",
+      "epoch": 2,
+      "accountKey": "account",
+      "threadId": "thread",
+      "events": ["one", "two"],
+      "submitted": true,
+      "created": 110.0,
+      "settingsFixed": true,
+      "requestTicket": "request:attempt",
+      "connectionGeneration": 7,
+      "claudeInputRequest": {
+        "$ref": 20
+      },
+      "nativeOperationId": "turn:agent:one:attempt:attempt",
+      "connectionId": "connection",
+      "supervisorIdentity": null,
+      "runId": "run:attempt",
+      "submission": "unknown",
+      "prepareAttemptId": null,
+      "turnStatus": null,
+      "resultRunId": null,
+      "claudeInputRejection": {
+        "$ref": 79
+      },
+      "executionOutcome": "not_applied"
+    },
+    {
+      "$base": 8,
+      "set": {
+        "record": {
+          "$ref": 80
+        }
+      }
+    },
+    {
+      "id": "retry",
+      "epoch": 2,
+      "accountKey": "account",
+      "threadId": "thread",
+      "events": ["one", "two"],
+      "submitted": false,
+      "created": 170.0,
+      "settingsFixed": true,
+      "requestTicket": "request:retry",
+      "connectionGeneration": 7,
+      "claudeRetryOf": "attempt",
+      "runId": "run:attempt",
+      "submission": "unsent",
+      "prepareAttemptId": null,
+      "turnStatus": null,
+      "resultRunId": null
+    },
+    {
+      "$base": 8,
+      "set": {
+        "id": "retry",
+        "record": {
+          "$ref": 82
+        }
+      }
+    },
+    [
+      {
+        "$ref": 81
+      },
+      {
+        "$ref": 83
+      }
+    ],
+    {
+      "modelEventProjection": 1,
+      "transcriptItemId": "agent:one",
+      "claudePreInputRetryUsed": true
+    },
+    {
+      "id": "one",
+      "record": {
+        "$ref": 85
+      }
+    },
+    {
+      "id": "two",
+      "record": {
+        "$ref": 85
+      }
+    },
+    [
+      {
+        "$ref": 86
+      },
+      {
+        "$ref": 87
+      }
+    ],
+    {
+      "$base": 14,
+      "set": {
+        "runtime_agents": {
+          "$ref": 75
+        },
+        "runtime_execution_runs": {
+          "$ref": 78
+        },
+        "runtime_execution_attempts": {
+          "$ref": 84
+        },
+        "runtime_event_meta": {
+          "$ref": 88
+        },
+        "runtime_items": {
+          "$ref": 40
+        }
+      }
+    },
+    {
+      "id": "retry",
+      "epoch": 2,
+      "accountKey": "account",
+      "threadId": "thread",
+      "events": ["one", "two"],
+      "submitted": true,
+      "created": 170.0,
+      "settingsFixed": true,
+      "requestTicket": "request:retry",
+      "connectionGeneration": 7,
+      "claudeRetryOf": "attempt",
+      "claudeInputRequest": {
+        "$ref": 20
+      },
+      "nativeOperationId": "turn:agent:one:attempt:retry",
+      "connectionId": "connection",
+      "supervisorIdentity": null
+    },
+    {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 2,
+      "status": "starting",
+      "provider": "claude",
+      "accountKey": "account",
+      "threadId": "thread",
+      "autoWake": true,
+      "cwd": "/fixture",
+      "role": "lead",
+      "isLead": true,
+      "model": "default",
+      "yoloMode": false,
+      "compactions": 0,
+      "events": 0,
+      "complaintsPresented": [],
+      "cyberAccessProgram": null,
+      "inFlight": true,
+      "turnId": null,
+      "error": null,
+      "startAttempt": {
+        "$ref": 90
+      }
+    },
+    {
+      "id": "agent",
+      "record": {
+        "$ref": 91
+      }
+    },
+    [
+      {
+        "$ref": 92
+      }
+    ],
+    {
+      "$base": 76,
+      "set": {
+        "status": "unknown"
+      }
+    },
+    {
+      "$base": 5,
+      "set": {
+        "record": {
+          "$ref": 94
+        }
+      }
+    },
+    [
+      {
+        "$ref": 95
+      }
+    ],
+    {
+      "id": "retry",
+      "epoch": 2,
+      "accountKey": "account",
+      "threadId": "thread",
+      "events": ["one", "two"],
+      "submitted": true,
+      "created": 170.0,
+      "settingsFixed": true,
+      "requestTicket": "request:retry",
+      "connectionGeneration": 7,
+      "claudeRetryOf": "attempt",
+      "claudeInputRequest": {
+        "$ref": 20
+      },
+      "nativeOperationId": "turn:agent:one:attempt:retry",
+      "connectionId": "connection",
+      "supervisorIdentity": null,
+      "runId": "run:attempt",
+      "submission": "unknown",
+      "prepareAttemptId": null,
+      "turnStatus": null,
+      "resultRunId": null
+    },
+    {
+      "$base": 83,
+      "set": {
+        "record": {
+          "$ref": 97
+        }
+      }
+    },
+    [
+      {
+        "$ref": 81
+      },
+      {
+        "$ref": 98
+      }
+    ],
+    {
+      "$base": 89,
+      "set": {
+        "runtime_agents": {
+          "$ref": 93
+        },
+        "runtime_execution_runs": {
+          "$ref": 96
+        },
+        "runtime_execution_attempts": {
+          "$ref": 99
+        },
+        "runtime_events": {
+          "$ref": 33
+        }
+      }
+    },
+    {
+      "$base": 43,
+      "set": {
+        "path": "retry-None.sqlite3",
+        "retry": true,
+        "before": {
+          "$ref": 89
+        },
+        "after": {
+          "$ref": 100
+        }
+      }
+    },
+    "INSERT INTO \"runtime_agents\"(\"id\",\"record\") VALUES ('agent','{\"id\": \"agent\", \"rootId\": \"agent\", \"epoch\": 2, \"status\": \"starting\", \"provider\": \"claude\", \"accountKey\": \"account\", \"threadId\": \"thread\", \"autoWake\": true, \"cwd\": \"/fixture\", \"role\": \"lead\", \"isLead\": true, \"model\": \"default\", \"yoloMode\": false, \"compactions\": 0, \"events\": 0, \"complaintsPresented\": [], \"cyberAccessProgram\": null, \"inFlight\": true, \"claudePreInputRetry\": {\"id\": \"attempt\", \"epoch\": 2, \"accountKey\": \"account\", \"threadId\": \"thread\", \"connectionId\": \"connection\", \"nativeOperationId\": \"turn:agent:one:attempt:attempt\", \"events\": [\"one\", \"two\"], \"submitted\": true, \"supervisorIdentity\": null}, \"turnId\": null, \"error\": null, \"startAttempt\": {\"id\": \"retry\", \"epoch\": 2, \"accountKey\": \"account\", \"threadId\": \"thread\", \"events\": [\"one\", \"two\"], \"submitted\": false, \"created\": 170.0, \"settingsFixed\": true, \"requestTicket\": \"request:retry\", \"connectionGeneration\": 7, \"claudeRetryOf\": \"attempt\"}}');",
+    "INSERT INTO \"runtime_event_meta\"(\"id\",\"record\") VALUES ('one','{\"modelEventProjection\": 1, \"transcriptItemId\": \"agent:one\", \"claudePreInputRetryUsed\": true}');",
+    "INSERT INTO \"runtime_event_meta\"(\"id\",\"record\") VALUES ('two','{\"modelEventProjection\": 1, \"transcriptItemId\": \"agent:one\", \"claudePreInputRetryUsed\": true}');",
+    "INSERT INTO \"runtime_execution_attempts\"(\"id\",\"run\",\"record\") VALUES ('attempt','run:attempt','{\"id\": \"attempt\", \"epoch\": 2, \"accountKey\": \"account\", \"threadId\": \"thread\", \"events\": [\"one\", \"two\"], \"submitted\": true, \"created\": 110.0, \"settingsFixed\": true, \"requestTicket\": \"request:attempt\", \"connectionGeneration\": 7, \"claudeInputRequest\": {\"input\": [{\"type\": \"text\", \"text\": \"compiled original\"}], \"source\": {\"cwd\": \"/fixture\", \"rootId\": \"agent\", \"parentId\": null, \"role\": \"lead\", \"isLead\": true, \"model\": \"default\", \"effort\": null, \"nativeEffort\": null, \"fastMode\": null, \"yoloMode\": false, \"imageWorkspace\": null, \"imageWorkspaceReady\": null, \"compactions\": 0}, \"clientUserMessageId\": \"one\", \"configuration\": {\"threadId\": \"thread\", \"model\": \"default\", \"cwd\": \"/fixture\", \"serviceTier\": \"default\"}, \"events\": [{\"id\": \"one\", \"kind\": \"user\", \"created\": 100.0, \"assets\": [], \"textHash\": \"47080470c1aeb2a10e9df746bc6abf3233a453c3b2cd52a5f14d9eb2a308587a\"}, {\"id\": \"two\", \"kind\": \"user\", \"created\": 101.0, \"assets\": [], \"textHash\": \"29e0e91a3bcefa7f8d341741d060590ce09bf596765a9e79d58a3b1cb66dbc1d\"}], \"transcriptItemId\": \"agent:one\", \"textHash\": \"fd6be1c4d92b20cf9c6da3f5fcf44b5baff29ac8e949ea88259fd5597c545150\"}, \"nativeOperationId\": \"turn:agent:one:attempt:attempt\", \"connectionId\": \"connection\", \"supervisorIdentity\": null, \"runId\": \"run:attempt\", \"submission\": \"unknown\", \"prepareAttemptId\": null, \"turnStatus\": null, \"resultRunId\": null, \"claudeInputRejection\": {\"id\": \"attempt\", \"epoch\": 2, \"accountKey\": \"account\", \"threadId\": \"thread\", \"connectionId\": \"connection\", \"nativeOperationId\": \"turn:agent:one:attempt:attempt\", \"events\": [\"one\", \"two\"], \"agent\": \"agent\", \"turnId\": null, \"outcome\": \"not_applied\", \"retry\": true}, \"executionOutcome\": \"not_applied\"}');",
+    "INSERT INTO \"runtime_execution_attempts\"(\"id\",\"run\",\"record\") VALUES ('retry','run:attempt','{\"id\": \"retry\", \"epoch\": 2, \"accountKey\": \"account\", \"threadId\": \"thread\", \"events\": [\"one\", \"two\"], \"submitted\": false, \"created\": 170.0, \"settingsFixed\": true, \"requestTicket\": \"request:retry\", \"connectionGeneration\": 7, \"claudeRetryOf\": \"attempt\", \"runId\": \"run:attempt\", \"submission\": \"unsent\", \"prepareAttemptId\": null, \"turnStatus\": null, \"resultRunId\": null}');",
+    "INSERT INTO \"runtime_execution_runs\"(\"id\",\"agent\",\"account\",\"epoch\",\"thread\",\"turn\",\"created\",\"record\") VALUES ('run:attempt','agent','account',2,'thread',NULL,110.0,'{\"id\": \"run:attempt\", \"agent\": \"agent\", \"accountKey\": \"account\", \"epoch\": 2, \"threadId\": \"thread\", \"turnId\": null, \"created\": 110.0, \"status\": \"unsent\", \"firstAttemptId\": \"attempt\", \"rootAttemptId\": null, \"latestAttemptId\": \"retry\"}');",
+    "INSERT INTO \"runtime_items\"(\"id\",\"agent\",\"record\",\"created\") VALUES ('agent:one','agent','{\"id\": \"agent:one\", \"role\": \"user\", \"title\": \"User\", \"text\": \"compiled original\", \"truncated\": false, \"at\": 150.0, \"assets\": [], \"inputs\": [{\"id\": \"one\", \"at\": 100.0, \"kind\": \"user\", \"text\": \"original one\", \"truncated\": false, \"assets\": []}, {\"id\": \"two\", \"at\": 101.0, \"kind\": \"user\", \"text\": \"original two\", \"truncated\": false, \"assets\": []}]}',150.0);",
+    [
+      {
+        "$ref": 102
+      },
+      {
+        "$ref": 103
+      },
+      {
+        "$ref": 104
+      },
+      {
+        "$ref": 60
+      },
+      {
+        "$ref": 61
+      },
+      {
+        "$ref": 105
+      },
+      {
+        "$ref": 106
+      },
+      {
+        "$ref": 63
+      },
+      {
+        "$ref": 64
+      },
+      {
+        "$ref": 107
+      },
+      {
+        "$ref": 108
+      }
+    ],
+    {
+      "schema": {
+        "$ref": 56
+      },
+      "data": {
+        "$ref": 109
+      }
+    },
+    {
+      "$base": 73,
+      "set": {
+        "model": "changed"
+      }
+    },
+    {
+      "id": "agent",
+      "record": {
+        "$ref": 111
+      }
+    },
+    [
+      {
+        "$ref": 112
+      }
+    ],
+    {
+      "$base": 89,
+      "set": {
+        "runtime_agents": {
+          "$ref": 113
+        }
+      }
+    },
+    {
+      "$base": 68,
+      "set": {
+        "path": "retry-configuration.sqlite3",
+        "retry": true,
+        "fault": "configuration",
+        "before": {
+          "$ref": 114
+        },
+        "after": {
+          "$ref": 114
+        }
+      }
+    },
+    {
+      "$base": 68,
+      "set": {
+        "path": "retry-before_commit.sqlite3",
+        "retry": true,
+        "before": {
+          "$ref": 89
+        },
+        "after": {
+          "$ref": 89
+        }
+      }
+    },
+    {
+      "$base": 116,
+      "set": {
+        "path": "retry-after_commit.sqlite3",
+        "fault": "after_commit",
+        "after": {
+          "$ref": 100
+        }
+      }
+    },
+    {
+      "$base": 116,
+      "set": {
+        "path": "retry-bind.sqlite3",
+        "fault": "bind"
+      }
+    }
+  ],
+  "root": [
+    {
+      "case": {
+        "$ref": 43
+      },
+      "database": {
+        "$ref": 67
+      }
+    },
+    {
+      "case": {
+        "$ref": 68
+      },
+      "database": {
+        "$ref": 67
+      }
+    },
+    {
+      "case": {
+        "$ref": 69
+      },
+      "database": {
+        "$ref": 67
+      }
+    },
+    {
+      "case": {
+        "$ref": 70
+      },
+      "database": {
+        "$ref": 67
+      }
+    },
+    {
+      "case": {
+        "$ref": 101
+      },
+      "database": {
+        "$ref": 110
+      }
+    },
+    {
+      "case": {
+        "$ref": 115
+      },
+      "database": {
+        "schema": {
+          "$ref": 56
+        },
+        "data": [
+          "INSERT INTO \"runtime_agents\"(\"id\",\"record\") VALUES ('agent','{\"id\":\"agent\",\"rootId\":\"agent\",\"epoch\":2,\"status\":\"starting\",\"provider\":\"claude\",\"accountKey\":\"account\",\"threadId\":\"thread\",\"autoWake\":true,\"cwd\":\"/fixture\",\"role\":\"lead\",\"isLead\":true,\"model\":\"changed\",\"yoloMode\":false,\"compactions\":0,\"events\":0,\"complaintsPresented\":[],\"cyberAccessProgram\":null,\"inFlight\":true,\"claudePreInputRetry\":{\"id\":\"attempt\",\"epoch\":2,\"accountKey\":\"account\",\"threadId\":\"thread\",\"connectionId\":\"connection\",\"nativeOperationId\":\"turn:agent:one:attempt:attempt\",\"events\":[\"one\",\"two\"],\"submitted\":true,\"supervisorIdentity\":null},\"turnId\":null,\"error\":null,\"startAttempt\":{\"id\":\"retry\",\"epoch\":2,\"accountKey\":\"account\",\"threadId\":\"thread\",\"events\":[\"one\",\"two\"],\"submitted\":false,\"created\":170.0,\"settingsFixed\":true,\"requestTicket\":\"request:retry\",\"connectionGeneration\":7,\"claudeRetryOf\":\"attempt\"}}');",
+          {
+            "$ref": 103
+          },
+          {
+            "$ref": 104
+          },
+          {
+            "$ref": 60
+          },
+          {
+            "$ref": 61
+          },
+          {
+            "$ref": 105
+          },
+          {
+            "$ref": 106
+          },
+          {
+            "$ref": 63
+          },
+          {
+            "$ref": 64
+          },
+          {
+            "$ref": 107
+          },
+          {
+            "$ref": 108
+          }
+        ]
+      }
+    },
+    {
+      "case": {
+        "$ref": 116
+      },
+      "database": {
+        "$ref": 110
+      }
+    },
+    {
+      "case": {
+        "$ref": 117
+      },
+      "database": {
+        "$ref": 110
+      }
+    },
+    {
+      "case": {
+        "$ref": 118
+      },
+      "database": {
+        "$ref": 110
+      }
+    }
+  ]
+}

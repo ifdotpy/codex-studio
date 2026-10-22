@@ -27,22 +27,85 @@ impl OwnerLookup for FixtureOwner {
     }
 }
 
+#[derive(serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+struct FixtureCredentials {
+    #[serde(rename = "X-Studio-Client")]
+    client: String,
+    #[serde(rename = "X-Studio-Server")]
+    server: String,
+    #[serde(rename = "X-Studio-Timestamp")]
+    timestamp: String,
+    #[serde(rename = "X-Studio-Nonce")]
+    nonce: String,
+    #[serde(rename = "X-Studio-Request-Id")]
+    request: String,
+    #[serde(rename = "X-Studio-Signature")]
+    signature: String,
+}
+
+/// Refresh valid frozen signatures without repairing deliberately forged requests.
+fn fresh_headers(request: &common::FixtureRequest) -> Vec<(String, String)> {
+    use std::collections::BTreeMap;
+    use studio_runtime_services::remote_transport::{
+        MultiServerSigningInput, multi_server_signing_bytes, verify_signature,
+    };
+    if request.headers.is_empty() {
+        return request.headers.clone();
+    }
+    let headers: BTreeMap<_, _> = request.headers.iter().cloned().collect();
+    let mut credentials: FixtureCredentials =
+        serde_json::from_value(serde_json::to_value(headers).expect("credential map"))
+            .expect("typed fixture credentials");
+    let wire = |timestamp: &str| {
+        multi_server_signing_bytes(MultiServerSigningInput {
+            method: &request.method,
+            target: &request.target,
+            server_id: &credentials.server,
+            client_id: &credentials.client,
+            timestamp,
+            nonce: &credentials.nonce,
+            request_id: &credentials.request,
+            body: request.raw.as_bytes(),
+        })
+    };
+    let identity = common::signing_identity();
+    let valid = verify_signature(
+        identity.public_key_pem(),
+        &wire(&credentials.timestamp),
+        &credentials.signature,
+    )
+    .is_ok();
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock")
+        .as_secs()
+        .to_string();
+    if valid {
+        credentials.signature = identity.sign(&wire(&timestamp));
+    }
+    credentials.timestamp = timestamp;
+    let headers: BTreeMap<String, String> =
+        serde_json::from_value(serde_json::to_value(credentials).expect("credentials"))
+            .expect("header map");
+    headers.into_iter().collect()
+}
+
 fn incoming(case: &Value) -> Request<Body> {
-    let raw = case["raw"].as_str().expect("raw");
+    let case: common::FixtureRequest =
+        serde_json::from_value(case.clone()).expect("fixture request");
+    let raw = &case.raw;
     let mut request = Request::builder()
-        .method(case["method"].as_str().expect("method"))
-        .uri(case["target"].as_str().expect("target"))
+        .method(case.method.as_str())
+        .uri(case.target.as_str())
         .header("host", "127.0.0.1:4000")
         .header("x-forwarded-host", "local.fixture.ts.net")
         .header("x-forwarded-proto", "https")
         .header("x-forwarded-for", "100.64.0.2")
         .header("content-type", "application/json")
         .header("content-length", raw.len().to_string());
-    for pair in case["headers"].as_array().expect("headers") {
-        request = request.header(
-            pair[0].as_str().expect("name"),
-            pair[1].as_str().expect("value"),
-        );
+    for (name, value) in fresh_headers(&case) {
+        request = request.header(name, value);
     }
     let mut request = request.body(Body::from(raw.to_owned())).expect("request");
     request.extensions_mut().insert(ConnectInfo(
@@ -451,6 +514,17 @@ async fn phone_owner_session_may_request_ui_access_and_signed_principals_may_not
 async fn signed_requests_cross_the_http_boundary_and_missing_owner_is_no_write() {
     let (_root, store) = common::store().await;
     let data = &common::fixture().data;
+    // The service corpus uses its frozen clock; this HTTP caller uses wall time.
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock")
+        .as_secs();
+    let frozen_now = data["now"].as_u64().expect("frozen clock");
+    let clock_shift = now as i64 - frozen_now as i64;
+    store.transaction_with(move |tx| {
+        tx.execute("UPDATE runtime_access_invites SET record=json_set(record,'$.expires',json_extract(record,'$.expires')+?1)", [clock_shift])?;
+        Ok::<_, studio_runtime_store::StoreError>(())
+    }).await.expect("refresh invitation clock");
     let case = &data["auth"][0];
     let state = HttpState::new(
         "token".into(),
@@ -784,8 +858,10 @@ async fn signed_remote_event_crosses_http_boundary_and_persists_once() {
         .header("x-forwarded-for", data["address"].as_str().unwrap())
         .header("content-type", "application/json")
         .header("content-length", raw.len().to_string());
-    for pair in data["headers"].as_array().unwrap() {
-        request = request.header(pair[0].as_str().unwrap(), pair[1].as_str().unwrap());
+    let signed: common::FixtureRequest =
+        serde_json::from_value(data.clone()).expect("event request");
+    for (name, value) in fresh_headers(&signed) {
+        request = request.header(name, value);
     }
     for login in data["logins"].as_array().unwrap() {
         request = request.header("tailscale-user-login", login.as_str().unwrap());

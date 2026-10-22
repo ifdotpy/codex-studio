@@ -53,6 +53,7 @@ mod terminal_corpus;
 mod thread_prepare_corpus;
 mod title_generation_corpus;
 mod title_generation_effects;
+mod turn_fixtures;
 mod turn_lifecycle_corpus;
 mod turn_prepare_corpus;
 mod vm_macsync_corpus;
@@ -111,3 +112,5 @@ pub(crate) mod process_support;
 
 #[path = "support/projections.rs"]
 pub(crate) mod projection_fixtures;
+
+pub(crate) use callback_fixtures::frozen as recovery_fixtures;

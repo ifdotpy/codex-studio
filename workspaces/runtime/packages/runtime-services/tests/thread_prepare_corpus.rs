@@ -1,64 +1,17 @@
-//! Complete provider requests and receipt patches against the real Python seam.
-use crate::prepared_python_support as prepared_python;
+//! Complete provider requests and receipt patches against frozen legacy expectations.
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
-use std::io::{BufRead, BufReader, Write};
-use std::path::Path;
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use studio_runtime_services::thread_prepare::*;
 
-struct Oracle {
-    child: Child,
-    input: ChildStdin,
-    output: BufReader<ChildStdout>,
-    _environment: prepared_python::IsolatedTestEnvironment,
-}
-impl Oracle {
+struct CapturedExpectations(crate::turn_fixtures::FrozenResponses);
+impl CapturedExpectations {
     fn new() -> Self {
-        let python = prepared_python::prepared_python(
-            &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
-        );
-        let environment = prepared_python::IsolatedTestEnvironment::new();
-        let mut command = Command::new(python);
-        environment.apply(&mut command);
-        let mut child = command
-            .arg("-B")
-            .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/thread_prepare/oracle.py"))
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .spawn()
-            .expect("oracle starts");
-        Self {
-            input: child.stdin.take().expect("stdin"),
-            output: BufReader::new(child.stdout.take().expect("stdout")),
-            child,
-            _environment: environment,
-        }
+        Self(crate::turn_fixtures::FrozenResponses::new(include_bytes!(
+            "thread_prepare/expected.json"
+        )))
     }
     fn call(&mut self, value: Value) -> Value {
-        writeln!(self.input, "{value}").expect("oracle input");
-        self.input.flush().expect("flush");
-        let mut line = String::new();
-        self.output.read_line(&mut line).expect("oracle output");
-        let value: Value = serde_json::from_str(&line).expect("oracle JSON");
-        assert!(value.get("error").is_none(), "oracle failed: {value}");
-        value["result"].clone()
-    }
-}
-impl Drop for Oracle {
-    fn drop(&mut self) {
-        let graceful =
-            writeln!(self.input, "{{\"command\":\"close\"}}").is_ok() && self.input.flush().is_ok();
-        if !graceful
-            && let Err(error) = self.child.kill()
-            && error.kind() != std::io::ErrorKind::InvalidInput
-        {
-            eprintln!("could not stop thread-preparation oracle: {error}");
-        }
-        if let Err(error) = self.child.wait() {
-            eprintln!("could not reap thread-preparation oracle: {error}");
-        }
+        self.0.call(&value)
     }
 }
 fn baseline() -> Value {
@@ -130,7 +83,7 @@ fn python_thread_preparation_corpus() {
     let all: Vec<Value> =
         serde_json::from_str(include_str!("thread_prepare/cases.json")).expect("cases");
     let full = std::env::var_os("STUDIO_RUNTIME_CORPUS_FULL").is_some();
-    let mut oracle = Oracle::new();
+    let mut oracle = CapturedExpectations::new();
     let mut counts = BTreeMap::new();
     for case in all.into_iter().filter(|c| full || c["fast"] == true) {
         let name = case["name"].as_str().expect("name");
@@ -504,28 +457,6 @@ fn saved_catalog_identity_and_loaded_epoch_are_not_silently_replaced() {
 }
 
 #[test]
-#[allow(clippy::disallowed_methods)]
-fn oracle_guard_blocks_content_metadata_processes_and_network() {
-    let python = prepared_python::prepared_python(
-        &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
-    );
-    let environment = prepared_python::IsolatedTestEnvironment::new();
-    let mut command = Command::new(python);
-    environment.apply(&mut command);
-    let result = command
-        .arg("-B")
-        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/thread_prepare/oracle.py"))
-        .arg("--guard-test")
-        .output()
-        .expect("guard test");
-    assert!(
-        result.status.success(),
-        "{}",
-        String::from_utf8_lossy(&result.stderr)
-    );
-}
-
-#[test]
 fn receipt_guards_all_frozen_execution_settings() {
     let base = snapshot(&baseline());
     let prepared = attempt(plan(&base, "attempt", "ticket"));
@@ -624,7 +555,6 @@ fn receipt_and_pending_ownership_are_bound_to_exact_attempt() {
 
 #[test]
 fn malformed_stored_catalog_family_never_panics() {
-    let mut oracle = Oracle::new();
     for tool in ["orchestration_move", "orchestration_agent_manage"] {
         for invalid in [
             Value::Null,
@@ -647,10 +577,6 @@ fn malformed_stored_catalog_family_never_panics() {
                 plan(&s, "attempt", "ticket"),
                 Outcome::Refuse(Refusal::MalformedCatalog)
             );
-            assert_eq!(
-                oracle.call(json!({"snapshot":value,"tool_probe":true}))["malformed"],
-                true
-            );
         }
     }
     for invalid in [
@@ -667,10 +593,6 @@ fn malformed_stored_catalog_family_never_panics() {
             plan(&snapshot(&value), "attempt", "ticket"),
             Outcome::Refuse(Refusal::MalformedCatalog)
         );
-        assert_eq!(
-            oracle.call(json!({"snapshot":value,"tool_probe":true}))["malformed"],
-            true
-        );
     }
     // Typed outer boundaries reject malformed maps before planning.
     for path in ["inputSchema", "description", "name"] {
@@ -683,28 +605,6 @@ fn malformed_stored_catalog_family_never_panics() {
     assert_eq!(
         plan(&s, "attempt", "ticket"),
         Outcome::Refuse(Refusal::EmptyThreadIdentity)
-    );
-}
-
-#[test]
-#[allow(clippy::disallowed_methods)]
-fn oracle_boundary_guards_detect_enclosing_control_flow_changes() {
-    let python = prepared_python::prepared_python(
-        &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
-    );
-    let environment = prepared_python::IsolatedTestEnvironment::new();
-    let mut command = Command::new(python);
-    environment.apply(&mut command);
-    let result = command
-        .arg("-B")
-        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/thread_prepare/oracle.py"))
-        .arg("--boundary-test")
-        .output()
-        .expect("boundary test");
-    assert!(
-        result.status.success(),
-        "{}",
-        String::from_utf8_lossy(&result.stderr)
     );
 }
 
