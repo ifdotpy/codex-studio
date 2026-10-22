@@ -880,6 +880,35 @@ function fastTierCommands(root) {
     },
     {
       item: { name: "studio-runtime-services", ecosystem: "cargo" },
+      label: "server command snapshot witnesses",
+      commands: [
+        [
+          "cargo",
+          [
+            "nextest",
+            "run",
+            "--locked",
+            "--no-tests",
+            "fail",
+            "--message-format",
+            "libtest-json-plus",
+            "-p",
+            "studio-runtime-services",
+            "--lib",
+            "-E",
+            "test(server_exec::tests::snapshots_) | test(server_exec::tests::snapshot_write_failure_) | test(server_exec::tests::existing_start_fence_)",
+          ],
+        ],
+      ],
+      options: {
+        selector:
+          "server_exec snapshot coalescing, write retry and start fence",
+        reason:
+          "Check that idle commands do not rewrite snapshots, changed output coalesces, failed writes retry, and an existing start fence prevents another process.",
+      },
+    },
+    {
+      item: { name: "studio-runtime-services", ecosystem: "cargo" },
       label: "provider callback acceptance witnesses",
       commands: [
         [

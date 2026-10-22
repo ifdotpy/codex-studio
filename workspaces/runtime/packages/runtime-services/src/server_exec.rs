@@ -38,8 +38,8 @@ const MAX_INPUT_BYTES: usize = 64 * 1024;
 const OUTPUT_SECONDS: f64 = 7.0 * 86400.0;
 /// Seconds that a finished audit row stays (Python `prune`).
 const AUDIT_SECONDS: f64 = 90.0 * 86400.0;
-/// Seconds between snapshot publications of a running command (Python `child`).
-const PUBLISH_SECONDS: f64 = 0.5;
+/// Minimum time between changed snapshots of a running command (Python `child`).
+const SNAPSHOT_PUBLISH_INTERVAL: Duration = Duration::from_millis(500);
 /// Seconds that pipes may drain after the command stops (Python `child`).
 const DRAIN_SECONDS: f64 = 2.0;
 /// Folder under the state directory that holds command snapshots.
@@ -87,9 +87,20 @@ fn job_path(folder: &Path, key: &str, suffix: &str) -> PathBuf {
     ))
 }
 
-fn atomic_json(path: &Path, value: &Value) -> Result<(), ExecError> {
-    crate::atomic_file::replace(path, value.to_string().as_bytes(), Some(0o600), true)
-        .map_err(|error| ExecError::Failed(error.to_string()))
+/// The sole JSON snapshot/config writer: build, serialize and fsync on the pool.
+async fn atomic_json(
+    path: PathBuf,
+    value: impl FnOnce() -> Value + Send + 'static,
+) -> Result<(), ExecError> {
+    studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/server_exec/json",
+        move || {
+            crate::atomic_file::replace(&path, value().to_string().as_bytes(), Some(0o600), true)
+                .map_err(|error| ExecError::Failed(error.to_string()))
+        },
+    )
+    .await
+    .map_err(|error| ExecError::Failed(error.to_string()))?
 }
 
 /// Python `Buffer`: the first and last bytes of one output stream.
@@ -653,8 +664,13 @@ impl ServerExec {
                 })
                 .await
         };
-        let written =
-            claim.and_then(|()| atomic_json(&job_path(&self.folder, key, ".config.json"), &config));
+        let written = match claim {
+            Ok(()) => {
+                let path = job_path(&self.folder, key, ".config.json");
+                atomic_json(path, move || config).await
+            }
+            Err(error) => Err(error),
+        };
         if let Err(error) = written {
             if let Ok(mut active) = self.active.lock() {
                 active.remove(key);
@@ -674,6 +690,8 @@ impl ServerExec {
             stdout: Buffer::new(output_limit.div_ceil(2)),
             stderr: Buffer::new(output_limit / 2),
             record: record.clone(),
+            snapshot_dirty: true,
+            last_publish: tokio::time::Instant::now(),
         };
         tokio::spawn(job.run(receiver));
         if timeout <= SYNC_SECONDS {
@@ -1044,6 +1062,8 @@ struct Job {
     stdout: Buffer,
     stderr: Buffer,
     record: Value,
+    snapshot_dirty: bool,
+    last_publish: tokio::time::Instant,
 }
 
 /// The current Unix second, in the resolution of process start times.
@@ -1070,24 +1090,54 @@ impl Job {
         }
     }
 
-    fn publish(&self) {
-        let snapshot = json!({
-            "record": self.record,
-            "stdout": self.stdout.snapshot(),
-            "stderr": self.stderr.snapshot(),
-        });
-        if let Err(error) = atomic_json(
-            &job_path(&self.runner.folder, &self.key, ".output.json"),
-            &snapshot,
-        ) {
-            eprintln!("server command {} snapshot failed: {error}", self.key);
+    async fn publish(&mut self) {
+        let path = job_path(&self.runner.folder, &self.key, ".output.json");
+        let (record, stdout, stderr) = (
+            self.record.clone(),
+            self.stdout.clone(),
+            self.stderr.clone(),
+        );
+        // Serialize, replace and fsync only on the labeled blocking worker.
+        // Await each write so initial/final snapshots cannot overtake each other.
+        let result = atomic_json(path, move || {
+            json!({
+                "record": record,
+                "stdout": stdout.snapshot(),
+                "stderr": stderr.snapshot(),
+            })
+        })
+        .await;
+        self.last_publish = tokio::time::Instant::now();
+        match result {
+            Ok(()) => self.snapshot_dirty = false,
+            Err(error) => {
+                self.snapshot_dirty = true;
+                eprintln!("server command {} snapshot failed: {error}", self.key);
+            }
+        }
+    }
+
+    async fn publish_if_due(&mut self) {
+        if self.snapshot_dirty && self.last_publish.elapsed() >= SNAPSHOT_PUBLISH_INTERVAL {
+            self.publish().await;
+        }
+    }
+
+    fn append_output(&mut self, is_stdout: bool, data: &[u8]) {
+        if !data.is_empty() {
+            if is_stdout {
+                self.stdout.append(data);
+            } else {
+                self.stderr.append(data);
+            }
+            self.snapshot_dirty = true;
         }
     }
 
     async fn finish(mut self, began: Instant) {
         self.record["duration"] = json!(began.elapsed().as_secs_f64());
         self.record["finishedAt"] = json!(now());
-        self.publish();
+        self.publish().await;
         let (runner, principal, actor, key, record) = (
             Arc::clone(&self.runner),
             self.principal.clone(),
@@ -1107,12 +1157,26 @@ impl Job {
     async fn run(mut self, mut controls: tokio::sync::mpsc::Receiver<Control>) {
         let began = Instant::now();
         let fence = job_path(&self.runner.folder, &self.key, ".started");
-        match std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&fence)
-            .and_then(|file| file.sync_all())
-        {
+        let fenced = studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-services/server_exec/start_fence",
+            move || {
+                std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&fence)
+                    .and_then(|file| file.sync_all())
+            },
+        )
+        .await;
+        let fenced = match fenced {
+            Ok(result) => result,
+            Err(error) => {
+                self.record["status"] = json!("unknown");
+                self.record["error"] = json!(error.to_string());
+                return self.finish(began).await;
+            }
+        };
+        match fenced {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
                 self.record["status"] = json!("unknown");
@@ -1126,7 +1190,7 @@ impl Job {
                 return self.finish(began).await;
             }
         }
-        self.publish();
+        self.publish().await;
         let mut command = tokio::process::Command::new(&self.argv[0]);
         command
             .args(&self.argv[1..])
@@ -1198,7 +1262,7 @@ impl Job {
         }
         drop(output);
         self.record["status"] = json!("running");
-        self.publish();
+        self.publish().await;
         let (runner, principal, actor, key, record) = (
             Arc::clone(&self.runner),
             self.principal.clone(),
@@ -1221,7 +1285,6 @@ impl Job {
         let mut killed_at: Option<Instant> = None;
         let mut exit: Option<std::process::ExitStatus> = None;
         let mut stopped: Vec<u32> = Vec::new();
-        let mut last_publish = Instant::now();
         let mut controls_open = true;
         let mut reaped_at: Option<u64> = None;
         let mut wait_failed = false;
@@ -1244,6 +1307,7 @@ impl Job {
                     }
                 }
                 self.record["stoppedDescendants"] = json!(stopped.len());
+                self.snapshot_dirty = true;
                 killed_at = Some(Instant::now());
                 close_input = true;
             }
@@ -1281,11 +1345,7 @@ impl Job {
                         let index = usize::from(!is_stdout);
                         let last = data.is_none();
                         let redacted = redactors[index].feed(data.as_deref().unwrap_or_default(), last);
-                        if is_stdout {
-                            self.stdout.append(&redacted);
-                        } else {
-                            self.stderr.append(&redacted);
-                        }
+                        self.append_output(is_stdout, &redacted);
                         if last {
                             ended += 1;
                         }
@@ -1302,10 +1362,7 @@ impl Job {
                 },
                 () = tokio::time::sleep(Duration::from_millis(50)) => {}
             }
-            if last_publish.elapsed().as_secs_f64() >= PUBLISH_SECONDS {
-                self.publish();
-                last_publish = Instant::now();
-            }
+            self.publish_if_due().await;
         }
         let status = match exit {
             Some(status) => Some(status),

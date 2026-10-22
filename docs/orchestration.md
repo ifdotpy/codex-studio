@@ -194,6 +194,17 @@ the conversation. It has no cross-team filter.
 The workspace API retains up to 100 completed task records and 100 completed
 monitor records within that chat. Active records remain available.
 
+Server command output snapshots follow one flow:
+
+1. The durable claim and start fence precede process creation.
+2. The command publishes its initial state, then coalesces changed output using
+   `SNAPSHOT_PUBLISH_INTERVAL` in
+   [server_exec.rs](../workspaces/runtime/packages/runtime-services/src/server_exec.rs).
+3. Idle commands keep their existing snapshot. Failed writes remain pending.
+4. Snapshot serialization, atomic replacement, and fsync run on the labeled
+   blocking pool. Each write finishes before another begins.
+5. The final snapshot finishes before the final record is saved and released.
+
 Inbox, workspace agent choices, and attention counts use the same lead tree.
 Two chats remain separate even when they use the same account or project folder.
 Switching chats clears open request forms, task details, and pending view responses.
