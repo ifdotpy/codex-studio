@@ -421,7 +421,7 @@ async fn client_request(
                 .map_err(|error| error.to_string())?
                 .join("workspace");
             #[cfg(debug_assertions)]
-            let resources = if resources.join("scripts/codex-canvas").is_file() {
+            let resources = if resources.join("bin/studio-runtime-server").is_file() {
                 resources
             } else {
                 std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))

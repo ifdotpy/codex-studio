@@ -862,6 +862,27 @@ function fastTierCommands(root) {
     operationsModulePreparation(),
     webWasmPreparation(root),
     {
+      item: { name: "retained Python helper boundaries", ecosystem: "pnpm" },
+      label: "retained Python helper boundaries",
+      commands: [
+        [
+          "node",
+          [
+            "--test",
+            path.join(
+              root,
+              "workspaces/client/apps/desktop/retained-helper-witness.test.cjs",
+            ),
+          ],
+        ],
+      ],
+      options: {
+        selector: "retained helper import and launch boundaries",
+        reason:
+          "Keep retained desktop and guest Python independent of the removed backend.",
+      },
+    },
+    {
       item: { name: "schema and dependency guards", ecosystem: "pnpm" },
       label: "schema and dependency guards",
       commands: [
@@ -872,6 +893,25 @@ function fastTierCommands(root) {
         selector: "generated contract and workspace boundary checks",
         reason: "Run the existing read-only schema and dependency guards.",
         allowZeroTests: true,
+      },
+    },
+    {
+      item: { name: "desktop recovery helpers", ecosystem: "pnpm" },
+      label: "Rust desktop recovery witnesses",
+      commands: [
+        [
+          "node",
+          [
+            "--test",
+            "workspaces/client/apps/desktop/recovery-helper-witness.test.cjs",
+          ],
+        ],
+      ],
+      options: {
+        selector:
+          "Rust recovery lease, identity and supervisor socket boundaries",
+        reason:
+          "Check desktop recovery without Python backend imports or supervisor scripts.",
       },
     },
     {
@@ -990,6 +1030,8 @@ function fastTierCommands(root) {
               "test(agent_columns::tests::migration_2026_10_20_columns_round_trips_an_old_state_once)",
               "test(agent_columns::tests::migration_2026_10_21_removes_capacity_column_and_replaces_wake_index_once)",
               "test(/^sql_callback_guard::/)",
+              "test(fresh_state::rust_fresh_state_catalog_is_deterministic_and_survives_reopen)",
+              "test(cross_runtime::fixture_records_are_readable_and_writable_in_rust)",
               "test(sql_guard_tests::)",
             ]),
           ],
@@ -1021,6 +1063,7 @@ function fastTierCommands(root) {
             "--lib",
             "-E",
             nextestAnyOf([
+              "test(peer_updates::tests::desktop_installer_contract_matches_rust_owner)",
               "test(server_exec::tests::snapshots_)",
               "test(server_exec::tests::snapshot_write_failure_)",
               "test(server_exec::tests::existing_start_fence_)",
@@ -1324,6 +1367,31 @@ function fastTierCommands(root) {
       item: web,
       label: "web unit safety witnesses",
       options: { script: "test:unit:fast" },
+    },
+    {
+      item: { name: "codex-agents-desktop", ecosystem: "pnpm" },
+      label: "Rust-only desktop startup witnesses",
+      commands: [
+        [
+          "pnpm",
+          [
+            "--filter",
+            "codex-agents-desktop",
+            "exec",
+            "vitest",
+            "run",
+            "--config",
+            "vitest.config.mjs",
+            "backend.test.mjs",
+            "backend-selection.test.mjs",
+          ],
+        ],
+      ],
+      options: {
+        selector: "Rust runtime startup and identity",
+        reason:
+          "Check startup without Python, binary build identity, existing-owner attachment, and uncertain connection refusals.",
+      },
     },
     { item: tooling, label: "tooling tests" },
   ];

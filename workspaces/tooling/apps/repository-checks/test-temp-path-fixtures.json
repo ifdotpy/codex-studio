@@ -288,12 +288,6 @@
     "\"-C\\n/tmp/workspace\\nstatus\\n--porcelain=v1\\n-z\\n{}\\n\",",
     "\"/tmp/workspace\","
   ],
-  "workspaces/runtime/packages/runtime-services/tests/portable_history/producer.py": [
-    "\"assets\": [{\"path\": '/tmp/asset \"quoted\" 日本語.png'}],"
-  ],
-  "workspaces/runtime/packages/runtime-services/tests/portable_history/store_producer.py": [
-    "\"assets\": [{\"path\": '/tmp/archive-fixture \"日本語.png'}],"
-  ],
   "workspaces/runtime/packages/runtime-services/tests/provider_session_task.rs": [
     "launch: ProviderLaunchSpec::new(vec![\"fake\".into()], BTreeMap::new(), \"/tmp\".into()),"
   ],

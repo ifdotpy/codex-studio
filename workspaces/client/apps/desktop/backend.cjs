@@ -2,24 +2,17 @@ const fs = require("node:fs");
 const path = require("node:path");
 const os = require("node:os");
 const { createHash } = require("node:crypto");
-const { spawn, execFileSync } = require("node:child_process");
+const { spawn } = require("node:child_process");
 const { savedLaunchEnvironment } = require("./restart-environment.cjs");
+// Desktop wire contract; Rust startup.rs is checked for parity in backend.test.mjs.
+const desktopProtocolVersion = 1;
+const backendBuildHexLength = 64;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function backendExitStatus(child) {
   if (child.exitCode !== null) return child.exitCode;
   if (child.signalCode !== null) return child.signalCode;
   return null;
-}
-
-const backendIdentityTimeoutMs = 10000;
-const backendSelectionEnv = "CODEX_DESKTOP_BACKEND";
-
-function backendSelection(env = process.env) {
-  const selected = env[backendSelectionEnv] || "python";
-  if (selected !== "python" && selected !== "rust")
-    throw new Error(`${backendSelectionEnv} must be either python or rust.`);
-  return selected;
 }
 
 function runtimeServer(resources, env = process.env) {
@@ -82,28 +75,7 @@ function runtimeServerBuild(resources, env = process.env) {
 }
 
 function backendBuild(resources, env = process.env) {
-  if (backendSelection(env) === "rust")
-    return runtimeServerBuild(resources, env);
-  const developmentIdentity = path.join(
-    resources,
-    "workspaces/runtime/apps/server/src/codex_backend_identity.py",
-  );
-  const identityScript = fs.existsSync(developmentIdentity)
-    ? developmentIdentity
-    : path.join(resources, "scripts/codex_backend_identity.py");
-  const identityInfo = fs.lstatSync(identityScript);
-  if (identityInfo.isSymbolicLink() || !identityInfo.isFile())
-    throw new Error("The backend identity helper must be a regular file.");
-  const output = execFileSync(
-    executable("python3", env),
-    ["-B", identityScript],
-    { encoding: "utf8", timeout: backendIdentityTimeoutMs, env },
-  ).trim();
-  if (!/^[a-f0-9]{64}$/.test(output))
-    throw new Error(
-      "The backend identity helper returned an invalid identity.",
-    );
-  return output;
+  return runtimeServerBuild(resources, env);
 }
 function updateStatus(resources, running, env = process.env) {
   let availableBackendBuild;
@@ -131,8 +103,7 @@ function stateDirectory(env = process.env) {
   );
 }
 function executable(name, env = process.env) {
-  const configured =
-    name === "python3" ? env.CODEX_AGENTS_PYTHON : env.CODEX_BIN;
+  const configured = name === "codex" ? env.CODEX_BIN : undefined;
   const candidates = configured
     ? [configured]
     : (env.PATH || "")
@@ -143,75 +114,11 @@ function executable(name, env = process.env) {
     if (!path.isAbsolute(file)) continue;
     try {
       fs.accessSync(file, fs.constants.X_OK);
-      if (name === "python3")
-        execFileSync(
-          file,
-          [
-            "-c",
-            "import sys; sys.exit(0 if sys.version_info >= (3,11) else 1)",
-          ],
-          { timeout: 5000, stdio: "ignore" },
-        );
       return file;
     } catch {}
   }
   throw new Error(
-    `Install ${name}, or set ${name === "python3" ? "CODEX_AGENTS_PYTHON" : "CODEX_BIN"} to its absolute executable path.`,
-  );
-}
-function apiPython(resources, env = process.env) {
-  const hasApi = (file) => {
-    try {
-      execFileSync(
-        file,
-        [
-          "-c",
-          "import sys; assert sys.version_info >= (3,11); import fastapi, httpx, pydantic, uvicorn",
-        ],
-        { timeout: 10000, stdio: "ignore" },
-      );
-      return true;
-    } catch {
-      return false;
-    }
-  };
-  const configured = env.CODEX_AGENTS_PYTHON;
-  if (configured) {
-    if (hasApi(configured)) return configured;
-    throw new Error(
-      "CODEX_AGENTS_PYTHON must point to Python 3.11+ with FastAPI, Pydantic, Uvicorn, and HTTPX from requirements.txt installed.",
-    );
-  }
-
-  const requirements = path.join(resources, "requirements.txt");
-  if (fs.existsSync(requirements)) {
-    const digest = createHash("sha256")
-      .update(fs.readFileSync(requirements))
-      .digest("hex");
-    const cacheRoot =
-      env.XDG_CACHE_HOME ||
-      (process.platform === "darwin"
-        ? path.join(os.homedir(), "Library", "Caches")
-        : path.join(os.homedir(), ".cache"));
-    const managed = path.join(
-      cacheRoot,
-      "codex-agents",
-      "python",
-      digest,
-      "bin",
-      "python",
-    );
-    if (hasApi(managed)) return managed;
-  }
-
-  const fallbackEnv = { ...env };
-  delete fallbackEnv.CODEX_AGENTS_PYTHON;
-  try {
-    const fallback = executable("python3", fallbackEnv);
-    if (hasApi(fallback)) return fallback;
-  } catch {}
-  throw new Error(
-    "No Python 3.11+ interpreter has FastAPI, Pydantic, Uvicorn, and HTTPX. Run `python3 workspaces/runtime/apps/server/src/install-cli.py` to prepare the managed environment, or set CODEX_AGENTS_PYTHON to an equipped interpreter.",
+    `Install ${name}, or set ${name === "codex" ? "CODEX_BIN" : "PATH"} to its absolute executable path.`,
   );
 }
 async function identity(
@@ -262,9 +169,11 @@ async function identity(
   if (
     !response.ok ||
     data.application !== "codex-agents" ||
-    data.protocol !== 1 ||
+    data.protocol !== desktopProtocolVersion ||
+    data.backendKind !== "rust" ||
     typeof data.backendBuild !== "string" ||
-    !/^[a-f0-9]{64}$/.test(data.backendBuild) ||
+    data.backendBuild.length !== backendBuildHexLength ||
+    !/^[a-f0-9]+$/.test(data.backendBuild) ||
     !Number.isSafeInteger(data.pid) ||
     data.pid < 1 ||
     data.stateDir !== state
@@ -289,7 +198,6 @@ async function ensureBackend({ resources, port = 4620, env = process.env }) {
   const state = stateDirectory(env);
   fs.mkdirSync(state, { recursive: true });
   const canonicalState = fs.realpathSync(state);
-  const selectedBackend = backendSelection(env);
   let persistedSupervisorMode = false;
   let saved = {};
   try {
@@ -312,16 +220,8 @@ async function ensureBackend({ resources, port = 4620, env = process.env }) {
     env.CODEX_AGENTS_SUPERVISOR_MODE === undefined
       ? persistedSupervisorMode
       : env.CODEX_AGENTS_SUPERVISOR_MODE === "1";
-  if (selectedBackend === "rust" && supervisorMode)
-    throw new Error(
-      "The Rust runtime server cannot use the configured Python process supervisor. Disable supervisor mode before selecting Rust.",
-    );
   const origin = `http://127.0.0.1:${port}`;
   const existing = await identity(origin, canonicalState);
-  if (existing && selectedBackend === "rust" && existing.backendKind !== "rust")
-    throw new Error(
-      "A different backend owns the selected port. Stop it before selecting the Rust runtime server.",
-    );
   if (
     existing &&
     supervisorMode &&
@@ -339,14 +239,6 @@ async function ensureBackend({ resources, port = 4620, env = process.env }) {
       owned: false,
     };
   const launchEnv = savedLaunchEnvironment(env, saved, canonicalState);
-  const packagedScripts = path.join(resources, "scripts");
-  const developmentScripts = path.join(
-    resources,
-    "workspaces/runtime/apps/server/src",
-  );
-  const scripts = fs.existsSync(path.join(developmentScripts, "codex-canvas"))
-    ? developmentScripts
-    : packagedScripts;
   const packagedRenderer = path.join(resources, "web/dist");
   const developmentRenderer = path.join(
     resources,
@@ -355,69 +247,15 @@ async function ensureBackend({ resources, port = 4620, env = process.env }) {
   const renderer = fs.existsSync(path.join(developmentRenderer, "index.html"))
     ? developmentRenderer
     : packagedRenderer;
-  const script = path.join(scripts, "codex-canvas");
-  if (
-    !fs.existsSync(script) ||
-    !fs.existsSync(path.join(renderer, "index.html"))
-  )
+  if (!fs.existsSync(path.join(renderer, "index.html")))
     throw new Error(
       "Desktop assets are missing. Run the web build before starting or packaging desktop.",
     );
-  const python =
-    selectedBackend === "python" ? apiPython(resources, launchEnv) : null;
-  if (python)
-    execFileSync(
-      python,
-      [
-        "-c",
-        'import sys; assert sys.version_info >= (3,11), "Python 3.11 or later is required"',
-      ],
-      { timeout: 5000 },
-    );
   const codex = executable("codex", launchEnv);
-  if (supervisorMode && python) {
-    const supervisor = path.join(scripts, "codex_process_supervisor.py");
-    if (!fs.existsSync(supervisor))
-      throw new Error(
-        "Supervisor mode is enabled but its packaged script is missing.",
-      );
-    const deadline = Date.now() + 10000;
-    let lastError;
-    while (Date.now() < deadline) {
-      try {
-        execFileSync(
-          python,
-          ["-B", supervisor, "--check", "--state", canonicalState],
-          {
-            timeout: 2000,
-            stdio: "ignore",
-            env: { ...launchEnv, CODEX_AGENTS_STATE_DIR: canonicalState },
-          },
-        );
-        lastError = null;
-        break;
-      } catch (error) {
-        lastError = error;
-        await sleep(100);
-      }
-    }
-    if (lastError) {
-      throw new Error(
-        `Supervisor mode is enabled but no compatible supervisor is ready for ${canonicalState}. The backend was not started: ${lastError.message}`,
-      );
-    }
-  }
   const log = path.join(state, "canvas.log");
-  const backendExecutable =
-    selectedBackend === "rust" ? runtimeServer(resources, launchEnv) : python;
-  const backendArgs =
-    selectedBackend === "rust"
-      ? ["--port", String(port)]
-      : ["-B", script, "--port", String(port)];
-  const backendBuildId =
-    selectedBackend === "rust"
-      ? runtimeServerBuild(resources, launchEnv)
-      : undefined;
+  const backendExecutable = runtimeServer(resources, launchEnv);
+  const backendArgs = ["--port", String(port)];
+  const backendBuildId = runtimeServerBuild(resources, launchEnv);
   // The Rust server records itself as the state owner (rust-state-owner.json)
   // after it holds runtime.lock and before its first write.
   const fd = fs.openSync(log, "a", 0o600);
@@ -431,7 +269,7 @@ async function ensureBackend({ resources, port = 4620, env = process.env }) {
         ...launchEnv,
         CODEX_AGENTS_STATE_DIR: canonicalState,
         CODEX_AGENTS_SUPERVISOR_MODE: supervisorMode ? "1" : "0",
-        ...(backendBuildId ? { CODEX_BACKEND_BUILD: backendBuildId } : {}),
+        CODEX_BACKEND_BUILD: backendBuildId,
         CODEX_BIN: codex,
         CODEX_NODE: process.execPath,
         PATH: `${path.dirname(codex)}:${launchEnv.PATH || "/usr/bin:/bin"}`,
@@ -448,13 +286,9 @@ async function ensureBackend({ resources, port = 4620, env = process.env }) {
   for (let attempt = 0; attempt < 100; attempt++) {
     await sleep(100);
     if (failure) throw failure;
-    const ready = await identity(
-      origin,
-      canonicalState,
-      selectedBackend === "rust"
-        ? { expectedBackendBuild: backendBuildId }
-        : {},
-    );
+    const ready = await identity(origin, canonicalState, {
+      expectedBackendBuild: backendBuildId,
+    });
     if (ready) {
       // A competing launcher can win the port. Its runtime flock remains authoritative.
       fs.writeFileSync(path.join(state, "canvas.pid"), `${ready.pid}\n`, {
@@ -482,12 +316,12 @@ module.exports = {
   ensureBackend,
   identity,
   executable,
-  apiPython,
   stateDirectory,
   backendBuild,
   updateStatus,
   backendExitStatus,
-  backendSelection,
   runtimeServer,
   runtimeServerBuild,
+  desktopProtocolVersion,
+  backendBuildHexLength,
 };
