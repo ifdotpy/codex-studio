@@ -650,7 +650,7 @@ test.skipIf(!process.env.CODEX_DESKTOP_E2E)(
     const { promisify } = await import("node:util");
     const { createServer } = await import("node:net");
     const root = path.dirname(new URL(import.meta.url).pathname);
-    const temp = mkdtempSync("/tmp/studio-renderer-recovery-");
+    const temp = mkdtempSync(path.join(tmpdir(), "studio-renderer-recovery-"));
     const port = await new Promise((resolve) => {
       const server = createServer();
       server.listen(0, "127.0.0.1", () => {

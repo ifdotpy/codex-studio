@@ -76,8 +76,7 @@ def seed_queue(backend: object) -> tuple[str, list[str]]:
 
 
 
-def clone_for_python(backend: object) -> Path:
-    root = Path(tempfile.mkdtemp(prefix="queue-reference-", dir=os.environ["TMPDIR"]))
+def clone_for_python(backend: object, root: Path) -> None:
     with closing(sqlite3.connect(backend.state / "canvas.sqlite3")) as source:
         with closing(sqlite3.connect(root / "canvas.sqlite3")) as target:
             source.backup(target)
@@ -90,7 +89,6 @@ def clone_for_python(backend: object) -> Path:
     # Project locations refer to this fixture server identity, stored outside SQLite.
     # A new identity would make local projects remote during startup projection.
     shutil.copytree(backend.state / "multi-server", root / "multi-server")
-    return root
 
 
 def logical_agents(database):
@@ -221,24 +219,26 @@ def state_difference(actual, expected):
 
 
 def python_mutation(backend: object, agent_id: str, body: dict):
-    root = clone_for_python(backend)
+    with tempfile.TemporaryDirectory(prefix="queue-reference-") as temporary:
+        root = Path(temporary)
+        clone_for_python(backend, root)
 
-    class QuietRuntime(fixture.Runtime):
-        def schedule(self):
-            pass
+        class QuietRuntime(fixture.Runtime):
+            def schedule(self):
+                pass
 
-    # The reference database uses the same host readiness records as the backend.
-    # Keep VM discovery independent of the reference database clone path.
-    runtime = make_runtime(QuietRuntime, root, fixture.FakeServer,
-                           environment_overrides={"CODEX_LINUX_VM_STATE_DIR": str(backend.state / "linux-vm")})
-    try:
-        python_body = dict(body)
-        if "expected_revision" in python_body:
-            python_body["expected_revision"] = runtime.queue_action(agent_id)["revision"]
-        result = runtime.queue_action(agent_id, python_body)
-        return result, normalized_state(root)
-    finally:
-        runtime.close()
+        # The reference database uses the same host readiness records as the backend.
+        # Keep VM discovery independent of the reference database clone path.
+        runtime = make_runtime(QuietRuntime, root, fixture.FakeServer,
+                               environment_overrides={"CODEX_LINUX_VM_STATE_DIR": str(backend.state / "linux-vm")})
+        try:
+            python_body = dict(body)
+            if "expected_revision" in python_body:
+                python_body["expected_revision"] = runtime.queue_action(agent_id)["revision"]
+            result = runtime.queue_action(agent_id, python_body)
+            return result, normalized_state(root)
+        finally:
+            runtime.close()
 
 
 class QueueStateNormalizationContract(unittest.TestCase):

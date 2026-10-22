@@ -9,10 +9,22 @@ use std::{
 use studio_runtime_providers::{Frame, Method, RequestFrame, RequestId};
 use studio_runtime_services::{callback_runtime::*, provider_callbacks::*};
 use studio_runtime_store::RuntimeStore;
+struct Template {
+    value: Value,
+    files: [Vec<u8>; 3],
+    identity_permissions: std::fs::Permissions,
+}
+
 pub fn template() -> &'static Value {
-    static VALUE: OnceLock<Value> = OnceLock::new();
+    &cached_template().value
+}
+
+// This synchronous test cache is built before any HTTP request.
+#[allow(clippy::disallowed_methods)]
+fn cached_template() -> &'static Template {
+    static VALUE: OnceLock<Template> = OnceLock::new();
     VALUE.get_or_init(|| {
-        let root = tempfile::tempdir().unwrap().keep();
+        let root = prepared_python::disposable_state_dir();
         let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src");
         let script =
             source.join("../../../packages/runtime-services/tests/wave7_p04_callback/oracle.py");
@@ -21,7 +33,7 @@ pub fn template() -> &'static Value {
             .unwrap_or("callback fixture")
             .to_owned();
         let mut command = Command::new(prepared_python::prepared_python(&source));
-        command.arg(&script).arg(root).stdin(Stdio::null());
+        command.arg(&script).arg(root.path()).stdin(Stdio::null());
         let output = prepared_python::output_with_timeout(
             &mut command,
             &script,
@@ -33,19 +45,34 @@ pub fn template() -> &'static Value {
             "{case_name}: callback Python oracle exited unsuccessfully: {}",
             String::from_utf8_lossy(&output.stderr)
         );
-        serde_json::from_slice(&output.stdout).unwrap()
+        let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+        let directory = PathBuf::from(value["template"].as_str().unwrap());
+        let files = [
+            "canvas.sqlite3",
+            "analytics.sqlite3",
+            "multi-server/identity.json",
+        ]
+        .map(|name| std::fs::read(directory.join(name)).unwrap());
+        let identity_permissions = std::fs::metadata(directory.join("multi-server/identity.json"))
+            .unwrap()
+            .permissions();
+        Template {
+            value,
+            files,
+            identity_permissions,
+        }
     })
 }
 #[allow(clippy::disallowed_methods)]
 pub async fn fixture() -> (tempfile::TempDir, Arc<RuntimeStore>, CallbackContext) {
-    let data = template();
+    let cached = cached_template();
+    let data = &cached.value;
     let root = tempfile::tempdir().unwrap();
-    for name in ["canvas.sqlite3", "analytics.sqlite3"] {
-        std::fs::copy(
-            PathBuf::from(data["template"].as_str().unwrap()).join(name),
-            root.path().join(name),
-        )
-        .unwrap();
+    for (name, bytes) in ["canvas.sqlite3", "analytics.sqlite3"]
+        .into_iter()
+        .zip(&cached.files)
+    {
+        std::fs::write(root.path().join(name), bytes).unwrap();
     }
     // Public projections bind the same generated fixture server identity.
     std::fs::create_dir(root.path().join("multi-server")).unwrap();
@@ -58,9 +85,14 @@ pub async fn fixture() -> (tempfile::TempDir, Arc<RuntimeStore>, CallbackContext
         )
         .unwrap();
     }
-    std::fs::copy(
-        PathBuf::from(data["template"].as_str().unwrap()).join("multi-server/identity.json"),
+    std::fs::write(
         root.path().join("multi-server/identity.json"),
+        &cached.files[2],
+    )
+    .unwrap();
+    std::fs::set_permissions(
+        root.path().join("multi-server/identity.json"),
+        cached.identity_permissions.clone(),
     )
     .unwrap();
     let store = Arc::new(RuntimeStore::open(Some(root.path())).await.unwrap());

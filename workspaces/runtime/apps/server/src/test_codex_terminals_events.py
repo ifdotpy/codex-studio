@@ -84,6 +84,7 @@ class TerminalContext:
 class TerminalResourceEvents(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="terminal-events-")
+        self.addCleanup(self.temp.cleanup)
         self.manager = TerminalManager(self.temp.name)
         self.key = "terminal-event-test"
         with self.manager.db() as db:
@@ -284,6 +285,7 @@ class TerminalResourceEvents(unittest.TestCase):
 class TerminalHubIntegration(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="terminal-hub-")
+        self.addCleanup(self.temp.cleanup)
         self.canvas = Canvas(Path(self.temp.name))
         self.context = ApiContext(self.canvas, token="terminal-hub-test")
         self.context.initialize()

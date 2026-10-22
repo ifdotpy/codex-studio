@@ -2,7 +2,7 @@ use crate::prepared_python_support;
 
 use serde_json::{Value, json};
 use std::{
-    path::{Path, PathBuf},
+    path::Path,
     process::Command,
     sync::{
         OnceLock,
@@ -22,16 +22,17 @@ use studio_runtime_store::{AccountTransferRepository, RuntimeStore};
 const OPERATION: &str = "41e0b552-0b0c-4c5c-9c37-2e7483cd05c9";
 
 #[allow(clippy::disallowed_methods)]
-fn template() -> &'static Path {
-    static ROOT: OnceLock<PathBuf> = OnceLock::new();
+fn template() -> &'static [Vec<u8>; 2] {
+    static ROOT: OnceLock<[Vec<u8>; 2]> = OnceLock::new();
     ROOT.get_or_init(|| {
-        let root = std::env::temp_dir().join(format!("wave7-p18-template-{}", std::process::id()));
+        let directory = prepared_python_support::disposable_state_dir();
+        let root = directory.path();
         let source = Path::new(env!("CARGO_MANIFEST_DIR"));
         let output = Command::new(prepared_python_support::prepared_python(
             &source.join("../../apps/server/src"),
         ))
         .arg(source.join("tests/account_transfer/template.py"))
-        .arg(&root)
+        .arg(root)
         .output()
         .expect("template process");
         assert!(
@@ -39,13 +40,17 @@ fn template() -> &'static Path {
             "{}",
             String::from_utf8_lossy(&output.stderr)
         );
-        root
+        ["canvas.sqlite3", "analytics.sqlite3"]
+            .map(|file| std::fs::read(root.join(file)).expect("template database bytes"))
     })
 }
 fn fixture() -> tempfile::TempDir {
     let root = tempfile::tempdir().expect("isolated state");
-    for file in ["canvas.sqlite3", "analytics.sqlite3"] {
-        std::fs::copy(template().join(file), root.path().join(file)).expect("clone Python state");
+    for (file, bytes) in ["canvas.sqlite3", "analytics.sqlite3"]
+        .into_iter()
+        .zip(template())
+    {
+        std::fs::write(root.path().join(file), bytes).expect("clone Python state");
     }
     root
 }

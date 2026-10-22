@@ -1,18 +1,12 @@
 import assert from "node:assert/strict";
 import { _electron as electron } from "playwright-core";
-import { mkdtemp, realpath } from "node:fs/promises";
+import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createServer } from "node:net";
 import { execFileSync, spawnSync } from "node:child_process";
 const root = path.dirname(fileURLToPath(import.meta.url));
-// macOS's per-user temporary directory can exceed the Unix socket path limit
-// once the backend appends its state-relative socket name.
-const temp = await mkdtemp(
-  path.join(process.platform === "darwin" ? "/tmp" : tmpdir(), "studio-pkg-"),
-);
-const state = path.join(temp, "state");
 const port = await new Promise((resolve) => {
   const server = createServer();
   server.listen(0, "127.0.0.1", () => {
@@ -29,6 +23,8 @@ const executable =
 const origin = `http://127.0.0.1:${port}`;
 let desktop;
 let pid;
+const temp = await mkdtemp(path.join(tmpdir(), "studio-pkg-"));
+const state = path.join(temp, "state");
 try {
   desktop = await electron.launch({
     executablePath: executable,
@@ -155,6 +151,13 @@ print(json.dumps({name: Runtime.role_guidance({"isLead": lead}) for name, lead i
     }),
   );
 } finally {
-  if (desktop) await desktop.close();
-  if (pid) process.kill(pid, "SIGTERM");
+  try {
+    if (desktop) await desktop.close();
+  } finally {
+    try {
+      if (pid) process.kill(pid, "SIGTERM");
+    } finally {
+      await rm(temp, { recursive: true, force: true });
+    }
+  }
 }

@@ -19,7 +19,7 @@ from codex_layout import REPOSITORY_ROOT
 class HostEnvironment(unittest.TestCase):
     def setUp(self) -> None:
         # A short path: tools and Unix sockets reject long ones.
-        self.root = Path(tempfile.mkdtemp(prefix="sb-", dir="/tmp"))
+        self.root = Path(self.enterContext(tempfile.TemporaryDirectory(prefix="sb-")))
 
     def tearDown(self) -> None:
         shutil.rmtree(self.root)

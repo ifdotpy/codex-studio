@@ -1241,7 +1241,8 @@ mod tests {
 
     #[test]
     fn reads_python_shaped_local_cache_without_starting_a_refresh() {
-        let root = std::env::temp_dir().join(format!("usage-costs-{}", std::process::id()));
+        let directory = tempfile::tempdir().expect("owned test directory");
+        let root = directory.path().to_path_buf();
         let home = root.join("profile");
         let account_root = root.join("state/account-costs");
         let key = "default";
@@ -1280,12 +1281,12 @@ mod tests {
         assert_eq!(response["data"]["source"], "Codex profile logs");
         assert_eq!(response["refreshing"], false);
         assert_eq!(response["stale"], true);
-        std::fs::remove_dir_all(root).expect("fixture cleanup");
     }
 
     #[test]
     fn missing_source_day_clears_daily_totals_and_marks_cache_stale() {
-        let root = std::env::temp_dir().join(format!("usage-cost-day-{}", std::process::id()));
+        let directory = tempfile::tempdir().expect("owned test directory");
+        let root = directory.path().to_path_buf();
         let home = root.join("profile");
         let key = "default";
         let account_id = "account-1";
@@ -1322,7 +1323,6 @@ mod tests {
         assert_eq!(response["stale"], true);
         assert_eq!(response["data"]["todayUSD"], Value::Null);
         assert_eq!(response["data"]["todayTokens"], Value::Null);
-        std::fs::remove_dir_all(root).expect("fixture cleanup");
     }
 
     #[test]
@@ -1405,7 +1405,8 @@ mod tests {
 
     #[test]
     fn local_claude_session_fixture_is_deduplicated_and_priced() {
-        let root = std::env::temp_dir().join(format!("usage-claude-{}", std::process::id()));
+        let directory = tempfile::tempdir().expect("owned test directory");
+        let root = directory.path().to_path_buf();
         let home = root.join("profile");
         let logs = home.join("projects/sample");
         std::fs::create_dir_all(&logs).expect("fixture sessions");
@@ -1468,15 +1469,12 @@ mod tests {
         assert_eq!(cached["stale"], false);
         assert_eq!(cached["refreshing"], false);
         assert_eq!(cached["data"]["todayUSD"], 0.3);
-        std::fs::remove_dir_all(root).expect("fixture cleanup");
     }
 
     #[test]
     fn missing_claude_output_tokens_remain_incomplete_like_python() {
-        let root = std::env::temp_dir().join(format!(
-            "usage-claude-missing-output-{}",
-            std::process::id()
-        ));
+        let directory = tempfile::tempdir().expect("owned test directory");
+        let root = directory.path().to_path_buf();
         let home = root.join("profile");
         let logs = home.join("projects/sample");
         let pricing = root.join("state/model-pricing");
@@ -1512,7 +1510,6 @@ mod tests {
         assert_eq!(result["coverage"], "partial");
         assert_eq!(result["todayUSD"], Value::Null);
         assert_eq!(result["unknownModels"], json!(["claude-test"]));
-        std::fs::remove_dir_all(root).expect("fixture cleanup");
     }
 
     #[test]

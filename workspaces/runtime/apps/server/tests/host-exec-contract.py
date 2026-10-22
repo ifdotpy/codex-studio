@@ -99,7 +99,8 @@ class Slots(HostSlotHandlers):
 
 class Contract(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
-        self.temp = tempfile.TemporaryDirectory(prefix="host-exec-contract-", dir="/tmp")
+        self.temp = tempfile.TemporaryDirectory(prefix="host-exec-contract-")
+        self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name).resolve()
         self.state = self.root / "state"
         self.state.mkdir()

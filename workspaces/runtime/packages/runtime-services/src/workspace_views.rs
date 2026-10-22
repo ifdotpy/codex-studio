@@ -655,10 +655,9 @@ mod tests {
     fn git_command_inherits_environment_preserves_arguments_and_bounds_errors() {
         use std::os::unix::fs::PermissionsExt;
 
-        let root = std::env::temp_dir().join(format!("workspace-views-git-{}", std::process::id()));
-        if root.exists() {
-            std::fs::remove_dir_all(&root).expect("previous Git fixture removed");
-        }
+        let directory = tempfile::tempdir().expect("owned test directory");
+        let root = directory.path().to_path_buf();
+
         std::fs::create_dir_all(&root).expect("fixture directory created");
         let executable = root.join("git-fake");
         std::fs::write(&executable, "#!/bin/sh\nprintf '%s\\n' \"$@\" \"$PATH\" >&2\nhead -c 2400 /dev/zero | tr '\\000' x >&2\nexit 1\n")
@@ -689,7 +688,6 @@ mod tests {
             "unexpected Git stderr: {message:?}"
         );
         assert!(message.contains("--porcelain=v1"));
-        std::fs::remove_dir_all(root).expect("Git fixture removed");
     }
 
     #[cfg(unix)]
@@ -697,11 +695,9 @@ mod tests {
     fn git_exit_terminates_a_descendant_that_keeps_a_pipe_open() {
         use std::os::unix::fs::PermissionsExt;
 
-        let root =
-            std::env::temp_dir().join(format!("workspace-views-timeout-{}", std::process::id()));
-        if root.exists() {
-            std::fs::remove_dir_all(&root).expect("old timeout fixture removed");
-        }
+        let directory = tempfile::tempdir().expect("owned test directory");
+        let root = directory.path().to_path_buf();
+
         std::fs::create_dir_all(&root).expect("timeout fixture directory created");
         let executable = root.join("git-fake");
         std::fs::write(&executable, "#!/bin/sh\nsleep 60 &\nexit 0\n")
@@ -720,6 +716,5 @@ mod tests {
             Duration::from_secs(2),
         );
         assert!(result.is_ok());
-        std::fs::remove_dir_all(root).expect("timeout fixture removed");
     }
 }

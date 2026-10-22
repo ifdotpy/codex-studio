@@ -46,7 +46,6 @@ test("Message Queue Drafts Ui", async ({
   let server;
   let quotaContext;
   let context;
-  let passed = false;
   const errors = [];
   try {
     await writeFile(
@@ -215,7 +214,6 @@ createRoot(document.getElementById("root")!).render(<App />);
     console.log(
       JSON.stringify({ browser: browser.browserType().name(), checks: 3 }),
     );
-    passed = true;
   } catch (error) {
     for (const [index, page] of (
       browser?.contexts().flatMap((context) => context.pages()) || []
@@ -232,8 +230,8 @@ createRoot(document.getElementById("root")!).render(<App />);
     if (server?.listening)
       await new Promise((resolve) => server.close(resolve));
     await vite?.close();
-    if (passed && !process.env.KEEP_TEST_ARTIFACTS)
+    if (!process.env.KEEP_TEST_ARTIFACTS)
       await rm(root, { recursive: true, force: true });
-    else if (passed) console.log(`Evidence: ${root}`);
+    else console.log(`Evidence: ${root}`);
   }
 });

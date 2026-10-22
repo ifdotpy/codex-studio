@@ -1,18 +1,11 @@
 use std::fs;
 use std::process::Command;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 #[test]
 #[allow(clippy::disallowed_methods)]
 fn state_check_reads_python_written_rows_without_changing_or_disclosing_them() {
-    let nonce = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("clock is after epoch")
-        .as_nanos();
-    let root = std::env::temp_dir().join(format!(
-        "runtime-state-check-{}-{nonce}",
-        std::process::id()
-    ));
+    let directory = tempfile::tempdir().expect("owned test directory");
+    let root = directory.path().to_path_buf();
     fs::create_dir_all(&root).expect("temporary state directory is created");
     let database = root.join("canvas.sqlite3");
     let python = std::env::var("CODEX_AGENTS_PYTHON").unwrap_or_else(|_| "python3".to_owned());
@@ -110,5 +103,4 @@ db.close()
         fs::read(&database).expect("database remains readable"),
         before
     );
-    fs::remove_dir_all(root).expect("temporary state is removed");
 }

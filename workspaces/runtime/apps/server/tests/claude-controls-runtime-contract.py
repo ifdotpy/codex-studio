@@ -74,6 +74,7 @@ class Server(f.FakeServer):
 class Controls(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
         self.rt = make_runtime(Runtime, Path(self.tmp.name), Server)
         agent = self.rt.new_lead({})
         self.key = agent['id']

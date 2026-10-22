@@ -44,6 +44,7 @@ spec.loader.exec_module(fixture)
 class ProgressLayoutContract(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="studio-progress-layout-")
+        self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
         self.runtime = fixture.Fixture(self.root)
         for key in ("first", "second"):

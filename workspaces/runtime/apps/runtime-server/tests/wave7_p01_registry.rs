@@ -47,7 +47,6 @@ struct Fixture {
     changes: watch::Receiver<u64>,
 }
 struct FixtureTemplate {
-    _root: tempfile::TempDir,
     entries: Vec<FixtureEntry>,
     agents: Value,
 }
@@ -118,11 +117,7 @@ async fn dispatch_template() -> &'static FixtureTemplate {
             let mut entries = Vec::new();
             snapshot_fixture(root.path(), root.path(), &mut entries);
             drop(store);
-            FixtureTemplate {
-                _root: root,
-                entries,
-                agents,
-            }
+            FixtureTemplate { entries, agents }
         })
         .await
 }
@@ -155,11 +150,7 @@ async fn recovery_template() -> &'static FixtureTemplate {
             let agents = serde_json::from_slice(&result.stdout).unwrap();
             let mut entries = Vec::new();
             snapshot_fixture(root.path(), root.path(), &mut entries);
-            FixtureTemplate {
-                _root: root,
-                entries,
-                agents,
-            }
+            FixtureTemplate { entries, agents }
         })
         .await
 }

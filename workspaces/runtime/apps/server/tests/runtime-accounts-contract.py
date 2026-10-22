@@ -75,6 +75,7 @@ class ControlledRuntime(f.Runtime):
 class AccountContracts(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix="codex-account-runtime-")
+        self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
         self.home = self.root / "default-home"
         self.other = self.root / "other-home"

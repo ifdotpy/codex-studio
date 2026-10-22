@@ -29,8 +29,9 @@ class StateFixtureResponseTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         repository = Path(__file__).resolve().parents[3]
-        cache = Path(os.environ.get("TMPDIR", "/tmp"))
+        cache = Path(tempfile.gettempdir())
         cls.temporary = tempfile.TemporaryDirectory(prefix="sync-entities-fixture-", dir=cache)
+        cls.addClassCleanup(cls.temporary.cleanup)
         environment = os.environ.copy()
         environment["PYTHONPATH"] = os.pathsep.join((str(repository / "src"), str(repository / "tests")))
         cls.process = subprocess.Popen(

@@ -103,7 +103,7 @@ class VaultEndToEnd(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(os.access(DESK, os.X_OK), DESK)
         vault_admin.LAYR, vault_admin.LAYR_DESK = LAYR, DESK
-        temp = Path(tempfile.mkdtemp(prefix="vault-e2e-"))
+        temp = Path(self.enterContext(tempfile.TemporaryDirectory(prefix="vault-e2e-")))
         self.addCleanup(shutil.rmtree, temp, True)
         identity = temp / "identity.txt"
         subprocess.run(["age-keygen", "-o", str(identity)], check=True, capture_output=True)

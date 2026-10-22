@@ -9,7 +9,7 @@ const FIRST_CURSOR: u64 = 1;
 const LONG_ANSWER_CHARS: usize = crate::sync_views::AGENT_SYNC_LAST_ANSWER_CHARS + 1;
 
 async fn fixture() -> Arc<RuntimeStore> {
-    let store = running_store().await;
+    let (_directory, store) = running_store().await;
     store
         .transaction(|tx| {
             let mut second = AgentRepository::get(tx, &AgentId::from("agent"))?

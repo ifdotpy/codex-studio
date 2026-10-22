@@ -34,6 +34,7 @@ from codex_runtime import Runtime
 class HttpCacheContract(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix='studio-http-cache-')
+        self.addCleanup(self.temp.cleanup)
         root = Path(self.temp.name)
         web = root / 'web'
         (web / 'assets').mkdir(parents=True)

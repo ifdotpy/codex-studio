@@ -28,9 +28,13 @@ fn delta(cursor: u64) -> JournalEntry {
     )
 }
 
-pub(super) async fn running_store() -> Arc<RuntimeStore> {
-    let directory = tempfile::tempdir().expect("temporary store").keep();
-    let store = Arc::new(RuntimeStore::open(Some(&directory)).await.expect("store"));
+pub(super) async fn running_store() -> (tempfile::TempDir, Arc<RuntimeStore>) {
+    let directory = tempfile::tempdir().expect("temporary store");
+    let store = Arc::new(
+        RuntimeStore::open(Some(directory.path()))
+            .await
+            .expect("store"),
+    );
     let agent = AgentRecord::from_value(json!({
         "id":"agent","name":"Agent","rootId":"agent","epoch":4,"status":"running",
         "accountHistory":[],"model":"gpt-5","effort":"high","fastMode":false,
@@ -47,7 +51,7 @@ pub(super) async fn running_store() -> Arc<RuntimeStore> {
         .transaction(move |tx| AgentRepository::put(tx, &agent))
         .await
         .expect("seed agent");
-    store
+    (directory, store)
 }
 
 pub(super) async fn journal(
@@ -150,7 +154,7 @@ async fn batch_work(
 async fn journal_batch_work_is_independent_of_held_receipt_backlog() {
     const BACKLOG: u64 = 4_000;
     const BATCH: u64 = super::JOURNAL_BATCH_MAX_EVENTS as u64;
-    let store = running_store().await;
+    let (_directory, store) = running_store().await;
     store
         .transaction_with(|tx| -> Result<(), WorkerError> {
             store::replace(
@@ -225,7 +229,7 @@ async fn journal_batch_work_is_independent_of_held_receipt_backlog() {
 /// their drain position.
 #[tokio::test]
 async fn legacy_receipt_keys_are_padded_once() {
-    let store = running_store().await;
+    let (_directory, store) = running_store().await;
     let legacy = |cursor: u64| {
         (
             format!("account-worker:journal:{SCOPE}:{GENERATION}:{cursor}:settled"),
@@ -307,7 +311,7 @@ async fn journal_batch_work_at_the_publication_bound_reads_by_key() {
         },
         metrics: NotificationStreamMetrics::default(),
     };
-    let store = running_store().await;
+    let (_directory, store) = running_store().await;
     let streams = journal(
         &store,
         NotificationStreamBuffer::default(),
@@ -377,7 +381,7 @@ impl crate::notification_runtime_effects::NotificationPostCommitSink for Recordi
 #[tokio::test]
 async fn publications_drain_in_sequence_order_with_one_delete_transaction() {
     const ENTRIES: u64 = 12;
-    let store = running_store().await;
+    let (_directory, store) = running_store().await;
     journal(
         &store,
         NotificationStreamBuffer::default(),
@@ -445,7 +449,7 @@ fn stream_metadata(store: &RuntimeStore) -> Option<String> {
 /// a restart restores.
 #[tokio::test]
 async fn journal_batch_persists_streams_only_when_they_change() {
-    let store = running_store().await;
+    let (_directory, store) = running_store().await;
     let streams = journal(&store, NotificationStreamBuffer::default(), vec![delta(1)]).await;
     store
         .transaction_with(|tx| -> Result<(), WorkerError> {
@@ -471,4 +475,23 @@ async fn journal_batch_persists_streams_only_when_they_change() {
         .expect("restore streams");
     assert_eq!(restored, streams);
     assert_eq!(restored.pending_bytes(), 2);
+}
+
+/// The store and its owner unwind together even when an assertion fails.
+#[tokio::test]
+async fn journal_fixture_directory_is_removed_on_return_and_unwind() {
+    for fail in [false, true] {
+        let (directory, store) = running_store().await;
+        let path = directory.path().to_path_buf();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            let (_directory, _store) = (directory, store);
+            assert!(!fail, "injected fixture failure");
+        }));
+        assert_eq!(result.is_err(), fail);
+        assert!(
+            !path.exists(),
+            "fixture state survived cleanup: {}",
+            path.display()
+        );
+    }
 }

@@ -112,6 +112,7 @@ class VolumeBackend:
 class MountIdentityContract(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix='mount-identity-')
+        self.addCleanup(self.temp.cleanup)
         self.root = Path(os.path.realpath(self.temp.name))
         self.project = self.root / 'project'
         self.project.mkdir()

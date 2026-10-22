@@ -3,7 +3,7 @@ use crate::prepared_python_support;
 use serde_json::{Value, json};
 use std::sync::Arc;
 use std::{
-    path::{Path, PathBuf},
+    path::Path,
     process::Command,
     sync::{
         Mutex, OnceLock,
@@ -37,18 +37,18 @@ fn test_resources() -> Arc<PreparationResources> {
 }
 
 #[allow(clippy::disallowed_methods)]
-fn python_corpus() -> (PathBuf, Value) {
-    static CORPUS: OnceLock<(PathBuf, Value)> = OnceLock::new();
+fn python_corpus() -> ([Vec<u8>; 2], Value) {
+    static CORPUS: OnceLock<([Vec<u8>; 2], Value)> = OnceLock::new();
     CORPUS
         .get_or_init(|| {
-            let root =
-                std::env::temp_dir().join(format!("w9-safety-buffer-{}", std::process::id()));
+            let directory = prepared_python_support::disposable_state_dir();
+            let root = directory.path();
             let source = Path::new(env!("CARGO_MANIFEST_DIR"));
             let output = Command::new(prepared_python_support::prepared_python(
                 &source.join("../../apps/server/src"),
             ))
             .arg(source.join("tests/wave9_safety_buffering_oracle.py"))
-            .arg(&root)
+            .arg(root)
             .output()
             .expect("Python safety corpus");
             assert!(
@@ -57,7 +57,11 @@ fn python_corpus() -> (PathBuf, Value) {
                 String::from_utf8_lossy(&output.stderr)
             );
             let corpus: Value = serde_json::from_slice(&output.stdout).expect("Python corpus JSON");
-            (root, corpus)
+            (
+                ["canvas.sqlite3", "analytics.sqlite3"]
+                    .map(|file| std::fs::read(root.join(file)).expect("template database bytes")),
+                corpus,
+            )
         })
         .clone()
 }
@@ -400,8 +404,11 @@ async fn action_runs_python_corpus_stage_path_and_commits_each_intent_before_dis
     let (template, corpus) = python_corpus();
     let expected = corpus["path"]["calls"].as_array().expect("Python requests");
     let root = tempfile::tempdir().expect("state copy");
-    for file in ["canvas.sqlite3", "analytics.sqlite3"] {
-        std::fs::copy(template.join(file), root.path().join(file)).expect("Python-written DB");
+    for (file, bytes) in ["canvas.sqlite3", "analytics.sqlite3"]
+        .into_iter()
+        .zip(&template)
+    {
+        std::fs::write(root.path().join(file), bytes).expect("Python-written DB");
     }
     let store = Arc::new(
         RuntimeStore::open(Some(root.path()))
@@ -524,8 +531,11 @@ fn without_generated_client_id(mut params: Value) -> Value {
 async fn late_provider_receipt_preserves_concurrent_cancel_and_does_not_advance() {
     let (template, _) = python_corpus();
     let root = tempfile::tempdir().expect("state copy");
-    for file in ["canvas.sqlite3", "analytics.sqlite3"] {
-        std::fs::copy(template.join(file), root.path().join(file)).expect("Python-written DB");
+    for (file, bytes) in ["canvas.sqlite3", "analytics.sqlite3"]
+        .into_iter()
+        .zip(&template)
+    {
+        std::fs::write(root.path().join(file), bytes).expect("Python-written DB");
     }
     let store = Arc::new(
         RuntimeStore::open(Some(root.path()))
@@ -620,8 +630,11 @@ async fn late_provider_receipt_preserves_concurrent_cancel_and_does_not_advance(
 async fn cancellation_before_intent_persistence_prevents_provider_dispatch() {
     let (template, _) = python_corpus();
     let root = tempfile::tempdir().expect("state copy");
-    for file in ["canvas.sqlite3", "analytics.sqlite3"] {
-        std::fs::copy(template.join(file), root.path().join(file)).expect("Python-written DB");
+    for (file, bytes) in ["canvas.sqlite3", "analytics.sqlite3"]
+        .into_iter()
+        .zip(&template)
+    {
+        std::fs::write(root.path().join(file), bytes).expect("Python-written DB");
     }
     let store = Arc::new(
         RuntimeStore::open(Some(root.path()))
@@ -696,8 +709,11 @@ async fn cancellation_before_intent_persistence_prevents_provider_dispatch() {
 async fn accepted_start_after_concurrent_stop_stages_interrupt_then_commits_lifecycle() {
     let (template, _) = python_corpus();
     let root = tempfile::tempdir().expect("state copy");
-    for file in ["canvas.sqlite3", "analytics.sqlite3"] {
-        std::fs::copy(template.join(file), root.path().join(file)).expect("Python-written DB");
+    for (file, bytes) in ["canvas.sqlite3", "analytics.sqlite3"]
+        .into_iter()
+        .zip(&template)
+    {
+        std::fs::write(root.path().join(file), bytes).expect("Python-written DB");
     }
     let store = Arc::new(
         RuntimeStore::open(Some(root.path()))
@@ -793,8 +809,11 @@ async fn accepted_start_after_concurrent_stop_stages_interrupt_then_commits_life
 async fn rejected_safety_start_settles_the_empty_event_attempt() {
     let (template, _) = python_corpus();
     let root = tempfile::tempdir().expect("state copy");
-    for file in ["canvas.sqlite3", "analytics.sqlite3"] {
-        std::fs::copy(template.join(file), root.path().join(file)).expect("Python-written DB");
+    for (file, bytes) in ["canvas.sqlite3", "analytics.sqlite3"]
+        .into_iter()
+        .zip(&template)
+    {
+        std::fs::write(root.path().join(file), bytes).expect("Python-written DB");
     }
     let store = Arc::new(
         RuntimeStore::open(Some(root.path()))
@@ -864,8 +883,11 @@ async fn unknown_at_every_stage_is_durable_and_never_resent_after_restart_or_act
     let (template, _) = python_corpus();
     for failed_stage in 0..7 {
         let root = tempfile::tempdir().expect("state copy");
-        for file in ["canvas.sqlite3", "analytics.sqlite3"] {
-            std::fs::copy(template.join(file), root.path().join(file)).expect("Python-written DB");
+        for (file, bytes) in ["canvas.sqlite3", "analytics.sqlite3"]
+            .into_iter()
+            .zip(&template)
+        {
+            std::fs::write(root.path().join(file), bytes).expect("Python-written DB");
         }
         let store = Arc::new(
             RuntimeStore::open(Some(root.path()))
@@ -958,8 +980,11 @@ async fn unknown_at_every_stage_is_durable_and_never_resent_after_restart_or_act
 async fn crash_after_unknown_receipt_before_terminal_stage_never_dispatches_after_restart() {
     let (template, _) = python_corpus();
     let root = tempfile::tempdir().expect("state copy");
-    for file in ["canvas.sqlite3", "analytics.sqlite3"] {
-        std::fs::copy(template.join(file), root.path().join(file)).expect("Python-written DB");
+    for (file, bytes) in ["canvas.sqlite3", "analytics.sqlite3"]
+        .into_iter()
+        .zip(&template)
+    {
+        std::fs::write(root.path().join(file), bytes).expect("Python-written DB");
     }
     let store = Arc::new(
         RuntimeStore::open(Some(root.path()))
@@ -1083,8 +1108,11 @@ async fn crash_after_unknown_receipt_before_terminal_stage_never_dispatches_afte
 async fn unknown_receipt_commits_terminal_stage_atomically_and_is_never_resent() {
     let (template, _) = python_corpus();
     let root = tempfile::tempdir().expect("state copy");
-    for file in ["canvas.sqlite3", "analytics.sqlite3"] {
-        std::fs::copy(template.join(file), root.path().join(file)).expect("Python-written DB");
+    for (file, bytes) in ["canvas.sqlite3", "analytics.sqlite3"]
+        .into_iter()
+        .zip(&template)
+    {
+        std::fs::write(root.path().join(file), bytes).expect("Python-written DB");
     }
     let store = Arc::new(
         RuntimeStore::open(Some(root.path()))
@@ -1186,8 +1214,11 @@ async fn not_sent_retries_same_operation_id_and_records_each_receipt() {
     let (template, _) = python_corpus();
     for not_sent_at in 0..7 {
         let root = tempfile::tempdir().expect("state copy");
-        for file in ["canvas.sqlite3", "analytics.sqlite3"] {
-            std::fs::copy(template.join(file), root.path().join(file)).expect("Python-written DB");
+        for (file, bytes) in ["canvas.sqlite3", "analytics.sqlite3"]
+            .into_iter()
+            .zip(&template)
+        {
+            std::fs::write(root.path().join(file), bytes).expect("Python-written DB");
         }
         let store = Arc::new(
             RuntimeStore::open(Some(root.path()))
@@ -1262,8 +1293,11 @@ async fn restart_resumes_recorded_intent_with_the_same_operation_id() {
     let (template, _) = python_corpus();
     for interrupted_stage in 0..7 {
         let root = tempfile::tempdir().expect("state copy");
-        for file in ["canvas.sqlite3", "analytics.sqlite3"] {
-            std::fs::copy(template.join(file), root.path().join(file)).expect("Python-written DB");
+        for (file, bytes) in ["canvas.sqlite3", "analytics.sqlite3"]
+            .into_iter()
+            .zip(&template)
+        {
+            std::fs::write(root.path().join(file), bytes).expect("Python-written DB");
         }
         let store = Arc::new(
             RuntimeStore::open(Some(root.path()))
@@ -1366,8 +1400,11 @@ async fn restart_applies_persisted_written_receipt_without_redispatch() {
     let (template, _) = python_corpus();
     for interrupted_stage in 0..7 {
         let root = tempfile::tempdir().expect("state copy");
-        for file in ["canvas.sqlite3", "analytics.sqlite3"] {
-            std::fs::copy(template.join(file), root.path().join(file)).expect("Python-written DB");
+        for (file, bytes) in ["canvas.sqlite3", "analytics.sqlite3"]
+            .into_iter()
+            .zip(&template)
+        {
+            std::fs::write(root.path().join(file), bytes).expect("Python-written DB");
         }
         let store = Arc::new(
             RuntimeStore::open(Some(root.path()))

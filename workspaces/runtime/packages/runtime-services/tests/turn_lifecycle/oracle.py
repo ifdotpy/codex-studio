@@ -28,6 +28,8 @@ if "--isolated" not in sys.argv:
     binary.chmod(0o700)
     environment_owner._provider_executable = binary
     environment = environment_owner._environment()
+    from oracle_guard import close_environment
+    close_environment()
     os.execve(sys.executable, [sys.executable, "-B", __file__, "--isolated"], environment)
 
 import copy
@@ -612,76 +614,76 @@ def main():
          patch.object(threading.Thread, "start", lambda self: None), \
          patch.object(threading.Thread, "join", lambda self, *a, **k: None), \
          patch.object(codex_runtime, "_RuntimeWalKeeper", lambda *a: None):
-        template = pathlib.Path(tempfile.mkdtemp(prefix="lifecycle-schema-"))
-        # Runtime selects WAL after its first schema setup; choose it upfront
-        # for disposable fixture initialization to avoid per-table rollback journals.
-        with sqlite3.connect(template / "canvas.sqlite3") as db:
-            db.execute("PRAGMA journal_mode=WAL")
-        connect = codex_runtime.sqlite_connect
-        def fixture_connect(*args, **kwargs):
-            db = connect(*args, **kwargs)
-            db.execute("PRAGMA synchronous=OFF")
-            return db
-        # Schema fixture construction is not a crash witness; all compared
-        # transitions reopen the copied databases with production durability.
-        with patch.object(codex_runtime, "sqlite_connect", fixture_connect):
-            initialized = QuietRuntime(template, lambda *_a, **_kw: None)
-        with initialized.db() as db:
-            # Match the notification corpus: materialize the next-index schema on both sides.
-            db.execute("CREATE VIRTUAL TABLE IF NOT EXISTS runtime_search_next USING fts5(body,content='',contentless_delete=1,tokenize='unicode61')")
-        initialized.close()
-        lifecycle = LifecycleCases(template)
-        for line in sys.stdin:
-            command = json.loads(line)
-            if command["command"] == "close":
-                break
-            module_name = command.get("module", command.get("case", {}).get("module"))
-            if module_name is not None:
-                assert module_name in {"notification_dispatch", "recovery_exclusion"}, "unknown oracle module"
-                sys.path.insert(0, str(pathlib.Path(__file__).parent))
-                if module_name == "notification_dispatch":
-                    import notification_dispatch as module
+        with tempfile.TemporaryDirectory(prefix="lifecycle-schema-") as temporary:
+            template = pathlib.Path(temporary)
+            # Runtime selects WAL after its first schema setup; choose it upfront
+            # for disposable fixture initialization to avoid per-table rollback journals.
+            with sqlite3.connect(template / "canvas.sqlite3") as db:
+                db.execute("PRAGMA journal_mode=WAL")
+            connect = codex_runtime.sqlite_connect
+            def fixture_connect(*args, **kwargs):
+                db = connect(*args, **kwargs)
+                db.execute("PRAGMA synchronous=OFF")
+                return db
+            # Schema fixture construction is not a crash witness; all compared
+            # transitions reopen the copied databases with production durability.
+            with patch.object(codex_runtime, "sqlite_connect", fixture_connect):
+                initialized = QuietRuntime(template, lambda *_a, **_kw: None)
+            with initialized.db() as db:
+                # Match the notification corpus: materialize the next-index schema on both sides.
+                db.execute("CREATE VIRTUAL TABLE IF NOT EXISTS runtime_search_next USING fts5(body,content='',contentless_delete=1,tokenize='unicode61')")
+            initialized.close()
+            lifecycle = LifecycleCases(template)
+            for line in sys.stdin:
+                command = json.loads(line)
+                if command["command"] == "close":
+                    break
+                module_name = command.get("module", command.get("case", {}).get("module"))
+                if module_name is not None:
+                    assert module_name in {"notification_dispatch", "recovery_exclusion"}, "unknown oracle module"
+                    sys.path.insert(0, str(pathlib.Path(__file__).parent))
+                    if module_name == "notification_dispatch":
+                        import notification_dispatch as module
+                    else:
+                        import recovery_exclusion as module
                 else:
-                    import recovery_exclusion as module
-            else:
-                module = sys.modules[__name__]
-            try:
-                if command["command"] == "normalize":
-                    result = normalize(command["value"])
-                elif command["command"] == "snapshot":
-                    result = module.snapshot(command["root"])
-                elif module is sys.modules[__name__]:
-                    result = lifecycle.run(command)
-                elif hasattr(module, "run_case"):
-                    result = module.run_case(command, template, QuietRuntime)
-                else:
-                    root = pathlib.Path(command["root"])
-                    shutil.copytree(template, root)
-                    runtime = QuietRuntime(root, lambda *_a, **_kw: None)
-                    try:
-                        module.seed(runtime, command["case"])
-                        rust = pathlib.Path(command["rust"])
-                        rust.mkdir(parents=True, exist_ok=True)
-                        if (root / "multi-server").exists():
-                            shutil.copytree(root / "multi-server", rust / "multi-server")
-                        with runtime.read_db() as source, sqlite3.connect(rust / "canvas.sqlite3") as target:
-                            source.backup(target)
-                        with sqlite3.connect(root / "analytics.sqlite3") as source, sqlite3.connect(rust / "analytics.sqlite3") as target:
-                            source.backup(target)
-                        before = module.snapshot(root)
-                        assert module.snapshot(rust) == before, "pre-states differ"
-                        runtime = module.transition(runtime, command["case"]) or runtime
-                        result = {"before": before, "after": module.snapshot(root)}
-                    finally:
-                        runtime.close()
-                print(json.dumps({"result": result}), flush=True)
-            except Exception:
-                import traceback
-                print(json.dumps({"error": traceback.format_exc()}), flush=True)
-        lifecycle.close()
-        if "notification_dispatch" in sys.modules:
-            sys.modules["notification_dispatch"].close()
-        shutil.rmtree(template)
+                    module = sys.modules[__name__]
+                try:
+                    if command["command"] == "normalize":
+                        result = normalize(command["value"])
+                    elif command["command"] == "snapshot":
+                        result = module.snapshot(command["root"])
+                    elif module is sys.modules[__name__]:
+                        result = lifecycle.run(command)
+                    elif hasattr(module, "run_case"):
+                        result = module.run_case(command, template, QuietRuntime)
+                    else:
+                        root = pathlib.Path(command["root"])
+                        shutil.copytree(template, root)
+                        runtime = QuietRuntime(root, lambda *_a, **_kw: None)
+                        try:
+                            module.seed(runtime, command["case"])
+                            rust = pathlib.Path(command["rust"])
+                            rust.mkdir(parents=True, exist_ok=True)
+                            if (root / "multi-server").exists():
+                                shutil.copytree(root / "multi-server", rust / "multi-server")
+                            with runtime.read_db() as source, sqlite3.connect(rust / "canvas.sqlite3") as target:
+                                source.backup(target)
+                            with sqlite3.connect(root / "analytics.sqlite3") as source, sqlite3.connect(rust / "analytics.sqlite3") as target:
+                                source.backup(target)
+                            before = module.snapshot(root)
+                            assert module.snapshot(rust) == before, "pre-states differ"
+                            runtime = module.transition(runtime, command["case"]) or runtime
+                            result = {"before": before, "after": module.snapshot(root)}
+                        finally:
+                            runtime.close()
+                    print(json.dumps({"result": result}), flush=True)
+                except Exception:
+                    import traceback
+                    print(json.dumps({"error": traceback.format_exc()}), flush=True)
+            lifecycle.close()
+            if "notification_dispatch" in sys.modules:
+                sys.modules["notification_dispatch"].close()
 
 
 if __name__ == "__main__":

@@ -27,6 +27,7 @@ cat "$FAKE_BASE/$rel"
 class CollectTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
         root = Path(self.temp.name)
         self.base, self.slot, self.line, tools = root / "base", root / "slot", root / "line", root / "bin"
         for folder in (self.base, self.slot, self.line, tools):

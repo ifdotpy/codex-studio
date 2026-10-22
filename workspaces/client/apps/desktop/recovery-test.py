@@ -45,7 +45,8 @@ def wait_for(check, seconds=20):
 
 class RecoveryTest(unittest.TestCase):
     def setUp(self):
-        self.temp = tempfile.TemporaryDirectory(prefix="studio-supervisor-test-", dir="/tmp")
+        self.temp = tempfile.TemporaryDirectory(prefix="studio-supervisor-test-")
+        self.addCleanup(self.temp.cleanup)
         self.state = Path(self.temp.name).resolve()
         source_link = self.state / "workspaces/runtime/apps/server/src"
         source_link.parent.mkdir(parents=True)
@@ -279,7 +280,7 @@ class RustSelectionTest(unittest.TestCase):
     """The explicit Rust selection uses fake executables in a private state directory."""
 
     def setUp(self):
-        self.temp = tempfile.TemporaryDirectory(prefix="studio-rust-recovery-", dir="/tmp")
+        self.temp = tempfile.TemporaryDirectory(prefix="studio-rust-recovery-")
         self.addCleanup(self.temp.cleanup)
         self.state = Path(self.temp.name).resolve()
         source_link = self.state / "workspaces/runtime/apps/server/src"

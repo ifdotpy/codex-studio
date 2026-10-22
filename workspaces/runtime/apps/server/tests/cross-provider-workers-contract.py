@@ -32,6 +32,7 @@ from studio_api.testing import read_runtime_state
 class CrossProviderWorkers(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix="cross-provider-workers-")
+        self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name).resolve()
         home = self.root / "codex-home"
         home.mkdir()

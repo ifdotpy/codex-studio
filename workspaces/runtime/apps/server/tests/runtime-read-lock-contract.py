@@ -43,6 +43,7 @@ spec.loader.exec_module(fixture)
 class RuntimeReadLock(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         self.runtime = make_runtime(Runtime, self.root, fixture.FakeServer)
         self.runtime.closed = True

@@ -122,6 +122,7 @@ class ControlledRuntime(Runtime):
 class WorkspaceContract(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix="codex-workspace-contract-")
+        self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
         self.project = self.root / "project"
         self.project.mkdir()

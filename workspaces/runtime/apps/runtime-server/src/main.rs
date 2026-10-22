@@ -52,6 +52,8 @@ const SHUTDOWN_JOIN_GRACE: Duration = Duration::from_secs(20);
 // Retry failed durable scheduler work after this bounded delay; commits can wake sooner.
 const SCHEDULER_FAILURE_RETRY: Duration = Duration::from_secs(30);
 const CONTINUATION_FAILURE_RETRY_SECONDS: f64 = 60.0;
+// Maximum agents staged per continuation tick, shared by all continuation kinds.
+const CONTINUATION_TICK_AGENT_LIMIT: i64 = 32;
 const AUTH_RESUME_PROOF_PENDING_PREDICATE: &str = "json_type(record,'$.authResumeProofPending')='object' AND json(json_extract(record,'$.authResumeProofPending')) <> '{}'";
 const CURRENT_USAGE_RESUME_DUE_ROWS: &str = "SELECT resume.agent AS agent,CAST(json_extract(resume.record,'$.dueAt') AS REAL) AS due FROM runtime_usage_resumes AS resume JOIN runtime_agents AS owner ON owner.id=resume.agent AND json_extract(owner.record,'$.usageResume.id')=resume.id WHERE json_extract(resume.record,'$.status')='scheduled' AND json_type(resume.record,'$.dueAt') IN ('integer','real')";
 const CURRENT_CAPACITY_RETRY_DUE_ROWS: &str = "SELECT retry.agent AS agent,CAST(json_extract(retry.record,'$.dueAt') AS REAL) AS due FROM runtime_capacity_retries AS retry JOIN runtime_agents AS owner ON owner.id=retry.agent AND json_extract(owner.record,'$.capacityRetry.id')=retry.id WHERE json_extract(retry.record,'$.status')='scheduled' AND json_type(retry.record,'$.dueAt') IN ('integer','real')";
@@ -1326,6 +1328,7 @@ async fn continuation_scheduler(
     mut shutdown: watch::Receiver<bool>,
 ) {
     let mut retry_not_before = None;
+    let mut tick_state = ContinuationTickState::default();
     loop {
         if *shutdown.borrow() {
             return;
@@ -1371,11 +1374,13 @@ async fn continuation_scheduler(
             ContinuationWait::Due => {
                 let store_for_tick = Arc::clone(&store);
                 let tick_now = epoch_seconds();
-                let result = run_continuation_tick(store_for_tick, tick_now).await;
+                let result = run_continuation_tick(store_for_tick, tick_now, &mut tick_state).await;
                 match result {
-                    Ok(changed) => {
-                        retry_not_before = None;
-                        if changed {
+                    Ok(tick) => {
+                        retry_not_before = tick
+                            .failed
+                            .then(|| epoch_seconds() + CONTINUATION_FAILURE_RETRY_SECONDS);
+                        if tick.changed {
                             event_wake.notify_one();
                         }
                     }
@@ -1422,13 +1427,49 @@ async fn wait_for_continuation(
     }
 }
 
+#[derive(Default)]
+struct ContinuationTickState {
+    after_agent: Option<String>,
+    errors: BTreeMap<String, String>,
+}
+
+impl ContinuationTickState {
+    fn record_error(&mut self, agent: &str, error: String) -> bool {
+        if self.errors.get(agent) == Some(&error) {
+            return false;
+        }
+        self.errors.insert(agent.to_owned(), error);
+        true
+    }
+}
+
+#[derive(Default)]
+struct ContinuationTick {
+    changed: bool,
+    failed: bool,
+}
+
 async fn run_continuation_tick(
     store: Arc<RuntimeStore>,
     now: f64,
-) -> studio_runtime_store::StoreResult<bool> {
-    let (agents, limits) = store
+    state: &mut ContinuationTickState,
+) -> studio_runtime_store::StoreResult<ContinuationTick> {
+    let after_agent = state.after_agent.clone();
+    let error_agents = state.errors.keys().cloned().collect::<Vec<_>>();
+    let (agents, limits, removed_agents) = store
         .read_async("runtime-server/continuation-inputs", move |db| {
-            let agents = continuation_tick_agents(db, now)?;
+            let agents = continuation_tick_agents(db, now, after_agent.as_deref())?;
+            let mut removed_agents = Vec::new();
+            for agent in error_agents {
+                let exists: bool = db.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM runtime_agents WHERE id=?1)",
+                    [&agent],
+                    |row| row.get(0),
+                )?;
+                if !exists {
+                    removed_agents.push(agent);
+                }
+            }
             let limits = account_state::limits_snapshots(db)?
                 .snapshots
                 .into_iter()
@@ -1444,11 +1485,15 @@ async fn run_continuation_tick(
                     .map(|limits| (account_key, limits))
                 })
                 .collect::<BTreeMap<_, _>>();
-            Ok::<_, studio_runtime_store::StoreError>((agents, limits))
+            Ok::<_, studio_runtime_store::StoreError>((agents, limits, removed_agents))
         })
         .await?;
-    let mut changed = false;
+    for agent in removed_agents {
+        state.errors.remove(&agent);
+    }
+    let mut tick = ContinuationTick::default();
     for agent_id in agents {
+        state.after_agent = Some(agent_id.clone());
         let observations = limits.clone();
         let agent = agent_id.clone();
         let staged = store.transaction_with(move |tx| {
@@ -1473,11 +1518,19 @@ async fn run_continuation_tick(
         }).await;
         // One agent's bad data must not hold back the other due agents.
         match staged {
-            Ok(staged) => changed |= staged,
-            Err(error) => eprintln!("continuation tick skipped agent {agent_id}: {error}"),
+            Ok(staged) => {
+                tick.changed |= staged;
+                state.errors.remove(&agent_id);
+            }
+            Err(error) => {
+                tick.failed = true;
+                if state.record_error(&agent_id, error.to_string()) {
+                    eprintln!("continuation tick skipped agent {agent_id}: {error}");
+                }
+            }
         }
     }
-    Ok(changed)
+    Ok(tick)
 }
 
 fn auth_resume_proof_exists(
@@ -1508,30 +1561,22 @@ fn continuation_next_due(
 fn continuation_tick_agents(
     connection: &rusqlite::Connection,
     now: f64,
+    after_agent: Option<&str>,
 ) -> studio_runtime_store::StoreResult<Vec<String>> {
+    // Rotate the combined ready set: neither a failed cursor nor a busy kind
+    // can monopolize the bounded batch. Advance past every attempted agent.
     let sql = format!(
-        "SELECT DISTINCT agent FROM ({CURRENT_USAGE_RESUME_DUE_ROWS} UNION ALL {CURRENT_CAPACITY_RETRY_DUE_ROWS}) WHERE due<=?1 ORDER BY agent LIMIT 32"
+        "SELECT agent FROM (
+            SELECT agent FROM ({CURRENT_USAGE_RESUME_DUE_ROWS} UNION ALL {CURRENT_CAPACITY_RETRY_DUE_ROWS}) WHERE due<=?1
+            UNION SELECT id AS agent FROM runtime_agents WHERE {AUTH_RESUME_PROOF_PENDING_PREDICATE}
+         ) ORDER BY CASE WHEN ?2 IS NULL OR agent>?2 THEN 0 ELSE 1 END, agent LIMIT ?3"
     );
     let mut statement = connection.prepare(&sql)?;
-    let due_agents = statement
-        .query_map([now], |row| row.get::<_, String>(0))?
-        .collect::<Result<Vec<_>, _>>()?;
-    drop(statement);
-    if due_agents.is_empty() {
-        auth_resume_proof_agents(connection)
-    } else {
-        Ok(due_agents)
-    }
-}
-
-fn auth_resume_proof_agents(
-    connection: &rusqlite::Connection,
-) -> studio_runtime_store::StoreResult<Vec<String>> {
-    let mut statement = connection.prepare(&format!(
-        "SELECT id FROM runtime_agents WHERE {AUTH_RESUME_PROOF_PENDING_PREDICATE} ORDER BY id LIMIT 32"
-    ))?;
     statement
-        .query_map([], |row| row.get::<_, String>(0))?
+        .query_map(
+            rusqlite::params![now, after_agent, CONTINUATION_TICK_AGENT_LIMIT],
+            |row| row.get::<_, String>(0),
+        )?
         .collect::<Result<Vec<_>, _>>()
         .map_err(Into::into)
 }
@@ -1908,12 +1953,13 @@ mod exit_logging_tests {
     use tokio::sync::{Notify, watch};
 
     use super::{
-        ContinuationWait, ShutdownReason, auth_resume_proof_agents, auth_resume_proof_exists,
-        continuation_next_due, continuation_tick_agents, error_exit_log,
-        next_federation_retry_delay, pairing_retry_is_pending, panic_observed_log,
-        run_continuation_tick, runtime_initialization_exit_log, scheduler_delay_seconds,
-        shutdown_exit_log, shutdown_join, successful_pair_retry_delay, wait_for_continuation,
-        wait_for_retry_or_shutdown, wait_for_scheduler_wake,
+        CONTINUATION_FAILURE_RETRY_SECONDS, ContinuationTickState, ContinuationWait,
+        ShutdownReason, auth_resume_proof_exists, continuation_next_due, continuation_scheduler,
+        continuation_tick_agents, error_exit_log, next_federation_retry_delay,
+        pairing_retry_is_pending, panic_observed_log, run_continuation_tick,
+        runtime_initialization_exit_log, scheduler_delay_seconds, shutdown_exit_log, shutdown_join,
+        successful_pair_retry_delay, wait_for_continuation, wait_for_retry_or_shutdown,
+        wait_for_scheduler_wake,
     };
 
     #[test]
@@ -1970,10 +2016,10 @@ mod exit_logging_tests {
                 .await
                 .expect("runtime store"),
         );
-        let changed = run_continuation_tick(store, 0.0)
+        let changed = run_continuation_tick(store, 0.0, &mut ContinuationTickState::default())
             .await
             .expect("a tick with nothing due succeeds");
-        assert!(!changed);
+        assert!(!changed.changed);
     }
 
     #[tokio::test]
@@ -2004,10 +2050,18 @@ mod exit_logging_tests {
             })
             .await
             .expect("seed agents");
-        let changed = run_continuation_tick(Arc::clone(&store), 2.0)
-            .await
-            .expect("one failing agent does not fail the tick");
-        assert!(changed, "the valid agent is staged");
+        let changed = run_continuation_tick(
+            Arc::clone(&store),
+            2.0,
+            &mut ContinuationTickState::default(),
+        )
+        .await
+        .expect("one failing agent does not fail the tick");
+        assert!(changed.changed, "the valid agent is staged");
+        assert!(
+            changed.failed,
+            "the malformed agent requests scheduler backoff"
+        );
         let db = store.test_reader().expect("reader");
         let pending = |id: &str| -> Option<String> {
             db.query_row(
@@ -2021,6 +2075,171 @@ mod exit_logging_tests {
         assert!(
             pending("a-broken").is_some(),
             "the failing agent keeps its cursor"
+        );
+    }
+
+    async fn proof_cursor_store(
+        broken: usize,
+        valid: usize,
+    ) -> (tempfile::TempDir, Arc<studio_runtime_store::RuntimeStore>) {
+        let directory = tempfile::tempdir().expect("state directory");
+        let store = Arc::new(
+            studio_runtime_store::RuntimeStore::open(Some(directory.path()))
+                .await
+                .expect("store"),
+        );
+        store
+            .transaction_with(move |tx| {
+                for index in 0..broken + valid {
+                    let id = format!("agent-{index:02}");
+                    let pending = if index < broken {
+                        serde_json::json!({"afterId":""})
+                    } else {
+                        serde_json::json!({"afterId":"", "proofAt":1.0})
+                    };
+                    let record = serde_json::json!({
+                        "id":id, "rootId":id, "role":"main", "status":"idle", "epoch":1,
+                        "authResumeProofPending":{"default":pending},
+                    });
+                    tx.execute(
+                        "INSERT INTO runtime_agents(id,record) VALUES (?1,?2)",
+                        rusqlite::params![id, record.to_string()],
+                    )?;
+                }
+                Ok::<_, studio_runtime_store::StoreError>(())
+            })
+            .await
+            .expect("seed cursors");
+        (directory, store)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn continuation_malformed_cursor_uses_backoff_despite_many_wakes() {
+        let (_directory, store) = proof_cursor_store(1, 1).await;
+        let baseline = store.writer_admissions();
+        let wake = Arc::new(Notify::new());
+        let event_wake = Arc::new(Notify::new());
+        let (shutdown, shutdown_rx) = watch::channel(false);
+        let scheduler = tokio::spawn(continuation_scheduler(
+            Arc::clone(&store),
+            Arc::clone(&wake),
+            Arc::clone(&event_wake),
+            shutdown_rx,
+        ));
+        // The valid cursor's notification proves that the whole first tick ran,
+        // including the earlier malformed cursor's failed staging transaction.
+        event_wake.notified().await;
+        assert_eq!(store.writer_admissions() - baseline, 2);
+        for _ in 0..1000 {
+            wake.notify_one();
+            tokio::task::yield_now().await;
+        }
+        tokio::time::advance(Duration::from_secs_f64(
+            CONTINUATION_FAILURE_RETRY_SECONDS - 1.0,
+        ))
+        .await;
+        tokio::task::yield_now().await;
+        assert_eq!(
+            store.writer_admissions() - baseline,
+            2,
+            "queued wakes cannot retry the malformed cursor before backoff"
+        );
+        shutdown.send_replace(true);
+        scheduler.await.expect("scheduler stops during backoff");
+    }
+
+    #[tokio::test]
+    async fn continuation_round_robin_reaches_all_forty_failing_cursors() {
+        let (_directory, store) = proof_cursor_store(40, 0).await;
+        let mut state = ContinuationTickState::default();
+        let first = run_continuation_tick(Arc::clone(&store), 2.0, &mut state)
+            .await
+            .expect("first batch");
+        assert!(first.failed);
+        assert_eq!(
+            state.errors.len(),
+            usize::try_from(super::CONTINUATION_TICK_AGENT_LIMIT).expect("positive batch limit")
+        );
+        let second =
+            run_continuation_tick(store, 2.0 + CONTINUATION_FAILURE_RETRY_SECONDS, &mut state)
+                .await
+                .expect("next batch");
+        assert!(second.failed);
+        assert_eq!(
+            state.errors.len(),
+            40,
+            "every cursor was attempted even though the early ids remain pending"
+        );
+    }
+
+    #[tokio::test]
+    async fn continuation_round_robin_stages_valid_cursors_after_a_full_failing_batch() {
+        let (_directory, store) = proof_cursor_store(32, 8).await;
+        let mut state = ContinuationTickState::default();
+        let first = run_continuation_tick(Arc::clone(&store), 2.0, &mut state)
+            .await
+            .expect("first batch");
+        assert!(first.failed);
+        assert!(!first.changed);
+        let second = run_continuation_tick(
+            Arc::clone(&store),
+            2.0 + CONTINUATION_FAILURE_RETRY_SECONDS,
+            &mut state,
+        )
+        .await
+        .expect("second batch");
+        assert!(
+            second.changed,
+            "later valid cursors progress while early cursors keep failing"
+        );
+        let reader = store.test_reader().expect("reader");
+        let pending: i64 = reader.query_row(
+            "SELECT COUNT(*) FROM runtime_agents WHERE json_extract(record,'$.authResumeProofPending') IS NOT NULL",
+            [], |row| row.get(0),
+        ).expect("remaining pending cursors");
+        assert_eq!(pending, 32, "all eight valid cursors were completed");
+    }
+
+    #[tokio::test]
+    async fn continuation_recovery_clears_the_recorded_error() {
+        let (_directory, store) = proof_cursor_store(1, 0).await;
+        let mut state = ContinuationTickState::default();
+        let failed = run_continuation_tick(Arc::clone(&store), 2.0, &mut state)
+            .await
+            .expect("malformed cursor tick");
+        assert!(failed.failed);
+        assert_eq!(state.errors.len(), 1);
+        store.transaction_with(|tx| {
+            tx.execute(
+                "UPDATE runtime_agents SET record=json_set(record,'$.authResumeProofPending.default.proofAt',1.0)",
+                [],
+            )?;
+            Ok::<_, studio_runtime_store::StoreError>(())
+        }).await.expect("repair cursor");
+        let recovered =
+            run_continuation_tick(store, 2.0 + CONTINUATION_FAILURE_RETRY_SECONDS, &mut state)
+                .await
+                .expect("repaired cursor tick");
+        assert!(!recovered.failed);
+        assert!(recovered.changed);
+        assert!(
+            state.errors.is_empty(),
+            "successful staging clears the old failure"
+        );
+    }
+
+    #[test]
+    fn continuation_errors_are_reported_only_when_the_error_changes() {
+        let mut state = ContinuationTickState::default();
+        assert!(state.record_error("agent", "malformed cursor".to_owned()));
+        for _ in 0..1000 {
+            assert!(!state.record_error("agent", "malformed cursor".to_owned()));
+        }
+        assert!(state.record_error("agent", "different error".to_owned()));
+        state.errors.remove("agent");
+        assert!(
+            state.record_error("agent", "different error".to_owned()),
+            "a recovered agent can fail again visibly"
         );
     }
 
@@ -2108,7 +2327,9 @@ mod exit_logging_tests {
         let connection = rusqlite::Connection::open_in_memory().expect("memory database");
         connection
             .execute_batch(&studio_runtime_store::agent_columns::fixture_sql(
-                "CREATE TABLE runtime_agents(id TEXT PRIMARY KEY, record TEXT NOT NULL);",
+                "CREATE TABLE runtime_agents(id TEXT PRIMARY KEY, record TEXT NOT NULL);
+                 CREATE TABLE runtime_usage_resumes(id TEXT PRIMARY KEY, agent TEXT NOT NULL, record TEXT NOT NULL);
+                 CREATE TABLE runtime_capacity_retries(id TEXT PRIMARY KEY, agent TEXT NOT NULL, record TEXT NOT NULL);",
             ))
             .expect("agents table");
         connection
@@ -2137,7 +2358,7 @@ mod exit_logging_tests {
 
         assert!(auth_resume_proof_exists(&connection).expect("pending proof exists"));
         assert_eq!(
-            auth_resume_proof_agents(&connection).expect("pending proof batch"),
+            continuation_tick_agents(&connection, 100.0, None).expect("pending proof batch"),
             vec!["real-proof".to_owned()]
         );
     }
@@ -2189,7 +2410,7 @@ mod exit_logging_tests {
             None
         );
         assert_eq!(
-            continuation_tick_agents(&connection, 100.0).expect("tick agent batch"),
+            continuation_tick_agents(&connection, 100.0, None).expect("tick agent batch"),
             vec!["real-proof".to_owned()]
         );
     }

@@ -41,6 +41,7 @@ from studio_api.testing import (
 class ProjectContracts(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix="codex-project-contract-")
+        self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name).resolve()
         self.first, self.second = self.root / "first", self.root / "second"
         self.first.mkdir()
