@@ -48,7 +48,7 @@ class LiveIsolation(unittest.TestCase):
         self.assertEqual(state_dir(), root)
         self.assertEqual(sorted(root.iterdir()), [])
         self.assertTrue(root.name.startswith("codex-runtime-live-"))
-        self.assertEqual(root.parent, Path("/tmp").resolve())
+        self.assertEqual(root.parent, Path(tempfile.gettempdir()).resolve())
         self.assertNotIn("CODEX_AGENTS_SUPERVISOR_MODE", os.environ)
         store = Path(os.environ["CODEX_WORKSPACE_STORE"]).resolve()
         self.assertEqual(store.parent, Path(tempfile.gettempdir()).resolve())

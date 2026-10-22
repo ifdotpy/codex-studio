@@ -164,9 +164,6 @@
     "\"/tmp/studio-runtime-server --port 4635\",",
     "\"/tmp/studio-runtime-server --port 0 --port 0\","
   ],
-  "workspaces/runtime/apps/server/tests/live-isolation-contract.py": [
-    "self.assertEqual(root.parent, Path(\"/tmp\").resolve())"
-  ],
   "workspaces/runtime/apps/server/tests/native-error-contract.py": [
     "'executionMode': 'sync', 'scope': 'turn', 'sourcePath': '/tmp/hooks.json',"
   ],
