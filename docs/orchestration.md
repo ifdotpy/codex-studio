@@ -786,6 +786,14 @@ The interrupt goes to the provider process that runs the turn, also after Studio
 reconnects to that process. A Codex interrupt leaves the thread's background
 terminals running, so Stop and delete then send `thread/backgroundTerminals/clean`.
 The Claude bridge stops its background tasks as part of the interrupt.
+
+Claude tool stall recovery follows the [bridge watchdog](../workspaces/providers/apps/claude-bridge/stall-watch.mjs):
+
+1. An unfinished tool call arms one timer for the earliest eligible deadline.
+2. CLI progress moves the silence deadline; tool results remove their deadline.
+3. Studio approvals, questions and tool waits pause detection; answering restarts the tool budget.
+4. A deadline starts the existing interrupt and close recovery once. Idle queries have no watchdog timer.
+
 A late result from an earlier generation cannot resume that agent.
 A new user message explicitly resumes the target. Other stopped agents stay stopped
 until the user or a resumed lead sends them a new task.
