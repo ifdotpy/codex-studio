@@ -1,3 +1,4 @@
+import Tasks from "./Tasks";
 import ClaudeCheckpointRestore from "../ClaudeCheckpointRestore";
 import { useServerApi } from "../../servers/ServerServicesContext";
 import { SearchContent } from "./SearchOverlay";
@@ -82,6 +83,7 @@ const sections = [
   ["messages", "Messages", Inbox],
   ["search", "Search", Search],
   ["plan", "Plan", BookOpen],
+  ["tasks", "Tasks", Layers3],
   ["checkpoints", "Checkpoints", GitBranch],
   ["tools", "Tools", Wrench],
   ["profiles", "Profiles", Users],
@@ -92,6 +94,7 @@ const descriptions: Record<string, string> = {
   messages: "Your messages and this team’s conversations.",
   search: "Find messages, work, plans, and agent conversations.",
   plan: "The agent's current plan.",
+  tasks: "Task assignments, checks, results, and review decisions.",
   checkpoints: "Save and restore points in the work.",
   tools: "Tools the agents can use.",
   profiles: "Reusable instructions and model choices for workers.",
@@ -242,6 +245,7 @@ export function Workspace(props: Props) {
   const needAgent = [
     "changes",
     "plan",
+    "tasks",
     "checkpoints",
     "tools",
     "rules",
@@ -452,6 +456,13 @@ export function Workspace(props: Props) {
                   )}
                   {section === "search" && <SearchContent {...context} />}
                   {section === "plan" && <Plan {...context} />}
+                  {section === "tasks" && selected && (
+                    <Tasks
+                      key={selected.id}
+                      agentId={selected.id}
+                      revision={revision}
+                    />
+                  )}
                   {section === "checkpoints" && <Checkpoints {...context} />}
                   {section === "tools" && <Tools {...context} />}
                   {section === "profiles" && <Profiles {...context} />}

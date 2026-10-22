@@ -625,6 +625,15 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
     let web = |name: &str| format!("{WEB_GENERATED}/{name}");
     let mut rendered = vec![
         Rendered {
+            path: web("taskReview.ts"),
+            text: format!(
+                "// {HEADER}\nexport const DEFAULT_GATE_TIMEOUT_MS = {};\nexport const MAX_GATE_TIMEOUT_MS = {};\nexport const MAX_RESULT_SCHEMA_BYTES = {};\n",
+                crate::task_gate::DEFAULT_TIMEOUT_MS,
+                crate::task_gate::MAX_TIMEOUT_MS,
+                crate::task_results::MAX_RESULT_SCHEMA_BYTES
+            ),
+        },
+        Rendered {
             path: "workspaces/providers/apps/claude-bridge/input-origin.generated.mjs".into(),
             text: format!(
                 "// {HEADER}\nexport const HUMAN_INPUT = {};\nexport const STUDIO_EVENT_INPUT = {};\n",

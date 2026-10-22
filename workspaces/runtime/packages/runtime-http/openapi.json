@@ -2440,22 +2440,22 @@
         "properties": {
           "burst": {
             "description": "Turn starts per burst.",
-            "maximum": 512.0,
-            "minimum": 1.0,
+            "maximum": 512,
+            "minimum": 1,
             "title": "Burst",
             "type": "integer"
           },
           "maxRunningTurns": {
             "description": "Turns that may run at once on this account.",
-            "maximum": 512.0,
-            "minimum": 1.0,
+            "maximum": 512,
+            "minimum": 1,
             "title": "Maxrunningturns",
             "type": "integer"
           },
           "pauseSeconds": {
             "description": "Seconds after the start that ends a burst before the next start.",
-            "maximum": 3600.0,
-            "minimum": 0.0,
+            "maximum": 3600,
+            "minimum": 0,
             "title": "Pauseseconds",
             "type": "integer"
           }
@@ -2478,22 +2478,22 @@
           },
           "burst": {
             "description": "Turn starts per burst.",
-            "maximum": 512.0,
-            "minimum": 1.0,
+            "maximum": 512,
+            "minimum": 1,
             "title": "Burst",
             "type": "integer"
           },
           "maxRunningTurns": {
             "description": "Turns that may run at once on this account.",
-            "maximum": 512.0,
-            "minimum": 1.0,
+            "maximum": 512,
+            "minimum": 1,
             "title": "Maxrunningturns",
             "type": "integer"
           },
           "pauseSeconds": {
             "description": "Seconds after the start that ends a burst before the next start.",
-            "maximum": 3600.0,
-            "minimum": 0.0,
+            "maximum": 3600,
+            "minimum": 0,
             "title": "Pauseseconds",
             "type": "integer"
           }
@@ -10541,8 +10541,8 @@
           },
           "current": {
             "items": {
-              "maximum": 9223372036854775807,
-              "minimum": -9223372036854775808,
+              "maximum": 9223372036854776000,
+              "minimum": -9.223372036854776e+18,
               "type": "integer",
               "x-integer-domain": "signed64"
             },
@@ -10557,8 +10557,8 @@
           },
           "previous": {
             "items": {
-              "maximum": 9223372036854775807,
-              "minimum": -9223372036854775808,
+              "maximum": 9223372036854776000,
+              "minimum": -9.223372036854776e+18,
               "type": "integer",
               "x-integer-domain": "signed64"
             },
@@ -10958,8 +10958,8 @@
             "anyOf": [
               {
                 "items": {
-                  "maximum": 9223372036854775807,
-                  "minimum": -9223372036854775808,
+                  "maximum": 9223372036854776000,
+                  "minimum": -9.223372036854776e+18,
                   "type": "integer",
                   "x-integer-domain": "signed64"
                 },
@@ -11013,8 +11013,8 @@
             "anyOf": [
               {
                 "items": {
-                  "maximum": 9223372036854775807,
-                  "minimum": -9223372036854775808,
+                  "maximum": 9223372036854776000,
+                  "minimum": -9.223372036854776e+18,
                   "type": "integer",
                   "x-integer-domain": "signed64"
                 },
@@ -14496,7 +14496,7 @@
           },
           "line": {
             "maximum": 9007199254740991,
-            "minimum": 1.0,
+            "minimum": 1,
             "title": "Line",
             "type": "integer"
           },
@@ -17102,8 +17102,8 @@
             "type": "string"
           },
           "port": {
-            "maximum": 65535.0,
-            "minimum": 1024.0,
+            "maximum": 65535,
+            "minimum": 1024,
             "title": "Port",
             "type": "integer"
           },
@@ -21835,8 +21835,8 @@
         "properties": {
           "concurrency": {
             "default": 32,
-            "maximum": 2048.0,
-            "minimum": 0.0,
+            "maximum": 2048,
+            "minimum": 0,
             "title": "Concurrency",
             "type": "integer"
           },
@@ -21862,8 +21862,8 @@
           },
           "maxAgents": {
             "default": 64,
-            "maximum": 2050.0,
-            "minimum": 1.0,
+            "maximum": 2050,
+            "minimum": 1,
             "title": "Maxagents",
             "type": "integer"
           },
@@ -23230,8 +23230,8 @@
           },
           "subagent_concurrency": {
             "default": 32,
-            "maximum": 2048.0,
-            "minimum": 0.0,
+            "maximum": 2048,
+            "minimum": 0,
             "title": "Subagent Concurrency",
             "type": "integer"
           },
@@ -23444,8 +23444,8 @@
           },
           "concurrency": {
             "default": 32,
-            "maximum": 2048.0,
-            "minimum": 0.0,
+            "maximum": 2048,
+            "minimum": 0,
             "title": "Concurrency",
             "type": "integer"
           },
@@ -23524,8 +23524,8 @@
           },
           "maxAgents": {
             "default": 64,
-            "maximum": 2050.0,
-            "minimum": 1.0,
+            "maximum": 2050,
+            "minimum": 1,
             "title": "Maxagents",
             "type": "integer"
           },
@@ -28224,7 +28224,7 @@
             "type": "string"
           },
           "size": {
-            "maximum": 9223372036854775807,
+            "maximum": 9223372036854776000,
             "minimum": 0,
             "title": "Size",
             "type": "integer",
@@ -29574,25 +29574,25 @@
         "properties": {
           "cpus": {
             "maximum": 9007199254740991,
-            "minimum": 1.0,
+            "minimum": 1,
             "title": "Cpus",
             "type": "integer"
           },
           "dataDiskBytes": {
-            "maximum": 1099511627776.0,
-            "minimum": 8589934592.0,
+            "maximum": 1099511627776,
+            "minimum": 8589934592,
             "title": "Datadiskbytes",
             "type": "integer"
           },
           "memoryBytes": {
-            "maximum": 68719476736.0,
-            "minimum": 1073741824.0,
+            "maximum": 68719476736,
+            "minimum": 1073741824,
             "title": "Memorybytes",
             "type": "integer"
           },
           "systemDiskBytes": {
-            "maximum": 137438953472.0,
-            "minimum": 8589934592.0,
+            "maximum": 137438953472,
+            "minimum": 8589934592,
             "title": "Systemdiskbytes",
             "type": "integer"
           }
@@ -31564,8 +31564,8 @@
           },
           "cols": {
             "default": 80,
-            "maximum": 1000.0,
-            "minimum": 1.0,
+            "maximum": 1000,
+            "minimum": 1,
             "title": "Cols",
             "type": "integer"
           },
@@ -31577,8 +31577,8 @@
           },
           "rows": {
             "default": 24,
-            "maximum": 1000.0,
-            "minimum": 1.0,
+            "maximum": 1000,
+            "minimum": 1,
             "title": "Rows",
             "type": "integer"
           },
@@ -31631,8 +31631,8 @@
           },
           "activityAt": {
             "default": null,
-            "maximum": 9007199254740991.0,
-            "minimum": -9007199254740991.0,
+            "maximum": 9007199254740991,
+            "minimum": -9007199254740991,
             "title": "Activityat",
             "type": "number"
           },
@@ -31662,8 +31662,8 @@
           },
           "created": {
             "default": null,
-            "maximum": 9007199254740991.0,
-            "minimum": -9007199254740991.0,
+            "maximum": 9007199254740991,
+            "minimum": -9007199254740991,
             "title": "Created",
             "type": "number"
           },
@@ -31708,8 +31708,8 @@
           "finished": {
             "anyOf": [
               {
-                "maximum": 9007199254740991.0,
-                "minimum": -9007199254740991.0,
+                "maximum": 9007199254740991,
+                "minimum": -9007199254740991,
                 "type": "number"
               },
               {
@@ -34795,15 +34795,15 @@
         "properties": {
           "childResultCoalesceSeconds": {
             "description": "Seconds a lead's finished-subagent result waits for sibling subagents that are still running, so close results arrive in one turn; 0 delivers each at once.",
-            "maximum": 300.0,
-            "minimum": 0.0,
+            "maximum": 300,
+            "minimum": 0,
             "title": "Childresultcoalesceseconds",
             "type": "integer"
           },
           "idleSessionUnloadMinutes": {
             "description": "Minutes a lead's or ordinary chat's idle Codex thread or Claude session stays loaded, and an account's provider process keeps running after its last thread unloaded. A managed worker without a running turn, pending input, or active monitor unloads at once. The next message resumes a thread. 0 never unloads.",
-            "maximum": 1440.0,
-            "minimum": 0.0,
+            "maximum": 1440,
+            "minimum": 0,
             "title": "Idlesessionunloadminutes",
             "type": "integer"
           }
@@ -37149,8 +37149,8 @@
         "additionalProperties": false,
         "properties": {
           "timestamp": {
-            "maximum": 9007199254740991.0,
-            "minimum": 0.0,
+            "maximum": 9007199254740991,
+            "minimum": 0,
             "title": "Timestamp",
             "type": "integer"
           },
@@ -45970,8 +45970,8 @@
           },
           "durationMinutes": {
             "default": 30,
-            "maximum": 525600.0,
-            "minimum": 1.0,
+            "maximum": 525600,
+            "minimum": 1,
             "title": "Durationminutes",
             "type": "integer"
           },
@@ -46098,8 +46098,8 @@
           },
           "intervalSeconds": {
             "default": 60,
-            "maximum": 31536000.0,
-            "minimum": 10.0,
+            "maximum": 31536000,
+            "minimum": 10,
             "title": "Intervalseconds",
             "type": "integer"
           },
@@ -46267,8 +46267,8 @@
           },
           "minimumWorkers": {
             "default": 8,
-            "maximum": 255.0,
-            "minimum": 1.0,
+            "maximum": 255,
+            "minimum": 1,
             "title": "Minimumworkers",
             "type": "integer"
           },
@@ -46365,8 +46365,8 @@
           },
           "stallTimeoutSeconds": {
             "default": 1800,
-            "maximum": 31536000.0,
-            "minimum": 0.0,
+            "maximum": 31536000,
+            "minimum": 0,
             "title": "Stalltimeoutseconds",
             "type": "integer"
           },
@@ -49099,7 +49099,7 @@
           },
           "expected_revision": {
             "maximum": 9007199254740991,
-            "minimum": 0.0,
+            "minimum": 0,
             "title": "Expected Revision",
             "type": "integer"
           },
@@ -53420,6 +53420,51 @@
         "title": "TaskStatus",
         "type": "string"
       },
+      "TaskSubmissionRefusal": {
+        "additionalProperties": false,
+        "properties": {
+          "errors": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "message": {
+                  "maxLength": 1024,
+                  "type": "string"
+                },
+                "path": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path",
+                "message"
+              ],
+              "type": "object"
+            },
+            "maxItems": 32,
+            "type": "array"
+          },
+          "failedSubmits": {
+            "maximum": 3,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "limit": {
+            "const": 3,
+            "type": "integer"
+          },
+          "retryAllowed": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "failedSubmits",
+          "limit",
+          "retryAllowed",
+          "errors"
+        ],
+        "type": "object"
+      },
       "TasksResource": {
         "additionalProperties": false,
         "properties": {
@@ -53468,8 +53513,8 @@
           },
           "cols": {
             "default": 100,
-            "maximum": 1000.0,
-            "minimum": 2.0,
+            "maximum": 1000,
+            "minimum": 2,
             "title": "Cols",
             "type": "integer"
           },
@@ -53481,8 +53526,8 @@
           },
           "rows": {
             "default": 28,
-            "maximum": 500.0,
-            "minimum": 1.0,
+            "maximum": 500,
+            "minimum": 1,
             "title": "Rows",
             "type": "integer"
           }
@@ -53897,8 +53942,8 @@
         "properties": {
           "cols": {
             "default": 100,
-            "maximum": 1000.0,
-            "minimum": 2.0,
+            "maximum": 1000,
+            "minimum": 2,
             "title": "Cols",
             "type": "integer"
           },
@@ -53910,8 +53955,8 @@
           },
           "rows": {
             "default": 28,
-            "maximum": 500.0,
-            "minimum": 1.0,
+            "maximum": 500,
+            "minimum": 1,
             "title": "Rows",
             "type": "integer"
           }
@@ -54283,8 +54328,8 @@
           },
           "callbackStartedAt": {
             "default": null,
-            "maximum": 9007199254740991.0,
-            "minimum": -9007199254740991.0,
+            "maximum": 9007199254740991,
+            "minimum": -9007199254740991,
             "title": "Callbackstartedat",
             "type": "number"
           },
@@ -54440,8 +54485,8 @@
           },
           "wireReceivedAt": {
             "default": null,
-            "maximum": 9007199254740991.0,
-            "minimum": -9007199254740991.0,
+            "maximum": 9007199254740991,
+            "minimum": -9007199254740991,
             "title": "Wirereceivedat",
             "type": "number"
           }
@@ -54499,8 +54544,8 @@
           },
           "callbackStartedAt": {
             "default": null,
-            "maximum": 9007199254740991.0,
-            "minimum": -9007199254740991.0,
+            "maximum": 9007199254740991,
+            "minimum": -9007199254740991,
             "title": "Callbackstartedat",
             "type": "number"
           },
@@ -54511,7 +54556,7 @@
           },
           "handlerEndedAt": {
             "default": null,
-            "maximum": 9223372036854775807,
+            "maximum": 9223372036854776000,
             "minimum": 0,
             "title": "Handlerendedat",
             "type": "integer",
@@ -54519,7 +54564,7 @@
           },
           "handlerStartedAt": {
             "default": null,
-            "maximum": 9223372036854775807,
+            "maximum": 9223372036854776000,
             "minimum": 0,
             "title": "Handlerstartedat",
             "type": "integer",
@@ -54532,7 +54577,7 @@
           },
           "reservationBeganAt": {
             "default": null,
-            "maximum": 9223372036854775807,
+            "maximum": 9223372036854776000,
             "minimum": 0,
             "title": "Reservationbeganat",
             "type": "integer",
@@ -54545,7 +54590,7 @@
           },
           "reservationEndedAt": {
             "default": null,
-            "maximum": 9223372036854775807,
+            "maximum": 9223372036854776000,
             "minimum": 0,
             "title": "Reservationendedat",
             "type": "integer",
@@ -54553,7 +54598,7 @@
           },
           "reservationLockedAt": {
             "default": null,
-            "maximum": 9223372036854775807,
+            "maximum": 9223372036854776000,
             "minimum": 0,
             "title": "Reservationlockedat",
             "type": "integer",
@@ -54561,8 +54606,8 @@
           },
           "wireReceivedAt": {
             "default": null,
-            "maximum": 9007199254740991.0,
-            "minimum": -9007199254740991.0,
+            "maximum": 9007199254740991,
+            "minimum": -9007199254740991,
             "title": "Wirereceivedat",
             "type": "number"
           }
@@ -60952,6 +60997,16 @@
             "default": null,
             "title": "Releases"
           },
+          "resultSchema": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/JsonValue"
+            },
+            "description": "Optional draft 2020-12 result contract for create/update (maximum 32768 UTF-8 bytes). Supports types, properties, required, additionalProperties, arrays, bounds, enum/const and combinators. References, regex and unknown keywords are refused. A new task version resets the submit cap.",
+            "type": [
+              "object",
+              "boolean"
+            ]
+          },
           "results": {
             "default": [],
             "items": {
@@ -60975,6 +61030,9 @@
             ],
             "title": "Status",
             "type": "string"
+          },
+          "submissionRefusal": {
+            "$ref": "#/components/schemas/TaskSubmissionRefusal"
           },
           "title": {
             "title": "Title",
@@ -61050,6 +61108,12 @@
             },
             "title": "Items",
             "type": "array"
+          },
+          "rootId": {
+            "type": "string"
+          },
+          "taskDefaultGate": {
+            "$ref": "#/components/schemas/TaskAcceptanceGate"
           },
           "tasks": {
             "items": {
@@ -61495,6 +61559,16 @@
             "title": "Releases",
             "type": "array"
           },
+          "resultSchema": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/JsonValue"
+            },
+            "description": "Optional draft 2020-12 result contract for create/update (maximum 32768 UTF-8 bytes). Supports types, properties, required, additionalProperties, arrays, bounds, enum/const and combinators. References, regex and unknown keywords are refused. A new task version resets the submit cap.",
+            "type": [
+              "object",
+              "boolean"
+            ]
+          },
           "results": {
             "items": {
               "$ref": "#/components/schemas/WorkResultRecordResponse"
@@ -61517,6 +61591,9 @@
             ],
             "title": "Status",
             "type": "string"
+          },
+          "submissionRefusal": {
+            "$ref": "#/components/schemas/TaskSubmissionRefusal"
           },
           "title": {
             "title": "Title",
@@ -61581,8 +61658,8 @@
           },
           "delegation_depth": {
             "default": 1,
-            "maximum": 3.0,
-            "minimum": 1.0,
+            "maximum": 3,
+            "minimum": 1,
             "title": "Delegation Depth",
             "type": "integer"
           },
@@ -61660,8 +61737,8 @@
           },
           "delegationDepth": {
             "default": 1,
-            "maximum": 3.0,
-            "minimum": 1.0,
+            "maximum": 3,
+            "minimum": 1,
             "title": "Delegationdepth",
             "type": "integer"
           },
@@ -62802,8 +62879,8 @@
           "gitFile": {
             "default": null,
             "items": {
-              "maximum": 9223372036854775807,
-              "minimum": -9223372036854775808,
+              "maximum": 9223372036854776000,
+              "minimum": -9.223372036854776e+18,
               "type": "integer",
               "x-integer-domain": "signed64"
             },
@@ -62826,8 +62903,8 @@
             "items": {
               "anyOf": [
                 {
-                  "maximum": 9007199254740991.0,
-                  "minimum": -9007199254740991.0,
+                  "maximum": 9007199254740991,
+                  "minimum": -9007199254740991,
                   "type": "number"
                 },
                 {
@@ -62880,8 +62957,8 @@
           "rootFile": {
             "default": null,
             "items": {
-              "maximum": 9223372036854775807,
-              "minimum": -9223372036854775808,
+              "maximum": 9223372036854776000,
+              "minimum": -9.223372036854776e+18,
               "type": "integer",
               "x-integer-domain": "signed64"
             },
@@ -62934,8 +63011,8 @@
           },
           "gitFile": {
             "items": {
-              "maximum": 9223372036854775807,
-              "minimum": -9223372036854775808,
+              "maximum": 9223372036854776000,
+              "minimum": -9.223372036854776e+18,
               "type": "integer",
               "x-integer-domain": "signed64"
             },
@@ -62948,8 +63025,8 @@
           },
           "rootFile": {
             "items": {
-              "maximum": 9223372036854775807,
-              "minimum": -9223372036854775808,
+              "maximum": 9223372036854776000,
+              "minimum": -9.223372036854776e+18,
               "type": "integer",
               "x-integer-domain": "signed64"
             },

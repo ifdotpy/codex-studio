@@ -23310,6 +23310,16 @@ export interface components {
       | "cancelled"
       | "lost"
       | "unknown";
+    TaskSubmissionRefusal: {
+      errors: {
+        message: string;
+        path: string;
+      }[];
+      failedSubmits: number;
+      /** @constant */
+      limit: 3;
+      retryAllowed: boolean;
+    };
     /** TerminalClose */
     TerminalClose: {
       /** Id */
@@ -26573,6 +26583,12 @@ export interface components {
        * @default []
        */
       results?: components["schemas"]["WorkResultRecord"][];
+      /** @description Optional draft 2020-12 result contract for create/update (maximum 32768 UTF-8 bytes). Supports types, properties, required, additionalProperties, arrays, bounds, enum/const and combinators. References, regex and unknown keywords are refused. A new task version resets the submit cap. */
+      resultSchema?:
+        | {
+            [key: string]: components["schemas"]["JsonValue"];
+          }
+        | boolean;
       /** Rootid */
       rootId: string;
       /**
@@ -26586,6 +26602,7 @@ export interface components {
         | "review"
         | "accepted"
         | "cancelled";
+      submissionRefusal?: components["schemas"]["TaskSubmissionRefusal"];
       /** Title */
       title: string;
       /** Updated */
@@ -26609,6 +26626,8 @@ export interface components {
       _syncEntitiesAfter?: number | null;
       /** Items */
       items: components["schemas"]["WorkItem"][];
+      rootId?: string;
+      taskDefaultGate?: components["schemas"]["TaskAcceptanceGate"];
       /** Tasks */
       tasks: components["schemas"]["WorkItem"][];
     };
@@ -27241,6 +27260,12 @@ export interface components {
       releases?: components["schemas"]["JsonValue"][];
       /** Results */
       results: components["schemas"]["WorkResultRecordResponse"][];
+      /** @description Optional draft 2020-12 result contract for create/update (maximum 32768 UTF-8 bytes). Supports types, properties, required, additionalProperties, arrays, bounds, enum/const and combinators. References, regex and unknown keywords are refused. A new task version resets the submit cap. */
+      resultSchema?:
+        | {
+            [key: string]: components["schemas"]["JsonValue"];
+          }
+        | boolean;
       /** Rootid */
       rootId: string;
       /**
@@ -27254,6 +27279,7 @@ export interface components {
         | "review"
         | "accepted"
         | "cancelled";
+      submissionRefusal?: components["schemas"]["TaskSubmissionRefusal"];
       /** Title */
       title: string;
       /** Updated */
