@@ -1384,6 +1384,30 @@ function fastTierCommands(root) {
           "Check startup without Python, binary build identity, existing-owner attachment, and uncertain connection refusals.",
       },
     },
+    {
+      item: packageTarget(packages, "studio-claude-bridge"),
+      label: "Claude watchdog deadline witnesses",
+      commands: [
+        [
+          "pnpm",
+          [
+            "--filter",
+            "studio-claude-bridge",
+            "exec",
+            "vitest",
+            "run",
+            "--config",
+            "vitest.config.mjs",
+            "stall-watch.test.mjs",
+          ],
+        ],
+      ],
+      options: {
+        selector: "idle watchdog and nearest tool deadline",
+        reason:
+          "Check zero idle timers, exact deadline recovery, and rearming on progress, results and Studio waits.",
+      },
+    },
     { item: tooling, label: "tooling tests" },
   ];
 }
