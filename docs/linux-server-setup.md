@@ -1,86 +1,55 @@
 # Linux and WSL server setup
 
-Install Python 3.11 or later, Node.js 22.15 or later, Git, and the provider CLI.
-Sign in to the provider as the server user. Keep the source and state on the
-Linux filesystem. Windows Subsystem for Linux (WSL) uses the same setup.
+Install the pinned Rust toolchain, Node.js 22.15 or later, Git, pnpm, and the
+provider CLI. Sign in to the provider as the server user. Keep source and state
+on the Linux filesystem. WSL uses the same user-service setup.
 
 From the checkout:
 
 ```sh
 pnpm install --frozen-lockfile
-python3 workspaces/runtime/apps/server/src/install-cli.py
-pnpm --filter codex-agents-web run build
+just install
+studio-runtime-server service install --state ~/.local/state/codex-agents
 ```
 
-Add `~/.local/bin` and the provider CLI directory to `PATH`. Select one idle
-boundary before the first cutover. Do not send new work during setup.
+Add `~/.local/bin` and the provider CLI directory to `PATH` before installing
+the service. The installer writes and enables `codex-studio.service` in
+`$XDG_CONFIG_HOME/systemd/user` (default `~/.config/systemd/user`). It carries
+`PATH`, `CODEX_CANVAS_PUBLIC_ORIGIN`, `CODEX_BIN`, and `CODEX_NODE` from
+the shell and preserves the selected state identity. It never starts, restarts,
+or stops a service. Repeating the same installation is safe; a differing
+existing unit is an error that requires an operator to resolve at an idle boundary.
+
+The base unit and delivery script share
+[the service layout](../workspaces/runtime/apps/runtime-server/service-layout.json).
+They use the same default local server port and release root. Set
+`CODEX_STUDIO_SERVER_ROOT` before installation and delivery to use a different
+release root. The base unit starts the binary under its `current` release.
+
+Only `just deliver-server` changes this host's live Linux server release.
+It builds a commit snapshot, selects it through `current`, restarts the backend,
+checks health, and rolls back an unhealthy release. Keep the state directory
+identity and never start a second backend against it. Do not interrupt active
+agents, commands, monitors, or terminals for a source update.
+
+At an authorized maintenance boundary, deliver the selected commit:
 
 ```sh
-codex-supervisor enable --port 4720 --state ~/.local/state/codex-agents
+just deliver-server HEAD
+studio-runtime-server service status
 ```
 
-For a running server, the command requires `codex-studio.service` to own the
-backend PID. It refuses an unrelated listener or occupied state directory.
-It installs `~/.config/systemd/user/codex-studio-supervisor.service` and
-`~/.config/systemd/user/codex-studio.service`. It preserves the backend's reported
-restart environment and captures the current `PATH`. Both units use
-`Restart=always` and `KillMode=process`. The backend starts after the supervisor
-unit and waits for its socket, state identity, and protocol 1. The supervisor
-does not depend on the backend unit's lifetime.
-
-For service operation after logout, enable user linger once:
+For startup after logout, enable user linger once:
 
 ```sh
 sudo loginctl enable-linger "$USER"
 ```
 
-Check the installation:
-
-```sh
-systemctl --user status codex-studio-supervisor codex-studio
-curl --fail http://127.0.0.1:4720/api/desktop
-```
-
-The response must contain `supervisorMode: true` and the supported process
-supervisor protocol version. Its owner is
-[`codex_shared_values.py`](../workspaces/runtime/apps/server/src/codex_shared_values.py).
-For a planned backend restart, use:
-
-```sh
-systemctl --user restart codex-studio
-```
-
-Do not stop or restart `codex-studio-supervisor` while its handles are live.
-A supervisor failure has the separate recovery limits in
-[restart recovery](restart-recovery.md).
-
-## Rust backend
-
-The Rust server uses the same switch as the desktop app,
-`CODEX_DESKTOP_BACKEND` (`python` or `rust`; owner:
-[`backend.cjs`](../workspaces/client/apps/desktop/backend.cjs)). After every
-`git pull`, build and restart:
-
-```sh
-just build-server
-CODEX_DESKTOP_BACKEND=rust codex-supervisor enable --port 4620 --state ~/.local/state/codex-agents
-```
-
-`enable` writes `~/.config/systemd/user/codex-studio.service` with
-`target/release/studio-runtime-server` (or `CODEX_RUNTIME_SERVER`) and restarts
-it. It carries `CODEX_CANVAS_PUBLIC_ORIGIN`, `CODEX_BIN`, `CODEX_NODE`, and
-`PATH` from the current shell. The Rust server runs without the Python process
-supervisor, as on the desktop. After a later build, `systemctl --user restart
-codex-studio` is enough.
-
-`enable` refuses while another process serves the state directory. To retire a
-hand-made unit, stop it at an idle boundary first, for example
-`systemctl --user stop codex-canvas-rust-hotfix.service`, then run `enable`.
-On macOS the same command installs launchd jobs for the Rust backend and the Rust
-supervisor; see [restart recovery](restart-recovery.md#rust-backend-and-rust-supervisor-on-macos).
-Never run two backends on one state directory. A Rust start leaves
-`rust-state-owner.json` in the state directory; Python then refuses that state
-(see [Rust backend state compatibility](rust-backend-state-compatibility.md)).
+`studio-runtime-server service uninstall --state DIRECTORY` disables startup
+and removes the matching base unit. It leaves any running backend and release
+directories alone. Keep the same state and launch environment when removing a
+configuration. The desktop's recovery helpers and any separately managed
+process supervisor have their own lifetimes; this CLI does not stop them.
 
 ## WSL networking and Tailscale
 

@@ -862,6 +862,33 @@ function fastTierCommands(root) {
     operationsModulePreparation(),
     webWasmPreparation(root),
     {
+      item: { name: "studio-runtime-server", ecosystem: "cargo" },
+      label: "Rust operator CLI witnesses",
+      commands: [
+        [
+          "cargo",
+          [
+            "nextest",
+            "run",
+            "--locked",
+            "--no-tests",
+            "fail",
+            "--message-format",
+            "libtest-json-plus",
+            "-p",
+            "studio-runtime-server",
+            "-E",
+            "test(operator_cli::)",
+          ],
+        ],
+      ],
+      options: {
+        selector: "Rust service and command installation without Python",
+        reason:
+          "Check isolated user service managers, delivery layout, safe link migration, and idempotent retries without touching host services.",
+      },
+    },
+    {
       item: { name: "schema and dependency guards", ecosystem: "pnpm" },
       label: "schema and dependency guards",
       commands: [
@@ -1105,6 +1132,7 @@ function fastTierCommands(root) {
             nextestAnyOf([
               "test(/^provider_session_task::active_barrier_holds_new_requests_but_not_callback_answers_or_interrupts$/)",
               "test(/^provider_session_task::expiry_batch_preserves_all_queued_request_outcomes_in_order$/)",
+              "test(/^turn_lifecycle_corpus::fast_witnesses_cover_transitions_states_and_review_findings$/)",
             ]),
           ],
         ],
@@ -1144,6 +1172,7 @@ function fastTierCommands(root) {
                   nextestAnyOf([
                     "test(/^provider_stdio::killed_provider_is_reaped_with_full_journal_and_unobserved_write$/)",
                     "test(/^wave7_p01_registry::direct_child_sigkill_settles_unknown_without_resend$/)",
+                    "test(/^state_check::state_check_reads_fixture_rows_without_changing_or_disclosing_them$/)",
                   ]),
                 ],
               ],

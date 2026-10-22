@@ -31,6 +31,7 @@ studio-runtime-priority-sys = { path = "../runtime-priority-sys" }
 studio-runtime-proc-sys = { path = "../runtime-proc-sys" }
 
 [dev-dependencies]
+rustix = { workspace = true, features = ["net", "pipe"] }
 studio-runtime-store = { path = "../runtime-store", features = ["test-support"] }
 tokio = { workspace = true, features = ["test-util"] }
 tempfile = { workspace = true }

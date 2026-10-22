@@ -1,6 +1,4 @@
-use crate::prepared_python_support as python_test_support;
 use serde_json::{Value, json};
-use std::sync::OnceLock;
 use studio_runtime_services::{
     account_worker::commit_prepared_turn,
     claude_input_recovery::{
@@ -23,52 +21,7 @@ fn open_state(path: impl AsRef<std::path::Path>) -> rusqlite::Connection {
 }
 
 fn corpus(root: &std::path::Path) -> Vec<Value> {
-    static TEMPLATE: OnceLock<Vec<(Value, Vec<u8>)>> = OnceLock::new();
-    let cases = TEMPLATE.get_or_init(|| {
-        let template_root = tempfile::tempdir().expect("submission Python template");
-        let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/wave7_p08_submission_oracle.py");
-        let mut command = std::process::Command::new(python_test_support::prepared_python(
-            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
-        ));
-        command.arg("-B").arg(&script).arg(template_root.path());
-        let output = python_test_support::output_with_timeout(
-            &mut command,
-            &script,
-            python_test_support::PYTHON_ORACLE_TIMEOUT,
-        )
-        .unwrap_or_else(|error| panic!("{}: {error}", script.display()));
-        assert!(
-            output.status.success(),
-            "{}: {}",
-            script.display(),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        let cases = serde_json::from_slice::<Value>(&output.stdout).expect("corpus JSON")["cases"]
-            .as_array()
-            .expect("cases")
-            .clone();
-        cases
-            .into_iter()
-            .map(|case| {
-                let bytes = std::fs::read(case["path"].as_str().expect("template path"))
-                    .expect("submission database bytes");
-                (case, bytes)
-            })
-            .collect()
-    });
-    cases
-        .iter()
-        .map(|(case, bytes)| {
-            let source = std::path::Path::new(case["path"].as_str().expect("template path"));
-            let file_name = source.file_name().expect("template filename");
-            let destination = root.join(file_name);
-            std::fs::write(&destination, bytes).expect("copy Python-written submission state");
-            let mut case = case.clone();
-            case["path"] = json!(destination);
-            case
-        })
-        .collect()
+    crate::turn_fixtures::database_cases(include_bytes!("wave7_p08_submission.json"), root)
 }
 fn state(db: &rusqlite::Connection) -> Value {
     let mut result = serde_json::Map::new();

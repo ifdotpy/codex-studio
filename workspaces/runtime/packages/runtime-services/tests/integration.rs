@@ -53,6 +53,7 @@ mod terminal_corpus;
 mod thread_prepare_corpus;
 mod title_generation_corpus;
 mod title_generation_effects;
+mod turn_fixtures;
 mod turn_lifecycle_corpus;
 mod turn_prepare_corpus;
 mod vm_macsync_corpus;

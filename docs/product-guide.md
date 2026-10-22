@@ -81,7 +81,8 @@ See [VM chats](linux-vm-workspaces.md) and [ASIF images](workspace-images.md).
 
 ## Setup
 
-Requirements: Python 3.11 or later, Node.js 22.15 or later, and the signed-in Codex CLI.
+Requirements for a source install: the pinned Rust toolchain, Node.js 22.15 or later,
+Git, pnpm, and the signed-in provider CLI.
 The desktop package currently targets macOS on Apple silicon.
 
 Install dependencies once from the repository root. The root and app manifests
@@ -92,7 +93,7 @@ own their commands: see the [root manifest](../package.json), [web manifest](../
 ```sh
 pnpm install --frozen-lockfile
 git config --local core.hooksPath .githooks
-python3 workspaces/runtime/apps/server/src/install-cli.py
+just install
 pnpm --filter codex-agents-web run build
 pnpm --filter codex-agents-desktop run start
 ```
@@ -103,14 +104,12 @@ dependencies; install them before committing.
 For full-repository audits, run `pnpm run lint:all` and
 `pnpm run format:check:all`. Append paths after `--` to check selected files.
 
-`python3 workspaces/runtime/apps/server/src/install-cli.py` prepares the pinned Python API environment in
-the user cache and installs command links. It also installs the Rust `codex-diagnostics` binary: if no packaged binary is available, the installer needs Cargo and the pinned Rust 1.99.0 toolchain to build it. Without Cargo or a prebuilt binary, installation fails with an explicit error. Pass `--dev` to prepare a separate
-development environment with mypy. Set `CODEX_AGENTS_PYTHON` to choose a
-Python 3.11+ interpreter with the API dependencies installed; the launcher
-validates it before use. Otherwise Studio uses its prepared environment, then
-a dependency-equipped system Python. Backend launch does not install packages
-or access the network. Run `python3 workspaces/runtime/apps/server/src/codex_python.py --mypy` for the
-backend type check.
+`just install` builds the Rust server, process supervisor, and diagnostics CLI
+and installs their command links in `~/.local/bin`. Add that directory and the
+provider CLI directory to `PATH`. Use `just install --bin-dir DIRECTORY` for
+another command directory. The installer refuses unrelated executables and
+reports obsolete Python command links that it removes from this checkout.
+The Rust backend requires no Python environment or extension installation.
 
 Claude Code is also supported through the installed CLI and its Claude subscription.
 Run `claude auth login`, then select **Claude Code** in the account menu for a new
@@ -241,7 +240,7 @@ replays a browser action. A failed probe or unknown reconnect response stops
 automatic retries; exact request IDs remain in the session recovery record.
 
 For browser access, run `codex-canvas` and open <http://127.0.0.1:4620>.
-Use `codex-control list` to inspect the same runtime from a terminal.
+Use the managed `orchestration_status` tool to inspect the same runtime.
 The desktop package command is owned by its [manifest](../workspaces/client/apps/desktop/package.json).
 
 For a shareable process snapshot, run `codex-diagnostics` while Studio runs.
@@ -290,7 +289,9 @@ See [live updates](live-updates.md) for publication and verification.
 The packaged macOS application restores its backend after login or a process
 failure. Saved input and verified interrupted work recover automatically.
 See [restart recovery](restart-recovery.md) for the exact behavior and limits.
-Use `codex-supervisor enable` to install supervisor mode without the desktop UI.
+Use `studio-runtime-server service install` to enable terminal-only backend
+startup without starting or restarting a service. On Linux, `just deliver-server`
+selects and restarts the server release. Preserve the existing state directory.
 For systemd user services and Windows Subsystem for Linux, see
 [Linux and WSL server setup](linux-server-setup.md).
 
