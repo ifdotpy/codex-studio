@@ -1269,6 +1269,14 @@ the archive receipt. Repeated calls keep the same request result.
 `archive_finished` checks completed, failed, interrupted, and stopped paused
 descendants. It archives workers with safe workspaces or no workspace. The result reports
 the archive count, measured freed bytes, and a reason for each worker kept.
+The optional `reason` follows this flow:
+
+1. The tool accepts a string reason and rejects unrelated fields.
+2. If omitted, the [batch owner](../workspaces/runtime/packages/runtime-services/src/agent_management_store.rs)
+   supplies its default audit reason.
+3. Each archived worker stores that reason through the existing archive owner.
+4. Repeating the same request returns its receipt without rewriting the reason.
+
 The Rust backend runs the existing archive owner deepest-first. Safe Git cleanup
 removes the entire worktree, including ignored `target/` output, after preserving
 its commit under an archive ref. Dirty or unverified worktrees remain intact.
