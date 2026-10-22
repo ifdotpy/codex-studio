@@ -1,0 +1,9 @@
+"""VM maintenance lock used by the desktop installer and the Rust VM host."""
+import os
+from pathlib import Path
+
+MAINTENANCE_LOCK = 'maintenance.lock'
+
+def vm_state_dir(state: Path) -> Path:
+    """The VM state directory of a Studio state directory."""
+    return Path(os.environ.get('CODEX_LINUX_VM_STATE_DIR') or state / 'linux-vm').expanduser().resolve()
