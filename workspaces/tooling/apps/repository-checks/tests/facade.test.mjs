@@ -679,6 +679,120 @@ test("server shard facade options are zero-based and diagnostics report plan and
   ]);
 });
 
+test("server shard plan prepares the checkout native module in its configured target", () => {
+  const target = path.join(os.tmpdir(), "studio-shard-target");
+  const result = spawnSync(
+    process.execPath,
+    [
+      "workspaces/tooling/apps/repository-checks/facade.mjs",
+      "test-plan",
+      "test-server-shard",
+      "1",
+      "4",
+      "--json",
+    ],
+    { encoding: "utf8", env: { ...process.env, CARGO_TARGET_DIR: target } },
+  );
+  assert.equal(result.status, 0, result.stderr);
+  const plan = JSON.parse(result.stdout);
+  assert.match(
+    plan.command,
+    /'cargo' 'build' '--locked' '-p' 'studio-operations-python'/,
+  );
+  assert.ok(
+    plan.command.indexOf("studio-operations-python") <
+      plan.command.indexOf("test-server.py"),
+  );
+  assert.ok(plan.command.includes(`CARGO_TARGET_DIR='${target}'`));
+  assert.match(plan.command, /'--shard-index' '1' '--shard-count' '4'/);
+});
+
+test("hosted remaining checks prepare native dependencies for workspace Clippy", () => {
+  const workflow = readFileSync(".github/workflows/ci.yml", "utf8");
+  const remaining = workflow
+    .split("  fast-rest:\n")[1]
+    .split("  fast-rust:\n")[0];
+  assert.match(
+    remaining,
+    /uses: \.\/\.github\/actions\/client-build-setup\n\s+with:\n\s+native: "true"/,
+  );
+});
+
+test(
+  "server shard execution builds before Python and stops on build failure",
+  { skip: process.platform === "win32" },
+  () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), "studio-shard-execution-"));
+    try {
+      const log = path.join(root, "calls.jsonl");
+      for (const command of ["cargo", "python3"]) {
+        const file = path.join(root, command);
+        writeFileSync(
+          file,
+          `#!${process.execPath}
+const fs = require("node:fs");
+fs.appendFileSync(process.env.SHARD_CALL_LOG, JSON.stringify({command: ${JSON.stringify(command)}, args: process.argv.slice(2), target: process.env.CARGO_TARGET_DIR}) + "\\n");
+if (${JSON.stringify(command)} === "cargo") process.exit(Number(process.env.SHARD_BUILD_EXIT));
+console.log("Server suites: 1 passed, 0 failed, 0 skipped (opt-in), 0 skipped (environment)");
+`,
+        );
+        chmodSync(file, 0o755);
+      }
+      for (const buildExit of [0, 42]) {
+        writeFileSync(log, "");
+        const result = spawnSync(
+          process.execPath,
+          [
+            "workspaces/tooling/apps/repository-checks/facade.mjs",
+            "test-server-shard",
+            "1",
+            "4",
+            "--json",
+          ],
+          {
+            encoding: "utf8",
+            env: {
+              ...process.env,
+              PATH: `${root}${path.delimiter}${process.env.PATH}`,
+              XDG_CACHE_HOME: path.join(root, "cache"),
+              CARGO_TARGET_DIR: path.join(root, "target"),
+              SHARD_CALL_LOG: log,
+              SHARD_BUILD_EXIT: String(buildExit),
+            },
+          },
+        );
+        assert.equal(result.status, buildExit, result.stderr || result.stdout);
+        const calls = readFileSync(log, "utf8")
+          .trim()
+          .split("\n")
+          .map((line) => JSON.parse(line));
+        assert.deepEqual(
+          calls.map((call) => call.command),
+          buildExit ? ["cargo"] : ["cargo", "python3"],
+        );
+        assert.deepEqual(calls[0].args, [
+          "build",
+          "--locked",
+          "-p",
+          "studio-operations-python",
+        ]);
+        assert.ok(
+          calls.every((call) => call.target === path.join(root, "target")),
+        );
+        if (!buildExit)
+          assert.deepEqual(calls[1].args.slice(-4), [
+            "--shard-index",
+            "1",
+            "--shard-count",
+            "4",
+          ]);
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+);
+
 test("server failure counts do not double count structured failures or passing tracebacks", () => {
   const item = { name: "server", ecosystem: "server" };
   const output = [

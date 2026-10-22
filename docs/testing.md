@@ -704,6 +704,11 @@ runs its part of that nextest archive with
 actions in `.github/actions` record the commit and the SHA-256 sum of each file.
 A job refuses build output from another commit or with changed files. A server
 or Rust job also fails when its build job fails; it does not report a skip.
+The [server shard facade](../workspaces/tooling/apps/repository-checks/facade.mjs)
+prepares the checkout native operations module before running each shard, using
+the same Cargo target directory as the server test loader. The remaining-checks
+job uses [native client setup](../.github/actions/client-build-setup/action.yml)
+because its workspace Clippy step also compiles the native client.
 Jobs that compile Rust restore a Cargo dependency cache. The cache key includes
 the toolchain and the hash of `Cargo.lock`, the `Cargo.toml` files, and
 `rust-toolchain.toml`. Workspace crates are always compiled from source.

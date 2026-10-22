@@ -756,6 +756,13 @@ function serverShardOptions(indexText, countText) {
   };
 }
 
+function serverShardCommands(root, options) {
+  return [
+    ...operationsModulePreparation().commands,
+    ...commandFor(root, serverPackage(), "test", "", options),
+  ];
+}
+
 function serverShardPlan(root, index, count) {
   const item = serverPackage();
   const options = serverShardOptions(index, count);
@@ -764,7 +771,7 @@ function serverShardPlan(root, index, count) {
     item,
     "test",
     "",
-    commandFor(root, item, "test", "", options),
+    serverShardCommands(root, options),
     options,
   );
 }
@@ -2588,7 +2595,12 @@ export async function main(argv = process.argv.slice(2)) {
   }
   if (action === "test-server-shard") {
     const options = serverShardOptions(packageName || "", requestedCase || "");
-    return (await execute(root, serverPackage(), "", json, options)).exitCode;
+    return (
+      await execute(root, serverPackage(), "", json, {
+        ...options,
+        commands: serverShardCommands(root, options),
+      })
+    ).exitCode;
   }
   if (action === "test-heavy") {
     const result = await executeRecipe(
