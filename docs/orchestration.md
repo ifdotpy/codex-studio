@@ -1442,6 +1442,7 @@ change with both options. Cross-machine Claude cache reuse remains unverified.
 
 1. The account worker applies a notification batch or stream flush in the existing lifecycle transaction.
 2. Dispatch stores normalized agent state, transcript changes, stream state and exact replay receipts.
-3. The lifecycle owner validates each final changed agent row and publishes its canonical renderer view once.
-4. Source state, receipts and renderer views commit together; a projection failure rolls them all back.
-5. Replaying committed journal identities returns the saved outcomes without publishing agents again.
+3. The lifecycle owner decodes, merges volatile fields and validates each final changed agent row once.
+4. Liveness, context and the canonical renderer view borrow that checked value in source row order; only storage and wire boundaries serialize it.
+5. Source state, receipts and renderer views commit together; a projection failure rolls them all back.
+6. Replaying committed journal identities returns the saved outcomes without decoding or publishing agents again.
