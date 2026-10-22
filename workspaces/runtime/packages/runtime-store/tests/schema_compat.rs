@@ -1,6 +1,4 @@
-use crate::prepared_python_support;
-use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::path::Path;
 
 use rusqlite::{Connection, params};
 use serde_json::{Value, json};
@@ -455,51 +453,6 @@ fn drop_sync_family(path: &Path) {
     }
 }
 
-#[allow(clippy::disallowed_methods)]
-fn prepare_with_python(state: &Path) {
-    let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src");
-    let script = r#"
-import contextlib, pathlib, sqlite3, sys
-sys.path.insert(0, sys.argv[2])
-from codex_sync import SyncStore
-from codex_sync_entities import ensure_tables, install_bypass_triggers, register_functions
-path = pathlib.Path(sys.argv[1]) / 'canvas.sqlite3'
-@contextlib.contextmanager
-def connect():
-    db = sqlite3.connect(path)
-    register_functions(db)
-    try:
-        yield db
-    finally:
-        db.close()
-with connect() as db:
-    register_functions(db)
-    ensure_tables(db)
-    install_bypass_triggers(db)
-store = SyncStore(connect, lambda _agent: None)
-store._ensure_versions()
-"#;
-    let output = Command::new(python_executable())
-        .arg("-c")
-        .arg(script)
-        .arg(state)
-        .arg(&source)
-        .env("PYTHONDONTWRITEBYTECODE", "1")
-        .output()
-        .expect("isolated Python starts for the schema producer test");
-    assert!(
-        output.status.success(),
-        "Python SyncStore preparation failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-}
-
-fn python_executable() -> PathBuf {
-    prepared_python_support::prepared_python(
-        &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
-    )
-}
-
 fn derived_catalog(path: &Path) -> Vec<(String, String, String)> {
     let db = Connection::open(path).expect("fixture DB opens");
     let mut statement = db
@@ -585,21 +538,25 @@ fn sync_seed_rows(path: &Path) -> Vec<String> {
 }
 
 #[tokio::test]
-async fn python_upgraded_event_windows_remain_atomic_when_reopened_by_rust() {
+async fn legacy_event_windows_remain_atomic_when_reopened_by_rust() {
     let state_directory = temporary_state();
     let state = state_directory.path();
     create_from_live_schema(state);
-    prepare_with_python(state);
+    drop(
+        RuntimeStore::open(Some(state))
+            .await
+            .expect("initial store opens"),
+    );
     let canvas = state.join("canvas.sqlite3");
     // Simulate a development state that briefly had the Python-only trigger.
-    let database = Connection::open(&canvas).expect("Python-prepared state opens");
+    let database = Connection::open(&canvas).expect("legacy state opens");
     database
         .execute_batch("CREATE TRIGGER sync_entity_event_window_v2_INSERT AFTER INSERT ON runtime_events BEGIN SELECT sync_entity_event_window(); END;")
         .expect("intermediate trigger fixture creates");
     drop(database);
     let store = RuntimeStore::open(Some(state))
         .await
-        .expect("Rust upgrades the actual Python-prepared state");
+        .expect("Rust upgrades the legacy trigger");
     let window = include_str!("../src/sync_schema.sql")
         .lines()
         .find_map(|line| line.strip_prefix("-- event-window-size: "))
@@ -686,67 +643,14 @@ async fn python_upgraded_event_windows_remain_atomic_when_reopened_by_rust() {
 }
 
 #[tokio::test]
-async fn python_prepared_sync_schema_matches_rust_bootstrap_and_is_idempotent() {
-    let python_state_directory = temporary_state();
-    let python_state = python_state_directory.path();
+async fn sync_schema_bootstrap_is_idempotent() {
     let rust_state_directory = temporary_state();
     let rust_state = rust_state_directory.path();
-    for state in [python_state, rust_state] {
-        create_from_live_schema(state);
-        drop_sync_family(&state.join("canvas.sqlite3"));
-    }
-    prepare_with_python(python_state);
-    let python_canvas = python_state.join("canvas.sqlite3");
-    let python_before_open = derived_catalog(&python_canvas);
-    let python_seeds = sync_seed_rows(&python_state.join("canvas.sqlite3"));
-
-    let python_store = RuntimeStore::open(Some(python_state))
-        .await
-        .expect("Rust structurally accepts the actual Python-prepared tables");
-    drop(python_store);
-    let python_after_open = derived_catalog(&python_canvas);
-    let python_replaced = replaced_derived_objects(&python_before_open, &python_after_open);
-
+    create_from_live_schema(rust_state);
+    drop_sync_family(&rust_state.join("canvas.sqlite3"));
     let store = RuntimeStore::open(Some(rust_state))
         .await
-        .expect("Rust opens an empty sync family and bootstraps it");
-    assert_eq!(
-        derived_catalog(&rust_state.join("canvas.sqlite3")),
-        python_after_open,
-        "indexes and triggers match the canonical stored SQL byte for byte"
-    );
-    assert_eq!(
-        python_replaced,
-        Vec::<String>::new(),
-        "Python first-open replacements"
-    );
-    let rust_seeds = sync_seed_rows(&rust_state.join("canvas.sqlite3"));
-    for seed in &rust_seeds {
-        assert!(
-            python_seeds.contains(seed),
-            "shared schema seed differs: {seed}"
-        );
-    }
-    // Python prepares renderer projections before serving; Rust's bootstrap
-    // prepares their storage without claiming those projections were seeded.
-    // Opening that Python state must retain its exact projection checkpoints.
-    for extra in python_seeds
-        .iter()
-        .filter(|seed| !rust_seeds.contains(seed))
-    {
-        assert!(
-            [
-                "meta:seeded:",
-                "meta:event_window_seq:",
-                "meta:task_window_migrated:"
-            ]
-            .iter()
-            .any(|prefix| extra.starts_with(prefix)),
-            "unexpected producer-specific schema seed: {extra}"
-        );
-    }
-    assert_eq!(sync_seed_rows(&python_canvas), python_seeds);
-
+        .expect("Rust bootstraps an empty sync family");
     store
         .transaction(move |tx| {
             tx.execute(
