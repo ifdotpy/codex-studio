@@ -964,6 +964,17 @@ export default function Conversation(p: {
   });
   const branch = useMessageAction(
     async (message: Message, draft?: { before: boolean; text: string }) => {
+      if (
+        items.some(
+          (item) =>
+            item.turnId === message.turnId && item.turnStatus === "uncertain",
+        )
+      ) {
+        p.notify(
+          "The turn outcome is unconfirmed. Review the saved evidence before you continue.",
+        );
+        return;
+      }
       if (branchLock.current) return;
       const agentId = p.id;
       if (!agentId) return;
@@ -1069,10 +1080,16 @@ export default function Conversation(p: {
     (!!agent?.canSend || !!p.legacy || !p.id);
   const lastAssistantByTurn = useMemo(() => {
     const last = new Map<string, string>();
+    const unconfirmed = new Set(
+      items
+        .filter((item) => item.turnStatus === "uncertain")
+        .map((item) => item.turnId),
+    );
     for (const item of items)
       if (
         item.role === "assistant" &&
         item.turnId &&
+        !unconfirmed.has(item.turnId) &&
         !isEmptyAssistantMessage(item)
       )
         last.set(item.turnId, item.id);
@@ -1337,6 +1354,7 @@ export default function Conversation(p: {
           managed &&
           m.role === "user" &&
           m.turnId &&
+          m.turnStatus !== "uncertain" &&
           (!m.deliveryStatus || m.deliveryStatus === "accepted")
             ? () => void editMessage(m)
             : undefined

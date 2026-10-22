@@ -1,7 +1,7 @@
-mod claude_repair_report;
 mod checkpoint_rewind;
 mod claude_file_backups;
 mod claude_login;
+mod claude_repair_report;
 mod multi_server_incoming;
 mod orchestration_settings;
 mod process_controls;
