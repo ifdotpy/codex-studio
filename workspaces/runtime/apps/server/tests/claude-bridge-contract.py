@@ -874,13 +874,9 @@ class Bridge(unittest.TestCase):
             time.sleep(.01)
         self.assertTrue((self.root / '.background-waiting').exists(), 'The turn must be waiting before interrupt')
         self.call('turn/interrupt', {'threadId': self.thread, 'turnId': started['turn']['id'], 'stopBackgroundTasks': False})
-        completed = None
-        deadline = time.monotonic() + HANG_GUARD_SECONDS
-        while time.monotonic() < deadline and completed is None:
-            row = self.read()
-            if (row.get('method') == 'turn/completed'
-                    and row['params']['turn']['id'] == started['turn']['id']):
-                completed = row['params']['turn']
+        # Stop persists its receipt before replying. Completion can arrive first.
+        completed = self.completed()
+        self.assertEqual(completed['id'], started['turn']['id'])
         self.assertEqual(completed['status'], 'interrupted')
         tasks = self.call('thread/backgroundTerminals/list', {'threadId': self.thread})['data']
         self.assertEqual([item['task_id'] for item in tasks], ['worker-1'])
@@ -903,13 +899,9 @@ class Bridge(unittest.TestCase):
         self.call('turn/interrupt', {
             'threadId': self.thread, 'turnId': started['turn']['id'],
         })
-        completed = None
-        deadline = time.monotonic() + HANG_GUARD_SECONDS
-        while time.monotonic() < deadline and completed is None:
-            row = self.read()
-            if (row.get('method') == 'turn/completed'
-                    and row['params']['turn']['id'] == started['turn']['id']):
-                completed = row['params']['turn']
+        # call() retains a completion that arrives before the Stop reply.
+        completed = self.completed()
+        self.assertEqual(completed['id'], started['turn']['id'])
         self.assertEqual(completed['status'], 'interrupted')
         self.assertEqual((self.root / '.stopped-tasks').read_text(), 'worker-1\n')
         self.assertEqual(self.call('thread/backgroundTerminals/list', {'threadId': self.thread})['data'], [])
@@ -951,7 +943,8 @@ class Bridge(unittest.TestCase):
             if row.get('method') == 'turn/completed' and row['params']['turn']['id'] == turn_id:
                 completed = row['params']['turn']
 
-        self.assertEqual(interrupt_reply.get('result'), {})
+        # Stop now returns its exact queue receipt, including an empty queue.
+        self.assertEqual(interrupt_reply.get('result'), {'cancelled': [], 'still_queued': []})
         self.assertEqual(completed['status'], 'interrupted')
         self.assertEqual(repeated_tool_requests, [])
         self.assertTrue(tool_request['params']['callId'])
