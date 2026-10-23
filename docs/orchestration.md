@@ -207,6 +207,14 @@ Use **+** beside a folder to start a chat there. An empty current chat is reused
 Folder registration lives in SQLite. Removing an empty project from the sidebar does not delete files.
 Each folder initially shows five chats. **Show more** expands the list, and search includes hidden chats.
 Folder collapse preferences stay in browser storage. Agent conversations appear in **Messages**.
+UI preferences follow the existing entity projection for every mounted server screen:
+
+1. The screen reads preference rows from its entity projection, including while hidden.
+2. Its bridge merges user preferences globally and server preferences into that server's storage.
+3. Writes use that screen's authenticated API; pending edits retry on resume or connection recovery.
+4. The projection workspace identity names the shell's saved aliases, labels and server order.
+5. The shell applies those fields without a second entity pull or state stream.
+
 Use the sidebar row menu to rename or delete a lead or agent chat.
 Manual names take priority over an automatic lead title. Studio stores both manual
 and generated names in SQLite and copies them to Codex with `thread/name/set`.

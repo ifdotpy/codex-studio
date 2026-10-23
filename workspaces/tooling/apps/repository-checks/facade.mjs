@@ -1549,6 +1549,31 @@ function fastTierCommands(root) {
     },
     {
       item: web,
+      label: "UI preference projection ownership witnesses",
+      commands: [
+        [
+          "pnpm",
+          [
+            "--filter",
+            "codex-agents-web",
+            "exec",
+            "vitest",
+            "run",
+            "--config",
+            "vitest.unit.config.ts",
+            "src/servers/useUiPreferenceSync.test.ts",
+            "src/sync/uiPreferenceBridge.test.ts",
+          ],
+        ],
+      ],
+      options: {
+        selector: "UI preferences reuse each mounted server projection",
+        reason:
+          "Prevent duplicate entity pulls and preserve server storage and API ownership.",
+      },
+    },
+    {
+      item: web,
       label: "Native draft notification witnesses",
       commands: [
         [
