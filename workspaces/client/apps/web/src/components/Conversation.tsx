@@ -7,12 +7,10 @@ import {
 } from "../servers/ServerServicesContext";
 import { useServerActivity } from "../servers/activity";
 import {
-  useChatWait,
   type ChatWaitSource,
   type ConversationData,
 } from "../hooks/conversationData";
 import { serviceTimeText } from "../local-time";
-import { nativeStatusMessage } from "./conversation/nativeStatus";
 import AgentAvatar from "./agents/AgentAvatar";
 import MessageQueue, {
   type LocalQueueItem,
@@ -22,7 +20,6 @@ import { useMessageQueue } from "./useMessageQueue";
 import { useMessageReceipts } from "./useMessageReceipts";
 import { receiptOutgoing, receiptTranscript } from "../sync/messageReceipts";
 import { useVisibleChatResult, type ChatReadProof } from "./useChatReadState";
-import { displayError } from "../errorPresentation";
 import {
   NativeError,
   NativeNotice,
@@ -51,11 +48,7 @@ import {
 } from "react";
 import { errorText } from "../api";
 import SafetyBuffering from "./conversation/transcript/SafetyBuffering";
-import {
-  currentCapacityRetry,
-  DISK_FULL_CAUSE,
-  DISK_FULL_WAIT_LABEL,
-} from "../capacityRetry";
+import { currentCapacityRetry } from "../capacityRetry";
 import {
   isCyberPolicyRefusal,
   nativeErrorKind,
@@ -83,7 +76,6 @@ import { useAttachmentDrafts } from "./useAttachmentDrafts";
 import { useUploadRecovery } from "./useUploadRecovery";
 import { useServerUploads } from "../servers/ServerServicesContext";
 import {
-  statusLabel,
   type Agent,
   type Json,
   type KnownApiFields,
@@ -225,40 +217,6 @@ function useCompactHeaderTools() {
   return compact;
 }
 
-// The wait label reaches the shell from here, so a changed wait renders this
-// leaf and never the transcript or the composer.
-function PhaseReport(p: {
-  source: ChatWaitSource;
-  id: string | null;
-  agent?: Agent;
-  connection: string;
-  threadBlock: boolean;
-  capacityRetry: ReturnType<typeof currentCapacityRetry> | null;
-  onPhase: (id: string | null, label: string) => void;
-}) {
-  const wait = useChatWait(p.source, p.agent);
-  const { agent, capacityRetry } = p;
-  const label =
-    p.connection === "reconnecting"
-      ? "Reconnecting"
-      : p.threadBlock
-        ? "Chat stopped as a precaution"
-        : capacityRetry?.status === "scheduled"
-          ? capacityRetry.cause === DISK_FULL_CAUSE
-            ? DISK_FULL_WAIT_LABEL
-            : "Waiting to retry model"
-          : displayError(nativeStatusMessage(agent?.nativeStatus)) ||
-            (["starting", "running"].includes(agent?.status || "")
-              ? "Working"
-              : ["waiting", "parked"].includes(agent?.status || "")
-                ? wait?.label || "Turn ended"
-                : statusLabel(agent?.status || "idle"));
-  useEffect(() => {
-    p.onPhase(p.id, label);
-  }, [p.id, label, p.onPhase]);
-  return null;
-}
-
 export default function Conversation(p: {
   id: string | null;
   projectName?: string;
@@ -303,7 +261,6 @@ export default function Conversation(p: {
   onJumpHandled?: (requestId: string) => void;
   limitsAccountLabel?: string;
   reloadLimits: () => void;
-  onPhase: (id: string | null, label: string) => void;
 }) {
   const { removeSendingMessage } = useSendingMessageRemoval();
   const { queueUploads } = useServerUploads();
@@ -1673,15 +1630,6 @@ export default function Conversation(p: {
           {!p.room && agent && (
             <SafetyBuffering key={`safety:${agent.id}`} agent={agent} />
           )}
-          <PhaseReport
-            source={p.waitSource}
-            id={p.id}
-            agent={agent}
-            connection={connection}
-            threadBlock={!!threadBlock}
-            capacityRetry={capacityRetry}
-            onPhase={p.onPhase}
-          />
           <div className="chat-activity">
             {!detailedActivity &&
               !reasoningVisible &&

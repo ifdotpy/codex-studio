@@ -144,13 +144,7 @@ import {
   createConversationDataSelector,
 } from "./hooks/conversationData";
 import { reportPromptComposerRender } from "./components/prompt-composer/renderProbe";
-import {
-  busy,
-  nativeReleaseLabel,
-  statusLabel,
-  type Agent,
-  type Json,
-} from "./types";
+import { busy, type Agent, type Json } from "./types";
 
 type LeadCreateRequest = Omit<
   PostBody<"/api/leads">,
@@ -343,17 +337,6 @@ export default function App({ active = true }: { active?: boolean }) {
       (entry) => !observedSends.current.has(entry.id),
     );
   }, [outbox.entries, outgoing]);
-  const [livePhase, setLivePhase] = useState<{
-    id: string | null;
-    label: string;
-  } | null>(null);
-  const onPhase = useCallback(
-    (id: string | null, label: string) =>
-      setLivePhase((old) =>
-        old?.id === id && old.label === label ? old : { id, label },
-      ),
-    [],
-  );
   const mobileClient = useMediaQuery("(max-width: 760px)", undefined, {
     getInitialValueInEffect: false,
   });
@@ -2636,41 +2619,11 @@ export default function App({ active = true }: { active?: boolean }) {
                     )
                   : false
               }
-              indicator={agent ? indicators.get(agent.id) : undefined}
-              projectPrefix={
-                mobileClient && agent?.cwd ? `${projectName} · ` : ""
-              }
               onBack={
                 // Only a worker chat links back; the lead and team rooms do not.
                 lead && agent && !agent.isLead && agent.id !== lead.id
                   ? () => open(lead.id)
                   : undefined
-              }
-              statusText={
-                agent
-                  ? indicators.get(agent.id)?.kind === "answer" ||
-                    (indicators.get(agent.id)?.kind === "working" &&
-                      !agent.inFlight)
-                    ? indicators.get(agent.id)?.label || ""
-                    : livePhase?.id === agent.id
-                      ? livePhase.label
-                      : [
-                          statusLabel(
-                            agent.status ?? "unknown",
-                            agent.activity?.phase ?? undefined,
-                            agent.parkedEvent ?? undefined,
-                          ),
-                          nativeReleaseLabel(agent),
-                        ]
-                          .filter(Boolean)
-                          .join(" · ")
-                  : room?.radio
-                    ? "Shared chat · One agent speaks at a time"
-                    : room?.kind === "private"
-                      ? "Private agent chat"
-                      : room
-                        ? "Broadcast"
-                        : ""
               }
             />
             <div id="conversation-header-tools" />
@@ -3158,7 +3111,6 @@ export default function App({ active = true }: { active?: boolean }) {
                   selectedAccount?.email || selectedAccount?.label
                 }
                 reloadLimits={forceReloadLimits}
-                onPhase={onPhase}
                 onSelect={open}
                 onBranchCreated={branchCreated}
                 onNewChat={newConversation}

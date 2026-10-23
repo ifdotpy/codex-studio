@@ -40,6 +40,8 @@ test("phone conversation gives the transcript its viewport budget", async ({
     const origin = `http://127.0.0.1:${port}`;
     const snapshot = await readTestState(origin);
     const agent = snapshot.threads.find((row) => row.name === "Other project");
+    agent.status = "waiting";
+    agent.inFlight = false;
     // One deterministic active monitor exercises the real activity-strip caller.
     // All other entity values and transcript reads come from the isolated server.
     snapshot.runtime.monitors = [
@@ -144,6 +146,13 @@ test("phone conversation gives the transcript its viewport budget", async ({
             name: "Session activity",
           });
           await expect(activity).toBeVisible();
+          await expect(
+            activity.locator('[data-activity-id="conversation-space-monitor"]'),
+          ).toBeVisible();
+          await expect(
+            page.locator(".simple-workspace-header"),
+          ).not.toContainText(/Waiting|Working|Running|monitor/i);
+          await expect(page.locator("#conversation-status")).toHaveCount(0);
           await expect(page.locator("#composer .execution-menu")).toHaveCount(
             1,
           );
@@ -172,7 +181,7 @@ test("phone conversation gives the transcript its viewport budget", async ({
               expect(box.width).toBeGreaterThanOrEqual(24);
               expect(box.height).toBeGreaterThanOrEqual(24);
             }
-            await expect(page.locator(".account-limits-dots")).toBeHidden();
+            await expect(page.locator(".account-limits-dots")).toBeVisible();
             await page
               .getByRole("button", { name: "Account limits", exact: true })
               .click();

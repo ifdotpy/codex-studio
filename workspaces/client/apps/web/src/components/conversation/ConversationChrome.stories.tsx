@@ -150,13 +150,7 @@ const meta = {
           <ActionIcon aria-label="Toggle conversations">
             <PanelLeft size={18} />
           </ActionIcon>
-          <ConversationTitle
-            title={titles[0]}
-            agent={lead}
-            indicator={indicators[0]}
-            statusText="Complete"
-            serverAlias="MAC"
-          />
+          <ConversationTitle title={titles[0]} agent={lead} serverAlias="MAC" />
           <Button
             aria-label="Team"
             title="Team: 1 working of 6"
@@ -250,11 +244,11 @@ export const ProjectStart: Story = {
       canvas.getByText("Linux VM /projects/codex-studio"),
     ).toBeVisible();
     await expect(
-      canvas.getByRole("progressbar", { name: "Context used" }),
-    ).toHaveAttribute("aria-valuenow", "32");
+      canvas.getByRole("button", { name: "Chat context" }),
+    ).toHaveTextContent("Context 32%");
     await expect(
-      canvas.getByRole("progressbar", { name: "Allowance remaining" }),
-    ).toHaveAttribute("aria-valuenow", "57");
+      canvas.getByRole("button", { name: "Account limits" }),
+    ).toHaveTextContent("Limits");
     for (const color of ["green", "yellow", "red"]) {
       await expect(
         canvasElement.querySelector(

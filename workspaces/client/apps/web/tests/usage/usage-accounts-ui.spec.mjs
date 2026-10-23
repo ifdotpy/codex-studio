@@ -446,6 +446,42 @@ test("usage accounts ui", async ({ browser: _browser }) => {
         await page.goto(
           server.resolvedUrls.local[0] + `?geometry&scheme=${scheme}`,
         );
+        assert.equal(
+          await page.locator(".context-use").innerText(),
+          "Context 10%",
+        );
+        const dots = await page
+          .locator(".account-limits-dot-target .account-limits-dot")
+          .evaluateAll((elements) =>
+            elements.map((element) => ({
+              width: element.getBoundingClientRect().width,
+              height: element.getBoundingClientRect().height,
+              radius: getComputedStyle(element).borderRadius,
+              color: element.getAttribute("data-color"),
+              background: getComputedStyle(element).backgroundColor,
+            })),
+          );
+        const palette =
+          scheme === "light"
+            ? {
+                green: "rgb(52, 134, 109)",
+                yellow: "rgb(166, 124, 33)",
+                red: "rgb(179, 81, 81)",
+                gray: "rgb(139, 144, 154)",
+              }
+            : {
+                green: "rgb(103, 173, 145)",
+                yellow: "rgb(213, 173, 82)",
+                red: "rgb(204, 119, 119)",
+                gray: "rgb(133, 139, 150)",
+              };
+        assert.equal(dots.length, 5);
+        for (const dot of dots) {
+          assert.equal(dot.width, 6);
+          assert.equal(dot.height, 6);
+          assert.equal(dot.radius, "50%");
+          assert.equal(dot.background, palette[dot.color]);
+        }
         const popover = page.locator(".account-limits-popover");
         await page
           .getByRole("button", { name: "Apply reset", exact: true })
@@ -518,6 +554,19 @@ test("usage accounts ui", async ({ browser: _browser }) => {
           .getByRole("button", { name: "Apply reset", exact: true })
           .waitFor();
         assert.equal((await popover.boundingBox()).height, before.height);
+        const claudeDot = page.locator(
+          '.account-limits-dot-target[data-account-key="claude-main"]',
+        );
+        await claudeDot.focus();
+        await page.keyboard.press("Enter");
+        await page.getByRole("link", { name: "Open free resets" }).waitFor();
+        assert.equal(await claudeDot.getAttribute("aria-expanded"), "true");
+        assert.equal(
+          await page
+            .locator('.account-limits-dot-target[aria-current="true"]')
+            .getAttribute("data-account-key"),
+          "codex-main",
+        );
       }
 
     assert.deepEqual(errors, []);

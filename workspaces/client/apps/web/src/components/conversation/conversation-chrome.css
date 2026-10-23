@@ -41,48 +41,6 @@
   gap: var(--mantine-spacing-xs);
   min-width: 0;
 }
-#conversation-status {
-  flex: none;
-  max-width: none;
-  height: auto;
-  min-height: var(--mantine-spacing-lg);
-  padding-block: 0;
-  padding-inline: var(--mantine-spacing-sm);
-  color: var(--text);
-  background: var(--hover);
-  font-size: var(--studio-text-meta);
-  font-weight: 500;
-  text-transform: none;
-  letter-spacing: normal;
-  box-shadow: none;
-}
-#conversation-status[data-studio-state="working"] {
-  color: var(--studio-state-working);
-  background: var(--studio-state-working-soft);
-}
-#conversation-status[data-studio-state="answer"] {
-  color: var(--studio-state-answer);
-  background: var(--studio-state-answer-soft);
-}
-#conversation-status[data-studio-state="error"] {
-  color: var(--studio-state-error);
-  background: var(--studio-state-error-soft);
-}
-#conversation-status[data-studio-state="unread"] {
-  color: var(--studio-state-unread);
-  background: var(--studio-state-unread-soft);
-}
-.conversation-status-label {
-  display: inline-block;
-  white-space: nowrap;
-}
-.conversation-status-dot {
-  display: none;
-  width: var(--mantine-spacing-xs);
-  height: var(--mantine-spacing-xs);
-  border-radius: 50%;
-  background: currentColor;
-}
 .conversation-server {
   flex: none;
   font-variant-numeric: tabular-nums;
@@ -380,15 +338,8 @@
 }
 
 @container workspace (max-width: 24em) {
-  .conversation-status-label,
   .conversation-server .chat-server-offline-label {
     display: none;
-  }
-  .conversation-status-dot {
-    display: inline-block;
-  }
-  #conversation-status {
-    padding-inline: var(--mantine-spacing-xs);
   }
 }
 

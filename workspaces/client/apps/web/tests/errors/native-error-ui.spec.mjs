@@ -369,7 +369,7 @@ test("native error ui", async ({ page: runnerPage }) => {
         httpStatusCode: 503,
       },
     );
-    await expect(page.locator("#conversation-status")).toHaveText("Working");
+    await expect(page.locator("#conversation-status")).toHaveCount(0);
     event("item/agentMessage/delta", {
       itemId: "native-text",
       delta: "Connection restored",

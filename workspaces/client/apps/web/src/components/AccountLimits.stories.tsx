@@ -166,6 +166,7 @@ export const PopoverDark: Story = {
       throw new Error("Missing limits popover");
     await waitFor(() => expect(canvas.getByText("$4.20")).toBeVisible());
     await waitFor(() => expect(getComputedStyle(popover).opacity).toBe("1"));
+    await canvasElement.ownerDocument.fonts.ready;
     await new Promise<void>((resolve) =>
       requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
     );
