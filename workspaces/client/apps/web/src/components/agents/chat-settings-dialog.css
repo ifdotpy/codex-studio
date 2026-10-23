@@ -38,6 +38,10 @@
   gap: var(--mantine-spacing-xs);
 }
 .execution-dialog-actions {
+  margin-block-start: var(--mantine-spacing-sm);
+  padding-block-start: var(--mantine-spacing-xs);
+  border-block-start: var(--studio-border-width) solid
+    var(--mantine-color-default-border);
   display: flex;
   flex-wrap: wrap;
   gap: var(--mantine-spacing-xs);
@@ -135,4 +139,8 @@
 }
 .execution-account-eligibility .setup-account {
   padding: var(--mantine-spacing-xs);
+}
+
+.execution-dialog-actions .mantine-Button-root {
+  min-height: var(--studio-touch-target);
 }

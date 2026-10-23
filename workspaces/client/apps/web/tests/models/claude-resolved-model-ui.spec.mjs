@@ -188,9 +188,7 @@ for (const provider of ["claude", "codex"])
         await expect(
           dialog.locator(".model-option-name").filter({ hasText: "1M" }),
         ).toHaveCount(0);
-        await expect(
-          dialog.getByRole("tab", { name: "Access Edits", exact: true }),
-        ).toBeVisible();
+        await expect(dialog.getByRole("tab")).toHaveCount(2);
       } else {
         await expect(dialog.locator(".model-family-label")).toHaveText([
           "Codex 6.x",
@@ -238,7 +236,7 @@ for (const provider of ["claude", "codex"])
             "data-mantine-color-scheme",
             scheme,
           );
-          for (const tab of ["Models", "Team", "Access"]) {
+          for (const tab of ["Models", "Team"]) {
             await dialog
               .getByRole("tab", { name: new RegExp("^" + tab) })
               .click();
@@ -350,6 +348,25 @@ for (const provider of ["claude", "codex"])
             });
             if (tab === "Models") {
               await roles.getByText("Workers", { exact: true }).click();
+              await expect
+                .poll(async () =>
+                  roles.evaluate((node) => {
+                    const indicator = node
+                      .querySelector(".mantine-SegmentedControl-indicator")
+                      .getBoundingClientRect();
+                    const checked = node
+                      .querySelector(
+                        ".mantine-SegmentedControl-control:has(input:checked) .mantine-SegmentedControl-label",
+                      )
+                      .getBoundingClientRect();
+                    return Math.max(
+                      ...["x", "y", "width", "height"].map((key) =>
+                        Math.abs(indicator[key] - checked[key]),
+                      ),
+                    );
+                  }),
+                )
+                .toBeLessThan(2);
               await expect(
                 dialog.getByRole("radio", { name: "Automatic", exact: true }),
               ).not.toBeChecked();

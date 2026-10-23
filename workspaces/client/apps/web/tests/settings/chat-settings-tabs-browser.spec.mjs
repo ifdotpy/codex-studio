@@ -76,6 +76,7 @@ function Fixture(){const[agent,setAgent]=useState(initial),[opened,setOpened]=us
       exact: true,
     });
     await expect(modal).toBeVisible();
+    await expect(modal.getByRole("tab")).toHaveCount(2);
     await expect(
       modal.getByRole("tab", { name: "Models", exact: true }),
     ).toBeVisible();
@@ -97,6 +98,9 @@ function Fixture(){const[agent,setAgent]=useState(initial),[opened,setOpened]=us
       exact: true,
     });
     await expect(automatic).toBeChecked();
+    await expect(
+      modal.locator(".setup-automatic-label .mantine-Badge-root"),
+    ).toHaveText("Recommended");
     await expect(modal.locator(".setup-account-automatic")).toContainText(
       "Prefers a free slot, project order, then fewer active agents.",
     );
@@ -143,9 +147,11 @@ function Fixture(){const[agent,setAgent]=useState(initial),[opened,setOpened]=us
     await expect(
       modal.getByRole("checkbox", { name: "Work 1", exact: true }),
     ).toBeDisabled();
-    await modal.getByRole("tab", { name: /^Access/ }).click();
+    await expect(modal.getByRole("tab", { name: /^Access/ })).toHaveCount(0);
+    await expect(modal.locator(".execution-browser")).toHaveCount(0);
     await expect(
-      modal.getByText("Browser access is disabled for this account.", {
+      modal.getByRole("radiogroup", {
+        name: "Full access without approval",
         exact: true,
       }),
     ).toBeVisible();

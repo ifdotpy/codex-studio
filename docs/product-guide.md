@@ -132,17 +132,16 @@ Tab enters the selected model; arrow keys select another enabled model. Compact
 model fields use native selects grouped by provider, with **(default)** and
 **(current)** tags where applicable and the selected model's description below
 the field. Dropdown menus show text labels; their appearance follows the browser.
-Fast and Daybreak switches include visible descriptions. Chat settings has Models, Team, and Access tabs. Models shows Lead, Workers,
-and Review summaries above the selected role's account, model, reasoning, and
+Fast and Daybreak switches include visible descriptions. Chat settings has Models and Team tabs. Models has a compact Lead, Workers, and Review switch above the selected role's account, model, reasoning, and
 mode controls. One execution summary in the composer shows the lead, workers,
 and review; its title contains the full settings. On narrow layouts it keeps the lead name beside role and provider icons;
 wider layouts name all three roles. Click it to open Models on Lead, then select a role.
 Accounts use a compact grid with remaining limits. Team contains
-subagent parallelism, delegation depth, and account eligibility; zero parallelism
+permissions, subagent parallelism, delegation depth, and account eligibility; zero parallelism
 uses a single agent. Account eligibility is always visible in its own grid.
 Automatic account selection prefers a free slot, project order, then fewer
 active agents. Eligibility is separate from each role's selected account.
-Access shows permissions, browser availability, and project actions. Hidden catalog models stay hidden. A proposed plan waits for a
+Project actions are available in the shared dialog footer. Hidden catalog models stay hidden. A proposed plan waits for a
 separate implementation request. Rollback preserves the original saved history.
 Commands and rollback retain their request identities after a lost response.
 
