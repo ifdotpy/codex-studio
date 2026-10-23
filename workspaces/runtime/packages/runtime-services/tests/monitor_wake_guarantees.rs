@@ -114,7 +114,7 @@ async fn restart_surviving_command_wakes_only_on_its_real_exit() {
         &ReattachProof {
             operation: operation.clone(),
             operation_id: format!("monitor:{id}"),
-            native_id: 1,
+            native_id: Some(1),
             current_connection: "new-connection".into(),
         },
         2001.5,

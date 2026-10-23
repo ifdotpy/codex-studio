@@ -648,7 +648,7 @@ async fn reattach_requires_exact_proof_and_cancels_a_stopped_owner() {
     let proof = monitor_policy::ReattachProof {
         operation: op.clone(),
         operation_id: format!("monitor:{}", lost["id"].as_str().expect("id")),
-        native_id: 42,
+        native_id: Some(42),
         current_connection: "new-connection".into(),
     };
     let snapshot = MonitorSnapshot::checked(lost.clone(), case["actor"].clone()).expect("snapshot");
