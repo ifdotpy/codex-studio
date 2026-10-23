@@ -1,8 +1,10 @@
+import { isModelWhitelisted, useModelWhitelist } from "./models/modelWhitelist";
+import { modelForValue } from "./models/modelOption";
 import { useServerServices } from "../servers/ServerServicesContext";
 import { createServerServices } from "../servers/serverServices";
 import { watchResourceReads } from "./watchResourceReads";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Button } from "@mantine/core";
+import { Button, Stack, Text } from "@mantine/core";
 import { errorText, type GetResult } from "../api";
 import type { Agent } from "../types";
 import { serverResourceScope, type StudioServer } from "../servers/registry";
@@ -27,7 +29,6 @@ type Props = {
   server?: StudioServer;
   projectId: string;
   path: string;
-  onOpenChange: (opened: boolean) => void;
   onChange: (settings: Omit<NewChatSettings, "workspaceMode"> | null) => void;
 };
 // The parent can pass a new object for the same server. Reads restart only for another
@@ -99,27 +100,7 @@ export default function NewChatModelSettings(props: Props) {
   );
 }
 
-function ModelDraft({
-  server,
-  projectId,
-  path,
-  onChange,
-  onOpenChange,
-}: Props) {
-  const openRoles = useRef({ orchestrator: false, worker: false });
-  const openCallbacks = useMemo(
-    () =>
-      Object.fromEntries(
-        (["orchestrator", "worker"] as const).map((role) => [
-          role,
-          (opened: boolean) => {
-            openRoles.current[role] = opened;
-            onOpenChange(Object.values(openRoles.current).some(Boolean));
-          },
-        ]),
-      ),
-    [onOpenChange],
-  );
+function ModelDraft({ server, projectId, path, onChange }: Props) {
   const [accounts, setAccounts] = useState<GetResult<"/api/accounts"> | null>(
     null,
   );
@@ -169,7 +150,12 @@ function ModelDraft({
   const provider = accounts?.accounts.find(
     (row) => row.id === accountKey,
   )?.provider;
-  const model = settings.model || defaultChatModel(provider, catalog.models);
+  const allowed = useModelWhitelist();
+  const availableModels = catalog.models.filter((row) =>
+    isModelWhitelisted({ ...row, provider: row.provider || provider }, allowed),
+  );
+  const model = settings.model || defaultChatModel(provider, availableModels);
+  const modelInfo = modelForValue(catalog.models, model);
   // A Claude orchestrator that keeps the default model starts at the default effort.
   const defaultEffort =
     !settings.model &&
@@ -178,7 +164,7 @@ function ModelDraft({
       ? DEFAULT_CLAUDE_LEAD_EFFORT
       : undefined;
   const worker = settings.worker_defaults;
-  const workerModel = catalog.models.some((row) => row.model === "gpt-6-luna")
+  const workerModel = availableModels.some((row) => row.model === "gpt-6-luna")
     ? "gpt-6-luna"
     : (model ?? null);
   const agent: Agent = {
@@ -205,8 +191,14 @@ function ModelDraft({
   const modelError =
     catalog.error ||
     (accounts && !catalog.loading && !model
-      ? "No models are available for this account."
-      : "");
+      ? "No enabled models are available for this account. Select models in Studio settings → Models."
+      : modelInfo &&
+          !isModelWhitelisted(
+            { ...modelInfo, provider: modelInfo.provider || provider },
+            allowed,
+          )
+        ? "Choose a model enabled in Studio settings → Models."
+        : "");
   const ready =
     !!accounts && !catalog.loading && !modelError && !!model && !error;
   useEffect(() => {
@@ -216,6 +208,15 @@ function ModelDraft({
             {
               ...settings,
               ...(defaultEffort ? { effort: defaultEffort } : {}),
+              ...(allowed !== null && !settings.worker_defaults
+                ? {
+                    worker_defaults: {
+                      model: workerModel,
+                      effort: "high",
+                      fast_mode: false,
+                    },
+                  }
+                : {}),
             },
             accountKey,
             settings.account_key !== undefined,
@@ -223,7 +224,16 @@ function ModelDraft({
           )
         : null,
     );
-  }, [ready, settings, defaultEffort, accountKey, model, onChange]);
+  }, [
+    ready,
+    settings,
+    defaultEffort,
+    accountKey,
+    model,
+    workerModel,
+    allowed,
+    onChange,
+  ]);
   const patch = useCallback(
     (value: Partial<import("../api").PostBody<"/api/conversation">>) => {
       const { id: _id, expected_account_key: _expected, ...values } = value;
@@ -232,22 +242,28 @@ function ModelDraft({
     [],
   );
   return (
-    <div
-      className="empty-chat-settings new-chat-model-settings"
+    <Stack
+      gap="lg"
+      className="new-chat-model-settings"
       aria-label="Agent settings"
     >
       {(["orchestrator", "worker"] as const).map((role) => (
-        <div className="empty-chat-setting" key={role}>
-          <span>{role === "orchestrator" ? "Model" : "Workers"}</span>
+        <section
+          key={role}
+          aria-label={role === "orchestrator" ? "Lead model" : "Worker model"}
+        >
+          <Text fw={600} mb="xs">
+            {role === "orchestrator" ? "Lead" : "Workers"}
+          </Text>
           <ExecutionSettings
             agent={agent}
             catalog={catalog}
             accounts={accounts?.accounts || []}
             refresh={async () => {}}
+            presentation="panel"
             settingsRow
             showAccountSummary
             initialRole={role}
-            onOpenChange={openCallbacks[role]}
             onDraftChange={patch}
             onAccountChange={(key) => {
               setAccountKey(key);
@@ -256,7 +272,7 @@ function ModelDraft({
               );
             }}
           />
-        </div>
+        </section>
       ))}
       {(error || modelError) && (
         <div role="alert">
@@ -272,6 +288,6 @@ function ModelDraft({
           </Button>
         </div>
       )}
-    </div>
+    </Stack>
   );
 }

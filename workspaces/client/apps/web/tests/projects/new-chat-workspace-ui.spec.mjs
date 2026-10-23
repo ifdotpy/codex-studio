@@ -1,3 +1,5 @@
+import { mkdir } from "node:fs/promises";
+import { join } from "node:path";
 import { test, expect } from "../playwright.mjs";
 import { fixture } from "../servers/multi-server-fixture.mjs";
 
@@ -113,26 +115,19 @@ for (const [choice, badge] of [
         dialog.getByRole("radio", { name: "layr", exact: true }),
       ).toBeChecked();
       await dialog.getByText(choice, { exact: true }).click();
-      await dialog
-        .getByRole("button", { name: "Main agent settings", exact: true })
-        .click();
-      const main = page.getByRole("dialog", {
-        name: "Main agent settings",
+      const main = dialog.getByRole("region", {
+        name: "Lead model",
         exact: true,
       });
-      await main.getByRole("option", { name: /Sol/ }).click();
+      await main.getByRole("radio", { name: /Sol/ }).click();
       await main.getByText("High", { exact: true }).click();
-      await page.keyboard.press("Escape");
-      await dialog
-        .getByRole("button", { name: "Subagent defaults", exact: true })
-        .click();
-      const worker = page.getByRole("dialog", {
-        name: "Subagent defaults",
+      const worker = dialog.getByRole("region", {
+        name: "Worker model",
         exact: true,
       });
-      await worker.getByRole("option", { name: /Astra/ }).click();
+      await worker.getByRole("radio", { name: /Astra/ }).click();
       await worker.getByText("Low", { exact: true }).click();
-      await page.keyboard.press("Escape");
+      await expect(page.getByRole("dialog")).toHaveCount(1);
       expect(changes).toHaveLength(0);
       await dialog
         .getByRole("button", { name: "Start chat", exact: true })
@@ -174,59 +169,69 @@ for (const system of ["Linux", "Windows"]) {
     }
   });
 }
-for (const variant of ["light", "dark", "mobile"]) {
-  test(`New chat workspace dialog ${variant}`, async ({ page }, testInfo) => {
-    const { server, creations } = await setup();
-    try {
-      await page.setViewportSize(
-        variant === "mobile"
-          ? { width: 390, height: 844 }
-          : { width: 1280, height: 800 },
-      );
-      await page.emulateMedia({
-        colorScheme: variant === "dark" ? "dark" : "light",
-      });
-      await page.goto(server.origin + "/?studio-navigation=combined");
-      if (variant === "mobile") await page.locator("#sidebar-toggle").click();
-      await page
-        .locator('[data-project-path="/same/project"] .project-tree-heading')
-        .hover();
-      await page
-        .getByRole("button", { name: "New chat in Local project", exact: true })
-        .click();
-      const dialog = page.getByRole("dialog", {
-        name: "New chat",
-        exact: true,
-      });
-      await expect(
-        dialog.getByRole("button", { name: "Start chat", exact: true }),
-      ).toBeEnabled();
-      await expect(
-        dialog.getByRole("radio", { name: "layr", exact: true }),
-      ).toBeChecked();
-      await expect(
-        dialog.getByRole("button", {
-          name: "Main agent settings",
+for (const width of [320, 390, 1440])
+  for (const variant of ["light", "dark"]) {
+    test(`New chat workspace dialog ${width} ${variant}`, async ({
+      page,
+    }, testInfo) => {
+      const { server, creations } = await setup();
+      try {
+        await page.setViewportSize({ width, height: 900 });
+        await page.emulateMedia({
+          colorScheme: variant === "dark" ? "dark" : "light",
+        });
+        await page.goto(server.origin + "/?studio-navigation=combined");
+        await page
+          .locator('[data-project-path="/same/project"] .project-tree-heading')
+          .hover();
+        await page
+          .getByRole("button", {
+            name: "New chat in Local project",
+            exact: true,
+          })
+          .click();
+        const dialog = page.getByRole("dialog", {
+          name: "New chat",
           exact: true,
-        }),
-      ).toBeVisible();
-      await expect(
-        dialog.getByRole("button", { name: "Subagent defaults", exact: true }),
-      ).toBeVisible();
-      const bounds = await dialog.boundingBox();
-      const viewport = page.viewportSize();
-      expect(bounds.x + bounds.width).toBeLessThanOrEqual(viewport.width);
-      await page.screenshot({
-        animations: "disabled",
-        path: testInfo.outputPath(`new-chat-${variant}.png`),
-      });
-      await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
-      expect(creations).toHaveLength(0);
-    } finally {
-      await server.close();
-    }
-  });
-}
+        });
+        await expect(
+          dialog.getByRole("button", { name: "Start chat", exact: true }),
+        ).toBeEnabled();
+        await expect(
+          dialog.getByRole("radio", { name: "layr", exact: true }),
+        ).toBeChecked();
+        await expect(
+          dialog.getByRole("radiogroup", {
+            name: "Main agent model",
+            exact: true,
+          }),
+        ).toBeVisible();
+        await expect(
+          dialog.getByRole("radiogroup", {
+            name: "Default subagent model",
+            exact: true,
+          }),
+        ).toBeVisible();
+        const bounds = await dialog.boundingBox();
+        const viewport = page.viewportSize();
+        expect(bounds.x + bounds.width).toBeLessThanOrEqual(viewport.width);
+        const evidence = process.env.MODELS_EVIDENCE;
+        if (evidence) await mkdir(evidence, { recursive: true });
+        await page.screenshot({
+          animations: "disabled",
+          path: evidence
+            ? join(evidence, `new-chat-${width}-${variant}.png`)
+            : testInfo.outputPath(`new-chat-${width}-${variant}.png`),
+        });
+        await dialog
+          .getByRole("button", { name: "Cancel", exact: true })
+          .click();
+        expect(creations).toHaveLength(0);
+      } finally {
+        await server.close();
+      }
+    });
+  }
 
 test("the general New chat button opens the controls for one folder", async ({
   page,
@@ -307,8 +312,10 @@ test("a paired server uses its own platform and catalog", async ({
     ).toBeEnabled();
     await expect(dialog.getByText("Workspace", { exact: true })).toHaveCount(0);
     await expect(
-      dialog.getByRole("button", { name: "Main agent settings", exact: true }),
-    ).toContainText("Sol");
+      dialog
+        .getByRole("radiogroup", { name: "Main agent model", exact: true })
+        .getByRole("radio", { checked: true }),
+    ).toHaveAccessibleName(/Sol/);
     await dialog
       .getByRole("button", { name: "Start chat", exact: true })
       .click();

@@ -11,7 +11,7 @@ import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-test("composer keeps one tools row and readable mixed-provider execution summary in medium containers", async ({
+test("composer keeps one tools row and compact model picker in medium containers", async ({
   browser,
 }) => {
   test.setTimeout(180_000);
@@ -123,23 +123,15 @@ test("composer keeps one tools row and readable mixed-provider execution summary
             await page.locator("#team-toggle").click();
             await expect(page.locator("#team")).toBeVisible();
           }
-          const trigger = page.locator("#composer .execution-summary-trigger");
+          const trigger = page.locator("#composer .execution-menu");
           await expect(trigger).toHaveCount(1);
           await expect(trigger).toHaveAttribute(
             "aria-label",
-            /Lead Opus 4.6 Medium.*Workers Sol 5.6 Medium.*Review same as caller/,
+            "Main agent settings",
           );
-          await expect(
-            trigger.locator(".execution-summary-segment"),
-          ).toHaveCount(3);
-          await expect(trigger.locator(".execution-worker-count")).toHaveCount(
-            0,
+          await expect(trigger.locator(".execution-selected")).toHaveText(
+            /Opus 4.6 · Medium/,
           );
-          await expect(trigger).not.toHaveAttribute(
-            "aria-label",
-            /\d+ workers/,
-          );
-          await expect(trigger).not.toHaveAttribute("title", /\d+ workers/);
           await page.evaluate(
             ({ target, scheme }) => {
               document.documentElement.setAttribute(
@@ -160,7 +152,7 @@ test("composer keeps one tools row and readable mixed-provider execution summary
           );
           if (target >= 900) {
             const names = await trigger
-              .locator(".execution-model,.execution-inherited-label")
+              .locator(".execution-selected")
               .evaluateAll((nodes) =>
                 nodes.map((node) => ({
                   text: node.textContent,
@@ -177,64 +169,21 @@ test("composer keeps one tools row and readable mixed-provider execution summary
           await expect(page.locator("#toast")).toBeHidden({ timeout: 10_000 });
           await trigger.click();
           const settings = page.getByRole("dialog", {
-            name: "Chat settings",
+            name: "Main agent settings",
             exact: true,
           });
+          await expect(settings).toBeVisible();
           await expect(
-            settings.getByRole("tab", { name: "Models", exact: true }),
-          ).toHaveAttribute("aria-selected", "true");
-          await expect(
-            settings
-              .getByRole("radiogroup", { name: "Agent role", exact: true })
-              .getByRole("radio")
-              .first(),
-          ).toBeChecked();
+            settings.getByLabel("Main agent model", { exact: true }),
+          ).toBeVisible();
           await page.keyboard.press("Escape");
           await expect(settings).toBeHidden();
           const geometry = await page
             .locator("#composer")
             .evaluate((composer) => {
               const r = (element) => element.getBoundingClientRect().toJSON();
-              const chips = [
-                ...composer.querySelectorAll(".execution-menu"),
-              ].map((button) => {
-                const label = button.querySelector(".execution-model"),
-                  glyph = button.querySelector(".execution-provider>svg");
-                const probe = document.createElement("span");
-                probe.style.cssText =
-                  "display:block;width:var(--studio-composer-model-min);position:absolute";
-                label.append(probe);
-                const minimum = probe.getBoundingClientRect().width;
-                probe.remove();
-                return {
-                  button: r(button),
-                  label: r(label),
-                  glyph: r(glyph),
-                  minimum,
-                  glyphColor: getComputedStyle(glyph).color,
-                  namesHidden: getComputedStyle(label).display === "none",
-                  names: [
-                    ...button.querySelectorAll(
-                      ".execution-model,.execution-inherited-label",
-                    ),
-                  ].map((node) => ({
-                    text: node.textContent,
-                    scrollWidth: node.scrollWidth,
-                    clientWidth: node.clientWidth,
-                    visible: getComputedStyle(node).display !== "none",
-                    ...r(node),
-                  })),
-                  roleIcons: [
-                    ...button.querySelectorAll(".execution-role-icon"),
-                  ].map(r),
-                  inherited: r(
-                    button.querySelector(".execution-inherited-icon"),
-                  ),
-                };
-              });
               return {
                 composer: r(composer),
-                chips,
                 controls: [
                   ...composer.querySelectorAll(
                     ".composer-tools button,.composer-submit-actions>button",
@@ -320,34 +269,17 @@ test("composer keeps one tools row and readable mixed-provider execution summary
         Math.max(...centers) - Math.min(...centers),
         JSON.stringify(result),
       ).toBeLessThanOrEqual(1);
-      for (const chip of result.chips) {
-        // The narrowest composer (20em) keeps role symbols only.
-        if (result.composer.width > 320) expect(chip.namesHidden).toBe(false);
-        const names = chip.names.filter((name) => name.visible);
-        // One-line role symbols leave room for the third name from 32em.
-        if (result.composer.width >= 500) expect(names).toHaveLength(3);
-        for (const name of names) {
-          expect(name.left).toBeGreaterThanOrEqual(chip.button.left);
-          expect(name.right).toBeLessThanOrEqual(chip.button.right);
-          if (result.composer.width >= 900)
-            expect(name.scrollWidth, JSON.stringify(result)).toBe(
-              name.clientWidth,
-            );
-        }
-        if (!chip.namesHidden)
-          expect(
-            chip.label.width,
-            JSON.stringify(result),
-          ).toBeGreaterThanOrEqual(chip.minimum - 1);
-
-        expect(chip.roleIcons).toHaveLength(3);
-        for (const icon of [...chip.roleIcons, chip.inherited])
-          expect(icon.width).toBeGreaterThanOrEqual(14);
-        expect(chip.glyph.width, JSON.stringify(result)).toBeGreaterThanOrEqual(
-          12,
+      for (const control of result.controls) {
+        expect(control.left, JSON.stringify(result)).toBeGreaterThanOrEqual(
+          result.composer.left,
         );
-        expect(chip.glyph.height).toBeGreaterThanOrEqual(12);
+        expect(control.right, JSON.stringify(result)).toBeLessThanOrEqual(
+          result.composer.right,
+        );
       }
+      expect(
+        result.controls.some((control) => /Attach/.test(control.name)),
+      ).toBe(true);
     }
     console.log("Composer evidence:", evidence);
   } finally {

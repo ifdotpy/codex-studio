@@ -1,3 +1,4 @@
+import { isModelWhitelisted, useModelWhitelist } from "./models/modelWhitelist";
 import { useServerApi } from "../servers/ServerServicesContext";
 import { accountCanStart } from "../accountName";
 import { ProviderMark, setupAccountName } from "./AccountTiles";
@@ -69,14 +70,24 @@ function ParticipantFields({
     if (account_key && account_key !== value.account_key)
       change({ account_key, model: "" });
   };
+  const allowed = useModelWhitelist();
+  const availableModels = catalog.models.filter((row) =>
+    isModelWhitelisted({ ...row, provider: row.provider || provider }, allowed),
+  );
   const info = modelForValue(catalog.models, value.model);
+  const enabledModel =
+    !!info &&
+    isModelWhitelisted(
+      { ...info, provider: info.provider || provider },
+      allowed,
+    );
   const reasoningEfforts =
     info?.supportedReasoningEfforts.map((item) => item.reasoningEffort) ?? [];
   useEffect(() => {
-    valid(!!info && !catalog.loading && !catalog.error);
-    if (!frozen && !value.model && catalog.models.length) {
+    valid(enabledModel && !catalog.loading && !catalog.error);
+    if (!frozen && !value.model && availableModels.length) {
       const preferred =
-        catalog.models.find((row) => row.isDefault) || catalog.models[0];
+        availableModels.find((row) => row.isDefault) || availableModels[0];
       change({ ...value, model: preferred.model });
     }
   }, [
@@ -84,7 +95,8 @@ function ParticipantFields({
     value.model,
     catalog.loading,
     catalog.error,
-    !!info,
+    enabledModel,
+    allowed,
     frozen,
   ]);
   const effort = value.effort || info?.defaultReasoningEffort || "Default";
