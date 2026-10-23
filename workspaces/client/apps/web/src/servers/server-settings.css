@@ -110,15 +110,15 @@
 .server-settings-card > .server-settings-edit {
   display: contents;
 }
-.server-settings-card > .server-settings-edit > summary {
+.server-settings-card > .server-settings-edit > .disclosure-control {
   grid-column: 1;
   grid-row: 3;
 }
-.server-settings-card > .server-settings-edit > form {
+.server-settings-card > .server-settings-edit > .disclosure-control + div {
   grid-column: 1 / -1;
   grid-row: 4;
 }
-.server-settings-edit summary {
+.server-settings-edit .disclosure-control {
   width: fit-content;
   cursor: pointer;
   color: var(--muted);
@@ -126,7 +126,7 @@
   min-height: var(--studio-control-size);
   align-content: center;
 }
-.server-settings-edit[open] > summary {
+.server-settings-edit[data-expanded] > .disclosure-control {
   margin-bottom: var(--mantine-spacing-sm);
 }
 .server-settings-edit form {
@@ -177,7 +177,7 @@
     flex-basis: 100%;
     justify-content: flex-start;
   }
-  .server-settings-edit summary {
+  .server-settings-edit .disclosure-control {
     min-height: var(--studio-touch-target);
   }
   .server-settings-edit-fields {
@@ -190,5 +190,18 @@
   .server-settings-seen {
     flex-basis: 100%;
     text-align: right;
+  }
+}
+
+.server-settings > .ui-settings-section > .ui-panel-header {
+  flex-wrap: wrap;
+}
+.server-settings > .ui-settings-section > .ui-panel-header > .ui-label {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+@media (max-width: 30rem) {
+  .server-settings > .ui-settings-section > .ui-panel-header > .ui-label {
+    flex-basis: 100%;
   }
 }

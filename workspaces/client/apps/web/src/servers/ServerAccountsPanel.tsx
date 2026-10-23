@@ -1,4 +1,5 @@
 import {
+  Accordion,
   Badge,
   Button,
   Menu,
@@ -29,8 +30,8 @@ import {
   useServerFullAccounts,
   type AccountSource,
 } from "./ServerAccountLimits";
-import { AccountLimitDetails, type Account } from "../components/Accounts";
-import { ProviderMark } from "../components/AccountTiles";
+import { AccountCapacityView, type Account } from "../components/Accounts";
+import { accountLimitView, ProviderMark } from "../components/AccountTiles";
 import type { ServerServices } from "./serverServices";
 
 type AccountAction = Extract<ServerCommand, { action: "account-action" }>;
@@ -134,7 +135,12 @@ export default function ServerAccountsPanel({
         {!rows.length ? (
           <p>No accounts found. Add a Codex or Claude account.</p>
         ) : (
-          <div className="server-accounts-list">
+          <Accordion
+            className="server-accounts-list"
+            keepMounted={false}
+            transitionDuration={0}
+            chevronPosition="left"
+          >
             {rows.map((row) => {
               const sources = accountSources(
                 row,
@@ -142,15 +148,35 @@ export default function ServerAccountsPanel({
                 fullAccounts,
                 servicesFor,
               );
+              const facts = (
+                <dl className="account-facts">
+                  <dt>Email</dt>
+                  <dd>{row.email || "Unavailable"}</dd>
+                  <dt>Servers</dt>
+                  <dd>
+                    {rowServers(row, servers)
+                      .map((server) => server.label)
+                      .join(", ")}
+                  </dd>
+                  <dt>Default</dt>
+                  <dd>
+                    {servers
+                      .filter((server) => row.byServer[server.id]?.isDefault)
+                      .map((server) => server.label)
+                      .join(", ") || "No"}
+                  </dd>
+                  <dt>Sign-in</dt>
+                  <dd>
+                    {Object.values(row.byServer).some(
+                      (account) => account?.status !== "ready",
+                    )
+                      ? "Sign in needed"
+                      : "Signed in"}
+                  </dd>
+                </dl>
+              );
               const accountDetails = (
                 <>
-                  <div className="account-strip-metadata">
-                    {" "}
-                    {!row.email && (
-                      <span className="account-muted">Email unavailable</span>
-                    )}
-                    {row.email && <small>{row.email}</small>}
-                  </div>
                   <ul
                     className="server-account-servers"
                     aria-label={`Servers for ${row.email || row.label}`}
@@ -225,70 +251,78 @@ export default function ServerAccountsPanel({
                 </>
               );
               return (
-                <article
+                <Accordion.Item
+                  value={row.key}
                   className="server-account-row"
                   key={row.key}
                   data-account-identity={row.key}
                 >
                   <div className="server-account-heading">
-                    <div>
-                      <span
-                        role="img"
-                        aria-label={
-                          row.provider === "claude" ? "Claude" : "Codex"
-                        }
-                      >
-                        <ProviderMark provider={row.provider} />
-                      </span>
-                      <strong title={row.label || row.email || "Account"}>
-                        {row.label || row.email || "Account"}
-                      </strong>
-                      {row.plan && (
-                        <span className="account-plan">{row.plan}</span>
-                      )}
-                      {rowServers(row, servers).some((server) =>
-                        ["offline", "degraded", "schema-mismatch"].includes(
-                          statuses[server.id] || "",
-                        ),
-                      ) && (
-                        <span className="account-strip-state" title="Offline">
-                          <CloudOff size={14} aria-hidden="true" />
-                          <span className="account-strip-state-label">
-                            Offline
-                          </span>
-                        </span>
-                      )}
-                      {Object.values(row.byServer).some(
-                        (account) => account?.status !== "ready",
-                      ) && (
+                    <Accordion.Control
+                      aria-label={`Limit details for ${row.email || row.label}`}
+                    >
+                      <span className="account-identity">
                         <span
-                          className="account-strip-state"
-                          title="Sign in needed"
+                          role="img"
+                          aria-label={
+                            row.provider === "claude" ? "Claude" : "Codex"
+                          }
                         >
-                          <LogIn size={14} aria-hidden="true" />
-                          <span className="account-strip-state-label">
-                            Sign in needed
-                          </span>
+                          <ProviderMark provider={row.provider} />
                         </span>
-                      )}
+                        <strong title={row.label || row.email || "Account"}>
+                          {row.label || row.email || "Account"}
+                        </strong>
 
-                      {servers
-                        .filter((server) => row.byServer[server.id]?.isDefault)
-                        .map((server) => (
-                          <Badge
-                            key={server.id}
-                            size="xs"
-                            color="blue"
-                            variant="light"
-                            title={`Default ${server.label}`}
-                          >
-                            <Check size={12} aria-hidden="true" />
+                        {rowServers(row, servers).some((server) =>
+                          ["offline", "degraded", "schema-mismatch"].includes(
+                            statuses[server.id] || "",
+                          ),
+                        ) && (
+                          <span className="account-strip-state" title="Offline">
+                            <CloudOff size={14} aria-hidden="true" />
                             <span className="account-strip-state-label">
-                              Default {server.label}
+                              Offline
                             </span>
-                          </Badge>
-                        ))}
-                    </div>
+                          </span>
+                        )}
+                        {Object.values(row.byServer).some(
+                          (account) => account?.status !== "ready",
+                        ) && (
+                          <span
+                            className="account-strip-state"
+                            title="Sign in needed"
+                          >
+                            <LogIn size={14} aria-hidden="true" />
+                            <span className="account-strip-state-label">
+                              Sign in needed
+                            </span>
+                          </span>
+                        )}
+
+                        {servers
+                          .filter(
+                            (server) => row.byServer[server.id]?.isDefault,
+                          )
+                          .map((server) => (
+                            <Badge
+                              key={server.id}
+                              size="xs"
+                              color="blue"
+                              variant="light"
+                              title={`Default ${server.label}`}
+                            >
+                              <Check size={12} aria-hidden="true" />
+                              <span className="account-strip-state-label">
+                                Default {server.label}
+                              </span>
+                            </Badge>
+                          ))}
+                      </span>
+                    </Accordion.Control>
+                    {row.plan && (
+                      <span className="account-plan">{row.plan}</span>
+                    )}
                     <Menu
                       opened={openAccountMenuKey === row.key}
                       onChange={(nextOpened) => {
@@ -310,6 +344,7 @@ export default function ServerAccountsPanel({
                     >
                       <Menu.Target>
                         <ActionButton
+                          className="account-card-menu"
                           ref={(node) => {
                             if (node)
                               accountMenuTriggers.current.set(row.key, node);
@@ -397,14 +432,28 @@ export default function ServerAccountsPanel({
                     <AccountLimitsAcrossServers
                       sources={sources}
                       extraDetails={accountDetails}
+                      facts={facts}
                     />
                   ) : (
-                    <AccountLimitDetails>{accountDetails}</AccountLimitDetails>
+                    <AccountCapacityView
+                      card
+                      account={{
+                        status: "signedOut",
+                        email: row.email,
+                        label: row.label,
+                      }}
+                      view={accountLimitView(
+                        { id: row.key, status: "signedOut" },
+                        null,
+                      )}
+                      facts={facts}
+                      extraDetails={accountDetails}
+                    />
                   )}
-                </article>
+                </Accordion.Item>
               );
             })}
-          </div>
+          </Accordion>
         )}
         <p className="server-accounts-help">
           The remaining limit belongs to the account, so it shows once. Each

@@ -1,3 +1,4 @@
+import Disclosure from "./ui/Disclosure";
 import {
   useServerApi,
   useServerResources,
@@ -21,6 +22,7 @@ import CodexSignIn from "./CodexSignIn";
 import NativeRuntimeStatus from "./NativeRuntimeStatus";
 import { watchResourceReads } from "./watchResourceReads";
 import {
+  Accordion,
   Button,
   Group,
   Menu,
@@ -38,6 +40,9 @@ import {
   RefreshCw,
   Pencil,
   Ellipsis,
+  CircleDot,
+  LogIn,
+  AlertCircle,
 } from "lucide-react";
 import {
   useCallback,
@@ -52,6 +57,7 @@ import {
 import { errorText, type GetResult } from "../api";
 import type { Agent } from "../types";
 import "./accounts.css";
+import { jsonObject } from "../usage/accountUsage";
 import { remainingLimitColor } from "./accountLimitColor";
 import AccountSignIn from "./AccountSignIn";
 import AccountManagerHost from "./AccountManagerHost";
@@ -248,11 +254,13 @@ export function AccountCapacity({
   opened,
   card = false,
   extraDetails,
+  facts,
 }: {
   account: Account;
   opened: boolean;
   card?: boolean;
   extraDetails?: ReactNode;
+  facts?: ReactNode;
 }) {
   const view = useAccountLimitView(account, { read: opened });
   if (account.status !== "ready" && !card) return null;
@@ -262,6 +270,7 @@ export function AccountCapacity({
       view={view}
       card={card}
       extraDetails={extraDetails}
+      facts={facts}
     />
   );
 }
@@ -274,144 +283,197 @@ export function AccountCapacityView({
   card = false,
   note,
   extraDetails,
+  facts,
 }: {
   account: Pick<Account, "status" | "email" | "label">;
   view: AccountLimitView;
   card?: boolean;
   note?: ReactNode;
   extraDetails?: ReactNode;
+  facts?: ReactNode;
 }) {
   const { limits, buckets, remaining, error: limitsError } = view;
-  const status = (
-    <>
-      {!limits && !limitsError && <small>Reading limits…</small>}
-      {limitsError && (
-        <ErrorDescription
-          className="account-action-error"
-          role="status"
-          value={limits?.readError || limitsError}
-        />
-      )}
-    </>
-  );
+  const credits = jsonObject(jsonObject(limits?.data)?.rateLimitResetCredits);
+  const availableCredits = Array.isArray(credits?.credits)
+    ? credits.credits.flatMap((value) => {
+        const credit = jsonObject(value);
+        return credit?.status === "available" ? [credit] : [];
+      })
+    : [];
   const windows = (
-    <>
-      {buckets.map((bucket) => (
-        <div key={bucket.id} className="account-capacity-pool">
-          <span>{/spark/i.test(bucket.name) ? "Spark" : bucket.name}</span>
-          <div>
-            {bucket.windows.map((window) => (
-              <div key={window.label} className="account-capacity-window">
-                <strong>
-                  {window.label}{" "}
-                  {window.remaining === null
-                    ? "Unknown"
-                    : window.expired
-                      ? "Reset due"
+    <div className="account-window-grid">
+      <table className="account-limits-table">
+        <thead>
+          <tr>
+            <th>Window</th>
+            <th>Meter</th>
+            <th>Left</th>
+            <th>Resets at</th>
+          </tr>
+        </thead>
+        <tbody>
+          {buckets.flatMap((bucket) =>
+            bucket.windows.map((window, index) => (
+              <tr key={`${bucket.id}-${index}`}>
+                <th scope="row">
+                  <span>
+                    {/spark/i.test(bucket.name) ? "Spark" : bucket.name}
+                  </span>
+                  <small>{window.label}</small>
+                </th>
+                <td>
+                  {window.remaining !== null && !window.expired ? (
+                    <Progress.Root
+                      className="account-window-meter"
+                      size="xs"
+                      role="meter"
+                      aria-label={`${bucket.name} ${window.label} remaining`}
+                      aria-valuemin={0}
+                      aria-valuemax={100}
+                      aria-valuenow={window.remaining}
+                    >
+                      <Progress.Section
+                        value={window.remaining}
+                        color={remainingLimitColor(window.remaining)}
+                        withAria={false}
+                      />
+                    </Progress.Root>
+                  ) : (
+                    <span>—</span>
+                  )}
+                </td>
+                <td>
+                  {window.expired
+                    ? "Reset due"
+                    : window.remaining === null
+                      ? "Unknown"
                       : remainingText(window.remaining)}
-                </strong>
-                {card && window.remaining !== null && !window.expired && (
-                  <Progress.Root
-                    className="account-window-meter"
-                    size="xs"
-                    role="meter"
-                    aria-label={`${bucket.name} ${window.label} remaining`}
-                    aria-valuemin={0}
-                    aria-valuemax={100}
-                    aria-valuenow={window.remaining}
-                  >
-                    <Progress.Section
-                      value={window.remaining}
-                      color={remainingLimitColor(window.remaining)}
-                      withAria={false}
-                    />
-                  </Progress.Root>
-                )}
-                {window.reset && (
-                  <time
-                    dateTime={new Date(window.reset * 1000).toISOString()}
-                    title={localDateTime(new Date(window.reset * 1000))}
-                  >
-                    {window.expired ? "Due " : "Resets "}
-                    {localDateTime(new Date(window.reset * 1000), {
-                      month: "short",
-                      day: "numeric",
-                      hour: "2-digit",
-                      minute: "2-digit",
-                    })}
-                  </time>
-                )}
-              </div>
-            ))}
-          </div>
-        </div>
-      ))}
-    </>
+                </td>
+                <td>
+                  {window.reset ? (
+                    <time
+                      dateTime={new Date(window.reset * 1000).toISOString()}
+                      title={localDateTime(new Date(window.reset * 1000))}
+                    >
+                      {localDateTime(new Date(window.reset * 1000), {
+                        month: "short",
+                        day: "numeric",
+                        hour: "2-digit",
+                        minute: "2-digit",
+                      })}
+                    </time>
+                  ) : (
+                    "Unavailable"
+                  )}
+                </td>
+              </tr>
+            )),
+          )}
+          {!buckets.length && (
+            <tr>
+              <td colSpan={4}>
+                {limitsError
+                  ? "Limits unavailable"
+                  : view.reading
+                    ? "Reading limits…"
+                    : "Limits unavailable"}
+              </td>
+            </tr>
+          )}
+        </tbody>
+      </table>
+    </div>
   );
+  const errors = limitsError && (
+    <ErrorDescription
+      className="account-action-error"
+      role="status"
+      value={limits?.readError || limitsError}
+    />
+  );
+  if (!card)
+    return (
+      <div className="account-capacity">
+        {errors}
+        {windows}
+      </div>
+    );
   return (
     <div
       className="account-capacity"
       aria-label={`Limits for ${account.email || account.label}`}
     >
-      {card ? (
-        <>
-          <div className="account-limit-summary">
-            <span>Remaining limit</span>
-            <span
-              role={remaining === null ? undefined : "meter"}
-              aria-label="Remaining limit"
-              aria-valuemin={0}
-              aria-valuemax={100}
-              aria-valuenow={remaining ?? undefined}
-            >
-              {remaining === null
-                ? view.reading
-                  ? "Reading limits…"
-                  : "Unavailable"
-                : remainingText(remaining)}
-            </span>
-          </div>
-          <div className="account-window-grid">
-            {windows}
-            {!buckets.length && (
-              <small>
-                {limitsError
-                  ? "Limits temporarily unavailable"
-                  : view.reading
-                    ? "Reading limits…"
-                    : "Limits unavailable"}
-              </small>
-            )}
-          </div>
-          {(account.status === "ready" || extraDetails) && (
-            <AccountLimitDetails>
-              {note && <small className="account-limit-note">{note}</small>}
-              {status}
-              {extraDetails}
-            </AccountLimitDetails>
-          )}
-        </>
-      ) : (
-        <>
-          {status}
+      <div className="account-limit-summary">
+        <span>Remaining limit</span>
+        <span
+          role={remaining === null ? undefined : "meter"}
+          aria-label="Remaining limit"
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={remaining ?? undefined}
+        >
+          <i
+            className="account-summary-dot"
+            aria-hidden="true"
+            style={{ background: remainingLimitColor(remaining) }}
+          />
+          {remaining === null
+            ? view.reading
+              ? "Reading limits…"
+              : "Unavailable"
+            : remainingText(remaining)}
+        </span>
+      </div>
+      <Accordion.Panel className="account-expanded">
+        <section className="account-detail-block">
+          <h4>Limits</h4>
+          {note && <small className="account-limit-note">{note}</small>}
+          {errors}
           {windows}
-          {limits && !limitsError && !limits.error && !buckets.length && (
-            <small>Limits unavailable</small>
+        </section>
+        <section className="account-detail-block">
+          <h4>Resets</h4>
+          <p>
+            {typeof credits?.availableCount === "number"
+              ? `${credits.availableCount} ${credits.availableCount === 1 ? "credit" : "credits"} available`
+              : "No reset credits reported."}
+          </p>
+          {availableCredits.map(
+            (credit, index) =>
+              typeof credit.expiresAt === "number" && (
+                <p key={index}>
+                  Expires{" "}
+                  <time
+                    dateTime={new Date(credit.expiresAt * 1000).toISOString()}
+                  >
+                    {localDateTime(new Date(credit.expiresAt * 1000))}
+                  </time>
+                </p>
+              ),
           )}
-        </>
-      )}
+          <small>Redeem reset credits from Limits in a chat.</small>
+        </section>
+        <section className="account-detail-block">
+          <h4>Account</h4>
+          {facts || (
+            <dl className="account-facts">
+              <dt>Email</dt>
+              <dd>{account.email || "Unavailable"}</dd>
+              <dt>Sign-in</dt>
+              <dd>
+                {account.status === "ready" ? "Signed in" : "Sign in needed"}
+              </dd>
+            </dl>
+          )}
+        </section>
+        {extraDetails && (
+          <section className="account-detail-block">
+            <h4>Actions</h4>
+            {extraDetails}
+          </section>
+        )}
+      </Accordion.Panel>
     </div>
-  );
-}
-
-export function AccountLimitDetails({ children }: { children: ReactNode }) {
-  return (
-    <details className="account-limit-details">
-      <summary>
-        <span>Limit details</span>
-      </summary>
-      <div className="account-limit-details-body">{children}</div>
-    </details>
   );
 }
 
@@ -1009,7 +1071,13 @@ export default function Accounts({
                 New chats use the application default unless the project has its
                 own default. Existing chats keep their account.
               </p>
-              <div className="accounts-list" aria-label="Saved accounts">
+              <Accordion
+                className="accounts-list"
+                aria-label="Saved accounts"
+                keepMounted={false}
+                transitionDuration={0}
+                chevronPosition="left"
+              >
                 {(["codex", "claude"] as const).map((provider) => {
                   const providerAccounts = accounts.filter(
                     (account) => (account.provider || "codex") === provider,
@@ -1026,52 +1094,83 @@ export default function Accounts({
                       </h3>
                       <div className="accounts-grid">
                         {providerAccounts.map((account) => (
-                          <section
+                          <Accordion.Item
+                            value={account.id}
                             className="account-row"
                             key={account.id}
                             data-account={account.id}
                             aria-label={account.email || account.label}
                           >
                             <div className="account-card-heading">
-                              <span
-                                role="img"
-                                aria-label={
-                                  provider === "claude" ? "Claude" : "Codex"
-                                }
+                              <Accordion.Control
+                                aria-label={`Limit details for ${account.email || account.label}`}
                               >
-                                <ProviderMark provider={provider} />
-                              </span>
-                              {(account.error ||
-                                account.status !== "ready") && (
-                                <span
-                                  className="account-strip-state"
-                                  data-error={
-                                    Boolean(account.error) ||
-                                    account.status === "error" ||
-                                    undefined
-                                  }
-                                >
-                                  {account.error || account.status === "error"
-                                    ? "Error"
-                                    : "Sign in needed"}
-                                </span>
-                              )}
-                              {account.id === state.data.defaultAccountKey && (
-                                <span
-                                  className="account-default"
-                                  title="Application default"
-                                >
-                                  <Check size={12} />
-                                  <span className="sr-only">
-                                    Application default
+                                <span className="account-identity">
+                                  <span
+                                    role="img"
+                                    aria-label={
+                                      provider === "claude" ? "Claude" : "Codex"
+                                    }
+                                  >
+                                    <ProviderMark provider={provider} />
                                   </span>
+                                  {(account.error ||
+                                    account.status !== "ready") && (
+                                    <span
+                                      className="account-strip-state"
+                                      data-error={
+                                        Boolean(account.error) ||
+                                        account.status === "error" ||
+                                        undefined
+                                      }
+                                    >
+                                      {account.error ||
+                                      account.status === "error" ? (
+                                        <AlertCircle
+                                          size={14}
+                                          aria-hidden="true"
+                                        />
+                                      ) : (
+                                        <LogIn size={14} aria-hidden="true" />
+                                      )}
+                                      <span className="account-strip-state-label">
+                                        {account.error ||
+                                        account.status === "error"
+                                          ? "Error"
+                                          : "Sign in needed"}
+                                      </span>
+                                    </span>
+                                  )}
+                                  {account.id ===
+                                    state.data.defaultAccountKey && (
+                                    <span
+                                      className="account-default"
+                                      title="Application default"
+                                    >
+                                      <Check size={12} />
+                                      <span className="sr-only">
+                                        Application default
+                                      </span>
+                                    </span>
+                                  )}
+                                  {account.id === accountKey && (
+                                    <span
+                                      className="account-strip-state"
+                                      title="Current account"
+                                    >
+                                      <CircleDot size={14} aria-hidden="true" />
+                                      <span className="sr-only">
+                                        Current account
+                                      </span>
+                                    </span>
+                                  )}
+                                  <strong
+                                    title={account.email || account.label}
+                                  >
+                                    {accountDisplayName(account)}
+                                  </strong>
                                 </span>
-                              )}
-                              <AccountNameEditor
-                                account={account}
-                                onSaved={state.setData}
-                                disabled={!!pending}
-                              />
+                              </Accordion.Control>
                               {account.plan && (
                                 <span className="account-plan">
                                   {account.plan}
@@ -1258,39 +1357,34 @@ export default function Accounts({
                               opened={
                                 !account.disconnected && (managerOnly || opened)
                               }
+                              facts={
+                                <dl className="account-facts">
+                                  <dt>Email</dt>
+                                  <dd>{account.email || "Unavailable"}</dd>
+                                  <dt>Server</dt>
+                                  <dd>This computer</dd>
+                                  <dt>Default</dt>
+                                  <dd>
+                                    {account.id === state.data.defaultAccountKey
+                                      ? "Application default"
+                                      : "No"}
+                                  </dd>
+                                  <dt>Sign-in</dt>
+                                  <dd>
+                                    {account.status === "ready"
+                                      ? "Signed in"
+                                      : "Sign in needed"}
+                                  </dd>
+                                </dl>
+                              }
                               extraDetails={
                                 <>
-                                  {account.email && (
-                                    <small className="account-email">
-                                      {account.email}
-                                    </small>
-                                  )}
-                                  <div className="account-card-status">
-                                    <span
-                                      className="account-status"
-                                      data-status={
-                                        account.error ||
-                                        account.status === "error"
-                                          ? "error"
-                                          : account.status === "ready"
-                                            ? "ready"
-                                            : "signedOut"
-                                      }
-                                    >
-                                      {account.error ||
-                                      account.status === "error"
-                                        ? "Error"
-                                        : account.status === "ready"
-                                          ? "Signed in"
-                                          : "Sign in needed"}
-                                    </span>
-                                    {account.id ===
-                                      state.data.defaultAccountKey && (
-                                      <span className="account-default">
-                                        <Check size={12} /> Application default
-                                      </span>
-                                    )}
-                                  </div>
+                                  <AccountNameEditor
+                                    account={account}
+                                    onSaved={state.setData}
+                                    disabled={!!pending}
+                                  />
+
                                   {Boolean(account.error) && (
                                     <ErrorDescription
                                       className="account-action-error"
@@ -1326,13 +1420,13 @@ export default function Accounts({
                                 </>
                               }
                             />
-                          </section>
+                          </Accordion.Item>
                         ))}
                       </div>
                     </section>
                   ) : null;
                 })}
-              </div>
+              </Accordion>
               <NativeRuntimeStatus
                 opened={managerOnly || opened}
                 accounts={accounts}
@@ -1341,8 +1435,10 @@ export default function Accounts({
           )}
           {adding && <ClaudeProfile onSaved={state.setData} />}
           {adding && (
-            <details className="account-register">
-              <summary>Add a Codex home directory</summary>
+            <Disclosure
+              className="account-register"
+              summary="Add a Codex home directory"
+            >
               <form
                 onSubmit={(e) => {
                   e.preventDefault();
@@ -1373,7 +1469,7 @@ export default function Accounts({
                   Add profile
                 </Button>
               </form>
-            </details>
+            </Disclosure>
           )}
           {(error || state.error) && (
             <p className="account-action-error" role="alert">

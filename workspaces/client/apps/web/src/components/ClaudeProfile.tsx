@@ -1,3 +1,4 @@
+import Disclosure from "./ui/Disclosure";
 import { useServerApi } from "../servers/ServerServicesContext";
 import { Button, NumberInput, Stack, Textarea, TextInput } from "@mantine/core";
 import { useRef, useState } from "react";
@@ -74,14 +75,13 @@ export default function ClaudeProfile({
     }
   };
   return (
-    <details className="account-register claude-profile" open={expanded}>
-      <summary>
-        {expanded
-          ? "Profile settings"
-          : account
-            ? "Configure Claude"
-            : "Claude"}
-      </summary>
+    <Disclosure
+      className="account-register claude-profile"
+      defaultOpen={expanded}
+      summary={
+        expanded ? "Profile settings" : account ? "Configure Claude" : "Claude"
+      }
+    >
       <form
         onChange={() => setSaved(false)}
         onSubmit={(event) => {
@@ -168,6 +168,6 @@ export default function ClaudeProfile({
           </Button>
         </Stack>
       </form>
-    </details>
+    </Disclosure>
   );
 }

@@ -265,7 +265,7 @@ test("Accounts provider cards preserve menus, confirmations, exact retries and r
         .locator(".account-card-heading")
         .getByText("Error", { exact: true }),
     ).toBeVisible();
-    await failure.locator(".account-limit-details > summary").click();
+    await failure.getByRole("button", { name: /^Limit details for/ }).click();
     await failure
       .getByRole("button", { name: "Error details", exact: true })
       .click();
@@ -273,7 +273,7 @@ test("Accounts provider cards preserve menus, confirmations, exact retries and r
     await failure
       .getByRole("button", { name: "Hide error details", exact: true })
       .click();
-    await failure.locator(".account-limit-details > summary").click();
+    await failure.getByRole("button", { name: /^Limit details for/ }).click();
     await expect(
       personal
         .locator(".account-card-heading")
@@ -294,33 +294,33 @@ test("Accounts provider cards preserve menus, confirmations, exact retries and r
       const b = await work.boundingBox();
       expect(b.y).toBeGreaterThan(a.y);
       expect(b.x).toBe(a.x);
-      expect(b.y - (a.y + a.height)).toBeGreaterThanOrEqual(16);
+      expect(a.height).toBeLessThanOrEqual(80);
+      expect(b.height).toBeLessThanOrEqual(80);
       const windows = personal.locator(".account-window-grid");
-      await expect(windows).toBeVisible();
-      const heading = await personal
-        .locator(".account-card-heading")
-        .boundingBox();
-      expect((await windows.boundingBox()).y).toBeGreaterThanOrEqual(
-        heading.y + heading.height,
-      );
+      await expect(windows).not.toBeAttached();
       await expect(
         personal.getByRole("textbox", {
           name: "Group of personal@example.com",
         }),
       ).toBeHidden();
-      await personal.locator(".account-limit-details > summary").click();
+      await personal
+        .getByRole("button", { name: /^Limit details for/ })
+        .click();
       await expect(
         personal.getByRole("textbox", {
           name: "Group of personal@example.com",
         }),
       ).toBeVisible();
-      await personal.locator(".account-limit-details > summary").click();
       expect(
         await personal
           .locator(".account-window-meter")
           .first()
           .evaluate((element) => element.getBoundingClientRect().height),
       ).toBe(3);
+      await work.getByRole("button", { name: /^Limit details for/ }).click();
+      await expect(personal.locator(".account-expanded")).not.toBeAttached();
+      await expect(work.locator(".account-expanded")).toBeVisible();
+      await work.getByRole("button", { name: /^Limit details for/ }).click();
       expect(
         await page.evaluate(
           () => document.documentElement.scrollWidth <= innerWidth,
@@ -409,7 +409,7 @@ test("Accounts provider cards preserve menus, confirmations, exact retries and r
     await disconnect
       .getByRole("button", { name: "Disconnect account", exact: true })
       .click();
-    await work.locator(".account-limit-details > summary").click();
+    await work.getByRole("button", { name: /^Limit details for/ }).click();
     await expect(
       work.getByText("Hidden from new chats.", { exact: true }),
     ).toBeVisible();

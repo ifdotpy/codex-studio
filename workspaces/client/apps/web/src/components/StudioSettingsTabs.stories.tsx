@@ -1,5 +1,6 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import {
+  Accordion,
   MantineProvider,
   useMantineColorScheme,
   NativeSelect,
@@ -77,18 +78,31 @@ function AccountStrips() {
       title="Accounts"
       help="Provider capacity across your development projects."
     >
-      <div className="accounts-grid">
+      <Accordion
+        className="accounts-grid"
+        keepMounted={false}
+        transitionDuration={0}
+        chevronPosition="left"
+      >
         {[
           ["Codex", "Release team", 76],
           ["Claude", "Review team", 32],
           ["Codex", "Documentation", 8],
         ].map(([provider, label, remaining]) => (
-          <article className="account-row" key={label}>
+          <Accordion.Item
+            className="account-row"
+            key={label}
+            value={String(label)}
+          >
             <div className="account-card-heading">
-              <span role="img" aria-label={String(provider)}>
-                <ProviderMark provider={String(provider).toLowerCase()} />
-              </span>
-              <strong title={String(label)}>{label}</strong>
+              <Accordion.Control aria-label={`Limit details for ${label}`}>
+                <span className="account-identity">
+                  <span role="img" aria-label={String(provider)}>
+                    <ProviderMark provider={String(provider).toLowerCase()} />
+                  </span>
+                  <strong title={String(label)}>{label}</strong>
+                </span>
+              </Accordion.Control>
             </div>
             <AccountCapacityView
               account={{ status: "ready", label: String(label), email: null }}
@@ -124,9 +138,9 @@ function AccountStrips() {
                 },
               )}
             />
-          </article>
+          </Accordion.Item>
         ))}
-      </div>
+      </Accordion>
     </SettingsSection>
   );
 }
@@ -154,17 +168,14 @@ export const SectionSelectionPreservesFields: Story = {
     const back = canvas.queryByRole("button", { name: "Back" });
     if (back) await userEvent.click(back);
     await userEvent.click(canvas.getByRole("tab", { name: "Accounts" }));
-    const summary = canvasElement.querySelector(
-      ".account-limit-details > summary",
-    );
-    if (!(summary instanceof HTMLElement))
-      throw new Error("Missing account disclosure");
+    const summary = canvas.getByRole("button", {
+      name: "Limit details for Release team",
+    });
     await expect(
       canvas.queryByRole("textbox", { name: "Group of Release team" }),
-    ).not.toBeVisible();
-    for (const row of canvasElement.querySelectorAll(".account-row")) {
-      await expect(row.querySelector(".account-window-grid")).toBeVisible();
-    }
+    ).not.toBeInTheDocument();
+    for (const row of canvasElement.querySelectorAll(".account-row"))
+      await expect(row.getBoundingClientRect().height).toBeLessThanOrEqual(80);
     await userEvent.click(summary);
     await expect(
       canvas.getByRole("textbox", { name: "Group of Release team" }),

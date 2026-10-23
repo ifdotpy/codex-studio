@@ -1,3 +1,4 @@
+import Disclosure from "./ui/Disclosure";
 import { useServerApi } from "../servers/ServerServicesContext";
 import { Button, NumberInput, Stack } from "@mantine/core";
 import { useRef, useState } from "react";
@@ -148,10 +149,10 @@ export default function AccountStartThrottle({
     }
   };
   return (
-    <details className="account-register account-start-throttle">
-      <summary>
-        Turn start limits{scope}: {throttleSummary(accountThrottle(account))}
-      </summary>
+    <Disclosure
+      className="account-register account-start-throttle"
+      summary={`Turn start limits${scope}: ${throttleSummary(accountThrottle(account))}`}
+    >
       <form
         onSubmit={(event) => {
           event.preventDefault();
@@ -190,6 +191,6 @@ export default function AccountStartThrottle({
           </Button>
         </Stack>
       </form>
-    </details>
+    </Disclosure>
   );
 }

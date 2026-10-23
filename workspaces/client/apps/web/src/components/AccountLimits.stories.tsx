@@ -1,7 +1,7 @@
 import { expect, userEvent, waitFor, within } from "storybook/test";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { useEffect, useMemo } from "react";
-import { MantineProvider } from "@mantine/core";
+import { Accordion, MantineProvider } from "@mantine/core";
 import Usage from "./Usage";
 import { AccountCapacityView } from "./Accounts";
 import { accountLimitView, ProviderMark } from "./AccountTiles";
@@ -41,20 +41,35 @@ function AccountLimitsFixture({
     <MantineProvider theme={theme} forceColorScheme={light ? "light" : "dark"}>
       <ServerServicesProvider services={services}>
         {settings ? (
-          <div
+          <Accordion
+            keepMounted={false}
+            transitionDuration={0}
+            chevronPosition="left"
             className="accounts-grid"
             style={{ maxWidth: "var(--studio-form-max)" }}
           >
             {accountLimitFixtures.map((item) => (
-              <article className="account-row" key={item.key}>
+              <Accordion.Item
+                className="account-row"
+                key={item.key}
+                value={item.key}
+              >
                 <div className="account-card-heading">
-                  <span
-                    role="img"
-                    aria-label={item.provider === "claude" ? "Claude" : "Codex"}
+                  <Accordion.Control
+                    aria-label={`Limit details for ${item.email || item.label}`}
                   >
-                    <ProviderMark provider={item.provider || "codex"} />
-                  </span>
-                  <strong>{item.label}</strong>
+                    <span className="account-identity">
+                      <span
+                        role="img"
+                        aria-label={
+                          item.provider === "claude" ? "Claude" : "Codex"
+                        }
+                      >
+                        <ProviderMark provider={item.provider || "codex"} />
+                      </span>
+                      <strong>{item.label}</strong>
+                    </span>
+                  </Accordion.Control>
                   <span className="account-plan">
                     {item.provider === "claude" ? "Max" : "Pro"}
                   </span>
@@ -76,9 +91,9 @@ function AccountLimitsFixture({
                   )}
                   extraDetails={<small>{item.email}</small>}
                 />
-              </article>
+              </Accordion.Item>
             ))}
-          </div>
+          </Accordion>
         ) : (
           <div
             style={{
@@ -207,28 +222,40 @@ export const SettingsDark: Story = {
   args: { settings: true },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(canvas.getAllByRole("article")).toHaveLength(5);
+    const rows = [...canvasElement.querySelectorAll(".account-row")];
+    await expect(rows).toHaveLength(5);
+    for (const row of rows) {
+      await expect(row.getBoundingClientRect().height).toBeLessThanOrEqual(80);
+      await expect(
+        row.querySelector(".account-expanded"),
+      ).not.toBeInTheDocument();
+    }
+    const controls = canvas.getAllByRole("button", {
+      name: /Limit details for/,
+    });
+    await userEvent.click(controls[0]);
     await expect(
       canvas.getByRole("meter", { name: "Spark 5h remaining" }),
     ).toBeVisible();
+    await expect(canvas.getByText("1 credit available")).toBeVisible();
+    await expect(
+      canvas.queryByRole("button", { name: "Apply reset" }),
+    ).not.toBeInTheDocument();
+    await userEvent.click(controls[3]);
     await expect(
       canvas.getByRole("meter", { name: "Opus 7d remaining" }),
     ).toBeVisible();
+    await expect(controls[0]).toHaveAttribute("aria-expanded", "false");
     await expect(
-      canvas.getByText("Limits temporarily unavailable", {
-        selector: ".account-window-grid > small",
-      }),
+      canvasElement.querySelectorAll(".account-expanded"),
+    ).toHaveLength(1);
+    await userEvent.click(controls[2]);
+    await expect(
+      canvas.getByText("Limits temporarily unavailable"),
     ).toBeVisible();
-    const rows = [...canvasElement.querySelectorAll(".account-row")];
-    for (const [index, row] of rows.entries()) {
-      const windows = row.querySelector(".account-window-grid");
-      await expect(windows).toBeVisible();
-      if (index > 0)
-        await expect(
-          row.getBoundingClientRect().top -
-            rows[index - 1].getBoundingClientRect().bottom,
-        ).toBeGreaterThanOrEqual(16);
-    }
+    await expect(
+      canvasElement.querySelectorAll(".account-expanded"),
+    ).toHaveLength(1);
   },
 };
 export const SettingsLight: Story = {

@@ -139,9 +139,11 @@ const AGE_REFRESH_MS = 30_000;
 export function AccountLimitsAcrossServers({
   sources,
   extraDetails,
+  facts,
 }: {
   sources: AccountSource[];
   extraDetails?: ReactNode;
+  facts?: ReactNode;
 }) {
   const [limits, setLimits] = useState<
     Record<string, AccountLimitsSnapshot | null>
@@ -186,6 +188,7 @@ export function AccountLimitsAcrossServers({
         view={accountLimitView(account, shown?.limits ?? null, now)}
         note={note}
         extraDetails={extraDetails}
+        facts={facts}
       />
     </>
   );

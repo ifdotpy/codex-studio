@@ -171,11 +171,13 @@ export const PartialSaveRetry: Story = {
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    const summary = canvasElement.querySelector("summary");
+    const summary = canvasElement.querySelector(
+      ".server-settings-edit .disclosure-control",
+    );
     if (!(summary instanceof HTMLElement))
       throw new Error("Missing Edit disclosure");
     await userEvent.click(summary);
-    const button = canvas.getByRole("button", { name: "Save" });
+    const button = await canvas.findByRole("button", { name: "Save" });
     await expect(button).toBeDisabled();
     const name = canvas.getByRole("textbox", {
       name: "Server name",

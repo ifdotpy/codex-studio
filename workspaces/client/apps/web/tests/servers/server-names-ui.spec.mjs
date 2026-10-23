@@ -52,7 +52,7 @@ test("server cards rename all four names and retain aliases after reload", async
     for (const remote of remotes)
       await expect.poll(() => remote.pairs.length).toBe(1);
     for (const summary of await dialog
-      .locator(".server-settings-edit > summary")
+      .locator(".server-settings-edit .disclosure-control")
       .all())
       await summary.click();
     const stripWidths = await dialog
@@ -126,7 +126,7 @@ test("server cards rename all four names and retain aliases after reload", async
       await expect(dialog).toContainText(name);
     const longName = "A".repeat(80);
     const longCard = dialog.locator("[data-settings-server=local]");
-    await longCard.locator(".server-settings-edit > summary").click();
+    await longCard.locator(".server-settings-edit .disclosure-control").click();
     await longCard
       .getByRole("textbox", { name: "Server name", exact: true })
       .fill(longName);
@@ -203,7 +203,7 @@ test("a UI-only client renames through its signed credential and retries the sam
       .getByRole("button", { name: "Pair server", exact: true })
       .click();
     const card = dialog.locator("[data-settings-server=remote]");
-    await card.locator(".server-settings-edit > summary").click();
+    await card.locator(".server-settings-edit .disclosure-control").click();
     await card
       .getByRole("textbox", { name: "Server name", exact: true })
       .fill("Igor MBP");
