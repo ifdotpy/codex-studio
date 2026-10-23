@@ -120,7 +120,7 @@ fn an_idle_service_of_another_build_is_replaced_and_keeps_receipts_and_leases() 
         .unwrap()
         .join("lease.json");
     let lease_bytes = std::fs::read(&lease).unwrap();
-    let token = ensure_service(&state.path, &binary(), "new-build").unwrap();
+    let token = ensure_service(&state.path, &binary(), "new-build", None).unwrap();
     assert_eq!(token, TOKEN);
     let after = state.health();
     assert_eq!(after["buildId"], "new-build");
@@ -137,7 +137,7 @@ fn an_idle_service_of_another_build_is_replaced_and_keeps_receipts_and_leases() 
         op
     );
     // The current build stays as it is.
-    ensure_service(&state.path, &binary(), "new-build").unwrap();
+    ensure_service(&state.path, &binary(), "new-build", None).unwrap();
     assert_eq!(state.health()["pid"], after["pid"]);
 }
 
@@ -155,7 +155,7 @@ fn a_busy_service_of_another_build_stays_with_its_command() {
                      "argv": ["/bin/sleep", "30"], "manifestSha256": empty, "timeoutSeconds": 60}),
         ),
     );
-    ensure_service(&state.path, &binary(), "new-build").unwrap();
+    ensure_service(&state.path, &binary(), "new-build", None).unwrap();
     assert_eq!(state.health()["pid"], before["pid"]);
     assert_eq!(state.health()["buildId"], "old-build");
     assert!(old.try_wait().unwrap().is_none());
@@ -180,7 +180,7 @@ fn a_busy_service_of_another_build_stays_with_its_command() {
 fn a_new_state_gets_a_token_and_a_service() {
     let temp = tempfile::tempdir().unwrap();
     let path = std::fs::canonicalize(temp.path()).unwrap().join("linux-vm");
-    let token = ensure_service(&path, &binary(), "fresh-build").unwrap();
+    let token = ensure_service(&path, &binary(), "fresh-build", None).unwrap();
     assert_eq!(token.len(), 64);
     use std::os::unix::fs::PermissionsExt;
     assert_eq!(

@@ -42,7 +42,7 @@ fn host(local_open: bool) -> Host {
         Arc::new(OneChat),
         HostBridgeOptions {
             listeners: Arc::new(move || {
-                if listener.load(Ordering::SeqCst) {
+                Some(if listener.load(Ordering::SeqCst) {
                     vec![Listener {
                         address: "127.0.0.1".into(),
                         port: PORT,
@@ -50,7 +50,7 @@ fn host(local_open: bool) -> Host {
                     }]
                 } else {
                     Vec::new()
-                }
+                })
             }),
             local_open,
             ..HostBridgeOptions::default()

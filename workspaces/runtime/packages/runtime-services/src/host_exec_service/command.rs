@@ -361,6 +361,32 @@ impl HostService {
             {
                 command.env(ENV_STATE, state);
             }
+            // A sign-in link of the command reaches the host bridge as its calling chat. The
+            // inherited environment must not name another chat's session.
+            let launcher = self
+                .browser_host
+                .as_ref()
+                .map(|folder| folder.join(crate::browser_environment::BROWSER_LAUNCHER))
+                .filter(|launcher| launcher.is_file());
+            match (&launcher, &self.browser_host) {
+                (Some(launcher), Some(folder)) => {
+                    command
+                        .env("BROWSER", launcher)
+                        .env(
+                            "STUDIO_BROWSER_SOCKET",
+                            folder.join(crate::browser_environment::BROWSER_OPEN_SOCKET),
+                        )
+                        .env("STUDIO_BROWSER_SESSION", text(op, "agentId"))
+                        // The launcher prefers a guest session name.
+                        .env_remove("LAYR_SESSION");
+                }
+                _ => {
+                    command
+                        .env_remove("BROWSER")
+                        .env_remove("STUDIO_BROWSER_SOCKET")
+                        .env_remove("STUDIO_BROWSER_SESSION");
+                }
+            }
             match op
                 .get("layrTree")
                 .and_then(Value::as_str)

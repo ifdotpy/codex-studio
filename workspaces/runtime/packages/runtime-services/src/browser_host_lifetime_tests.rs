@@ -71,6 +71,7 @@ impl Fixture {
                 }),
                 http_providers: BTreeSet::new(),
                 clock: Arc::new(move || f64::from_bits(clock.load(Ordering::SeqCst))),
+                local_open: false,
             },
         )
         .expect("bridge");

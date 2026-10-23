@@ -29,6 +29,8 @@ use protocol::{Failure, HostExecError, INVALID, Outcome, require};
 
 /// The subcommand of `studio-runtime-server` that runs this service.
 pub const SUBCOMMAND: &str = "host-exec-service";
+/// The optional argument that names the Studio server's host bridge folder.
+pub const BROWSER_HOST_ARGUMENT: &str = "--browser-host";
 /// The service socket in the VM state folder; the native helper forwards the
 /// guest port to it (`linux-vm/main.swift`).
 pub const SOCKET_FILE: &str = "host-exec.sock";
@@ -123,6 +125,10 @@ pub(crate) struct Inner {
 
 pub(crate) struct HostService {
     pub(crate) state: PathBuf,
+    /// The host bridge folder of the Studio server (`<state>/browser-host`). A command gets
+    /// its launcher as `BROWSER` with the calling chat as the session, so a sign-in that a VM
+    /// chat runs on this Mac shows a card (docs/vm-browser-bridge.md, "Native chats").
+    pub(crate) browser_host: Option<PathBuf>,
     pub(crate) pool: PathBuf,
     pub(crate) default_slots: i64,
     pub(crate) default_budget: u64,
@@ -251,6 +257,7 @@ impl HostService {
         .map_err(std::io::Error::other)?;
         Ok(Self {
             state,
+            browser_host: None,
             pool,
             default_slots: slots,
             default_budget: budget,
@@ -262,6 +269,12 @@ impl HostService {
             locks: Mutex::new(HashMap::new()),
             stopped: tokio::sync::Notify::new(),
         })
+    }
+
+    /// Send the sign-in links of commands to the host bridge in `folder`.
+    pub(crate) fn with_browser_host(mut self, folder: Option<PathBuf>) -> Self {
+        self.browser_host = folder;
+        self
     }
 
     pub(crate) fn inner(&self) -> MutexGuard<'_, Inner> {
@@ -921,8 +934,9 @@ pub(crate) async fn serve(service: Arc<HostService>) -> std::io::Result<()> {
     Ok(())
 }
 
-/// `studio-runtime-server host-exec-service <vm-state-dir> --build <id>`: run the
-/// service in its own session. Returns `None` for other command lines.
+/// `studio-runtime-server host-exec-service <vm-state-dir> --build <id>
+/// [--browser-host <folder>]`: run the service in its own session. Returns `None` for
+/// other command lines.
 pub fn main(args: impl IntoIterator<Item = std::ffi::OsString>) -> Option<i32> {
     let args: Vec<String> = args
         .into_iter()
@@ -932,13 +946,20 @@ pub fn main(args: impl IntoIterator<Item = std::ffi::OsString>) -> Option<i32> {
     if args.first().map(String::as_str) != Some(SUBCOMMAND) {
         return None;
     }
-    let (Some(state), Some("--build"), Some(build), None) = (
+    let browser_host = match (args.get(4).map(String::as_str), args.get(5), args.get(6)) {
+        (None, None, None) => Some(None),
+        (Some(BROWSER_HOST_ARGUMENT), Some(folder), None) => Some(Some(PathBuf::from(folder))),
+        _ => None,
+    };
+    let (Some(state), Some("--build"), Some(build), Some(browser_host)) = (
         args.get(1),
         args.get(2).map(String::as_str),
         args.get(3),
-        args.get(4),
+        browser_host,
     ) else {
-        eprintln!("usage: studio-runtime-server {SUBCOMMAND} <vm-state-dir> --build <id>");
+        eprintln!(
+            "usage: studio-runtime-server {SUBCOMMAND} <vm-state-dir> --build <id> [{BROWSER_HOST_ARGUMENT} <folder>]"
+        );
         return Some(2);
     };
     // A running Mac command survives a backend restart: the service leaves the
@@ -959,7 +980,9 @@ pub fn main(args: impl IntoIterator<Item = std::ffi::OsString>) -> Option<i32> {
         }
     };
     let result = runtime.block_on(async {
-        let service = Arc::new(HostService::open(Path::new(state), build.clone())?);
+        let service = Arc::new(
+            HostService::open(Path::new(state), build.clone())?.with_browser_host(browser_host),
+        );
         serve(service).await
     });
     match result {

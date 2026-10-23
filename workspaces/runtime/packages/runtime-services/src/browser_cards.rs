@@ -2,7 +2,7 @@
 //! and 6). The Rust port of `codex_browser_bridge.Bridge.poll` and `apply`.
 //!
 //! One poll runs for each source: the guest service of the Linux VM on this Mac (`vm`) and
-//! the host bridge of native chats (`host`, `browser_host`). It long-polls `browser.wait`,
+//! the host bridge of commands on this server (`host`, `browser_host`). It long-polls `browser.wait`,
 //! writes one `browser/open` request for each new pending link, refuses links that no chat
 //! can own, keeps the card's deadline equal to the guest request's, and expires a pending
 //! card when its guest request ends. A card that nobody answered tells its chat
@@ -197,7 +197,8 @@ fn unanswered_event(tx: &Transaction<'_>, record: &Value, state: &str, now: f64)
 /// A bridge that the server polls.
 #[derive(Clone)]
 pub struct CardSource {
-    /// `vm`: links of VM chats from the guest. `host`: links of native chats of this server.
+    /// `vm`: links of VM chats from the guest. `host`: links of commands that run on this
+    /// server: native chats, and `host_exec` commands of VM chats.
     pub source: &'static str,
     pub guest: Arc<dyn GuestRpc>,
     /// The forwards that this server holds for the source's approvals.
@@ -230,13 +231,10 @@ fn refusal(
     if python_truthy(agent.get("deletedAt")) {
         return Ok(Some("The chat was deleted".into()));
     }
+    // The host bridge also serves a VM chat's `host_exec` command, which runs on this Mac.
     let vm = agent.get("executionMode").and_then(Value::as_str) == Some("vm");
-    if vm != (source.source == "vm") {
-        return Ok(Some(if source.source == "vm" {
-            "The chat is not an active VM chat".into()
-        } else {
-            "The chat is not a native chat".into()
-        }));
+    if source.source == "vm" && !vm {
+        return Ok(Some("The chat is not an active VM chat".into()));
     }
     if let Some(project) = agent
         .get("layrProjectId")
@@ -347,7 +345,19 @@ pub async fn apply(
                         serde_json::from_str(&raw).map_err(|_| BrowserCardError::Invalid)?;
                     // A pasted result in flight writes its own outcome (browser_answer).
                     let pasting = record.pointer("/params/paste").is_some_and(|mark| !mark.is_null());
-                    if record.get("status").and_then(Value::as_str) == Some("pending") && !pasting {
+                    let local = item.get("closeReason").and_then(Value::as_str)
+                        == Some(crate::browser_host::LOCAL_CLOSE_REASON);
+                    let pending = record.get("status").and_then(Value::as_str) == Some("pending");
+                    if pending && !pasting && local {
+                        // The browser of this Mac had the page and the command stopped
+                        // listening: it ended its sign-in there, and nobody waits for the card.
+                        record["status"] = json!("answered");
+                        record["answeredBy"] = json!("browser");
+                        record["answeredAt"] = json!(now);
+                        record["decision"] = json!("accept");
+                        record["closeReason"] = json!(crate::browser_host::LOCAL_CLOSE_REASON);
+                        put_request(tx, &key, &record)?;
+                    } else if pending && !pasting {
                         let waiting = record.pointer("/params/phase").and_then(Value::as_str) == Some(WAITING);
                         record["status"] = json!("expired");
                         record["closeReason"] = json!(state);
