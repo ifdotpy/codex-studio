@@ -357,6 +357,19 @@ fn valid_session_id(value: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
 }
 
+/// The snapshot format of the Claude bridge session store. The bridge owns it, so it
+/// is read from the bridge source instead of being copied here.
+fn claude_session_format() -> &'static str {
+    static FORMAT: LazyLock<&'static str> = LazyLock::new(|| {
+        include_str!("../../../../providers/apps/claude-bridge/session-store.mjs")
+            .split_once("const FORMAT = \"")
+            .and_then(|(_, rest)| rest.split_once('"'))
+            .map(|(format, _)| format)
+            .expect("Claude session store format")
+    });
+    *FORMAT
+}
+
 /// The native ids a Studio session state file names. Studio writes this file, so a
 /// file of another shape is an error, not something to skip.
 #[derive(Deserialize)]
@@ -769,6 +782,91 @@ mod tests {
             r#"{"nativeId": 5}"#,
         )
         .expect("write bad state");
+        assert!(matches!(
+            read_local_claude_usage(&state, &members, &accounts),
+            Err(CostsError::InvalidSessionState)
+        ));
+    }
+
+    /// The Claude bridge saves a snapshot envelope whose session holds every turn, so the
+    /// file can pass 16 MiB. Its native ids still select that session's logs.
+    #[test]
+    fn bridge_session_snapshots_are_read_at_any_size() {
+        let temp = tempdir().expect("temporary fixture directory");
+        let state = temp.path().join("state");
+        let profile = temp.path().join("claude");
+        let project = profile.join("projects/project");
+        fs::create_dir_all(&project).expect("create project");
+        fs::create_dir_all(state.join("account-servers/acct/sessions")).expect("sessions");
+        let row = |id: &str| {
+            json!({"type":"assistant","timestamp":"2026-09-01T12:00:00Z",
+                "message":{"id":id,"model":"claude-sonnet-4-5",
+                    "usage":{"input_tokens":1,"output_tokens":2}}})
+        };
+        fs::write(
+            project.join("native-small.jsonl"),
+            format!("{}\n", row("r-small")),
+        )
+        .expect("write small native log");
+        fs::write(
+            project.join("native-large.jsonl"),
+            format!("{}\n", row("r-large")),
+        )
+        .expect("write large native log");
+        let accounts = BTreeMap::from([(
+            "acct".to_owned(),
+            json!({"provider":"claude","claudeOptions":{"configDir":profile}}),
+        )]);
+        let snapshot = |thread: &str, native: &str, turn_bytes: usize| {
+            json!({
+                "format": super::claude_session_format(),
+                "sequence": 3,
+                "session": {
+                    "id": thread,
+                    "nativeId": native,
+                    "turns": [{"text": "x".repeat(turn_bytes)}]
+                }
+            })
+            .to_string()
+        };
+        for (thread, native, bytes) in [
+            ("thread-small", "native-small", 1_024),
+            ("thread-large", "native-large", 17 * 1024 * 1024),
+        ] {
+            fs::write(
+                state.join(format!("account-servers/acct/sessions/{thread}.json")),
+                snapshot(thread, native, bytes),
+            )
+            .expect("write session snapshot");
+            let members = vec![(
+                "agent".to_owned(),
+                member(json!({"accountKey":"acct","threadId":thread})),
+            )];
+            let rows =
+                read_local_claude_usage(&state, &members, &accounts).expect("snapshot usage");
+            assert_eq!(
+                rows.iter()
+                    .map(|row| row.usage.id.as_str())
+                    .collect::<Vec<_>>(),
+                [if thread == "thread-small" {
+                    "r-small"
+                } else {
+                    "r-large"
+                }]
+            );
+        }
+
+        // A snapshot of another format is still an error, not an empty session.
+        fs::write(
+            state.join("account-servers/acct/sessions/thread-small.json"),
+            json!({"format":"studio-claude-session-v0","session":{"nativeId":"native-small"}})
+                .to_string(),
+        )
+        .expect("write unknown snapshot format");
+        let members = vec![(
+            "agent".to_owned(),
+            member(json!({"accountKey":"acct","threadId":"thread-small"})),
+        )];
         assert!(matches!(
             read_local_claude_usage(&state, &members, &accounts),
             Err(CostsError::InvalidSessionState)
