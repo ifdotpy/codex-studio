@@ -7,6 +7,10 @@ import {
   runtimeBinaries,
   runtimeBinaryName,
 } from "../desktop/runtime-binaries.mjs";
+import {
+  missingPythonModules,
+  pythonEntryPoints,
+} from "../desktop/python-resources.mjs";
 
 const application = process.argv[2];
 if (!application) throw new Error("Supply the packaged .app path.");
@@ -58,10 +62,14 @@ for (const file of [
   "helpers/desktop-recovery/restart-environment.cjs",
   "studio-fs-events",
   "studio-linux-vm",
-  "recover_backend.py",
-  "install_update.py",
+  ...pythonEntryPoints,
 ])
   await access(path.join(resources, file));
+assert.deepEqual(
+  missingPythonModules(resources),
+  [],
+  "The packaged Python programs import modules that Contents/Resources does not supply.",
+);
 for (const { binary } of runtimeBinaries)
   await access(
     path.join(workspace, "bin", runtimeBinaryName(binary)),
@@ -82,6 +90,6 @@ console.log(
     executable,
     commit: stamp.commit,
     checks:
-      "bundle resources, Rust runtime executables, desktop icon, code signature",
+      "bundle resources, Python helper imports, Rust runtime executables, desktop icon, code signature",
   }),
 );

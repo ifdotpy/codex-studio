@@ -2,6 +2,7 @@ import { buildLinuxVM } from "./native/linux-vm/build.mjs";
 import { signingIdentity, signApplication, signCode } from "./signing.mjs";
 import { setBundleDisplayName } from "./bundle-name.mjs";
 import { runtimeBinaries, runtimeBinaryName } from "./runtime-binaries.mjs";
+import { pythonResources } from "./python-resources.mjs";
 import {
   cargoReleaseArguments,
   prebuiltReleaseDirectory,
@@ -256,8 +257,7 @@ try {
       : [
           linuxVM,
           fsEvents,
-          path.join(root, "recover_backend.py"),
-          path.join(root, "install_update.py"),
+          ...pythonResources.map((file) => path.join(root, file)),
         ]),
   ];
   if (resourcesOnly) {
