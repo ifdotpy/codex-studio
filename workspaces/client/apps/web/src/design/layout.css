@@ -18,6 +18,9 @@
   --studio-settings-nav-size: 12rem;
   /* Messages room selector alongside the selected room. */
   --studio-room-list-size: 16rem;
+  /* Technical notice details scroll limit and text alignment after the icon. */
+  --studio-notice-details-max: 11.25rem;
+  --studio-notice-indent: 1.5rem;
   /* Voice overlay maximum height, input minimum, and compact label width. */
   --studio-voice-max: 35rem;
   --studio-voice-input-min: 7.5rem;
