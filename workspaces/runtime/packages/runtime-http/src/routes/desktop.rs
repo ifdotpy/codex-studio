@@ -90,6 +90,17 @@ pub fn initialize_backend_identity() -> io::Result<String> {
     }
 }
 
+/// The build identity of this executable: the one that startup recorded, or a
+/// hash of the executable now. The Mac `host_exec` service reports the build of
+/// the backend that started it.
+pub fn backend_build_identity() -> io::Result<String> {
+    if let Some(build) = BACKEND_BUILD.get() {
+        return Ok(build.clone());
+    }
+    let build = executable_build()?;
+    Ok(BACKEND_BUILD.get_or_init(|| build).clone())
+}
+
 fn backend_build() -> String {
     BACKEND_BUILD
         .get_or_init(|| executable_build().expect("runtime executable is readable"))

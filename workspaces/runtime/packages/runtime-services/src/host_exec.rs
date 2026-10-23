@@ -1,11 +1,11 @@
 //! VM-only `host_exec`: one macOS command from a VM agent's layr line
 //! (docs/host-exec.md).
 //!
-//! Python `codex_host_exec.py` owns the tool contract and the Mac service. The
-//! service stays a separate Python process; this module asks the Python owner
-//! to keep it running and sends the guest the exact request that Python sends.
-//! A lost or uncertain guest answer never repeats the command: the caller gets
-//! an unknown outcome with the operation ID to read with `status` or `list`.
+//! This module owns the tool contract: the argument checks, the guest request
+//! and its identity, the waits and the output limit. The Mac side is the service
+//! of [`crate::host_exec_service`]. A lost or uncertain guest answer never
+//! repeats the command: the caller gets an unknown outcome with the operation ID
+//! to read with `status` or `list`.
 
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
@@ -23,19 +23,19 @@ pub(crate) const TOOL: &str = "host_exec";
 /// The dependency that `host_exec` names until the host attaches its runtime.
 pub(crate) const DEPENDENCY: &str = "host-exec/layr-bridge";
 
-// Python `codex_host_exec` owns the values below. The fast server suite
-// `host-exec-restart-contract.py` checks each copy against its owner.
 /// Run time of a command without `timeout_seconds`, in seconds.
 pub(crate) const DEFAULT_TIMEOUT_SECONDS: f64 = 300.0;
-/// Largest `timeout_seconds`, in seconds.
+/// Largest `timeout_seconds`, in seconds; the bundled definition states the same maximum.
 pub(crate) const MAX_TIMEOUT_SECONDS: f64 = 3600.0;
-/// Seconds that the guest wait of an execute request adds to the command timeout.
+/// Seconds that the guest wait of an execute request adds to the command
+/// timeout: the slot transfer before the command and the result transfer after it.
 pub(crate) const EXECUTE_STREAM_MARGIN_SECONDS: f64 = 3660.0;
 /// Guest wait of a status, cancel, list or release request, in seconds.
 pub(crate) const STREAM_TIMEOUT_SECONDS: f64 = 60.0;
-/// Largest command output that a tool result keeps, in characters.
+/// Largest command output that a tool result keeps, in characters. The rest
+/// stays readable with action status.
 pub(crate) const OUTPUT_LIMIT_CHARS: usize = 262_144;
-/// The shell that runs the command text.
+/// The shell that runs the command text: argv is this pair plus the command.
 pub(crate) const COMMAND_SHELL: [&str; 2] = ["/bin/zsh", "-lc"];
 /// Guest request ID prefix of one exact tool request.
 pub(crate) const REQUEST_ID_PREFIX: &str = "host-exec:";
@@ -43,7 +43,8 @@ pub(crate) const REQUEST_ID_PREFIX: &str = "host-exec:";
 pub(crate) const CONFIGURE_ID_PREFIX: &str = "host-configure:";
 /// Guest wait of `host.configure`, in seconds.
 pub(crate) const CONFIGURE_TIMEOUT_SECONDS: f64 = 15.0;
-/// The channel token file in the VM state folder.
+/// The channel token file in the VM state folder: the Mac service checks it,
+/// the guest gets it with `host.configure`.
 pub(crate) const TOKEN_FILE: &str = "host-exec-token";
 /// The tool receipt field that keeps the exact guest request.
 pub(crate) const RECEIPT_REQUEST_FIELD: &str = "hostExecRequest";
@@ -51,21 +52,10 @@ pub(crate) const RECEIPT_REQUEST_FIELD: &str = "hostExecRequest";
 pub(crate) const OPERATION_NOTE: &str =
     "Operation: {}. Use action status or list; never repeat the command.";
 
-/// Longest wait for the Python service owner, in seconds. Its own waits are
-/// 10 seconds to stop an idle old service and 10 seconds to start a new one.
-const ENSURE_TIMEOUT_SECONDS: u64 = 60;
-/// Retained standard error of the Python service owner, in bytes.
-const ENSURE_STDERR_BYTES: usize = 16_384;
-/// The environment variable that names the prepared Python interpreter
-/// (`codex_python.py` owns its meaning).
-const PYTHON_ENVIRONMENT: &str = "CODEX_AGENTS_PYTHON";
-/// The Python entry point: the scripts folder and the VM state folder follow.
-const ENSURE_SCRIPT: &str = "import sys; sys.path.insert(0, sys.argv[1]); import codex_host_exec; codex_host_exec.ensure_service(sys.argv[2])";
-
 const REVIEWER_REFUSAL: &str = "host_exec is unavailable to read-only reviewers";
 const VM_ONLY_REFUSAL: &str = "host_exec is available only to VM agents";
 
-/// The bundled tool definition, generated from Python `tool_definition()`.
+/// The bundled tool definition (`host_exec_tool.json`, its owner).
 pub(crate) fn tool_definition() -> Option<&'static crate::thread_prepare::ToolDefinition> {
     static DEFINITION: OnceLock<Option<crate::thread_prepare::ToolDefinition>> = OnceLock::new();
     DEFINITION
@@ -73,7 +63,7 @@ pub(crate) fn tool_definition() -> Option<&'static crate::thread_prepare::ToolDe
         .as_ref()
 }
 
-/// The actions of the bundled definition (Python `ACTIONS`).
+/// The actions of the bundled definition; the guest broker implements each.
 fn known_action(action: &str) -> bool {
     tool_definition()
         .and_then(|tool| tool.input_schema.get("properties"))
@@ -82,7 +72,7 @@ fn known_action(action: &str) -> bool {
         .is_some_and(|actions| actions.iter().any(|known| known == action))
 }
 
-/// Keeps the Mac `host_exec` service running (Python `ensure_service`).
+/// Keeps the Mac `host_exec` service running.
 pub trait HostExecService: Send + Sync {
     /// Make sure a healthy service of the current build serves the VM state
     /// folder, then return the channel token. An error proves that no guest
@@ -90,89 +80,49 @@ pub trait HostExecService: Send + Sync {
     fn ensure(&self) -> BoxFuture<'_, Result<String, String>>;
 }
 
-/// Runs Python `codex_host_exec.ensure_service` from the server scripts. The
-/// Python owner creates the token, probes `host-exec.sock`, replaces an idle
-/// service of another build through `service.retire`, and starts
-/// `codex_host_exec_server.py` in its own session.
-pub struct PythonHostExecService {
-    python: PathBuf,
-    scripts: PathBuf,
+/// Starts the Mac service as `studio-runtime-server host-exec-service` from
+/// the backend executable (`host_exec_service::lifecycle::ensure_service`): it
+/// creates the token, probes `host-exec.sock`, asks an idle service of another
+/// build to retire, and starts the current build in its own session.
+pub struct RustHostExecService {
+    program: PathBuf,
     vm_state_dir: PathBuf,
+    build: fn() -> std::io::Result<String>,
 }
 
-impl PythonHostExecService {
-    /// `scripts` holds `codex_host_exec.py`; the interpreter is
-    /// `CODEX_AGENTS_PYTHON` when set, otherwise `python3` on `PATH`.
-    pub fn new(scripts: PathBuf, vm_state_dir: PathBuf) -> Self {
-        let python = std::env::var_os(PYTHON_ENVIRONMENT)
-            .filter(|value| !value.is_empty())
-            .map_or_else(|| PathBuf::from("python3"), PathBuf::from);
-        Self::with_python(python, scripts, vm_state_dir)
-    }
-
-    pub fn with_python(python: PathBuf, scripts: PathBuf, vm_state_dir: PathBuf) -> Self {
+impl RustHostExecService {
+    /// `program` is the `studio-runtime-server` executable; `build` gives its
+    /// build identity, which the first call computes when startup did not.
+    pub fn new(
+        program: PathBuf,
+        vm_state_dir: PathBuf,
+        build: fn() -> std::io::Result<String>,
+    ) -> Self {
         Self {
-            python,
-            scripts,
+            program,
             vm_state_dir,
+            build,
         }
     }
 }
 
-impl HostExecService for PythonHostExecService {
+impl HostExecService for RustHostExecService {
     fn ensure(&self) -> BoxFuture<'_, Result<String, String>> {
-        let python = self.python.clone();
-        let scripts = self.scripts.clone();
-        let state = self.vm_state_dir.clone();
+        let (program, state, build) = (self.program.clone(), self.vm_state_dir.clone(), self.build);
         Box::pin(async move {
             studio_runtime_process::blocking_pool::spawn_blocking(
                 "runtime-services/host-exec-service",
-                move || ensure_with_python(&python, &scripts, &state),
+                move || {
+                    let build = build().map_err(|error| {
+                        format!("The backend build identity is unknown: {error}")
+                    })?;
+                    crate::host_exec_service::lifecycle::ensure_service(&state, &program, &build)
+                },
             )
             .await
             .unwrap_or_else(|_| Err("The host_exec service check ended without a result".into()))
         })
     }
-}
-
-fn ensure_with_python(
-    python: &std::path::Path,
-    scripts: &std::path::Path,
-    state: &std::path::Path,
-) -> Result<String, String> {
-    let (Some(scripts_text), Some(state_text)) = (scripts.to_str(), state.to_str()) else {
-        return Err("The host_exec service paths are not UTF-8".into());
-    };
-    let outcome = crate::bounded_child::run(crate::bounded_child::Request {
-        program: python.as_os_str(),
-        git_directory: None,
-        args: &["-I", "-B", "-c", ENSURE_SCRIPT, scripts_text, state_text],
-        environment: &[],
-        input: None,
-        stdout_limit: ENSURE_STDERR_BYTES,
-        stderr_limit: ENSURE_STDERR_BYTES,
-        timeout: Duration::from_secs(ENSURE_TIMEOUT_SECONDS),
-    });
-    match outcome {
-        Ok(_) => {}
-        Err(crate::bounded_child::ChildError::Failed(message)) => {
-            return Err(format!("The host_exec service did not start: {message}"));
-        }
-        Err(crate::bounded_child::ChildError::TimedOut) => {
-            return Err(format!(
-                "The host_exec service check exceeded {ENSURE_TIMEOUT_SECONDS} seconds. Inspect {}",
-                state.join("host-exec.log").display()
-            ));
-        }
-        Err(crate::bounded_child::ChildError::Launch(message)) => {
-            return Err(format!(
-                "Could not run {} for the host_exec service: {message}",
-                python.display()
-            ));
-        }
-    }
-    std::fs::read_to_string(state.join(TOKEN_FILE))
-        .map_err(|error| format!("The host_exec channel token is unreadable: {error}"))
 }
 
 /// The guest channel and the Mac service of `host_exec`.
@@ -187,7 +137,7 @@ impl HostExecRuntime {
     }
 }
 
-/// The exact guest request of one tool request (Python `hostExecRequest`).
+/// The exact guest request of one tool request (the receipt field `hostExecRequest`).
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct GuestRequest {
     pub(crate) request_id: String,
@@ -213,7 +163,7 @@ pub(crate) fn operation_note(operation: &str) -> String {
     OPERATION_NOTE.replace("{}", operation)
 }
 
-/// Python `run_tool` argument checks and guest parameters. `request_id` is the
+/// The argument checks and guest parameters of one call. `request_id` is the
 /// tool request ID, used when the caller supplies no `request_id`.
 pub(crate) fn guest_request(
     actor_id: &str,
@@ -298,7 +248,7 @@ pub(crate) fn guest_request(
     })
 }
 
-/// Python `codex_host_exec.run_tool` after the claim of tool request
+/// Run one `host_exec` call after the claim of tool request
 /// `request_id` committed.
 pub(crate) async fn run(
     store: Arc<RuntimeStore>,
@@ -381,7 +331,7 @@ async fn on_guest_thread<T: Send + 'static>(
     })
 }
 
-/// Python `remember_request`: save the exact guest request on its running
+/// Save the exact guest request on its running
 /// receipt before the guest call, so a restart can find the same request.
 async fn remember(
     store: &RuntimeStore,
@@ -406,7 +356,7 @@ async fn remember(
         .await
 }
 
-/// Python `configure_guest`: give the guest the channel token.
+/// Give the guest the channel token of the Mac service.
 async fn configure(guest: Arc<dyn GuestRpc>, token: String) -> Result<(), GuestError> {
     on_guest_thread(move || {
         let identity = format!(
@@ -480,13 +430,13 @@ fn settle(
             refused(with_note(guest_error_text(&error)))
         }
         // The guest answered with an explicit error, or its answer was lost.
-        // Both keep their uncertainty, as Python settles them: the command is
+        // Both keep their uncertainty: the command is
         // never sent again, and the operation ID finds its outcome.
         Err(error) => unknown(with_note(guest_error_text(&error))),
     }
 }
 
-/// Python `LinuxVMError` text of a `host.exec` or `host.configure` failure.
+/// The text of a `host.exec` or `host.configure` failure.
 fn guest_error_text(error: &GuestError) -> String {
     match error {
         GuestError::Rejected { code, detail, .. } => {

@@ -323,7 +323,7 @@ fn operation(actor: &str, request: &str) -> String {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn vm_agent_runs_one_command_with_the_python_guest_request() {
+async fn vm_agent_runs_one_command_with_its_exact_guest_request() {
     let id = operation(LEAD, "build");
     let fixture = Fixture::new(Answer::Result {
         frames: vec![
@@ -355,7 +355,7 @@ async fn vm_agent_runs_one_command_with_the_python_guest_request() {
             Duration::from_secs_f64(3690.0)
         )]
     );
-    // The guest gets the channel token first, under the Python identity.
+    // The guest gets the channel token first, under its token identity.
     let configure = fixture.guest.calls("host.configure");
     assert_eq!(
         configure[0],
@@ -558,7 +558,7 @@ async fn without_its_runtime_the_tool_names_its_dependency() {
 }
 
 #[test]
-fn read_actions_use_the_python_parameters_and_wait() {
+fn read_actions_use_their_parameters_and_wait() {
     let status = guest_request(
         LEAD,
         Some(&json!("/line")),
@@ -575,7 +575,7 @@ fn read_actions_use_the_python_parameters_and_wait() {
     let list = guest_request(LEAD, None, &json!({"action": "list"}), "thread:call").unwrap();
     assert_eq!(list.params, json!({"agentId": LEAD, "action": "list"}));
     assert_eq!(list.operation_note(), None);
-    // Without timeout_seconds the Python default applies; a supplied cwd wins.
+    // Without timeout_seconds the default applies; a supplied cwd wins.
     let execute = guest_request(
         LEAD,
         Some(&json!("/line")),
@@ -654,38 +654,4 @@ async fn an_interrupted_host_exec_receipt_names_its_operation() {
     let message = text(&result);
     assert!(message.contains("\"outcome\":\"unknown\""), "{message}");
     assert!(message.contains(&operation_note(&id)), "{message}");
-}
-
-#[cfg(unix)]
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn the_python_owner_keeps_the_service_and_its_token() {
-    let scripts = tempfile::tempdir().unwrap();
-    let state = tempfile::tempdir().unwrap();
-    std::fs::write(
-        scripts.path().join("codex_host_exec.py"),
-        "import os\n\
-         def ensure_service(state):\n\
-         \x20   if os.path.exists(os.path.join(state, 'fail')):\n\
-         \x20       raise RuntimeError('The host_exec service exited. Log: fixture')\n\
-         \x20   with open(os.path.join(state, 'host-exec-token'), 'w') as stream:\n\
-         \x20       stream.write('f' * 64)\n\
-         \x20   with open(os.path.join(state, 'checks'), 'a') as stream:\n\
-         \x20       stream.write(state + '\\n')\n",
-    )
-    .unwrap();
-    let python = std::env::var_os("CODEX_AGENTS_PYTHON")
-        .map_or_else(|| PathBuf::from("python3"), PathBuf::from);
-    let service = PythonHostExecService::with_python(
-        python,
-        scripts.path().to_path_buf(),
-        state.path().to_path_buf(),
-    );
-    assert_eq!(service.ensure().await, Ok("f".repeat(64)));
-    assert_eq!(
-        std::fs::read_to_string(state.path().join("checks")).unwrap(),
-        format!("{}\n", state.path().display())
-    );
-    std::fs::write(state.path().join("fail"), "").unwrap();
-    let error = service.ensure().await.unwrap_err();
-    assert!(error.contains("The host_exec service exited"), "{error}");
 }

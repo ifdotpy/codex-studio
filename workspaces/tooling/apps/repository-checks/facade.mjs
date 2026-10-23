@@ -44,6 +44,10 @@ const UNSAFE_RUST_ALLOWLIST = [
     "FSEvents (lead's W9 decision).",
   ],
   [
+    "workspaces/runtime/packages/runtime-services/src/host_exec_service/clone_ffi.rs",
+    "APFS clonefile(2) for host_exec slot clones.",
+  ],
+  [
     "workspaces/runtime/packages/runtime-services/src/diagnostics/allocator.rs",
     "Opt-in GNU allocator summary through a bounded private diagnostic buffer.",
   ],
@@ -704,6 +708,51 @@ function fastTierCommands(root) {
         selector: "Rust service and command installation without Python",
         reason:
           "Check isolated user service managers, delivery layout, safe link migration, and idempotent retries without touching host services.",
+      },
+    },
+    {
+      item: { name: "studio-runtime-services", ecosystem: "cargo" },
+      label: "host_exec tool and Mac service witnesses",
+      commands: [
+        [
+          "cargo",
+          [
+            "nextest",
+            "run",
+            "--locked",
+            "--no-tests",
+            "fail",
+            "--message-format",
+            "libtest-json-plus",
+            "-p",
+            "studio-runtime-services",
+            "--lib",
+            "-E",
+            "test(/^host_exec(_service)?::/)",
+          ],
+        ],
+        [
+          "cargo",
+          [
+            "nextest",
+            "run",
+            "--locked",
+            "--no-tests",
+            "fail",
+            "--message-format",
+            "libtest-json-plus",
+            "-p",
+            "studio-runtime-server",
+            "-E",
+            "test(/^host_exec_service::/)",
+          ],
+        ],
+      ],
+      options: {
+        selector:
+          "host_exec identities, refusals, Mac service receipts, start rules, and the guest broker",
+        reason:
+          "Check that a lost answer never repeats a Mac command, that only VM writers run commands, and that the unchanged guest broker works with the service process.",
       },
     },
     {

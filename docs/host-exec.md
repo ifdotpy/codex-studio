@@ -21,7 +21,8 @@ in the slot is not this value: the slot holds ignored build output, and layr-onl
 of the state do not have to be there. The
 guest asks layr for the tree when it saves the line for the command. A layr from before
 2026-10-17 has no tree form; then the command gets no `HOST_EXEC_TREE`, never a guessed
-value. `codex_host_exec.py` owns the names of these variables.
+value. The Mac service (`runtime-services/src/host_exec_service/mod.rs`) owns the names
+of these variables.
 
 For example:
 
@@ -69,16 +70,12 @@ A different payload with the same ID fails. A pending receipt after a restart
 reports an unknown outcome. It does not repeat the command or a source write.
 A lost host owner leaves the slot leased for inspection.
 
-A Studio restart during a call does not lose its result. Studio saves the exact
+A Studio restart during a call never repeats the command. Studio saves the exact
 guest request (request ID and parameters) on the tool receipt before it sends it.
-The guest keeps a receipt for each `host.exec` request ID. After the restart,
-Studio sends the same request again (`codex_host_exec.resume`). The guest returns
-its saved answer, or it waits for the command that still runs. It never starts
-the command again. The waiting caller then gets the real result, with an empty
-`output` and a `recovery` note: read the output with `status`. An explicit guest
-error also reaches the caller. While the resume can still succeed, Studio keeps
-back the saved "outcome unknown" answer. When the guest gives no answer after
-`RESUME_ATTEMPTS` tries, the caller gets that answer.
+The guest keeps a receipt for each `host.exec` request ID. After the restart, the
+call answers "outcome unknown" with its operation ID. Read the result with `status`
+or `list`; do not repeat the command. Studio does not yet send the saved request
+again to deliver the real result to the waiting caller.
 
 A failure before the run request (slot preparation, manifest, or transfer)
 releases the Mac slot. The saved status records `sync_failed` and `preRunError`.
@@ -112,33 +109,27 @@ source tree, even if its command only reads logs. A detached process can then re
 or change files during that transfer. Use `status` to read output without a new
 source transfer. Keep independent background jobs in separately owned workspaces.
 
-The Mac service is a separate process, so it keeps its code after an app update.
-Its health reports a code build hash fixed at its start. Each VM start compares
-it with the installed build and replaces an idle service of another build: the
-old service accepts an authenticated retire request and stops. A running command
-or request keeps the old service, and the start reports the reason; a later start
-replaces it. A service from before build hashes has no retire request: Studio
-stops it when it has no command child process. Receipts, tokens, leases, and
-unknown outcomes stay in the same state folder. `host-exec-bootstrap.py` checks
-this with real service processes.
+The Mac service is a separate process, `studio-runtime-server host-exec-service
+<vm-state-folder> --build <id>`, in its own session. A running Mac command survives
+a backend restart, and the service keeps its code after an app update. Its health
+reports the build of the backend that started it. Before each `host_exec` call, the
+backend makes sure that a service of its own build serves the VM state folder: it
+creates the channel token once, probes `host-exec.sock`, and starts the service when
+none answers. An idle service of another build accepts an authenticated retire
+request and stops; then the backend starts its own build. A running command or
+request keeps the old service, and the backend reports the reason; a later call
+replaces it. A service without a build identity is never stopped by the backend.
+Receipts, tokens, leases, and unknown outcomes stay in the same state folder. The
+runtime-server witnesses `host_exec_service::*` check this with real service processes.
 
-### Rust backend
+### Backend
 
-The Rust backend (`studio-runtime-server`) runs `host_exec` in
-`runtime-services/src/host_exec.rs`. It gives the tool to VM agents that are not
-reviewers, and it sends the same guest requests, identities and timeouts as
-`codex_host_exec.py`. The Mac service stays the Python process above. Before each
-call, the Rust backend runs `codex_host_exec.ensure_service` from the server
-scripts with `CODEX_AGENTS_PYTHON`, or with `python3` on `PATH` when that variable
-is not set. Then it sends `host.configure` with the channel token, because the Rust
-backend does not start the VM. The Python module owns the shared values;
-`host-exec-restart-contract.py` checks the Rust copies and the bundled tool
-definition `host_exec_tool.json`.
-
-The Rust backend saves the guest request on the tool receipt, but it does not
-resume an interrupted call yet. After a restart, the call keeps its "outcome
-unknown" answer with its operation ID. Read the result with `status` or `list`;
-do not repeat the command.
+The backend gives the tool to VM agents that are not reviewers
+(`runtime-services/src/host_exec.rs`, which owns the tool contract and the bundled
+definition `host_exec_tool.json`). Before each call, it checks the Mac service as
+above and sends `host.configure` with the channel token, because the backend does
+not start the VM. The guest calls run on their own thread, so a long command never
+holds a thread of the backend's blocking pool.
 
 ## Slots and source changes
 
@@ -330,18 +321,17 @@ a clone reads every file, because the clone has new inodes.
 
 Run checks one at a time:
 
-The former Python backend command has been removed. See [testing](testing.md)
-for current Rust checks.
-
 ```sh
+cargo test -p studio-runtime-services --lib host_exec
+cargo nextest run -p studio-runtime-server --test integration -E 'test(/^host_exec_service::/)'
 python3 -B workspaces/runtime/apps/vm-guest/test_host_exec_slot_io.py
 python3 -B workspaces/runtime/apps/vm-guest/test_service.py
 ```
 
-The manual benchmark `workspaces/runtime/apps/server/tests/host-exec-transfer-bench.py`
-times a cold slot, a warm slot and a small change (`--files 50000`; `--cache` puts
-the files in a cache folder). It runs the file helper as a process, without the VM
-socket and without real layr.
+The runtime-server witness `the_guest_broker_runs_against_the_mac_service` runs the
+unchanged guest broker (`host_exec.py` and `host_exec_slot.py`) with fixture layr
+against a real service process (`vm-guest/host_exec_mac_contract.py`). It needs
+`python3` 3.11 or newer on `PATH`.
 
 The contract uses a layr fixture. It does not prove VM transport or real layr
 collection. The live check must use the native VM, real layr, `xcodebuild -version`,
