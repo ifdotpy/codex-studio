@@ -12,10 +12,10 @@ name = "studio_native_client"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
-tauri-build = { version = "=2.7.2", features = [] }
+tauri-build = { version = "=2.7.4", features = [] }
 
 [dependencies]
-tauri = { version = "=2.12.3", features = [] }
+tauri = { version = "=2.12.5", features = [] }
 studio-client-core = { path = "../../../packages/client-core" }
 libc.workspace = true
 serde.workspace = true

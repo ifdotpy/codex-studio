@@ -15,3 +15,16 @@ describe("failedTurnsNeedingLookup", () => {
     ).toEqual(["turn-1"]);
   });
 });
+
+it("requests reasons for unconfirmed turns without changing completed turns", () => {
+  expect(
+    failedTurnsNeedingLookup(
+      [
+        { turnId: "unknown", turnStatus: "uncertain" },
+        { turnId: "done", turnStatus: "completed" },
+        { turnId: "known", turnStatus: "uncertain" },
+      ],
+      new Set(["known"]),
+    ),
+  ).toEqual(["unknown"]);
+});

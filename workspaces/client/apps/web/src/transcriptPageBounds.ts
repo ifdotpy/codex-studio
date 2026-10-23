@@ -5,6 +5,68 @@ export const MAX_TRANSCRIPT_PAGE_BYTES = 4_000_000;
 export const MAX_TRANSCRIPT_CACHE_ITEMS = 1_200;
 export const MAX_TRANSCRIPT_CACHE_BYTES = 12_000_000;
 
+export function mergeTranscript(
+  earlier: Message[],
+  later: Message[],
+): Message[] {
+  return [
+    ...new Map([...earlier, ...later].map((item) => [item.id, item])).values(),
+  ].sort(
+    (a, b) => Number(a.at ?? a.created ?? 0) - Number(b.at ?? b.created ?? 0),
+  );
+}
+
+export function updateLiveTranscriptPage(
+  page: { items: Message[]; before: string | null; focused: boolean },
+  liveItems: Message[],
+  snapshot: { truncated?: boolean; nextCursor?: string | null },
+) {
+  if (page.focused) {
+    const present = new Set(page.items.map((item) => item.id));
+    page.items = mergeTranscript(
+      page.items,
+      liveItems.filter((item) => present.has(item.id)),
+    );
+  } else if (!snapshot.truncated) {
+    page.items = liveItems;
+    page.before = null;
+  } else {
+    const present = new Set(liveItems.map((item) => item.id));
+    // Only an authoritative shared row proves that the retained and fresh
+    // ranges are contiguous. Optimistic queue rows can span a history gap.
+    const authoritative = new Set(
+      liveItems
+        .filter((item) => !item.pending && item.materialized !== false)
+        .map((item) => item.id),
+    );
+    const overlaps = page.items.some(
+      (item) =>
+        !item.pending &&
+        item.materialized !== false &&
+        authoritative.has(item.id),
+    );
+    if (!overlaps) {
+      page.items = liveItems;
+      page.before = snapshot.nextCursor || liveItems[0]?.id || null;
+      return;
+    }
+    // A live snapshot is authoritative within its range, including removals.
+    const firstAt = Math.min(
+      ...liveItems.map((item) => Number(item.at ?? item.created ?? Infinity)),
+    );
+    page.items = mergeTranscript(
+      page.items.filter(
+        (item) =>
+          present.has(item.id) ||
+          (!item.pending &&
+            item.materialized !== false &&
+            Number(item.at ?? item.created ?? 0) < firstAt),
+      ),
+      liveItems,
+    );
+  }
+}
+
 export function boundTranscriptPage(
   items: Message[],
   sizeOf: (item: Message) => number,

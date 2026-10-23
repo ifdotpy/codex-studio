@@ -62,7 +62,7 @@ impl RemoteClient {
             mutation: Mutex::new(()),
             response_slots: Arc::new(Semaphore::new(MAX_OPEN_SERVER_RESPONSES)),
             server_slots: std::sync::Mutex::new(HashMap::new()),
-            http: reqwest::Client::builder()
+            http: crate::tls::client_builder()
                 .redirect(reqwest::redirect::Policy::none())
                 .retry(reqwest::retry::never())
                 .connect_timeout(Duration::from_secs(15))
@@ -543,7 +543,7 @@ mod tests {
         )));
         let mut client = RemoteClient::new(vault).unwrap();
         let local = std::net::SocketAddr::from(([127, 0, 0, 1], port));
-        client.http = reqwest::Client::builder()
+        client.http = crate::tls::client_builder()
             .no_proxy()
             .retry(reqwest::retry::never())
             .resolve("busy.tailnet.ts.net", local)
@@ -582,6 +582,60 @@ mod tests {
         assert_eq!(
             client.response_slots.available_permits(),
             MAX_OPEN_SERVER_RESPONSES - MAX_OPEN_RESPONSES_PER_SERVER
+        );
+    }
+    #[tokio::test]
+    async fn https_transport_rejects_untrusted_certificate_before_sending_request() {
+        let cert =
+            rcgen::generate_simple_self_signed(vec!["fixture.tailnet.ts.net".into()]).unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let origin = format!("https://fixture.tailnet.ts.net:{}", address.port());
+        let invitation = json!({"protocol":1,"origin":origin,"serverId":"server","inviteId":"invite","token":"test","publicKey":"fixture","tailscaleUser":"user"});
+        let credential = server_keys::new_pair(&invitation, "pair").unwrap();
+        let config = rustls::ServerConfig::builder_with_provider(Arc::new(
+            rustls::crypto::ring::default_provider(),
+        ))
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_no_client_auth()
+        .with_single_cert(
+            vec![cert.cert.der().clone()],
+            rustls::pki_types::PrivateKeyDer::Pkcs8(cert.signing_key.serialize_der().into()),
+        )
+        .unwrap();
+        let server = std::thread::spawn(move || {
+            let (socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut stream = rustls::StreamOwned::new(
+                rustls::ServerConnection::new(Arc::new(config)).unwrap(),
+                socket,
+            );
+            // Certificate rejection must happen before any signed HTTP bytes arrive.
+            assert!(stream.read(&mut [0]).is_err());
+            listener
+        });
+        let vault = Arc::new(Memory(StdMutex::new(
+            json!({"drafts":{},"servers":{"server":credential}}),
+        )));
+        let mut client = RemoteClient::new(vault).unwrap();
+        client.http = crate::tls::client_builder()
+            .no_proxy()
+            .resolve("fixture.tailnet.ts.net", address)
+            .redirect(reqwest::redirect::Policy::none())
+            .retry(reqwest::retry::never())
+            .build()
+            .unwrap();
+        let params = json!({"serverId":"server","credentialId":credential["clientId"],"url":origin+"/api/test","method":"POST","base64":STANDARD.encode(b"null"),"requestId":"untrusted","headers":[]});
+        assert!(client.dispatch("servers.request", &params).await.is_err());
+        let listener = server.join().unwrap();
+        listener.set_nonblocking(true).unwrap();
+        assert_eq!(
+            listener.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock,
+            "failed TLS requests must not retry"
         );
     }
     #[tokio::test]
@@ -665,7 +719,7 @@ mod tests {
             .redirect(reqwest::redirect::Policy::none())
             .retry(reqwest::retry::never())
             .resolve("fixture.tailnet.ts.net", address)
-            .add_root_certificate(root)
+            .tls_certs_only([root])
             .build()
             .unwrap();
         let params = json!({"serverId":"server","credentialId":credential["clientId"],"url":origin.clone()+"/api/test?q=1","method":"POST","base64":STANDARD.encode(b"null"),"requestId":"original","headers":[["X-Canvas-Token","secret"],["Authorization","secret"],["Cookie","secret"]]});

@@ -203,14 +203,27 @@ pub fn project(source: &str, raw: &Value, owner: &Value, connection: Option<&str
     } else {
         text(raw, "command", text(raw, "name", default_name))
     };
-    json!({"id":text(raw,"id",&opaque),"key":URL_SAFE_NO_PAD.encode(canonical(&json!([source,agent,opaque]))),
+    let mut result = json!({"id":text(raw,"id",&opaque),"key":URL_SAFE_NO_PAD.encode(canonical(&json!([source,agent,opaque]))),
         "generation":digest(&json!([source,agent,native])),"agent":agent,"accountKey":account,"epoch":owner["epoch"],
         "source":source,"status":text(raw,"status","unknown"),"cancelRequested":raw["cancelRequested"]==true,
         "created":raw["created"].as_f64().unwrap_or(0.0),"name":name,"command":string(raw,"command"),"cwd":string(raw,"cwd"),"log":string(raw,"log"),
         "output":output,"error":string(raw,"error"),"stdinError":string(raw,"stdinError"),"stdinClosed":raw["stdinClosed"]==true,
         "stdinCloseRequested":raw["stdinCloseRequested"]==true,"bytes":bytes,"outputTruncated":raw["outputTruncated"].as_bool().unwrap_or(bytes>output.len() as u64),
         "capabilities":{"readOutput":!is_claude,"sendInput":can_input,"resize":is_monitor&&can_input,"stop":same||(pending&&epoch==owner["epoch"]&&source_account==account)},
-        "_raw":raw,"_sourceAccountKey":source_account,"_sourceConnectionId":source_connection,"_sourceThreadId":source_thread,"_sourceEpoch":epoch})
+        "_raw":raw,"_sourceAccountKey":source_account,"_sourceConnectionId":source_connection,"_sourceThreadId":source_thread,"_sourceEpoch":epoch});
+    if is_monitor {
+        if let Some(budget) = raw.get("outputWakeBudget") {
+            result["outputWakeBudget"] = json!({"totalSuppressedMatches":budget["totalSuppressedMatches"],"paused":budget["paused"],"tokens":budget["tokens"]});
+        }
+        if let Some(patterns) = raw.get("outputPatterns") {
+            result["outputPatterns"] = patterns.clone();
+        }
+    }
+    if is_claude && raw["outputFile"].is_string() {
+        result["outputFile"] = raw["outputFile"].clone();
+        result["capabilities"]["readOutput"] = json!(true);
+    }
+    result
 }
 pub fn processes(
     connection: &Connection,

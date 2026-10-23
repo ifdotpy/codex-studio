@@ -1,11 +1,13 @@
+import type { UsageEligibility } from "../components/ModelLimitEligibility";
 import type { Agent, Json } from "../types";
 import { nativeErrorKind } from "../nativeErrors";
-import { providerLimitData, type RateLimitWindow } from "./providerLimits";
+import { providerLimitData } from "./providerLimits";
 
 export type LimitRecovery = {
   title: string;
   message: string;
   resetAt?: number;
+  eligibility?: UsageEligibility;
   action?: { label: string; href: string };
   ownerRequest?: string;
 };
@@ -23,26 +25,21 @@ function freshLimits(limits: Json | null, agent: Agent, now: number) {
   );
 }
 
-function windowAllowsUsage(
-  window: RateLimitWindow | undefined | null,
-  now: number,
-): boolean {
-  if (window == null) return true;
-  const { usedPercent, resetsAt } = window;
-  return (
-    finite(usedPercent) &&
-    usedPercent >= 0 &&
-    usedPercent < 100 &&
-    (resetsAt == null || (finite(resetsAt) && resetsAt > now))
-  );
-}
-
-function hasExhaustedWindow(
-  window: RateLimitWindow | undefined | null,
-  now: number,
-) {
-  const resetsAt = window?.resetsAt;
-  return finite(resetsAt) && resetsAt <= now;
+export function modelEligibility(
+  agent: Agent,
+  limits: Json | null,
+): UsageEligibility | undefined {
+  const value = limits?.eligibility;
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    return undefined;
+  if (
+    value.agentId !== agent.id ||
+    value.accountKey !== (agent.accountKey || "default") ||
+    value.model !== (agent.model || "") ||
+    value.provider !== (agent.provider || "")
+  )
+    return undefined;
+  return value as UsageEligibility;
 }
 
 export function limitRecovered(
@@ -62,38 +59,16 @@ export function limitRecovered(
     : typeof agent.lastEvent === "string"
       ? Date.parse(agent.lastEvent) / 1000
       : Number.NaN;
-  const data = providerLimitData(limits?.data);
-  const rateLimits = data?.rateLimits;
-  const buckets = [
-    rateLimits,
-    ...Object.values(data?.rateLimitsByLimitId ?? {}),
-  ];
-  if (
-    !limits ||
-    !freshLimits(limits, agent, now) ||
-    limitsAt > now + 5 ||
-    (finite(errorAt) && limitsAt <= errorAt) ||
-    data?.ordinaryUsageAllowed !== true
-  )
-    return false;
-  return (
-    !!rateLimits &&
-    buckets.every((bucket) => {
-      if (!bucket) return false;
-      const remainingPercent = bucket.individualLimit?.remainingPercent;
-      return Boolean(
-        bucket.rateLimitReachedType == null &&
-        (bucket.spendControlReached == null ||
-          bucket.spendControlReached === false) &&
-        (remainingPercent == null ||
-          (finite(remainingPercent) &&
-            remainingPercent >= 0 &&
-            remainingPercent <= 100)) &&
-        !(finite(remainingPercent) && remainingPercent <= 0) &&
-        windowAllowsUsage(bucket.primary, now) &&
-        windowAllowsUsage(bucket.secondary, now),
-      );
-    })
+  const eligibility = modelEligibility(agent, limits);
+  return Boolean(
+    limits &&
+    freshLimits(limits, agent, now) &&
+    limitsAt <= now + 5 &&
+    (!finite(errorAt) || limitsAt > errorAt) &&
+    eligibility?.canRun &&
+    eligibility.fresh &&
+    eligibility.validUntil != null &&
+    now < eligibility.validUntil,
   );
 }
 
@@ -106,29 +81,19 @@ export function limitRecovery(
   if (limitRecovered(agent, limits, now)) return null;
   if (kind !== "usageLimitExceeded" && kind !== "rateLimitExceeded")
     return null;
+  const eligibility = modelEligibility(agent, limits);
   const fallback: LimitRecovery = {
+    ...(eligibility ? { eligibility } : {}),
     title: "Usage limit reached",
     message: "View account limits for reset times and available credits.",
   };
   const data = providerLimitData(limits?.data);
   const snapshot = data?.rateLimits;
-  if (
-    !snapshot ||
-    !freshLimits(limits, agent, now) ||
-    hasExhaustedWindow(snapshot.primary, now) ||
-    hasExhaustedWindow(snapshot.secondary, now)
-  )
-    return fallback;
+  if (!snapshot || !freshLimits(limits, agent, now)) return fallback;
 
-  const resets = [snapshot.primary, snapshot.secondary].flatMap((window) => {
-    return finite(window?.usedPercent) &&
-      window.usedPercent >= 100 &&
-      finite(window.resetsAt)
-      ? [window.resetsAt]
-      : [];
-  });
   const reset =
-    resets.length > 0 ? { resetAt: Math.max(...resets) } : undefined;
+    eligibility?.resetAt != null ? { resetAt: eligibility.resetAt } : undefined;
+  if (agent.provider === "claude") return { ...fallback, ...reset };
   let reached =
     typeof snapshot.rateLimitReachedType === "string"
       ? snapshot.rateLimitReachedType
@@ -149,6 +114,7 @@ export function limitRecovery(
           label: "Add workspace credits",
           href: "https://chatgpt.com/admin/billing?codex_credit_action=add_credits",
         },
+        eligibility,
         ...reset,
       };
     case "workspace_member_credits_depleted":
@@ -158,6 +124,7 @@ export function limitRecovery(
           "Your workspace is out of credits. Ask your workspace owner to add credits.",
         ownerRequest:
           "Codex says our workspace is out of credits. Can you add credits?",
+        eligibility,
         ...reset,
       };
     case "workspace_owner_usage_limit_reached":
@@ -168,6 +135,7 @@ export function limitRecovery(
           label: "Open workspace usage limits",
           href: "https://chatgpt.com/admin/usage-limits/workspace",
         },
+        eligibility,
         ...reset,
       };
     case "workspace_member_usage_limit_reached":
@@ -176,6 +144,7 @@ export function limitRecovery(
         message: "Ask your workspace owner to increase your usage limit.",
         ownerRequest:
           "Codex says I reached my workspace usage limit. Can you increase my limit?",
+        eligibility,
         ...reset,
       };
   }
@@ -191,6 +160,7 @@ export function limitRecovery(
         label: "View credits in ChatGPT",
         href: "https://chatgpt.com/codex/settings/usage?credits_modal=true",
       },
+      eligibility,
       ...reset,
     };
   }
@@ -202,6 +172,7 @@ export function limitRecovery(
         label: "View ChatGPT usage",
         href: "https://chatgpt.com/codex/settings/usage",
       },
+      eligibility,
       ...reset,
     };
   }

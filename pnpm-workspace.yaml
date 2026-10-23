@@ -4,8 +4,8 @@ packages:
   - "workspaces/*/packages/*"
 
 overrides:
-  "@modelcontextprotocol/sdk": 1.31.0
-  "typed-rest-client>qs": 6.16.0
+  "@modelcontextprotocol/sdk": 1.32.1
+  "typed-rest-client>qs": 6.16.1
 
 allowBuilds:
   esbuild: true
@@ -13,6 +13,6 @@ allowBuilds:
 
 patchedDependencies:
   # Weak event-bulk caching releases payloads; projection pulls retain 409
-  # conflicts for server-sequence comparison; a rejected incremental write
-  # releases its queue (fixed upstream in 17.6.0). Recheck on every RxDB upgrade.
-  rxdb@17.5.0: patches/rxdb@17.5.0.patch
+  # conflicts for server-sequence comparison. The incremental-write queue fix
+  # is upstream in 17.6.0. Recheck the remaining patch on every RxDB upgrade.
+  rxdb@17.6.0: patches/rxdb@17.6.0.patch

@@ -19,7 +19,60 @@ pub(crate) fn routes() -> RouteGroup {
     RouteGroup::new(vec![
         post("/api/monitor/cancel", OperationStatus::Implemented, cancel),
         post("/api/monitor/input", OperationStatus::Implemented, input),
+        post(
+            "/api/monitor/restart",
+            OperationStatus::Implemented,
+            restart,
+        ),
     ])
+}
+
+async fn restart(
+    State(state): State<HttpState>,
+    runtime: Option<Extension<Arc<MonitorRuntime>>>,
+    ApiJson(body): ApiJson<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let runtime = runtime
+        .ok_or_else(|| ApiError::dependency("provider-session/monitor-commands"))?
+        .0;
+    let store = state.store.clone().ok_or_else(ApiError::internal)?;
+    let owner = body["agent"]
+        .as_str()
+        .ok_or_else(ApiError::internal)?
+        .to_owned();
+    let actor = store
+        .read_async("monitor-restart/owner", move |tx| {
+            event_write::checked_agent(tx, &owner)
+        })
+        .await
+        .map_err(|e| error(e.into()))?;
+    let workspace = super::agents_create::prepare_parent_workspace(&actor).map_err(|_| {
+        ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "The monitor workspace is not ready",
+        )
+    })?;
+    let log_root = studio_runtime_services::monitor_output::log_root(store.root())
+        .to_string_lossy()
+        .into_owned();
+    let now = event_write::unix_time().map_err(|_| ApiError::internal())?;
+    let value = super::sync_delta::write(
+        store,
+        move |tx| {
+            let record = monitor_runtime::restart_in_transaction(
+                tx,
+                &body,
+                workspace.as_ref(),
+                &log_root,
+                now,
+            )?;
+            Ok(serde_json::json!({"id":record["id"],"status":record["status"]}))
+        },
+        error,
+    )
+    .await?;
+    runtime.wake_tick();
+    Ok(Json(value))
 }
 
 async fn cancel(

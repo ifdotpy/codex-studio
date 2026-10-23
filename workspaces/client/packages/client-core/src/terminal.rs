@@ -8,6 +8,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
     collections::HashMap,
+    num::NonZeroU16,
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -17,6 +18,9 @@ use tokio::{
 };
 
 type Command = (Request, oneshot::Sender<Response>);
+// Initial terminal grid dimensions in rows and columns; both are nonzero.
+const INITIAL_ROWS: NonZeroU16 = NonZeroU16::new(24).unwrap();
+const INITIAL_COLS: NonZeroU16 = NonZeroU16::new(100).unwrap();
 struct Entry {
     input: mpsc::Sender<Command>,
     value: watch::Receiver<Value>,
@@ -169,7 +173,12 @@ struct Screen {
 impl Screen {
     fn new() -> Self {
         Self {
-            parser: vt100::Parser::new_with_callbacks(24, 100, 5000, Replies::default()),
+            parser: vt100::Parser::new_with_callbacks(
+                INITIAL_ROWS,
+                INITIAL_COLS,
+                5000,
+                Replies::default(),
+            ),
             offset: 0,
             loaded: false,
             truncated: false,
@@ -217,6 +226,7 @@ impl Screen {
     fn value(&self) -> Value {
         let screen = self.parser.screen();
         let (rows, cols) = screen.size();
+        let (rows, cols) = (rows.get(), cols.get());
         let cursor = screen.cursor_position();
         let lines:Vec<Value>=(0..rows).map(|r| {
             let mut runs:Vec<Value>=Vec::new();
@@ -396,12 +406,12 @@ fn mouse(screen: &vt100::Screen, params: &Value) -> Result<String, String> {
     let (rows, cols) = screen.size();
     let row = params["row"]
         .as_u64()
-        .filter(|v| *v < rows as u64)
+        .filter(|v| *v < u64::from(rows.get()))
         .ok_or("Invalid mouse row.")?
         + 1;
     let col = params["col"]
         .as_u64()
-        .filter(|v| *v < cols as u64)
+        .filter(|v| *v < u64::from(cols.get()))
         .ok_or("Invalid mouse column.")?
         + 1;
     let action = params["action"].as_str().unwrap_or("");
@@ -483,8 +493,8 @@ async fn run(
                             Ok(json!({"sent":true}))
                         },
                         "terminal.resize"=>{
-                            let cols=request.params["cols"].as_u64().filter(|n|(2..=240).contains(n)).ok_or("Invalid terminal width.")? as u16;
-                            let rows=request.params["rows"].as_u64().filter(|n|(2..=120).contains(n)).ok_or("Invalid terminal height.")? as u16;
+                            let cols=request.params["cols"].as_u64().filter(|n|(2..=240).contains(n)).and_then(|n|NonZeroU16::new(n as u16)).ok_or("Invalid terminal width.")?;
+                            let rows=request.params["rows"].as_u64().filter(|n|(2..=120).contains(n)).and_then(|n|NonZeroU16::new(n as u16)).ok_or("Invalid terminal height.")?;
                             if screen.parser.screen().size()!=(rows,cols) {
                                 if running(&screen.status) {post(&backend,"resize",json!({"id":id,"cols":cols,"rows":rows})).await?;}
                                 screen.parser.screen_mut().set_size(rows,cols);
@@ -600,6 +610,32 @@ mod tests {
         assert!(s.parser.screen().alternate_screen());
         output(&mut s, "\x1b[?1049l", false);
         assert!(s.parser.screen().contents().contains("Done"));
+    }
+    #[test]
+    fn resized_grid_keeps_cursor_output_and_truncation_dimensions() {
+        let mut s = Screen::new();
+        assert_eq!(s.value()["rows"], 24);
+        assert_eq!(s.value()["cols"], 100);
+        let rows = std::num::NonZeroU16::new(3).unwrap();
+        let cols = std::num::NonZeroU16::new(8).unwrap();
+        s.parser.screen_mut().set_size(rows, cols);
+        output(&mut s, "one\r\ntwo\r\nthree", false);
+        s.parser
+            .screen_mut()
+            .set_size(std::num::NonZeroU16::new(2).unwrap(), cols);
+        assert_eq!(s.parser.screen().contents(), "two\nthree");
+        assert_eq!(s.parser.screen().cursor_position(), (1, 5));
+        let value = s.value();
+        assert_eq!(value["rows"], 2);
+        assert_eq!(value["cols"], 8);
+        assert_eq!(value["lines"].as_array().unwrap().len(), 2);
+        s.parser.screen_mut().set_size(rows, cols);
+        assert_eq!(s.parser.screen().contents(), "one\ntwo\nthree");
+        output(&mut s, "new\x1b[6n", true);
+        assert_eq!(s.value()["rows"], 3);
+        assert_eq!(s.value()["cols"], 8);
+        assert_eq!(s.parser.screen().contents(), "new");
+        assert!(s.parser.callbacks().0.is_empty());
     }
     #[test]
     fn old_queries_never_write_and_invalid_cursors_do_not_consume_output() {

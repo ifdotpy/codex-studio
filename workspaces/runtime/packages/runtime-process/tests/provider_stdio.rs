@@ -352,7 +352,8 @@ async fn cancellation_stops_the_entire_owned_process_group() {
         rustix::fs::Mode::empty(),
     )
     .expect("nonblocking lifetime reader");
-    let lifetime = tokio::io::unix::AsyncFd::new(reader).expect("observe lifetime EOF");
+    let mut lifetime =
+        tokio::net::unix::pipe::Receiver::from_owned_fd(reader).expect("observe lifetime EOF");
     let script = format!("exec 3>\"{}\"; {code}", fifo.display());
     let mut attachment = factory
         .open(
@@ -408,12 +409,8 @@ async fn cancellation_stops_the_entire_owned_process_group() {
     assert!(attachment.shutdown().await.result.is_ok());
     assert_reaped(parent);
     let eof = tokio::time::timeout(Duration::from_secs(10), async {
-        let mut ready = lifetime.readable().await.expect("group EOF readiness");
-        ready
-            .try_io(|fd| {
-                rustix::io::read(fd.get_ref(), &mut [0_u8; 1]).map_err(std::io::Error::from)
-            })
-            .expect("lifetime readiness")
+        tokio::io::AsyncReadExt::read(&mut lifetime, &mut [0_u8; 1])
+            .await
             .expect("group EOF")
     })
     .await

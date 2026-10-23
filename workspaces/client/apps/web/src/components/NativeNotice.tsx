@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { displayError, errorDetails } from "../errorPresentation";
 import { currentCapacityRetry } from "../capacityRetry";
+import { useLimitEligibility } from "../usage/useLimitEligibility";
 import { limitRecovery } from "../usage/limitRecovery";
 import { useRecoveredLimit } from "./useRecoveredLimit";
 import CapacityRetry from "./CapacityRetry";
@@ -83,8 +84,9 @@ export function NativeError({
     const timer = setInterval(() => setNow(Date.now() / 1000), 1000);
     return () => clearInterval(timer);
   }, [limits]);
-  const recovered = useRecoveredLimit(agent, limits ?? null, now);
-  const recovery = recovered ? null : limitRecovery(agent, limits ?? null, now);
+  const modelLimits = useLimitEligibility(agent, limits ?? null);
+  const recovered = useRecoveredLimit(agent, modelLimits, now);
+  const recovery = recovered ? null : limitRecovery(agent, modelLimits, now);
   const usageResume = agent.usageResume;
   const authResume =
     usageResume?.cause === "auth" &&

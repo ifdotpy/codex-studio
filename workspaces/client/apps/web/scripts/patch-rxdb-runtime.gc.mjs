@@ -4,12 +4,12 @@ import { spawnSync } from "node:child_process";
 import { dirname } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-// RxDB 17.5.0 retains completed event batches and payloads in a strong Map.
+// RxDB 17.6.0 retains completed event batches and payloads in a strong Map.
 // A WeakMap preserves identity reuse while allowing those objects to be collected.
 // Projection pulls must retain 409 conflicts for server-sequence comparison;
 // RxDB's automatic deleted-document reinsertion remains enabled elsewhere.
 // A rejected incremental storage write (for example, a full disk) must reject
-// its callers and release the queue; RxDB 17.6.0 has the same fix upstream.
+// its callers and release the queue; this behavior is now fixed upstream.
 // Recheck these runtime changes whenever the pinned RxDB version changes.
 if (!global.gc) {
   const result = spawnSync(

@@ -531,7 +531,7 @@ impl CompletionWriter for LifecycleCompletionWriter {
                 if accepted
                     && matches!(
                         turn["status"].as_str(),
-                        Some("completed" | "failed" | "interrupted")
+                        Some("completed" | "failed" | "interrupted" | "uncertain")
                     )
                 {
                     let raw = AgentRepository::get_raw(tx, &AgentId::from(id))?
@@ -578,7 +578,7 @@ impl CompletionWriter for LifecycleCompletionWriter {
                 }
                 let terminal = matches!(
                     turn["status"].as_str(),
-                    Some("completed" | "failed" | "interrupted")
+                    Some("completed" | "failed" | "interrupted" | "uncertain")
                 );
                 let exact_turn = if restart {
                     &a["restartRecovery"]["turnId"]
@@ -591,13 +591,15 @@ impl CompletionWriter for LifecycleCompletionWriter {
                 {
                     return Ok(RecoveryEffectResult::plain(RecoveryOutcome::Unconfirmed));
                 }
-                let normal = *mode == CompletionMode::ObservedTurn
-                    || (*mode == CompletionMode::AutomaticConnection
-                        && crate::recovery::completion_permission(
-                            expected,
-                            turn,
-                            unresolved_turn_receipts(tx, a, text(turn, "id")?)?,
-                        ));
+                let unconfirmed = turn["status"] == "uncertain";
+                let normal = !unconfirmed
+                    && (*mode == CompletionMode::ObservedTurn
+                        || (*mode == CompletionMode::AutomaticConnection
+                            && crate::recovery::completion_permission(
+                                expected,
+                                turn,
+                                unresolved_turn_receipts(tx, a, text(turn, "id")?)?,
+                            )));
                 let turn_id = text(turn, "id")?;
                 let mut updated = if normal {
                     let Some(attempt_id) = attempt["id"].as_str() else {
@@ -671,6 +673,17 @@ impl CompletionWriter for LifecycleCompletionWriter {
                     let mut updated = a.clone();
                     updated["status"] = turn["status"].clone();
                     updated["error"] = turn.get("error").cloned().unwrap_or(Value::Null);
+                    if unconfirmed {
+                        // Stop automatic input while preserving the native outcome and reason.
+                        updated["status"] = json!("paused");
+                        updated["nativeFailureHold"] = json!(true);
+                        if updated["error"].is_null() {
+                            updated["error"] =
+                                json!({"message":"Studio could not confirm the turn outcome."});
+                        }
+                        updated["nativeTurnError"] =
+                            json!({"turnId":turn["id"],"error":updated["error"]});
+                    }
                     if turn["status"] == "failed" {
                         updated["nativeFailureHold"] = json!(true);
                         if updated["error"].is_null() {
@@ -694,11 +707,22 @@ impl CompletionWriter for LifecycleCompletionWriter {
                 if !normal {
                     restore_text(tx, &mut updated, turn, self.at)?;
                     let notice_id = format!("{id}:connection-recovery:{turn_id}");
-                    let notice_text = format!(
-                        "Connection checked. Codex reports the previous turn as {}.",
-                        text(turn, "status")?
-                    );
-                    let notice = json!({"id":notice_id,"role":"system","title":"Connection recovery","text":notice_text,"truncated":false,"at":self.at,"nativeNotice":"info","turnId":turn_id,"previousError":a["error"],"details":a["error"],"turnStatus":turn["status"]});
+                    let notice_text = if unconfirmed {
+                        String::new()
+                    } else {
+                        format!(
+                            "Connection checked. Codex reports the previous turn as {}.",
+                            text(turn, "status")?
+                        )
+                    };
+                    let mut notice = json!({"id":notice_id,"role":"system","title":"Connection recovery","text":notice_text,"truncated":false,"at":self.at,"nativeNotice":"info","turnId":turn_id,"previousError":a["error"],"details":a["error"],"turnStatus":turn["status"]});
+                    if unconfirmed {
+                        // The turn renderer displays this terminal marker and its reason once.
+                        notice["role"] = json!("assistant");
+                        notice["nativeNotice"] = Value::Null;
+                        notice["title"] = json!("Outcome unconfirmed");
+                        notice["turnError"] = updated["error"].clone();
+                    }
                     studio_runtime_store::NotificationDispatchRepository::put_transcript_item(
                         tx,
                         &notice_id,

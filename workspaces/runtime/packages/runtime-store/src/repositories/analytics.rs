@@ -880,19 +880,43 @@ fn chart_rows(filter: &ScopeFilter) -> Result<Vec<Value>, AnalyticsError> {
     Ok(points)
 }
 
-#[derive(serde::Serialize, serde::Deserialize)]
+/// Stored `captureErrors` metadata, served as `AnalyticsCaptureErrors`.
+#[derive(Default, serde::Serialize, serde::Deserialize)]
 struct CaptureErrors {
     count: u64,
-    #[serde(flatten)]
-    extra: BTreeMap<String, Value>,
+    last: Option<CaptureErrorRecord>,
 }
-impl Default for CaptureErrors {
-    fn default() -> Self {
-        Self {
-            count: 0,
-            extra: BTreeMap::from([("last".into(), Value::Null)]),
-        }
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CaptureErrorRecord {
+    /// Unit: epoch seconds. Older rows stored it as a decimal string.
+    #[serde(deserialize_with = "epoch_seconds")]
+    at: f64,
+    operation: String,
+    #[serde(default)]
+    code: Option<String>,
+    error: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    error_type: Option<String>,
+}
+fn epoch_seconds<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<f64, D::Error> {
+    #[derive(serde::Deserialize)]
+    #[serde(untagged)]
+    enum Stored {
+        Number(f64),
+        Text(String),
     }
+    match <Stored as serde::Deserialize>::deserialize(deserializer)? {
+        Stored::Number(at) => Ok(at),
+        Stored::Text(at) => at.parse().map_err(serde::de::Error::custom),
+    }
+    .and_then(|at: f64| {
+        if at.is_finite() && at >= 0.0 {
+            Ok(at)
+        } else {
+            Err(serde::de::Error::custom("capture error time out of range"))
+        }
+    })
 }
 /// Failure count and latest failure message of the analytics `captureErrors` metadata.
 #[derive(Default, serde::Deserialize)]
@@ -1497,4 +1521,20 @@ pub fn turn_errors(db: &Connection, keys: Vec<String>) -> Result<Value, Analytic
             .map(|row| project(row, &["agentId", "threadId", "turnId", "status", "error"]))
             .collect(),
     })?)
+}
+
+#[cfg(test)]
+mod capture_error_tests {
+    use super::CaptureErrors;
+
+    #[test]
+    fn legacy_string_capture_error_time_is_served_as_a_number() {
+        let stored = r#"{"count":2,"last":{"at":"1792320464","operation":"analytics_capture_queue","code":"queueOverflow","error":"Publication queue limit reached"}}"#;
+        let read: CaptureErrors = serde_json::from_str(stored).expect("stored capture errors");
+        let served = serde_json::to_value(&read).expect("served capture errors");
+        assert_eq!(served["count"], 2);
+        assert!(served["last"]["at"].is_number(), "{served}");
+        assert_eq!(served["last"]["at"].as_f64(), Some(1_792_320_464.0));
+        assert_eq!(served["last"]["error"], "Publication queue limit reached");
+    }
 }

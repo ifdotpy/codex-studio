@@ -1,0 +1,37 @@
+.agent-limits {
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--mantine-color-default-border);
+  border-radius: 6px;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+.agent-limits p {
+  margin: 6px 0;
+}
+.agent-limits dl {
+  margin: 8px 0;
+}
+.agent-limits dt {
+  font-weight: 600;
+}
+.agent-limits dd {
+  margin: 0 0 6px;
+}
+.agent-limits summary {
+  cursor: pointer;
+}
+.agent-limits-path {
+  font-family: monospace;
+}
+.agent-limits input {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+}
+.agent-limits-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}

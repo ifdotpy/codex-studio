@@ -154,7 +154,37 @@ pub fn result_input_field() -> Value {
     json!({"$ref":"#/components/schemas/JsonValue", "maxLength":MAX_HTTP_RESULT_TEXT_CODEPOINTS})
 }
 
+/// Read fields for task review. Bounds come from the submission validator above.
+pub fn apply_read_contract(document: &mut Value) {
+    let schemas = &mut document["components"]["schemas"];
+    schemas["TaskSubmissionRefusal"] = json!({"type":"object","additionalProperties":false,
+        "properties":{
+            "failedSubmits":{"type":"integer","minimum":0,"maximum":MAX_FAILED_RESULT_SUBMITS_PER_ATTEMPT},
+            "limit":{"type":"integer","const":MAX_FAILED_RESULT_SUBMITS_PER_ATTEMPT},
+            "retryAllowed":{"type":"boolean"},
+            "errors":{"type":"array","maxItems":MAX_RESULT_VALIDATION_ERRORS,"items":{
+                "type":"object","additionalProperties":false,
+                "properties":{"path":{"type":"string"},"message":{"type":"string","maxLength":MAX_RESULT_ERROR_MESSAGE_CODEPOINTS}},
+                "required":["path","message"]}}
+        },"required":["failedSubmits","limit","retryAllowed","errors"]});
+    for name in ["WorkItem", "WorkViewRecordResponse"] {
+        let mut schema = schema_input();
+        schema["additionalProperties"] = result_field();
+        schemas[name]["properties"]["resultSchema"] = schema;
+        schemas[name]["properties"]["submissionRefusal"] =
+            json!({"$ref":"#/components/schemas/TaskSubmissionRefusal"});
+    }
+    schemas["WorkList"]["properties"]["rootId"] = json!({"type":"string"});
+    schemas["WorkList"]["properties"]["taskDefaultGate"] =
+        json!({"$ref":"#/components/schemas/TaskAcceptanceGate"});
+}
+
 pub fn check_schema_parity(openapi: &Value) -> Result<(), String> {
+    let mut expected = openapi.clone();
+    apply_read_contract(&mut expected);
+    if expected != *openapi {
+        return Err("Task read schema differs from runtime-schema/src/task_results.rs".into());
+    }
     if openapi["components"]["schemas"]["WorkBody"]["properties"]["result"] != result_input_field()
     {
         return Err(

@@ -49,7 +49,7 @@ import '@mantine/core/styles.css';
 import {NativeError, NativeNotice} from '/src/components/NativeNotice.tsx';
 import Usage from '/src/components/Usage.tsx';
 const error={codexErrorInfo:'usageLimitExceeded',message:'Historical quota failure'};
-const agent={id:'lumina',rootId:'lumina',accountKey:'work',threadId:'native-lumina',model:'gpt-6-astra',
+const agent={id:'lumina',rootId:'lumina',accountKey:'work',threadId:'native-lumina',model:'gpt-6-astra',provider:'codex',
   error,nativeLimitErrorAt:${now - 10},status:'failed',isLead:true};
 const item={id:'past-error',role:'system',nativeNotice:'error',nativeError:error,text:error.message};
 window.fixtureActions=[];
@@ -145,6 +145,14 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`;
       );
     };
     const apply = async (label, limits, visible, identity = {}) => {
+      if (limits?.eligibility)
+        limits = {
+          ...limits,
+          eligibility: {
+            ...limits.eligibility,
+            agentId: identity.agentId || "lumina",
+          },
+        };
       await page.evaluate((snapshot) => window.applyLimitSnapshot(snapshot), {
         label,
         limits,
@@ -157,6 +165,20 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`;
     const available = {
       accountKey: "work",
       at: now,
+      eligibility: {
+        agentId: "lumina",
+        accountKey: "work",
+        provider: "codex",
+        model: "gpt-6-astra",
+        canRun: true,
+        allowed: true,
+        fresh: true,
+        checkedAt: now,
+        validUntil: now + 5,
+        resetAt: null,
+        buckets: [{ id: "codex", overageAllowed: false }],
+        overage: "unavailable",
+      },
       data: {
         ordinaryUsageAllowed: true,
         rateLimits: {
@@ -178,13 +200,22 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`;
       ["read-error", { ...available, error: "Offline" }],
       [
         "unknown",
-        { ...available, data: { rateLimits: available.data.rateLimits } },
+        {
+          ...available,
+          eligibility: undefined,
+          data: { rateLimits: available.data.rateLimits },
+        },
       ],
       ["no-snapshot", null],
       [
         "usage-denied",
         {
           ...available,
+          eligibility: {
+            ...available.eligibility,
+            allowed: false,
+            canRun: false,
+          },
           data: { ...available.data, ordinaryUsageAllowed: false },
         },
       ],
@@ -192,6 +223,11 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`;
         "exhausted",
         {
           ...available,
+          eligibility: {
+            ...available.eligibility,
+            allowed: false,
+            canRun: false,
+          },
           data: {
             ...available.data,
             rateLimits: {

@@ -308,14 +308,15 @@ function Turn({
   );
   if (
     !groupedMessages.length &&
-    !["failed", "interrupted"].includes(group.outcome || "")
+    !["failed", "interrupted", "uncertain"].includes(group.outcome || "")
   )
     return null;
   return (
     <section
       className="turn-history"
       data-turn={
-        !group.outcome || ["failed", "interrupted"].includes(group.outcome)
+        !group.outcome ||
+        ["failed", "interrupted", "uncertain"].includes(group.outcome)
           ? turns.at(-1)?.items[0].turnId
           : group.items[0].turnId
       }
@@ -375,6 +376,19 @@ function Turn({
             )}
           </p>
         ))}
+      {group.outcome === "uncertain" && (
+        <div className="turn-problem" role="status">
+          <CircleAlert size={14} />
+          <div>
+            <strong>Outcome unconfirmed</strong>
+            <p>{failureReason}</p>
+            <p>
+              Review the saved evidence before you continue. This turn will not
+              be replayed.
+            </p>
+          </div>
+        </div>
+      )}
       {group.outcome === "interrupted" && (
         <p className="turn-problem">
           <CircleStop size={14} />
@@ -448,7 +462,7 @@ export default function TurnHistory({
     const failedTurns = new Set(
       groups
         .flatMap((group) => group.turns || [group])
-        .filter((turn) => turn.outcome === "failed")
+        .filter((turn) => ["failed", "uncertain"].includes(turn.outcome || ""))
         .flatMap((turn) => {
           const turnId = turn.items[0].turnId;
           return turnId && typeof turnId === "string" ? [turnId] : [];
@@ -495,7 +509,7 @@ export default function TurnHistory({
         const turnId = outcomeTurn.items[0].turnId;
         if (
           !enabled ||
-          group.items[0].role === "user" ||
+          (group.items[0].role === "user" && group.outcome !== "uncertain") ||
           !group.items[0].turnId ||
           typeof group.items[0].turnId !== "string" ||
           !turnId ||

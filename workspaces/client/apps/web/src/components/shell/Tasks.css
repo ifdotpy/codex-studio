@@ -1,0 +1,111 @@
+.task-review {
+  display: grid;
+  gap: 16px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.task-review h3,
+.task-review h4,
+.task-review p {
+  margin: 8px 0;
+}
+.task-review-card {
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--mantine-color-default-border);
+  border-radius: 8px;
+}
+.task-review-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+.task-review-filters {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.task-review-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  gap: 8px;
+}
+.task-review-list button {
+  width: 100%;
+  display: grid;
+  gap: 4px;
+  text-align: left;
+  border: 1px solid var(--mantine-color-default-border);
+  border-radius: 6px;
+  padding: 10px;
+  color: inherit;
+  background: var(--mantine-color-body);
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+.task-review-list button[aria-pressed="true"] {
+  border-color: var(--mantine-primary-color-filled);
+}
+.task-review-list span {
+  font-size: 12px;
+}
+.task-review fieldset {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+  padding: 0;
+  margin: 12px 0 0;
+  border: 0;
+}
+.task-review dl {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 6px 12px;
+  font-size: 13px;
+}
+.task-review dd {
+  margin: 0;
+}
+.task-review dt {
+  font-weight: 600;
+}
+.task-review-json {
+  font-size: 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  padding: 10px;
+  background: var(--mantine-color-default-hover);
+  max-height: 360px;
+  overflow-y: auto;
+}
+.task-review-description {
+  white-space: pre-wrap;
+}
+.task-review summary {
+  cursor: pointer;
+  font-weight: 600;
+  padding: 8px 0;
+}
+.task-review-dependencies {
+  display: grid;
+  gap: 4px;
+  font-size: 14px;
+}
+.task-review-dependencies select {
+  width: 100%;
+  min-width: 0;
+  color: inherit;
+  background: var(--mantine-color-body);
+  border: 1px solid var(--mantine-color-default-border);
+}
+@media (max-width: 480px) {
+  .task-review-filters {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .task-review dl {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
