@@ -226,6 +226,18 @@ export const Interactions: Story = {
     });
     await waitFor(() => expect(unread).toBeVisible());
     await expect(unread).toBeDisabled();
+    await userEvent.click(
+      within(document.body).getByRole("menuitem", { name: "Rename" }),
+    );
+    await expect(
+      page.getAllByRole("textbox", { name: "Chat name" }),
+    ).toHaveLength(1);
+    await expect(
+      within(lane).getByRole("textbox", { name: "Chat name" }),
+    ).toBeVisible();
+    await userEvent.click(
+      page.getByRole("button", { name: "Cancel", exact: true }),
+    );
   },
 };
 

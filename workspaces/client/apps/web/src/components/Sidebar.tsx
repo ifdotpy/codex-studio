@@ -228,6 +228,7 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
     [renaming, setRenaming] = useState<string | null>(null),
     [name, setName] = useState(""),
     [archive, setArchive] = useState(false);
+  const [renameInPriority, setRenameInPriority] = useState(false);
   const hideOldChatsThreshold =
     p.hideOldChatsThreshold ?? DEFAULT_HIDE_OLD_CHATS_THRESHOLD;
   const sorting = useSidebarOrder(
@@ -843,7 +844,7 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
       serverOffline={
         p.offlineServers?.has(services.serverForChat(row.id)) ?? false
       }
-      renaming={renaming === row.id}
+      renaming={renaming === row.id && renameInPriority === priority}
       name={renaming === row.id ? name : ""}
       organizing={organizing === row.id}
       disabled={!canEdit({ kind: "chat", id: row.id })}
@@ -906,6 +907,7 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
         cancelRename: () => setRenaming(null),
         beginRename: () => {
           setName(row.name ?? "");
+          setRenameInPriority(priority);
           setRenaming(row.id);
         },
         unread: () => p.markUnread(row),
