@@ -1,0 +1,144 @@
+/* Inspection fixture only: the application consumes theme/state tokens directly. */
+.foundation-sheet {
+  inline-size: 100%;
+  min-inline-size: 0;
+  padding: var(--mantine-spacing-md);
+  background: var(--mantine-color-body);
+  color: var(--text);
+  font-size: var(--studio-text-body);
+}
+.foundation-sheet header {
+  margin-block-end: var(--mantine-spacing-lg);
+}
+.foundation-sheet h1 {
+  margin: 0;
+  font-size: var(--mantine-font-size-xl);
+  font-weight: 600;
+}
+.foundation-sheet p {
+  margin-block: var(--mantine-spacing-xs);
+  color: var(--muted);
+}
+.foundation-palette {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--mantine-spacing-xs);
+}
+.foundation-swatch {
+  display: flex;
+  align-items: end;
+  min-block-size: var(--mantine-spacing-xl);
+  padding: var(--mantine-spacing-xs);
+  border: var(--studio-border-width) solid var(--line);
+}
+.foundation-swatch-page {
+  background: var(--mantine-color-body);
+}
+.foundation-swatch-surface {
+  background: var(--surface);
+}
+.foundation-swatch-ink {
+  background: var(--text);
+  color: var(--surface);
+}
+.foundation-swatch-signal {
+  background: var(--mantine-primary-color-filled);
+  color: var(--mantine-primary-color-contrast);
+}
+.foundation-type {
+  display: grid;
+  gap: var(--mantine-spacing-xs);
+  padding-block: var(--mantine-spacing-lg);
+}
+.foundation-section {
+  font-size: var(--mantine-font-size-xl);
+  font-weight: 600;
+}
+.foundation-title {
+  font-size: var(--mantine-font-size-lg);
+  font-weight: 500;
+}
+.foundation-meta {
+  font-size: var(--studio-text-meta);
+  color: var(--muted);
+}
+.foundation-projects {
+  display: grid;
+  gap: var(--mantine-spacing-lg);
+  grid-template-columns: repeat(
+    auto-fit,
+    minmax(min(100%, var(--studio-team-size)), 1fr)
+  );
+}
+.foundation-projects h2 {
+  margin: 0;
+  padding-block: var(--mantine-spacing-xs);
+  font-size: var(--studio-text-body);
+  font-weight: 600;
+}
+.foundation-strip {
+  display: flex;
+  align-items: center;
+  gap: var(--mantine-spacing-xs);
+  padding: var(--mantine-spacing-xs) var(--mantine-spacing-sm);
+  border-block-end: var(--studio-border-width) solid var(--line);
+}
+.foundation-copy {
+  flex: 1;
+  min-inline-size: 0;
+}
+.foundation-copy strong {
+  display: block;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-weight: 500;
+}
+.foundation-copy small {
+  display: block;
+  font-size: var(--studio-text-meta);
+  color: var(--muted);
+}
+.foundation-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: var(--mantine-spacing-sm);
+  margin-block: var(--mantine-spacing-lg);
+}
+.foundation-controls > * {
+  min-inline-size: 0;
+  max-inline-size: 100%;
+}
+
+/* Fullscreen inspection owns its gutter instead of the preview decorator. */
+#storybook-root > div:has(.foundation-sheet) {
+  display: contents;
+}
+html:has(.foundation-sheet),
+body:has(.foundation-sheet) {
+  overflow: auto;
+}
+
+body:has(.foundation-sheet) {
+  position: static;
+  height: auto;
+}
+
+.foundation-signal-ramp {
+  display: grid;
+  grid-template-columns: repeat(10, minmax(0, 1fr));
+  gap: var(--mantine-spacing-xs);
+  margin-block-start: var(--mantine-spacing-xs);
+}
+.foundation-signal-ramp i {
+  display: block;
+  block-size: var(--studio-control-size);
+  background: var(--swatch);
+}
+.foundation-signal-ramp span {
+  text-align: center;
+  font-size: var(--studio-text-meta);
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+}

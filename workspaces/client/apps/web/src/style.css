@@ -25,6 +25,18 @@ body {
   }
 }
 a {
+  color: inherit;
+}
+/* Reading links keep a clear destination cue; navigation stays neutral. */
+:where(
+    .prose,
+    .markdown-body,
+    .file-preview-body,
+    .native-notice,
+    .browser-access-notice,
+    .studio-recovery-banner
+  )
+  a {
   color: var(--accent);
 }
 button,
@@ -423,14 +435,13 @@ p {
   min-height: 0;
   margin: 8px auto 0;
   padding: 10px 12px 8px;
-  background: light-dark(#f4f5f8, #26262e);
-  border: 1px solid light-dark(#18244714, #ffffff14);
+  background: var(--raised);
+  border: var(--studio-border-width) solid var(--line);
   border-radius: 18px;
-  box-shadow: 0 4px 24px #0000000d;
   transition: border-color 0.15s;
 }
 #composer:focus-within {
-  border-color: light-dark(#737b8c, #636375);
+  border-color: var(--accent);
 }
 .composer-bar {
   flex-shrink: 0;
@@ -476,12 +487,12 @@ p {
   text-align: right;
 }
 #send {
-  background: light-dark(#252b3b, #e2e2eb);
-  color: light-dark(#f4f5f8, #25252c);
+  background: var(--mantine-primary-color-filled);
+  color: var(--mantine-primary-color-contrast);
 }
 #send:disabled {
-  background: light-dark(#f4f5f8, #3c3c46);
-  color: light-dark(#737b8c, #858591);
+  background: var(--mantine-color-disabled);
+  color: var(--mantine-color-disabled-color);
 }
 .usage-footer .mantine-Popover-target {
   margin-left: auto;

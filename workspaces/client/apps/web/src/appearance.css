@@ -192,9 +192,6 @@
   color: var(--text);
   background: var(--studio-page);
 }
-:root[data-mantine-color-scheme="light"] a {
-  color: var(--accent);
-}
 :root[data-mantine-color-scheme="light"]
   :is(
     .message-content,
@@ -274,6 +271,7 @@
 @media (pointer: coarse) {
   :root {
     --studio-action-size: var(--studio-touch-target);
+    --studio-voice-control-size: var(--studio-touch-target);
   }
   .mantine-Button-root {
     --button-height-xs: var(--studio-touch-target);

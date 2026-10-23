@@ -1,5 +1,6 @@
 import {
   createTheme,
+  defaultVariantColorsResolver,
   Button,
   ActionIcon,
   TextInput,
@@ -26,6 +27,15 @@ export const theme = createTheme({
   primaryColor: "signal",
   primaryShade: { light: 7, dark: 4 },
   autoContrast: true,
+  // Mantine's component resolver chooses text using the light primary shade.
+  // The generated contrast variable follows both primaryShade schemes.
+  variantColorResolver: (input) => {
+    const colors = defaultVariantColorsResolver(input);
+    return input.variant === "filled" &&
+      input.color === input.theme.primaryColor
+      ? { ...colors, color: "var(--mantine-primary-color-contrast)" }
+      : colors;
+  },
   defaultRadius: "md",
   fontFamily:
     'Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
