@@ -658,6 +658,7 @@ fn compile_schemas() -> SchemaResult<CompiledSchemas> {
         "SyncPullResponse",
         "TranscriptStreamDelta",
         "TaskEntityDto",
+        "TeamBudgetSummary",
         "WorkEntityDto",
         "WorkspaceEntityDto",
         "DevicePairResponse",
@@ -1291,3 +1292,5 @@ mod tests {
 }
 
 pub mod task_gate;
+
+pub mod claude_permissions;

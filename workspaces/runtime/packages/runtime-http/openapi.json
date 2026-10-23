@@ -1517,6 +1517,12 @@
             "title": "Label",
             "type": "string"
           },
+          "organization": {
+            "$ref": "#/components/schemas/ClaudeOrganization"
+          },
+          "organizationMismatch": {
+            "$ref": "#/components/schemas/ClaudeOrganizationMismatch"
+          },
           "plan": {
             "anyOf": [
               {
@@ -2440,22 +2446,22 @@
         "properties": {
           "burst": {
             "description": "Turn starts per burst.",
-            "maximum": 512.0,
-            "minimum": 1.0,
+            "maximum": 512,
+            "minimum": 1,
             "title": "Burst",
             "type": "integer"
           },
           "maxRunningTurns": {
             "description": "Turns that may run at once on this account.",
-            "maximum": 512.0,
-            "minimum": 1.0,
+            "maximum": 512,
+            "minimum": 1,
             "title": "Maxrunningturns",
             "type": "integer"
           },
           "pauseSeconds": {
             "description": "Seconds after the start that ends a burst before the next start.",
-            "maximum": 3600.0,
-            "minimum": 0.0,
+            "maximum": 3600,
+            "minimum": 0,
             "title": "Pauseseconds",
             "type": "integer"
           }
@@ -2478,22 +2484,22 @@
           },
           "burst": {
             "description": "Turn starts per burst.",
-            "maximum": 512.0,
-            "minimum": 1.0,
+            "maximum": 512,
+            "minimum": 1,
             "title": "Burst",
             "type": "integer"
           },
           "maxRunningTurns": {
             "description": "Turns that may run at once on this account.",
-            "maximum": 512.0,
-            "minimum": 1.0,
+            "maximum": 512,
+            "minimum": 1,
             "title": "Maxrunningturns",
             "type": "integer"
           },
           "pauseSeconds": {
             "description": "Seconds after the start that ends a burst before the next start.",
-            "maximum": 3600.0,
-            "minimum": 0.0,
+            "maximum": 3600,
+            "minimum": 0,
             "title": "Pauseseconds",
             "type": "integer"
           }
@@ -4170,6 +4176,16 @@
             ],
             "title": "Autowake"
           },
+          "budgetBlocked": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "canSend": {
             "anyOf": [
               {
@@ -4181,6 +4197,16 @@
             ],
             "title": "Cansend"
           },
+          "capabilityProfile": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WorkerCapabilitiesDto"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "capacityRetry": {
             "anyOf": [
               {
@@ -4190,6 +4216,30 @@
                 "type": "null"
               }
             ]
+          },
+          "claudeOptions": {
+            "anyOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "permissionMode": {
+                    "enum": [
+                      "default",
+                      "acceptEdits",
+                      "auto",
+                      "plan",
+                      "bypassPermissions"
+                    ],
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Claude permission mode for the worker launch preview. Other session options remain private."
           },
           "commandProgress": {
             "default": [],
@@ -4211,6 +4261,18 @@
               }
             ],
             "title": "Compactions"
+          },
+          "completedWorkerTurns": {
+            "anyOf": [
+              {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "concurrency": {
             "anyOf": [
@@ -5291,6 +5353,16 @@
             ],
             "title": "Tail"
           },
+          "terminalReason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "threadId": {
             "anyOf": [
               {
@@ -5301,6 +5373,28 @@
               }
             ],
             "title": "Threadid"
+          },
+          "tokenBudget": {
+            "anyOf": [
+              {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "tokenUsageAccounting": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "tokensUsed": {
             "anyOf": [
@@ -5404,6 +5498,16 @@
               }
             ],
             "title": "Workspacebackend"
+          },
+          "workspaceCleanupIntent": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WorkspaceCleanupSummaryDto"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "workspaceMode": {
             "anyOf": [
@@ -10541,8 +10645,8 @@
           },
           "current": {
             "items": {
-              "maximum": 9223372036854775807,
-              "minimum": -9223372036854775808,
+              "maximum": 9223372036854776000,
+              "minimum": -9.223372036854776e+18,
               "type": "integer",
               "x-integer-domain": "signed64"
             },
@@ -10557,8 +10661,8 @@
           },
           "previous": {
             "items": {
-              "maximum": 9223372036854775807,
-              "minimum": -9223372036854775808,
+              "maximum": 9223372036854776000,
+              "minimum": -9.223372036854776e+18,
               "type": "integer",
               "x-integer-domain": "signed64"
             },
@@ -10958,8 +11062,8 @@
             "anyOf": [
               {
                 "items": {
-                  "maximum": 9223372036854775807,
-                  "minimum": -9223372036854775808,
+                  "maximum": 9223372036854776000,
+                  "minimum": -9.223372036854776e+18,
                   "type": "integer",
                   "x-integer-domain": "signed64"
                 },
@@ -11013,8 +11117,8 @@
             "anyOf": [
               {
                 "items": {
-                  "maximum": 9223372036854775807,
-                  "minimum": -9223372036854775808,
+                  "maximum": 9223372036854776000,
+                  "minimum": -9.223372036854776e+18,
                   "type": "integer",
                   "x-integer-domain": "signed64"
                 },
@@ -14496,7 +14600,7 @@
           },
           "line": {
             "maximum": 9007199254740991,
-            "minimum": 1.0,
+            "minimum": 1,
             "title": "Line",
             "type": "integer"
           },
@@ -17102,8 +17206,8 @@
             "type": "string"
           },
           "port": {
-            "maximum": 65535.0,
-            "minimum": 1024.0,
+            "maximum": 65535,
+            "minimum": 1024,
             "title": "Port",
             "type": "integer"
           },
@@ -17631,6 +17735,17 @@
             },
             "title": "Mcp",
             "type": "array"
+          },
+          "mcpSession": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/McpSessionBinding"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           },
           "model": {
             "title": "Model",
@@ -19926,6 +20041,41 @@
         "title": "ClaudeOptions",
         "type": "object"
       },
+      "ClaudeOrganization": {
+        "additionalProperties": false,
+        "properties": {
+          "idSuffix": {
+            "type": "string"
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "name",
+          "idSuffix"
+        ],
+        "type": "object"
+      },
+      "ClaudeOrganizationMismatch": {
+        "additionalProperties": false,
+        "properties": {
+          "expected": {
+            "$ref": "#/components/schemas/ClaudeOrganization"
+          },
+          "observed": {
+            "$ref": "#/components/schemas/ClaudeOrganization"
+          }
+        },
+        "required": [
+          "expected",
+          "observed"
+        ],
+        "type": "object"
+      },
       "ClaudePreInputRetryRecordResponse": {
         "additionalProperties": {
           "$ref": "#/components/schemas/JsonValue"
@@ -20083,6 +20233,47 @@
           }
         },
         "title": "ClaudeProfileRequest",
+        "type": "object"
+      },
+      "ClaudeRepairReport": {
+        "additionalProperties": false,
+        "properties": {
+          "invalidSequence": {
+            "type": "boolean"
+          },
+          "nativeHistoryConfirmed": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "scopeConfirmed": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "skippedRows": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "status": {
+            "enum": [
+              "none",
+              "needs_repair",
+              "repaired"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "skippedRows",
+          "invalidSequence",
+          "scopeConfirmed",
+          "nativeHistoryConfirmed"
+        ],
         "type": "object"
       },
       "ClaudeRollbackResponse": {
@@ -20678,6 +20869,9 @@
             "default": false,
             "type": "boolean"
           },
+          "error": {
+            "$ref": "#/components/schemas/JsonValue"
+          },
           "id": {
             "title": "Id",
             "type": "string"
@@ -20694,7 +20888,8 @@
               "inProgress",
               "completed",
               "failed",
-              "interrupted"
+              "interrupted",
+              "uncertain"
             ],
             "title": "Status",
             "type": "string"
@@ -21790,8 +21985,8 @@
         "properties": {
           "concurrency": {
             "default": 32,
-            "maximum": 2048.0,
-            "minimum": 0.0,
+            "maximum": 2048,
+            "minimum": 0,
             "title": "Concurrency",
             "type": "integer"
           },
@@ -21817,8 +22012,8 @@
           },
           "maxAgents": {
             "default": 64,
-            "maximum": 2050.0,
-            "minimum": 1.0,
+            "maximum": 2050,
+            "minimum": 1,
             "title": "Maxagents",
             "type": "integer"
           },
@@ -23185,8 +23380,8 @@
           },
           "subagent_concurrency": {
             "default": 32,
-            "maximum": 2048.0,
-            "minimum": 0.0,
+            "maximum": 2048,
+            "minimum": 0,
             "title": "Subagent Concurrency",
             "type": "integer"
           },
@@ -23399,8 +23594,8 @@
           },
           "concurrency": {
             "default": 32,
-            "maximum": 2048.0,
-            "minimum": 0.0,
+            "maximum": 2048,
+            "minimum": 0,
             "title": "Concurrency",
             "type": "integer"
           },
@@ -23479,8 +23674,8 @@
           },
           "maxAgents": {
             "default": 64,
-            "maximum": 2050.0,
-            "minimum": 1.0,
+            "maximum": 2050,
+            "minimum": 1,
             "title": "Maxagents",
             "type": "integer"
           },
@@ -23547,6 +23742,17 @@
             ],
             "default": null,
             "title": "Parent"
+          },
+          "permission_mode": {
+            "description": "Claude child permission mode. Omit to inherit. Reviewers use plan. Bypass requires a bypass parent.",
+            "enum": [
+              "default",
+              "acceptEdits",
+              "auto",
+              "plan",
+              "bypassPermissions"
+            ],
+            "type": "string"
           },
           "profile_id": {
             "anyOf": [
@@ -28179,7 +28385,7 @@
             "type": "string"
           },
           "size": {
-            "maximum": 9223372036854775807,
+            "maximum": 9223372036854776000,
             "minimum": 0,
             "title": "Size",
             "type": "integer",
@@ -29529,25 +29735,25 @@
         "properties": {
           "cpus": {
             "maximum": 9007199254740991,
-            "minimum": 1.0,
+            "minimum": 1,
             "title": "Cpus",
             "type": "integer"
           },
           "dataDiskBytes": {
-            "maximum": 1099511627776.0,
-            "minimum": 8589934592.0,
+            "maximum": 1099511627776,
+            "minimum": 8589934592,
             "title": "Datadiskbytes",
             "type": "integer"
           },
           "memoryBytes": {
-            "maximum": 68719476736.0,
-            "minimum": 1073741824.0,
+            "maximum": 68719476736,
+            "minimum": 1073741824,
             "title": "Memorybytes",
             "type": "integer"
           },
           "systemDiskBytes": {
-            "maximum": 137438953472.0,
-            "minimum": 8589934592.0,
+            "maximum": 137438953472,
+            "minimum": 8589934592,
             "title": "Systemdiskbytes",
             "type": "integer"
           }
@@ -30584,10 +30790,36 @@
             "default": null,
             "title": "Output"
           },
+          "outputFile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "outputPatterns": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "outputTruncated": {
             "default": false,
             "title": "Outputtruncated",
             "type": "boolean"
+          },
+          "outputWakeBudget": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MonitorOutputWakeBudget"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "source": {
             "enum": [
@@ -30639,6 +30871,89 @@
           "capabilities"
         ],
         "title": "ManagedProcessRecord",
+        "type": "object"
+      },
+      "McpReconnectRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "name": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "request_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "session": {
+            "$ref": "#/components/schemas/McpSessionBinding"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "request_id",
+          "session"
+        ],
+        "type": "object"
+      },
+      "McpReconnectResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "message": {
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "completed",
+              "failed",
+              "unknown"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "message"
+        ],
+        "type": "object"
+      },
+      "McpSessionBinding": {
+        "additionalProperties": false,
+        "properties": {
+          "account": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "connection": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "epoch": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "generation": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "thread": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "account",
+          "thread",
+          "epoch",
+          "connection",
+          "generation"
+        ],
         "type": "object"
       },
       "MessageHistory": {
@@ -31309,6 +31624,12 @@
             "default": null,
             "title": "Name"
           },
+          "outputPatterns": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "outputTruncated": {
             "anyOf": [
               {
@@ -31320,6 +31641,16 @@
             ],
             "default": null,
             "title": "Outputtruncated"
+          },
+          "outputWakeBudget": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MonitorOutputWakeBudget"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "processId": {
             "anyOf": [
@@ -31519,8 +31850,8 @@
           },
           "cols": {
             "default": 80,
-            "maximum": 1000.0,
-            "minimum": 1.0,
+            "maximum": 1000,
+            "minimum": 1,
             "title": "Cols",
             "type": "integer"
           },
@@ -31532,8 +31863,8 @@
           },
           "rows": {
             "default": 24,
-            "maximum": 1000.0,
-            "minimum": 1.0,
+            "maximum": 1000,
+            "minimum": 1,
             "title": "Rows",
             "type": "integer"
           },
@@ -31548,6 +31879,29 @@
           "id"
         ],
         "title": "MonitorInput",
+        "type": "object"
+      },
+      "MonitorOutputWakeBudget": {
+        "additionalProperties": false,
+        "description": "Public output wake budget. The monitor matcher owns the stored budget. Tokens count available output wake batches.",
+        "properties": {
+          "paused": {
+            "type": "boolean"
+          },
+          "tokens": {
+            "minimum": 0,
+            "type": "number"
+          },
+          "totalSuppressedMatches": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "totalSuppressedMatches",
+          "paused",
+          "tokens"
+        ],
         "type": "object"
       },
       "MonitorRecordResponse": {
@@ -31586,8 +31940,8 @@
           },
           "activityAt": {
             "default": null,
-            "maximum": 9007199254740991.0,
-            "minimum": -9007199254740991.0,
+            "maximum": 9007199254740991,
+            "minimum": -9007199254740991,
             "title": "Activityat",
             "type": "number"
           },
@@ -31617,8 +31971,8 @@
           },
           "created": {
             "default": null,
-            "maximum": 9007199254740991.0,
-            "minimum": -9007199254740991.0,
+            "maximum": 9007199254740991,
+            "minimum": -9007199254740991,
             "title": "Created",
             "type": "number"
           },
@@ -31663,8 +32017,8 @@
           "finished": {
             "anyOf": [
               {
-                "maximum": 9007199254740991.0,
-                "minimum": -9007199254740991.0,
+                "maximum": 9007199254740991,
+                "minimum": -9007199254740991,
                 "type": "number"
               },
               {
@@ -31844,6 +32198,50 @@
           }
         },
         "title": "MonitorRecordResponse",
+        "type": "object"
+      },
+      "MonitorRestartRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "accountKey": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "agent": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "epoch": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "outputPatterns": {
+            "items": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "minItems": 1,
+            "type": "array"
+          },
+          "requestId": {
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "agent",
+          "epoch",
+          "requestId",
+          "outputPatterns",
+          "accountKey"
+        ],
         "type": "object"
       },
       "MonitorState": {
@@ -34750,15 +35148,15 @@
         "properties": {
           "childResultCoalesceSeconds": {
             "description": "Seconds a lead's finished-subagent result waits for sibling subagents that are still running, so close results arrive in one turn; 0 delivers each at once.",
-            "maximum": 300.0,
-            "minimum": 0.0,
+            "maximum": 300,
+            "minimum": 0,
             "title": "Childresultcoalesceseconds",
             "type": "integer"
           },
           "idleSessionUnloadMinutes": {
             "description": "Minutes a lead's or ordinary chat's idle Codex thread or Claude session stays loaded, and an account's provider process keeps running after its last thread unloaded. A managed worker without a running turn, pending input, or active monitor unloads at once. The next message resumes a thread. 0 never unloads.",
-            "maximum": 1440.0,
-            "minimum": 0.0,
+            "maximum": 1440,
+            "minimum": 0,
             "title": "Idlesessionunloadminutes",
             "type": "integer"
           }
@@ -37104,8 +37502,8 @@
         "additionalProperties": false,
         "properties": {
           "timestamp": {
-            "maximum": 9007199254740991.0,
-            "minimum": 0.0,
+            "maximum": 9007199254740991,
+            "minimum": 0,
             "title": "Timestamp",
             "type": "integer"
           },
@@ -45925,8 +46323,8 @@
           },
           "durationMinutes": {
             "default": 30,
-            "maximum": 525600.0,
-            "minimum": 1.0,
+            "maximum": 525600,
+            "minimum": 1,
             "title": "Durationminutes",
             "type": "integer"
           },
@@ -46053,8 +46451,8 @@
           },
           "intervalSeconds": {
             "default": 60,
-            "maximum": 31536000.0,
-            "minimum": 10.0,
+            "maximum": 31536000,
+            "minimum": 10,
             "title": "Intervalseconds",
             "type": "integer"
           },
@@ -46222,8 +46620,8 @@
           },
           "minimumWorkers": {
             "default": 8,
-            "maximum": 255.0,
-            "minimum": 1.0,
+            "maximum": 255,
+            "minimum": 1,
             "title": "Minimumworkers",
             "type": "integer"
           },
@@ -46320,8 +46718,8 @@
           },
           "stallTimeoutSeconds": {
             "default": 1800,
-            "maximum": 31536000.0,
-            "minimum": 0.0,
+            "maximum": 31536000,
+            "minimum": 0,
             "title": "Stalltimeoutseconds",
             "type": "integer"
           },
@@ -49054,7 +49452,7 @@
           },
           "expected_revision": {
             "maximum": 9007199254740991,
-            "minimum": 0.0,
+            "minimum": 0,
             "title": "Expected Revision",
             "type": "integer"
           },
@@ -52933,6 +53331,16 @@
             "default": null,
             "title": "Name"
           },
+          "outputFile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "outputTruncated": {
             "anyOf": [
               {
@@ -53256,6 +53664,16 @@
             ],
             "title": "Name"
           },
+          "outputFile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "outputTruncated": {
             "anyOf": [
               {
@@ -53483,6 +53901,30 @@
         "title": "TaskKind",
         "type": "string"
       },
+      "TaskOutputResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "outputFile": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          },
+          "truncated": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "outputFile",
+          "text",
+          "truncated"
+        ],
+        "type": "object"
+      },
       "TaskResource": {
         "additionalProperties": false,
         "properties": {
@@ -53521,6 +53963,51 @@
         "title": "TaskStatus",
         "type": "string"
       },
+      "TaskSubmissionRefusal": {
+        "additionalProperties": false,
+        "properties": {
+          "errors": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "message": {
+                  "maxLength": 1024,
+                  "type": "string"
+                },
+                "path": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path",
+                "message"
+              ],
+              "type": "object"
+            },
+            "maxItems": 32,
+            "type": "array"
+          },
+          "failedSubmits": {
+            "maximum": 3,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "limit": {
+            "const": 3,
+            "type": "integer"
+          },
+          "retryAllowed": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "failedSubmits",
+          "limit",
+          "retryAllowed",
+          "errors"
+        ],
+        "type": "object"
+      },
       "TasksResource": {
         "additionalProperties": false,
         "properties": {
@@ -53540,6 +54027,89 @@
           "agentId"
         ],
         "title": "TasksResource",
+        "type": "object"
+      },
+      "TeamBudgetSummary": {
+        "additionalProperties": false,
+        "properties": {
+          "incomplete": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "agentId": {
+                  "type": "string"
+                },
+                "reason": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "agentId",
+                "reason"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "reached": {
+            "type": "boolean"
+          },
+          "retainedWorktrees": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "cleanup": {
+                  "$ref": "#/components/schemas/WorkspaceCleanupSummaryDto"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "name": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "id",
+                "cleanup"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "rootId": {
+            "type": "string"
+          },
+          "tokenBudget": {
+            "anyOf": [
+              {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "tokensUsed": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "rootId",
+          "tokenBudget",
+          "reached",
+          "incomplete"
+        ],
         "type": "object"
       },
       "TerminalClose": {
@@ -53569,8 +54139,8 @@
           },
           "cols": {
             "default": 100,
-            "maximum": 1000.0,
-            "minimum": 2.0,
+            "maximum": 1000,
+            "minimum": 2,
             "title": "Cols",
             "type": "integer"
           },
@@ -53582,8 +54152,8 @@
           },
           "rows": {
             "default": 28,
-            "maximum": 500.0,
-            "minimum": 1.0,
+            "maximum": 500,
+            "minimum": 1,
             "title": "Rows",
             "type": "integer"
           }
@@ -53998,8 +54568,8 @@
         "properties": {
           "cols": {
             "default": 100,
-            "maximum": 1000.0,
-            "minimum": 2.0,
+            "maximum": 1000,
+            "minimum": 2,
             "title": "Cols",
             "type": "integer"
           },
@@ -54011,8 +54581,8 @@
           },
           "rows": {
             "default": 28,
-            "maximum": 500.0,
-            "minimum": 1.0,
+            "maximum": 500,
+            "minimum": 1,
             "title": "Rows",
             "type": "integer"
           }
@@ -54384,8 +54954,8 @@
           },
           "callbackStartedAt": {
             "default": null,
-            "maximum": 9007199254740991.0,
-            "minimum": -9007199254740991.0,
+            "maximum": 9007199254740991,
+            "minimum": -9007199254740991,
             "title": "Callbackstartedat",
             "type": "number"
           },
@@ -54541,8 +55111,8 @@
           },
           "wireReceivedAt": {
             "default": null,
-            "maximum": 9007199254740991.0,
-            "minimum": -9007199254740991.0,
+            "maximum": 9007199254740991,
+            "minimum": -9007199254740991,
             "title": "Wirereceivedat",
             "type": "number"
           }
@@ -54600,8 +55170,8 @@
           },
           "callbackStartedAt": {
             "default": null,
-            "maximum": 9007199254740991.0,
-            "minimum": -9007199254740991.0,
+            "maximum": 9007199254740991,
+            "minimum": -9007199254740991,
             "title": "Callbackstartedat",
             "type": "number"
           },
@@ -54612,7 +55182,7 @@
           },
           "handlerEndedAt": {
             "default": null,
-            "maximum": 9223372036854775807,
+            "maximum": 9223372036854776000,
             "minimum": 0,
             "title": "Handlerendedat",
             "type": "integer",
@@ -54620,7 +55190,7 @@
           },
           "handlerStartedAt": {
             "default": null,
-            "maximum": 9223372036854775807,
+            "maximum": 9223372036854776000,
             "minimum": 0,
             "title": "Handlerstartedat",
             "type": "integer",
@@ -54633,7 +55203,7 @@
           },
           "reservationBeganAt": {
             "default": null,
-            "maximum": 9223372036854775807,
+            "maximum": 9223372036854776000,
             "minimum": 0,
             "title": "Reservationbeganat",
             "type": "integer",
@@ -54646,7 +55216,7 @@
           },
           "reservationEndedAt": {
             "default": null,
-            "maximum": 9223372036854775807,
+            "maximum": 9223372036854776000,
             "minimum": 0,
             "title": "Reservationendedat",
             "type": "integer",
@@ -54654,7 +55224,7 @@
           },
           "reservationLockedAt": {
             "default": null,
-            "maximum": 9223372036854775807,
+            "maximum": 9223372036854776000,
             "minimum": 0,
             "title": "Reservationlockedat",
             "type": "integer",
@@ -54662,8 +55232,8 @@
           },
           "wireReceivedAt": {
             "default": null,
-            "maximum": 9007199254740991.0,
-            "minimum": -9007199254740991.0,
+            "maximum": 9007199254740991,
+            "minimum": -9007199254740991,
             "title": "Wirereceivedat",
             "type": "number"
           }
@@ -57512,6 +58082,90 @@
         "title": "UnrevokeServer",
         "type": "object"
       },
+      "UsageEligibility": {
+        "additionalProperties": false,
+        "properties": {
+          "accountKey": {
+            "type": "string"
+          },
+          "agentId": {
+            "type": "string"
+          },
+          "allowed": {
+            "type": "boolean"
+          },
+          "buckets": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "overageAllowed": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "id",
+                "overageAllowed"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "canRun": {
+            "type": "boolean"
+          },
+          "checkedAt": {
+            "type": "number"
+          },
+          "fresh": {
+            "type": "boolean"
+          },
+          "model": {
+            "type": "string"
+          },
+          "overage": {
+            "enum": [
+              "allowed",
+              "in_use",
+              "rejected",
+              "unavailable"
+            ],
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "resetAt": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "validUntil": {
+            "type": [
+              "number",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "agentId",
+          "accountKey",
+          "model",
+          "provider",
+          "allowed",
+          "canRun",
+          "fresh",
+          "checkedAt",
+          "validUntil",
+          "resetAt",
+          "overage",
+          "buckets"
+        ],
+        "type": "object"
+      },
       "UsageLimitsData": {
         "additionalProperties": {
           "$ref": "#/components/schemas/JsonValue"
@@ -57689,6 +58343,9 @@
               }
             ],
             "default": null
+          },
+          "eligibility": {
+            "$ref": "#/components/schemas/UsageEligibility"
           },
           "error": {
             "anyOf": [
@@ -61053,6 +61710,16 @@
             "default": null,
             "title": "Releases"
           },
+          "resultSchema": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/JsonValue"
+            },
+            "description": "Optional draft 2020-12 result contract for create/update (maximum 32768 UTF-8 bytes). Supports types, properties, required, additionalProperties, arrays, bounds, enum/const and combinators. References, regex and unknown keywords are refused. A new task version resets the submit cap.",
+            "type": [
+              "object",
+              "boolean"
+            ]
+          },
           "results": {
             "default": [],
             "items": {
@@ -61076,6 +61743,9 @@
             ],
             "title": "Status",
             "type": "string"
+          },
+          "submissionRefusal": {
+            "$ref": "#/components/schemas/TaskSubmissionRefusal"
           },
           "title": {
             "title": "Title",
@@ -61151,6 +61821,12 @@
             },
             "title": "Items",
             "type": "array"
+          },
+          "rootId": {
+            "type": "string"
+          },
+          "taskDefaultGate": {
+            "$ref": "#/components/schemas/TaskAcceptanceGate"
           },
           "tasks": {
             "items": {
@@ -61596,6 +62272,16 @@
             "title": "Releases",
             "type": "array"
           },
+          "resultSchema": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/JsonValue"
+            },
+            "description": "Optional draft 2020-12 result contract for create/update (maximum 32768 UTF-8 bytes). Supports types, properties, required, additionalProperties, arrays, bounds, enum/const and combinators. References, regex and unknown keywords are refused. A new task version resets the submit cap.",
+            "type": [
+              "object",
+              "boolean"
+            ]
+          },
           "results": {
             "items": {
               "$ref": "#/components/schemas/WorkResultRecordResponse"
@@ -61618,6 +62304,9 @@
             ],
             "title": "Status",
             "type": "string"
+          },
+          "submissionRefusal": {
+            "$ref": "#/components/schemas/TaskSubmissionRefusal"
           },
           "title": {
             "title": "Title",
@@ -61652,6 +62341,104 @@
         "title": "WorkViewRecordResponse",
         "type": "object"
       },
+      "WorkerCapabilitiesDto": {
+        "additionalProperties": false,
+        "properties": {
+          "allowedTools": {
+            "anyOf": [
+              {
+                "items": {
+                  "minLength": 1,
+                  "pattern": "^[A-Za-z0-9_.:/*-]+$",
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "disallowedTools": {
+            "anyOf": [
+              {
+                "items": {
+                  "minLength": 1,
+                  "pattern": "^[A-Za-z0-9_.:/*-]+$",
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "maxTurns": {
+            "anyOf": [
+              {
+                "maximum": 4294967295,
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "mcpServers": {
+            "anyOf": [
+              {
+                "items": {
+                  "minLength": 1,
+                  "pattern": "^[A-Za-z0-9_.:/-]+$",
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "skills": {
+            "anyOf": [
+              {
+                "items": {
+                  "minLength": 1,
+                  "pattern": "^[A-Za-z0-9_.:/-]+$",
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "WorkerContinueRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string"
+          },
+          "request_id": {
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "request_id"
+        ],
+        "type": "object"
+      },
       "WorkerDefaults": {
         "additionalProperties": false,
         "properties": {
@@ -61682,8 +62469,8 @@
           },
           "delegation_depth": {
             "default": 1,
-            "maximum": 3.0,
-            "minimum": 1.0,
+            "maximum": 3,
+            "minimum": 1,
             "title": "Delegation Depth",
             "type": "integer"
           },
@@ -61761,8 +62548,8 @@
           },
           "delegationDepth": {
             "default": 1,
-            "maximum": 3.0,
-            "minimum": 1.0,
+            "maximum": 3,
+            "minimum": 1,
             "title": "Delegationdepth",
             "type": "integer"
           },
@@ -61904,6 +62691,40 @@
           "fastMode"
         ],
         "title": "WorkerDefaultsRecordResponse",
+        "type": "object"
+      },
+      "WorkspaceCleanupSummaryDto": {
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "phase": {
+            "type": "string"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "phase",
+          "reason",
+          "path"
+        ],
         "type": "object"
       },
       "WorkspaceEntityDto": {
@@ -62903,8 +63724,8 @@
           "gitFile": {
             "default": null,
             "items": {
-              "maximum": 9223372036854775807,
-              "minimum": -9223372036854775808,
+              "maximum": 9223372036854776000,
+              "minimum": -9.223372036854776e+18,
               "type": "integer",
               "x-integer-domain": "signed64"
             },
@@ -62927,8 +63748,8 @@
             "items": {
               "anyOf": [
                 {
-                  "maximum": 9007199254740991.0,
-                  "minimum": -9007199254740991.0,
+                  "maximum": 9007199254740991,
+                  "minimum": -9007199254740991,
                   "type": "number"
                 },
                 {
@@ -62981,8 +63802,8 @@
           "rootFile": {
             "default": null,
             "items": {
-              "maximum": 9223372036854775807,
-              "minimum": -9223372036854775808,
+              "maximum": 9223372036854776000,
+              "minimum": -9.223372036854776e+18,
               "type": "integer",
               "x-integer-domain": "signed64"
             },
@@ -63035,8 +63856,8 @@
           },
           "gitFile": {
             "items": {
-              "maximum": 9223372036854775807,
-              "minimum": -9223372036854775808,
+              "maximum": 9223372036854776000,
+              "minimum": -9.223372036854776e+18,
               "type": "integer",
               "x-integer-domain": "signed64"
             },
@@ -63049,8 +63870,8 @@
           },
           "rootFile": {
             "items": {
-              "maximum": 9223372036854775807,
-              "minimum": -9223372036854775808,
+              "maximum": 9223372036854776000,
+              "minimum": -9.223372036854776e+18,
               "type": "integer",
               "x-integer-domain": "signed64"
             },
@@ -66140,6 +66961,127 @@
         "summary": "Account Transfer"
       }
     },
+    "/api/agents/continue": {
+      "post": {
+        "operationId": "continue_worker_api_agents_continue_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WorkerContinueRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/studio_api__work__models__MessageReceipt"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Access-Control-Allow-Origin": {
+                "$ref": "#/components/headers/AccessControlAllowOrigin"
+              },
+              "Access-Control-Expose-Headers": {
+                "$ref": "#/components/headers/AccessControlExposeHeaders"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/CacheControl"
+              },
+              "Content-Encoding": {
+                "$ref": "#/components/headers/ContentEncoding"
+              },
+              "Content-Length": {
+                "$ref": "#/components/headers/ContentLength"
+              },
+              "Content-Security-Policy": {
+                "$ref": "#/components/headers/ContentSecurityPolicy"
+              },
+              "Content-Type": {
+                "$ref": "#/components/headers/ContentType"
+              },
+              "Referrer-Policy": {
+                "$ref": "#/components/headers/ReferrerPolicy"
+              },
+              "Server-Timing": {
+                "$ref": "#/components/headers/ServerTiming"
+              },
+              "Vary": {
+                "$ref": "#/components/headers/Vary"
+              },
+              "X-Content-Type-Options": {
+                "$ref": "#/components/headers/XContentTypeOptions"
+              },
+              "X-Studio-API-Schema": {
+                "$ref": "#/components/headers/StudioApiSchema"
+              },
+              "X-Studio-Server": {
+                "$ref": "#/components/headers/StudioServer"
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ApiError400",
+            "description": "Bad Request"
+          },
+          "401": {
+            "$ref": "#/components/responses/ApiError401",
+            "description": "Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/ApiError403",
+            "description": "Forbidden"
+          },
+          "408": {
+            "$ref": "#/components/responses/ApiError408",
+            "description": "Request Timeout"
+          },
+          "409": {
+            "$ref": "#/components/responses/ApiError409",
+            "description": "Conflict"
+          },
+          "410": {
+            "$ref": "#/components/responses/ApiError410",
+            "description": "Gone"
+          },
+          "413": {
+            "$ref": "#/components/responses/ApiError413",
+            "description": "Content Too Large"
+          },
+          "415": {
+            "$ref": "#/components/responses/ApiError415",
+            "description": "Unsupported Media Type"
+          },
+          "426": {
+            "$ref": "#/components/responses/ApiError426",
+            "description": "Upgrade Required"
+          },
+          "429": {
+            "$ref": "#/components/responses/ApiError429",
+            "description": "Too Many Requests"
+          },
+          "500": {
+            "$ref": "#/components/responses/ApiError500",
+            "description": "Internal Server Error"
+          },
+          "502": {
+            "$ref": "#/components/responses/ApiError502",
+            "description": "Bad Gateway"
+          },
+          "503": {
+            "$ref": "#/components/responses/ApiError503",
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Post Message"
+      }
+    },
     "/api/agents/finder-view": {
       "get": {
         "description": "Where Finder shows the chat's files. Reads saved records only; never mounts or calls the VM.",
@@ -67027,6 +67969,23 @@
             "required": false,
             "schema": {
               "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "serversCursor",
+            "required": false,
+            "schema": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "fresh",
+            "required": false,
+            "schema": {
+              "type": "boolean"
             }
           }
         ],
@@ -68053,6 +69012,91 @@
           }
         },
         "summary": "Claude Profile"
+      }
+    },
+    "/api/claude/repair-report": {
+      "get": {
+        "operationId": "claude_repair_report",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClaudeRepairReport"
+                }
+              }
+            },
+            "description": "Safe saved repair evidence; no transcript text or paths"
+          },
+          "400": {
+            "$ref": "#/components/responses/ApiError400",
+            "description": "Bad Request"
+          },
+          "401": {
+            "$ref": "#/components/responses/ApiError401",
+            "description": "Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/ApiError403",
+            "description": "Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/ApiError404",
+            "description": "Not Found"
+          },
+          "408": {
+            "$ref": "#/components/responses/ApiError408",
+            "description": "Request Timeout"
+          },
+          "409": {
+            "$ref": "#/components/responses/ApiError409",
+            "description": "Conflict"
+          },
+          "410": {
+            "$ref": "#/components/responses/ApiError410",
+            "description": "Gone"
+          },
+          "413": {
+            "$ref": "#/components/responses/ApiError413",
+            "description": "Content Too Large"
+          },
+          "415": {
+            "$ref": "#/components/responses/ApiError415",
+            "description": "Unsupported Media Type"
+          },
+          "426": {
+            "$ref": "#/components/responses/ApiError426",
+            "description": "Upgrade Required"
+          },
+          "429": {
+            "$ref": "#/components/responses/ApiError429",
+            "description": "Too Many Requests"
+          },
+          "500": {
+            "$ref": "#/components/responses/ApiError500",
+            "description": "Internal Server Error"
+          },
+          "502": {
+            "$ref": "#/components/responses/ApiError502",
+            "description": "Bad Gateway"
+          },
+          "503": {
+            "$ref": "#/components/responses/ApiError503",
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Read saved Claude journal repair evidence without repair or replay"
       }
     },
     "/api/claude/session": {
@@ -70853,6 +71897,14 @@
               "const": "1",
               "type": "string"
             }
+          },
+          {
+            "in": "query",
+            "name": "agent",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -71516,6 +72568,153 @@
           }
         },
         "summary": "Mac Sync Resolve"
+      }
+    },
+    "/api/mcp/reconnect": {
+      "post": {
+        "operationId": "mcp_reconnect_api_mcp_reconnect_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/McpReconnectRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/McpReconnectResponse"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Access-Control-Allow-Origin": {
+                "$ref": "#/components/headers/AccessControlAllowOrigin"
+              },
+              "Access-Control-Expose-Headers": {
+                "$ref": "#/components/headers/AccessControlExposeHeaders"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/CacheControl"
+              },
+              "Content-Encoding": {
+                "$ref": "#/components/headers/ContentEncoding"
+              },
+              "Content-Length": {
+                "$ref": "#/components/headers/ContentLength"
+              },
+              "Content-Security-Policy": {
+                "$ref": "#/components/headers/ContentSecurityPolicy"
+              },
+              "Content-Type": {
+                "$ref": "#/components/headers/ContentType"
+              },
+              "ETag": {
+                "$ref": "#/components/headers/ETag"
+              },
+              "Referrer-Policy": {
+                "$ref": "#/components/headers/ReferrerPolicy"
+              },
+              "Server-Timing": {
+                "$ref": "#/components/headers/ServerTiming"
+              },
+              "Vary": {
+                "$ref": "#/components/headers/Vary"
+              },
+              "X-Content-Type-Options": {
+                "$ref": "#/components/headers/XContentTypeOptions"
+              },
+              "X-Studio-API-Schema": {
+                "$ref": "#/components/headers/StudioApiSchema"
+              },
+              "X-Studio-Server": {
+                "$ref": "#/components/headers/StudioServer"
+              }
+            }
+          },
+          "304": {
+            "description": "Not Modified",
+            "headers": {
+              "Access-Control-Allow-Origin": {
+                "$ref": "#/components/headers/AccessControlAllowOrigin"
+              },
+              "Access-Control-Expose-Headers": {
+                "$ref": "#/components/headers/AccessControlExposeHeaders"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/CacheControl"
+              },
+              "Content-Encoding": {
+                "$ref": "#/components/headers/ContentEncoding"
+              },
+              "Content-Length": {
+                "$ref": "#/components/headers/ContentLength"
+              },
+              "Content-Security-Policy": {
+                "$ref": "#/components/headers/ContentSecurityPolicy"
+              },
+              "Content-Type": {
+                "$ref": "#/components/headers/ContentType"
+              },
+              "ETag": {
+                "$ref": "#/components/headers/ETag"
+              },
+              "Referrer-Policy": {
+                "$ref": "#/components/headers/ReferrerPolicy"
+              },
+              "Server-Timing": {
+                "$ref": "#/components/headers/ServerTiming"
+              },
+              "Vary": {
+                "$ref": "#/components/headers/Vary"
+              },
+              "X-Content-Type-Options": {
+                "$ref": "#/components/headers/XContentTypeOptions"
+              },
+              "X-Studio-API-Schema": {
+                "$ref": "#/components/headers/StudioApiSchema"
+              },
+              "X-Studio-Server": {
+                "$ref": "#/components/headers/StudioServer"
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ApiError400",
+            "description": "Bad Request"
+          },
+          "401": {
+            "$ref": "#/components/responses/ApiError401",
+            "description": "Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/ApiError403",
+            "description": "Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/ApiError404",
+            "description": "Not Found"
+          },
+          "429": {
+            "$ref": "#/components/responses/ApiError429",
+            "description": "Too Many Requests"
+          },
+          "500": {
+            "$ref": "#/components/responses/ApiError500",
+            "description": "Internal Server Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/ApiError503",
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Reconnect one MCP server in one agent session"
       }
     },
     "/api/messages": {
@@ -72417,6 +73616,127 @@
           }
         },
         "summary": "Monitor Log"
+      }
+    },
+    "/api/monitor/restart": {
+      "post": {
+        "operationId": "restart_monitor_api_monitor_restart_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MonitorRestartRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MonitorActionResult"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Access-Control-Allow-Origin": {
+                "$ref": "#/components/headers/AccessControlAllowOrigin"
+              },
+              "Access-Control-Expose-Headers": {
+                "$ref": "#/components/headers/AccessControlExposeHeaders"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/CacheControl"
+              },
+              "Content-Encoding": {
+                "$ref": "#/components/headers/ContentEncoding"
+              },
+              "Content-Length": {
+                "$ref": "#/components/headers/ContentLength"
+              },
+              "Content-Security-Policy": {
+                "$ref": "#/components/headers/ContentSecurityPolicy"
+              },
+              "Content-Type": {
+                "$ref": "#/components/headers/ContentType"
+              },
+              "Referrer-Policy": {
+                "$ref": "#/components/headers/ReferrerPolicy"
+              },
+              "Server-Timing": {
+                "$ref": "#/components/headers/ServerTiming"
+              },
+              "Vary": {
+                "$ref": "#/components/headers/Vary"
+              },
+              "X-Content-Type-Options": {
+                "$ref": "#/components/headers/XContentTypeOptions"
+              },
+              "X-Studio-API-Schema": {
+                "$ref": "#/components/headers/StudioApiSchema"
+              },
+              "X-Studio-Server": {
+                "$ref": "#/components/headers/StudioServer"
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ApiError400",
+            "description": "Bad Request"
+          },
+          "401": {
+            "$ref": "#/components/responses/ApiError401",
+            "description": "Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/ApiError403",
+            "description": "Forbidden"
+          },
+          "408": {
+            "$ref": "#/components/responses/ApiError408",
+            "description": "Request Timeout"
+          },
+          "409": {
+            "$ref": "#/components/responses/ApiError409",
+            "description": "Conflict"
+          },
+          "410": {
+            "$ref": "#/components/responses/ApiError410",
+            "description": "Gone"
+          },
+          "413": {
+            "$ref": "#/components/responses/ApiError413",
+            "description": "Content Too Large"
+          },
+          "415": {
+            "$ref": "#/components/responses/ApiError415",
+            "description": "Unsupported Media Type"
+          },
+          "426": {
+            "$ref": "#/components/responses/ApiError426",
+            "description": "Upgrade Required"
+          },
+          "429": {
+            "$ref": "#/components/responses/ApiError429",
+            "description": "Too Many Requests"
+          },
+          "500": {
+            "$ref": "#/components/responses/ApiError500",
+            "description": "Internal Server Error"
+          },
+          "502": {
+            "$ref": "#/components/responses/ApiError502",
+            "description": "Bad Gateway"
+          },
+          "503": {
+            "$ref": "#/components/responses/ApiError503",
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Confirm a monitor restart with narrower output patterns"
       }
     },
     "/api/multi-server": {
@@ -78619,6 +79939,206 @@
           }
         },
         "summary": "Task Detail"
+      }
+    },
+    "/api/task/output": {
+      "get": {
+        "operationId": "task_output_api_task_output_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "id",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "agent",
+            "required": true,
+            "schema": {
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskOutputResponse"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Access-Control-Allow-Origin": {
+                "$ref": "#/components/headers/AccessControlAllowOrigin"
+              },
+              "Access-Control-Expose-Headers": {
+                "$ref": "#/components/headers/AccessControlExposeHeaders"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/CacheControl"
+              },
+              "Content-Encoding": {
+                "$ref": "#/components/headers/ContentEncoding"
+              },
+              "Content-Length": {
+                "$ref": "#/components/headers/ContentLength"
+              },
+              "Content-Security-Policy": {
+                "$ref": "#/components/headers/ContentSecurityPolicy"
+              },
+              "Content-Type": {
+                "$ref": "#/components/headers/ContentType"
+              },
+              "Referrer-Policy": {
+                "$ref": "#/components/headers/ReferrerPolicy"
+              },
+              "Server-Timing": {
+                "$ref": "#/components/headers/ServerTiming"
+              },
+              "Vary": {
+                "$ref": "#/components/headers/Vary"
+              },
+              "X-Content-Type-Options": {
+                "$ref": "#/components/headers/XContentTypeOptions"
+              },
+              "X-Studio-API-Schema": {
+                "$ref": "#/components/headers/StudioApiSchema"
+              },
+              "X-Studio-Server": {
+                "$ref": "#/components/headers/StudioServer"
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ApiError400",
+            "description": "Bad Request"
+          },
+          "401": {
+            "$ref": "#/components/responses/ApiError401",
+            "description": "Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/ApiError403",
+            "description": "Forbidden"
+          },
+          "429": {
+            "$ref": "#/components/responses/ApiError429",
+            "description": "Too Many Requests"
+          },
+          "500": {
+            "$ref": "#/components/responses/ApiError500",
+            "description": "Internal Server Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/ApiError503",
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Read bounded task output within its owner workspace"
+      }
+    },
+    "/api/team-budget": {
+      "get": {
+        "operationId": "team_budget_api_team_budget_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "agent",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 1,
+              "title": "Agent",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TeamBudgetSummary"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Access-Control-Allow-Origin": {
+                "$ref": "#/components/headers/AccessControlAllowOrigin"
+              },
+              "Access-Control-Expose-Headers": {
+                "$ref": "#/components/headers/AccessControlExposeHeaders"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/CacheControl"
+              },
+              "Content-Encoding": {
+                "$ref": "#/components/headers/ContentEncoding"
+              },
+              "Content-Length": {
+                "$ref": "#/components/headers/ContentLength"
+              },
+              "Content-Security-Policy": {
+                "$ref": "#/components/headers/ContentSecurityPolicy"
+              },
+              "Content-Type": {
+                "$ref": "#/components/headers/ContentType"
+              },
+              "Referrer-Policy": {
+                "$ref": "#/components/headers/ReferrerPolicy"
+              },
+              "Server-Timing": {
+                "$ref": "#/components/headers/ServerTiming"
+              },
+              "Vary": {
+                "$ref": "#/components/headers/Vary"
+              },
+              "X-Content-Type-Options": {
+                "$ref": "#/components/headers/XContentTypeOptions"
+              },
+              "X-Studio-API-Schema": {
+                "$ref": "#/components/headers/StudioApiSchema"
+              },
+              "X-Studio-Server": {
+                "$ref": "#/components/headers/StudioServer"
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ApiError400",
+            "description": "Bad Request"
+          },
+          "401": {
+            "$ref": "#/components/responses/ApiError401",
+            "description": "Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/ApiError403",
+            "description": "Forbidden"
+          },
+          "429": {
+            "$ref": "#/components/responses/ApiError429",
+            "description": "Too Many Requests"
+          },
+          "500": {
+            "$ref": "#/components/responses/ApiError500",
+            "description": "Internal Server Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/ApiError503",
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Processes"
       }
     },
     "/api/terminals": {

@@ -1355,6 +1355,18 @@ async fn create_child(
     let result = mutate(context, move |tx| {
         let validate = |schema: &str, value: &Value| validate(schema, value);
         crate::host_worker_create::recheck_worker(tx, &draft, epoch, &identity)?;
+        let current_parent =
+            load_agent_value(tx, &parent_id, &validate)?.ok_or(MutationError::UnknownAgent)?;
+        let current_root = load_agent_value(tx, &draft.root_id.0, &validate)?
+            .ok_or(MutationError::UnknownAgent)?;
+        let permission_intent = record["creationIntent"].clone();
+        crate::child_permissions::inherit_claude_permissions(
+            &mut record,
+            &current_parent,
+            &current_root,
+            &permission_intent,
+        )
+        .map_err(OperationError::Invalid)?;
         let mut prompt = prompt;
         if let Some(task_id) = &task_id {
             let work = studio_runtime_store::WorkItemsRepository::work_record(tx, task_id)?

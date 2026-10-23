@@ -562,3 +562,12 @@
     display: none;
   }
 }
+
+.model-limit-eligibility {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.model-limit-eligibility p {
+  margin: 0.35rem 0;
+}

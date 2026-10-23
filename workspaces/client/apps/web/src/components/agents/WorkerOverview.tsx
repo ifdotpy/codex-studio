@@ -1,3 +1,4 @@
+import { WORKER_TURN_LIMIT_REASON } from "../../generated/sharedValues";
 import { createContext, type ReactNode } from "react";
 import { useWorkerModels, type WorkerModelInfo } from "./WorkerModelPicker";
 
@@ -43,6 +44,7 @@ export function workerState(
   deferred?: Set<string>,
 ) {
   const status = agent.status ?? "";
+  if (agent.terminalReason === WORKER_TURN_LIMIT_REASON) return "stopped";
   if (agent.stall) return "stalled";
   if (answers.has(agent.id)) return "answer";
   if (status === "approval")

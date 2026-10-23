@@ -675,6 +675,7 @@ function nextestAnyOf(terms) {
 
 function fastTierCommands(root) {
   const packages = discover(root);
+  const bridge = packageTarget(packages, "studio-claude-bridge");
   const web = packageTarget(packages, "codex-agents-web");
   const tooling = packageTarget(packages, "codex-studio-tooling");
   const facade = path.join(
@@ -1071,6 +1072,31 @@ function fastTierCommands(root) {
       },
     },
     {
+      item: bridge,
+      label: "Claude restart and journal evidence witnesses",
+      commands: [
+        [
+          "pnpm",
+          [
+            "--filter",
+            "studio-claude-bridge",
+            "exec",
+            "vitest",
+            "run",
+            "--config",
+            "vitest.config.mjs",
+            "restart-reconcile.test.mjs",
+            "journal-repair.test.mjs",
+          ],
+        ],
+      ],
+      options: {
+        selector: "restart-reconcile and journal-repair",
+        reason:
+          "Preserve unconfirmed outcomes and bounded, read-only repair evidence without a model query.",
+      },
+    },
+    {
       item: { name: "studio-runtime-services", ecosystem: "cargo" },
       label: "journal agent publication witnesses",
       commands: [
@@ -1192,6 +1218,7 @@ function fastTierCommands(root) {
               "test(account_limits_ignore_python_single_account_fallback)",
               "test(python_payload_marker_layout_is_refused_without_upgrade)",
               "test(repositories::workspace_views::bulk_read_tests::)",
+              "test(repositories::analytics::capture_error_tests::)",
             ]),
           ],
         ],
@@ -1314,6 +1341,8 @@ function fastTierCommands(root) {
               "test(/^provider_session_task::active_barrier_holds_new_requests_but_not_callback_answers_or_interrupts$/)",
               "test(provider_callbacks_unjournaled_card_is_refused_without_writes)",
               "test(/^provider_session_task::expiry_batch_preserves_all_queued_request_outcomes_in_order$/)",
+              "test(/^recovery_store::restart_continues_only_a_confirmed_interruption$/)",
+              "test(/^analytics_capture_corpus::uncertain_turn_keeps_its_outcome_and_reason_in_analytics$/)",
               "test(/^turn_lifecycle_corpus::fast_witnesses_cover_transitions_states_and_review_findings$/)",
               "test(wave7_p10_lifecycle::committed_delete_)",
               "test(wave7_p10_lifecycle::lost_wake_preserves_committed_stop_for_restart)",
@@ -1377,7 +1406,7 @@ function fastTierCommands(root) {
       : []),
     {
       item: { name: "project preparation", ecosystem: "cargo" },
-      label: "project preparation conflict witnesses",
+      label: "project preparation and agent limit witnesses",
       commands: [
         [
           "cargo",
@@ -1396,15 +1425,15 @@ function fastTierCommands(root) {
             "--test",
             "integration",
             "-E",
-            "test(/^project_preparation::/) | test(committed_delete_route_succeeds_with_unrelated_failing_cleanup) | test(real_rxdb_single_writer_draft_ack_echo_ordering)",
+            "test(/^project_preparation::/) | test(/^agent_limits::/) | test(committed_delete_route_succeeds_with_unrelated_failing_cleanup) | test(real_rxdb_single_writer_draft_ack_echo_ordering)",
           ],
         ],
       ],
       options: {
         selector:
-          "project preparation structural conflicts and idle async answer",
+          "project preparation conflicts, worker continuation authority, and budget projections",
         reason:
-          "Check project writes across agent execution changes and real structural conflicts.",
+          "Check project writes, user-only worker resets, and bounded budget and cleanup views.",
       },
     },
     {
@@ -1503,8 +1532,10 @@ function fastTierCommands(root) {
             "-p",
             "studio-runtime-http",
             "--lib",
+            "--test",
+            "integration",
             "-E",
-            "test(validation::tests::named_schema_)",
+            "test(validation::tests::named_schema_) | test(/^claude_repair_report::/)",
           ],
         ],
       ],

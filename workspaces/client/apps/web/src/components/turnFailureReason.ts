@@ -17,6 +17,8 @@ export function failureMessage(value: unknown): string {
 
 // Prefer the model error. A tool's exit code does not explain a model failure.
 export function turnFailureReason(items: Message[]): string {
+  const stored = items.find((item) => item.turnError);
+  if (stored) return failureMessage(stored.turnError);
   const native = items.find(
     (item) => item.nativeError && !["tool", "output"].includes(item.role),
   );

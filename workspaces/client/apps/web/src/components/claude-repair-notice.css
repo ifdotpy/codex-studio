@@ -1,0 +1,31 @@
+.claude-repair-notice {
+  margin: 12px 0;
+  padding: 12px;
+  border: 1px solid var(--mantine-color-yellow-7);
+  border-radius: 8px;
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+.claude-repair-notice p {
+  margin: 8px 0;
+}
+.claude-repair-notice summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+.claude-repair-notice dt {
+  font-weight: 600;
+}
+.claude-repair-notice dd {
+  margin: 0 0 8px;
+}
+.claude-repair-notice ul {
+  padding-left: 20px;
+}
+.turn-problem > div {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.turn-problem p {
+  margin: 4px 0;
+}

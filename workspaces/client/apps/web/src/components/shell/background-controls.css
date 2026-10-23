@@ -109,3 +109,32 @@
   max-height: 58dvh;
   line-height: 1.65;
 }
+
+.task-wake-budget,
+.task-file-output,
+.task-restart {
+  margin-block: 12px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.task-wake-budget {
+  border-left: 3px solid var(--mantine-color-yellow-6);
+  padding-left: 10px;
+}
+.task-restart > * + * {
+  margin-top: 10px;
+}
+.task-restart-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.task-restart .mantine-Button-label,
+.task-wake-budget .mantine-Button-label {
+  white-space: normal;
+}
+.task-restart .mantine-Button-root,
+.task-wake-budget .mantine-Button-root {
+  height: auto;
+  min-height: 30px;
+}

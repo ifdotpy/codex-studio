@@ -53,7 +53,22 @@ pub(crate) async fn work_for_agent(state: HttpState, agent_id: String) -> Result
             _ => ApiError::internal(),
         })?;
         let records = stored_values("runtime_work", records, validators, false)?;
-        Ok(work_policy::work_list(&agent.root_id.0, &records))
+        let mut list = work_policy::work_list(&agent.root_id.0, &records);
+        let lead = AgentRepository::get(connection, &agent.root_id)?
+            .ok_or_else(|| invalid_stored("runtime_agents", &agent.root_id.0))?;
+        list["rootId"] = json!(agent.root_id.0);
+        list["taskDefaultGate"] = lead
+            .extra
+            .get("taskDefaultGate")
+            .cloned()
+            .unwrap_or(Value::Null);
+        for item in list["items"].as_array_mut().expect("work list") {
+            item["submissionRefusal"] =
+                studio_runtime_services::work_write::current_submission_refusal(connection, item)
+                    .map_err(super::work_write::write_error)?;
+        }
+        list["tasks"] = list["items"].clone();
+        Ok(list)
     })
     .await
 }

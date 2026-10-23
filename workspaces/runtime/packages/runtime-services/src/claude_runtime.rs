@@ -68,6 +68,7 @@ impl ControlSession for RetainedClaudeSession {
             matches!(
                 method,
                 Method::ClaudeState
+                    | Method::ClaudeRepairReport
                     | Method::ClaudeCommands
                     | Method::ClaudeFileBackups
                     | Method::ClaudeSettings

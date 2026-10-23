@@ -73,6 +73,47 @@ impl LimitsObservation {
         allowed(&self.raw["data"], agent, now)
     }
 }
+/// Read projection of the same model gate used by automatic continuation.
+/// Times are Unix seconds. `validUntil` bounds the freshness of this decision.
+pub fn eligibility(observation: &Value, agent: &Value, now: f64) -> Value {
+    let data = &observation["data"];
+    let key = account(agent);
+    let fresh = LimitsObservation::from_record(observation.clone(), None)
+        .is_ok_and(|limits| limits.fresh_for(key, now - FRESH_SECONDS, false));
+    let applicable: Vec<Value> = buckets(data, agent)
+        .filter(|(_, bucket)| bucket.is_object())
+        .map(|(id, _)| json!({"id": id, "overageAllowed": overage_allowed(data, agent, id)}))
+        .collect();
+    let info = &data["claudeRateLimit"];
+    let overage = if text(info, "overageStatus") == "rejected" {
+        "rejected"
+    } else if flag(info, "isUsingOverage") || flag(info, "overageInUse") {
+        "in_use"
+    } else if applicable.iter().any(|b| flag(b, "overageAllowed")) {
+        "allowed"
+    } else {
+        "unavailable"
+    };
+    let valid_until = number(observation, "at").map(|at| {
+        buckets(data, agent)
+            .filter(|(id, _)| !overage_allowed(data, agent, id))
+            .flat_map(|(_, bucket)| {
+                ["primary", "secondary"]
+                    .into_iter()
+                    .filter_map(move |window| number(&bucket[window], "resetsAt"))
+            })
+            .fold(at + FRESH_SECONDS, f64::min)
+    });
+    json!({
+        "agentId": text(agent, "id"), "accountKey": key,
+        "model": text(agent, "model"), "provider": text(agent, "provider"),
+        "allowed": allowed(data, agent, now),
+        "canRun": fresh && allowed(data, agent, now), "fresh": fresh,
+        "checkedAt": now, "validUntil": valid_until,
+        "resetAt": reset_at(data, agent), "buckets": applicable, "overage": overage
+    })
+}
+
 pub fn next_check(reset: Option<f64>, now: f64) -> f64 {
     reset
         .filter(|r| *r > now)

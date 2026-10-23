@@ -62,7 +62,9 @@ export function historyPresentationGroups(
     const priorNativeTurn = priorTurns.at(-1);
     const joinableOutcome =
       !group.outcome ||
-      ["completed", "failed", "interrupted", "ended"].includes(group.outcome);
+      ["completed", "failed", "interrupted", "uncertain", "ended"].includes(
+        group.outcome,
+      );
     const canJoin =
       previous &&
       priorNativeTurn?.outcome === "completed" &&
@@ -105,8 +107,25 @@ export function historyGroups(
       last.items.push(item);
     else groups.push({ id: item.id, items: [item] });
   }
+  const replyTurns = new Set(
+    items.filter((item) => item.role !== "user").map((item) => item.turnId),
+  );
+  const unconfirmed = new Set(
+    items
+      .filter((item) => item.turnStatus === "uncertain")
+      .map((item) => item.turnId),
+  );
   for (const group of groups) {
     const first = group.items[0];
+    if (
+      first.role === "user" &&
+      first.turnId &&
+      unconfirmed.has(first.turnId) &&
+      !replyTurns.has(first.turnId)
+    ) {
+      group.outcome = "uncertain";
+      continue;
+    }
     // An explicit final answer can stream before the terminal event arrives.
     group.result = group.items
       .filter(
@@ -116,14 +135,20 @@ export function historyGroups(
           !isEmptyAssistantMessage(item),
       )
       .at(-1);
+    const uncertain = unconfirmed.has(first.turnId);
+    if (first.turnId && first.role !== "user" && uncertain) {
+      group.outcome = "uncertain";
+      continue;
+    }
     if (
       !first.turnId ||
-      first.turnId === currentTurn ||
+      (!uncertain && first.turnId === currentTurn) ||
       first.role === "user" ||
-      group.items.some(
-        (item) =>
-          item.streaming || item.pending || item.toolStatus === "running",
-      )
+      (!uncertain &&
+        group.items.some(
+          (item) =>
+            item.streaming || item.pending || item.toolStatus === "running",
+        ))
     )
       continue;
     const outcomes = group.items
@@ -133,17 +158,25 @@ export function historyGroups(
       !outcomes.length ||
       outcomes.some(
         (status) =>
-          !["completed", "failed", "interrupted", "ended"].includes(status),
+          ![
+            "completed",
+            "failed",
+            "interrupted",
+            "uncertain",
+            "ended",
+          ].includes(status),
       )
     )
       continue;
-    group.outcome = outcomes.includes("failed")
-      ? "failed"
-      : outcomes.includes("interrupted")
-        ? "interrupted"
-        : outcomes.includes("ended")
-          ? "ended"
-          : "completed";
+    group.outcome = outcomes.includes("uncertain")
+      ? "uncertain"
+      : outcomes.includes("failed")
+        ? "failed"
+        : outcomes.includes("interrupted")
+          ? "interrupted"
+          : outcomes.includes("ended")
+            ? "ended"
+            : "completed";
     const answers = group.items.filter(
       (item) => item.role === "assistant" && !isEmptyAssistantMessage(item),
     );
@@ -166,6 +199,9 @@ export function incrementalHistoryGroups(
   } | null,
 ): HistoryGroup[] {
   if (!prior || prior.currentTurn !== currentTurn)
+    return historyGroups(items, currentTurn);
+  // Unconfirmed outcomes depend on records outside their own presentation group.
+  if (items.some((item) => item.turnStatus === "uncertain"))
     return historyGroups(items, currentTurn);
   let shared = 0;
   while (

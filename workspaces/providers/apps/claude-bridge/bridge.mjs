@@ -2303,6 +2303,8 @@ async function handle(method, p) {
     await persist(s);
     return { thread: wireThread(s, await sessionStore.metadata(s.id), false) };
   }
+  if (method === "claude/repairReport")
+    return sessionStore.repairReport(p.threadId);
   if (method === "claude/fileBackups") {
     const s = await session(p.threadId);
     return fileBackups(s, p.settledRequestIds ?? null, root, persist);
@@ -2315,6 +2317,7 @@ async function handle(method, p) {
       turns: s.turns.map((t) => ({
         id: t.id,
         status: t.status,
+        ...(t.error ? { error: t.error } : {}),
         canRestoreFiles: fileRestoreReason(s, t, active) === null,
         restoreFilesUnavailableReason: fileRestoreReason(s, t, active),
         text:
