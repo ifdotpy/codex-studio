@@ -688,7 +688,7 @@ mod tests {
                 launch: ProviderLaunchSpec::new(
                     vec!["/bin/sh".into(), "-c".into(), "sleep 30 & exit 0".into()],
                     std::collections::BTreeMap::new(),
-                    "/var/tmp".into(),
+                    std::env::temp_dir(),
                 ),
             },
             Shutdown::default(),
