@@ -61,3 +61,22 @@ it("runs every infinite animation on compositor properties only", () => {
     );
   }
 });
+
+it("pauses inactive animations of pseudo-elements too", () => {
+  const css = readFileSync(
+    new URL("./visual-activity.css", import.meta.url),
+    "utf8",
+  );
+  const selectors = css
+    .slice(0, css.indexOf("{"))
+    .split(",")
+    .map((selector) => selector.trim().replace(/\s+/g, " "));
+  // A universal selector does not match ::before or ::after.
+  for (const scope of [
+    '[data-visual-active="false"]',
+    "details:not([open]) > :not(summary)",
+  ])
+    for (const pseudo of ["::before", "::after"])
+      for (const selector of [`${scope}${pseudo}`, `${scope} *${pseudo}`])
+        assert.ok(selectors.includes(selector), `${selector} is not paused`);
+});
