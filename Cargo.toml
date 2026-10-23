@@ -43,6 +43,7 @@ await_holding_refcell_ref = "deny"
 large_futures = "warn"
 
 [workspace.dependencies]
+schemars = { version = "=1.2.3", features = ["derive"] }
 bytes = "=1.12.1"
 base64 = { version = "=0.23.1", default-features = false, features = ["alloc"] }
 data-encoding = "=2.11.1"

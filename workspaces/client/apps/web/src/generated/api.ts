@@ -3790,15 +3790,13 @@ export interface components {
     } & {
       [key: string]: components["schemas"]["JsonValue"];
     };
-    /** AgentCommandProgress */
+    /** @description A managed command currently starting or running for this agent. */
     AgentCommandProgress: {
-      /** Lastoutputline */
       lastOutputLine: string;
-      /** Monitorid */
       monitorId: string;
-      /** Stage */
+      /** @description Human-readable stage: the first line of the managed command. */
       stage: string;
-      /** Startedat */
+      /** Format: double */
       startedAt: number;
     };
     /** AgentDraftRecordResponse */
@@ -6076,11 +6074,13 @@ export interface components {
       | "registered"
       | "app-server"
       | "orchestrator-reference";
-    /** AgentStall */
+    /** @description An idle worker still owns this unsubmitted assignment. */
     AgentStall: {
-      /** Since */
+      /**
+       * Format: double
+       * @description Later of the assignment update and latest settled execution, in Unix seconds.
+       */
       since: number;
-      /** Taskid */
       taskId: string;
     };
     /** AgentStartAttempt */

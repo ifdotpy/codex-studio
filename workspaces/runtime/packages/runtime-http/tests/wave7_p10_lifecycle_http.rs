@@ -212,6 +212,52 @@ async fn production_lifecycle_bundle_interrupts_active_turn_through_http_route()
 }
 
 #[tokio::test]
+async fn committed_delete_route_succeeds_with_unrelated_failing_cleanup() {
+    struct NoBroker;
+    impl AccountSessionPort for NoBroker {}
+    let root = fixtures::tempdir();
+    let _ = fixtures::corpus(root.path());
+    let store = Arc::new(fixtures::store(root.path(), "delete-cleanup-failure-http").await);
+    let cwd = root.path().to_path_buf();
+    store.transaction(move |tx| {
+        for record in [
+            json!({"id":"agent", "rootId":"agent", "epoch":1, "status":"idle", "isLead":true, "autoWake":false}),
+            json!({"id":"a-unrelated", "rootId":"a-unrelated", "epoch":1, "status":"paused", "deletedAt":1,
+                "cwd":cwd, "worktreeReady":true, "agentArchive":{"at":1,"epoch":1,"cleanupPending":true},
+                "workspaceCleanupIntent":studio_runtime_services::workspace_cleanup_runtime::queued_cleanup_intent("a-unrelated", 1, studio_runtime_services::workspace_cleanup_runtime::CleanupAction::Archive)})
+        ] {
+            AgentRepository::put(tx, &AgentRecord::from_value(record)?)?;
+        }
+        Ok(())
+    }).await.expect("seed agents");
+    let ports: Arc<dyn LifecyclePorts> = Arc::new(ProductionLifecyclePorts::new(
+        store.clone(),
+        Arc::new(Notify::new()),
+        Arc::new(Notify::new()),
+        Arc::new(NoBroker),
+        None,
+    ));
+    let state = HttpState::new(
+        "fixture-token".into(),
+        "fixture".into(),
+        store.root().to_string_lossy().into(),
+        49171,
+        None,
+        Some(store.clone()),
+        None,
+    );
+    let app = router(state).expect("router").layer(Extension(ports));
+    let (status, response) = call(&app, "/api/conversation/delete", json!({"id":"agent"})).await;
+    assert_eq!(status, 200, "committed delete response: {response}");
+    assert_eq!(response["deleted"], json!(["agent"]));
+    let reader = store.test_reader().expect("reader");
+    let tombstone: bool = reader.query_row("SELECT json_type(record,'$.deletedAt') IN ('real','integer') AND json_type(record,'$.workspaceCleanupIntent') IS NULL FROM runtime_agents WHERE id='agent'", [], |row| row.get(0)).expect("deleted agent");
+    assert!(tombstone, "delete commits and its own cleanup drains");
+    let queued: String = reader.query_row("SELECT json_extract(record,'$.workspaceCleanupIntent.phase') FROM runtime_agents WHERE id='a-unrelated'", [], |row| row.get(0)).expect("unrelated intent");
+    assert_eq!(queued, "queued");
+}
+
+#[tokio::test]
 async fn production_delete_route_interrupts_and_settles_active_turn() {
     let root = fixtures::tempdir();
     let _ = fixtures::corpus(root.path());

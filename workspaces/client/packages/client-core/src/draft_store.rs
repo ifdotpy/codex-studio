@@ -24,16 +24,8 @@ fn sql<T>(value: rusqlite::Result<T>) -> Result<T, String> {
     value.map_err(|e| e.to_string())
 }
 fn decode(document: &Document) -> Result<DraftVersion, String> {
-    let mut value: Value = serde_json::from_str(&document.payload).map_err(|e| e.to_string())?;
-    if value.get("id").is_none() {
-        value["id"] = json!(document.id);
-    }
-    let value: DraftVersion = serde_json::from_value(value).map_err(|e| e.to_string())?;
-    value.validate()?;
-    if value.id != document.id || value.text.chars().count() > 2_000_000 {
-        return Err("Invalid draft document.".into());
-    }
-    Ok(value)
+    let value = serde_json::from_str(&document.payload).map_err(|e| e.to_string())?;
+    DraftVersion::from_stored_value(&document.id, value)
 }
 fn document(version: &DraftVersion) -> Document {
     // Value's ordered map matches the server's canonical key order.
@@ -339,6 +331,39 @@ mod tests {
         assert!(response.error.is_none(), "{:?}", response.error);
         response.result.unwrap()
     }
+    #[test]
+    fn draft_receive_normalizes_shared_legacy_fixtures_without_rewriting_storage() {
+        let cases: Vec<Value> =
+            serde_json::from_str(include_str!("../../../contracts/draft-compatibility.json"))
+                .unwrap();
+        for case in cases {
+            let mut store = crate::store::Store::open(std::path::Path::new(":memory:")).unwrap();
+            let payload = case["payload"].to_string();
+            let response = store.dispatch(Request {
+                id: "receive".into(),
+                method: "drafts.receive".into(),
+                params: json!({"workspace":"a".repeat(32),"documents":[{
+                    "id":"phone:chat","payload":payload,"seq":1,"_deleted":false
+                }]}),
+            });
+            if let Some(updated) = case["updated"].as_u64() {
+                assert!(
+                    response.error.is_none(),
+                    "{}: {:?}",
+                    case["name"],
+                    response.error
+                );
+                let stored = rows(&store.connection, &"a".repeat(32)).unwrap();
+                assert_eq!(stored[0].0.payload, payload, "stored bytes must survive");
+                let version = decode(&stored[0].0).unwrap();
+                assert_eq!(version.updated, updated, "{}", case["name"]);
+                assert_eq!(response.result.unwrap()["drafts"]["chat"], "x");
+            } else {
+                assert!(response.error.is_some(), "{}", case["name"]);
+            }
+        }
+    }
+
     #[test]
     fn synchronization_decodes_only_the_keyed_draft_per_incoming_document() {
         const STORED: usize = 8;

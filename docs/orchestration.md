@@ -220,9 +220,31 @@ Native composer draft synchronization follows this flow:
 3. Combine simultaneous triggers and retain one follow-up when notified during a refresh.
 4. Keep idle windows quiet; closing the view removes listeners and pending refreshes.
 
+Draft payload compatibility follows this flow:
+
+1. Derive the server schema and web type from [DraftVersion](../workspaces/client/packages/client-domain/src/drafts.rs) with `pnpm run contracts:generate`.
+2. Validate new pushes against that schema; require a JavaScript-safe integer timestamp.
+3. Read historical drafts through the same Rust owner: missing or null timestamps become zero, and fractional timestamps are floored.
+4. Preserve stored payload bytes; read normalization never rewrites or drops a draft. `pnpm run contracts:check` rejects generated drift.
+
+Markdown rendering follows this flow:
+
+1. Parse in the client-domain Rust owner into typed blocks, nodes, and sentences.
+2. Serialize the same output through native IPC or WebAssembly.
+3. Generate the renderer types from those Rust structs with the existing contract commands.
+
 Deleting an agent chat removes it from the user list until the next agent message. Its participants retain their history.
 Deletion stops the selected agent and its descendants and removes them from the interface.
 Stored transcripts and project files remain on disk. Deleted agents cannot resume from late events or message retries.
+Delete confirmation and pending cleanup follow this flow:
+
+1. Commit the authorized deletion and return its committed result.
+2. Drain saved effects; log failures and retain their intents without changing that result.
+3. Reconcile each cleanup intent independently, so one failure cannot block other chats.
+4. Settle an already missing owned worktree without filesystem or Git mutations.
+5. After a lost response, read server state without resending the delete. A newer
+   refresh cannot discard this readback; confirmation requires the same workspace.
+
 Monitor projection updates follow this flow:
 
 1. Creation, status, owner, and creation-time changes select the canonical monitor window.
@@ -1570,5 +1592,13 @@ change with both options. Cross-machine Claude cache reuse remains unverified.
 4. A connected stream asks the resource notification owner about its subscribed keys.
 5. After a coalesced wake, the owner reads each affected projection once per revision, shared across streams.
 6. A resource version advances when its content digest changes; unchanged content causes no client re-read.
-7. Unknown, unavailable, evicted, or racing projections retain the safe refresh.
-8. Initial connections still receive every subscribed resource; publication receipts and retry identities stay unchanged.
+7. A publication during a projection read stays pending at the sampled cursor, even when the digest is unchanged.
+8. Limits use the cached per-account snapshot without starting provider reads or refreshes; explicit refresh keeps its existing path.
+9. Unknown, unavailable, or evicted projections retain the safe refresh.
+10. Initial connections still receive every subscribed resource; publication receipts and retry identities stay unchanged.
+
+Progress contract generation follows this flow:
+
+1. Derive command progress and stall schemas from the Rust structs in [agent_progress.rs](../workspaces/runtime/packages/runtime-schema/src/agent_progress.rs).
+2. Refresh their OpenAPI components and the renderer types with `pnpm run contracts:generate`.
+3. Run `pnpm run contracts:check` to reject drift; HTTP routes continue to consume OpenAPI.

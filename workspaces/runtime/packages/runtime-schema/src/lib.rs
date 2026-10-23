@@ -928,6 +928,9 @@ fn escape_pointer(value: &str) -> String {
     value.replace('~', "~0").replace('/', "~1")
 }
 
+// Rust owns draft payloads shared by HTTP and the native client.
+pub use studio_client_domain::drafts;
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
