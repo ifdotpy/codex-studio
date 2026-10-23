@@ -17,9 +17,7 @@ test("the combined window keeps the closed terminal bar under the sidebar and op
     await expect(bar).toBeVisible();
     await expect(shell).toHaveAttribute("data-shell-terminal", "closed");
     const frame = page;
-    await sidebar
-      .getByRole("button", { name: "Local Saved pin", exact: true })
-      .click();
+    await sidebar.getByRole("button", { name: /^Local Saved pin\b/ }).click();
     // The view's own closed bar gives way to the shell's.
     await expect(frame.locator(".terminal-dock")).toBeHidden();
     const closed = await page.evaluate(() => ({
@@ -135,16 +133,14 @@ test("the combined window keeps the closed terminal bar under the sidebar and op
       handle.y + handle.height / 2 - 40,
     );
     await sidebar
-      .getByRole("button", { name: "Remote Saved pin", exact: true })
+      .getByRole("button", { name: /^Remote Saved pin\b/ })
       .dispatchEvent("click");
     await page.mouse.up();
     await expect(shell).toHaveAttribute("data-shell-terminal", "closed");
     expect(
       await page.evaluate(() => localStorage.getItem("codex.terminal.height")),
     ).toBe(preference);
-    await sidebar
-      .getByRole("button", { name: "Local Saved pin", exact: true })
-      .click();
+    await sidebar.getByRole("button", { name: /^Local Saved pin\b/ }).click();
     await expect(shell).toHaveAttribute("data-shell-terminal", "open");
     await expect(dock).toBeVisible();
 
