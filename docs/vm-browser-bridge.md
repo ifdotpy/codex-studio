@@ -219,16 +219,18 @@ its own `http` and `https` rule.
   expires its pending cards (the existing request rules).
 - One card for the same sign-in: a link of another chat with the same Linux user, sign-in
   host and `client_id` as an open request (pending or approved) waits on that request: the
-  host bridge queues it as `joined` with `joinedTo`, shows no second card and opens no second
-  page on the Mac. The launcher says so to the command. The card names the waiting chats
+  host bridge and the VM guest bridge queue it as `joined` with `joinedTo`
+  (`SIGN_IN_JOINED_STATE`, owner `runtime-schema/src/shared_values.rs`), show no second card
+  and open no second page on the Mac. The launcher says so to the command. The card names the waiting chats
   (`params.joined`). Each command keeps its own sign-in request, because the provider binds the
   result to that command (`state`, PKCE). When the card's sign-in finishes (a relayed result,
   the browser of this Mac, a device page, or an approval after which the command stopped
   listening), each joined request closes with `closeReason: "joined-signed-in"`, and its chat
   gets one `browser_joined` event: stop the waiting command and run it again, because the
   sign-in session is now active. When the card ends without a sign-in, the oldest joined
-  request becomes the card. A device code page has no client and never joins. A VM worker
-  has its own Linux user and session store, so its links never join those of another worker.
+  request becomes the card. A device code page has no client and never joins. The Linux user
+  owns the session store (for example `~/.aws/sso`): on the VM, chats that run as the project
+  user join, and a chat with its own agent user joins only chats with that user.
 - Backend restart: startup recovery expires every pending request; a sign-in card gets
   `closeReason: "restart"`. The bridge keeps its request across the restart, and the first
   poll after the restart reads the whole queue again. A card whose request is still open

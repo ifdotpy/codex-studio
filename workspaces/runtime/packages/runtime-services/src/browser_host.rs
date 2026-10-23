@@ -76,9 +76,10 @@ const MAX_WAIT_SECONDS: f64 = 20.0;
 const SENT_HEADERS: [&str; 3] = ["user-agent", "accept", "accept-language"];
 /// A request of another chat that waits on the open request of the same Linux user,
 /// sign-in host and client (`joinedTo`) instead of a card of its own.
-pub const JOINED: &str = "joined";
+pub const JOINED: &str = studio_runtime_schema::shared_values::SIGN_IN_JOINED_STATE;
 /// The `closeReason` of a joined request whose sign-in finished on the card it waited on.
-pub const JOINED_SIGNED_IN_REASON: &str = "joined-signed-in";
+pub const JOINED_SIGNED_IN_REASON: &str =
+    studio_runtime_schema::shared_values::SIGN_IN_JOINED_SIGNED_IN_REASON;
 const OPEN_STATES: [&str; 3] = ["pending", "approved", JOINED];
 /// States after which the same link of a chat can queue again (`REOPEN_STATES`).
 const REOPEN_STATES: [&str; 3] = ["stale", "expired", "replaced"];
