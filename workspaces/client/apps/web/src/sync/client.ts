@@ -18,6 +18,7 @@ import {
   applyEntityRows,
   emptyEntityProjection,
   type UiPreferenceProjection,
+  type EntityRow,
 } from "./entityProjection";
 
 import { observeEntityProjection } from "./entityProjectionObserver";
@@ -93,12 +94,7 @@ export { DRAFT_SYNC_TIMING_MS } from "./draftSyncTiming.mjs";
 
 addRxPlugin(RxDBLeaderElectionPlugin);
 
-export type SyncDocument = {
-  id: string;
-  payload: string;
-  seq: number;
-  _deleted?: boolean;
-};
+export type SyncDocument = EntityRow;
 
 export type SyncEntityPersisterProbe = {
   sequences: number[];
@@ -118,9 +114,17 @@ export {
 
 export type { ResourceRef } from "./resourceEvents";
 
+// Full-page fields and items follow the API owner; sync delta controls are local.
+type TranscriptSyncPayload = Partial<TranscriptPageData> & {
+  delta?: boolean;
+  removed?: string[];
+  order?: string[];
+  itemRevisions?: Record<string, string>;
+};
+
 type TranscriptProjectionMeta = {
   format: 2;
-  metadata: Record<string, any>;
+  metadata: Omit<Partial<TranscriptPageData>, "items">;
   order: string[];
   itemRevisions: Record<string, string>;
 };
@@ -828,7 +832,7 @@ export function createSyncClient(options: SyncClientOptions) {
   const transcriptItemId = (scope: string, id: string) =>
     `transcript:item:${scope.slice("transcript:".length)}:${id}`;
 
-  function transcriptMetadata(value: Record<string, any>) {
+  function transcriptMetadata(value: TranscriptSyncPayload) {
     const {
       items: _items,
       delta: _delta,
@@ -902,7 +906,9 @@ export function createSyncClient(options: SyncClientOptions) {
     const base = previous?.payload
       ? readTranscriptMeta(previous.payload)
       : null;
-    const incoming = document._deleted ? {} : JSON.parse(document.payload);
+    const incoming: TranscriptSyncPayload = document._deleted
+      ? {}
+      : JSON.parse(document.payload);
     const oldOrder: string[] = base?.order || [];
     const isDelta = !document._deleted && incoming.delta === true;
     if (isDelta && !base)
@@ -910,9 +916,7 @@ export function createSyncClient(options: SyncClientOptions) {
 
     const changedItems = document._deleted
       ? []
-      : (incoming.items || []).filter(
-          (item: any) => typeof item?.id === "string",
-        );
+      : (incoming.items || []).filter((item) => typeof item?.id === "string");
     const removed: string[] = document._deleted
       ? oldOrder
       : isDelta
@@ -929,10 +933,10 @@ export function createSyncClient(options: SyncClientOptions) {
               .filter((key) => !removed.includes(key))
               .concat(
                 changedItems
-                  .map((item: any) => item.id)
+                  .map((item) => item.id)
                   .filter((key: string) => !oldOrder.includes(key)),
               )
-          : changedItems.map((item: any) => item.id);
+          : changedItems.map((item) => item.id);
     if (!document._deleted && !isDelta)
       removed.push(...oldOrder.filter((key) => !order.includes(key)));
     const previousMetadata = base?.metadata || {};
@@ -949,7 +953,7 @@ export function createSyncClient(options: SyncClientOptions) {
       order,
       itemRevisions,
     };
-    const rows: SyncDocument[] = changedItems.map((item: any) => ({
+    const rows: SyncDocument[] = changedItems.map((item) => ({
       id: transcriptItemId(scope, item.id),
       payload: JSON.stringify(item),
       seq: document.seq,

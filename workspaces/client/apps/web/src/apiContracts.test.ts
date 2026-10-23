@@ -282,3 +282,55 @@ const markdownParserContract: Assert<
 void markdownBlocks;
 void invalidMarkdownBlock;
 void markdownParserContract;
+
+// Desktop and local storage adapters consume their existing contract owners.
+type DesktopDeclaration = import("../../desktop/bridge").CodexDesktop;
+type WebDesktopDeclaration = import("./desktop").DesktopBridge;
+type PreferenceDeclaration =
+  import("./components/accountPreference").PreferenceAccount;
+type PreferenceProjectDeclaration =
+  import("./components/accountPreference").PreferenceProject;
+type LocalSyncRow = import("./sync/client").SyncDocument;
+type ProjectionSyncRow = import("./sync/entityProjection").EntityRow;
+type LocalContractAssertions = [
+  Assert<Equal<DesktopDeclaration, WebDesktopDeclaration>>,
+  Assert<
+    Equal<
+      PreferenceDeclaration["provider"],
+      Partial<components["schemas"]["Account"]>["provider"]
+    >
+  >,
+  Assert<
+    Equal<
+      PreferenceDeclaration["status"],
+      Partial<components["schemas"]["Account"]>["status"]
+    >
+  >,
+  Assert<
+    Equal<
+      PreferenceProjectDeclaration,
+      Pick<
+        components["schemas"]["ProjectEntityDto"],
+        "accountKey" | "accountKeys" | "accountGroups"
+      >
+    >
+  >,
+  Assert<
+    Equal<
+      Parameters<NonNullable<DesktopDeclaration["openSignIn"]>>[0],
+      string | { url: string; forward: import("./desktop").SignInForward }
+    >
+  >,
+  Assert<Equal<LocalSyncRow, ProjectionSyncRow>>,
+  Assert<Equal<Required<LocalSyncRow>, components["schemas"]["SyncDocument"]>>,
+];
+const localContractAssertions: LocalContractAssertions = [
+  true,
+  true,
+  true,
+  true,
+  true,
+  true,
+  true,
+];
+void localContractAssertions;

@@ -1,3 +1,4 @@
+import type { components } from "../generated/api";
 import {
   ACCOUNT_GROUP_PATTERN,
   ACCOUNT_GROUPS_MAX,
@@ -5,24 +6,26 @@ import {
   DEFAULT_CLAUDE_LEAD_MODEL,
 } from "../generated/sharedValues";
 
-/** The account fields that the default choice reads. */
-export type PreferenceAccount = {
-  id: string;
-  provider?: string | null;
-  group?: string | null;
-  status?: string | null;
-  canAttemptNativeProof?: boolean | null;
-  disconnected?: boolean | null;
-  deleted?: boolean | null;
-  duplicateOf?: string | null;
-};
+/** Legacy and preference fixtures may omit fields other than the account id. */
+export type PreferenceAccount = Pick<components["schemas"]["Account"], "id"> &
+  Partial<
+    Pick<
+      components["schemas"]["Account"],
+      | "provider"
+      | "group"
+      | "status"
+      | "canAttemptNativeProof"
+      | "disconnected"
+      | "deleted"
+      | "duplicateOf"
+    >
+  >;
 
 /** The project fields that the default choice reads. */
-export type PreferenceProject = {
-  accountKey?: string | null;
-  accountKeys?: string[] | null;
-  accountGroups?: string[] | null;
-};
+export type PreferenceProject = Pick<
+  components["schemas"]["ProjectEntityDto"],
+  "accountKey" | "accountKeys" | "accountGroups"
+>;
 
 export type NewChatDefault = {
   accountKey: string;
