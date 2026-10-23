@@ -1283,6 +1283,7 @@ function fastTierCommands(root) {
               "test(account_worker::tests::retained::automatic_recovery_)",
               "test(account_worker::tests::retained::startup_first_pass_reconciles_exact_history_without_replaying_unknown_input)",
               "test(account_worker::tests::retained::retained_actor_request_answer_after_same_generation_restart_is_recorded_once)",
+              "test(account_worker::tests::restart_held_first_input_is_reconciled_by_the_first_worker)",
             ]),
           ],
         ],

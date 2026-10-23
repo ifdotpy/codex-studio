@@ -1609,6 +1609,126 @@ async fn scenario_restart_after_submitted_before_written_recovers_unknown_withou
     worker.shutdown().await.unwrap();
 }
 
+/// The backend and its provider process stopped after a worker's first
+/// `turn/start` was submitted and before its answer arrived. Startup recovery
+/// holds that input until native history decides it. The first account worker of the new backend must read
+/// that history, then deliver the input once if the provider did not apply it,
+/// or keep the applied turn. The input must never stay held without a check,
+/// and must never be sent twice.
+#[tokio::test]
+async fn restart_held_first_input_is_reconciled_by_the_first_worker() {
+    for applied in [false, true] {
+        let state = State::new().await;
+        let agent = state.agent.clone();
+        let epoch = state.epoch;
+        state
+            .bridge
+            .run(move |store| async move {
+                let intent = store::claim(Arc::clone(&store), "default", &agent, epoch)
+                    .await?
+                    .unwrap();
+                let operation = format!("account:default:{}:turn/start", intent.attempt_id);
+                let request = RecoveredRequest {
+                    ticket: studio_runtime_providers::RequestTicket {
+                        id: RequestId::String(operation.clone()),
+                        generation: 1,
+                        method: Method::TurnStart,
+                    },
+                    operation_id: OperationId(operation.clone()),
+                    thread_id: intent.thread_id.clone(),
+                    lightweight: false,
+                    deadline_ms: 60_000,
+                    unknown: false,
+                    remote_id: None,
+                };
+                let prepared = preparation::prepare(
+                    Arc::clone(&store),
+                    &test_resources()?,
+                    &intent,
+                    Method::TurnStart,
+                    1,
+                )
+                .await?;
+                assert!(
+                    store::submitted(
+                        &store,
+                        Pending {
+                            thread: prepared.thread,
+                            compiled: prepared.compiled,
+                            intent: prepared.intent,
+                            method: "turn/start".into(),
+                            operation
+                        },
+                        "default",
+                        request,
+                        store::SubmissionEvidence {
+                            turn: None,
+                            submission: prepared.submission,
+                            guard: Some(prepared.guard),
+                            connection_id: "test-connection".into(),
+                            effect: None,
+                        },
+                    )
+                    .await?
+                );
+                Ok(())
+            })
+            .await
+            .unwrap();
+        // The new backend process recovers its scheduler before any worker starts.
+        crate::scheduler::recover_on_startup(&state.bridge.store)
+            .await
+            .unwrap();
+        assert_eq!(state.record().await["restartRecovery"]["stage"], "held");
+        assert_eq!(state.event_status("input").await, "uncertain");
+        let mut bridge = StoreBridge::new(state.bridge.store.clone()).await.unwrap();
+        bridge.faults = state.bridge.faults.clone();
+        // The provider process stopped with the backend: a new generation
+        // cannot answer the old request, so only native history decides.
+        let mut peer = Peer::identity("default", 2, None);
+        let mut worker = peer.worker(bridge).await;
+        let history = tokio::select! {
+            history = peer.write("thread/turns/list") => history,
+            () = worker_barrier(&worker) => {
+                panic!("applied {applied}: the first pass left the held input unchecked")
+            }
+        };
+        if applied {
+            peer.reply(
+                &history,
+                json!({"data":[{"id":"old-turn","threadId":"fake-thread-0","status":"inProgress",
+                    "items":[],"clientUserMessageId":"annotation:input"}]}),
+            )
+            .await;
+            worker_barrier(&worker).await;
+            assert_eq!(state.record().await["turnId"], "old-turn");
+        } else {
+            peer.reply(
+                &history,
+                json!({"data":[{
+                    "id":"rejected","threadId":"fake-thread-0","status":"failed",
+                    "items":[],"clientUserMessageId":"annotation:input","startOutcome":"not_applied"
+                }]}),
+            )
+            .await;
+            let thread = peer.write("thread/read").await;
+            peer.reply(
+                &thread,
+                json!({"thread":{"id":"fake-thread-0","status":{"type":"idle"}}}),
+            )
+            .await;
+            let start = peer.write_turn_start().await;
+            peer.accepted(&start).await;
+            assert_eq!(state.event_status("input").await, "delivered");
+        }
+        assert!(
+            peer.writes.try_recv().is_err(),
+            "applied {applied}: the first input is sent at most once"
+        );
+        worker.shutdown().await.unwrap();
+    }
+}
+
 /// Accepted callback records the account still owes an answer for.
 fn callback_records(state: &State) -> i64 {
     state

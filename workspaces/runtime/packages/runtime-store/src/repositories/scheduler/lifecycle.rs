@@ -1379,7 +1379,13 @@ impl SchedulerRepository {
             || expected_attempt["id"] != attempt_id
             || expected_attempt["epoch"] != epoch
             || expected_attempt["submitted"] != true
-            || expected_attempt["executionOutcome"] != "unknown"
+            // A process stop can end a submitted start before its response
+            // records an outcome; the held marker's attempt then has none,
+            // which is unknown too.
+            || (expected_attempt
+                .get("executionOutcome")
+                .is_some_and(|outcome| !outcome.is_null())
+                && expected_attempt["executionOutcome"] != "unknown")
             || expected_attempt["accountKey"]
                 != agent
                     .extra
