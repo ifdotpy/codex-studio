@@ -3674,7 +3674,7 @@ mod tests {
         };
         let search = |tx: &rusqlite::Transaction<'_>, id: &str| -> Option<String> {
             tx.query_row("SELECT coalesce(f.body,json_extract(i.record,'$.text')) FROM runtime_search_next_meta m JOIN runtime_items i ON i.id=m.id LEFT JOIN runtime_item_fulltext f ON f.id=m.id JOIN runtime_search_next s ON s.rowid=m.search_rowid WHERE m.id=?1", [id], |r| {
-                r.get(0)
+                r.get::<_, studio_runtime_store::stored_text::StoredText>(0).map(studio_runtime_store::stored_text::StoredText::into_string)
             })
             .optional()
             .expect("search row")

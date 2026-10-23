@@ -68,6 +68,21 @@ The Rust supervisor reserves a `handles` row with `pid` 0 before it starts a chi
 
 Python writes JSON with `json.dumps`; some writers use compact separators and `ensure_ascii=False`, while ordinary record writes use their local defaults. No reader should depend on whitespace, escaping choice, or object key order. `codex_time.py` also emits UTC RFC 3339-like strings with millisecond precision and `Z`; other externally sourced date strings may carry offsets. SQLite's primary persisted runtime timestamps are numeric Unix seconds, not Python `datetime` objects.
 
+### Compressed text columns
+
+[`stored_text.rs`](../workspaces/runtime/packages/runtime-store/src/stored_text.rs)
+owns the stored form of `runtime_item_fulltext.body`. The column keeps its
+declared `TEXT` type, but a value is either plain TEXT, as older releases wrote
+it, or a BLOB in stored format 1: the version byte `0x01` and then exactly one
+zstd frame (RFC 8878) that declares its content size and carries a content
+checksum, without a dictionary. The decoded text is byte-identical to the text
+that was written. Readers accept both forms and refuse an unknown version
+byte, a damaged frame, a missing checksum or content size, and a declared size
+above `STORED_TEXT_MAX_DECODED_BYTES`. A release that only reads plain TEXT
+refuses a compressed body as an invalid stored object; it does not misread it.
+`length(body)` and `typeof(body)` therefore describe the stored form, not the
+text.
+
 ### Connection recovery request receipt
 
 `runtime_agents.record.connectionRecovery` may include `requestId`,

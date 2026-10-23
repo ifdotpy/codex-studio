@@ -4,6 +4,7 @@ use crate::CachedSql;
 use crate::records::{RecordOrder, RecordPredicate, Table, TranscriptItemId, TranscriptItemRecord};
 use crate::repositories::sync_documents::SyncDocumentsRepository;
 use crate::schema::{ConditionalTableRequirement, SchemaRequirements, TableRequirement};
+use crate::stored_text::{StoredText, StoredTextValue};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::{Value, json};
 use studio_runtime_schema::delivery::DeliveryMoment;
@@ -355,12 +356,12 @@ impl TranscriptRepository {
             .query_row_cached(
                 "SELECT body FROM runtime_item_fulltext WHERE id=?1",
                 [&item.id],
-                |row| row.get::<_, Option<String>>(0),
+                |row| row.get::<_, Option<StoredText>>(0),
             )
             .optional()
             .map_err(|error| map_column_error(error, "runtime_item_fulltext", &item.id))?;
         if let Some(Some(full)) = full {
-            return Ok(Some(full));
+            return Ok(Some(full.into_string()));
         }
         if let Some(text) = item.record.get("text") {
             let text = text
@@ -502,7 +503,7 @@ impl TranscriptRepository {
             transaction.execute_cached(
                 "INSERT INTO runtime_item_fulltext(id,body) VALUES(?1,?2) \
                  ON CONFLICT(id) DO UPDATE SET body=excluded.body",
-                params![id, text],
+                params![id, StoredTextValue::for_write(text)],
             )?;
         } else if has_fulltext {
             transaction.execute_cached("DELETE FROM runtime_item_fulltext WHERE id=?1", [id])?;
@@ -1396,7 +1397,9 @@ mod tests {
     fn fulltext_fixture(body: rusqlite::types::Value) -> (Connection, super::TranscriptItem) {
         let connection = Connection::open_in_memory().expect("in-memory database opens");
         connection
-            .execute_batch("CREATE TABLE runtime_item_fulltext(id TEXT PRIMARY KEY,body TEXT NOT NULL);")
+            .execute_batch(
+                "CREATE TABLE runtime_item_fulltext(id TEXT PRIMARY KEY,body TEXT NOT NULL);",
+            )
             .expect("fulltext table creates");
         connection
             .execute(
@@ -1414,7 +1417,8 @@ mod tests {
 
     /// Stored format 1 is a version byte and one zstd frame with its content
     /// size and checksum. This golden value pins the bytes already on disk.
-    const STORED_FORMAT_1_GOLDEN: &str = "0128b52ffd241de9000053746f72656420666f726d61742076313a2068c3a96c6c6f20e29c930afcd5cb80";
+    const STORED_FORMAT_1_GOLDEN: &str =
+        "0128b52ffd241de9000053746f72656420666f726d61742076313a2068c3a96c6c6f20e29c930afcd5cb80";
 
     fn golden_blob() -> Vec<u8> {
         data_encoding::HEXLOWER
