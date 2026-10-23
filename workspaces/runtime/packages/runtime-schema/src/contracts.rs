@@ -56,6 +56,14 @@ fn shared_values_ts() -> String {
         &[
             ("MAX_SAFE_INTEGER", values::MAX_SAFE_INTEGER.to_string()),
             (
+                "SYNC_TRANSCRIPT_STREAM_MAX_ITEMS",
+                values::SYNC_TRANSCRIPT_STREAM_MAX_ITEMS.to_string(),
+            ),
+            (
+                "SYNC_TRANSCRIPT_STREAM_MAX_BYTES",
+                values::SYNC_TRANSCRIPT_STREAM_MAX_BYTES.to_string(),
+            ),
+            (
                 "SYNC_ENTITY_STREAM_MAX_DOCUMENTS",
                 values::SYNC_ENTITY_STREAM_MAX_DOCUMENTS.to_string(),
             ),
@@ -379,6 +387,18 @@ pub fn check_schema_parity(openapi: &Value, account_transfer: &Value) -> Result<
         openapi,
         "/components/schemas/EntityChangeBatch/properties/documents/maxItems",
         values::SYNC_ENTITY_STREAM_MAX_DOCUMENTS,
+    )?;
+    for field in ["items", "removed", "order"] {
+        expect_number(
+            openapi,
+            &format!("/components/schemas/TranscriptStreamDelta/properties/{field}/maxItems"),
+            values::SYNC_TRANSCRIPT_STREAM_MAX_ITEMS as i64,
+        )?;
+    }
+    expect_number(
+        openapi,
+        "/components/schemas/TranscriptStreamDelta/properties/itemRevisions/maxProperties",
+        values::SYNC_TRANSCRIPT_STREAM_MAX_ITEMS as i64,
     )?;
     check_delivery_parity(openapi)?;
     check_account_group_parity(openapi)?;

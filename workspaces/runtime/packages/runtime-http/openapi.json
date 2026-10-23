@@ -43861,6 +43861,16 @@
             "minimum": 0,
             "title": "Revision",
             "type": "integer"
+          },
+          "transcriptChanges": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TranscriptChangeBatch"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -54217,6 +54227,32 @@
         "title": "TranscriptAsset",
         "type": "object"
       },
+      "TranscriptChangeBatch": {
+        "additionalProperties": false,
+        "description": "Complete transcript sync interval. The delta flag is true; oversize or unavailable intervals remain hints.",
+        "properties": {
+          "after": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "delta": {
+            "$ref": "#/components/schemas/TranscriptStreamDelta"
+          },
+          "through": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "after",
+          "through",
+          "delta"
+        ],
+        "title": "TranscriptChangeBatch",
+        "type": "object"
+      },
       "TranscriptContextUsage": {
         "additionalProperties": false,
         "description": "Runtime token usage shape published by tokenUsage notifications.",
@@ -54259,6 +54295,13 @@
         ],
         "title": "TranscriptContextUsage",
         "type": "object"
+      },
+      "TranscriptHistoryVersion": {
+        "description": "The threadId:restoredCheckpoint version, 1 to 8193 Unicode code points (two bounded stream identities and their separator).",
+        "maxLength": 8193,
+        "minLength": 1,
+        "title": "TranscriptHistoryVersion",
+        "type": "string"
       },
       "TranscriptInput": {
         "additionalProperties": {
@@ -54901,6 +54944,12 @@
         ],
         "title": "TranscriptItemResponse",
         "type": "object"
+      },
+      "TranscriptItemRevision": {
+        "description": "Canonical SHA-256 item revision from runtime-store repositories/transcript.rs canonical_hash, encoded as 64 lowercase hexadecimal characters.",
+        "pattern": "^[0-9a-f]{64}$",
+        "title": "TranscriptItemRevision",
+        "type": "string"
       },
       "TranscriptMessageRecord": {
         "additionalProperties": {
@@ -55627,6 +55676,181 @@
         ],
         "title": "TranscriptSearchResult",
         "type": "object"
+      },
+      "TranscriptStreamDelta": {
+        "additionalProperties": false,
+        "description": "Existing full transcript snapshot or sparse sync delta; item records share TranscriptMessageRecord.",
+        "properties": {
+          "agent": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TranscriptAgent"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "delta": {
+            "const": true,
+            "type": "boolean"
+          },
+          "historyVersion": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TranscriptHistoryVersion"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "itemRevisions": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/TranscriptItemRevision"
+            },
+            "maxProperties": 512,
+            "propertyNames": {
+              "$ref": "#/components/schemas/TranscriptStreamItemId"
+            },
+            "type": "object"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/TranscriptMessageRecord"
+            },
+            "maxItems": 512,
+            "title": "Items",
+            "type": "array"
+          },
+          "nextAfterCursor": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TranscriptStreamItemId"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "nextCursor": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TranscriptStreamItemId"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "order": {
+            "items": {
+              "$ref": "#/components/schemas/TranscriptStreamItemId"
+            },
+            "maxItems": 512,
+            "type": "array"
+          },
+          "removed": {
+            "items": {
+              "$ref": "#/components/schemas/TranscriptStreamItemId"
+            },
+            "maxItems": 512,
+            "type": "array"
+          },
+          "tail": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TranscriptStreamTail"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "truncated": {
+            "title": "Truncated",
+            "type": "boolean"
+          },
+          "unavailable": {
+            "default": null,
+            "description": "The transcript projection owner emits only null; unavailable conversations fail the pull with an HTTP error rather than a string-valued reason.",
+            "type": "null"
+          }
+        },
+        "required": [
+          "delta",
+          "items",
+          "truncated",
+          "removed",
+          "itemRevisions"
+        ],
+        "title": "TranscriptStreamDelta",
+        "type": "object"
+      },
+      "TranscriptStreamItemId": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/TranscriptMessageRecord/properties/id"
+          },
+          {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          }
+        ],
+        "description": "TranscriptMessageRecord.id in stream controls and item cursors; 1 to 4096 Unicode code points. Longer stored identities use pull recovery.",
+        "title": "TranscriptStreamItemId"
+      },
+      "TranscriptStreamTail": {
+        "description": "Optional transcript preview, 0 to 300 Unicode code points; the current transcript producer omits this field.",
+        "maxLength": 300,
+        "minLength": 0,
+        "title": "TranscriptStreamTail",
+        "type": "string"
+      },
+      "TranscriptSyncPage": {
+        "additionalProperties": false,
+        "description": "Transcript projection owner result before the HTTP adapter adds generation.",
+        "properties": {
+          "checkpoint": {
+            "$ref": "#/components/schemas/SyncCheckpoint"
+          },
+          "documents": {
+            "items": {
+              "$ref": "#/components/schemas/SyncDocument"
+            },
+            "title": "Documents",
+            "type": "array"
+          },
+          "workspaceId": {
+            "title": "Workspaceid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "workspaceId",
+          "documents",
+          "checkpoint"
+        ],
+        "title": "TranscriptSyncPage",
+        "type": "object"
+      },
+      "TranscriptSyncPayload": {
+        "anyOf": [
+          {
+            "$ref": "#/components/schemas/TranscriptPageResponse"
+          },
+          {
+            "$ref": "#/components/schemas/TranscriptStreamDelta"
+          }
+        ],
+        "description": "Existing complete snapshot or sparse sync delta, decoded at the projection boundary.",
+        "title": "TranscriptSyncPayload"
       },
       "TranscriptsResource": {
         "additionalProperties": false,

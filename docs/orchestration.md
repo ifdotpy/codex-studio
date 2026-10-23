@@ -16,9 +16,14 @@ State updates follow this flow:
    and reads full records and tombstones from one SQLite snapshot.
 3. Store the batch before advancing its checkpoint. Recover gaps, resets, reconnects,
    failed storage, and batches outside the [shared limits](../workspaces/runtime/packages/runtime-schema/src/shared_values.rs) through pull.
-4. An open chat reads again when its stored conversation revision changes or its
-   scoped stream publication advances; unrelated commits and exact publication
-   retries cause no pull. Active transcript text uses the existing pull path.
+4. Open chats pull their baseline, then apply complete typed transcript intervals
+   through the same delta applier as pull; advance the cursor after storing all items.
+5. A hinted subscribed transcript uses the existing pull projection owner in the
+   coalesced flush. Its revision cache shares page computation across subscribers;
+   this stream path may perform the same projection upkeep transaction as a pull.
+6. Transcript gaps, reconnects, epochs, storage failures and oversize reconcile by pull.
+   External `/api/sync/notify` hints proven empty at the same pull cursor are consumed;
+   changed content is delivered, and incomplete intervals retain a pull hint.
 
 Browser draft notifications follow this flow:
 

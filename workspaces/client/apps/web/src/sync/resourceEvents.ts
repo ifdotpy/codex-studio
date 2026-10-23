@@ -49,6 +49,8 @@ export type ResourceVersion = {
   draftChanges?: components["schemas"]["DraftChangeBatch"];
   /** Highest entity row represented by this StateResource revision, when present. */
   entitySequence?: number;
+  /** Transcript cursor persisted before this notification; readers verify local coverage. */
+  transcriptSequence?: number;
   /** The server cannot enumerate the exact changed rows; clients must reconcile. */
   entitySequenceReset?: boolean;
 };
@@ -521,6 +523,13 @@ export function createResourceEvents(options: ResourceEventsOptions) {
         event.resourceVersions?.find(
           (entry) => entry.resource && resourceKey(entry.resource) === key,
         ) ?? event.resourceVersions?.[resourceIndex];
+      if (
+        resource.kind === "transcript" &&
+        event.reason === "change" &&
+        !epochChanged &&
+        revisionEntry?.transcriptChanges
+      )
+        version.transcriptSequence = revisionEntry.transcriptChanges.through;
       if (resource.kind === "drafts") {
         version.reason = event.reason;
         version.draftChanges = revisionEntry?.draftChanges ?? undefined;
@@ -551,7 +560,12 @@ export function createResourceEvents(options: ResourceEventsOptions) {
         dispatchResource(
           resource,
           version,
-          !versions || !!revisionEntry?.entitySequenceReset,
+          !versions ||
+            !!revisionEntry?.entitySequenceReset ||
+            (resource.kind === "transcript" &&
+              !revisionEntry?.transcriptChanges &&
+              !isDuplicate &&
+              !staleRevision),
         );
         if (event.reason !== "change") pendingBaselines.add(key);
       } else if (!rememberResourceVersion(resource, version) && !versions) {

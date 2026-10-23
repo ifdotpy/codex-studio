@@ -19618,6 +19618,7 @@ export interface components {
       resource?: components["schemas"]["ResourceRef"] | null;
       /** Revision */
       revision: number;
+      transcriptChanges?: components["schemas"]["TranscriptChangeBatch"] | null;
     };
     /**
      * ResourceTokenRatesEvent
@@ -23795,6 +23796,15 @@ export interface components {
       size: number;
     };
     /**
+     * TranscriptChangeBatch
+     * @description Complete transcript sync interval. The delta flag is true; oversize or unavailable intervals remain hints.
+     */
+    TranscriptChangeBatch: {
+      after: number;
+      delta: components["schemas"]["TranscriptStreamDelta"];
+      through: number;
+    };
+    /**
      * TranscriptContextUsage
      * @description Runtime token usage shape published by tokenUsage notifications.
      */
@@ -23812,6 +23822,11 @@ export interface components {
        */
       window?: number | null;
     };
+    /**
+     * TranscriptHistoryVersion
+     * @description The threadId:restoredCheckpoint version, 1 to 8193 Unicode code points (two bounded stream identities and their separator).
+     */
+    TranscriptHistoryVersion: string;
     /**
      * TranscriptInput
      * @description One native/runtime input batch entry shown inside a transcript item.
@@ -24098,6 +24113,11 @@ export interface components {
     } & {
       [key: string]: components["schemas"]["JsonValue"];
     };
+    /**
+     * TranscriptItemRevision
+     * @description Canonical SHA-256 item revision from runtime-store repositories/transcript.rs canonical_hash, encoded as 64 lowercase hexadecimal characters.
+     */
+    TranscriptItemRevision: string;
     /**
      * TranscriptMessageRecord
      * @description Transcript rows always carry their runtime role and display text.
@@ -24408,6 +24428,67 @@ export interface components {
        */
       kind: "transcripts";
     };
+    /**
+     * TranscriptStreamDelta
+     * @description Existing full transcript snapshot or sparse sync delta; item records share TranscriptMessageRecord.
+     */
+    TranscriptStreamDelta: {
+      /** @default null */
+      agent?: components["schemas"]["TranscriptAgent"] | null;
+      /** @constant */
+      delta: true;
+      /** @default null */
+      historyVersion?: components["schemas"]["TranscriptHistoryVersion"] | null;
+      itemRevisions: {
+        [key: string]: components["schemas"]["TranscriptItemRevision"];
+      };
+      /** Items */
+      items: components["schemas"]["TranscriptMessageRecord"][];
+      /** @default null */
+      nextAfterCursor?: components["schemas"]["TranscriptStreamItemId"] | null;
+      /** @default null */
+      nextCursor?: components["schemas"]["TranscriptStreamItemId"] | null;
+      order?: components["schemas"]["TranscriptStreamItemId"][];
+      removed: components["schemas"]["TranscriptStreamItemId"][];
+      /** @default null */
+      tail?: components["schemas"]["TranscriptStreamTail"] | null;
+      /** Truncated */
+      truncated: boolean;
+      /**
+       * @description The transcript projection owner emits only null; unavailable conversations fail the pull with an HTTP error rather than a string-valued reason.
+       * @default null
+       */
+      unavailable?: null;
+    };
+    /**
+     * TranscriptStreamItemId
+     * @description TranscriptMessageRecord.id in stream controls and item cursors; 1 to 4096 Unicode code points. Longer stored identities use pull recovery.
+     */
+    TranscriptStreamItemId: components["schemas"]["TranscriptMessageRecord"]["id"] &
+      string;
+    /**
+     * TranscriptStreamTail
+     * @description Optional transcript preview, 0 to 300 Unicode code points; the current transcript producer omits this field.
+     */
+    TranscriptStreamTail: string;
+    /**
+     * TranscriptSyncPage
+     * @description Transcript projection owner result before the HTTP adapter adds generation.
+     */
+    TranscriptSyncPage: {
+      checkpoint: components["schemas"]["SyncCheckpoint"];
+      /** Documents */
+      documents: components["schemas"]["SyncDocument"][];
+      /** Workspaceid */
+      workspaceId: string;
+    };
+    /**
+     * TranscriptSyncPayload
+     * @description Existing complete snapshot or sparse sync delta, decoded at the projection boundary.
+     */
+    TranscriptSyncPayload:
+      | components["schemas"]["TranscriptPageResponse"]
+      | components["schemas"]["TranscriptStreamDelta"];
     /**
      * TransferAction
      * @enum {string}
