@@ -96,7 +96,9 @@ async fn confirmed_restart_is_atomic_replay_safe_and_waits_for_exit() {
     let store = RuntimeStore::open(Some(root.path())).await.unwrap();
     let cwd = root.path().to_string_lossy().into_owned();
     let first = store.transaction_with(move |tx| {
-        AgentRepository::put(tx, &AgentRecord::from_value(json!({"id":"owner","rootId":"owner","epoch":2,"cwd":cwd,"autoWake":true,"yoloMode":true,"status":"idle"}))?)?;
+        let owner = AgentRecord::from_value(json!({"id":"owner","rootId":"owner","epoch":2,"cwd":cwd,"autoWake":true,"yoloMode":true,"status":"idle"}))
+            .map_err(studio_runtime_store::StoreError::from)?;
+        AgentRepository::put(tx, &owner)?;
         monitor_runtime::create_in_transaction(tx, &monitor_runtime::MonitorAdmission {
             actor_id:"owner", epoch:2, request_id:"first", request:&json!({"command":"printf test","output_patterns":["test"]}), log_root:"/logs"
         }, &Workspace, 1.0)

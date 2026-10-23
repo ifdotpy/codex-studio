@@ -13,10 +13,11 @@ pub const MAX_TASK_OUTPUT_BYTES: u64 = 65_536;
 #[cfg(unix)]
 fn open_output(root: &Path, path: &Path) -> Result<File, &'static str> {
     use rustix::fs::{Mode, OFlags, open, openat};
+    use studio_runtime_store::path_identity::CanonicalPath;
     let supplied_root = root;
-    let root = root
-        .canonicalize()
-        .map_err(|_| "The task workspace is unavailable")?;
+    let root = CanonicalPath::existing(root)
+        .map_err(|_| "The task workspace is unavailable")?
+        .into_path_buf();
     let relative = if path.is_absolute() {
         path.strip_prefix(supplied_root)
             .or_else(|_| path.strip_prefix(&root))

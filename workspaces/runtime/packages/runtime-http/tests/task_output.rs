@@ -1,4 +1,4 @@
-//! Task output uses the authenticated HTTP boundary and the stored owner path.
+//! Task output uses the trusted-origin HTTP boundary and the stored owner path.
 #![allow(clippy::unwrap_used)]
 use axum::{
     body::{Body, to_bytes},
@@ -11,11 +11,13 @@ use studio_runtime_http::{HttpState, router};
 use studio_runtime_store::{RuntimeStore, StoreError};
 use tower::ServiceExt;
 
-async fn get(app: &axum::Router, path: &str, token: &str) -> (u16, Value) {
+const LOCAL_ORIGIN: &str = "http://127.0.0.1:49171";
+
+async fn get(app: &axum::Router, path: &str, origin: &str) -> (u16, Value) {
     let request = Request::builder()
         .uri(path)
         .header("host", "127.0.0.1:49171")
-        .header("x-canvas-token", token)
+        .header("origin", origin)
         .header(
             studio_runtime_http::API_SCHEMA_HASH_HEADER,
             studio_runtime_http::api_schema_hash(),
@@ -34,7 +36,9 @@ async fn get(app: &axum::Router, path: &str, token: &str) -> (u16, Value) {
 async fn authorized_task_output_read_and_projection() {
     let root = tempfile::tempdir().unwrap();
     let workspace = tempfile::tempdir().unwrap();
-    std::fs::write(workspace.path().join("out.txt"), "Claude task output").unwrap();
+    tokio::fs::write(workspace.path().join("out.txt"), "Claude task output")
+        .await
+        .unwrap();
     let store = Arc::new(RuntimeStore::open(Some(root.path())).await.unwrap());
     let cwd = workspace.path().to_string_lossy().into_owned();
     store.transaction_with(move |tx| {
@@ -54,44 +58,34 @@ async fn authorized_task_output_read_and_projection() {
         None,
     ))
     .unwrap();
-    let (status, value) = get(
-        &app,
-        "/api/task/output?id=task&agent=owner",
-        "fixture-token",
-    )
-    .await;
+    let (status, value) = get(&app, "/api/task/output?id=task&agent=owner", LOCAL_ORIGIN).await;
     assert_eq!(status, 200, "{value}");
     assert_eq!(value["text"], "Claude task output");
-    let (status, detail) = get(&app, "/api/task?id=task", "fixture-token").await;
+    let (status, detail) = get(&app, "/api/task?id=task", LOCAL_ORIGIN).await;
     assert_eq!(status, 200, "{detail}");
     assert_eq!(detail["outputFile"], "out.txt");
     assert!(
-        get(
-            &app,
-            "/api/task/output?id=task&agent=another",
-            "fixture-token"
-        )
-        .await
-        .0 >= 400
-    );
-    assert!(
-        get(&app, "/api/task/output?id=task&agent=owner", "wrong-token")
+        get(&app, "/api/task/output?id=task&agent=another", LOCAL_ORIGIN)
             .await
             .0
             >= 400
     );
+    let (status, refusal) = get(
+        &app,
+        "/api/task/output?id=task&agent=owner",
+        "https://untrusted.invalid",
+    )
+    .await;
+    assert_eq!(status, 403, "{refusal}");
     store.transaction(move |tx| {
         tx.execute("UPDATE runtime_tasks SET record=json_set(record,'$.outputFile','../secret') WHERE id='task'",[])?;
         Ok(())
     }).await.unwrap();
     assert!(
-        get(
-            &app,
-            "/api/task/output?id=task&agent=owner",
-            "fixture-token"
-        )
-        .await
-        .0 >= 400
+        get(&app, "/api/task/output?id=task&agent=owner", LOCAL_ORIGIN)
+            .await
+            .0
+            >= 400
     );
 }
 

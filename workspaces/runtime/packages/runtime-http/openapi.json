@@ -31923,6 +31923,8 @@
             "type": "string"
           },
           "epoch": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
             "type": "integer"
           },
           "id": {
