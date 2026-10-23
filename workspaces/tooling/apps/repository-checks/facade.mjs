@@ -1028,6 +1028,7 @@ function fastTierCommands(root) {
               "test(draft_store::tests::synchronization_decodes_only_the_keyed_draft_per_incoming_document)",
               "test(terminal::tests::resized_grid_keeps_cursor_output_and_truncation_dimensions)",
               "test(server_transport::tests::https_transport_rejects_untrusted_certificate_before_sending_request)",
+              "test(server_transport::tests::one_server_cannot_hold_the_slots_of_another_server)",
               "test(server_transport::tests::https_transport_signs_exact_bytes_and_streams_without_forwarding_local_auth)",
               "test(svg_normalization_has_no_script_file_or_network_references)",
             ]),

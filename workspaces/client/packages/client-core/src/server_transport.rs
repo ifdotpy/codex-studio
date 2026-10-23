@@ -543,7 +543,7 @@ mod tests {
         )));
         let mut client = RemoteClient::new(vault).unwrap();
         let local = std::net::SocketAddr::from(([127, 0, 0, 1], port));
-        client.http = reqwest::Client::builder()
+        client.http = crate::tls::client_builder()
             .no_proxy()
             .retry(reqwest::retry::never())
             .resolve("busy.tailnet.ts.net", local)
