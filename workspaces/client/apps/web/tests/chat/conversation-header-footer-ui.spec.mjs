@@ -11,11 +11,13 @@ import { join } from "node:path";
 
 test("conversation header stays compact and usage facts remain visible", async ({
   browser,
-}) => {
+}, testInfo) => {
   test.setTimeout(90_000);
   const state = await mkdtemp(join(tmpdir(), "studio-header-footer-"));
-  const evidence =
-    process.env.CONVERSATION_HEADER_FOOTER_EVIDENCE || join(state, "evidence");
+  const evidence = join(
+    process.env.CONVERSATION_HEADER_FOOTER_EVIDENCE || join(state, "evidence"),
+    `repeat-${testInfo.repeatEachIndex}`,
+  );
   await mkdir(evidence, { recursive: true });
   const fixture = spawnFixture(process.execPath, [rustUiFixture, state], {
     stdio: ["ignore", "pipe", "pipe"],
@@ -74,6 +76,30 @@ test("conversation header stays compact and usage facts remain visible", async (
           await expect(page.locator("#conversation-title")).toHaveText(
             "Release lead",
           );
+          // Opening a completed chat commits read state and loads its transcript
+          // independently of the cost request. Measure the post-open header.
+          await expect(
+            page.locator("#conversation-status"),
+          ).toHaveAccessibleName("Read");
+          await expect(page.locator("#messages")).toContainText(
+            "Review the release",
+          );
+          const tools = page.locator(
+            "#conversation-header-tools .conversation-header-tools-menu",
+          );
+          await expect(tools).toHaveAttribute(
+            "data-compact",
+            width === 1440 ? "no" : "yes",
+          );
+          await expect(
+            tools.locator(".prompt-history-toggle-label"),
+          ).toHaveText("1 / 1");
+          await expect(
+            page.locator('.account-limits-dot-target[aria-current="true"]'),
+          ).toBeVisible();
+          await expect(
+            page.getByRole("button", { name: "Account limits", exact: true }),
+          ).toBeVisible();
           await expect(page.locator(".session-cost-summary")).toHaveAttribute(
             "aria-busy",
             "false",
@@ -94,6 +120,7 @@ test("conversation header stays compact and usage facts remain visible", async (
               ),
             scheme,
           );
+          await page.evaluate(() => document.fonts.ready);
           const geometry = await page.evaluate(() => {
             const rect = (s) =>
               document.querySelector(s).getBoundingClientRect().toJSON();
@@ -136,47 +163,62 @@ test("conversation header stays compact and usage facts remain visible", async (
               overflow: document.documentElement.scrollWidth > innerWidth,
             };
           });
-          results.push({ width, scheme, ...geometry });
+          const result = { width, scheme, ...geometry };
+          results.push(result);
           await page.screenshot({
             path: join(evidence, `chrome-${width}-${scheme}.png`),
           });
+          assertGeometry(result);
+        } catch (error) {
+          const failure = join(evidence, `failed-${width}-${scheme}.png`);
+          await page.screenshot({ path: failure }).catch(() => {});
+          await writeFile(
+            join(evidence, `failed-${width}-${scheme}.html`),
+            await page.content(),
+          );
+          await testInfo.attach(`Header/footer ${width} ${scheme}`, {
+            path: failure,
+          });
+          throw error;
         } finally {
           await page.context().close();
         }
       }
+    console.log("Header/footer evidence:", evidence);
+  } finally {
     await writeFile(
       join(evidence, "geometry.json"),
       JSON.stringify(results, null, 2),
     );
-    for (const r of results) {
-      expect(r.header.height, JSON.stringify(r)).toBeLessThanOrEqual(45);
-      expect(r.teamStrip).toBe(false);
-      expect(r.server.width).toBeGreaterThan(0);
-      expect(r.server.left).toBeGreaterThanOrEqual(r.status.right);
-      expect(r.statusLabel.accessible).toBeTruthy();
-      if (r.statusLabel.visible)
-        expect(
-          r.statusLabel.scrollWidth,
-          JSON.stringify(r),
-        ).toBeLessThanOrEqual(r.statusLabel.width + 1);
-      else expect(r.statusLabel.dotWidth).toBeGreaterThan(0);
-      expect(
-        Math.abs(
-          r.title.top + r.title.height / 2 - r.status.top - r.status.height / 2,
-        ),
-      ).toBeLessThanOrEqual(1);
-      expect(r.dots.width).toBeGreaterThan(0);
-      expect(r.dots.height).toBeGreaterThan(0);
-      expect(r.estimate.width).toBeGreaterThan(0);
-      const centers = r.controls.map((e) => e.top + e.height / 2);
-      expect(
-        Math.max(...centers) - Math.min(...centers),
-        JSON.stringify(r),
-      ).toBeLessThanOrEqual(1);
-      expect(r.overflow).toBe(false);
-    }
-    console.log("Header/footer evidence:", evidence);
-  } finally {
+    await writeFile(join(evidence, "fixture.log"), log);
+    console.log("Header/footer artifacts:", evidence);
     fixture.kill("SIGTERM");
   }
 });
+
+function assertGeometry(r) {
+  expect(r.header.height, JSON.stringify(r)).toBeLessThanOrEqual(45);
+  expect(r.teamStrip).toBe(false);
+  expect(r.server.width).toBeGreaterThan(0);
+  expect(r.server.left).toBeGreaterThanOrEqual(r.status.right);
+  expect(r.statusLabel.accessible).toBeTruthy();
+  if (r.statusLabel.visible)
+    expect(r.statusLabel.scrollWidth, JSON.stringify(r)).toBeLessThanOrEqual(
+      r.statusLabel.width + 1,
+    );
+  else expect(r.statusLabel.dotWidth).toBeGreaterThan(0);
+  expect(
+    Math.abs(
+      r.title.top + r.title.height / 2 - r.status.top - r.status.height / 2,
+    ),
+  ).toBeLessThanOrEqual(1);
+  expect(r.dots.width).toBeGreaterThan(0);
+  expect(r.dots.height).toBeGreaterThan(0);
+  expect(r.estimate.width).toBeGreaterThan(0);
+  const centers = r.controls.map((e) => e.top + e.height / 2);
+  expect(
+    Math.max(...centers) - Math.min(...centers),
+    JSON.stringify(r),
+  ).toBeLessThanOrEqual(1);
+  expect(r.overflow).toBe(false);
+}
