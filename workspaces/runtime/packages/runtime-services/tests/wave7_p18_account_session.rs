@@ -4,6 +4,7 @@ use studio_runtime_services::account_session_runtime::{
     AccountSessionError, AccountSessionFuture, AccountSessionPort, LimitsSnapshot, LoginRequest,
     limits,
 };
+use studio_runtime_store::path_identity::CanonicalPath;
 
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -139,10 +140,34 @@ fn profile_normalization_matches_python() {
         serde_json::from_str(include_str!("wave7_p18_profile_corpus.json"))
             .expect("frozen profile corpus");
     assert_eq!(cases.len(), 27);
-    for case in cases {
+    // The corpus was frozen below a Linux temporary home. Normalization resolves
+    // the links of the existing prefix (macOS links its system temporary folders
+    // below `/private`), so each case runs below a canonical temporary root in
+    // place of the frozen one.
+    let temporary = tempfile::tempdir().expect("temporary profile root");
+    let root = CanonicalPath::existing(temporary.path())
+        .expect("canonical temporary root")
+        .into_path_buf();
+    for mut case in cases {
+        let frozen_root = Path::new(&case.home)
+            .parent()
+            .expect("frozen home below its root")
+            .to_owned();
+        let mut options = Value::Object(case.options);
+        relocate(&mut options, &frozen_root, &root);
+        let Value::Object(options) = options else {
+            unreachable!("relocation keeps the options object")
+        };
+        case.options = options;
+        relocate(&mut case.result, &frozen_root, &root);
+        let home = root.join(
+            Path::new(&case.home)
+                .strip_prefix(&frozen_root)
+                .expect("frozen home below its root"),
+        );
         let result = studio_runtime_services::account_session_runtime::normalize_profile(
             case.options.clone(),
-            Path::new(&case.home),
+            &home,
         );
         let normalized = result
             .as_ref()
@@ -157,5 +182,26 @@ fn profile_normalization_matches_python() {
             case.options,
             result.err()
         );
+    }
+}
+
+/// Replace the `from` prefix of every path string in `value` with `to`.
+fn relocate(value: &mut Value, from: &Path, to: &Path) {
+    match value {
+        Value::String(text) => {
+            if let Ok(rest) = Path::new(text.as_str()).strip_prefix(from) {
+                let relocated = if rest.as_os_str().is_empty() {
+                    to.to_owned()
+                } else {
+                    to.join(rest)
+                };
+                *text = relocated.to_string_lossy().into_owned();
+            }
+        }
+        Value::Array(values) => values
+            .iter_mut()
+            .for_each(|value| relocate(value, from, to)),
+        Value::Object(map) => map.values_mut().for_each(|value| relocate(value, from, to)),
+        _ => {}
     }
 }

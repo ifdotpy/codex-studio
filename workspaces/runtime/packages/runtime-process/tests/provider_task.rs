@@ -654,7 +654,7 @@ while IFS= read -r line; do
 done
 "#;
     let launch = ProviderLaunchSpec::new(
-        shell_command(script),
+        retained_shell_command(&state.0, script),
         support::child_environment(&state.0),
         state.0.clone(),
     );
@@ -805,18 +805,21 @@ async fn real_supervisor_reattach_waits_for_a_launch_record_in_transition() {
     let mut supervisor = SupervisorProcess::start(&state);
     real_watchdog(async {
         let script_path = state.0.join("transition.sh");
-        let script = r#"
+        let shell = retained_shell(&state.0);
+        let script = format!(
+            r#"
 case "$1" in
- launch) accepted_home=$HOME; unset HOME; exec /bin/sh "$0" transition "$accepted_home";;
+ launch) accepted_home=$HOME; unset HOME; exec '{shell}' "$0" transition "$accepted_home";;
  transition)
   : > transition
   release_poll_seconds=0.01
   while [ ! -e release ]; do sleep "$release_poll_seconds"; done
   HOME=$2; export HOME
-  exec /bin/sh "$0" ready;;
+  exec '{shell}' "$0" ready;;
 esac
 while IFS= read -r line; do :; done
-"#;
+"#
+        );
         std::fs::write(&script_path, script).unwrap();
         let mut env = support::child_environment(&state.0);
         // The shell exports its cwd across exec; include it in the accepted launch.
@@ -824,7 +827,7 @@ while IFS= read -r line; do :; done
         env.insert("SHLVL".into(), "0".into());
         let launch = ProviderLaunchSpec::new(
             vec![
-                "/bin/sh".into(),
+                shell,
                 script_path.to_string_lossy().into_owned(),
                 "launch".into(),
             ],

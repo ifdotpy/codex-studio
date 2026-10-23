@@ -154,6 +154,47 @@ rpc_id() {
     ]
 }
 
+/// A POSIX shell for a child that a reattach must verify. macOS does not show
+/// the launch environment of an Apple platform binary such as `/bin/sh` to
+/// other processes in `KERN_PROCARGS2`, so the reattach would refuse the child
+/// as unverifiable. Provider binaries are not platform binaries. On macOS this
+/// is an ad-hoc signed copy of `/bin/bash` in `root`, named `sh` so that bash
+/// keeps its POSIX mode.
+#[cfg(target_os = "macos")]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "test helper; codesign signs one local file and exits at once"
+)]
+pub(crate) fn retained_shell(root: &Path) -> String {
+    let shell = root.join("sh");
+    if !shell.exists() {
+        std::fs::copy("/bin/bash", &shell).unwrap();
+        let signed = Command::new("/usr/bin/codesign")
+            .args(["--force", "--sign", "-"])
+            .arg(&shell)
+            .output()
+            .unwrap();
+        assert!(
+            signed.status.success(),
+            "ad-hoc signature of the test shell failed: {}",
+            String::from_utf8_lossy(&signed.stderr)
+        );
+    }
+    shell.to_string_lossy().into_owned()
+}
+
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn retained_shell(_root: &Path) -> String {
+    "/bin/sh".into()
+}
+
+/// [`shell_command`] run by [`retained_shell`].
+pub(crate) fn retained_shell_command(root: &Path, script: &str) -> Vec<String> {
+    let mut command = shell_command(script);
+    command[0] = retained_shell(root);
+    command
+}
+
 impl Drop for SupervisorProcess {
     #[allow(clippy::disallowed_methods)]
     fn drop(&mut self) {
