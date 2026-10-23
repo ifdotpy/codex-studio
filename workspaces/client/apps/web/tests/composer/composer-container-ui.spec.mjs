@@ -14,7 +14,7 @@ import { join } from "node:path";
 test("composer keeps one tools row and readable mixed-provider execution summary in medium containers", async ({
   browser,
 }) => {
-  test.setTimeout(120_000);
+  test.setTimeout(180_000);
   const state = await mkdtemp(join(tmpdir(), "studio-composer-container-"));
   const evidence =
     process.env.COMPOSER_CONTAINER_EVIDENCE || join(state, "evidence");
@@ -64,6 +64,8 @@ test("composer keeps one tools row and readable mixed-provider execution summary
       serviceTiers: [],
     }));
     for (const { width, target, team } of [
+      { width: 1440, target: 1100 },
+      { width: 1920, target: 1400 },
       { width: 1440, target: 900 },
       { width: 1440, target: 470, team: true },
       { width: 1440, target: 600, team: true },
@@ -128,22 +130,6 @@ test("composer keeps one tools row and readable mixed-provider execution summary
             /\d+ workers/,
           );
           await expect(trigger).not.toHaveAttribute("title", /\d+ workers/);
-          await trigger.click();
-          const settings = page.getByRole("dialog", {
-            name: "Chat settings",
-            exact: true,
-          });
-          await expect(
-            settings.getByRole("tab", { name: "Models", exact: true }),
-          ).toHaveAttribute("aria-selected", "true");
-          await expect(
-            settings
-              .getByRole("radiogroup", { name: "Agent role", exact: true })
-              .getByRole("radio")
-              .first(),
-          ).toBeChecked();
-          await page.keyboard.press("Escape");
-          await expect(settings).toBeHidden();
           await page.evaluate(
             ({ target, scheme }) => {
               document.documentElement.setAttribute(
@@ -162,6 +148,39 @@ test("composer keeps one tools row and readable mixed-provider execution summary
             },
             { target, scheme },
           );
+          if (target >= 900) {
+            const names = await trigger
+              .locator(".execution-model,.execution-inherited-label")
+              .evaluateAll((nodes) =>
+                nodes.map((node) => ({
+                  text: node.textContent,
+                  actual: node.clientWidth,
+                  content: node.scrollWidth,
+                })),
+              );
+            for (const name of names)
+              expect(
+                name.actual,
+                `${width}px ${name.text} is fully visible`,
+              ).toBe(name.content);
+          }
+          await expect(page.locator("#toast")).toBeHidden({ timeout: 10_000 });
+          await trigger.click();
+          const settings = page.getByRole("dialog", {
+            name: "Chat settings",
+            exact: true,
+          });
+          await expect(
+            settings.getByRole("tab", { name: "Models", exact: true }),
+          ).toHaveAttribute("aria-selected", "true");
+          await expect(
+            settings
+              .getByRole("radiogroup", { name: "Agent role", exact: true })
+              .getByRole("radio")
+              .first(),
+          ).toBeChecked();
+          await page.keyboard.press("Escape");
+          await expect(settings).toBeHidden();
           const geometry = await page
             .locator("#composer")
             .evaluate((composer) => {
@@ -190,6 +209,8 @@ test("composer keeps one tools row and readable mixed-provider execution summary
                     ),
                   ].map((node) => ({
                     text: node.textContent,
+                    scrollWidth: node.scrollWidth,
+                    clientWidth: node.clientWidth,
                     visible: getComputedStyle(node).display !== "none",
                     ...r(node),
                   })),
@@ -298,6 +319,10 @@ test("composer keeps one tools row and readable mixed-provider execution summary
         for (const name of names) {
           expect(name.left).toBeGreaterThanOrEqual(chip.button.left);
           expect(name.right).toBeLessThanOrEqual(chip.button.right);
+          if (result.composer.width >= 900)
+            expect(name.scrollWidth, JSON.stringify(result)).toBe(
+              name.clientWidth,
+            );
         }
         if (!chip.namesHidden)
           expect(

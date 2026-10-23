@@ -91,3 +91,29 @@
     display: none;
   }
 }
+
+/* Wide composers reserve the summary's natural width before delivery hints.
+   The zero basis above still keeps attachments and controls on one narrow row. */
+@container composer (min-width: 56.25em) {
+  .empty-chat-settings,
+  .execution-summary-trigger {
+    flex: 0 0 auto;
+  }
+  .composer-tools:has(.execution-summary-trigger) {
+    flex: 1 0 auto;
+  }
+  .composer-bar:has(.execution-summary-trigger) .composer-submit-actions {
+    flex: 0 1 auto;
+    min-width: 0;
+  }
+  .composer-bar:has(.execution-summary-trigger) .composer-timing {
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    flex-wrap: nowrap;
+  }
+  .execution-summary-segment .execution-model {
+    flex: none;
+  }
+}
