@@ -1129,3 +1129,52 @@ it("applies v4 structured entity rows without parsing JSON strings", () => {
   const stale = applyEntityRows(state, [upsert], true);
   assert.deepEqual(stale.threads, []);
 });
+
+it("projects independent account limits and preserves them across workspace updates", () => {
+  const row = (collection, id, value, seq) => ({
+    id: `entity:${collection}:${id}`,
+    payload: "",
+    entity: { collection, id, value },
+    seq,
+  });
+  const state = emptyEntityProjection();
+  const alpha = { accountKey: "alpha", at: 100, data: { accountId: "A" } };
+  const initial = applyEntityRows(
+    state,
+    [
+      row("workspace", "current", { stateDir: "fixture" }, 1),
+      row("rateLimit", "alpha", alpha, 2),
+      row("rateLimit", "default", { accountKey: "default", at: 101 }, 3),
+    ],
+    true,
+  );
+  assert.deepEqual(initial.runtime.rateLimitsByAccount.alpha, alpha);
+  assert.equal(
+    initial.runtime.rateLimits,
+    initial.runtime.rateLimitsByAccount.default,
+  );
+  const next = applyEntityRows(
+    state,
+    [
+      row("workspace", "current", { stateDir: "updated" }, 4),
+      row("rateLimit", "alpha", alpha, 2),
+      row("rateLimit", "default", { accountKey: "default", at: 101 }, 3),
+    ],
+    true,
+  );
+  assert.equal(
+    next.runtime.rateLimitsByAccount,
+    initial.runtime.rateLimitsByAccount,
+  );
+  const withoutAlpha = applyEntityRows(
+    state,
+    [
+      row("workspace", "current", { stateDir: "updated" }, 4),
+      row("rateLimit", "default", { accountKey: "default", at: 101 }, 3),
+      { id: "entity:rateLimit:alpha", seq: 5, payload: "{}", _deleted: true },
+    ],
+    true,
+  );
+  assert.equal(withoutAlpha.runtime.rateLimitsByAccount.alpha, undefined);
+  assert.equal(withoutAlpha.runtime.rateLimits.accountKey, "default");
+});

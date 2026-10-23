@@ -1540,21 +1540,10 @@ async fn run_continuation_tick(
             let observation = if let Some(mut value) = fresh {
                 // A notification can commit between the read and this transaction.
                 // Prefer that newer snapshot, including a new rejection.
-                let raw: Option<String> = tx
-                    .query_row(
-                        "SELECT payload FROM sync_entities WHERE collection='workspace' AND id='current' AND deleted=0",
-                        [],
-                        |row| row.get(0),
-                    )
-                    .optional()?;
-                if let Some(raw) = raw
-                    && let Ok(entity) = serde_json::from_str::<serde_json::Value>(&raw)
-                    && let Some(current) = entity
-                        .pointer("/value/rateLimitsByAccount")
-                        .and_then(|by_account| by_account.get(&account))
+                if let Some(current) = account_state::latest_limits_snapshot(tx, &account)?
                     && current["at"].as_f64().unwrap_or(0.0) >= value["at"].as_f64().unwrap_or(0.0)
                 {
-                    value = current.clone();
+                    value = current;
                 }
                 studio_runtime_services::usage_resume::LimitsObservation::from_record(value, None)
                     .ok()
@@ -2083,7 +2072,7 @@ mod exit_logging_tests {
                 }
                 if let Some(store) = &self.newer_rejection {
                     store.transaction_with(|tx| {
-                        studio_runtime_store::SyncDocumentsRepository::put_entity(tx,"workspace","current",serde_json::json!({"rateLimitsByAccount":{"default":{"accountKey":"default","at":1001.0,"data":{"rateLimits":{"primary":{"usedPercent":100.0,"resetsAt":2000.0}}}}}}),false)
+                        studio_runtime_store::SyncDocumentsRepository::put_entity(tx,"rateLimit","default",serde_json::json!({"accountKey":"default","at":1001.0,"data":{"rateLimits":{"primary":{"usedPercent":100.0,"resetsAt":2000.0}}}}),false)
                     }).await.expect("rate-limit fixture writes");
                 }
                 Ok(
@@ -2110,7 +2099,7 @@ mod exit_logging_tests {
                     tx.execute("INSERT INTO runtime_usage_resumes(id,agent,record) VALUES (?1,?1,?2)",[id,&resume.to_string()])?;
                 }
                 // A recent cache entry cannot replace the provider read at the due time.
-                studio_runtime_store::SyncDocumentsRepository::put_entity(tx,"workspace","current",serde_json::json!({"rateLimitsByAccount":{"default":{"accountKey":"default","at":999.0,"data":{"rateLimits":{"primary":{"usedPercent":0.0}}}}}}),false)?;
+                studio_runtime_store::SyncDocumentsRepository::put_entity(tx,"rateLimit","default",serde_json::json!({"accountKey":"default","at":999.0,"data":{"rateLimits":{"primary":{"usedPercent":0.0}}}}),false)?;
                 Ok::<_,studio_runtime_store::StoreError>(())
             }).await.expect("usage resume fixture writes");
             let port = TickLimits {

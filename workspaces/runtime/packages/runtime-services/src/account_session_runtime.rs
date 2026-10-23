@@ -2016,7 +2016,7 @@ mod persistence_tests {
                     tx,
                     "workspace",
                     "current",
-                    json!({"rateLimitsByAccount":{"other":{"accountKey":"other"}}}),
+                    json!({"untouched":true}),
                     false,
                 )?;
                 Ok(())
@@ -2037,12 +2037,17 @@ mod persistence_tests {
         .unwrap();
 
         let entity = stored_workspace(&store);
-        assert_eq!(entity["value"]["rateLimits"], value);
-        assert_eq!(entity["value"]["rateLimitsByAccount"]["default"], value);
-        assert_eq!(
-            entity["value"]["rateLimitsByAccount"]["other"]["accountKey"],
-            "other"
-        );
+        assert_eq!(entity["value"], json!({"untouched":true}));
+        let raw: String = store
+            .test_reader()
+            .unwrap()
+            .query_row(
+                "SELECT payload FROM sync_entities WHERE collection='rateLimit' AND id='default'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(serde_json::from_str::<Value>(&raw).unwrap()["value"], value);
         assert_eq!(cache.lock().unwrap().get("default"), Some(&value));
     }
 
@@ -2056,13 +2061,17 @@ mod persistence_tests {
                     tx,
                     "workspace",
                     "current",
-                    json!({"rateLimitsByAccount":"invalid-shape","untouched":true}),
+                    json!({"untouched":true}),
                     false,
                 )?;
                 Ok(())
             })
             .await
             .unwrap();
+        store.transaction(|tx| {
+            tx.execute_batch("CREATE TRIGGER reject_limits BEFORE INSERT ON sync_entities WHEN NEW.collection='rateLimit' BEGIN SELECT RAISE(ABORT,'injected failure'); END;")?;
+            Ok(())
+        }).await.unwrap();
         let before = stored_workspace(&store);
         let cache = Arc::new(Mutex::new(BTreeMap::new()));
         let value = json!({"accountKey":"default","data":{"accountId":"fixture"},"at":1.0,"readAt":1.0,"error":null});
@@ -2081,6 +2090,9 @@ mod persistence_tests {
 
         assert_eq!(stored_workspace(&store), before);
         assert!(cache.lock().unwrap().is_empty());
+        assert_eq!(store.test_reader().unwrap().query_row(
+            "SELECT COUNT(*) FROM runtime_operation_receipts WHERE signature='limits-observation'", [], |row| row.get::<_, i64>(0),
+        ).unwrap(), 0, "failed publication rolls back the private observation too");
     }
 }
 
@@ -2348,14 +2360,14 @@ mod limits_runtime_tests {
             .test_reader()
             .unwrap()
             .query_row(
-                "SELECT payload FROM sync_entities WHERE collection='workspace' AND id='current'",
+                "SELECT payload FROM sync_entities WHERE collection='rateLimit' AND id='default'",
                 [],
                 |row| row.get(0),
             )
             .unwrap();
         assert_eq!(
-            serde_json::from_str::<Value>(&raw).unwrap()["value"]["rateLimits"]["data"]["rateLimits"]
-                ["primary"]["usedPercent"],
+            serde_json::from_str::<Value>(&raw).unwrap()["value"]["data"]["rateLimits"]["primary"]
+                ["usedPercent"],
             100
         );
     }
@@ -2386,11 +2398,20 @@ mod limits_runtime_tests {
             f.runtime.limits_snapshot("default").unwrap()["at"],
             repeated.observed_at
         );
+        let restored =
+            studio_runtime_store::account_state::limits_snapshots(&store.test_reader().unwrap())
+                .unwrap();
+        assert_eq!(
+            restored.snapshots[0].1["at"], repeated.observed_at,
+            "startup restoration retains timestamp-only freshness"
+        );
+        let mut changed = update(&f, 3, 60);
+        changed.observed_at = repeated.observed_at + 1.0;
         assert!(
             !f.runtime.ingest_limits(repeated).await.unwrap(),
             "durable cursor replay remains a no-op"
         );
-        assert!(f.runtime.ingest_limits(update(&f, 3, 60)).await.unwrap());
+        assert!(f.runtime.ingest_limits(changed).await.unwrap());
         assert!(
             studio_runtime_store::SyncDocumentsRepository::entity_sequence(
                 &store.test_reader().unwrap(),

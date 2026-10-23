@@ -1,4 +1,5 @@
 import type {
+  AccountRateLimitsDto,
   AgentEntityDto,
   ChatEntityDto,
   ComplaintEntityDto,
@@ -53,6 +54,7 @@ const ENTITY_COLLECTIONS = [
   "event",
   "work",
   "workspace",
+  "rateLimit",
   "uiPreferences",
 ] as const satisfies readonly EntityCollection[];
 type Assert<T extends true> = T;
@@ -103,6 +105,7 @@ function emptyEntityValues(): EntityValues {
     event: new Map<string, EventEntityDto>(),
     work: new Map<string, WorkEntityDto>(),
     workspace: new Map<string, WorkspaceEntityDto>(),
+    rateLimit: new Map<string, AccountRateLimitsDto>(),
     uiPreferences: new Map<string, UiPreferencesDto>(),
   };
 }
@@ -189,8 +192,14 @@ function projectSnapshotCollections(
       ? prior.runtime.work
       : entityValues(values, "work");
   const workspace = values.workspace.get("current");
+  const rateLimitsByAccount =
+    prior && !changed.has("rateLimit")
+      ? prior.runtime.rateLimitsByAccount
+      : Object.fromEntries(values.rateLimit);
   const runtime = {
     ...workspace,
+    rateLimitsByAccount,
+    rateLimits: rateLimitsByAccount?.default ?? null,
     agents,
     rooms,
     tasks,
@@ -345,6 +354,9 @@ export function applyEntityChanges(
         break;
       case "uiPreferences":
         state.values.uiPreferences.set(payload.id, payload.value);
+        break;
+      case "rateLimit":
+        state.values.rateLimit.set(payload.id, payload.value);
         break;
       case "workspace":
         state.values.workspace.set(payload.id, payload.value);

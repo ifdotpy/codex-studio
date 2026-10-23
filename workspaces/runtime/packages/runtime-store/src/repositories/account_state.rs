@@ -1,14 +1,16 @@
-//! Read and validate persisted account usage snapshots from the workspace row.
+//! Durable per-account usage observations and their compact sync projections.
 
-use rusqlite::{Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, Transaction};
 use serde_json::Value;
 
-use crate::StoreResult;
 use crate::records::{RecordOrder, RecordPredicate, Table, UsageResumeRecord};
 use crate::schema::{SchemaRequirements, TableRequirement};
+use crate::{StoreError, StoreResult, SyncDocumentsRepository};
 
 pub const MAX_PERSISTED_DOCUMENT_BYTES: usize = 64 * 1024 * 1024;
 pub const MAX_PERSISTED_DOCUMENT_DEPTH: usize = 128;
+/// Namespace of the single durable observation receipt per account. Unit: key prefix.
+const LIMITS_OBSERVATION_PREFIX: &str = "account-limits-observation:";
 pub const AUTH_WAIT_NOTICE_SECONDS: f64 = 1800.0;
 pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
     conditional_tables: &[],
@@ -16,10 +18,16 @@ pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
     triggers: &[],
     conditional_triggers: &[],
     connection_functions: &[],
-    bootstrap_tables: &[TableRequirement {
-        name: "sync_entities",
-        columns: &["collection", "id", "payload", "deleted"],
-    }],
+    bootstrap_tables: &[
+        TableRequirement {
+            name: "sync_entities",
+            columns: &["collection", "id", "payload", "deleted"],
+        },
+        TableRequirement {
+            name: "runtime_operation_receipts",
+            columns: &["id", "result"],
+        },
+    ],
     bootstrap_triggers: &[],
     bootstrap_connection_functions: &[],
 };
@@ -36,102 +44,156 @@ pub struct LimitsReadDiagnostic {
     pub keyword: String,
 }
 
-/// Read the startup workspace envelope with byte/depth bounds and schema
-/// validation. Invalid envelopes are reported without exposing stored values.
-pub fn limits_snapshots(connection: &Connection) -> StoreResult<LimitsRead> {
-    let payload = connection
+/// One ordered observation receipt per account; cursor generations are connection-local.
+pub fn limits_observation_key(account: &str) -> String {
+    format!("{LIMITS_OBSERVATION_PREFIX}{account}")
+}
+
+/// Read the freshest durable observation used by resume checks and startup restoration.
+pub fn latest_limits_snapshot(
+    connection: &Connection,
+    account: &str,
+) -> StoreResult<Option<Value>> {
+    let raw: Option<String> = connection
         .query_row(
-            "SELECT substr(CAST(payload AS BLOB),1,?1), length(CAST(payload AS BLOB)) FROM sync_entities WHERE collection='workspace' AND id='current' AND deleted=0",
-            [MAX_PERSISTED_DOCUMENT_BYTES as i64 + 1],
-            |row| Ok((row.get::<_, Option<Vec<u8>>>(0)?, row.get::<_, Option<i64>>(1)?)),
+            "SELECT result FROM runtime_operation_receipts WHERE id=?1",
+            [limits_observation_key(account)],
+            |row| row.get(0),
         )
         .optional()?;
-    let Some(payload) = payload else {
-        return Ok(LimitsRead {
-            snapshots: Vec::new(),
-            diagnostics: Vec::new(),
-        });
-    };
-    let Some(bytes) = payload.0 else {
-        return Ok(LimitsRead {
-            snapshots: Vec::new(),
-            diagnostics: Vec::new(),
-        });
-    };
-    if payload.1.unwrap_or_default() > MAX_PERSISTED_DOCUMENT_BYTES as i64
-        || !persisted_document_within_bounds(&bytes)
+    let receipt = raw
+        .map(|raw| serde_json::from_str::<Value>(&raw))
+        .transpose()?;
+    if let Some(mut receipt) = receipt
+        && let Some(snapshot) = receipt.get_mut("snapshot")
     {
-        return Ok(invalid_envelope("/", "resourceLimit"));
+        return Ok(Some(snapshot.take()));
     }
-    let document: Value = match serde_json::from_slice(&bytes) {
-        Ok(document) => document,
-        Err(_) => return Ok(invalid_envelope("/", "parse")),
+    let raw: Option<String> = connection.query_row(
+        "SELECT payload FROM sync_entities WHERE collection='rateLimit' AND id=?1 AND deleted=0",
+        [account], |row| row.get(0),
+    ).optional()?;
+    Ok(raw
+        .map(|raw| serde_json::from_str::<Value>(&raw))
+        .transpose()?
+        .and_then(|mut envelope| envelope.get_mut("value").map(Value::take)))
+}
+
+/// Move persisted v3 workspace snapshots once, without changing their account identity.
+pub(crate) fn migrate_workspace_limits(transaction: &Transaction<'_>) -> StoreResult<()> {
+    let raw: Option<String> = transaction.query_row(
+        "SELECT payload FROM sync_entities WHERE collection='workspace' AND id='current' AND deleted=0",
+        [], |row| row.get(0),
+    ).optional()?;
+    let Some(raw) = raw else {
+        return Ok(());
     };
-    let Some(value) = document.get("value").filter(|value| value.is_object()) else {
-        return Ok(invalid_envelope("/value", "type"));
+    let mut envelope: Value = serde_json::from_str(&raw)?;
+    let Some(value) = envelope.get_mut("value").and_then(Value::as_object_mut) else {
+        return Ok(());
     };
-    let mut projection = value.clone();
-    if projection
-        .get("rateLimitsByAccount")
-        .is_some_and(Value::is_object)
-    {
-        projection["rateLimitsByAccount"] = serde_json::json!({});
+    let accounts = value.remove("rateLimitsByAccount");
+    let default = value.remove("rateLimits");
+    if accounts.is_none() && default.is_none() {
+        return Ok(());
     }
-    if projection
-        .get("rateLimits")
-        .is_some_and(|value| value.is_object())
-    {
-        projection["rateLimits"] = Value::Null;
-    }
-    match validate_workspace(&projection) {
-        Ok(Some((pointer, keyword))) => {
-            return Ok(invalid_envelope(&format!("/value{pointer}"), &keyword));
-        }
-        Err(()) => return Ok(invalid_envelope("/value", "schemaCompile")),
-        Ok(None) => {}
-    }
-    let mut snapshots = Vec::new();
-    let mut diagnostics = Vec::new();
-    if let Some(map) = value.get("rateLimitsByAccount").and_then(Value::as_object) {
-        for (key, snapshot) in map {
-            match validate_account_limits(snapshot) {
-                Ok(Some((pointer, keyword))) => diagnostics.push(LimitsReadDiagnostic {
-                    workspace_row: "workspace/current",
-                    account_key: key.clone(),
-                    pointer,
-                    keyword,
-                }),
-                Err(()) => diagnostics.push(LimitsReadDiagnostic {
-                    workspace_row: "workspace/current",
-                    account_key: key.clone(),
-                    pointer: "/".to_owned(),
-                    keyword: "schemaCompile".to_owned(),
-                }),
-                Ok(None) => snapshots.push((key.clone(), snapshot.clone())),
+    if let Some(Value::Object(accounts)) = accounts {
+        for (key, snapshot) in accounts {
+            let exists: bool = transaction.query_row(
+                "SELECT EXISTS(SELECT 1 FROM sync_entities WHERE collection='rateLimit' AND id=?1)",
+                [&key],
+                |row| row.get(0),
+            )?;
+            if !exists {
+                SyncDocumentsRepository::put_entity(
+                    transaction,
+                    "rateLimit",
+                    &key,
+                    snapshot,
+                    false,
+                )?;
             }
         }
     }
-    Ok(LimitsRead {
-        snapshots,
-        diagnostics,
-    })
+    let value = envelope
+        .get_mut("value")
+        .map(Value::take)
+        .ok_or_else(|| StoreError::SchemaMismatch("workspace value missing".into()))?;
+    SyncDocumentsRepository::put_entity(transaction, "workspace", "current", value, false)?;
+    Ok(())
 }
 
-fn invalid_envelope(pointer: &str, keyword: &str) -> LimitsRead {
-    LimitsRead {
+/// Restore bounded, validated per-account observations; invalid accounts remain isolated.
+pub fn limits_snapshots(connection: &Connection) -> StoreResult<LimitsRead> {
+    let mut statement = connection.prepare(
+        "SELECT e.id,substr(CAST(e.payload AS BLOB),1,?1),length(CAST(e.payload AS BLOB)),substr(CAST(r.result AS BLOB),1,?1),length(CAST(r.result AS BLOB)) FROM sync_entities e LEFT JOIN runtime_operation_receipts r ON r.id=?2 || e.id WHERE e.collection='rateLimit' AND e.deleted=0",
+    )?;
+    let mut rows = statement.query(rusqlite::params![
+        MAX_PERSISTED_DOCUMENT_BYTES as i64 + 1,
+        LIMITS_OBSERVATION_PREFIX
+    ])?;
+    let mut result = LimitsRead {
         snapshots: Vec::new(),
-        diagnostics: vec![LimitsReadDiagnostic {
-            workspace_row: "workspace/current",
-            account_key: "*".to_owned(),
-            pointer: pointer.to_owned(),
-            keyword: keyword.to_owned(),
-        }],
+        diagnostics: Vec::new(),
+    };
+    while let Some(row) = rows.next()? {
+        let key: String = row.get(0)?;
+        let bytes: Option<Vec<u8>> = row.get(1)?;
+        let length: Option<i64> = row.get(2)?;
+        let receipt: Option<Vec<u8>> = row.get(3)?;
+        let receipt_length: Option<i64> = row.get(4)?;
+        let decoded = (|| {
+            if let Some(receipt) = receipt {
+                let mut receipt = decode_limits_document(&receipt, receipt_length)?;
+                if let Some(snapshot) = receipt.get_mut("snapshot") {
+                    return Ok(snapshot.take());
+                }
+            }
+            let bytes = bytes.ok_or_else(|| ("/value".to_owned(), "type".to_owned()))?;
+            let mut envelope = decode_limits_document(&bytes, length)?;
+            envelope
+                .get_mut("value")
+                .map(Value::take)
+                .ok_or_else(|| ("/value".to_owned(), "type".to_owned()))
+        })();
+        let (snapshot, invalid) = match decoded {
+            Ok(snapshot) => {
+                let invalid = if snapshot
+                    .get("accountKey")
+                    .is_some_and(|account| account != &key)
+                {
+                    Some(("/accountKey".to_owned(), "identity".to_owned()))
+                } else {
+                    match validate_account_limits(&snapshot) {
+                        Ok(error) => error,
+                        Err(()) => Some(("/".to_owned(), "schemaCompile".to_owned())),
+                    }
+                };
+                (Some(snapshot), invalid)
+            }
+            Err(error) => (None, Some(error)),
+        };
+        if let Some((pointer, keyword)) = invalid {
+            result.diagnostics.push(LimitsReadDiagnostic {
+                workspace_row: "rateLimit",
+                account_key: key,
+                pointer,
+                keyword,
+            });
+        } else if let Some(snapshot) = snapshot {
+            result.snapshots.push((key, snapshot));
+        }
     }
+    Ok(result)
 }
 
-fn validate_workspace(value: &Value) -> Result<Option<(String, String)>, ()> {
-    studio_runtime_schema::first_error("workspace-usage-limits/UsageLimitsWorkspaceEnvelope", value)
-        .map_err(|_| ())
+fn decode_limits_document(bytes: &[u8], length: Option<i64>) -> Result<Value, (String, String)> {
+    if length.unwrap_or_default() > MAX_PERSISTED_DOCUMENT_BYTES as i64
+        || !persisted_document_within_bounds(bytes)
+    {
+        return Err(("/".to_owned(), "resourceLimit".to_owned()));
+    }
+    serde_json::from_slice(bytes).map_err(|_| ("/".to_owned(), "parse".to_owned()))
 }
 
 fn validate_account_limits(value: &Value) -> Result<Option<(String, String)>, ()> {
@@ -200,13 +262,27 @@ mod tests {
 
     fn database(payload: &Value) -> Connection {
         let connection = Connection::open_in_memory().expect("in-memory SQLite");
-        connection.execute("CREATE TABLE sync_entities(collection TEXT, id TEXT, payload TEXT, deleted INTEGER)", []).expect("fixture table");
-        connection
-            .execute(
-                "INSERT INTO sync_entities VALUES('workspace','current',?1,0)",
-                [payload.to_string()],
-            )
-            .expect("fixture row");
+        connection.execute_batch("CREATE TABLE sync_entities(collection TEXT, id TEXT, payload TEXT, deleted INTEGER); CREATE TABLE runtime_operation_receipts(id TEXT PRIMARY KEY,result TEXT);").expect("fixture tables");
+        if let Some(accounts) = payload
+            .pointer("/value/rateLimitsByAccount")
+            .and_then(Value::as_object)
+        {
+            for (key, snapshot) in accounts {
+                connection
+                    .execute(
+                        "INSERT INTO sync_entities VALUES('rateLimit',?1,?2,0)",
+                        rusqlite::params![key, json!({"value":snapshot}).to_string()],
+                    )
+                    .expect("fixture row");
+            }
+        } else if payload["value"] == false {
+            connection
+                .execute(
+                    "INSERT INTO sync_entities VALUES('rateLimit','default',?1,0)",
+                    [payload.to_string()],
+                )
+                .expect("invalid fixture row");
+        }
         connection
     }
 
@@ -238,8 +314,8 @@ mod tests {
     fn malformed_envelope_reports_safe_location_and_limits_payload_bounds() {
         let db = database(&json!({"value":false}));
         let read = limits_snapshots(&db).expect("read diagnostic");
-        assert_eq!(read.diagnostics[0].workspace_row, "workspace/current");
-        assert_eq!(read.diagnostics[0].pointer, "/value");
+        assert_eq!(read.diagnostics[0].workspace_row, "rateLimit");
+        assert_eq!(read.diagnostics[0].pointer, "");
         assert!(read.snapshots.is_empty());
 
         let deep = format!(
@@ -253,8 +329,12 @@ mod tests {
             [],
         )
         .expect("table");
+        db.execute_batch(
+            "CREATE TABLE runtime_operation_receipts(id TEXT PRIMARY KEY,result TEXT)",
+        )
+        .expect("receipts");
         db.execute(
-            "INSERT INTO sync_entities VALUES('workspace','current',?1,0)",
+            "INSERT INTO sync_entities VALUES('rateLimit','default',?1,0)",
             [deep],
         )
         .expect("row");
@@ -293,6 +373,41 @@ mod tests {
         assert_eq!(read.diagnostics.len(), 1);
         assert_eq!(read.diagnostics[0].account_key, "default");
         assert_eq!(read.diagnostics[0].pointer, "/data");
+    }
+
+    #[test]
+    fn workspace_limits_migrate_once_without_overwriting_account_entities() {
+        let mut db = Connection::open_in_memory().expect("SQLite");
+        db.execute_batch("CREATE TABLE sync_entities(collection TEXT,id TEXT,seq INTEGER,hash TEXT,payload TEXT,deleted INTEGER,PRIMARY KEY(collection,id)); CREATE TABLE sync_documents(seq INTEGER); CREATE TABLE sync_versions(seq INTEGER); CREATE TABLE runtime_operation_receipts(id TEXT PRIMARY KEY,result TEXT);").expect("migration fixture");
+        let tx = db.transaction().expect("transaction");
+        let newer = json!({"accountKey":"alpha","at":2.0,"data":{"accountId":"newer"}});
+        let beta = json!({"accountKey":"beta","at":1.0,"data":{"accountId":"beta"}});
+        crate::SyncDocumentsRepository::put_entity(&tx,"workspace","current",json!({"stateDir":"fixture","rateLimitsByAccount":{"alpha":{"accountKey":"alpha","at":1.0},"beta":beta},"rateLimits":{"accountKey":"default","at":1.0}}),false).expect("workspace");
+        crate::SyncDocumentsRepository::put_entity(&tx, "rateLimit", "alpha", newer.clone(), false)
+            .expect("existing account");
+        super::migrate_workspace_limits(&tx).expect("migration");
+        let seq = crate::SyncDocumentsRepository::entity_sequence(&tx).expect("sequence");
+        super::migrate_workspace_limits(&tx).expect("repeat migration");
+        assert_eq!(
+            crate::SyncDocumentsRepository::entity_sequence(&tx).expect("sequence"),
+            seq
+        );
+        let raw: String = tx
+            .query_row(
+                "SELECT payload FROM sync_entities WHERE collection='workspace'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("workspace");
+        assert_eq!(
+            serde_json::from_str::<Value>(&raw).expect("JSON")["value"],
+            json!({"stateDir":"fixture"})
+        );
+        let restored = limits_snapshots(&tx).expect("restored accounts");
+        assert!(restored.diagnostics.is_empty());
+        assert_eq!(restored.snapshots.len(), 2);
+        assert!(restored.snapshots.contains(&("alpha".to_owned(), newer)));
+        assert!(restored.snapshots.contains(&("beta".to_owned(), beta)));
     }
 
     #[test]

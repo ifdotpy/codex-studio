@@ -510,12 +510,16 @@ async fn entity_snapshot(
     if let (Some(target), Some(extra)) = (runtime.as_object_mut(), workspace_entity.as_object()) {
         target.extend(extra.clone());
     }
+    let edges = list("edge");
+    let limits = collections.remove("rateLimit").unwrap_or_default();
+    runtime["rateLimits"] = limits.get("default").cloned().unwrap_or(Value::Null);
+    runtime["rateLimitsByAccount"] = Value::Object(limits.into_iter().collect());
     let state_dir = workspace_entity
         .get("stateDir")
         .cloned()
         .unwrap_or_else(|| json!(""));
     Ok((
-        json!({"token":"","stateDir":state_dir,"threads":agents,"chats":chats,"nodes":nodes,"edges":list("edge"),"runtime":runtime}),
+        json!({"token":"","stateDir":state_dir,"threads":agents,"chats":chats,"nodes":nodes,"edges":edges,"runtime":runtime}),
         seq,
     ))
 }
@@ -767,6 +771,7 @@ mod tests {
             json!({"collection":"edge","id":"edge-1","value":{"id":"edge-1","source":"agent-000","target":"chat-1"}}),
             json!({"collection":"workspace","id":"current","value":{"stateDir":"isolated-state"}}),
             json!({"collection":"task","id":"task-1","value":{"id":"task-1","status":"running"}}),
+            json!({"collection":"rateLimit","id":"default","value":{"accountKey":"default","at":100.0,"data":{"accountId":"fixture"}}}),
         ]);
         let docs: Vec<Value> = entities.iter().enumerate().map(|(index, entity)| {
             json!({"op":"upsert","collection":entity["collection"],"id":entity["id"],"value":entity["value"],"seq":index+1})
@@ -805,7 +810,7 @@ mod tests {
                     let fresh = url
                         .query_pairs()
                         .any(|(key, value)| key == "fresh" && value == "1");
-                    if after < 704 {
+                    if after < 705 {
                         assert!(
                             fresh,
                             "every first-sync page must retain the fresh high-water mark"
@@ -858,6 +863,14 @@ mod tests {
         assert_eq!(snapshot["edges"][0]["id"], "edge-1");
         assert_eq!(snapshot["runtime"]["tasks"][0]["id"], "task-1");
         assert_eq!(snapshot["runtime"]["stateDir"], "isolated-state");
+        assert_eq!(
+            snapshot["runtime"]["rateLimitsByAccount"]["default"]["at"],
+            100.0
+        );
+        assert_eq!(
+            snapshot["runtime"]["rateLimits"],
+            snapshot["runtime"]["rateLimitsByAccount"]["default"]
+        );
         assert_eq!(state_puts.load(Ordering::SeqCst), 1);
         let unchanged = pull(&backend, &sender, &workspace, "state").await.unwrap();
         assert_eq!(unchanged, document);
@@ -873,8 +886,8 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(checkpoint["seq"], 704);
-        let tombstone = json!({"op":"delete","collection":"task","id":"task-1","seq":705});
+        assert_eq!(checkpoint["seq"], 705);
+        let tombstone = json!({"op":"delete","collection":"task","id":"task-1","seq":706});
         assert!(
             put_entity_change(&sender, &workspace, &tombstone)
                 .await

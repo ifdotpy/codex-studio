@@ -1337,6 +1337,7 @@ impl RuntimeStore {
             .transaction(move |transaction| {
                 agent_columns::prepare(transaction)?;
                 bootstrap::prepare_sync_schema(transaction)?;
+                account_state::migrate_workspace_limits(transaction)?;
                 bootstrap::prepare_runtime_event_indexes(transaction)?;
                 AgentRepository::prepare_change_journal(transaction)?;
                 agent_volatile::prepare(transaction)?;

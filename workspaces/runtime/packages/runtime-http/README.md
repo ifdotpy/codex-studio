@@ -256,7 +256,16 @@ start limits.
 
 Python registers this operation in `studio_api/accounts/router.py:214-228`. The response fields are `accountKey`, `data`, `at`, `error`, `readAt`, `checkedAt`, and `processedAt` (`studio_api/accounts/models.py:362-369`). `data` is an extensible provider result; known fields include `accountId`, `rateLimits`, `rateLimitsByLimitId`, `rateLimitResetCredits`, `ordinaryUsageAllowed`, `status`, `signedIn`, and `source` (`models.py:347-359`). Rate-limit buckets contain primary/secondary usage windows, optional individual limits and reset-credit data (`models.py:302-344`). The Rust route preserves the persisted JSON snapshot, including timestamps and provider-specific fields.
 
-The restart-persistent source is the current workspace row in SQLite, `sync_entities(collection='workspace', id='current', deleted=0)`, whose payload value may contain `rateLimitsByAccount[accountKey]`; legacy `rateLimits` is used for `default` (`codex_runtime.py:9120-9138`; repository query in `runtime-store/src/repositories/account_state.rs`). Python restores these snapshots once during runtime construction (`codex_runtime.py:1720`) into its in-memory rate-limit cache; `rate_limits_for()` serves that memory on each request (`codex_runtime.py:9159-9162`, route `router.py:219-228`). Rust reads the workspace row once at startup into its account policy snapshot. Both validate selected snapshots against the Python-exported `workspace-usage-limits.schema.json`; invalid entries are isolated and reported as value-free diagnostics. Missing or data-null snapshots are uncached; error-only snapshots are not restored after restart.
+Account limits synchronize as `rateLimit` entities keyed by account, independently
+of `workspace/current`. The [account-state repository](../runtime-store/src/repositories/account_state.rs)
+moves persisted workspace snapshots once at startup. The existing per-account
+observation receipt keeps the freshest validated snapshot and ordered provider
+cursor in the same transaction as publication. Timestamp-only observations update
+that receipt without advancing sync sequence; changed provider data or errors
+publish one account entity. Startup and resume checks use the freshest durable
+observation. Client projections assemble these entities into account limits for
+the UI; reset windows already carry absolute `resetsAt` timestamps. Invalid
+startup snapshots remain isolated with value-free diagnostics.
 
 `account_key` is a scalar query value defaulting to `default`; missing or blank values select `default`. Repeated scalar values are rejected with HTTP 400 and `location: ["query", "account_key"]`. Extra query names are rejected with HTTP 400 and `location: ["query", "<name>"]`; validation errors use `{ "error": "Invalid request", "location": [...] }` in both runtimes. An explicit unknown account with no restored snapshot returns HTTP 400 `{ "error": "Unknown Codex account" }`.
 

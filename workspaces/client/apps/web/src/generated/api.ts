@@ -22885,6 +22885,13 @@ export interface components {
           value: components["schemas"]["WorkspaceEntityDto"];
         }
       | {
+          /** @constant */
+          collection: "rateLimit";
+          /** @constant */
+          op: "upsert";
+          value: components["schemas"]["AccountRateLimitsDto"];
+        }
+      | {
           /** @enum {string} */
           collection:
             | "agent"
@@ -22901,7 +22908,8 @@ export interface components {
             | "task"
             | "uiPreferences"
             | "work"
-            | "workspace";
+            | "workspace"
+            | "rateLimit";
           /** @constant */
           op: "delete";
         }
@@ -22921,7 +22929,8 @@ export interface components {
       | components["schemas"]["SyncTaskEntityPayload"]
       | components["schemas"]["SyncUiPreferencesEntityPayload"]
       | components["schemas"]["SyncWorkEntityPayload"]
-      | components["schemas"]["SyncWorkspaceEntityPayload"];
+      | components["schemas"]["SyncWorkspaceEntityPayload"]
+      | components["schemas"]["SyncRateLimitEntityPayload"];
     /** SyncEventEntityPayload */
     SyncEventEntityPayload: {
       /**
@@ -23096,6 +23105,17 @@ export interface components {
       reset?: false | null;
       /** Workspaceid */
       workspaceId: string;
+    };
+    /** SyncRateLimitEntityPayload */
+    SyncRateLimitEntityPayload: {
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      collection: "rateLimit";
+      /** Id */
+      id: string;
+      value: components["schemas"]["AccountRateLimitsDto"];
     };
     /** SyncRequestEntityPayload */
     SyncRequestEntityPayload: {
@@ -26922,11 +26942,6 @@ export interface components {
       peerTeamsVersion?: number | null;
       /** Projectorganizationversion */
       projectOrganizationVersion?: number | null;
-      rateLimits?: components["schemas"]["AccountRateLimitsDto"] | null;
-      /** Ratelimitsbyaccount */
-      rateLimitsByAccount?: {
-        [key: string]: components["schemas"]["AccountRateLimitsDto"];
-      } | null;
       sidebarOrder?: components["schemas"]["SidebarOrderDto"] | null;
       /** Statedir */
       stateDir?: null | string;

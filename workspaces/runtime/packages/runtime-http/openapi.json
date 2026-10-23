@@ -52163,6 +52163,27 @@
             "type": "object"
           },
           {
+            "properties": {
+              "collection": {
+                "const": "rateLimit",
+                "type": "string"
+              },
+              "op": {
+                "const": "upsert",
+                "type": "string"
+              },
+              "value": {
+                "$ref": "#/components/schemas/AccountRateLimitsDto"
+              }
+            },
+            "required": [
+              "op",
+              "collection",
+              "value"
+            ],
+            "type": "object"
+          },
+          {
             "not": {
               "required": [
                 "value"
@@ -52185,7 +52206,8 @@
                   "task",
                   "uiPreferences",
                   "work",
-                  "workspace"
+                  "workspace",
+                  "rateLimit"
                 ],
                 "type": "string"
               },
@@ -52243,6 +52265,7 @@
             "monitor": "#/components/schemas/SyncMonitorEntityPayload",
             "peerTeam": "#/components/schemas/SyncPeerTeamEntityPayload",
             "project": "#/components/schemas/SyncProjectEntityPayload",
+            "rateLimit": "#/components/schemas/SyncRateLimitEntityPayload",
             "request": "#/components/schemas/SyncRequestEntityPayload",
             "room": "#/components/schemas/SyncRoomEntityPayload",
             "rule": "#/components/schemas/SyncRuleEntityPayload",
@@ -52298,6 +52321,9 @@
           },
           {
             "$ref": "#/components/schemas/SyncWorkspaceEntityPayload"
+          },
+          {
+            "$ref": "#/components/schemas/SyncRateLimitEntityPayload"
           }
         ]
       },
@@ -52753,6 +52779,30 @@
           "checkpoint"
         ],
         "title": "SyncPullResponse",
+        "type": "object"
+      },
+      "SyncRateLimitEntityPayload": {
+        "additionalProperties": false,
+        "properties": {
+          "collection": {
+            "const": "rateLimit",
+            "title": "Collection",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "value": {
+            "$ref": "#/components/schemas/AccountRateLimitsDto"
+          }
+        },
+        "required": [
+          "collection",
+          "id",
+          "value"
+        ],
+        "title": "SyncRateLimitEntityPayload",
         "type": "object"
       },
       "SyncRequestEntityPayload": {
@@ -62340,30 +62390,6 @@
               }
             ],
             "title": "Projectorganizationversion"
-          },
-          "rateLimits": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/AccountRateLimitsDto"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "rateLimitsByAccount": {
-            "anyOf": [
-              {
-                "additionalProperties": {
-                  "$ref": "#/components/schemas/AccountRateLimitsDto"
-                },
-                "type": "object"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Ratelimitsbyaccount"
           },
           "sidebarOrder": {
             "anyOf": [
