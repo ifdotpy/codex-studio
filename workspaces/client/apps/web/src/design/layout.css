@@ -20,6 +20,11 @@
   --studio-form-max: 40rem;
   /* Model picker column: 65% of the previous desktop form width, in rem. */
   --studio-model-picker-size: calc(var(--studio-form-max) * 0.65);
+  /* New chat dialog outer width: model column plus its Mantine body padding. */
+  --studio-model-dialog-padding: var(--mantine-spacing-md);
+  --studio-model-dialog-size: calc(
+    var(--studio-model-picker-size) + var(--studio-model-dialog-padding) * 2
+  );
   /* Vertical settings section navigation. */
   --studio-settings-nav-size: 12rem;
   /* Messages room selector alongside the selected room. */

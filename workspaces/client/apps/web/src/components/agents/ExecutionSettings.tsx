@@ -94,13 +94,12 @@ const fastTier = (info?: WorkerModelInfo) =>
 
 type SettingsProps = {
   presentation?: "menu" | "panel";
-  teamOnly?: boolean;
   agent: Agent;
+  lead?: Agent;
   catalog: Catalog;
   accounts?: Account[];
   team?: Array<Pick<Agent, "id" | "rootId" | "deletedAt" | "accountKey">>;
   refresh: () => Promise<void>;
-  teamDefaults?: boolean;
   initialRole?: SetupRole;
   settingsRow?: boolean;
   showAccountSummary?: boolean;
@@ -109,7 +108,6 @@ type SettingsProps = {
   onOpenChange?: (opened: boolean) => void;
   openRequest?: number;
   inline?: boolean;
-  permissionsOnly?: boolean;
   permissionsTargetId?: string;
   onAccountChange?: (key: string) => void;
   accountDisabled?: boolean;
@@ -210,13 +208,33 @@ const confirmedTransfer = (
 };
 
 export function ExecutionSettings(props: SettingsProps) {
+  return <ExecutionSettingsController {...props} />;
+}
+
+// These fields belong to the Team section, outside the complete model picker.
+export function DelegationSettings(props: SettingsProps) {
+  return (
+    <ExecutionSettingsController
+      {...props}
+      initialRole="worker"
+      section="delegation"
+    />
+  );
+}
+export function ExecutionPermissions(props: SettingsProps) {
+  return <ExecutionSettingsController {...props} section="permissions" />;
+}
+type ControllerProps = SettingsProps & {
+  section?: "delegation" | "permissions";
+};
+function ExecutionSettingsController(props: ControllerProps) {
   const [role, setRole] = useState<SetupRole>(
-    props.initialRole || (props.teamDefaults ? "worker" : "orchestrator"),
+    props.initialRole || (props.agent.isLead ? "orchestrator" : "worker"),
   );
   const [opened, setOpened] = useState(false);
   useEffect(() => {
     if ((props.openRequest || 0) > 0) {
-      setRole("orchestrator");
+      setRole(props.agent.isLead ? "orchestrator" : "worker");
       setOpened(true);
     }
   }, [props.openRequest]);
@@ -224,18 +242,45 @@ export function ExecutionSettings(props: SettingsProps) {
     (value: boolean) => {
       setOpened(value);
       if (!value && props.settingsRow)
-        setRole(props.initialRole || "orchestrator");
+        setRole(
+          props.initialRole || (props.agent.isLead ? "orchestrator" : "worker"),
+        );
     },
-    [props.settingsRow, props.initialRole],
+    [props.settingsRow, props.initialRole, props.agent.isLead],
   );
-  const scope = JSON.stringify([props.agent.id, accountOf(props.agent), role]);
+  const inheritedRole = !props.agent.isLead && role !== "worker";
+  const agent = inheritedRole ? props.lead || props.agent : props.agent;
+  const readOnlyReason = inheritedRole
+    ? props.lead
+      ? "Inherited from the lead. Open the lead chat to change these settings."
+      : "Managed by the lead. Its settings are unavailable in this chat."
+    : undefined;
+  const roleSwitchId = useId();
+  const focusRole = useRef(false);
+  useLayoutEffect(() => {
+    if (focusRole.current) {
+      document
+        .getElementById(roleSwitchId)
+        ?.querySelector<HTMLInputElement>("input:checked")
+        ?.focus();
+      focusRole.current = false;
+    }
+  }, [role, roleSwitchId]);
+  const scope = JSON.stringify([agent.id, accountOf(agent), role]);
   return (
     <ScopedExecutionSettings
       key={scope}
       {...props}
-      teamDefaults={role !== "orchestrator"}
+      agent={agent}
+      inheritedUnavailable={inheritedRole && !props.lead}
+      readOnlyReason={readOnlyReason}
+      roleSwitchId={roleSwitchId}
+      teamDefaults={role === "review" || (role === "worker" && !!agent.isLead)}
       role={role}
-      onRole={setRole}
+      onRole={(value) => {
+        focusRole.current = true;
+        setRole(value);
+      }}
       opened={opened}
       setOpened={changeOpened}
     />
@@ -245,7 +290,10 @@ export function ExecutionSettings(props: SettingsProps) {
 function ScopedExecutionSettings({
   agent,
   presentation = "menu",
-  teamOnly = false,
+  section,
+  readOnlyReason,
+  inheritedUnavailable,
+  roleSwitchId,
   catalog: parentCatalog,
   accounts = [],
   team,
@@ -253,7 +301,6 @@ function ScopedExecutionSettings({
   teamDefaults = false,
   nextTurnSupported,
   onOpenChange,
-  permissionsOnly = false,
   initialRole = "orchestrator",
   settingsRow = false,
   showAccountSummary = false,
@@ -267,7 +314,11 @@ function ScopedExecutionSettings({
   onRole,
   opened,
   setOpened,
-}: SettingsProps & {
+}: ControllerProps & {
+  teamDefaults: boolean;
+  readOnlyReason?: string;
+  inheritedUnavailable: boolean;
+  roleSwitchId: string;
   role: SetupRole;
   onRole: (role: SetupRole) => void;
   opened: boolean;
@@ -412,10 +463,18 @@ function ScopedExecutionSettings({
     role === "review" ? agent.workerDefaults?.accountKey : current.account_key;
   const accountCatalog = useWorkerModels(
     effectiveAccount || accountOf(agent),
-    teamDefaults && (opened || settingsRow),
+    teamDefaults && (opened || settingsRow || presentation === "panel"),
     !effectiveAccount,
   );
-  const catalog = teamDefaults ? accountCatalog : parentCatalog;
+  const inheritedCatalog = useWorkerModels(
+    accountOf(agent),
+    !!readOnlyReason && role === "orchestrator",
+  );
+  const catalog = teamDefaults
+    ? accountCatalog
+    : readOnlyReason
+      ? inheritedCatalog
+      : parentCatalog;
   const allowedModels = useModelWhitelist();
   const connectedAccounts = accounts.filter((account) =>
     accountCanStart(account),
@@ -458,7 +517,7 @@ function ScopedExecutionSettings({
     pickerProvider !== (activeAccount?.provider || "codex");
   const allWorkerModels = useWorkerModels(
     accountOf(agent),
-    crossProvider && (opened || !!settingsRow),
+    crossProvider && (opened || settingsRow || presentation === "panel"),
     true,
   );
   const catalogReader = useModelCatalogReader();
@@ -516,6 +575,7 @@ function ScopedExecutionSettings({
     !teamDefaults && (!!agent.inFlight || busy.has(agent.status ?? ""));
   const catalogKnown = !catalog.loading && !catalog.error;
   const disabled =
+    !!readOnlyReason ||
     saving ||
     !!unconfirmed ||
     (active && !canQueueSettings) ||
@@ -587,6 +647,7 @@ function ScopedExecutionSettings({
       disabledReason: "Unavailable for review.",
     });
   const submit = async (request: ConversationBody, notice = "") => {
+    if (readOnlyReason) return;
     if (onDraftChange) {
       onDraftChange(request);
       return;
@@ -1152,7 +1213,7 @@ function ScopedExecutionSettings({
     pickerEfforts[0]?.value ||
     "";
   const delegation =
-    teamDefaults && agent.isLead && !onDraftChange ? (
+    teamDefaults && agent.isLead && !readOnlyReason && !onDraftChange ? (
       <NativeSelect
         label="Delegation depth"
         className="execution-delegation"
@@ -1177,17 +1238,12 @@ function ScopedExecutionSettings({
         retainCurrentModel={!onDraftChange}
         role={role}
         onRole={onRole}
-        roles={
-          presentation !== "menu"
-            ? []
-            : agent.isLead
-              ? ["orchestrator", "worker", "review"]
-              : ["orchestrator"]
-        }
+        roleSwitchId={roleSwitchId}
+        readOnlyReason={readOnlyReason}
         provider={pickerProvider}
         providers={pickerProviders}
         onProvider={setBrowsedProvider}
-        accounts={connectedAccounts}
+        accounts={inheritedUnavailable ? [] : connectedAccounts}
         accountKey={
           teamDefaults
             ? current.account_key ||
@@ -1198,9 +1254,12 @@ function ScopedExecutionSettings({
             : accountOf(agent)
         }
         onAccount={chooseAccount}
-        automaticAccount={role === "worker"}
+        automaticAccount={role === "worker" && teamDefaults}
         accountDisabled={
-          saving || accountDisabled || (!teamDefaults && !onAccountChange)
+          !!readOnlyReason ||
+          saving ||
+          accountDisabled ||
+          (!teamDefaults && !onAccountChange)
         }
         isAccountDisabled={(account) =>
           !!(
@@ -1214,8 +1273,19 @@ function ScopedExecutionSettings({
         modelId={
           presentation !== "menu" ? `${agent.id}-${role}-model` : undefined
         }
-        models={pickerModels}
-        model={pickerModel}
+        models={
+          inheritedUnavailable
+            ? [
+                {
+                  value: "unavailable",
+                  label: "Inherited settings unavailable",
+                  provider: pickerProvider,
+                  badges: [],
+                },
+              ]
+            : pickerModels
+        }
+        model={inheritedUnavailable ? "unavailable" : pickerModel}
         modelLabel={
           role === "review" ? "Default review model" : prefix + " model"
         }
@@ -1225,7 +1295,7 @@ function ScopedExecutionSettings({
             void changeReview({ model: value === DEFAULT ? null : value });
           else void change({ model: value === DEFAULT ? null : value });
         }}
-        efforts={pickerEfforts}
+        efforts={inheritedUnavailable ? [] : pickerEfforts}
         effort={selectedEffort}
         effortLabel={
           role === "review" ? "Default review reasoning" : prefix + " reasoning"
@@ -1236,23 +1306,27 @@ function ScopedExecutionSettings({
         }}
         effortDisabled={role !== "review" && !modeSupported}
         disabled={disabled || catalog.loading || !!catalog.error}
-        fastAvailable={!!fastTier(info)}
+        fastAvailable={!inheritedUnavailable && !!fastTier(info)}
         fast={current.fast_mode}
         onFast={() => void change({ fast_mode: !current.fast_mode })}
         daybreakAvailable={
+          !inheritedUnavailable &&
           selectedProvider !== "claude" &&
           (daybreakEnabled || supportsMode(info, true))
         }
         daybreak={daybreakEnabled}
         onDaybreak={() => void change({ daybreak_enabled: !daybreakEnabled })}
       />
-      {role === "worker" && !onDraftChange && (
-        <p className="notice">
-          {crossProvider
-            ? `A model here is for new subagents on any ready ${title(pickerProvider)} account. Choose an account above to use only that one.`
-            : "For new subagents. Existing subagents keep their account and model."}
-        </p>
-      )}
+      {role === "worker" &&
+        teamDefaults &&
+        !readOnlyReason &&
+        !onDraftChange && (
+          <p className="notice">
+            {crossProvider
+              ? `A model here is for new subagents on any ready ${title(pickerProvider)} account. Choose an account above to use only that one.`
+              : "For new subagents. Existing subagents keep their account and model."}
+          </p>
+        )}
       {role === "worker" &&
         teamDefaults &&
         !onDraftChange &&
@@ -1271,7 +1345,7 @@ function ScopedExecutionSettings({
             {setupAccountName(activeAccount)}
           </Button>
         )}
-      {(teamDefaults || agent.isLead) && shownTransfer && (
+      {!readOnlyReason && (teamDefaults || agent.isLead) && shownTransfer && (
         <AccountTransferStatus
           transfer={shownTransfer}
           targetLabel={
@@ -1314,7 +1388,7 @@ function ScopedExecutionSettings({
           <Button onClick={catalog.retry}>Retry model list</Button>
         </div>
       )}
-      {unconfirmed && !saving && (
+      {!readOnlyReason && unconfirmed && !saving && (
         <div role="status">
           <p>
             The settings response is unconfirmed. Check the same save before
@@ -1585,14 +1659,14 @@ function ScopedExecutionSettings({
       )}
     </div>
   );
-  if (teamOnly)
+  if (section === "delegation")
     return (
       <Stack gap="sm">
         {delegation}
         {error && <p role="alert">{error}</p>}
       </Stack>
     );
-  if (permissionsOnly) return permissions;
+  if (section === "permissions") return permissions;
   if (presentation === "panel")
     return (
       <div className="execution-profile-body" data-role={role}>

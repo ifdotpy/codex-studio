@@ -172,8 +172,12 @@ test("execution settings ui", async ({ browser: _browser }) => {
         name === "Subagent defaults"
           ? "Workers"
           : name === "Subagent settings"
-            ? "Agent"
+            ? "Workers"
             : "Lead";
+      for (const name of ["Lead", "Workers", "Review"])
+        await expect(
+          settings.getByRole("radio", { name, exact: true }),
+        ).toHaveCount(1);
       await settings
         .getByRole("radiogroup", { name: "Agent role", exact: true })
         .getByText(role, { exact: true })
@@ -730,6 +734,27 @@ test("execution settings ui", async ({ browser: _browser }) => {
     };
     await openWorker();
     await openSettings("Subagent settings");
+    const workerDialog = page.getByRole("dialog", {
+      name: "Chat settings",
+      exact: true,
+    });
+    for (const roleName of ["Lead", "Review"]) {
+      await workerDialog.getByText(roleName, { exact: true }).click();
+      await expect(
+        workerDialog.getByText(
+          "Inherited from the lead. Open the lead chat to change these settings.",
+        ),
+      ).toBeVisible();
+      const models = workerDialog.getByRole("listbox");
+      await expect(models).toHaveCount(1);
+      await expect(
+        models.locator('[role="option"]:not(:disabled)'),
+      ).toHaveCount(0);
+    }
+    await workerDialog.getByText("Workers", { exact: true }).click();
+    await expect(
+      workerDialog.getByLabel("Subagent reasoning", { exact: true }),
+    ).toBeVisible();
     const pendingBodies = [];
     await page.route("**/api/conversation", async (route) => {
       const body = route.request().postDataJSON();

@@ -114,12 +114,6 @@
   font-size: var(--mantine-font-size-xs);
   font-variant-numeric: tabular-nums;
 }
-.settings-role-switch .mantine-SegmentedControl-label {
-  min-height: var(--studio-control-size);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
 .chat-execution-settings .mantine-SegmentedControl-label {
   min-width: 0;
 }

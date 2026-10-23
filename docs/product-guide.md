@@ -133,7 +133,13 @@ model fields use native selects grouped by provider, with **(default)** and
 **(current)** tags where applicable and the selected model's description below
 the field. Dropdown menus show text labels; their appearance follows the browser.
 Fast and Daybreak switches include visible descriptions. Chat settings has Models and Team tabs. Models has a compact Lead, Workers, and Review switch above the selected role's account, model, reasoning, and
-mode controls. One execution summary in the composer shows the lead, workers,
+mode controls. The same picker always shows all three roles in New chat, chat
+settings, and shared-chat participant settings. New chat saves the chosen review
+model and reasoning with the new lead. In a worker chat, Workers edits that
+worker; Lead and Review display inherited settings read-only. Shared-chat
+participants manage their own worker and review defaults. The New chat dialog
+fits the picker width on desktop and the available width on phones.
+One execution summary in the composer shows the lead, workers,
 and review; its title contains the full settings. On narrow layouts it keeps the lead name beside role and provider icons, using the complete family name at the narrowest stage;
 wider layouts name all three roles. Click it to open Models on Lead, then select a role.
 Accounts use a compact grid with remaining limits. Team contains

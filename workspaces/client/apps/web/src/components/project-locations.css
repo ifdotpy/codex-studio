@@ -5,7 +5,7 @@
 }
 .project-server-cards {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 13.75rem), 1fr));
   gap: 8px;
 }
 .project-server-card {

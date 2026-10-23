@@ -74,14 +74,25 @@ test("new chat controls are inline, save settings and keep the compact composer 
             const root = getComputedStyle(document.documentElement);
             return {
               picker: node.getBoundingClientRect().width,
+              dialog: node.closest('[role="dialog"]').getBoundingClientRect()
+                .width,
+              padding: parseFloat(
+                getComputedStyle(node.closest(".mantine-Modal-body"))
+                  .paddingInlineStart,
+              ),
               previous:
                 parseFloat(root.getPropertyValue("--studio-form-max")) *
                 parseFloat(root.fontSize),
               overflow: document.documentElement.scrollWidth > innerWidth,
             };
           });
-        if (width === 1440)
+        if (width === 1440) {
           expect(geometry.picker).toBeCloseTo(geometry.previous * 0.65, 0);
+          expect(geometry.dialog).toBeCloseTo(
+            geometry.picker + geometry.padding * 2,
+            0,
+          );
+        }
         expect(geometry.overflow).toBe(false);
         measurements.push({ width, scheme, ...geometry });
         if (screenshotDirectory)
@@ -105,6 +116,33 @@ test("new chat controls are inline, save settings and keep the compact composer 
       name: "Agent role",
       exact: true,
     });
+    for (const name of ["Lead", "Workers", "Review"])
+      await expect(roles.getByRole("radio", { name, exact: true })).toHaveCount(
+        1,
+      );
+    await roles.getByRole("radio", { name: "Lead", exact: true }).focus();
+    await page.keyboard.press("ArrowRight");
+    await expect(
+      roles.getByRole("radio", { name: "Workers", exact: true }),
+    ).toBeChecked();
+    await page.keyboard.press("ArrowRight");
+    await expect(
+      roles.getByRole("radio", { name: "Review", exact: true }),
+    ).toBeChecked();
+    await expect(
+      roles.getByRole("radio", { name: "Review", exact: true }),
+    ).toBeFocused();
+    const reviewModels = creation.getByRole("listbox", {
+      name: "Default review model",
+      exact: true,
+    });
+    await reviewModels
+      .locator('[role="option"][data-value="gpt-6-astra"]')
+      .click();
+    await chooseSetupValue(
+      creation.getByLabel("Default review reasoning", { exact: true }),
+      "high",
+    );
     await roles.getByText("Workers", { exact: true }).click();
     await expect(creation.getByRole("listbox")).toHaveCount(1);
     await expect(
@@ -128,7 +166,16 @@ test("new chat controls are inline, save settings and keep the compact composer 
       .getByRole("dialog", { name: "New chat", exact: true })
       .getByRole("button", { name: "Start chat", exact: true })
       .click();
-    await startChat;
+    const createdResponse = await startChat;
+    expect(createdResponse.ok()).toBe(true);
+    expect(createdResponse.request().postDataJSON().review_defaults).toEqual({
+      model: "gpt-6-astra",
+      effort: "high",
+    });
+    expect((await createdResponse.json()).reviewDefaults).toEqual({
+      model: "gpt-6-astra",
+      effort: "high",
+    });
     const row = page.locator("#composer .composer-context-row");
     await expect(row).toBeVisible();
     await expect(
