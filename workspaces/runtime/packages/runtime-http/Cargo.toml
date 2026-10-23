@@ -31,7 +31,7 @@ subtle = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true, features = ["rt"] }
 tower-http = { workspace = true, features = ["compression-br"] }
-uuid = { workspace = true, features = ["v4"] }
+uuid = { workspace = true, features = ["serde", "v4"] }
 
 [build-dependencies]
 openapi-to-rust = { version = "=0.22.0", default-features = false }

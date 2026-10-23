@@ -102,6 +102,7 @@ test("short and comprehensive recipes preserve their owned test boundaries", () 
   }
   assert.match(fast.command, /test\(\/\^sql_callback_guard::\/\)/);
   assert.match(fast.command, /test\(\/\^project_preparation::\/\)/);
+  assert.match(fast.command, /test\(\/\^agent_limits::\/\)/);
   assert.match(fast.command, /test\(\/\^monitor_start_preparation::\/\)/);
   assert.match(fast.command, /test\(\/\^monitor_wake_guarantees::\/\)/);
   assert.match(fast.command, /test\(monitor_completion_\)/);

@@ -539,3 +539,24 @@ details.workspace-error > summary {
     flex-shrink: 0;
   }
 }
+
+.workspace-mcp,
+.workspace-mcp-server {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+.workspace-mcp-server {
+  padding: 12px;
+  border: 1px solid var(--mantine-color-default-border);
+  border-radius: 8px;
+  overflow-wrap: anywhere;
+}
+.workspace-mcp-server > button {
+  align-self: flex-start;
+  max-width: 100%;
+}
+.workspace-mcp-server > p {
+  margin: 0;
+}

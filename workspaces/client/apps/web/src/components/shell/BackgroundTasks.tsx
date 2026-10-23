@@ -43,6 +43,7 @@ import {
 } from "../../api";
 import type { paths } from "../../generated/api";
 import "./background-controls.css";
+import MonitorRestart from "./MonitorRestart";
 import type { Agent, JsonValue, Monitor, Request, Snapshot } from "../../types";
 import { useServerResourceReads } from "../../servers/ServerServicesContext";
 import { copyText } from "../../clipboard/clipboard";
@@ -836,6 +837,12 @@ function TaskDetail({
   const watchResourceReads = useServerResourceReads();
   const { get, post } = useServerApi();
 
+  const [fileOutput, setFileOutput] = useState<{
+    text: string;
+    truncated: boolean;
+  } | null>(null);
+  const [filePending, setFilePending] = useState(false);
+  const [fileError, setFileError] = useState("");
   const [detail, setDetail] = useState<TaskDetailResponse | null>(null),
     [loadError, setLoadError] = useState("");
   useEffect(() => {
@@ -869,7 +876,9 @@ function TaskDetail({
   const monitor = task.kind === "monitor" && "tail" in task ? task : null;
   const outputSupported = summary.capabilities?.readOutput !== false;
   const outputTail = outputSupported
-    ? (resolvedDetail?.tail ?? ("tail" in task ? task.tail : undefined))
+    ? (fileOutput?.text ??
+      resolvedDetail?.tail ??
+      ("tail" in task ? task.tail : undefined))
     : undefined;
   const outputError = resolvedDetail?.error ?? monitor?.error;
   const [pending, setPending] = useState(false),
@@ -969,6 +978,65 @@ function TaskDetail({
               : "The agent receives the result when this command exits."}
           </p>
         )}
+        {task.kind === "monitor" && task.outputWakeBudget && (
+          <div className="task-wake-budget" role="status">
+            <Text size="sm">
+              {task.outputWakeBudget.totalSuppressedMatches} matches suppressed
+            </Text>
+            {task.outputWakeBudget.paused && (
+              <>
+                <Text fw={600} size="sm">
+                  Output wakes paused
+                </Text>
+                <Text size="sm">
+                  {task.status === "running"
+                    ? "The command is still running. Its exit will still wake the agent."
+                    : "The command exit will still wake the agent."}
+                </Text>
+              </>
+            )}
+            {activeTask(task) && (
+              <MonitorRestart task={task} notify={notify} refresh={refresh} />
+            )}
+          </div>
+        )}
+        {task.outputFile && (
+          <div className="task-file-output">
+            <p className="task-cwd">{task.outputFile}</p>
+            <Button
+              size="xs"
+              loading={filePending}
+              onClick={async () => {
+                setFilePending(true);
+                setFileError("");
+                try {
+                  setFileOutput(
+                    await get("/api/task/output", {
+                      query: { id: task.id, agent: task.agent },
+                    }),
+                  );
+                } catch (error) {
+                  setFileError(errorText(error));
+                } finally {
+                  setFilePending(false);
+                }
+              }}
+            >
+              View output
+            </Button>
+            {fileError && (
+              <p className="task-error" role="alert">
+                {fileError}
+              </p>
+            )}
+            {fileOutput?.truncated && (
+              <p className="task-note">
+                The output file exceeds the preview limit. Only its first part
+                appears below.
+              </p>
+            )}
+          </div>
+        )}
         {resolvedDetail?.arguments && (
           <details className="task-input">
             <summary>Tool input</summary>
@@ -1014,8 +1082,15 @@ function TaskDetail({
                 <ActionIcon
                   size="sm"
                   aria-label="Download task log"
-                  disabled={pending}
-                  onClick={() => void downloadLog(task, resolvedDetail, notify)}
+                  disabled={pending || (!!task.outputFile && !fileOutput)}
+                  onClick={() =>
+                    void downloadLog(
+                      task,
+                      resolvedDetail,
+                      notify,
+                      fileOutput?.text,
+                    )
+                  }
                 >
                   <Download size={13} />
                 </ActionIcon>
@@ -1046,9 +1121,11 @@ function TaskDetail({
             {!outputSupported
               ? "This provider does not expose process output."
               : outputTail ||
-                (activeTask(task)
-                  ? "Waiting for output…"
-                  : "No output recorded.")}
+                (task.outputFile && !fileOutput
+                  ? "Select View output to read this file."
+                  : activeTask(task)
+                    ? "Waiting for output…"
+                    : "No output recorded.")}
           </pre>
           {(task.outputTruncated ||
             (task.bytes || 0) >
@@ -1245,6 +1322,7 @@ async function downloadLog(
   task: DisplayBackgroundTask,
   detail: TaskDetailResponse | null,
   notify: (s: string) => void,
+  fileText?: string,
 ) {
   try {
     let blob: Blob, name: string;
@@ -1255,7 +1333,7 @@ async function downloadLog(
       if (result.truncated)
         notify("The download contains the retained part of the log.");
     } else {
-      blob = new Blob([detail?.tail || task.tail || ""], {
+      blob = new Blob([fileText ?? detail?.tail ?? task.tail ?? ""], {
         type: "text/plain",
       });
       name = `command-${task.id}.log`;
