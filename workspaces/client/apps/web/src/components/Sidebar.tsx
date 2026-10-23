@@ -176,6 +176,8 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
   const { canPickDirectory, pickDirectory, revealPath } =
     useServerFileDialogs();
   const services = p.services;
+  const lastOpened = useRef(p.opened);
+  if (p.opened) lastOpened.current = p.opened;
   const [now, setNow] = useState(() => Date.now() / 1000);
   useEffect(() => {
     const timer = window.setInterval(
@@ -1976,6 +1978,14 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
         <Drawer
           zIndex={p.settings ? 190 : undefined}
           opened={p.mobile}
+          onEnterTransitionEnd={() => {
+            if (lastOpened.current)
+              document
+                .querySelector<HTMLElement>(
+                  `#sidebar [data-chat="${CSS.escape(lastOpened.current)}"]`,
+                )
+                ?.focus();
+          }}
           onClose={p.close}
           size="100%"
           padding={0}
