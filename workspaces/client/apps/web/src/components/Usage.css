@@ -504,6 +504,7 @@
   font-variant-numeric: tabular-nums;
 }
 .session-cost-summary {
+  white-space: nowrap;
   min-width: 0;
   color: var(--muted);
   font-size: var(--studio-text-meta);
@@ -593,9 +594,6 @@
     min-height: var(--mantine-spacing-lg);
   }
 }
-.session-cost-summary {
-  white-space: nowrap;
-}
 .session-cost-compact-label {
   display: none;
 }
@@ -609,12 +607,9 @@
     white-space: nowrap;
   }
   .session-cost-compact-label {
-    display: inline;
-  }
-}
-@container conversation-footer (max-width: 24em) {
-  .session-cost-summary {
-    display: none;
+    display: inline-flex;
+    vertical-align: middle;
+    margin-inline-end: calc(var(--mantine-spacing-xs) / 2);
   }
 }
 

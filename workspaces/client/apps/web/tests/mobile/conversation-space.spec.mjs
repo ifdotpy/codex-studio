@@ -116,6 +116,10 @@ test("phone conversation gives the transcript its viewport budget", async ({
             "aria-busy",
             "false",
           );
+          await expect(page.locator(".session-cost-summary")).toBeVisible();
+          await expect(
+            page.locator(".session-cost-summary"),
+          ).toHaveAccessibleName(/Session estimate: \$/);
           await page.evaluate(
             (value) =>
               document.documentElement.setAttribute(
@@ -199,6 +203,8 @@ test("phone conversation gives the transcript its viewport budget", async ({
               activity: rect(".session-activity"),
               composer: rect("#composer"),
               footer: rect(".conversation-composer-footer"),
+              estimate: rect(".session-cost-summary"),
+              footerHeight: rect(".usage-footer").height,
               overflow: document.documentElement.scrollWidth > innerWidth,
             };
           });
@@ -249,6 +255,10 @@ test("phone conversation gives the transcript its viewport budget", async ({
         result.minimum,
       );
       expect(result.overflow).toBe(false);
+      expect(result.footerHeight).toBeLessThanOrEqual(
+        result.width < 760 ? 20 : 32,
+      );
+      expect(result.estimate.width).toBeGreaterThan(0);
       expect(
         Math.abs(result.activity.top - result.header.bottom),
       ).toBeLessThanOrEqual(1);
