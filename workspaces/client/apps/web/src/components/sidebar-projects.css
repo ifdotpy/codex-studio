@@ -12,6 +12,25 @@
   background: var(--sidebar);
   border-inline-end: var(--studio-border-width) solid var(--line);
 }
+/* Keep keyboard focus inside each control, clear of the strip's state rail.
+   Portal menus share this treatment with controls in the navigation. */
+#sidebar
+  :is(button, a, input, textarea, select, summary, [tabindex]):focus-visible,
+.fleet-menu
+  :is(button, a, input, textarea, select, summary, [tabindex]):focus-visible {
+  outline: var(--studio-focus-ring-width) solid
+    var(--mantine-primary-color-filled);
+  outline-offset: calc(
+    -1 * (var(--studio-focus-ring-width) + var(--studio-focus-ring-inset))
+  );
+  box-shadow: none;
+}
+#chat-search {
+  --input-bd-focus: var(--mantine-color-default-border);
+}
+.fleet-strip > .chat-row {
+  margin-inline-start: var(--studio-rail-size);
+}
 .sidebar-header,
 .sidebar-primary-actions,
 .projects-heading,
@@ -424,9 +443,6 @@
   font-size: var(--mantine-font-size-xs);
   font-weight: 400;
   cursor: pointer;
-}
-.project-tree-layr .project-layr-readiness:focus-visible {
-  outline: var(--studio-rail-size) solid var(--mantine-primary-color-filled);
 }
 .project-layr-readiness::before {
   content: "";

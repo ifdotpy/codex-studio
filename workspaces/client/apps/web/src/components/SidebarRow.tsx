@@ -324,7 +324,7 @@ const SidebarRowView = memo(function SidebarRowView({
               <MoreHorizontal size={16} />
             </ActionIcon>
           </Menu.Target>
-          <Menu.Dropdown>
+          <Menu.Dropdown className="fleet-menu">
             <Menu.Item
               disabled={disabled}
               leftSection={<Pencil size={14} />}

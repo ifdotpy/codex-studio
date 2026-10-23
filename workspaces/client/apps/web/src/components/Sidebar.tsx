@@ -1177,7 +1177,7 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
                           <MoreHorizontal size={15} />
                         </ActionIcon>
                       </Menu.Target>
-                      <Menu.Dropdown>
+                      <Menu.Dropdown className="fleet-menu">
                         <Menu.Item
                           disabled={
                             !canEdit(projectTarget(group.path, folder.id))
@@ -1369,7 +1369,7 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
                 <MoreHorizontal size={16} />
               </ActionIcon>
             </Menu.Target>
-            <Menu.Dropdown>
+            <Menu.Dropdown className="fleet-menu">
               <Menu.Item onClick={() => setArchive(!archive)}>
                 {archive ? "Show active chats" : "Show archived chats"}
               </Menu.Item>
@@ -1544,7 +1544,7 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
                         <MoreHorizontal size={15} />
                       </ActionIcon>
                     </Menu.Target>
-                    <Menu.Dropdown>
+                    <Menu.Dropdown className="fleet-menu">
                       <Menu.Label>Create</Menu.Label>
                       <Menu.Item
                         disabled={!canEdit(projectTarget(group.path))}
