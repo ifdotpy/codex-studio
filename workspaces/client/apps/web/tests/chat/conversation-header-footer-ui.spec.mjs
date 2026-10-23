@@ -78,6 +78,14 @@ test("conversation header stays compact and usage facts remain visible", async (
             "aria-busy",
             "false",
           );
+          await expect(page.locator(".session-cost-summary")).toBeVisible();
+          await expect(page.locator(".session-cost-summary")).toHaveAttribute(
+            "title",
+            /Session estimate: \$/,
+          );
+          await expect(
+            page.locator(".session-cost-summary"),
+          ).toHaveAccessibleName(/Session estimate: \$/);
           await page.evaluate(
             (s) =>
               document.documentElement.setAttribute(
@@ -159,8 +167,7 @@ test("conversation header stays compact and usage facts remain visible", async (
       ).toBeLessThanOrEqual(1);
       expect(r.dots.width).toBeGreaterThan(0);
       expect(r.dots.height).toBeGreaterThan(0);
-      expect(r.estimate.width).toBeGreaterThanOrEqual(r.width === 320 ? 0 : 1);
-      if (r.width === 320) expect(r.estimate.width).toBe(0);
+      expect(r.estimate.width).toBeGreaterThan(0);
       const centers = r.controls.map((e) => e.top + e.height / 2);
       expect(
         Math.max(...centers) - Math.min(...centers),

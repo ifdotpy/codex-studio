@@ -10,6 +10,7 @@ import {
   Gauge,
   RefreshCw,
   CircleGauge,
+  CircleDollarSign,
 } from "lucide-react";
 import type { Agent, Json, JsonValue } from "../types";
 import { errorText, type GetResult } from "../api";
@@ -490,7 +491,11 @@ export default function Usage({
     >
       <div
         className="session-cost-summary"
-        aria-label="Current team session API cost estimate"
+        aria-label={
+          sessionCost
+            ? `Session estimate: ${dollars(sessionCost.totalUSD)}`
+            : "Current team session API cost estimate"
+        }
         aria-busy={sessionCostUpdating}
         title={[
           sessionCost
@@ -520,7 +525,7 @@ export default function Usage({
           <>
             <span className="session-cost-label">Session estimate: </span>
             <span className="session-cost-compact-label" aria-hidden="true">
-              ≈{" "}
+              <CircleDollarSign size={13} />
             </span>
             <span>
               {dollars(sessionCost.totalUSD)}
