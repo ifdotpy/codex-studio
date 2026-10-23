@@ -159,31 +159,19 @@ test("execution settings ui", async ({ browser: _browser }) => {
         await page
           .getByRole("button", { name: "Chat settings", exact: true })
           .click();
-      if (name === "Main agent settings") {
-        await settings.getByText("Browser", { exact: true }).waitFor();
-        assert.deepEqual(
-          await settings.locator(".ui-row-label").allTextContents(),
-          ["Model", "Workers", "Review", "Parallel", "Permissions", "Browser"],
-        );
-        assert.equal(
-          await settings.locator(".chat-settings-more").getAttribute("open"),
-          null,
-        );
-        assert.equal(await settings.locator("h3").count(), 0);
-        assert.equal(
-          await settings
-            .getByRole("button", { name: "Review settings", exact: true })
-            .count(),
-          1,
-        );
+      await expect(settings.getByRole("heading", { level: 3 })).toHaveText([
+        "Agents",
+        "Team",
+        "Access",
+      ]);
+      const role = name === "Subagent defaults" ? "worker" : "orchestrator";
+      const disclosure = settings.locator(`details[data-role="${role}"]`);
+      if (!(await disclosure.getAttribute("open"))) {
+        // An empty open attribute is still open; use the native property.
+        if (!(await disclosure.evaluate((node) => node.open)))
+          await disclosure.locator(":scope > summary").click();
       }
-      const trigger = settings.getByRole("button", { name, exact: true });
-      if ((await trigger.getAttribute("aria-expanded")) !== "true")
-        await trigger.click();
-      const role = name === "Subagent defaults" ? "Worker" : "Orchestrator";
-      await expect(
-        page.getByRole("radio", { name: role, exact: true }),
-      ).toBeChecked();
+      await expect(disclosure).toHaveAttribute("open", "");
     };
     await page
       .locator("[data-chat]")
@@ -212,7 +200,7 @@ test("execution settings ui", async ({ browser: _browser }) => {
       ],
     );
     await expect(
-      page.locator(`input[type="radio"][data-value="${lead.model}"]`),
+      leadModel.locator(`input[type="radio"][data-value="${lead.model}"]`),
     ).toBeChecked();
     const listBox = leadModel;
     assert.ok(
@@ -237,13 +225,9 @@ test("execution settings ui", async ({ browser: _browser }) => {
     });
     await page.keyboard.press("Escape");
     await listBox.waitFor({ state: "hidden" });
-    assert.equal(
-      await page.evaluate(() =>
-        document.activeElement?.classList.contains("execution-menu"),
-      ),
-      true,
-      "Escape returns focus to the picker trigger",
-    );
+    await expect(
+      page.getByRole("button", { name: "Chat settings", exact: true }),
+    ).toBeFocused();
     await openSettings("Main agent settings");
     const originalModelSaved = settingsResponse(
       lead.id,
@@ -312,48 +296,29 @@ test("execution settings ui", async ({ browser: _browser }) => {
     );
     await waitFor(() => leadFastMode.isEnabled());
     await page.keyboard.press("Escape");
-    await page
-      .getByRole("dialog", { name: "Main agent settings", exact: true })
-      .waitFor({ state: "hidden" });
-    assert.ok(
-      await page
-        .getByRole("dialog", { name: "Chat settings", exact: true })
-        .isVisible(),
-      "Escape closes only the model detail section",
-    );
+    await expect(
+      page.getByRole("dialog", { name: "Chat settings", exact: true }),
+    ).not.toBeVisible();
     await openSettings("Subagent defaults");
-    const dialog = page.getByRole("dialog", {
-      name: "Subagent defaults",
-      exact: true,
-    });
-    await dialog
-      .getByRole("radiogroup", { name: "Agent role", exact: true })
-      .getByText("Review", { exact: true })
-      .click();
-    const reviewDialog = page.getByRole("dialog", {
-      name: "Review settings",
-      exact: true,
-    });
-    await expect(reviewDialog).toBeVisible();
+    const dialog = page.locator('details[data-role="worker"]');
+    await page.locator('details[data-role="review"] > summary').click();
+    const reviewDialog = page.locator('details[data-role="review"]');
     await expect(
       reviewDialog.getByRole("radiogroup", {
         name: "Default review model",
         exact: true,
       }),
     ).toBeVisible();
-    await reviewDialog
-      .getByRole("radiogroup", { name: "Agent role", exact: true })
-      .getByText("Worker", { exact: true })
-      .click();
-    await dialog.waitFor({ state: "visible" });
-    const delegationDepth = dialog.getByRole("combobox", {
+    await dialog.locator(":scope > summary").click();
+    await expect(dialog).toHaveAttribute("open", "");
+    const delegationDepth = page.getByRole("combobox", {
       name: "Delegation depth",
     });
-    assert.equal(await delegationDepth.inputValue(), "Lead only (1)");
+    assert.equal(await delegationDepth.inputValue(), "1");
     assert.equal(
-      await dialog
+      await page
         .getByText(
-          "New worker sessions use this depth. Lowering blocks new delegation immediately; existing descendants keep running.",
+          "Lowering blocks new delegation immediately. Existing descendants keep running.",
         )
         .isVisible(),
       true,
@@ -362,8 +327,7 @@ test("execution settings ui", async ({ browser: _browser }) => {
       lead.id,
       (body) => body.worker_defaults?.delegation_depth === 2,
     );
-    await delegationDepth.click();
-    await page.getByRole("option", { name: "One nested level (2)" }).click();
+    await delegationDepth.selectOption("2");
     assert.ok((await nestedDelegationSaved).ok());
     await waitFor(
       async () =>
@@ -374,7 +338,11 @@ test("execution settings ui", async ({ browser: _browser }) => {
       exact: true,
     });
     assert.match(
-      await (await openModelList(defaultModel)).first().innerText(),
+      await (
+        await openModelList(defaultModel)
+      )
+        .first()
+        .evaluate((node) => node.labels[0].textContent),
       /^Same as main agent$/,
     );
     assert.equal(await modelValue(defaultModel), "gpt-6-luna");
@@ -422,7 +390,7 @@ test("execution settings ui", async ({ browser: _browser }) => {
       );
       // The open model list stays inside the window at every width.
       await openModelList(defaultModel);
-      const box = await listBox.boundingBox();
+      const box = await defaultModel.boundingBox();
       assert.ok(
         box.x >= 0 && box.x + box.width <= width + 1,
         `model list fits ${width}`,

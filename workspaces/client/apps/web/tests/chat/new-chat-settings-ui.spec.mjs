@@ -62,8 +62,12 @@ test("new chat chips open each role, save settings and disappear after send", as
       name: "Subagent defaults",
       exact: true,
     });
-    await expect(main).toContainText(/ · .+ · .+/);
-    await expect(workers).toContainText(/Luna 6 · High · .+/);
+    await expect(main.locator(".execution-model")).not.toBeEmpty();
+    await expect(main.locator(".execution-effort")).not.toBeEmpty();
+    await expect(main.locator(".execution-account")).not.toBeEmpty();
+    await expect(workers.locator(".execution-model")).toHaveText("Luna 6");
+    await expect(workers.locator(".execution-effort")).toHaveText("High");
+    await expect(workers.locator(".execution-account")).not.toBeEmpty();
     const composerBounds = await page.locator("#composer").boundingBox();
     const rowBounds = await row.boundingBox();
     expect(rowBounds.y).toBeGreaterThanOrEqual(
@@ -87,7 +91,7 @@ test("new chat chips open each role, save settings and disappear after send", as
     await expect(
       page.getByRole("dialog", { name: "Main agent settings", exact: true }),
     ).toHaveCount(0);
-    await expect(main).toContainText(" · High · ");
+    await expect(main.locator(".execution-effort")).toHaveText("High");
     await workers.click();
     await expect(
       page.getByRole("radio", { name: "Worker", exact: true }),
@@ -106,10 +110,10 @@ test("new chat chips open each role, save settings and disappear after send", as
     await expect(
       page.getByRole("dialog", { name: "Subagent defaults", exact: true }),
     ).toHaveCount(0);
-    await expect(workers).toContainText(" · Medium · ");
+    await expect(workers.locator(".execution-effort")).toHaveText("Medium");
     await page.reload();
-    await expect(main).toContainText(" · High · ");
-    await expect(workers).toContainText(" · Medium · ");
+    await expect(main.locator(".execution-effort")).toHaveText("High");
+    await expect(workers.locator(".execution-effort")).toHaveText("Medium");
     await page.setViewportSize({ width: 390, height: 844 });
     for (const chip of [main, workers]) {
       await expect(chip).toBeVisible();

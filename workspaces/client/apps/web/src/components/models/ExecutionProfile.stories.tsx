@@ -1,7 +1,11 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { useState } from "react";
+import { useState, type ContextType } from "react";
 import { Paper, Stack } from "@mantine/core";
 import { AgentSetupPicker, type SetupRole } from "../agents/AgentSetupPicker";
+import { ExecutionSettings } from "../agents/ExecutionSettings";
+import { ModelCatalogReader } from "../agents/WorkerModelPicker";
+import type { Agent } from "../../types";
+import "../agents/chat-settings-dialog.css";
 import { ModelField } from "./ModelField";
 import {
   INHERITED_MODEL,
@@ -137,4 +141,84 @@ export const WorkspaceCompact: Story = {
       </Stack>
     );
   },
+};
+
+const previewCatalog = [
+  {
+    model: "gpt-6-astra",
+    isDefault: true,
+    description: "General coding and planning.",
+  },
+  {
+    model: "gpt-6-luna",
+    isDefault: false,
+    description: "Fast implementation tasks.",
+  },
+  { model: "gpt-6.1-sol", isDefault: false, description: "Complex reasoning." },
+].map((row) => ({
+  ...row,
+  provider: "codex",
+  supportedReasoningEfforts: [
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max",
+    "ultra",
+  ].map((reasoningEffort) => ({ reasoningEffort })),
+  serviceTiers: [{ id: "priority" }],
+}));
+const previewReader: ContextType<typeof ModelCatalogReader> = {
+  scope: "execution-disclosure-story",
+  read: async () => ({ data: previewCatalog }),
+  watchResourceReads: (_refs, read, failed) => {
+    void read().catch(failed);
+    return Object.assign(() => {}, {
+      refresh: () => {
+        void read().catch(failed);
+      },
+    });
+  },
+};
+const previewAgent = {
+  id: "execution-preview",
+  name: "Preview",
+  source: "managed",
+  isLead: true,
+  provider: "codex",
+  model: "gpt-6-astra",
+  effort: "high",
+  status: "idle",
+  created: 1,
+  workerDefaults: { model: "gpt-6-luna", effort: "high" },
+  reviewDefaults: { model: null, effort: null },
+} as Agent;
+export const InlineAgentSettings: Story = {
+  render: () => (
+    <ModelCatalogReader.Provider value={previewReader}>
+      <Stack
+        className="chat-execution-settings"
+        gap="xs"
+        maw="var(--studio-form-max)"
+        mx="auto"
+      >
+        {(["orchestrator", "worker", "review"] as const).map((role) => (
+          <ExecutionSettings
+            key={role}
+            presentation="disclosure"
+            settingsRow
+            initialRole={role}
+            agent={previewAgent}
+            catalog={{
+              models: previewCatalog,
+              loading: false,
+              error: "",
+              retry: () => {},
+            }}
+            refresh={async () => {}}
+          />
+        ))}
+      </Stack>
+    </ModelCatalogReader.Provider>
+  ),
 };

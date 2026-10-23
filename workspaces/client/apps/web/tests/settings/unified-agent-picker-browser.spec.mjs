@@ -129,7 +129,9 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
         name: "Main agent settings",
         exact: true,
       });
-      await expect(trigger).toContainText("Astra 6 · Medium · Work 1");
+      await expect(trigger.locator(".execution-model")).toHaveText("Astra 6");
+      await expect(trigger.locator(".execution-effort")).toHaveText("Medium");
+      await expect(trigger.locator(".execution-account")).toHaveText("Work 1");
       assert.equal(
         await trigger
           .locator(".execution-selected")
@@ -327,9 +329,16 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
         name: "Review settings",
         exact: true,
       });
-      await expect(mainRow).toContainText("Astra 6 · Medium · Work 1");
-      await expect(workersRow).toContainText("Luna 6 · High · Work 1");
-      await expect(reviewRow).toContainText("Astra 6 · Medium");
+      await expect(mainRow.locator(".execution-model")).toHaveText("Astra 6");
+      await expect(mainRow.locator(".execution-effort")).toHaveText("Medium");
+      await expect(mainRow.locator(".execution-account")).toHaveText("Work 1");
+      await expect(workersRow.locator(".execution-model")).toHaveText("Luna 6");
+      await expect(workersRow.locator(".execution-effort")).toHaveText("High");
+      await expect(workersRow.locator(".execution-account")).toHaveText(
+        "Work 1",
+      );
+      await expect(reviewRow.locator(".execution-model")).toHaveText("Astra 6");
+      await expect(reviewRow.locator(".execution-effort")).toHaveText("Medium");
       await expect(reviewRow).not.toContainText("Work 1");
       await expect(reviewRow.locator(".execution-selected")).toHaveAttribute(
         "data-inherited",
@@ -359,7 +368,8 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
         "high",
       );
       await page.keyboard.press("Escape");
-      await expect(reviewRow).toContainText("Luna 6 · High");
+      await expect(reviewRow.locator(".execution-model")).toHaveText("Luna 6");
+      await expect(reviewRow.locator(".execution-effort")).toHaveText("High");
       await expect(
         reviewRow.locator(".execution-selected"),
       ).not.toHaveAttribute("data-inherited");
