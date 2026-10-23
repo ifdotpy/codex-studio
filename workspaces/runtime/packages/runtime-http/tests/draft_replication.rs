@@ -12,6 +12,23 @@ async fn real_rxdb_single_writer_draft_ack_echo_ordering() {
             .await
             .expect("store"),
     );
+    // Historical rows already accepted before the schema upgrade, including
+    // one whose successful push response never reached its client.
+    store
+        .transaction(|tx| {
+            for session in ["legacy-conflict", "legacy-lost-response"] {
+                let id = format!("phone:writer:{session}");
+                let payload = serde_json::json!({
+                    "id": id, "device": "phone", "session": session,
+                    "text": "legacy remote", "updated": 5,
+                    "metadata": {"kept": true}
+                });
+                SyncDocumentsRepository::put_draft(tx, &id, &payload.to_string(), false)?;
+            }
+            Ok(())
+        })
+        .await
+        .expect("historical drafts");
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("listen");
