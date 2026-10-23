@@ -14,7 +14,9 @@ import {
   type StudioSettingsTab,
 } from "./StudioSettingsTabs";
 import { SettingsRow, SettingsSection } from "./ui/primitives";
+import { ProviderMark } from "./AccountTiles";
 import { AccountCapacityView } from "./Accounts";
+import AccountGroup from "./AccountGroup";
 import { theme } from "../theme";
 import "../servers/servers.css";
 
@@ -83,12 +85,27 @@ function AccountStrips() {
         ].map(([provider, label, remaining]) => (
           <article className="account-row" key={label}>
             <div className="account-card-heading">
-              <strong>{label}</strong>
+              <span role="img" aria-label={String(provider)}>
+                <ProviderMark provider={String(provider).toLowerCase()} />
+              </span>
+              <strong title={String(label)}>{label}</strong>
             </div>
-            <span className="account-email">{provider}</span>
             <AccountCapacityView
               account={{ status: "ready", label: String(label), email: null }}
               card
+              extraDetails={
+                <AccountGroup
+                  account={{
+                    id: String(label),
+                    label: String(label),
+                    provider: String(provider).toLowerCase(),
+                    status: "ready",
+                    home: "/fixture/accounts",
+                    source: "fixture",
+                  }}
+                  onSaved={() => {}}
+                />
+              }
               view={{
                 limits: null,
                 buckets: [],
@@ -127,6 +144,21 @@ export const SectionSelectionPreservesFields: Story = {
     const back = canvas.queryByRole("button", { name: "Back" });
     if (back) await userEvent.click(back);
     await userEvent.click(canvas.getByRole("tab", { name: "Accounts" }));
+    const summary = canvasElement.querySelector(
+      ".account-limit-details > summary",
+    );
+    if (!(summary instanceof HTMLElement))
+      throw new Error("Missing account disclosure");
+    await expect(
+      canvas.queryByRole("textbox", { name: "Group of Release team" }),
+    ).not.toBeInTheDocument();
+    for (const row of canvasElement.querySelectorAll(".account-row")) {
+      await expect(row.getBoundingClientRect().height).toBeLessThanOrEqual(56);
+    }
+    await userEvent.click(summary);
+    await expect(
+      canvas.getByRole("textbox", { name: "Group of Release team" }),
+    ).toBeVisible();
     const meters = canvas.getAllByRole("meter", { name: "Remaining limit" });
     await expect(
       meters.map((meter) => meter.getAttribute("aria-valuenow")),

@@ -347,15 +347,13 @@
 .account-row {
   display: grid;
   min-width: 0;
-  gap: var(--mantine-spacing-xs);
-  padding: var(--mantine-spacing-md);
   border-radius: 0;
   border-bottom: var(--studio-border-width) solid var(--line);
   background: transparent;
 }
 .account-card-heading {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   gap: calc(var(--mantine-spacing-xs) * 0.4);
   min-width: 0;
 }
@@ -441,9 +439,6 @@
   .accounts-grid {
     grid-template-columns: minmax(0, 1fr);
   }
-  .account-row {
-    padding: var(--mantine-spacing-sm);
-  }
   .account-card-menu {
     width: var(--studio-touch-target);
     min-height: var(--studio-touch-target);
@@ -478,9 +473,7 @@
 }
 .server-account-row {
   display: grid;
-  gap: var(--mantine-spacing-xs);
   min-width: 0;
-  padding: var(--mantine-spacing-sm);
   border: 0;
   border-bottom: var(--studio-border-width) solid var(--line);
   border-radius: 0;
@@ -488,14 +481,15 @@
 }
 .server-account-heading {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
+  min-width: 0;
   justify-content: space-between;
   gap: var(--mantine-spacing-xs);
 }
 .server-account-heading > div:first-child {
   display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
+  flex: 1;
+  align-items: center;
   gap: calc(var(--mantine-spacing-xs) * 0.4);
   min-width: 0;
 }
@@ -511,7 +505,8 @@
 }
 
 .server-account-heading strong {
-  flex: 1 1 100%;
+  flex: 1;
+  min-width: 0;
 }
 .server-account-heading .mantine-Badge-root {
   color: var(--muted);
@@ -521,4 +516,102 @@
 .server-account-heading .mantine-Badge-label {
   display: flex;
   gap: var(--mantine-spacing-xs);
+}
+
+/* An account's identity, allowance and native disclosure share one strip. */
+.account-row,
+.server-account-row {
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: calc(var(--mantine-spacing-xs) / 5) var(--mantine-spacing-xs);
+  padding: calc(var(--mantine-spacing-xs) / 5) 0;
+}
+.account-card-heading,
+.server-account-heading {
+  grid-column: 1;
+  grid-row: 1;
+  align-items: center;
+}
+.account-card-heading > strong,
+.server-account-heading strong,
+.account-card-heading .account-name > button .mantine-Button-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.account-card-heading > [role="img"],
+.server-account-heading [role="img"] {
+  display: flex;
+  flex: none;
+}
+:is(.account-row, .server-account-row) > .account-capacity {
+  display: contents;
+}
+:is(.account-row, .server-account-row) .account-limit-summary {
+  grid-column: 2;
+  grid-row: 1;
+  color: var(--text);
+  white-space: nowrap;
+}
+:is(.account-row, .server-account-row) .account-limit-summary > :first-child {
+  position: absolute;
+  inline-size: var(--studio-border-width);
+  block-size: var(--studio-border-width);
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+:is(.account-row, .server-account-row) .account-limit-bar {
+  grid-column: 1 / -1;
+  grid-row: 2;
+  height: var(--studio-meter-size);
+}
+:is(.account-row, .server-account-row) .account-limit-details {
+  display: contents;
+}
+:is(.account-row, .server-account-row) .account-limit-details > summary {
+  grid-column: 3;
+  grid-row: 1;
+  min-height: var(--studio-action-size);
+  align-content: center;
+  white-space: nowrap;
+}
+.account-limit-details-body {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: var(--mantine-spacing-sm);
+  min-width: 0;
+  padding-block: var(--mantine-spacing-sm);
+}
+.account-strip-metadata {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--mantine-spacing-xs);
+  color: var(--muted);
+}
+.account-strip-state {
+  color: var(--studio-state-answer);
+  font-size: var(--studio-text-meta);
+  white-space: nowrap;
+}
+.account-strip-state[data-error] {
+  color: var(--studio-state-error);
+}
+/* The disclosure keeps its accessible name while the native marker saves phone space. */
+@media (max-width: 47.5rem) {
+  :is(.account-row, .server-account-row) .account-limit-details > summary {
+    min-width: var(--studio-touch-target);
+    min-height: var(--studio-touch-target);
+    text-align: center;
+  }
+  :is(.account-row, .server-account-row)
+    .account-limit-details
+    > summary
+    > span {
+    position: absolute;
+    inline-size: var(--studio-border-width);
+    block-size: var(--studio-border-width);
+    overflow: hidden;
+    clip-path: inset(50%);
+  }
 }

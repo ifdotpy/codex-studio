@@ -247,14 +247,23 @@ export function AccountCapacity({
   account,
   opened,
   card = false,
+  extraDetails,
 }: {
   account: Account;
   opened: boolean;
   card?: boolean;
+  extraDetails?: ReactNode;
 }) {
   const view = useAccountLimitView(account, { read: opened });
   if (account.status !== "ready" && !card) return null;
-  return <AccountCapacityView account={account} view={view} card={card} />;
+  return (
+    <AccountCapacityView
+      account={account}
+      view={view}
+      card={card}
+      extraDetails={extraDetails}
+    />
+  );
 }
 
 /** One reading of an account's provider limits. `note` says where and when
@@ -264,11 +273,13 @@ export function AccountCapacityView({
   view,
   card = false,
   note,
+  extraDetails,
 }: {
   account: Pick<Account, "status" | "email" | "label">;
   view: AccountLimitView;
   card?: boolean;
   note?: ReactNode;
+  extraDetails?: ReactNode;
 }) {
   const { limits, buckets, remaining, error: limitsError } = view;
   const details = (
@@ -351,20 +362,29 @@ export function AccountCapacityView({
               withAria={false}
             />
           </Progress.Root>
-          {note && <small className="account-limit-note">{note}</small>}
-          {account.status !== "ready" ? null : limitsError ? (
-            details
-          ) : (
-            <details className="account-limit-details">
-              <summary>Limit details</summary>
+          {(account.status === "ready" || extraDetails) && (
+            <AccountLimitDetails>
+              {note && <small className="account-limit-note">{note}</small>}
               {details}
-            </details>
+              {extraDetails}
+            </AccountLimitDetails>
           )}
         </>
       ) : (
         details
       )}
     </div>
+  );
+}
+
+export function AccountLimitDetails({ children }: { children: ReactNode }) {
+  return (
+    <details className="account-limit-details">
+      <summary>
+        <span>Limit details</span>
+      </summary>
+      <div className="account-limit-details-body">{children}</div>
+    </details>
   );
 }
 
@@ -986,6 +1006,40 @@ export default function Accounts({
                             aria-label={account.email || account.label}
                           >
                             <div className="account-card-heading">
+                              <span
+                                role="img"
+                                aria-label={
+                                  provider === "claude" ? "Claude" : "Codex"
+                                }
+                              >
+                                <ProviderMark provider={provider} />
+                              </span>
+                              {(account.error ||
+                                account.status !== "ready") && (
+                                <span
+                                  className="account-strip-state"
+                                  data-error={
+                                    Boolean(account.error) ||
+                                    account.status === "error" ||
+                                    undefined
+                                  }
+                                >
+                                  {account.error || account.status === "error"
+                                    ? "Error"
+                                    : "Sign in needed"}
+                                </span>
+                              )}
+                              {account.id === state.data.defaultAccountKey && (
+                                <span
+                                  className="account-default"
+                                  title="Application default"
+                                >
+                                  <Check size={12} />
+                                  <span className="sr-only">
+                                    Application default
+                                  </span>
+                                </span>
+                              )}
                               <AccountNameEditor
                                 account={account}
                                 onSaved={state.setData}
@@ -1166,78 +1220,85 @@ export default function Accounts({
                                 </Menu.Dropdown>
                               </Menu>
                             </div>
-                            {account.email && (
-                              <small className="account-email">
-                                {account.email}
-                              </small>
-                            )}
-                            <div className="account-card-status">
-                              <span
-                                className="account-status"
-                                data-status={
-                                  account.error || account.status === "error"
-                                    ? "error"
-                                    : account.status === "ready"
-                                      ? "ready"
-                                      : "signedOut"
-                                }
-                              >
-                                {account.error || account.status === "error"
-                                  ? "Error"
-                                  : account.status === "ready"
-                                    ? "Signed in"
-                                    : "Sign in needed"}
-                              </span>
-                              {account.plan && (
-                                <span className="account-plan">
-                                  {account.plan}
-                                </span>
-                              )}
-                              {account.id === state.data.defaultAccountKey && (
-                                <span className="account-default">
-                                  <Check size={12} /> Application default
-                                </span>
-                              )}
-                            </div>
-                            {Boolean(account.error) && (
-                              <ErrorDescription
-                                className="account-action-error"
-                                value={account.error}
-                              />
-                            )}
-                            {account.authenticationRecovery && (
-                              <p role="alert">
-                                {account.authenticationRecovery}
-                              </p>
-                            )}
-                            {account.disconnected && (
-                              <p>Hidden from new chats.</p>
-                            )}
-                            {!account.disconnected && (
-                              <AccountCapacity
-                                card
-                                account={account}
-                                opened={managerOnly || opened}
-                              />
-                            )}
-                            {!account.disconnected && (
-                              <AccountStartThrottle
-                                account={account}
-                                onSaved={state.setData}
-                              />
-                            )}
-                            {!account.disconnected && (
-                              <AccountGroup
-                                account={account}
-                                onSaved={state.setData}
-                              />
-                            )}
-                            {account.provider === "claude" && (
-                              <ClaudeProfile
-                                account={account}
-                                onSaved={state.setData}
-                              />
-                            )}
+                            <AccountCapacity
+                              card
+                              account={account}
+                              opened={
+                                !account.disconnected && (managerOnly || opened)
+                              }
+                              extraDetails={
+                                <>
+                                  {account.email && (
+                                    <small className="account-email">
+                                      {account.email}
+                                    </small>
+                                  )}
+                                  <div className="account-card-status">
+                                    <span
+                                      className="account-status"
+                                      data-status={
+                                        account.error ||
+                                        account.status === "error"
+                                          ? "error"
+                                          : account.status === "ready"
+                                            ? "ready"
+                                            : "signedOut"
+                                      }
+                                    >
+                                      {account.error ||
+                                      account.status === "error"
+                                        ? "Error"
+                                        : account.status === "ready"
+                                          ? "Signed in"
+                                          : "Sign in needed"}
+                                    </span>
+                                    {account.plan && (
+                                      <span className="account-plan">
+                                        {account.plan}
+                                      </span>
+                                    )}
+                                    {account.id ===
+                                      state.data.defaultAccountKey && (
+                                      <span className="account-default">
+                                        <Check size={12} /> Application default
+                                      </span>
+                                    )}
+                                  </div>
+                                  {Boolean(account.error) && (
+                                    <ErrorDescription
+                                      className="account-action-error"
+                                      value={account.error}
+                                    />
+                                  )}
+                                  {account.authenticationRecovery && (
+                                    <p role="alert">
+                                      {account.authenticationRecovery}
+                                    </p>
+                                  )}
+                                  {account.disconnected && (
+                                    <p>Hidden from new chats.</p>
+                                  )}
+                                  {!account.disconnected && (
+                                    <AccountStartThrottle
+                                      account={account}
+                                      onSaved={state.setData}
+                                    />
+                                  )}
+                                  {!account.disconnected && (
+                                    <AccountGroup
+                                      account={account}
+                                      onSaved={state.setData}
+                                    />
+                                  )}
+                                  {account.provider === "claude" && (
+                                    <ClaudeProfile
+                                      account={account}
+                                      onSaved={state.setData}
+                                    />
+                                  )}
+                                </>
+                              }
+                            />
                           </section>
                         ))}
                       </div>
