@@ -211,6 +211,20 @@
     --ai-size-md: var(--studio-touch-target);
     --ai-size-lg: var(--studio-touch-target);
   }
+  .mantine-CloseButton-root {
+    --cb-size-xs: var(--studio-touch-target);
+    --cb-size-sm: var(--studio-touch-target);
+    --cb-size-md: var(--studio-touch-target);
+    --cb-size-lg: var(--studio-touch-target);
+    --cb-size: var(--studio-touch-target);
+    min-inline-size: var(--studio-touch-target);
+    min-block-size: var(--studio-touch-target);
+  }
+  /* Menu has no size variable; the hit region grows without scaling its icon. */
+  .mantine-Menu-item {
+    min-inline-size: var(--studio-touch-target);
+    min-block-size: var(--studio-touch-target);
+  }
   .mantine-Input-wrapper {
     --input-height-xs: var(--studio-touch-target);
     --input-height-sm: var(--studio-touch-target);

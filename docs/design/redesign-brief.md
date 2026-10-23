@@ -50,6 +50,14 @@ Signal is the Mantine primary color (a 10-shade `signal` palette). The state
 names are the existing `ChatIndicatorKind` values from
 `src/components/chat-status/chatStatusModel.ts`; that type owns the state set.
 
+Operational notices consume the semantic error, answer, and working tokens on
+an explicit scheme-aware Surface. Counts on raised utility surfaces use
+`--studio-text-on-raised`, owned by `studio-theme.css`; the number stays neutral
+while adjacent labels and state marks communicate urgency. Filled primary actions
+consume the Mantine primary palette and its generated contrast variable; uncolored
+subtle actions remain neutral. CloseButton and menu hit regions consume
+`--studio-touch-target` only for coarse pointers.
+
 ## Type
 
 One family: Inter (already the theme font), weights 400, 500 and 600 only.
