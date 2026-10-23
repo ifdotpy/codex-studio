@@ -117,6 +117,8 @@ export function createTokenRateCache() {
   }
 
   let records = new Map<string, TokenRate>();
+  let baselineEpoch: string | undefined;
+  let baselineWorkspaceId: string | undefined;
   // A derived index contains identities only; every value belongs to records.
   let teamAgents = new Map<string, string>();
   const listeners = new Map<string, Set<(value: TokenRate | null) => void>>();
@@ -149,6 +151,12 @@ export function createTokenRateCache() {
   }
 
   function receiveResourceTokenRates(event: TokenRateEvent) {
+    if (
+      !event.snapshot &&
+      (baselineEpoch !== event.epoch ||
+        baselineWorkspaceId !== event.workspaceId)
+    )
+      return false;
     const changed = new Set<string>();
     if (
       typeof event.snapshot !== "boolean" ||
@@ -158,7 +166,12 @@ export function createTokenRateCache() {
       !isTokenRateSnapshot(event, changed)
     )
       return false;
-    if (event.snapshot) return replaceWorkspaceTokenRates(event);
+    if (event.snapshot) {
+      replaceWorkspaceTokenRates(event);
+      baselineEpoch = event.epoch;
+      baselineWorkspaceId = event.workspaceId;
+      return true;
+    }
     const removed = new Set<string>();
     let size = records.size;
     for (const id of event.removed) {
@@ -214,6 +227,8 @@ export function createTokenRateCache() {
   }
 
   function clearWorkspaceTokenRates() {
+    baselineEpoch = undefined;
+    baselineWorkspaceId = undefined;
     receiveWorkspaceTokenRates({ records: [] });
   }
 

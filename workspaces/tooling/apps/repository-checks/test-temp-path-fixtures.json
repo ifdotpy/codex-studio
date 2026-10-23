@@ -127,6 +127,9 @@
     "&json!({\"id\":\"asset\",\"agent\":\"a\",\"name\":\"n\",\"path\":\"/tmp/n\",\"mime\":\"text/plain\",\"image\":false,\"size\":1,\"hash\":\"sha256:x\",\"created\":1.0,\"future\":true})",
     "\"home\":\"/tmp/default\","
   ],
+  "workspaces/runtime/packages/runtime-services/tests/monitor_output_ui.rs": [
+    ".unwrap_or_else(|| \"/tmp\".into());"
+  ],
   "workspaces/runtime/packages/runtime-services/src/account_policy.rs": [
     "r#\"{{\"version\":1,\"defaultAccountKey\":\"default\",\"accounts\":{{\"default\":{{\"id\":\"default\",\"home\":\"/tmp\",\"label\":\"{marker}\",\"source\":\"Codex CLI\",\"status\":\"error\",\"error\":\"{marker}\"}}}},\"logins\":{{}}}}\"#"
   ],

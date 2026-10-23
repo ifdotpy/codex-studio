@@ -35,7 +35,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-async function fixture() {
+async function fixture(follower = false) {
   vi.useFakeTimers();
   vi.stubGlobal("window", {
     addEventListener: vi.fn(),
@@ -46,9 +46,45 @@ async function fixture() {
     addEventListener: vi.fn(),
     removeEventListener: vi.fn(),
   });
-  vi.stubGlobal("navigator", { onLine: true });
+  vi.stubGlobal("navigator", {
+    onLine: true,
+    ...(follower
+      ? {
+          locks: {
+            request: (
+              _name: string,
+              _options: unknown,
+              callback: (lock: null) => Promise<void>,
+            ) => callback(null),
+          },
+        }
+      : {}),
+  });
   vi.stubGlobal("location", { origin: "http://studio.test" });
-  vi.stubGlobal("BroadcastChannel", undefined);
+  let deliverPeer: ((event: MessageEvent) => void) | undefined;
+  vi.stubGlobal(
+    "BroadcastChannel",
+    follower
+      ? class {
+          onmessage: ((event: MessageEvent) => void) | null = null;
+          constructor() {
+            deliverPeer = (event) => this.onmessage?.(event);
+          }
+          postMessage() {}
+          close() {}
+        }
+      : undefined,
+  );
+  const peer = (name: string, event: unknown) =>
+    deliverPeer?.({
+      data: {
+        workspaceId: "workspace",
+        tabId: "owner",
+        apiSchemaHash: API_SCHEMA_HASH,
+        kind: name === "token-rates" ? name : "resource-event",
+        event,
+      },
+    } as MessageEvent);
   const sources: Source[] = [];
   const urls: string[] = [];
   const post = vi.fn().mockResolvedValue({ gen: 1 });
@@ -84,9 +120,9 @@ async function fixture() {
   const state = { kind: "state" } as const;
   const stopState = transport.watchResourceChanges(state, vi.fn());
   await vi.advanceTimersByTimeAsync(0);
-  const source = sources[0]!;
-  source.emit("session", { sessionId: "session-one" });
-  source.emit("api-schema", { hash: API_SCHEMA_HASH });
+  const source = follower ? ({ emit: peer } as Source) : sources[0]!;
+  if (!follower) source.emit("session", { sessionId: "session-one" });
+  if (!follower) source.emit("api-schema", { hash: API_SCHEMA_HASH });
   source.emit("resources", {
     protocol: SYNC_PROTOCOL_VERSION,
     workspaceId: "workspace",
@@ -254,4 +290,84 @@ it("drops initial data for an addition removed before its acknowledgement", asyn
   const listener = vi.fn();
   f.transport.watchResourceChanges(resource, listener);
   expect(listener).not.toHaveBeenCalled();
+});
+
+it("a late follower ignores deltas until the same-revision full token replay", async () => {
+  const f = await fixture(true);
+  const listener = vi.fn();
+  f.transport.watchTokenRateEvents(listener);
+  const record = {
+    agentId: "active",
+    rootId: "root",
+    turnId: "turn",
+    active: true,
+    estimated: false,
+    rate: 1,
+    outputTokens: 10,
+  };
+  const frame = {
+    protocol: SYNC_PROTOCOL_VERSION,
+    workspaceId: "workspace",
+    epoch: "epoch",
+    revision: 7,
+    snapshot: false,
+    records: [record],
+    removed: [],
+  };
+  f.source.emit("token-rates", frame);
+  expect(listener).not.toHaveBeenCalled();
+  const full = {
+    ...frame,
+    snapshot: true,
+    records: [record, { ...record, agentId: "quiet", active: false, rate: 0 }],
+  };
+  f.source.emit("token-rates", full);
+  expect(listener).toHaveBeenCalledExactlyOnceWith(full);
+  f.source.emit("token-rates", full);
+  expect(listener).toHaveBeenCalledTimes(1);
+  f.source.emit("token-rates", { ...frame, epoch: "new", revision: 1 });
+  expect(listener).toHaveBeenCalledTimes(1);
+  f.source.emit("token-rates", { ...full, epoch: "new", revision: 1 });
+  expect(listener).toHaveBeenCalledTimes(2);
+});
+
+it("invalidates pending follower persistence when its last transcript subscriber leaves", async () => {
+  const f = await fixture(true);
+  const resource = { kind: "transcript", agentId: "slow-follower" } as const;
+  const stop = f.transport.watchResourceChanges(resource, vi.fn());
+  let finish!: () => void;
+  f.persist.mockImplementationOnce(
+    () =>
+      new Promise<void>((resolve) => {
+        finish = resolve;
+      }),
+  );
+  const frame = (revision: number) => ({
+    protocol: SYNC_PROTOCOL_VERSION,
+    workspaceId: "workspace",
+    epoch: "epoch",
+    revision,
+    reason: "change",
+    resources: [resource],
+    resourceVersions: [
+      {
+        revision,
+        transcriptChanges: {
+          after: revision - 1,
+          through: revision,
+          delta: { delta: true, items: [], removed: [], truncated: false },
+        },
+      },
+    ],
+  });
+  f.source.emit("resources", frame(2));
+  f.source.emit("resources", frame(3));
+  expect(f.persist).toHaveBeenCalledTimes(1);
+  const isCurrent = f.persist.mock.calls[0]![1] as () => boolean;
+  expect(isCurrent()).toBe(true);
+  stop();
+  expect(isCurrent()).toBe(false);
+  finish();
+  await vi.advanceTimersByTimeAsync(25);
+  expect(f.persist).toHaveBeenCalledTimes(1);
 });

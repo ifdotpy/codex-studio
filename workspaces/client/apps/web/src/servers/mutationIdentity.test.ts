@@ -179,3 +179,26 @@ it.each([500, 503, 504, 410])(
     }
   },
 );
+
+it("does not journal ephemeral subscription control requests after a lost response", async () => {
+  const requests: Request[] = [];
+  vi.stubGlobal("fetch", async (request: Request) => {
+    requests.push(request);
+    throw new Error("Lost control response");
+  });
+  try {
+    await expect(
+      post("/api/sync/subscriptions", {
+        sessionId: "dead-session",
+        gen: 1,
+        add: [],
+        remove: [],
+        tokenRates: true,
+      }),
+    ).rejects.toThrow("Lost control response");
+    expect(rows.size).toBe(0);
+    expect(requests[0].headers.get("X-Studio-Request-Id")).toBeNull();
+  } finally {
+    vi.unstubAllGlobals();
+  }
+});
