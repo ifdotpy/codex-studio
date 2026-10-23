@@ -1795,6 +1795,36 @@ function fastTierCommands(root) {
       },
     },
     {
+      item: { name: "studio-runtime-http", ecosystem: "cargo" },
+      label: "Real RxDB and server draft ordering witness",
+      commands: [
+        [
+          "cargo",
+          [
+            "nextest",
+            "run",
+            "--locked",
+            "--no-tests",
+            "fail",
+            "--message-format",
+            "libtest-json-plus",
+            "-p",
+            "studio-runtime-http",
+            "--test",
+            "integration",
+            "-E",
+            "test(real_rxdb_single_writer_draft_ack_echo_ordering)",
+          ],
+        ],
+      ],
+      options: {
+        selector:
+          "draft acknowledgement, stale echoes, lost responses and concurrent writers",
+        reason:
+          "Real RxDB must preserve the current draft master while the real HTTP CAS detects genuine conflicts.",
+      },
+    },
+    {
       item: web,
       label: "Draft stream acceptance and durable recovery witnesses",
       commands: [

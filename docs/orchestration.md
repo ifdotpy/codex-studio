@@ -267,11 +267,19 @@ Native composer draft synchronization follows this flow:
 3. Combine simultaneous triggers and retain one follow-up when notified during a refresh.
 4. Keep idle windows quiet; closing the view removes listeners and pending refreshes.
 
+Browser draft push acknowledgement follows this flow:
+
+1. Save edits locally immediately; the existing RxDB push gate groups remote writes, including edits received during an in-flight push.
+2. Accept the conflicts-only HTTP result as acknowledgement of the exact attempted state.
+3. Deliver complete server draft intervals through the same RxDB master stream.
+4. Keep the fork and assumed master when a delayed echo is an ancestor already replaced in the fork's `seen` map.
+5. Resolve genuine concurrent versions with the [draft conflict owner](../workspaces/client/apps/web/src/sync/conflicts.ts), keeping both texts; retry a lost response with its exact attempted state.
+
 Draft payload compatibility follows this flow:
 
 1. Derive the server schema and web type from [DraftVersion](../workspaces/client/packages/client-domain/src/drafts.rs) with `pnpm run contracts:generate`.
-2. Validate new pushes against that schema; require a JavaScript-safe integer timestamp.
-3. Read historical drafts through the same Rust owner: missing or null timestamps become zero, and fractional timestamps are floored.
+2. Validate new pushes against that closed schema; reject unknown fields and require a JavaScript-safe integer timestamp.
+3. Read historical drafts and assumed masters through the same Rust compatibility decoder: preserve unknown fields, map missing or null timestamps to zero, and floor fractions.
 4. Preserve stored payload bytes; read normalization never rewrites or drops a draft. `pnpm run contracts:check` rejects generated drift.
 
 Markdown rendering follows this flow:
