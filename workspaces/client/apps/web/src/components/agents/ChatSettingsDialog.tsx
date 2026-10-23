@@ -16,9 +16,8 @@ import { ExecutionSettings } from "./ExecutionSettings";
 import { AccountExclusionsControl } from "./AccountExclusionsControl";
 import SubagentConcurrencyControl from "./SubagentConcurrencyControl";
 import BrowserAccessNotice from "../BrowserAccessNotice";
-import { modelDisplayName, modelForValue } from "../models/modelOption";
 import type { SetupRole } from "./AgentSetupPicker";
-import { useWorkerModels } from "./WorkerModelPicker";
+import type { useWorkerModels } from "./WorkerModelPicker";
 import "./chat-settings-dialog.css";
 
 const ClaudeSettings = lazy(() =>
@@ -60,42 +59,12 @@ export function ChatSettingsDialog(p: Props) {
   }, [p.settingsOpen, p.agent?.id, p.agent?.source]);
   const [role, setRole] = useState<SetupRole>("orchestrator");
   const [claudePermission, setClaudePermission] = useState<string | null>(null);
-  const workerCatalog = useWorkerModels(
-    root?.workerDefaults?.accountKey || root?.accountKey || "default",
-    p.settingsOpen && !!root?.isLead,
-    !root?.workerDefaults?.accountKey,
-  );
-  const name = (model: string | null | undefined, worker = false) => {
-    const rows = worker ? workerCatalog.models : p.agentModels.models;
-    const info = modelForValue(rows, model);
-    return modelDisplayName(
-      modelForValue(rows, info?.resolvedModel || model) || info,
-      model || "",
-    );
-  };
-  const roles: { value: SetupRole; label: string; model: string }[] = [
-    {
-      value: "orchestrator",
-      label: p.agent?.isLead ? "Lead" : "Agent",
-      model: name(p.agent?.pendingSettings?.model || p.agent?.model),
-    },
+  const roles: { value: SetupRole; label: string }[] = [
+    { value: "orchestrator", label: p.agent?.isLead ? "Lead" : "Agent" },
     ...(root?.isLead
       ? [
-          {
-            value: "worker" as const,
-            label: "Workers",
-            model:
-              root.workerDefaults?.model === null
-                ? name(root.pendingSettings?.model || root.model, true)
-                : name(root.workerDefaults?.model ?? "gpt-6-luna", true),
-          },
-          {
-            value: "review" as const,
-            label: "Review",
-            model: root.reviewDefaults?.model
-              ? name(root.reviewDefaults.model, true)
-              : "Same as caller",
-          },
+          { value: "worker" as const, label: "Workers" },
+          { value: "review" as const, label: "Review" },
         ]
       : []),
   ];
@@ -158,20 +127,8 @@ export function ChatSettingsDialog(p: Props) {
                   aria-label="Agent role"
                   value={role}
                   onChange={(value) => setRole(value as SetupRole)}
-                  data={roles.map((item) => ({
-                    value: item.value,
-                    label: (
-                      <span className="settings-role-label">
-                        <span>{item.label}</span>
-                        <span
-                          className="settings-role-model"
-                          title={item.model}
-                        >
-                          {item.model}
-                        </span>
-                      </span>
-                    ),
-                  }))}
+                  className="settings-role-switch"
+                  data={roles}
                 />
               )}
               <UnifiedAgentSettings

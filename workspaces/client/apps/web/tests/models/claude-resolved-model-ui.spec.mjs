@@ -202,9 +202,10 @@ for (const provider of ["claude", "codex"])
         "role",
         "button",
       );
+      await expect(roles.locator(".settings-role-model")).toHaveCount(0);
       await expect(
-        roles.getByText("Same as caller", { exact: true }),
-      ).toBeVisible();
+        page.locator("#composer .execution-summary-trigger"),
+      ).toHaveAttribute("title", /Review same as caller/);
       for (const role of ["Lead", "Workers"]) {
         await roles.getByText(role, { exact: true }).click();
         const selected = dialog.locator(
@@ -272,6 +273,10 @@ for (const provider of ["claude", "codex"])
                 .map((el) => el.getBoundingClientRect())
                 .filter((box) => box.height);
               return {
+                roleHeight:
+                  node
+                    .querySelector(".settings-role-switch")
+                    ?.getBoundingClientRect().height || 0,
                 groupGaps: [...node.querySelectorAll(".model-family-group")]
                   .slice(1)
                   .map((group) => {
@@ -326,6 +331,8 @@ for (const provider of ["claude", "codex"])
                 width === 1440 ? 3 : 5,
               );
             expect(geometry.chipWidthRange).toBeLessThan(2);
+            if (tab === "Models")
+              expect(geometry.roleHeight).toBeLessThanOrEqual(44);
             for (const gap of geometry.familyGaps)
               expect(gap).toBeGreaterThanOrEqual(8);
             for (const gap of geometry.groupGaps)
