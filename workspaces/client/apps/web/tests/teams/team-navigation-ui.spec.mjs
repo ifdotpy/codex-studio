@@ -545,20 +545,26 @@ test("team-navigation-ui", async ({ page: fixturePage }) => {
         name: "Chat settings",
         exact: true,
       });
-      await chatSettings
-        .getByRole("tab", { name: "Models", exact: true })
-        .click();
-      const account = chatSettings.getByRole("group", {
-        name: "Main agent account",
+      await expect(chatSettings.getByRole("tablist")).toHaveCount(0);
+      await expect(
+        chatSettings.getByRole("textbox", {
+          name: "Subagent parallelism",
+          exact: true,
+        }),
+      ).toBeVisible();
+      await page.keyboard.press("Escape");
+      await chatSettings.waitFor({ state: "hidden" });
+      await page.locator("#composer .execution-summary-trigger").click();
+      const picker = page.locator(".execution-dropdown");
+      const account = picker.getByRole("group", {
+        name: "Subagent account",
         exact: true,
       });
       await expect(account).toBeVisible();
       await expect(account).toHaveAttribute("aria-disabled", "true");
       await expect(account).not.toBeEmpty();
-      await chatSettings
-        .getByRole("button", { name: "Close", exact: true })
-        .click();
-      await chatSettings.waitFor({ state: "hidden" });
+      await page.keyboard.press("Escape");
+      await picker.waitFor({ state: "hidden" });
       await page.locator("#back-lead").click();
       assert.equal(
         await page.locator("#message").inputValue(),

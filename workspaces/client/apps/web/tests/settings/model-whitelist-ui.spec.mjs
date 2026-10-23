@@ -86,20 +86,14 @@ test("Models whitelist filters every execution role and preserves the current mo
       page.locator("#composer .execution-summary-trigger"),
     ).toHaveAttribute("title", current);
     await page.locator("#composer .execution-summary-trigger").click();
-    const picker = page.getByRole("dialog", {
-      name: "Chat settings",
-      exact: true,
-    });
+    const picker = page.locator(".execution-dropdown");
     await expect(
       picker
         .getByLabel("Main agent model", { exact: true })
         .getByRole("option", { name: /Luna/ }),
     ).toHaveCount(0);
     await picker.getByText("Workers", { exact: true }).click();
-    const worker = page.getByRole("dialog", {
-      name: "Chat settings",
-      exact: true,
-    });
+    const worker = page.locator(".execution-dropdown");
     const workerModel = worker.getByLabel("Default subagent model", {
       exact: true,
     });

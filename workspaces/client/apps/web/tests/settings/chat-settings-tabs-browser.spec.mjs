@@ -10,7 +10,7 @@ import {
   createFixtureViteServer,
 } from "../playwright.mjs";
 
-test("Chat settings tabs keep native role choices, distinct account eligibility and one phone scroll", async ({
+test("Chat settings is one compact Team panel with account eligibility and no tabs", async ({
   page,
 }) => {
   test.setTimeout(120000);
@@ -41,7 +41,7 @@ test("Chat settings tabs keep native role choices, distinct account eligibility 
           return `import React,{useState} from 'react';import{createRoot}from'react-dom/client';import{flushSync}from'react-dom';import{MantineProvider}from'@mantine/core';import'@mantine/core/styles.css';import'/src/style.css';import'/src/appearance.css';import'/src/design/state.css';import{theme}from'/src/theme.ts';import{ChatSettingsDialog}from'/src/components/agents/ChatSettingsDialog.tsx';
 const names=['gpt-6-astra','gpt-6.1-sol','gpt-6-luna','gpt-5.6-sol','gpt-5.6-luna','gpt-5.6-terra','gpt-6-sol'];const models=names.map((model,index)=>({model,provider:'codex',isDefault:!index,description:'Coding and reasoning for '+model,supportedReasoningEfforts:['low','medium','high','xhigh','max','ultra'].map(reasoningEffort=>({reasoningEffort})),serviceTiers:[{id:'priority'}],availableAccessPrograms:{cyber:['standard','daybreakBlue']}}));const accounts=Array.from({length:5},(_,i)=>({id:i?'account-'+i:'default',label:'Work '+(i+1),email:'operator'+(i+1)+'@example.com',status:'ready',provider:'codex'}));const accountsData={accounts,archivedAccounts:[],defaultAccountKey:'default',defaultAccountGroups:[],logins:[],supportsDelete:true,supportsDisconnect:true};const initial={id:'lead',accountKey:'default',provider:'codex',name:'Lead',source:'managed',model:names[0],effort:'high',isLead:true,status:'idle',created:1,yoloMode:false,subagentConcurrencyVersion:2,concurrency:8,agentModeRevision:1,workerDefaults:{model:'gpt-6-luna',effort:'high',delegationDepth:1},reviewDefaults:{model:null,effort:null}};
 window.calls=[];const nativeFetch=window.fetch;window.fetch=async(input,options)=>{const url=input instanceof Request?input.url:input;options=input instanceof Request?{method:input.method,body:input.method==='GET'?undefined:await input.clone().text()}:options;const u=new URL(url,location.origin);let result;if(u.pathname==='/api/limits'){const key=u.searchParams.get('account_key');result={accountKey:key,at:Date.now()/1000,data:{rateLimits:{primary:{usedPercent:20,windowDurationMins:300,resetsAt:Date.now()/1000+3600}}}}}else if(u.pathname==='/api/models')result={data:models};else if(u.pathname==='/api/desktop')result={browser:{enabled:false,reason:'Browser access is disabled for this account.'}};else if(u.pathname==='/api/accounts')result=accountsData;else if(u.pathname==='/api/conversation'){const body=JSON.parse(options.body);window.calls.push(body);let next={...window.agent};if(body.worker_defaults)next.workerDefaults={...next.workerDefaults,model:body.worker_defaults.model,effort:body.worker_defaults.effort,delegationDepth:body.worker_defaults.delegation_depth,accountKey:body.worker_defaults.account_key,fastMode:body.worker_defaults.fast_mode};else if(body.review_defaults)next.reviewDefaults=body.review_defaults;else if(body.excluded_account_keys)next.excludedAccountKeys=body.excluded_account_keys;else if('subagent_concurrency' in body){next.concurrency=body.subagent_concurrency;next.agentModeRevision++}else if('yolo_mode' in body)next.yoloMode=body.yolo_mode;else Object.assign(next,{model:body.model,effort:body.effort,fastMode:body.fast_mode,daybreakEnabled:body.daybreak_enabled});window.updateAgent(next);result=next;}if(!result)return nativeFetch(input,options);return new Response(JSON.stringify(result),{headers:{'Content-Type':'application/json'}})};
-function Fixture(){const[agent,setAgent]=useState(initial),[opened,setOpened]=useState(true),[accountOpen,setAccountOpen]=useState(false);window.agent=agent;window.updateAgent=value=>flushSync(()=>setAgent(value));const state={data:accountsData,setData:()=>{},error:'',refresh:async()=>accountsData,scope:'fixture'};return <MantineProvider theme={theme} forceColorScheme={new URLSearchParams(location.search).get('theme')||'light'}><ChatSettingsDialog settingsOpen={opened} setSettingsOpen={setOpened} accountModalOpen={accountOpen} updateAccountModalOpen={setAccountOpen} agent={agent} lead={agent} accounts={state} agentModels={{models,loading:false,error:'',retry:()=>{}}} data={{stateDir:'execution-preview',runtime:{agents:[]}}} workspaceId="1234567890abcdef1234567890abcdef" accountKey="default" refresh={async()=>{}} notify={()=>{}} creating={false} newChat={()=>{}} project={()=>{}} selectedAccount={accounts[0]} setClaudeLoginKey={()=>{}} /></MantineProvider>};createRoot(document.getElementById('root')).render(<Fixture/>);`;
+function Fixture(){const[agent,setAgent]=useState(initial),[opened,setOpened]=useState(true);window.agent=agent;window.updateAgent=value=>flushSync(()=>setAgent(value));const state={data:accountsData,setData:()=>{},error:'',refresh:async()=>accountsData,scope:'fixture'};return <MantineProvider theme={theme} forceColorScheme={new URLSearchParams(location.search).get('theme')||'light'}><ChatSettingsDialog settingsOpen={opened} setSettingsOpen={setOpened} accountModalOpen={false} agent={agent} lead={agent} accounts={state} agentModels={{models,loading:false,error:'',retry:()=>{}}} data={{stateDir:'execution-preview',runtime:{agents:[]}}} workspaceId="1234567890abcdef1234567890abcdef" refresh={async()=>{}} notify={()=>{}} creating={false} newChat={()=>{}} project={()=>{}} selectedAccount={accounts[0]} setClaudeLoginKey={()=>{}} /></MantineProvider>};createRoot(document.getElementById('root')).render(<Fixture/>);`;
         },
       },
     ],
@@ -76,49 +76,11 @@ function Fixture(){const[agent,setAgent]=useState(initial),[opened,setOpened]=us
       exact: true,
     });
     await expect(modal).toBeVisible();
-    await expect(modal.getByRole("tab")).toHaveCount(2);
+    await expect(modal.getByRole("tablist")).toHaveCount(0);
+    await expect(modal.getByRole("listbox")).toHaveCount(0);
     await expect(
-      modal.getByRole("tab", { name: "Models", exact: true }),
-    ).toBeVisible();
-    const roles = modal.getByRole("radiogroup", {
-      name: "Agent role",
-      exact: true,
-    });
-    await expect(
-      modal
-        .getByRole("listbox", { name: "Main agent model", exact: true })
-        .getByRole("option"),
-    ).toHaveCount(7);
-    await roles.getByText("Workers", { exact: true }).click();
-    await expect(
-      modal.getByRole("option", { name: "Same as main agent", exact: true }),
-    ).toBeVisible();
-    const automatic = modal.getByRole("radio", {
-      name: "Automatic",
-      exact: true,
-    });
-    await expect(automatic).toBeChecked();
-    await expect(
-      modal.locator(".setup-automatic-label .mantine-Badge-root"),
-    ).toHaveText("Recommended");
-    await expect(modal.locator(".setup-account-automatic")).toContainText(
-      "Prefers a free slot, project order, then fewer active agents.",
-    );
-    await expect(modal.locator(".setup-account-automatic")).toHaveAttribute(
-      "data-checked",
-      "true",
-    );
-    await modal
-      .getByRole("radiogroup", {
-        name: "Default subagent reasoning",
-        exact: true,
-      })
-      .getByText("Low", { exact: true })
-      .click();
-    await page.waitForFunction(() =>
-      window.calls.some((call) => call.worker_defaults?.effort === "low"),
-    );
-    await modal.getByRole("tab", { name: /^Team/ }).click();
+      modal.getByRole("radiogroup", { name: "Agent role" }),
+    ).toHaveCount(0);
     await modal
       .getByRole("combobox", { name: "Delegation depth", exact: true })
       .selectOption("2");
@@ -155,21 +117,7 @@ function Fixture(){const[agent,setAgent]=useState(initial),[opened,setOpened]=us
         exact: true,
       }),
     ).toBeVisible();
-    await modal.getByRole("tab", { name: "Models", exact: true }).focus();
-    await page.keyboard.press("ArrowRight");
-    await expect(modal.getByRole("tab", { name: /^Team/ })).toHaveAttribute(
-      "aria-selected",
-      "true",
-    );
     await expect(modal.getByRole("dialog")).toHaveCount(0);
-    await modal.getByRole("tab", { name: "Models", exact: true }).click();
-    expect(
-      await modal
-        .locator(".model-options")
-        .evaluateAll((nodes) =>
-          nodes.every((node) => getComputedStyle(node).overflowY === "visible"),
-        ),
-    ).toBe(true);
     expect(
       await page.evaluate(
         () => document.documentElement.scrollWidth <= innerWidth,

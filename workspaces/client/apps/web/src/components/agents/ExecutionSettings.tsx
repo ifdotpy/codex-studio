@@ -16,6 +16,9 @@ import {
 } from "@mantine/core";
 import { ChevronDown } from "lucide-react";
 import {
+  type ReactElement,
+  type ReactNode,
+  type RefObject,
   useCallback,
   useEffect,
   useId,
@@ -94,6 +97,11 @@ const fastTier = (info?: WorkerModelInfo) =>
 
 type SettingsProps = {
   presentation?: "menu" | "panel";
+  renderTrigger?: (props: {
+    opened: boolean;
+    ref: RefObject<HTMLButtonElement | null>;
+    onClick: () => void;
+  }) => ReactElement;
   agent: Agent;
   lead?: Agent;
   catalog: Catalog;
@@ -232,8 +240,10 @@ function ExecutionSettingsController(props: ControllerProps) {
     props.initialRole || (props.agent.isLead ? "orchestrator" : "worker"),
   );
   const [opened, setOpened] = useState(false);
+  const triggerRef = useRef<HTMLButtonElement>(null);
   useEffect(() => {
     if ((props.openRequest || 0) > 0) {
+      triggerRef.current?.focus({ preventScroll: true });
       setRole(props.agent.isLead ? "orchestrator" : "worker");
       setOpened(true);
     }
@@ -241,6 +251,7 @@ function ExecutionSettingsController(props: ControllerProps) {
   const changeOpened = useCallback(
     (value: boolean) => {
       setOpened(value);
+      if (!value) triggerRef.current?.focus({ preventScroll: true });
       if (!value && props.settingsRow)
         setRole(
           props.initialRole || (props.agent.isLead ? "orchestrator" : "worker"),
@@ -258,19 +269,23 @@ function ExecutionSettingsController(props: ControllerProps) {
   const roleSwitchId = useId();
   const focusRole = useRef(false);
   useLayoutEffect(() => {
+    const selected = document
+      .getElementById(roleSwitchId)
+      ?.querySelector<HTMLInputElement>("input:checked");
+    // Each role has isolated draft state. Preserve the selected keyboard
+    // target when its form remounts inside the stable focus trap.
+    selected?.setAttribute("data-autofocus", "true");
     if (focusRole.current) {
-      document
-        .getElementById(roleSwitchId)
-        ?.querySelector<HTMLInputElement>("input:checked")
-        ?.focus();
+      selected?.focus();
       focusRole.current = false;
     }
-  }, [role, roleSwitchId]);
+  }, [role, roleSwitchId, opened]);
   const scope = JSON.stringify([agent.id, accountOf(agent), role]);
-  return (
+  const controls = (
     <ScopedExecutionSettings
       key={scope}
       {...props}
+      presentation={props.renderTrigger ? "panel" : props.presentation}
       agent={agent}
       inheritedUnavailable={inheritedRole && !props.lead}
       readOnlyReason={readOnlyReason}
@@ -282,14 +297,36 @@ function ExecutionSettingsController(props: ControllerProps) {
         setRole(value);
       }}
       opened={opened}
+      triggerRef={triggerRef}
       setOpened={changeOpened}
     />
+  );
+  if (!props.renderTrigger || props.section) return controls;
+  return (
+    <ExecutionMenu
+      opened={opened}
+      setOpened={changeOpened}
+      accountModalOpen={props.accountModalOpen}
+      label={settingsLabel(
+        agent,
+        role,
+        role === "review" || (role === "worker" && !!agent.isLead),
+      )}
+      trigger={props.renderTrigger({
+        opened,
+        ref: triggerRef,
+        onClick: () => changeOpened(!opened),
+      })}
+    >
+      {controls}
+    </ExecutionMenu>
   );
 }
 
 function ScopedExecutionSettings({
   agent,
   presentation = "menu",
+  renderTrigger,
   section,
   readOnlyReason,
   inheritedUnavailable,
@@ -313,6 +350,7 @@ function ScopedExecutionSettings({
   role,
   onRole,
   opened,
+  triggerRef,
   setOpened,
 }: ControllerProps & {
   teamDefaults: boolean;
@@ -322,6 +360,7 @@ function ScopedExecutionSettings({
   role: SetupRole;
   onRole: (role: SetupRole) => void;
   opened: boolean;
+  triggerRef: RefObject<HTMLButtonElement | null>;
   setOpened: (opened: boolean) => void;
 }) {
   const { post, save, saved } = useServerApi();
@@ -426,15 +465,7 @@ function ScopedExecutionSettings({
     kind: "saving" | "saved" | "accepted";
     text: string;
   } | null>(null);
-  const label =
-    role === "review"
-      ? "Review settings"
-      : teamDefaults
-        ? "Subagent defaults"
-        : agent.isLead
-          ? "Main agent settings"
-          : "Subagent settings";
-  const popoverLabelId = useId();
+  const label = settingsLabel(agent, role, teamDefaults);
   const prefix = teamDefaults
     ? "Default subagent"
     : agent.isLead
@@ -1113,7 +1144,6 @@ function ScopedExecutionSettings({
       if (mounted.current) setSaving(false);
     }
   };
-  const mobile = useMediaQuery("(max-width: 760px)");
   const chooseAutomaticModel = (model: string) => {
     const row = infoFor(allWorkerModels, model);
     const effort = row?.supportedReasoningEfforts?.some(
@@ -1233,7 +1263,6 @@ function ScopedExecutionSettings({
     ) : null;
   const controls = (
     <>
-      {presentation === "menu" && delegation}
       <AgentSetupPicker
         retainCurrentModel={!onDraftChange}
         role={role}
@@ -1564,8 +1593,15 @@ function ScopedExecutionSettings({
       )}
     </>
   );
+  const toggle = () => {
+    if (settingsRow) onRole(initialRole);
+    setError("");
+    setStatus(null);
+    setOpened(!opened);
+  };
   const trigger = (
     <Button
+      ref={triggerRef}
       className="execution-menu"
       rightSection={<ChevronDown size={14} />}
       title={[
@@ -1601,12 +1637,7 @@ function ScopedExecutionSettings({
           : label
       }
       aria-expanded={opened}
-      onClick={() => {
-        if (settingsRow) onRole(initialRole);
-        setError("");
-        setStatus(null);
-        setOpened(!opened);
-      }}
+      onClick={toggle}
     >
       <span
         className="execution-selected"
@@ -1669,19 +1700,68 @@ function ScopedExecutionSettings({
   if (section === "permissions") return permissions;
   if (presentation === "panel")
     return (
-      <div className="execution-profile-body" data-role={role}>
+      <div
+        className={renderTrigger ? undefined : "execution-profile-body"}
+        data-role={role}
+      >
         {controls}
       </div>
     );
+  return (
+    <>
+      {permissionsTarget && createPortal(permissions, permissionsTarget)}
+      {extrasTarget && createPortal(extras, extrasTarget)}
+      <ExecutionMenu
+        opened={opened}
+        setOpened={setOpened}
+        accountModalOpen={accountModalOpen}
+        label={label}
+        trigger={trigger}
+      >
+        {controls}
+      </ExecutionMenu>
+    </>
+  );
+}
+
+const settingsLabel = (agent: Agent, role: SetupRole, teamDefaults: boolean) =>
+  role === "review"
+    ? "Review settings"
+    : teamDefaults
+      ? "Subagent defaults"
+      : agent.isLead
+        ? "Main agent settings"
+        : "Subagent settings";
+
+/** Keep the anchor and focus trap mounted while the isolated role form changes. */
+function ExecutionMenu({
+  opened,
+  setOpened,
+  accountModalOpen = false,
+  label,
+  trigger,
+  children,
+}: {
+  opened: boolean;
+  setOpened: (value: boolean) => void;
+  accountModalOpen?: boolean;
+  label: string;
+  trigger: ReactElement;
+  children: ReactNode;
+}) {
+  const mobile = useMediaQuery("(max-width: 760px)");
+  const popoverLabelId = useId();
   if (mobile)
     return (
       <>
         {trigger}
-        {permissionsTarget && createPortal(permissions, permissionsTarget)}
-        {extrasTarget && createPortal(extras, extrasTarget)}
         <Drawer
           opened={opened}
           onClose={() => setOpened(false)}
+          closeOnEscape={false}
+          closeOnClickOutside={!accountModalOpen}
+          trapFocus={!accountModalOpen}
+          returnFocus
           position="bottom"
           size="auto"
           title={label}
@@ -1689,15 +1769,13 @@ function ScopedExecutionSettings({
           withinPortal
         >
           <div className="execution-dropdown" role="region" aria-label={label}>
-            {controls}
+            {children}
           </div>
         </Drawer>
       </>
     );
   return (
     <>
-      {permissionsTarget && createPortal(permissions, permissionsTarget)}
-      {extrasTarget && createPortal(extras, extrasTarget)}
       <Popover
         opened={opened}
         onChange={setOpened}
@@ -1720,7 +1798,7 @@ function ScopedExecutionSettings({
           <span id={popoverLabelId} className="sr-only">
             {label}
           </span>
-          {controls}
+          {children}
         </Popover.Dropdown>
       </Popover>
     </>
