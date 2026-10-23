@@ -74,6 +74,9 @@ pub mod federation_effects;
 pub mod federation_limits;
 pub mod federation_messaging;
 pub mod file_derived;
+pub mod host_exec;
+#[cfg(unix)]
+pub mod host_exec_service;
 pub mod host_project_runtime;
 pub mod host_worker_create;
 pub mod image_workspace;
