@@ -11,7 +11,7 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-test.use({ apiSchemaFixtureHeaders: false });
+test.use({ apiSchemaFixtureHeaders: false, hasTouch: true });
 
 test("team-navigation-ui", async ({ page: fixturePage }) => {
   test.setTimeout(60_000);
@@ -22,6 +22,19 @@ test("team-navigation-ui", async ({ page: fixturePage }) => {
       ...process.env,
       CODEX_BOARD_STATE_DIR: join(root, "board"),
       FIXTURE_WORKER_COUNT: "40",
+      FIXTURE_AGENT_STEPS: JSON.stringify({
+        "Worker 02": [
+          {
+            say: "Which scope should I review?",
+            item: "team-navigation-answer",
+            extra: {
+              questions: [
+                { title: "Which scope?", options: ["One file", "All files"] },
+              ],
+            },
+          },
+        ],
+      }),
     },
   });
   let page,
@@ -48,6 +61,14 @@ test("team-navigation-ui", async ({ page: fixturePage }) => {
     const workers = initial.threads.filter(
       (agent) => agent.rootId === lead.id && !agent.isLead,
     );
+    assert.equal(workers.length, 40);
+    assert.equal(
+      initial.runtime.agents.some(
+        (agent) => agent.parentId === lead.id && agent.role === "reviewer",
+      ),
+      false,
+      "navigation workers must persist after result delivery; reviewers auto-archive",
+    );
     const worker = (n) =>
       workers.find(
         (agent) => agent.name === `Worker ${String(n).padStart(2, "0")}`,
@@ -66,7 +87,6 @@ test("team-navigation-ui", async ({ page: fixturePage }) => {
       const data = await response.json();
       if (data.reset || !data.documents?.length)
         return route.fulfill({ response, json: data });
-      let sequence = data.maxSeq || data.checkpoint?.seq || 0;
       // The server seeds idle workers; the roster's mix of states is scripted here.
       const desiredStatus = new Map(
         workers.map((agent, index) => [
@@ -75,7 +95,6 @@ test("team-navigation-ui", async ({ page: fixturePage }) => {
             (index < 8 ? "running" : index < 26 ? "queued" : "completed"),
         ]),
       );
-      let answerRequestPresent = false;
       for (const document of data.documents) {
         if (document._deleted) continue;
         const payload = JSON.parse(document.payload);
@@ -84,7 +103,6 @@ test("team-navigation-ui", async ({ page: fixturePage }) => {
           payload.value.status = "approval";
           payload.value.inFlight = false;
           document.payload = JSON.stringify(payload);
-          document.seq = ++sequence;
         } else if (
           payload.collection === "agent" &&
           desiredStatus.has(payload.id)
@@ -92,41 +110,10 @@ test("team-navigation-ui", async ({ page: fixturePage }) => {
           payload.value.status = desiredStatus.get(payload.id);
           payload.value.inFlight = payload.value.status === "running";
           document.payload = JSON.stringify(payload);
-          document.seq = ++sequence;
-        } else if (
-          payload.collection === "request" &&
-          payload.value.agent === worker(2).id
-        ) {
-          answerRequestPresent = true;
         }
       }
-      if (!answerRequestPresent) {
-        data.documents.push({
-          id: "entity:request:team-navigation-answer",
-          seq: ++sequence,
-          _deleted: false,
-          payload: JSON.stringify({
-            collection: "request",
-            id: "team-navigation-answer",
-            value: {
-              id: "team-navigation-answer",
-              method: "agent/asyncQuestion",
-              agent: worker(2).id,
-              epoch: initial.runtime.agents.find(
-                (agent) => agent.id === worker(2).id,
-              ).epoch,
-              status: "pending",
-              params: {
-                questions: [{ id: "scope", question: "Which scope?" }],
-              },
-            },
-          }),
-        });
-      }
-      data.documents.sort((left, right) => left.seq - right.seq);
-      data.checkpoint = { ...data.checkpoint, seq: sequence };
-      data.maxSeq = sequence;
-      data.initialHigh = sequence;
+      // Only presentation values change. The real pending question is seeded
+      // through the provider; server-owned sequences and checkpoints stay intact.
       await route.fulfill({ response, json: data });
     });
     await page.goto(origin);
