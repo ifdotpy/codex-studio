@@ -584,7 +584,18 @@ export default function App({ active = true }: { active?: boolean }) {
   const navigationIntent = useRef(0);
   const createdSelection = useRef<string | null>(null);
   useMobileViewport(active && mobileClient);
-  const narrowTeam = useMediaQuery("(max-width: 1199px)");
+  // CSS owns these sums: --studio-form-max + --studio-team-size, with
+  // --studio-sidebar-width when the desktop fleet occupies space. The Team
+  // layout parity test keeps the media queries aligned with those owners.
+  const teamFitsWithoutSidebar = useMediaQuery("(min-width: 60rem)");
+  const teamFitsWithSidebar = useMediaQuery("(min-width: 78rem)");
+  const teamHasSidebar =
+    (!isServerView || isClassicServerView) &&
+    !mobileClient &&
+    !sidebarCollapsed;
+  const narrowTeam = !(teamHasSidebar
+    ? teamFitsWithSidebar
+    : teamFitsWithoutSidebar);
   const {
       data,
       error,
@@ -3079,7 +3090,7 @@ export default function App({ active = true }: { active?: boolean }) {
               opened={teamOpen}
               onClose={() => setTeamOpen(false)}
               position="right"
-              size={300}
+              size="var(--studio-team-size)"
               padding={0}
               withCloseButton={false}
               title="Team"
