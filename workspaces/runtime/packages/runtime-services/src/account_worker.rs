@@ -4565,9 +4565,23 @@ impl Worker {
         for event in exit.undelivered {
             self.event(event).await?;
         }
+        // A retained provider (a supervised process that outlives this worker)
+        // keeps its generation open: the next worker attaches to it and
+        // continues its turns, so this end is no provider disconnect.
+        let provider_retained = exit
+            .adapter
+            .as_ref()
+            .is_some_and(|adapter| adapter.provider_retained);
+        let outcomes = exit
+            .outcomes
+            .into_iter()
+            .filter(|outcome| {
+                !(provider_retained && matches!(outcome, SessionOutcome::GenerationClosed { .. }))
+            })
+            .collect();
         self.event(SessionEvent {
             journal: None,
-            outcomes: exit.outcomes,
+            outcomes,
         })
         .await?;
         for (_, reply) in std::mem::take(&mut self.vm_notification_waiters) {
@@ -4590,7 +4604,7 @@ impl Worker {
                 store::save_recovery(&store, &account, &recovery).await?;
             }
             scheduler::lifecycle_transaction(&store, move |tx| {
-                store::disconnect_provider_generation(tx, &account, generation)
+                store::disconnect_provider_generation(tx, &account, generation, provider_retained)
             })
             .await?;
             Ok(())

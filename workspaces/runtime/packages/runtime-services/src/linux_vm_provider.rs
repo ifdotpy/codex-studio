@@ -480,6 +480,8 @@ async fn run_guest_attachment(
         result,
         cleanup_error: None,
         recovery_needed: None,
+        // The account worker disconnects its VM actors when their session ends.
+        provider_retained: false,
     }
 }
 

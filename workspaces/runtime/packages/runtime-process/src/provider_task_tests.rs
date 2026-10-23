@@ -304,6 +304,7 @@ fn actor(
         initialize_id: None,
         cached_initialize: None,
         open_attempted: false,
+        provider_exited: false,
     };
     (actor, commands, journal)
 }

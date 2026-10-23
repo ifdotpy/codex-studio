@@ -713,3 +713,38 @@ fn stored_incident_runs_that_share_a_turn_settle_without_an_edit() {
         "{runs:?}"
     );
 }
+
+/// An account worker whose supervised host provider outlives it ends only its
+/// VM actors: their sessions belong to the worker. The host turn stays live
+/// for the next worker of the same generation.
+#[test]
+fn a_retained_host_provider_disconnects_only_the_vm_actors() {
+    let mut connection = database();
+    let attempt = |id: &str| {
+        json!({"id": id, "epoch": 0, "accountKey": ACCOUNT, "events": [format!("event-{id}")],
+            "submitted": true, "turnId": "turn", "connectionGeneration": 4, "created": 1.0,
+            "settingsFixed": true, "connectionId": "connection", "threadId": "thread"})
+    };
+    let running = |attempt: Value| {
+        json!({"status": "running", "autoWake": true, "inFlight": true, "turnId": "turn",
+            "error": null, "startAttempt": attempt})
+    };
+    put(&connection, running(attempt("host")));
+    let mut vm = running(attempt("vm"));
+    vm["id"] = json!("vm-agent");
+    vm["rootId"] = json!("vm-agent");
+    vm["executionMode"] = json!("vm");
+    put(&connection, vm);
+    let host = stored(&connection);
+    let interrupted = with(&mut connection, |tx| {
+        SchedulerRepository::disconnect_vm_actors(tx, ACCOUNT, 4, 20.0).expect("disconnect runs")
+    });
+    assert_eq!(interrupted, ["vm-agent"]);
+    assert_eq!(stored(&connection), host);
+    let vm = AgentRepository::get(&connection, &AgentId::from("vm-agent"))
+        .expect("agent reads")
+        .expect("agent exists")
+        .value();
+    assert_eq!(vm["status"], "interrupted");
+    assert_eq!(vm["error"], PROVIDER_DISCONNECTED_TURN_ERROR);
+}

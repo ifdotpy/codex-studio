@@ -298,7 +298,7 @@ async fn a_pending_question_survives_a_worker_reattach_and_is_answered_once() {
         .bridge
         .run(|store| async move {
             scheduler::lifecycle_transaction_with(&store, |tx| {
-                store::disconnect_provider_generation(tx, "default", 1)?;
+                store::disconnect_provider_generation(tx, "default", 1, false)?;
                 Ok::<_, WorkerError>(())
             })
             .await

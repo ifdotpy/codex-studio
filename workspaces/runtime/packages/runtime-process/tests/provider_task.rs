@@ -1441,10 +1441,31 @@ async fn terminal_eof_serves_already_queued_final_ack_before_completion() {
         receipt.receive().await,
         CommandReceipt::Acknowledged(EventCursor(1))
     ));
-    assert!(attachment.completion().await.result.is_ok());
+    let exit = attachment.completion().await;
+    assert!(exit.result.is_ok());
+    // The attachment saw the child end: no provider outlives it.
+    assert!(!exit.provider_retained);
     assert!(peer.read().await.is_none());
     assert!(peer.read_event().await.is_none());
     }).await;
+}
+
+/// The supervisor keeps the child when only the attachment ends, so its turns
+/// are not lost (a replaced account worker attaches to the same generation).
+#[tokio::test]
+async fn a_cancelled_attachment_leaves_its_supervised_child_retained() {
+    watchdog(async {
+        let state = DisposableState::new();
+        let (mut attachment, mut peer) = open_peer(&state).await;
+        peer.next_event(0, 1, "stdout", json!({"method":"notice"}))
+            .await;
+        attachment.journal.recv().await.unwrap();
+        peer.request("nextBatch").await;
+        let exit = attachment.shutdown().await;
+        assert!(exit.provider_retained);
+        assert!(peer.read().await.is_none());
+    })
+    .await;
 }
 
 async fn watchdog<T>(future: impl std::future::Future<Output = T>) -> T {

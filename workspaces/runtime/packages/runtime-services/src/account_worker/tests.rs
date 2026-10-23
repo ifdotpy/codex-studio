@@ -394,12 +394,17 @@ impl Peer {
         gate: Option<oneshot::Receiver<()>>,
         cleanup_error: Option<String>,
     ) -> Self {
-        Self::identity_with_options(account, generation, gate, cleanup_error, false)
+        Self::identity_with_options(account, generation, gate, cleanup_error, false, false)
+    }
+    /// A supervised provider: its process outlives the worker's attachment,
+    /// and only `stop` ends it.
+    fn supervised() -> Self {
+        Self::identity_with_options("default", 1, None, None, false, true)
     }
     /// A peer whose `initialize` reaches the test as an ordinary write, so its
     /// reply arrives as a journal frame behind any earlier provider frames.
     fn initialized_by_journal(account: &str, generation: u64) -> Self {
-        Self::identity_with_options(account, generation, None, None, true)
+        Self::identity_with_options(account, generation, None, None, true, false)
     }
     fn identity_with_options(
         account: &str,
@@ -407,6 +412,7 @@ impl Peer {
         mut gate: Option<oneshot::Receiver<()>>,
         cleanup_error: Option<String>,
         journal_initialize: bool,
+        supervised: bool,
     ) -> Self {
         let generation = Generation(generation);
         MATRIX
@@ -416,8 +422,30 @@ impl Peer {
                     .store(generation.0, std::sync::atomic::Ordering::SeqCst)
             })
             .ok();
+        // `stop` ends the fake provider process; `attachment` ends the
+        // worker's attachment. A direct provider ends with its attachment; a
+        // supervised one outlives it.
         let stop = Shutdown::default();
+        let attachment = if supervised {
+            Shutdown::default()
+        } else {
+            stop.clone()
+        };
         let mut stopped = stop.subscribe();
+        if supervised {
+            // Either end stops the fake task.
+            let task_stop = Shutdown::default();
+            for source in [stop.clone(), attachment.clone()] {
+                let task_stop = task_stop.clone();
+                tokio::spawn(async move {
+                    let mut source = source.subscribe();
+                    Shutdown::cancelled(&mut source).await;
+                    task_stop.cancel();
+                });
+            }
+            stopped = task_stop.subscribe();
+        }
+        let provider_stopped = stop.subscribe();
         let (commands, mut inbox) = mpsc::channel::<AdapterCommand>(16);
         let (entries, journal) = mpsc::channel(PEER_JOURNAL_CAPACITY);
         let (out, writes) = mpsc::channel(16);
@@ -489,10 +517,11 @@ impl Peer {
                 result: Ok(()),
                 cleanup_error,
                 recovery_needed: None,
+                provider_retained: supervised && !*provider_stopped.borrow(),
             }
         });
         let factory = Arc::new(Factory(std::sync::Mutex::new(Some(
-            ProviderAttachment::from_task(commands, journal, observed, stop.clone(), task),
+            ProviderAttachment::from_task(commands, journal, observed, attachment, task),
         ))));
         Self {
             wire: studio_runtime_providers::ProviderKind::Codex.wire(),
@@ -6121,6 +6150,65 @@ async fn provider_exit_while_the_server_runs_is_a_disconnect_reported_once() {
         );
     }
     replacement.shutdown().await.unwrap();
+}
+
+/// A replaced account worker leaves the turn of its supervised provider
+/// live: the provider process keeps running under the supervisor, and the next
+/// worker attaches to the same generation. Before, every worker end marked the
+/// turn "Codex disconnected" and told the parent; the live state had 43 such
+/// notices in 21 and 22 October 2026, each with the provider process alive.
+#[tokio::test]
+async fn a_replaced_worker_keeps_the_live_turn_of_its_retained_provider() {
+    let state = State::new().await;
+    let parent = adopt_parent(&state).await;
+    let mut peer = Peer::supervised();
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    let start = state.start(&mut peer, &worker).await;
+    peer.accepted(&start).await;
+    worker_barrier(&worker).await;
+    // The registry replaces the worker; the provider process keeps running.
+    worker.shutdown().await.unwrap();
+    let record = state.record().await;
+    assert_eq!(record["status"], "running", "{record}");
+    assert!(record["error"].is_null(), "{record}");
+    assert_eq!(child_stop_notices(&state, &parent).await, 0);
+
+    // The next worker attaches to the same provider generation.
+    let mut next = Peer::supervised();
+    next.cursor = 2;
+    let mut replacement = next.worker(state.bridge.clone()).await;
+    worker_barrier(&replacement).await;
+    let record = state.record().await;
+    assert_eq!(record["status"], "running", "{record}");
+    assert_eq!(child_stop_notices(&state, &parent).await, 0);
+    while let Ok(wire) = next.writes.try_recv() {
+        assert_ne!(
+            wire.value["method"], "turn/start",
+            "the live turn is not resent"
+        );
+    }
+    next.completed().await;
+    assert_eq!(state.record().await["status"], "completed");
+    replacement.shutdown().await.unwrap();
+}
+
+/// The exit of a supervised provider process is still a disconnect.
+#[tokio::test]
+async fn a_supervised_provider_exit_is_still_a_disconnect() {
+    let state = State::new().await;
+    let parent = adopt_parent(&state).await;
+    let mut peer = Peer::supervised();
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    let start = state.start(&mut peer, &worker).await;
+    peer.accepted(&start).await;
+    provider_exits(&peer, &mut worker).await;
+    let record = state.record().await;
+    assert_eq!(record["status"], "interrupted");
+    assert_eq!(
+        record["error"],
+        studio_runtime_store::PROVIDER_DISCONNECTED_TURN_ERROR
+    );
+    assert_eq!(child_stop_notices(&state, &parent).await, 1);
 }
 
 #[tokio::test]
