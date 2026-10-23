@@ -17,6 +17,8 @@ fn fixture(root: &Path) {
     .unwrap();
 }
 
+// Only the Linux service manager tests run the operator command.
+#[cfg(target_os = "linux")]
 fn cli(root: &Path, args: &[&str]) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_studio-runtime-server"))
         .args(args)
