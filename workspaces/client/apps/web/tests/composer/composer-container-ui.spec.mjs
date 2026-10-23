@@ -120,6 +120,14 @@ test("composer keeps one tools row and readable mixed-provider execution summary
           await expect(
             trigger.locator(".execution-summary-segment"),
           ).toHaveCount(3);
+          await expect(trigger.locator(".execution-worker-count")).toHaveCount(
+            0,
+          );
+          await expect(trigger).not.toHaveAttribute(
+            "aria-label",
+            /\d+ workers/,
+          );
+          await expect(trigger).not.toHaveAttribute("title", /\d+ workers/);
           await trigger.click();
           const settings = page.getByRole("dialog", {
             name: "Chat settings",
@@ -285,11 +293,11 @@ test("composer keeps one tools row and readable mixed-provider execution summary
       ).toBeLessThanOrEqual(1);
       for (const chip of result.chips) {
         expect(chip.namesHidden).toBe(false);
-        if (result.composer.width >= 440) {
-          const names = chip.names.filter((name) => name.visible);
-          expect(names).toHaveLength(3);
-          for (const name of names)
-            expect(name.right).toBeLessThanOrEqual(chip.button.right);
+        const names = chip.names.filter((name) => name.visible);
+        if (result.composer.width >= 440) expect(names).toHaveLength(3);
+        for (const name of names) {
+          expect(name.left).toBeGreaterThanOrEqual(chip.button.left);
+          expect(name.right).toBeLessThanOrEqual(chip.button.right);
         }
         if (!chip.namesHidden)
           expect(

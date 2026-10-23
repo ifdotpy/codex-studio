@@ -2,7 +2,7 @@
 .empty-chat-settings {
   display: flex;
   align-items: center;
-  flex: 1 1 auto;
+  flex: 1 1 0;
   min-width: 0;
 }
 .execution-summary-trigger {
@@ -46,8 +46,7 @@
 }
 .execution-summary-segment .execution-role,
 .execution-summary-segment .execution-effort,
-.execution-inherited-label,
-.execution-worker-count {
+.execution-inherited-label {
   font-size: var(--studio-text-meta);
   color: var(--mantine-color-dimmed);
   white-space: nowrap;
