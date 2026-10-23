@@ -125,10 +125,17 @@ the remaining weekly allowance.
 
 Chat settings includes Claude permission modes, extended thinking, automatic
 compaction, native commands and skills, and context rollback. Model, effort, and
-fast-mode controls use the native model catalog. The model picker lists one row
-per model with its display name, a **(default)** tag for the catalog default, a
-**(current)** tag for the model the chat uses now, and the catalog description
-in a second column. Hidden catalog models stay hidden. A proposed plan waits for a
+fast-mode controls use the native model catalog. Setup sheets list models as
+native radio choices with descriptions and reasons for unavailable choices.
+Tab enters the selected model; arrow keys select another enabled model. Compact
+model fields use native selects grouped by provider, with **(default)** and
+**(current)** tags where applicable and the selected model's description below
+the field. Dropdown menus show text labels; their appearance follows the browser.
+Fast and Daybreak switches include visible descriptions. Chat settings groups
+Lead, Workers, and Review in native disclosures, with one role open at a time.
+Team contains subagent parallelism and delegation depth; zero parallelism uses
+a single agent. Account eligibility is separate from each role's selected account.
+Access shows permissions and the reason browser access is unavailable. Hidden catalog models stay hidden. A proposed plan waits for a
 separate implementation request. Rollback preserves the original saved history.
 Commands and rollback retain their request identities after a lost response.
 

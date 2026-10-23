@@ -129,7 +129,9 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
         name: "Main agent settings",
         exact: true,
       });
-      await expect(trigger).toContainText("Astra 6 · Medium · Work 1");
+      await expect(trigger.locator(".execution-model")).toHaveText("Astra 6");
+      await expect(trigger.locator(".execution-effort")).toHaveText("Medium");
+      await expect(trigger.locator(".execution-account")).toHaveText("Work 1");
       assert.equal(
         await trigger
           .locator(".execution-selected")
@@ -140,7 +142,7 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
         .getByRole("button", { name: "Main agent settings", exact: true })
         .click();
       await expect(
-        page.getByRole("listbox", { name: "Main agent model" }),
+        page.getByRole("radiogroup", { name: "Main agent model" }),
       ).toBeVisible();
       const capture = async (scene) => {
         if (process.env.PICKER_CLIP_DETECTOR) {
@@ -168,14 +170,14 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
         window.calls.some((call) => call.effort === "high"),
       );
       await page
-        .getByRole("button", { name: "Fast mode", exact: true })
+        .getByRole("switch", { name: "Fast mode", exact: true })
         .click();
       await page.waitForFunction(() =>
         window.calls.some((call) => call.fast_mode === true),
       );
-      await page.getByRole("button", { name: "Worker", exact: true }).click();
+      await page.getByText("Worker", { exact: true }).click();
       await expect(
-        page.getByRole("listbox", { name: "Default subagent model" }),
+        page.getByRole("radiogroup", { name: "Default subagent model" }),
       ).toBeVisible();
       await capture("worker-codex");
       await chooseSetupValue(
@@ -200,21 +202,21 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
         0,
       );
       await expect(
-        page.getByRole("option", {
-          name: "Opus 5.5 recommended",
+        page.getByRole("radio", {
+          name: "Opus 5.5 (default)",
           exact: true,
         }),
       ).toBeVisible();
       await capture("worker-claude");
       assert.equal(
         await page
-          .getByRole("button", { name: "Daybreak", exact: true })
+          .getByRole("switch", { name: "Daybreak", exact: true })
           .count(),
         0,
       );
       assert.equal(
         await page
-          .getByRole("button", { name: "Fast mode", exact: true })
+          .getByRole("switch", { name: "Fast mode", exact: true })
           .count(),
         0,
       );
@@ -225,7 +227,7 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
         .locator("label")
         .filter({ hasText: "Codex" })
         .click();
-      const luna = page.getByRole("option", { name: "Luna 6", exact: true });
+      const luna = page.getByRole("radio", { name: "Luna 6", exact: true });
       await expect(luna).toBeVisible();
       const mark = await page.evaluate(() => window.calls.length);
       await luna.click();
@@ -253,17 +255,17 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
         ),
         0,
       );
-      await expect(luna).toHaveAttribute("aria-selected", "true");
-      await page.getByRole("button", { name: "Review", exact: true }).click();
+      await expect(luna).toBeChecked();
+      await page.getByText("Review", { exact: true }).click();
       await expect(
-        page.getByText("Uses the caller account", { exact: true }),
+        page.getByText("Uses the caller account.", { exact: true }),
       ).toBeVisible();
       assert.equal(
         await page.getByLabel("Subagent account", { exact: true }).count(),
         0,
       );
       assert.equal(
-        await page.getByRole("option", { name: /Sonnet/ }).count(),
+        await page.getByRole("radio", { name: /Sonnet/ }).count(),
         0,
       );
       // Restore automatic workers, so review defaults have the Codex catalog accepted by the backend.
@@ -278,10 +280,10 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
         }),
       );
       await expect(
-        page.getByRole("option", { name: "Astra 6 recommended", exact: true }),
+        page.getByRole("radio", { name: "Astra 6 (default)", exact: true }),
       ).toBeVisible();
       await page
-        .getByRole("option", { name: "Astra 6 recommended", exact: true })
+        .getByRole("radio", { name: "Astra 6 (default)", exact: true })
         .click();
       await page.waitForFunction(() =>
         window.calls.some(
@@ -289,23 +291,21 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
         ),
       );
       await capture("review-codex");
-      await page
-        .getByRole("button", { name: "Orchestrator", exact: true })
-        .click();
+      await page.getByText("Orchestrator", { exact: true }).click();
       await chooseSetupValue(
         page.getByLabel("Main agent account", { exact: true }),
         "account-5",
       );
       // A default alias reads as the model it resolves to, listed once.
       await expect(
-        page.getByRole("option", {
-          name: "Opus 5.5 recommended",
+        page.getByRole("radio", {
+          name: "Opus 5.5 (default)",
           exact: true,
         }),
       ).toBeVisible();
-      await expect(
-        page.getByRole("option", { name: /^Opus 5\.5/ }),
-      ).toHaveCount(1);
+      await expect(page.getByRole("radio", { name: /^Opus 5\.5/ })).toHaveCount(
+        1,
+      );
       await expect(page.locator(".execution-menu").first()).toContainText(
         "Opus 5.5",
       );
@@ -329,9 +329,16 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
         name: "Review settings",
         exact: true,
       });
-      await expect(mainRow).toContainText("Astra 6 · Medium · Work 1");
-      await expect(workersRow).toContainText("Luna 6 · High · Work 1");
-      await expect(reviewRow).toContainText("Astra 6 · Medium");
+      await expect(mainRow.locator(".execution-model")).toHaveText("Astra 6");
+      await expect(mainRow.locator(".execution-effort")).toHaveText("Medium");
+      await expect(mainRow.locator(".execution-account")).toHaveText("Work 1");
+      await expect(workersRow.locator(".execution-model")).toHaveText("Luna 6");
+      await expect(workersRow.locator(".execution-effort")).toHaveText("High");
+      await expect(workersRow.locator(".execution-account")).toHaveText(
+        "Work 1",
+      );
+      await expect(reviewRow.locator(".execution-model")).toHaveText("Astra 6");
+      await expect(reviewRow.locator(".execution-effort")).toHaveText("Medium");
       await expect(reviewRow).not.toContainText("Work 1");
       await expect(reviewRow.locator(".execution-selected")).toHaveAttribute(
         "data-inherited",
@@ -344,8 +351,8 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
       ]) {
         await row.click();
         await expect(
-          page.getByRole("button", { name: role, exact: true }),
-        ).toHaveAttribute("aria-pressed", "true");
+          page.getByRole("radio", { name: role, exact: true }),
+        ).toBeChecked();
         await page.keyboard.press("Escape");
         await expect(page.locator(".execution-dropdown:visible")).toHaveCount(
           0,
@@ -361,7 +368,8 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
         "high",
       );
       await page.keyboard.press("Escape");
-      await expect(reviewRow).toContainText("Luna 6 · High");
+      await expect(reviewRow.locator(".execution-model")).toHaveText("Luna 6");
+      await expect(reviewRow.locator(".execution-effort")).toHaveText("High");
       await expect(
         reviewRow.locator(".execution-selected"),
       ).not.toHaveAttribute("data-inherited");
@@ -410,8 +418,10 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
         } else if (scene === "shared") {
           await group.locator('[data-account-key="account-5"]').click();
           await expect(
-            page.getByLabel("Model for agent 1", { exact: true }),
-          ).toHaveAttribute("data-value", "default");
+            page
+              .getByLabel("Model for agent 1", { exact: true })
+              .getByRole("radio", { checked: true }),
+          ).toHaveValue("default");
           await chooseSetupValue(
             page.getByLabel("Reasoning for agent 1", { exact: true }),
             "high",

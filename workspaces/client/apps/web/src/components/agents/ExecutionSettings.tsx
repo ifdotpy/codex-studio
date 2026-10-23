@@ -6,8 +6,9 @@ import {
   Drawer,
   Switch,
   SegmentedControl,
-  Select,
-  Tooltip,
+  NativeSelect,
+  Stack,
+  Text,
 } from "@mantine/core";
 import { ChevronDown } from "lucide-react";
 import {
@@ -31,16 +32,17 @@ import {
 } from "./WorkerModelPicker";
 import { AccountTransferStatus, type Account } from "../Accounts";
 import { layerZIndex } from "../../theme";
-import type { ModelOption } from "../ModelPicker";
+import {
+  INHERITED_MODEL as DEFAULT,
+  modelDisplayName,
+  toModelOptions,
+  type ModelOption,
+} from "../models/modelOption";
 import { ProviderMark, setupAccountName } from "../AccountTiles";
 import { useMediaQuery } from "@mantine/hooks";
-import {
-  AgentSetupPicker,
-  setupModelName,
-  type SetupRole,
-} from "./AgentSetupPicker";
+import { AgentSetupPicker, type SetupRole } from "./AgentSetupPicker";
 import "./execution-settings.css";
-import { SettingsSection, SettingsRow } from "../ui/primitives";
+import { SettingsSection } from "../ui/primitives";
 
 type Catalog = ReturnType<typeof useWorkerModels>;
 type ConversationBody = PostBody<"/api/conversation">;
@@ -64,7 +66,6 @@ type SettingsAgent = Pick<
   | "fastMode"
   | "daybreakEnabled"
 >;
-const DEFAULT = "__model_default__";
 const title = (value: string) => value.charAt(0).toUpperCase() + value.slice(1);
 const infoFor = (catalog: Catalog, model: string) =>
   catalog.models.find(
@@ -80,32 +81,17 @@ const displayModel = (catalog: Catalog, model: string) => {
         (row.model === info.resolvedModel ||
           row.resolvedModel === info.resolvedModel),
     );
-    if (target) return setupModelName(target, target.model);
+    if (target) return modelDisplayName(target, target.model);
   }
   if (!info && model === "default") return "Auto";
-  return setupModelName(info, model);
+  return modelDisplayName(info, model);
 };
 const fastTier = (info?: WorkerModelInfo) =>
   info?.serviceTiers?.find((tier) => tier.id === "priority");
-export function shortModel(model: string) {
-  return (
-    (
-      {
-        "gpt-6-astra": "Astra",
-        "gpt-6.1-sol": "Sol 6.1",
-        "gpt-6-sol": "Sol 6",
-        "gpt-5.6-sol": "Sol",
-        "gpt-5.6-terra": "Terra",
-        "gpt-5.6-luna": "Luna",
-        "gpt-6-luna": "Luna",
-        "gpt-daybreak-blue-latest": "Daybreak Blue",
-        "gpt-daybreak-red-latest": "Daybreak Red",
-      } as Record<string, string>
-    )[model] || model
-  );
-}
 
 type SettingsProps = {
+  presentation?: "menu" | "disclosure";
+  teamOnly?: boolean;
   agent: Agent;
   catalog: Catalog;
   accounts?: Account[];
@@ -255,6 +241,8 @@ export function ExecutionSettings(props: SettingsProps) {
 
 function ScopedExecutionSettings({
   agent,
+  presentation = "menu",
+  teamOnly = false,
   catalog: parentCatalog,
   accounts = [],
   team,
@@ -540,28 +528,34 @@ function ScopedExecutionSettings({
     !!(active || queued || unconfirmed) &&
     daybreakEnabled !== !!agent.daybreakEnabled;
   const modeLabel = daybreakEnabled ? "Daybreak" : "Standard";
-  const modelOptions: ModelOption[] = models.map((row) => ({
-    value: row.model,
-    label: row.displayName || shortModel(row.model),
-    description: row.description || undefined,
-    isDefault: !!row.isDefault,
-    disabled: !supportsMode(row),
-  }));
+  const modelOptions = toModelOptions(models, {
+    provider: selectedProvider || "codex",
+    disabledReason: (row) =>
+      supportsMode(row)
+        ? undefined
+        : `Unavailable in ${modeLabel.toLowerCase()} mode.`,
+  });
   if (teamDefaults) {
     const leadModel = agent.model ?? "";
     const leadInfo = infoFor(catalog, leadModel);
     modelOptions.unshift({
       value: DEFAULT,
-      label: `Same as main agent (${agent.provider === "claude" ? leadInfo?.displayName || shortModel(leadModel) : shortModel(leadModel)})`,
+      label: `Same as main agent (${modelDisplayName(leadInfo, leadModel)})`,
+      provider: leadProvider || "codex",
+      badges: [],
       description: leadInfo?.description || undefined,
-      disabled: !supportsMode(leadInfo),
+      disabledReason: supportsMode(leadInfo)
+        ? undefined
+        : `Unavailable in ${modeLabel.toLowerCase()} mode.`,
     });
   }
   if (!modelOptions.some((row) => row.value === (current.model || DEFAULT)))
     modelOptions.unshift({
       value: current.model || DEFAULT,
-      label: shortModel(selectedModel),
-      disabled: true,
+      label: modelDisplayName(selectedModel),
+      provider: selectedProvider || "codex",
+      badges: [],
+      disabledReason: "Unavailable on this account.",
     });
   const reviewModels = catalog.models.filter(
     (row) =>
@@ -576,14 +570,11 @@ function ScopedExecutionSettings({
     {
       value: DEFAULT,
       label: "Same as caller",
+      provider: "codex",
+      badges: [],
       description: "Use the caller model and reasoning level.",
     },
-    ...reviewModels.map((row) => ({
-      value: row.model,
-      label: row.displayName || shortModel(row.model),
-      description: row.description || undefined,
-      isDefault: !!row.isDefault,
-    })),
+    ...toModelOptions(reviewModels),
   ];
   if (
     reviewCurrent.model &&
@@ -591,8 +582,10 @@ function ScopedExecutionSettings({
   )
     reviewOptions.push({
       value: reviewCurrent.model,
-      label: shortModel(reviewCurrent.model),
-      disabled: true,
+      label: modelDisplayName(reviewCurrent.model),
+      provider: "codex",
+      badges: [],
+      disabledReason: "Unavailable for review.",
     });
   const submit = async (request: ConversationBody, notice = "") => {
     if (onDraftChange) {
@@ -818,7 +811,7 @@ function ScopedExecutionSettings({
     };
     void submit(
       { id: agent.id, worker_defaults: next },
-      `${shortModel(wanted)} is not available on ${setupAccountName(accounts.find((account) => account.id === stored.account_key))}. Using ${replacement.displayName || shortModel(replacement.model)}, the account default.`,
+      `${modelDisplayName(wanted)} is not available on ${setupAccountName(accounts.find((account) => account.id === stored.account_key))}. Using ${modelDisplayName(replacement)}, the account default.`,
     );
   });
   const storedTransfer = jsonObject(agent.accountTransfer);
@@ -902,7 +895,7 @@ function ScopedExecutionSettings({
         }
         next.model = replacement.model;
         adjustments.push(
-          `Model changed to ${shortModel(next.model)} for ${next.daybreak_enabled ? "Daybreak" : "standard mode"}.`,
+          `Model changed to ${modelDisplayName(next.model)} for ${next.daybreak_enabled ? "Daybreak" : "standard mode"}.`,
         );
       }
     }
@@ -1078,20 +1071,21 @@ function ScopedExecutionSettings({
     : role === "review"
       ? reviewCurrent.model || DEFAULT
       : current.model || DEFAULT;
-  const crossOptions: ModelOption[] = allWorkerModels.models
-    .filter(
+  const crossOptions = toModelOptions(
+    allWorkerModels.models.filter(
       (row) =>
         !isDaybreakAlias(row.model) &&
         !row.hidden &&
         (row.provider || pickerProvider) === pickerProvider,
-    )
-    .map((row) => ({
-      value: row.model,
-      label: displayModel(allWorkerModels, row.model),
-      description: row.description || undefined,
-      isDefault: !!row.isDefault,
-      disabled: !supportsDaybreakMode(row, false),
-    }));
+    ),
+    {
+      provider: pickerProvider,
+      disabledReason: (row) =>
+        supportsDaybreakMode(row, false)
+          ? undefined
+          : "Unavailable in standard mode.",
+    },
+  ).map((row) => ({ ...row, label: displayModel(allWorkerModels, row.value) }));
   const pickerModels = (
     crossProvider
       ? crossOptions
@@ -1131,7 +1125,7 @@ function ScopedExecutionSettings({
       if (same.length < 2) return true;
       const keep =
         same.find((other) => other.value === pickerModel) ||
-        same.find((other) => other.isDefault) ||
+        same.find((other) => other.badges.includes("default")) ||
         same[0];
       return keep === row;
     });
@@ -1147,33 +1141,35 @@ function ScopedExecutionSettings({
     pickerInfo?.defaultReasoningEffort ||
     pickerEfforts[0]?.value ||
     "";
+  const delegation =
+    teamDefaults && agent.isLead && !onDraftChange ? (
+      <NativeSelect
+        label="Delegation depth"
+        value={String(current.delegation_depth)}
+        description="Lowering blocks new delegation immediately. Existing descendants keep running."
+        data={[
+          { value: "1", label: "Lead only (1)" },
+          { value: "2", label: "One nested level (2)" },
+          { value: "3", label: "Two nested levels (3)" },
+        ]}
+        disabled={saving}
+        onChange={(event) =>
+          void change({ delegation_depth: Number(event.currentTarget.value) })
+        }
+      />
+    ) : null;
   const controls = (
     <>
-      {teamDefaults && agent.isLead && !onDraftChange && (
-        <SettingsRow label="Delegation depth">
-          <Select
-            aria-label="Delegation depth"
-            value={String(current.delegation_depth)}
-            description="New worker sessions use this depth. Lowering blocks new delegation immediately; existing descendants keep running."
-            comboboxProps={{ withinPortal: false }}
-            data={[
-              { value: "1", label: "Lead only (1)" },
-              { value: "2", label: "One nested level (2)" },
-              { value: "3", label: "Two nested levels (3)" },
-            ]}
-            disabled={saving}
-            onChange={(value) => {
-              if (value !== null)
-                void change({ delegation_depth: Number(value) });
-            }}
-          />
-        </SettingsRow>
-      )}
+      {presentation !== "disclosure" && delegation}
       <AgentSetupPicker
         role={role}
         onRole={onRole}
         roles={
-          agent.isLead ? ["orchestrator", "worker", "review"] : ["orchestrator"]
+          presentation === "disclosure"
+            ? []
+            : agent.isLead
+              ? ["orchestrator", "worker", "review"]
+              : ["orchestrator"]
         }
         provider={pickerProvider}
         providers={pickerProviders}
@@ -1201,6 +1197,11 @@ function ScopedExecutionSettings({
             shownTransfer.scope !== "subagents" &&
             account.id !== shownTransfer.targetAccountKey
           )
+        }
+        modelId={
+          presentation === "disclosure"
+            ? `${agent.id}-${role}-model`
+            : undefined
         }
         models={pickerModels}
         model={pickerModel}
@@ -1338,40 +1339,36 @@ function ScopedExecutionSettings({
   const permissions =
     agent.isLead && agent.provider !== "claude" ? (
       settingsRow ? (
-        <SettingsRow label="Permissions">
-          <Tooltip
-            label={
-              permissionsActive
-                ? "Available when this turn ends."
-                : !("yoloMode" in agent)
-                  ? "Available after the server update."
-                  : ""
+        <Stack gap="xs">
+          <Text size="sm" fw={500}>
+            Permissions
+          </Text>
+          <SegmentedControl
+            fullWidth
+            aria-label="Full access without approval"
+            value={
+              (pendingYolo?.value ?? agent.yoloMode === true) ? "full" : "ask"
             }
-            disabled={!permissionsActive && "yoloMode" in agent}
-          >
-            <span>
-              <SegmentedControl
-                aria-label="Full access without approval"
-                value={
-                  (pendingYolo?.value ?? agent.yoloMode === true)
-                    ? "full"
-                    : "ask"
-                }
-                disabled={saving || permissionsActive || !("yoloMode" in agent)}
-                data={[
-                  { value: "ask", label: "Ask" },
-                  { value: "full", label: "Full" },
-                ]}
-                onChange={(value) => void changeYolo(value === "full")}
-              />
-            </span>
-          </Tooltip>
+            disabled={saving || permissionsActive || !("yoloMode" in agent)}
+            data={[
+              { value: "ask", label: "Ask" },
+              { value: "full", label: "Full" },
+            ]}
+            onChange={(value) => void changeYolo(value === "full")}
+          />
+          <Text size="xs" c="dimmed">
+            {permissionsActive
+              ? "Available when this turn ends."
+              : !("yoloMode" in agent)
+                ? "Available after the server update."
+                : "Applies to the whole team."}
+          </Text>
           {error && (
             <p className="execution-error" role="alert">
               {error}
             </p>
           )}
-        </SettingsRow>
+        </Stack>
       ) : (
         <SettingsSection title="Permissions">
           <p>Applies to the whole team.</p>
@@ -1444,6 +1441,39 @@ function ScopedExecutionSettings({
     summaryInfo?.defaultReasoningEffort ||
     mainSettings.effort ||
     mainInfo?.defaultReasoningEffort;
+  const summaryAccountName =
+    summaryRole !== "review" &&
+    (showAccountSummary ||
+      connectedAccounts.filter(
+        (account) => (account.provider || "codex") === summaryProvider,
+      ).length > 1)
+      ? setupAccountName(
+          accounts.find((account) => account.id === summaryAccount),
+        )
+      : "";
+  const summaryContent = (
+    <>
+      <ProviderMark provider={summaryProvider} />
+      <span className="execution-role">
+        {summaryRole === "worker"
+          ? "Workers"
+          : summaryRole === "review"
+            ? "Review"
+            : agent.isLead
+              ? "Lead"
+              : "Agent"}
+      </span>
+      <span className="execution-model">
+        {displayModel(summaryCatalog, summaryModel)}
+      </span>
+      {summaryEffort && (
+        <span className="execution-effort">{title(summaryEffort)}</span>
+      )}
+      {summaryAccountName && (
+        <span className="execution-account">{summaryAccountName}</span>
+      )}
+    </>
+  );
   const trigger = (
     <Button
       className="execution-menu"
@@ -1467,7 +1497,6 @@ function ScopedExecutionSettings({
         setOpened(!opened);
       }}
     >
-      <ProviderMark provider={summaryProvider} />
       <span
         className="execution-selected"
         data-inherited={
@@ -1478,14 +1507,7 @@ function ScopedExecutionSettings({
               : undefined
         }
       >
-        {displayModel(summaryCatalog, summaryModel)}
-        {summaryEffort && ` · ${title(summaryEffort)}`}
-        {summaryRole !== "review" &&
-          (showAccountSummary ||
-            connectedAccounts.filter(
-              (account) => (account.provider || "codex") === summaryProvider,
-            ).length > 1) &&
-          ` · ${setupAccountName(accounts.find((account) => account.id === summaryAccount))}`}
+        {summaryContent}
       </span>
     </Button>
   );
@@ -1526,6 +1548,32 @@ function ScopedExecutionSettings({
       )}
     </div>
   );
+  if (teamOnly)
+    return (
+      <Stack gap="sm">
+        {delegation}
+        {error && <p role="alert">{error}</p>}
+      </Stack>
+    );
+  if (presentation === "disclosure" && !permissionsOnly)
+    return (
+      <details
+        name="agent"
+        className="execution-disclosure"
+        data-role={initialRole}
+      >
+        <summary
+          data-studio-state={
+            role === "orchestrator" && busy.has(agent.status || "")
+              ? "working"
+              : "none"
+          }
+        >
+          <span className="execution-selected">{summaryContent}</span>
+        </summary>
+        <div className="execution-profile-body">{controls}</div>
+      </details>
+    );
   if (permissionsOnly) return permissions;
   if (mobile)
     return (
@@ -1559,7 +1607,6 @@ function ScopedExecutionSettings({
         trapFocus={!accountModalOpen}
         zIndex={layerZIndex.popover}
         position="top-start"
-        width={340}
         shadow="md"
         middlewares={{ flip: true, shift: true, size: true }}
         closeOnEscape={false}

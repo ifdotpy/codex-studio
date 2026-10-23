@@ -2,6 +2,7 @@ import {
   readTestState,
   spawnFixture as spawn,
   test,
+  expect,
   rustUiFixture,
 } from "../playwright.mjs";
 import assert from "node:assert/strict";
@@ -182,7 +183,7 @@ test("subagent concurrency ui", async ({ browser: _browser }) => {
     await openSettings(page);
 
     const control = page.locator(".agent-mode-control");
-    const input = page.getByRole("spinbutton", {
+    const input = page.getByRole("textbox", {
       name: "Subagent parallelism",
     });
     const waitConcurrency = (value) =>
@@ -204,19 +205,13 @@ test("subagent concurrency ui", async ({ browser: _browser }) => {
     await input.waitFor();
     assert.equal(await input.inputValue(), "32");
     assert.equal(await control.getAttribute("data-agent-mode"), "multi");
-    assert.equal(await input.getAttribute("min"), "0");
-    assert.equal(await input.getAttribute("max"), "2048");
-    assert.equal(
-      await input.getAttribute("title"),
-      "0 disables subagents. The lead does not count. Extra work waits in the queue.",
-    );
     const helpId = await input.getAttribute("aria-describedby");
     assert.equal(
       await page.locator(`#${helpId}`).textContent(),
       "0 disables subagents. The lead does not count. Extra work waits in the queue.",
     );
     await input.fill("64");
-    await input.blur();
+    await control.getByRole("button", { name: "Apply", exact: true }).click();
     await waitConcurrency(64);
     assert.deepEqual(Object.keys(writes.at(-1)).sort(), [
       "expected_account_key",
@@ -235,15 +230,10 @@ test("subagent concurrency ui", async ({ browser: _browser }) => {
 
     // Zero expresses Single agent and does not interrupt accepted workers.
     await input.fill("0");
-    await input.blur();
+    await control.getByRole("button", { name: "Apply", exact: true }).click();
     await waitConcurrency(0);
     assert.equal(await control.getAttribute("data-agent-mode"), "single");
-    assert.equal(
-      await control
-        .getByRole("radio", { name: "Off", exact: true })
-        .isChecked(),
-      true,
-    );
+    await expect(control.getByRole("radio")).toHaveCount(0);
     let state = await snapshot();
     assert.equal(
       state.threads.find((agent) => agent.id === lead.id).concurrency,
@@ -257,7 +247,7 @@ test("subagent concurrency ui", async ({ browser: _browser }) => {
 
     // Capacity at the product maximum remains available; positive values restore Multi.
     await input.fill("2048");
-    await input.blur();
+    await control.getByRole("button", { name: "Apply", exact: true }).click();
     await waitConcurrency(2048);
     assert.equal(await control.getAttribute("data-agent-mode"), "multi");
     assert.equal((await currentLead()).concurrency, 2048);
@@ -269,7 +259,7 @@ test("subagent concurrency ui", async ({ browser: _browser }) => {
     // A lost response keeps the same request identity across a reload and retry.
     loseNextReply = true;
     await input.fill("128");
-    await input.blur();
+    await control.getByRole("button", { name: "Apply", exact: true }).click();
     const retry = page.getByRole("button", {
       name: "Retry limit change",
       exact: true,
@@ -332,7 +322,7 @@ test("subagent concurrency ui", async ({ browser: _browser }) => {
     // Conflict is explicit: discard that request, refresh canonical value, allow editing.
     raceNextRequest = true;
     await input.fill("16");
-    await input.blur();
+    await control.getByRole("button", { name: "Apply", exact: true }).click();
     await control.getByRole("alert").waitFor();
     await waitConcurrency(8);
     await waitRevision(6);
@@ -343,7 +333,7 @@ test("subagent concurrency ui", async ({ browser: _browser }) => {
     );
     assert.equal(await retry.count(), 0);
     await input.fill("9");
-    await input.blur();
+    await control.getByRole("button", { name: "Apply", exact: true }).click();
     await waitConcurrency(9);
     assert.equal((await currentLead()).agentModeRevision, 7);
     assert.equal((await currentLead()).concurrency, 9);
@@ -396,11 +386,11 @@ test("subagent concurrency ui", async ({ browser: _browser }) => {
       .locator("#conversation-title")
       .filter({ hasText: "Other project" })
       .waitFor();
-    const otherInput = page.getByRole("spinbutton", {
+    const otherInput = page.getByRole("textbox", {
       name: "Subagent parallelism",
     });
     await otherInput.fill("17");
-    await otherInput.blur();
+    await page.getByRole("button", { name: "Apply", exact: true }).click();
     await waitConcurrency(17);
     assert.equal(
       (await snapshot()).threads.find((agent) => agent.id === other.id)
@@ -512,7 +502,7 @@ test("subagent concurrency ui", async ({ browser: _browser }) => {
       });
       await rollingPage.goto(origin);
       await openSettings(rollingPage);
-      const oldInput = rollingPage.getByRole("spinbutton", {
+      const oldInput = rollingPage.getByRole("textbox", {
         name: "Subagent parallelism",
       });
       await oldInput.waitFor();
@@ -526,24 +516,18 @@ test("subagent concurrency ui", async ({ browser: _browser }) => {
       );
       assert.equal(await oldInput.inputValue(), "");
       assert.equal(await oldInput.isDisabled(), true);
-      assert.equal(
-        await rollingPage
-          .locator(".agent-mode-control")
-          .getByRole("radio", { name: "On", exact: true })
-          .isDisabled(),
-        true,
-      );
+      await expect(
+        rollingPage.locator(".agent-mode-control").getByRole("radio"),
+      ).toHaveCount(0);
       assert.equal(
         await rollingPage
           .getByRole("button", { name: /Retry .* change/ })
           .count(),
         0,
       );
-      assert.equal(
-        await rollingPage
-          .locator(".agent-mode-control .agent-mode-limit-mode")
-          .textContent(),
-        mode === "single" ? "Single agent" : "Multi agent",
+      await expect(rollingPage.locator(".agent-mode-control")).toHaveAttribute(
+        "data-agent-mode",
+        mode,
       );
       await rollingPage
         .getByText(/does not provide the concurrency setting/, { exact: false })
@@ -679,7 +663,7 @@ test("subagent concurrency ui", async ({ browser: _browser }) => {
       };
     });
     await input.fill("10");
-    await input.blur();
+    await control.getByRole("button", { name: "Apply", exact: true }).click();
     await control.getByRole("alert").waitFor();
     assert.equal(writes.length, beforeStorageFailure);
     assert.equal(await input.isEnabled(), true);
@@ -705,15 +689,17 @@ test("subagent concurrency ui", async ({ browser: _browser }) => {
     const box = await input.boundingBox();
     assert(box && box.x >= 0 && box.x + box.width <= 390 && box.height >= 36);
     await input.fill("2048");
-    await input.blur();
+    await control.getByRole("button", { name: "Apply", exact: true }).click();
     await waitConcurrency(2048);
-    await control.getByText("Off", { exact: true }).click();
+    await input.fill("0");
+    await control.getByRole("button", { name: "Apply", exact: true }).click();
     await waitConcurrency(0);
     assert.equal(await input.inputValue(), "0");
-    await control.getByText("On", { exact: true }).click();
+    await input.fill("32");
+    await control.getByRole("button", { name: "Apply", exact: true }).click();
     await waitConcurrency(32);
     await input.fill("2048");
-    await input.blur();
+    await control.getByRole("button", { name: "Apply", exact: true }).click();
     await waitConcurrency(2048);
     assert.equal((await currentLead()).concurrency, 2048);
     assert.deepEqual(prompts, []);

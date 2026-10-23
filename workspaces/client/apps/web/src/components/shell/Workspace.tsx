@@ -42,7 +42,8 @@ import {
 } from "../../api";
 import type { Agent, Json, JsonValue, Snapshot } from "../../types";
 import { useFormDraft } from "../useFormDraft";
-import { ModelPicker, type ModelOption } from "../ModelPicker";
+import { ModelField } from "../models/ModelField";
+import { modelDisplayName, toModelOptions } from "../models/modelOption";
 import { useWorkerModels } from "../agents/WorkerModelPicker";
 import { useServerResourceReads } from "../../servers/ServerServicesContext";
 import TeamChats from "./messages/TeamChats";
@@ -1025,21 +1026,15 @@ function Profiles(c: Context) {
   );
   // The profile model list comes from the selected lead's subagent catalog.
   const catalog = useWorkerModels(lead?.accountKey || "default", !!draft, true);
-  const profileModels: ModelOption[] = catalog.models.map((row) => ({
-    value: row.model,
-    label:
-      typeof row.displayName === "string" && row.displayName
-        ? row.displayName
-        : row.model,
-    description:
-      typeof row.description === "string" && row.description
-        ? row.description
-        : undefined,
-    isDefault: !!row.isDefault,
-  }));
+  const profileModels = toModelOptions(catalog.models);
   const draftModel = typeof draft?.model === "string" ? draft.model : "";
   if (draftModel && !profileModels.some((row) => row.value === draftModel))
-    profileModels.unshift({ value: draftModel, label: draftModel });
+    profileModels.unshift({
+      value: draftModel,
+      label: modelDisplayName(draftModel),
+      provider: "codex",
+      badges: ["current"],
+    });
   return (
     <>
       <ResourceState state={state} />
@@ -1173,7 +1168,8 @@ function Profiles(c: Context) {
               data={["implementer", "reviewer"]}
             />
             {catalog.models.length ? (
-              <ModelPicker
+              <ModelField
+                presentation="select"
                 label="Model"
                 value={draftModel}
                 options={profileModels}

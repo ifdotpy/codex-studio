@@ -2,6 +2,10 @@
 export function setupControl(locator) {
   return {
     selectOption: async (value) => {
+      if (await locator.evaluate((node) => node.tagName === "SELECT")) {
+        await locator.selectOption(value);
+        return;
+      }
       const segment = locator.locator(`input[value="${value}"]`);
       if (
         (await locator.getAttribute("role")) === "radiogroup" &&
@@ -29,8 +33,10 @@ export function setupControl(locator) {
     inputValue: () => locator.getAttribute("data-value"),
     count: () => locator.count(),
     isEnabled: async () =>
+      (await locator.isEnabled()) &&
       (await locator.getAttribute("aria-disabled")) !== "true",
     isDisabled: async () =>
+      (await locator.isDisabled()) ||
       (await locator.getAttribute("aria-disabled")) === "true",
     getAttribute: (attribute) => locator.getAttribute(attribute),
     waitFor: (options) => locator.waitFor(options),
@@ -40,17 +46,16 @@ export function setupControl(locator) {
 export async function chooseSetupValue(locator, value) {
   await setupControl(locator).selectOption(value);
 }
+// Native switches expose checked state directly.
 export function setupToggle(locator) {
-  const checked = async () =>
-    (await locator.getAttribute("aria-pressed")) === "true";
   return {
     check: async () => {
-      if (!(await checked())) await locator.click();
+      if (!(await locator.isChecked())) await locator.click();
     },
     uncheck: async () => {
-      if (await checked()) await locator.click();
+      if (await locator.isChecked()) await locator.click();
     },
-    isChecked: checked,
+    isChecked: () => locator.isChecked(),
     isEnabled: () => locator.isEnabled(),
     isDisabled: () => locator.isDisabled(),
     count: () => locator.count(),

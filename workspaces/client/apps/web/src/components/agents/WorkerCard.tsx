@@ -9,7 +9,7 @@ import "../../api";
 import { nativeErrorView } from "../../nativeErrors";
 import { DISK_FULL_WAIT_LABEL, diskFullHold } from "../../capacityRetry";
 import { startWaitLabel } from "../../startWait";
-import { setupModelName } from "./AgentSetupPicker";
+import { modelDisplayName } from "../models/modelOption";
 import { TeamModelCatalog } from "./WorkerOverview";
 import type { Account } from "../Accounts";
 import { accountDisplayName } from "../../accountName";
@@ -151,7 +151,7 @@ const WorkerCardView = memo(function WorkerCardView({
   const modelName =
     !info && agent.model === "default"
       ? "Auto"
-      : setupModelName(
+      : modelDisplayName(
           resolved ||
             (info?.isDefault && info.resolvedModel
               ? { ...info, model: info.resolvedModel }

@@ -1,0 +1,33 @@
+.model-options {
+  margin-block-start: var(--mantine-spacing-xs);
+}
+.model-radio {
+  padding: calc(var(--mantine-spacing-xs) / 2) var(--mantine-spacing-xs);
+  border-radius: var(--mantine-radius-sm);
+}
+.model-radio:has(:checked) {
+  background: var(--mantine-primary-color-light);
+}
+.model-radio:has(:focus-visible) {
+  outline: auto;
+}
+.model-radio:not(:has(:checked)):not(:has([data-unavailable]))
+  .mantine-Radio-description {
+  display: none;
+}
+.model-radio .mantine-Radio-labelWrapper,
+.model-select {
+  min-width: 0;
+  flex: 1;
+  overflow-wrap: anywhere;
+}
+.model-radio .mantine-Radio-body {
+  align-items: center;
+}
+
+.effort-scale .mantine-SegmentedControl-control {
+  flex: 1 0 auto;
+}
+.execution-profile .effort-scale .mantine-SegmentedControl-label {
+  white-space: nowrap;
+}

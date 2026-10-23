@@ -76,42 +76,23 @@ test("Mobile client ui", async ({
         exact: true,
       });
       await chatSettings.waitFor();
-      await chatSettings
-        .getByRole("button", { name: "Main agent settings", exact: true })
-        .click();
-      await page
-        .getByRole("dialog", { name: "Main agent settings", exact: true })
-        .waitFor();
+      const lead = chatSettings.locator('details[data-role="orchestrator"]');
+      if (!(await lead.evaluate((node) => node.open)))
+        await lead.locator(":scope > summary").click();
+      await expect(lead).toHaveAttribute("open", "");
     };
     const closeChatSettings = async () => {
-      const mainSettings = page.getByRole("dialog", {
-        name: "Main agent settings",
-        exact: true,
-      });
-      if (await mainSettings.isVisible()) {
-        await page.keyboard.press("Escape");
-        await mainSettings.waitFor({ state: "hidden" });
-      }
-      const chatSettings = page.getByRole("dialog", {
+      const dialog = page.getByRole("dialog", {
         name: "Chat settings",
         exact: true,
       });
-      if (await chatSettings.isVisible()) {
-        await chatSettings
-          .getByRole("button", { name: "Close", exact: true })
-          .click();
-        await chatSettings.waitFor({ state: "hidden" });
-      }
+      await dialog.getByRole("button", { name: "Close", exact: true }).click();
+      await expect(dialog).not.toBeVisible();
     };
     const closeMainAgentSettings = async () => {
-      const mainSettings = page.getByRole("dialog", {
-        name: "Main agent settings",
-        exact: true,
-      });
-      if (await mainSettings.isVisible()) {
-        await page.keyboard.press("Escape");
-        await mainSettings.waitFor({ state: "hidden" });
-      }
+      const lead = page.locator('details[data-role="orchestrator"]');
+      if (await lead.evaluate((node) => node.open))
+        await lead.locator(":scope > summary").click();
     };
     const startProjectChat = async (name) => {
       await page.getByRole("button", { name, exact: true }).click();
@@ -126,7 +107,7 @@ test("Mobile client ui", async ({
     };
     const selectedAccount = () =>
       page
-        .getByRole("dialog", { name: "Main agent settings", exact: true })
+        .locator('details[data-role="orchestrator"]')
         .locator('.setup-account[data-selected="true"]');
     const inspectConversationTools = async (hasUsage) => {
       const menu = page.locator(".conversation-header-tools-menu");
@@ -245,15 +226,15 @@ test("Mobile client ui", async ({
       name: "Main agent settings",
       exact: true,
     });
-    const rolePicker = mainSettings.getByRole("group", { name: "Agent role" });
-    await rolePicker
-      .getByRole("button", { name: "Worker", exact: true })
-      .click();
+    const rolePicker = mainSettings.getByRole("radiogroup", {
+      name: "Agent role",
+    });
+    await rolePicker.getByText("Worker", { exact: true }).click();
     const subagentSettings = page.getByRole("dialog", {
       name: "Subagent defaults",
       exact: true,
     });
-    const workerModel = subagentSettings.getByRole("listbox", {
+    const workerModel = subagentSettings.getByRole("radiogroup", {
       name: "Default subagent model",
       exact: true,
     });

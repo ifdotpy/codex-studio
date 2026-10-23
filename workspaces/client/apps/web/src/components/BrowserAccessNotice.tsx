@@ -1,5 +1,5 @@
 import { useServerApi } from "../servers/ServerServicesContext";
-import { Tooltip } from "@mantine/core";
+import { Stack, Text } from "@mantine/core";
 import { useEffect, useState } from "react";
 import { SettingsRow } from "./ui/primitives";
 import { type GetResult } from "../api";
@@ -35,18 +35,19 @@ export default function BrowserAccessNotice({
 
   if (compact)
     return (
-      <SettingsRow label="Browser">
-        <Tooltip
-          label={
-            status?.reason ||
-            (status?.enabled
-              ? "Browser access is available."
-              : "Not available for this account.")
-          }
-        >
-          <span role="status">{status?.enabled ? "On" : "Off"}</span>
-        </Tooltip>
-      </SettingsRow>
+      <Stack gap="xs">
+        <Text size="sm" fw={500}>
+          Browser
+        </Text>
+        <Text size="sm" role="status">
+          {status?.enabled ? "Available" : "Unavailable"}
+        </Text>
+        {!status?.enabled && (
+          <Text size="xs" c="dimmed">
+            {status?.reason || "Not available for this account."}
+          </Text>
+        )}
+      </Stack>
     );
   if (!active || !status || status.enabled) return null;
   return (

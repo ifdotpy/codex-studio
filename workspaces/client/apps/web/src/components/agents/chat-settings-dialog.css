@@ -1,0 +1,73 @@
+.chat-execution-settings {
+  container-type: inline-size;
+  min-width: 0;
+}
+.chat-execution-settings section {
+  min-width: 0;
+}
+.execution-disclosure {
+  border-block-end: var(--studio-border-width) solid
+    var(--mantine-color-default-border);
+}
+.execution-disclosure > summary,
+.execution-accounts > summary {
+  cursor: pointer;
+  padding-block: var(--mantine-spacing-sm);
+}
+.execution-disclosure > summary::marker {
+  color: var(--mantine-color-dimmed);
+}
+.execution-profile-body {
+  padding: var(--mantine-spacing-sm) 0 var(--mantine-spacing-md);
+}
+.execution-disclosure .execution-selected {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--mantine-spacing-xs);
+  min-width: 0;
+}
+.execution-selected > .execution-role {
+  font-size: var(--mantine-font-size-xs);
+  color: var(--mantine-color-dimmed);
+}
+.execution-selected > .execution-model {
+  font-weight: 500;
+}
+.execution-selected > .execution-effort,
+.execution-selected > .execution-account {
+  font-size: var(--mantine-font-size-xs);
+  color: var(--mantine-color-dimmed);
+}
+.execution-team-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 26ch), 1fr));
+  gap: var(--mantine-spacing-md);
+  margin-block-start: var(--mantine-spacing-sm);
+}
+.execution-team-fields .agent-mode-control {
+  display: grid;
+  gap: var(--mantine-spacing-xs);
+}
+.execution-accounts > summary {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: var(--mantine-spacing-xs);
+}
+.execution-dialog-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--mantine-spacing-xs);
+}
+.execution-settings-modal .mantine-Modal-body {
+  overflow-wrap: anywhere;
+}
+@container (max-width: 26em) {
+  .execution-team-fields {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .execution-disclosure > summary .execution-account {
+    flex-basis: 100%;
+  }
+}
