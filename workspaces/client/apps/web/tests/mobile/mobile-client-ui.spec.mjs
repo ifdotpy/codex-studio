@@ -296,6 +296,11 @@ test("Mobile client ui", async ({
     await page.unroute("**/api/leads");
     await page.reload();
     await page
+      .locator("#sidebar .project-chats .chat-row")
+      .filter({ hasText: "Release lead" })
+      .first()
+      .click();
+    await page
       .getByRole("button", { name: "Retry chat request", exact: true })
       .waitFor();
     const replay = page.waitForResponse(
@@ -371,6 +376,9 @@ test("Mobile client ui", async ({
       expected_revision: project?.accountRevision || 0,
     });
     await page.reload();
+    await page
+      .locator(`#sidebar .project-chats .chat-row[data-chat="${created.id}"]`)
+      .click();
     await openChatSettings();
     await selectedAccount().waitFor();
     await expect(selectedAccount()).toHaveAttribute(
@@ -414,6 +422,9 @@ test("Mobile client ui", async ({
     );
     await post("/api/projects", { path: profile, account_key: alternate.id });
     await page.reload();
+    await page
+      .locator(`#sidebar .project-chats .chat-row[data-chat="${nextChat.id}"]`)
+      .click();
     await page.getByLabel("Back to chats").click();
     const otherResponse = page.waitForResponse(
       (response) =>
