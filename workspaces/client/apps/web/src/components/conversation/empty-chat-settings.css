@@ -1,33 +1,50 @@
-/* The execution controls own their contents; this file owns their placement. */
+/* Execution owns the trigger content; conversation owns compact placement. */
 .empty-chat-settings {
   display: flex;
   align-items: center;
-  flex-wrap: wrap;
-  gap: var(--mantine-spacing-xs) var(--mantine-spacing-md);
+  gap: calc(var(--mantine-spacing-xs) / 2);
   min-width: 0;
-  flex: 1 1 auto;
 }
 .empty-chat-setting {
   display: flex;
-  align-items: center;
-  gap: var(--mantine-spacing-xs);
   min-width: 0;
-  max-width: 100%;
-  color: var(--muted);
-  font-size: var(--studio-text-meta);
 }
 .empty-chat-setting > span {
-  flex: none;
+  display: none;
 }
 .empty-chat-setting .execution-menu {
   min-width: 0;
   max-width: 100%;
+  padding-inline: calc(var(--mantine-spacing-xs) / 2);
 }
-@media (max-width: 47.5em) {
+.empty-chat-setting .execution-selected {
+  flex-wrap: nowrap;
+  gap: calc(var(--mantine-spacing-xs) / 2);
+}
+.empty-chat-setting .execution-model {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.empty-chat-setting .execution-account {
+  display: none;
+}
+@container workspace (max-width: 47.5em) {
   .empty-chat-settings {
-    flex-basis: 100%;
+    flex: 1;
   }
   .empty-chat-setting {
-    flex: 1 1 100%;
+    flex: 1;
+  }
+  .empty-chat-setting .execution-role,
+  .empty-chat-setting .execution-effort,
+  .empty-chat-setting .mantine-Button-section {
+    display: none;
+  }
+  .empty-chat-setting .execution-menu {
+    width: 100%;
+    min-width: var(--studio-touch-target);
+    padding-inline: calc(var(--mantine-spacing-xs) / 5);
+    font-size: var(--studio-text-meta);
   }
 }

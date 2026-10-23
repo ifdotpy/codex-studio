@@ -154,20 +154,6 @@ const meta = {
                 location="Linux VM /projects/codex-studio"
                 recentChats={recentChats}
                 onSelect={args.onSelect}
-                execution={(["orchestrator", "worker"] as const).map(
-                  (role) => ({
-                    label: role === "orchestrator" ? "Model" : "Workers",
-                    control: (
-                      <ExecutionSettings
-                        agent={lead}
-                        catalog={catalog}
-                        refresh={async () => {}}
-                        settingsRow
-                        initialRole={role}
-                      />
-                    ),
-                  }),
-                )}
               />
             </div>
           </div>
@@ -176,10 +162,27 @@ const meta = {
               aria-label="Message"
               placeholder="Describe the work…"
               autosize
-              minRows={2}
+              minRows={1}
             />
             <div className="composer-bar">
-              <span className="composer-timing">Send after tool calls</span>
+              <div className="composer-tools">
+                <div
+                  className="empty-chat-settings composer-context-row"
+                  aria-label="Agent settings"
+                >
+                  {(["orchestrator", "worker"] as const).map((role) => (
+                    <div className="empty-chat-setting" key={role}>
+                      <ExecutionSettings
+                        agent={lead}
+                        catalog={catalog}
+                        refresh={async () => {}}
+                        settingsRow
+                        initialRole={role}
+                      />
+                    </div>
+                  ))}
+                </div>
+              </div>
               <div className="composer-submit-actions">
                 <ActionIcon aria-label="Queue for next turn">
                   <ListEnd size={18} />

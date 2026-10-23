@@ -1,4 +1,3 @@
-import { Fragment, type ReactNode } from "react";
 import type { ChatIndicator } from "../chat-status/chatStatusModel";
 import "./conversation-chrome.css";
 
@@ -10,7 +9,6 @@ export type RecentProjectChat = {
 export type ConversationStartProps = {
   projectName: string;
   location: string;
-  execution?: { label: string; control: ReactNode }[];
   recentChats?: RecentProjectChat[];
   onSelect?: (id: string) => void;
 };
@@ -18,7 +16,6 @@ export type ConversationStartProps = {
 export default function ConversationStart({
   projectName,
   location,
-  execution,
   recentChats = [],
   onSelect,
 }: ConversationStartProps) {
@@ -31,12 +28,6 @@ export default function ConversationStart({
       <dl className="conversation-start-facts">
         <dt>Runs in</dt>
         <dd>{location}</dd>
-        {execution?.map(({ label, control }) => (
-          <Fragment key={label}>
-            <dt>{label}</dt>
-            <dd>{control}</dd>
-          </Fragment>
-        ))}
       </dl>
       {!!recentChats.length && onSelect && (
         <nav className="conversation-recent" aria-label="Recent project chats">
