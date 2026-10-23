@@ -1385,7 +1385,7 @@ function fastTierCommands(root) {
             "--test",
             "integration",
             "-E",
-            "test(/^project_preparation::/) | test(committed_delete_route_succeeds_with_unrelated_failing_cleanup)",
+            "test(/^project_preparation::/) | test(committed_delete_route_succeeds_with_unrelated_failing_cleanup) | test(real_rxdb_single_writer_draft_ack_echo_ordering)",
           ],
         ],
       ],
@@ -1818,36 +1818,6 @@ function fastTierCommands(root) {
         selector: "unchanged draft revisions and retained tombstones",
         reason:
           "Unrelated commits must not request draft pulls; draft changes still notify.",
-      },
-    },
-    {
-      item: { name: "studio-runtime-http", ecosystem: "cargo" },
-      label: "Real RxDB and server draft ordering witness",
-      commands: [
-        [
-          "cargo",
-          [
-            "nextest",
-            "run",
-            "--locked",
-            "--no-tests",
-            "fail",
-            "--message-format",
-            "libtest-json-plus",
-            "-p",
-            "studio-runtime-http",
-            "--test",
-            "integration",
-            "-E",
-            "test(real_rxdb_single_writer_draft_ack_echo_ordering)",
-          ],
-        ],
-      ],
-      options: {
-        selector:
-          "draft acknowledgement, stale echoes, lost responses and concurrent writers",
-        reason:
-          "Real RxDB must preserve the current draft master while the real HTTP CAS detects genuine conflicts.",
       },
     },
     {
