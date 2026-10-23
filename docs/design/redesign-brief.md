@@ -133,7 +133,6 @@ for the application and Storybook. Current reviewed values:
 | `--studio-form-max`               |     40 | Readable form column               |
 | `--studio-settings-nav-size`      |     12 | Settings navigation inline size    |
 | `--studio-room-list-size`         |     16 | Messages room selector inline size |
-| `--studio-meter-width`            |      3 | Context meter length               |
 | `--studio-meter-size`             | 0.1875 | Context meter thickness            |
 
 `src/studio-preferences.css` alone owns the custom transcript column through

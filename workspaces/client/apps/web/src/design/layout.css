@@ -33,8 +33,7 @@
   --studio-voice-control-size: 2.5rem;
   /* Minimum overlay menu width, constrained by the viewport on phones. */
   --studio-menu-min: 13.75rem;
-  /* Compact context usage meter length and thickness. */
-  --studio-meter-width: 3rem;
+  /* Compact context usage meter thickness. */
   --studio-meter-size: 0.1875rem;
   /* Keyboard focus ring stroke, and its gap inward from the control edge.
      Inset rings stay inside scroll containers and clear the state rail. */

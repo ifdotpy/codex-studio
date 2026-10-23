@@ -123,8 +123,7 @@
   font-weight: 600;
 }
 .fleet-lane-heading > span,
-.project-state-counts,
-.fleet-chat-time {
+.project-state-counts {
   font-variant-numeric: tabular-nums;
 }
 .fleet-lane-heading > span {
