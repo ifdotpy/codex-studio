@@ -1192,6 +1192,7 @@ function fastTierCommands(root) {
               "test(account_limits_ignore_python_single_account_fallback)",
               "test(python_payload_marker_layout_is_refused_without_upgrade)",
               "test(repositories::workspace_views::bulk_read_tests::)",
+              "test(repositories::analytics::capture_error_tests::)",
             ]),
           ],
         ],
