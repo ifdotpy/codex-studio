@@ -21,13 +21,19 @@ describe("workspace layout", () => {
     expect(
       deriveWorkspaceLayout({
         ...base,
-        viewport: { ...base.viewport, width: 760.5 },
+        viewport: {
+          ...base.viewport,
+          width: layoutValues.navigation.inlineMin - 0.5,
+        },
       }).navigationMode,
     ).toBe("drawer");
     expect(
       deriveWorkspaceLayout({
         ...base,
-        viewport: { ...base.viewport, width: 761 },
+        viewport: {
+          ...base.viewport,
+          width: layoutValues.navigation.inlineMin,
+        },
       }).navigationMode,
     ).toBe("inline");
   });
@@ -56,14 +62,18 @@ describe("workspace layout", () => {
     ).toBe(true);
   });
   it("resolves rem from the current root size and rejects invalid preferences", () => {
-    expect(resolveLayoutLength("conversation.min", 20)).toBe(800);
+    expect(resolveLayoutLength("conversation.min", 20)).toBe(
+      layoutValues.conversation.min * 20,
+    );
     const result = deriveWorkspaceLayout({
       ...base,
       preferredPanelWidthRem: Infinity,
       rootFontPx: 20,
     });
     expect(Number.isFinite(result.panelLayout.width)).toBe(true);
-    expect(result.panelLayout.width).toBeLessThanOrEqual(base.host.width - 800);
+    expect(result.panelLayout.width).toBeLessThanOrEqual(
+      base.host.width - layoutValues.conversation.min * 20,
+    );
   });
   it("subtracts safe areas once for the 951 by 669 target", () => {
     const input = {
@@ -79,8 +89,23 @@ describe("workspace layout", () => {
     ).toBe(951);
   });
   it("uses the local tools width and main font independently", () => {
-    expect(isCompactTools(899.5, 16)).toBe(true);
-    expect(isCompactTools(900, 19)).toBe(false);
-    expect(isCompactTools(1000, 20)).toBe(true);
+    expect(
+      isCompactTools(
+        layoutValues.tools.compactContainerMax - 0.5,
+        layoutValues.tools.compactFontMin - 1,
+      ),
+    ).toBe(true);
+    expect(
+      isCompactTools(
+        layoutValues.tools.compactContainerMax,
+        layoutValues.tools.compactFontMin - 1,
+      ),
+    ).toBe(false);
+    expect(
+      isCompactTools(
+        layoutValues.tools.compactContainerMax + 100,
+        layoutValues.tools.compactFontMin,
+      ),
+    ).toBe(true);
   });
 });
