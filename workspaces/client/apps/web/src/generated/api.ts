@@ -22769,18 +22769,144 @@ export interface components {
     };
     /**
      * SyncEntity
-     * @description One durable sync entity change attached to a successful response.
+     * @description One v4 entity change. The collection DTO is structured; deletes omit value.
      */
     SyncEntity: {
-      /** Deleted */
-      _deleted: boolean;
-      /** Id */
+      collection: string;
       id: string;
-      /** Payload */
-      payload: string;
+      /** @enum {string} */
+      op: "upsert" | "delete";
       /** Seq */
       seq: number;
-    };
+      value?: components["schemas"]["JsonValue"];
+    } & (
+      | {
+          /** @constant */
+          collection: "agent";
+          /** @constant */
+          op: "upsert";
+          value: components["schemas"]["AgentEntityDto"];
+        }
+      | {
+          /** @constant */
+          collection: "chat";
+          /** @constant */
+          op: "upsert";
+          value: components["schemas"]["ChatEntityDto"];
+        }
+      | {
+          /** @constant */
+          collection: "complaint";
+          /** @constant */
+          op: "upsert";
+          value: components["schemas"]["ComplaintEntityDto"];
+        }
+      | {
+          /** @constant */
+          collection: "edge";
+          /** @constant */
+          op: "upsert";
+          value: components["schemas"]["EdgeEntityDto"];
+        }
+      | {
+          /** @constant */
+          collection: "event";
+          /** @constant */
+          op: "upsert";
+          value: components["schemas"]["EventEntityDto"];
+        }
+      | {
+          /** @constant */
+          collection: "monitor";
+          /** @constant */
+          op: "upsert";
+          value: components["schemas"]["MonitorEntityDto"];
+        }
+      | {
+          /** @constant */
+          collection: "peerTeam";
+          /** @constant */
+          op: "upsert";
+          value: components["schemas"]["PeerTeamEntityDto"];
+        }
+      | {
+          /** @constant */
+          collection: "project";
+          /** @constant */
+          op: "upsert";
+          value: components["schemas"]["ProjectEntityDto"];
+        }
+      | {
+          /** @constant */
+          collection: "request";
+          /** @constant */
+          op: "upsert";
+          value: components["schemas"]["RequestEntityDto"];
+        }
+      | {
+          /** @constant */
+          collection: "room";
+          /** @constant */
+          op: "upsert";
+          value: components["schemas"]["RoomEntityDto"];
+        }
+      | {
+          /** @constant */
+          collection: "rule";
+          /** @constant */
+          op: "upsert";
+          value: components["schemas"]["RuleEntityDto"];
+        }
+      | {
+          /** @constant */
+          collection: "task";
+          /** @constant */
+          op: "upsert";
+          value: components["schemas"]["TaskEntityDto"];
+        }
+      | {
+          /** @constant */
+          collection: "uiPreferences";
+          /** @constant */
+          op: "upsert";
+          value: components["schemas"]["UiPreferencesDto"];
+        }
+      | {
+          /** @constant */
+          collection: "work";
+          /** @constant */
+          op: "upsert";
+          value: components["schemas"]["WorkEntityDto"];
+        }
+      | {
+          /** @constant */
+          collection: "workspace";
+          /** @constant */
+          op: "upsert";
+          value: components["schemas"]["WorkspaceEntityDto"];
+        }
+      | {
+          /** @enum {string} */
+          collection:
+            | "agent"
+            | "chat"
+            | "complaint"
+            | "edge"
+            | "event"
+            | "monitor"
+            | "peerTeam"
+            | "project"
+            | "request"
+            | "room"
+            | "rule"
+            | "task"
+            | "uiPreferences"
+            | "work"
+            | "workspace";
+          /** @constant */
+          op: "delete";
+        }
+    );
     SyncEntityPayload:
       | components["schemas"]["SyncAgentEntityPayload"]
       | components["schemas"]["SyncChatEntityPayload"]
@@ -22887,7 +23013,7 @@ export interface components {
        * Protocolversion
        * @constant
        */
-      protocolVersion: 3;
+      protocolVersion: 4;
       /**
        * Pullendpoint
        * @constant
@@ -22901,7 +23027,7 @@ export interface components {
        */
       streamEndpoint: "/api/sync/stream";
       /** Supportedversions */
-      supportedVersions: 3[];
+      supportedVersions: 4[];
     };
     /** SyncPullResetResponse */
     SyncPullResetResponse: {
@@ -22943,7 +23069,10 @@ export interface components {
       _syncEntitiesAfter?: number | null;
       checkpoint: components["schemas"]["SyncCheckpoint"];
       /** Documents */
-      documents: components["schemas"]["SyncDocument"][];
+      documents: (
+        | components["schemas"]["SyncDocument"]
+        | components["schemas"]["SyncEntity"]
+      )[];
       /**
        * Floor
        * @default null
@@ -37902,7 +38031,7 @@ export type WorkEntityDto = components["schemas"]["WorkEntityDto"];
 export type WorkspaceEntityDto = components["schemas"]["WorkspaceEntityDto"];
 export type SyncEntityPayload = components["schemas"]["SyncEntityPayload"];
 
-export const SYNC_PROTOCOL_VERSION = 3 as const;
+export const SYNC_PROTOCOL_VERSION = 4 as const;
 export const SYNC_ENTITY_SCOPE = "state:entities:v1" as const;
 export const TOKEN_RATE_MAX_ENTRIES = 4096 as const;
 export const TOKEN_RATE_IDENTIFIER_MAX_CODEPOINTS = 200 as const;

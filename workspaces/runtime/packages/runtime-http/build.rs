@@ -56,6 +56,29 @@ fn main() -> Result<(), Box<dyn Error>> {
         rust_type: "studio_runtime_schema::DeliveryMoment".to_owned(),
         serde_with: Some("studio_runtime_schema::delivery::compatibility".to_owned()),
     };
+    // Normalization already validates each collection DTO. Keep its parsed value
+    // in place rather than deserialize it into a second owned object tree. The
+    // OpenAPI oneOf still generates the fully typed TypeScript discriminated union.
+    let SchemaType::Object {
+        properties,
+        variant,
+        ..
+    } = &mut analysis
+        .schemas
+        .get_mut("SyncEntity")
+        .ok_or("missing sync entity schema")?
+        .schema_type
+    else {
+        return Err("sync entity schema must be an object".into());
+    };
+    *variant = None;
+    properties
+        .get_mut("value")
+        .ok_or("missing sync entity value")?
+        .schema_type = SchemaType::Primitive {
+        rust_type: "serde_json::Value".to_owned(),
+        serde_with: None,
+    };
     let config = GeneratorConfig {
         spec_path: spec_path.clone(),
         output_dir: output_dir.clone(),

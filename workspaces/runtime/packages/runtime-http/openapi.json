@@ -51846,18 +51846,374 @@
       },
       "SyncEntity": {
         "additionalProperties": false,
-        "description": "One durable sync entity change attached to a successful response.",
-        "properties": {
-          "_deleted": {
-            "title": "Deleted",
-            "type": "boolean"
+        "description": "One v4 entity change. The collection DTO is structured; deletes omit value.",
+        "oneOf": [
+          {
+            "properties": {
+              "collection": {
+                "const": "agent",
+                "type": "string"
+              },
+              "op": {
+                "const": "upsert",
+                "type": "string"
+              },
+              "value": {
+                "$ref": "#/components/schemas/AgentEntityDto"
+              }
+            },
+            "required": [
+              "op",
+              "collection",
+              "value"
+            ],
+            "type": "object"
           },
-          "id": {
-            "title": "Id",
+          {
+            "properties": {
+              "collection": {
+                "const": "chat",
+                "type": "string"
+              },
+              "op": {
+                "const": "upsert",
+                "type": "string"
+              },
+              "value": {
+                "$ref": "#/components/schemas/ChatEntityDto"
+              }
+            },
+            "required": [
+              "op",
+              "collection",
+              "value"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "collection": {
+                "const": "complaint",
+                "type": "string"
+              },
+              "op": {
+                "const": "upsert",
+                "type": "string"
+              },
+              "value": {
+                "$ref": "#/components/schemas/ComplaintEntityDto"
+              }
+            },
+            "required": [
+              "op",
+              "collection",
+              "value"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "collection": {
+                "const": "edge",
+                "type": "string"
+              },
+              "op": {
+                "const": "upsert",
+                "type": "string"
+              },
+              "value": {
+                "$ref": "#/components/schemas/EdgeEntityDto"
+              }
+            },
+            "required": [
+              "op",
+              "collection",
+              "value"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "collection": {
+                "const": "event",
+                "type": "string"
+              },
+              "op": {
+                "const": "upsert",
+                "type": "string"
+              },
+              "value": {
+                "$ref": "#/components/schemas/EventEntityDto"
+              }
+            },
+            "required": [
+              "op",
+              "collection",
+              "value"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "collection": {
+                "const": "monitor",
+                "type": "string"
+              },
+              "op": {
+                "const": "upsert",
+                "type": "string"
+              },
+              "value": {
+                "$ref": "#/components/schemas/MonitorEntityDto"
+              }
+            },
+            "required": [
+              "op",
+              "collection",
+              "value"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "collection": {
+                "const": "peerTeam",
+                "type": "string"
+              },
+              "op": {
+                "const": "upsert",
+                "type": "string"
+              },
+              "value": {
+                "$ref": "#/components/schemas/PeerTeamEntityDto"
+              }
+            },
+            "required": [
+              "op",
+              "collection",
+              "value"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "collection": {
+                "const": "project",
+                "type": "string"
+              },
+              "op": {
+                "const": "upsert",
+                "type": "string"
+              },
+              "value": {
+                "$ref": "#/components/schemas/ProjectEntityDto"
+              }
+            },
+            "required": [
+              "op",
+              "collection",
+              "value"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "collection": {
+                "const": "request",
+                "type": "string"
+              },
+              "op": {
+                "const": "upsert",
+                "type": "string"
+              },
+              "value": {
+                "$ref": "#/components/schemas/RequestEntityDto"
+              }
+            },
+            "required": [
+              "op",
+              "collection",
+              "value"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "collection": {
+                "const": "room",
+                "type": "string"
+              },
+              "op": {
+                "const": "upsert",
+                "type": "string"
+              },
+              "value": {
+                "$ref": "#/components/schemas/RoomEntityDto"
+              }
+            },
+            "required": [
+              "op",
+              "collection",
+              "value"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "collection": {
+                "const": "rule",
+                "type": "string"
+              },
+              "op": {
+                "const": "upsert",
+                "type": "string"
+              },
+              "value": {
+                "$ref": "#/components/schemas/RuleEntityDto"
+              }
+            },
+            "required": [
+              "op",
+              "collection",
+              "value"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "collection": {
+                "const": "task",
+                "type": "string"
+              },
+              "op": {
+                "const": "upsert",
+                "type": "string"
+              },
+              "value": {
+                "$ref": "#/components/schemas/TaskEntityDto"
+              }
+            },
+            "required": [
+              "op",
+              "collection",
+              "value"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "collection": {
+                "const": "uiPreferences",
+                "type": "string"
+              },
+              "op": {
+                "const": "upsert",
+                "type": "string"
+              },
+              "value": {
+                "$ref": "#/components/schemas/UiPreferencesDto"
+              }
+            },
+            "required": [
+              "op",
+              "collection",
+              "value"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "collection": {
+                "const": "work",
+                "type": "string"
+              },
+              "op": {
+                "const": "upsert",
+                "type": "string"
+              },
+              "value": {
+                "$ref": "#/components/schemas/WorkEntityDto"
+              }
+            },
+            "required": [
+              "op",
+              "collection",
+              "value"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "collection": {
+                "const": "workspace",
+                "type": "string"
+              },
+              "op": {
+                "const": "upsert",
+                "type": "string"
+              },
+              "value": {
+                "$ref": "#/components/schemas/WorkspaceEntityDto"
+              }
+            },
+            "required": [
+              "op",
+              "collection",
+              "value"
+            ],
+            "type": "object"
+          },
+          {
+            "not": {
+              "required": [
+                "value"
+              ]
+            },
+            "properties": {
+              "collection": {
+                "enum": [
+                  "agent",
+                  "chat",
+                  "complaint",
+                  "edge",
+                  "event",
+                  "monitor",
+                  "peerTeam",
+                  "project",
+                  "request",
+                  "room",
+                  "rule",
+                  "task",
+                  "uiPreferences",
+                  "work",
+                  "workspace"
+                ],
+                "type": "string"
+              },
+              "op": {
+                "const": "delete",
+                "type": "string"
+              }
+            },
+            "required": [
+              "op",
+              "collection"
+            ],
+            "type": "object"
+          }
+        ],
+        "properties": {
+          "collection": {
             "type": "string"
           },
-          "payload": {
-            "title": "Payload",
+          "id": {
+            "type": "string"
+          },
+          "op": {
+            "enum": [
+              "upsert",
+              "delete"
+            ],
             "type": "string"
           },
           "seq": {
@@ -51865,13 +52221,16 @@
             "minimum": 0,
             "title": "Seq",
             "type": "integer"
+          },
+          "value": {
+            "$ref": "#/components/schemas/JsonValue"
           }
         },
         "required": [
+          "op",
+          "collection",
           "id",
-          "seq",
-          "payload",
-          "_deleted"
+          "seq"
         ],
         "title": "SyncEntity",
         "type": "object"
@@ -52156,9 +52515,9 @@
             "type": "integer"
           },
           "protocolVersion": {
-            "const": 3,
-            "maximum": 3,
-            "minimum": 3,
+            "const": 4,
+            "maximum": 4,
+            "minimum": 4,
             "title": "Protocolversion",
             "type": "integer"
           },
@@ -52181,9 +52540,9 @@
           },
           "supportedVersions": {
             "items": {
-              "const": 3,
-              "maximum": 3,
-              "minimum": 3,
+              "const": 4,
+              "maximum": 4,
+              "minimum": 4,
               "type": "integer"
             },
             "title": "Supportedversions",
@@ -52312,7 +52671,14 @@
           },
           "documents": {
             "items": {
-              "$ref": "#/components/schemas/SyncDocument"
+              "oneOf": [
+                {
+                  "$ref": "#/components/schemas/SyncDocument"
+                },
+                {
+                  "$ref": "#/components/schemas/SyncEntity"
+                }
+              ]
             },
             "title": "Documents",
             "type": "array"

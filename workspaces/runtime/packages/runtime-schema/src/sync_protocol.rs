@@ -3,9 +3,9 @@
 //! of `api.ts` is rendered by `studio-contracts`.
 
 /// The single supported sync protocol version.
-pub const SYNC_PROTOCOL_VERSION: u32 = 3;
+pub const SYNC_PROTOCOL_VERSION: u32 = 4;
 /// `SYNC_PROTOCOL_VERSION` as text, for headers and query values.
-pub const SYNC_PROTOCOL_VERSION_TEXT: &str = "3";
+pub const SYNC_PROTOCOL_VERSION_TEXT: &str = "4";
 /// Scope name of the sync entity stream.
 pub const SYNC_ENTITY_SCOPE: &str = "state:entities:v1";
 
