@@ -1,4 +1,5 @@
 mod claude_login;
+mod draft_replication;
 mod multi_server_incoming;
 mod orchestration_settings;
 mod process_controls;
