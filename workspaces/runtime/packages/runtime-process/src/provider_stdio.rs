@@ -162,6 +162,12 @@ fn write_stdin_timing_diagnostic_best_effort(line: &[u8]) {
     }
 }
 
+/// For each leader PID: whether the leader was still an unreaped child of this
+/// process when cleanup signalled its group.
+#[cfg(test)]
+static LEADER_UNREAPED_AT_SIGNAL: Mutex<std::collections::BTreeMap<u32, bool>> =
+    Mutex::new(std::collections::BTreeMap::new());
+
 async fn reap_with_deadline<T>(
     pid: Option<u32>,
     wait: impl std::future::Future<Output = io::Result<T>>,
@@ -316,18 +322,41 @@ impl StdioProviderTaskFactory {
                     }
                 };
                 let pid = child.id();
-                let result = tokio::select! {
+                // The leader's exit is observed without reaping it, so the group ID
+                // stays owned until the group signal below (`owned_process_group`).
+                let leader_exit = async {
+                    match pid {
+                        Some(pid) => crate::owned_process_group::exited_unreaped(pid).await,
+                        None => Err(io::Error::other("the provider child has no process ID")),
+                    }
+                };
+                let (result, exit_unobserved) = tokio::select! {
                     biased;
-                    _ = Shutdown::cancelled(&mut stop) => Ok(()),
+                    _ = Shutdown::cancelled(&mut stop) => (Ok(()), false),
                     // First retain immediately readable replies in the bounded journal.
                     // A full journal must never prevent observing and reaping the child.
-                    result = bounded => result,
-                    exited = child.wait() => exited
-                        .map_err(process_error)
-                        .and(Err(SupervisorError::ConnectionLost.into())),
+                    result = bounded => (result, false),
+                    exited = leader_exit => match exited {
+                        Ok(()) => (Err(SupervisorError::ConnectionLost.into()), false),
+                        Err(error) => (Err(process_error(error)), true),
+                    },
                 };
+                // Signal the group before the leader is reaped. If its exit could not
+                // be observed, the leader may already be reaped: send nothing.
                 // Always wait, including when the group already exited (ESRCH).
-                let killed = child.start_kill();
+                #[cfg(test)]
+                if let Some(pid) = pid {
+                    let unreaped = crate::owned_process_group::exited_unreaped_now(pid).is_ok();
+                    LEADER_UNREAPED_AT_SIGNAL
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .insert(pid, unreaped);
+                }
+                let killed = if exit_unobserved {
+                    Ok(())
+                } else {
+                    child.start_kill()
+                };
                 let reaped = reap_with_deadline(pid, child.wait()).await;
                 let cleanup = killed
                     .or_else(|error| {
@@ -637,6 +666,52 @@ async fn read_stdout_line<R: AsyncRead + Unpin>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A group signal after the leader is reaped could reach another group that
+    /// reuses the ID. Here the leader exits while a descendant keeps stdout open,
+    /// so the exit, not stdout EOF, ends the exchange.
+    #[tokio::test]
+    async fn cleanup_signals_the_group_before_it_reaps_the_exited_leader() {
+        let mut attachment = StdioProviderTaskFactory {
+            deadline: Some(Instant::now() + std::time::Duration::from_secs(30)),
+            max_frame_bytes: 1024,
+            max_output_bytes: Some(4096),
+            stderr_log: None,
+        }
+        .open(
+            ProviderHandle::for_account("stdio-group-signal"),
+            OpenOptions {
+                clock: SessionClock::default(),
+                expected_generation: Some(Generation(1)),
+                launch: ProviderLaunchSpec::new(
+                    vec!["/bin/sh".into(), "-c".into(), "sleep 30 & exit 0".into()],
+                    std::collections::BTreeMap::new(),
+                    "/var/tmp".into(),
+                ),
+            },
+            Shutdown::default(),
+        )
+        .await
+        .expect("child starts");
+        let pid = attachment
+            .status
+            .borrow()
+            .info
+            .as_ref()
+            .expect("child info")
+            .pid;
+        let exit = attachment.completion().await;
+        assert!(exit.cleanup_error.is_none(), "{:?}", exit.cleanup_error);
+        assert_eq!(
+            LEADER_UNREAPED_AT_SIGNAL
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .get(&pid)
+                .copied(),
+            Some(true),
+            "the group signal comes before the leader is reaped"
+        );
+    }
     use std::{
         pin::Pin,
         sync::{

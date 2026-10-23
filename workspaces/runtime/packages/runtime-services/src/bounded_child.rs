@@ -20,6 +20,14 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
 }
 
+// Whether the leader was still an unreaped child of this thread's process when
+// the last group signal went out. Absent from production builds.
+#[cfg(test)]
+thread_local! {
+    pub(crate) static LEADER_UNREAPED_AT_SIGNAL: std::cell::Cell<Option<bool>> =
+        const { std::cell::Cell::new(None) };
+}
+
 const MAX_ERROR_CHARS: usize = 1200;
 
 #[derive(Debug)]
@@ -145,28 +153,33 @@ fn run_with_environment(request: Request<'_>, remove_git: bool) -> Result<Output
     let deadline =
         DEADLINE_OVERRIDE.with_borrow_mut(|hook| hook.take().map_or(deadline, |ready| ready()));
 
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break status,
-            Ok(None) if Instant::now() < deadline => thread::sleep(
+    // The exit is observed without reaping the leader, so the group ID stays
+    // owned until the group signal below (`owned_process_group`).
+    loop {
+        match leader_exited(&mut *child) {
+            Ok(true) => break,
+            Ok(false) if Instant::now() < deadline => thread::sleep(
                 Duration::from_millis(10).min(deadline.saturating_duration_since(Instant::now())),
             ),
-            Ok(None) => {
+            Ok(false) => {
                 terminate(&mut *child);
                 detach(stdout_reader, stderr_reader);
                 return Err(ChildError::TimedOut);
             }
             Err(error) => {
-                terminate(&mut *child);
+                // The leader may already be reaped, so its group ID is not ours
+                // to signal any more.
                 detach(stdout_reader, stderr_reader);
                 return Err(launch("wait", error));
             }
         }
-    };
+    }
 
-    // Reap ordinary descendants as soon as the command exits. A helper that escaped into a new
-    // session may still own a pipe; recv_timeout below keeps that case within the same deadline.
+    // Stop ordinary descendants as soon as the command exits, then reap. A helper that escaped
+    // into a new session may still own a pipe; recv_timeout below keeps that case within the
+    // same deadline.
     terminate(&mut *child);
+    let status = child.wait().map_err(|error| launch("wait", error))?;
     let stdout = match receive_until(&stdout_receiver, deadline, "stdout") {
         Ok(output) => output.map_err(|error| launch("stdout read", error))?,
         Err(error) => {
@@ -225,6 +238,20 @@ fn detach(stdout_reader: thread::JoinHandle<()>, stderr_reader: thread::JoinHand
     drop(stderr_reader);
 }
 
+/// Whether the leader exited. On Unix the leader stays unreaped, so its group
+/// can still be signalled safely.
+#[cfg(unix)]
+fn leader_exited(child: &mut dyn ChildWrapper) -> std::io::Result<bool> {
+    studio_runtime_process::owned_process_group::exited_unreaped_now(child.id())
+}
+
+#[cfg(not(unix))]
+fn leader_exited(child: &mut dyn ChildWrapper) -> std::io::Result<bool> {
+    Ok(child.try_wait()?.is_some())
+}
+
+/// Signal the owned group, then reap the leader. Call only while the leader is
+/// not reaped.
 fn terminate(child: &mut dyn ChildWrapper) {
     #[cfg(windows)]
     {
@@ -242,6 +269,10 @@ fn terminate(child: &mut dyn ChildWrapper) {
             );
         }
     }
+    #[cfg(all(test, unix))]
+    LEADER_UNREAPED_AT_SIGNAL.set(Some(
+        studio_runtime_process::owned_process_group::exited_unreaped_now(child.id()).is_ok(),
+    ));
     drop(child.start_kill());
     drop(child.try_wait());
 }
@@ -269,6 +300,31 @@ mod tests {
     use std::ffi::OsStr;
     use std::io::Cursor;
     use std::time::Duration;
+
+    /// A group signal after the leader is reaped could reach another group that
+    /// reuses the ID. The descendant cleanup must signal while the exited leader
+    /// is unreaped.
+    #[cfg(unix)]
+    #[test]
+    fn descendant_cleanup_signals_the_group_before_it_reaps_the_leader() {
+        super::LEADER_UNREAPED_AT_SIGNAL.set(None);
+        run(Request {
+            program: OsStr::new("/bin/sh"),
+            git_directory: None,
+            args: &["-c", "exit 0"],
+            environment: &[],
+            input: None,
+            stdout_limit: 16,
+            stderr_limit: 16,
+            timeout: Duration::from_secs(10),
+        })
+        .expect("the child runs");
+        assert_eq!(
+            super::LEADER_UNREAPED_AT_SIGNAL.get(),
+            Some(true),
+            "the group signal comes before the leader is reaped"
+        );
+    }
 
     /// Cutover attempt 3 showed only "the Git process could not run". The error
     /// must name the failing step and the operating-system error.
