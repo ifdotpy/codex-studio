@@ -795,3 +795,45 @@
   min-width: 0;
   text-overflow: ellipsis;
 }
+
+/* Sidebar rules moved from workspace-layout.css. */
+
+@media (min-width: 761px) {
+  #sidebar {
+    width: var(--studio-sidebar-width);
+    flex-basis: var(--studio-sidebar-width);
+    padding-inline: 16px;
+  }
+
+  .desktop-inset-titlebar .sidebar-header {
+    padding-inline: 0;
+  }
+}
+/* Sidebar rules moved from studio-preferences.css. */
+
+:root:not([data-studio-typography="original"]) #sidebar {
+  font-family: var(--studio-font-family);
+  font-size: var(--studio-sidebar-font-size);
+}
+
+:root:not([data-studio-typography="original"])
+  #sidebar
+  :is(
+    .chat-row,
+    .row-copy strong,
+    .row-copy small,
+    .row-meta,
+    #chat-search,
+    .sidebar-nav-button,
+    .sidebar-footer,
+    .load-more,
+    #open-complaints
+  ) {
+  font-size: var(--studio-sidebar-font-size);
+}
+
+:root:not([data-studio-typography="original"])
+  #sidebar
+  :is(button, input, textarea, select) {
+  font-family: var(--studio-font-family);
+}
