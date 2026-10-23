@@ -175,22 +175,6 @@
   padding: 0 8px;
   margin-left: -8px;
 }
-.sidebar-nav {
-  display: grid;
-  gap: 2px;
-  flex-shrink: 0;
-}
-.sidebar-nav-button {
-  width: 100%;
-  height: auto;
-  min-height: 34px;
-  padding-block: 4px;
-  padding-inline: 10px;
-  color: var(--text);
-}
-.sidebar-nav-button .mantine-Button-inner {
-  justify-content: flex-start;
-}
 @media (max-width: 760px) {
   .workspace-header.simple-workspace-header {
     gap: 2px;
@@ -379,31 +363,6 @@
     min-width: 0;
     white-space: normal;
     overflow-wrap: anywhere;
-  }
-
-  /* Visible project actions need dedicated space instead of a hover overlay. */
-  #sidebar .projects-heading .mantine-ActionIcon-root,
-  #sidebar .project-tree-action,
-  #sidebar .project-chats .row-actions {
-    width: 44px;
-    height: 44px;
-  }
-  #sidebar .project-tree-action:has(+ .project-tree-action) {
-    right: 48px;
-  }
-  #sidebar .project-tree-toggle {
-    margin-right: 48px;
-  }
-  #sidebar
-    .project-tree-heading:has(.project-tree-action + .project-tree-action)
-    .project-tree-toggle {
-    margin-right: 92px;
-  }
-  #sidebar .project-chats .chat-row {
-    padding-right: 52px;
-  }
-  #sidebar .sidebar-nav-button {
-    height: 44px;
   }
 
   #team :is(.worker-heading, .team-filters) {
@@ -720,11 +679,6 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-.sidebar-shared-chat .mantine-Button-label {
-  display: block;
-  min-width: 0;
-  text-overflow: ellipsis;
 }
 
 /* In Chat settings the agent setup trigger reads as one full-width field:
