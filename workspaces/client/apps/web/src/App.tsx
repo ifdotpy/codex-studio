@@ -1,3 +1,4 @@
+import { ChatSettingsDialog } from "./components/agents/ChatSettingsDialog";
 import { DeliveryMoment } from "./generated/deliveryMoment";
 import { useScreenEnvironment } from "./servers/ScreenContext";
 import {
@@ -16,7 +17,6 @@ import { onDesktopNavigate } from "./native/notifications";
 import { writePreferenceEdit } from "./sync/uiPreferenceStore";
 import { createUiPreferenceBridge } from "./sync/uiPreferenceBridge";
 import type { UiPreferenceProjection } from "./sync/entityProjection";
-import { Tooltip } from "@mantine/core";
 import StudioSettingsTabs, {
   isStudioSettingsTab,
   type StudioSettingsTab,
@@ -85,11 +85,9 @@ import {
   Settings,
   Square,
   ArrowLeft,
-  Folder,
   MessageSquare,
   Mail,
   PanelLeft,
-  Plus,
   Search,
   Settings2,
   Users,
@@ -187,11 +185,9 @@ import ProjectAccount from "./components/ProjectAccount";
 import ProjectFolderDialog from "./components/ProjectFolderDialog";
 import SessionActivity from "./components/agents/SessionActivity";
 import { useWorkerModels } from "./components/agents/WorkerModelPicker";
-import { UnifiedAgentSettings } from "./components/agents/UnifiedAgentSettings";
 import { FederationSettings } from "./components/FederationSettings";
 import { LinuxVMSettings } from "./components/LinuxVMSettings";
 import { OrchestrationSettings } from "./components/OrchestrationSettings";
-import BrowserAccessNotice from "./components/BrowserAccessNotice";
 import ProviderUpdateSettings from "./components/ProviderUpdateSettings";
 import SupervisorRecoveryNotice from "./components/SupervisorRecoveryNotice";
 import Accounts, { useAccounts } from "./components/Accounts";
@@ -199,7 +195,6 @@ import ClaudeSignIn from "./components/ClaudeSignIn";
 import AccountSignInNotice from "./components/AccountSignInNotice";
 import CodexSignIn from "./components/CodexSignIn";
 import ConversationTitle from "./components/shell/ConversationTitle";
-import SubagentConcurrencyControl from "./components/agents/SubagentConcurrencyControl";
 import Conversation from "./components/Conversation";
 const SelectedConversation = memo(Conversation);
 import type { UsageAccount } from "./components/Usage";
@@ -233,11 +228,6 @@ import {
   TeamModels,
 } from "./components/agents/WorkerOverview";
 import { activeTask, backgroundTasks } from "./components/backgroundTaskModel";
-const ClaudeSettings = lazy(() =>
-  import("./components/ClaudeSettings").then((module) => ({
-    default: module.ClaudeSettings,
-  })),
-);
 const TerminalDock = lazy(() => import("./components/TerminalDock"));
 import Workspace from "./components/shell/DeferredWorkspace";
 const BackgroundTasks = lazy(
@@ -3791,174 +3781,36 @@ export default function App({ active = true }: { active?: boolean }) {
           )}
         </div>
       </Modal>
-      <Modal
-        opened={settingsOpen}
-        closeOnEscape={
-          !accountModalOpen &&
-          !mainSettingsOpen &&
-          !workerSettingsOpen &&
-          !reviewSettingsOpen
-        }
-        closeOnClickOutside={
-          !accountModalOpen &&
-          !mainSettingsOpen &&
-          !workerSettingsOpen &&
-          !reviewSettingsOpen
-        }
-        onClose={() => {
-          if (accountModalOpenRef.current) return;
-          setSettingsOpen(false);
-        }}
-        title="Chat settings"
-        size={modalSizes.settings}
-      >
-        <div className="chat-settings-panel chat-settings-rows">
-          {agent?.source === "managed" && (
-            <>
-              <SettingsRow label="Model">
-                <UnifiedAgentSettings
-                  key={"execution:" + agent.id}
-                  state={accounts}
-                  notify={notify}
-                  settingsRow
-                  permissionsTargetId="chat-settings-permissions"
-                  extrasTargetId="chat-settings-modes"
-                  onOpenChange={setMainSettingsOpen}
-                  onAccountModalOpenChange={updateAccountModalOpen}
-                  showAccountExclusions
-                  agent={agent}
-                  catalog={agentModels}
-                  team={data?.runtime?.agents || []}
-                  refresh={refresh}
-                />
-              </SettingsRow>
-              {lead?.isLead &&
-                (["worker", "review"] as const).map((role) => (
-                  <SettingsRow
-                    key={role}
-                    label={role === "worker" ? "Workers" : "Review"}
-                  >
-                    <UnifiedAgentSettings
-                      state={accounts}
-                      notify={notify}
-                      settingsRow
-                      initialRole={role}
-                      onOpenChange={
-                        role === "worker"
-                          ? setWorkerSettingsOpen
-                          : setReviewSettingsOpen
-                      }
-                      onAccountModalOpenChange={setAccountModalOpen}
-                      agent={lead}
-                      catalog={agentModels}
-                      team={data?.runtime?.agents || []}
-                      refresh={refresh}
-                    />
-                  </SettingsRow>
-                ))}
-            </>
-          )}
-          {lead?.source === "managed" && (
-            <SettingsRow label="Parallel">
-              <SubagentConcurrencyControl
-                compact
-                lead={lead}
-                stateDir={data.stateDir}
-                workspaceId={workspaceId}
-                refresh={refresh}
-              />
-            </SettingsRow>
-          )}
-          <div id="chat-settings-permissions" />
-          <BrowserAccessNotice
-            compact
-            accountKey={accountKey}
-            active={settingsOpen && (agent || lead)?.provider !== "claude"}
-          />
-          <div className="chat-settings-footer">
-            {agent?.cwd && (
-              <Button
-                variant="default"
-                className="settings-new-chat"
-                leftSection={<Plus size={14} />}
-                aria-label="New chat in this project"
-                disabled={creating}
-                onClick={() => {
-                  setSettingsOpen(false);
-                  void newChat(agent.cwd ?? undefined);
-                }}
-              >
-                New chat
-              </Button>
-            )}
-            {agent?.source === "managed" &&
-              (["compact", "review"] as const)
-                .filter((action) =>
-                  menuActions(agent.provider ?? undefined).includes(action),
-                )
-                .map((action) => {
-                  const disabled =
-                    busy.has(agent.status ?? "") ||
-                    !!agent.inFlight ||
-                    !!nativeThreadError(agent) ||
-                    !agent.threadId;
-                  return (
-                    <Tooltip
-                      key={action}
-                      disabled={!disabled}
-                      label={
-                        !agent.threadId
-                          ? "Available after the chat starts."
-                          : "Wait until the chat is ready."
-                      }
-                    >
-                      <span>
-                        <Button
-                          variant="default"
-                          disabled={disabled}
-                          onClick={() => {
-                            setSettingsOpen(false);
-                            void run(() => submitNativeAction(agent, action));
-                          }}
-                        >
-                          {action === "compact" ? "Compact" : "Review"}
-                        </Button>
-                      </span>
-                    </Tooltip>
-                  );
-                })}
-          </div>
-          <details className="chat-settings-more">
-            <summary>More</summary>
-            <div id="chat-settings-modes" />
-            {agent?.cwd && (
-              <Button
-                leftSection={<Folder size={14} />}
-                aria-label="Choose project folder"
-                onClick={() => {
-                  setSettingsOpen(false);
-                  project();
-                }}
-              >
-                Folder
-              </Button>
-            )}
-            {agent?.provider === "claude" && (
-              <Suspense fallback={null}>
-                <ClaudeSettings
-                  agent={agent}
-                  account={selectedAccount}
-                  permissionsTargetId="chat-settings-permissions"
-                  onSignIn={(key) => {
-                    setSettingsOpen(false);
-                    setClaudeLoginKey(key);
-                  }}
-                />
-              </Suspense>
-            )}
-          </details>
-        </div>
-      </Modal>
+      <ChatSettingsDialog
+        settingsOpen={settingsOpen}
+        accountModalOpen={accountModalOpen}
+        mainSettingsOpen={mainSettingsOpen}
+        workerSettingsOpen={workerSettingsOpen}
+        reviewSettingsOpen={reviewSettingsOpen}
+        accountModalOpenRef={accountModalOpenRef}
+        setSettingsOpen={setSettingsOpen}
+        agent={agent}
+        lead={lead}
+        accounts={accounts}
+        notify={notify}
+        setMainSettingsOpen={setMainSettingsOpen}
+        updateAccountModalOpen={updateAccountModalOpen}
+        agentModels={agentModels}
+        data={data}
+        refresh={refresh}
+        setWorkerSettingsOpen={setWorkerSettingsOpen}
+        setReviewSettingsOpen={setReviewSettingsOpen}
+        setAccountModalOpen={setAccountModalOpen}
+        workspaceId={workspaceId}
+        accountKey={accountKey}
+        creating={creating}
+        newChat={newChat}
+        run={run}
+        submitNativeAction={submitNativeAction}
+        project={project}
+        selectedAccount={selectedAccount}
+        setClaudeLoginKey={setClaudeLoginKey}
+      />
       <Modal
         opened={!!modal}
         closeOnEscape={modal?.title !== "New chat"}
