@@ -223,21 +223,17 @@ test("Mobile client ui", async ({
     await closeChatSettings();
     const mainSettingsTrigger = page
       .locator(".composer-context-row")
-      .getByRole("button", { name: "Main agent settings", exact: true });
-    await mainSettingsTrigger.waitFor({ state: "visible" });
+      .getByRole("button", { name: /^Execution settings:/ });
     await mainSettingsTrigger.click();
     const mainSettings = page.getByRole("dialog", {
-      name: "Main agent settings",
+      name: "Chat settings",
       exact: true,
     });
     const rolePicker = mainSettings.getByRole("radiogroup", {
       name: "Agent role",
     });
-    await rolePicker.getByText("Worker", { exact: true }).click();
-    const subagentSettings = page.getByRole("dialog", {
-      name: "Subagent defaults",
-      exact: true,
-    });
+    await rolePicker.getByText("Workers", { exact: true }).click();
+    const subagentSettings = mainSettings;
     const workerModel = subagentSettings.getByRole("radiogroup", {
       name: "Default subagent model",
       exact: true,

@@ -53,8 +53,10 @@ export function ChatSettingsDialog(p: Props) {
   const root = p.lead || p.agent;
   const [tab, setTab] = useState("models");
   useEffect(() => {
-    if (p.settingsOpen)
+    if (p.settingsOpen) {
       setTab(p.agent?.source === "managed" ? "models" : "access");
+      setRole("orchestrator");
+    }
   }, [p.settingsOpen, p.agent?.id, p.agent?.source]);
   const [role, setRole] = useState<SetupRole>("orchestrator");
   const [claudePermission, setClaudePermission] = useState<string | null>(null);

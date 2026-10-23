@@ -3096,6 +3096,7 @@ export default function App({ active = true }: { active?: boolean }) {
                 onSelect={open}
                 onBranchCreated={branchCreated}
                 onNewChat={newConversation}
+                onOpenChatSettings={() => setSettingsOpen(true)}
                 onChooseChat={chooseConversation}
               />
             )}

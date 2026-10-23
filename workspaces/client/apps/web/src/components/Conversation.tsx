@@ -118,9 +118,8 @@ import SelectionQuote, {
 } from "./conversation/transcript/SelectionQuote";
 import MessageActions from "./conversation/transcript/MessageActions";
 import { LiveAgentPhase } from "./agents/AgentPhase";
-import { UnifiedAgentSettings } from "./agents/UnifiedAgentSettings";
+import { ExecutionSummaryTrigger } from "./agents/ExecutionSummaryTrigger";
 import type { useAccounts } from "./Accounts";
-import { useWorkerModels } from "./agents/WorkerModelPicker";
 import ComposerAttachments, {
   MessageAttachments,
   type Attachment,
@@ -288,6 +287,7 @@ export default function Conversation(p: {
   onSelect?: (id: string) => void;
   onBranchCreated?: (id: string) => void;
   onNewChat?: () => void;
+  onOpenChatSettings: () => void;
   onChooseChat?: () => void;
   sending: boolean;
   schemaMismatch?: boolean;
@@ -668,18 +668,6 @@ export default function Conversation(p: {
     !historical && !after,
   );
   const threadBlock = nativeThreadError(agent);
-  const [, setModelCommandOpen] = useState(false);
-  const [modelCommandRequest, setModelCommandRequest] = useState(0);
-  // Load the chat account catalog up front: the closed composer trigger
-  // needs it to name the model behind a default alias.
-  const modelCatalog = useWorkerModels(
-    p.agent?.accountKey || "default",
-    p.agent?.source === "managed",
-  );
-  useEffect(() => {
-    setModelCommandOpen(false);
-    setModelCommandRequest(0);
-  }, [p.id, p.agent?.accountKey, p.syncWorkspaceId, p.data.stateDir]);
   const capacityRetry = agent ? currentCapacityRetry(agent) : null;
   const errorKind = nativeErrorKind(agent?.error);
   const failureKey = [
@@ -724,42 +712,19 @@ export default function Conversation(p: {
     setLimitsOpen(false);
   }, [p.id]);
   const managed = agent?.source === "managed";
-  const executionSettings =
-    p.agent?.source === "managed"
-      ? (["orchestrator", "worker"] as const).map((role) => ({
-          label: role === "orchestrator" ? "Model" : "Workers",
-          control: (
-            <UnifiedAgentSettings
-              state={p.accountsState}
-              notify={p.notify}
-              team={p.data.runtime?.agents || []}
-              agent={p.agent!}
-              catalog={modelCatalog}
-              refresh={p.refresh}
-              settingsRow
-              showAccountSummary
-              initialRole={role}
-              openRequest={role === "orchestrator" ? modelCommandRequest : 0}
-              onOpenChange={
-                role === "orchestrator" ? setModelCommandOpen : undefined
-              }
-            />
-          ),
-        }))
-      : [];
-  const executionControls = executionSettings.length ? (
-    <div
-      className="empty-chat-settings composer-context-row"
-      aria-label="Agent settings"
-    >
-      {executionSettings.map(({ label, control }) => (
-        <div className="empty-chat-setting" key={label}>
-          <span>{label}</span>
-          {control}
-        </div>
-      ))}
-    </div>
-  ) : null;
+  const executionControls =
+    p.agent?.source === "managed" ? (
+      <div
+        className="empty-chat-settings composer-context-row"
+        aria-label="Agent settings"
+      >
+        <ExecutionSummaryTrigger
+          agent={p.agent}
+          team={p.data.runtime?.agents || []}
+          onOpen={p.onOpenChatSettings}
+        />
+      </div>
+    ) : null;
   const queueScope = `${p.data.stateDir}:${p.syncWorkspaceId || ""}:${p.id}`;
   const messageQueue = useMessageQueue({
     id: p.id,
@@ -865,8 +830,7 @@ export default function Conversation(p: {
         promptRecall.reset();
         input.current?.focus({ preventScroll: true });
         p.setDraft("");
-        setModelCommandOpen(true);
-        setModelCommandRequest((request) => request + 1);
+        p.onOpenChatSettings();
       }
       return;
     }

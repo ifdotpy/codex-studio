@@ -11,7 +11,7 @@ import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-test("composer keeps one tools row and readable mixed-provider chips in medium containers", async ({
+test("composer keeps one tools row and readable mixed-provider execution summary in medium containers", async ({
   browser,
 }) => {
   test.setTimeout(120_000);
@@ -64,17 +64,23 @@ test("composer keeps one tools row and readable mixed-provider chips in medium c
       serviceTiers: [],
     }));
     for (const { width, target, team } of [
-      { width: 1440, target: 600 },
+      { width: 1440, target: 900 },
+      { width: 1440, target: 470, team: true },
+      { width: 1440, target: 600, team: true },
+      { width: 1440, target: 440, team: true },
       { width: 1024, target: 480 },
       { width: 1080, target: 760 },
       { width: 768, target: 432 },
+      { width: 390, target: 358 },
+      { width: 320, target: 288 },
     ])
       for (const scheme of ["light", "dark"]) {
         const page = await browser.newPage({
-          viewport: { width, height: 900 },
+          viewport: { width: 1440, height: 900 },
           colorScheme: scheme,
         });
         try {
+          page.setDefaultTimeout(10000);
           await stubEntityState(page, snapshot, contract);
           await page.route("**/api/sync/pull**", (route) =>
             new URL(route.request().url()).searchParams.get("scope") ===
@@ -88,17 +94,56 @@ test("composer keeps one tools row and readable mixed-provider chips in medium c
           );
           await page.goto(origin);
           await page
+            .getByLabel("Toggle conversations", { exact: true })
+            .waitFor();
+          if (!(await page.locator("#sidebar").isVisible()))
+            await page
+              .getByLabel("Toggle conversations", { exact: true })
+              .click();
+          await page
             .locator("[data-chat]")
             .filter({ hasText: "Release lead" })
             .first()
             .click();
+          await page.setViewportSize({ width, height: 900 });
+          if (width < 760) await expect(page.locator("#sidebar")).toBeHidden();
           if (team) {
             await page.locator("#team-toggle").click();
             await expect(page.locator("#team")).toBeVisible();
           }
+          const trigger = page.locator("#composer .execution-summary-trigger");
+          await expect(trigger).toHaveCount(1);
+          await expect(trigger).toHaveAttribute(
+            "aria-label",
+            /Lead Opus 4.6 Medium.*Workers Sol 5.6 Medium.*Review same as caller/,
+          );
           await expect(
-            page.locator("#composer .execution-model").first(),
-          ).toContainText("Opus");
+            trigger.locator(".execution-summary-segment"),
+          ).toHaveCount(3);
+          await expect(trigger.locator(".execution-worker-count")).toHaveCount(
+            0,
+          );
+          await expect(trigger).not.toHaveAttribute(
+            "aria-label",
+            /\d+ workers/,
+          );
+          await expect(trigger).not.toHaveAttribute("title", /\d+ workers/);
+          await trigger.click();
+          const settings = page.getByRole("dialog", {
+            name: "Chat settings",
+            exact: true,
+          });
+          await expect(
+            settings.getByRole("tab", { name: "Models", exact: true }),
+          ).toHaveAttribute("aria-selected", "true");
+          await expect(
+            settings
+              .getByRole("radiogroup", { name: "Agent role", exact: true })
+              .getByRole("radio")
+              .first(),
+          ).toBeChecked();
+          await page.keyboard.press("Escape");
+          await expect(settings).toBeHidden();
           await page.evaluate(
             ({ target, scheme }) => {
               document.documentElement.setAttribute(
@@ -125,7 +170,7 @@ test("composer keeps one tools row and readable mixed-provider chips in medium c
                 ...composer.querySelectorAll(".execution-menu"),
               ].map((button) => {
                 const label = button.querySelector(".execution-model"),
-                  glyph = button.querySelector(".execution-selected>svg");
+                  glyph = button.querySelector(".execution-provider>svg");
                 const probe = document.createElement("span");
                 probe.style.cssText =
                   "display:block;width:var(--studio-composer-model-min);position:absolute";
@@ -138,6 +183,22 @@ test("composer keeps one tools row and readable mixed-provider chips in medium c
                   glyph: r(glyph),
                   minimum,
                   glyphColor: getComputedStyle(glyph).color,
+                  namesHidden: getComputedStyle(label).display === "none",
+                  names: [
+                    ...button.querySelectorAll(
+                      ".execution-model,.execution-inherited-label",
+                    ),
+                  ].map((node) => ({
+                    text: node.textContent,
+                    visible: getComputedStyle(node).display !== "none",
+                    ...r(node),
+                  })),
+                  roleIcons: [
+                    ...button.querySelectorAll(".execution-role-icon"),
+                  ].map(r),
+                  inherited: r(
+                    button.querySelector(".execution-inherited-icon"),
+                  ),
                 };
               });
               return {
@@ -162,7 +223,10 @@ test("composer keeps one tools row and readable mixed-provider chips in medium c
           results.push({ width, target, team: !!team, scheme, ...geometry });
           await expect(page.locator("#toast")).toBeHidden({ timeout: 10_000 });
           await page.screenshot({
-            path: join(evidence, `composer-${target}-${scheme}.png`),
+            path: join(
+              evidence,
+              `composer-${width}-${target}-${team ? "docked" : "closed"}-${scheme}.png`,
+            ),
           });
           if (target === 760 && scheme === "light") {
             await page
@@ -228,9 +292,22 @@ test("composer keeps one tools row and readable mixed-provider chips in medium c
         JSON.stringify(result),
       ).toBeLessThanOrEqual(1);
       for (const chip of result.chips) {
-        expect(chip.label.width, JSON.stringify(result)).toBeGreaterThanOrEqual(
-          chip.minimum - 1,
-        );
+        expect(chip.namesHidden).toBe(false);
+        const names = chip.names.filter((name) => name.visible);
+        if (result.composer.width >= 440) expect(names).toHaveLength(3);
+        for (const name of names) {
+          expect(name.left).toBeGreaterThanOrEqual(chip.button.left);
+          expect(name.right).toBeLessThanOrEqual(chip.button.right);
+        }
+        if (!chip.namesHidden)
+          expect(
+            chip.label.width,
+            JSON.stringify(result),
+          ).toBeGreaterThanOrEqual(chip.minimum - 1);
+
+        expect(chip.roleIcons).toHaveLength(3);
+        for (const icon of [...chip.roleIcons, chip.inherited])
+          expect(icon.width).toBeGreaterThanOrEqual(14);
         expect(chip.glyph.width, JSON.stringify(result)).toBeGreaterThanOrEqual(
           12,
         );

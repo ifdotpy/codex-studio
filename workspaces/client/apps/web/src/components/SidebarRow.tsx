@@ -9,6 +9,7 @@ import {
 import {
   ActionIcon,
   Button,
+  Badge,
   Menu,
   TextInput,
   UnstyledButton,
@@ -24,6 +25,7 @@ import {
   Pin,
   PinOff,
   Trash2,
+  WifiOff,
 } from "lucide-react";
 import type { Agent } from "../types";
 import {
@@ -34,11 +36,7 @@ import ChatStatus from "./agents/ChatStatus";
 import { AgentProgress } from "./agents/AgentProgress";
 import { ProviderMark } from "./AccountTiles";
 import { relativeChatTime } from "./sidebar/fleet";
-import { DEFAULT_LOCAL_SERVER_ALIAS } from "../servers/serverAliases";
-import {
-  ChatServerLine,
-  offlineServerDescription,
-} from "../servers/ProjectChatRows";
+import { offlineServerDescription } from "../servers/ProjectChatRows";
 import { reportPromptComposerRender } from "./prompt-composer/renderProbe";
 
 type Actions = {
@@ -67,7 +65,6 @@ type Props = {
   now?: number;
   selected: boolean;
   serverAlias: string;
-  defaultServerAlias?: string;
   projectLabel?: string;
   indicator?: ChatIndicator;
   serverOffline?: boolean;
@@ -139,7 +136,6 @@ export default function SidebarRow(props: Props) {
       now={props.now}
       selected={props.selected}
       serverAlias={props.serverAlias}
-      defaultServerAlias={props.defaultServerAlias}
       projectLabel={props.projectLabel}
       indicator={indicator}
       serverOffline={props.serverOffline}
@@ -161,7 +157,6 @@ const SidebarRowView = memo(function SidebarRowView({
   now,
   selected,
   serverAlias,
-  defaultServerAlias = DEFAULT_LOCAL_SERVER_ALIAS,
   projectLabel,
   indicator,
   serverOffline = false,
@@ -188,7 +183,6 @@ const SidebarRowView = memo(function SidebarRowView({
       [command.stage, command.lastOutputLine].filter(Boolean).join("\n"),
     )
     .join("\n\n");
-  const showServer = serverAlias !== defaultServerAlias || serverOffline;
   const chatRow = (
     <UnstyledButton
       {...bindingValues}
@@ -228,45 +222,56 @@ const SidebarRowView = memo(function SidebarRowView({
             {a?.pinned && <Pin size={11} className="chat-pin" />}
             {row.name ?? ""}
           </strong>
-          {showServer && (
-            <ChatServerLine
-              provider={a.provider || undefined}
-              alias={serverAlias}
-              offline={serverOffline}
-            />
+        </span>
+        <span className="fleet-chat-meta">
+          <Badge
+            className="fleet-server-badge"
+            size="xs"
+            variant="outline"
+            color="gray"
+            data-offline={serverOffline || undefined}
+            title={offlineDescription || serverAlias}
+            aria-label={
+              serverOffline
+                ? `Server ${serverAlias} Offline. ${offlineDescription}`
+                : `Server ${serverAlias}`
+            }
+            leftSection={
+              serverOffline ? (
+                <WifiOff size="1em" aria-hidden="true" />
+              ) : undefined
+            }
+          >
+            {serverAlias}
+          </Badge>
+          {projectLabel && (
+            <span className="fleet-chat-project" title={projectLabel}>
+              {projectLabel}
+            </span>
+          )}
+          {(row.stall || commands.length > 0) && (
+            <span
+              className="fleet-chat-activity"
+              title={activityDetails || undefined}
+            >
+              <AgentProgress
+                agent={{
+                  stall: row.stall,
+                  commandProgress: commands.slice(0, 1),
+                }}
+              />
+              {moreCommands > 0 && (
+                <span
+                  className="fleet-command-count"
+                  aria-label={`${moreCommands} more managed command${moreCommands === 1 ? "" : "s"}`}
+                  title={activityDetails}
+                >
+                  +{moreCommands}
+                </span>
+              )}
+            </span>
           )}
         </span>
-        {(projectLabel || row.stall || commands.length > 0) && (
-          <span className="fleet-chat-meta">
-            {projectLabel && (
-              <span className="fleet-chat-project" title={projectLabel}>
-                {projectLabel}
-              </span>
-            )}
-            {(row.stall || commands.length > 0) && (
-              <span
-                className="fleet-chat-activity"
-                title={activityDetails || undefined}
-              >
-                <AgentProgress
-                  agent={{
-                    stall: row.stall,
-                    commandProgress: commands.slice(0, 1),
-                  }}
-                />
-                {moreCommands > 0 && (
-                  <span
-                    className="fleet-command-count"
-                    aria-label={`${moreCommands} more managed command${moreCommands === 1 ? "" : "s"}`}
-                    title={activityDetails}
-                  >
-                    +{moreCommands}
-                  </span>
-                )}
-              </span>
-            )}
-          </span>
-        )}
       </span>
       {timestamp != null && Number.isFinite(timestamp) && (
         <time

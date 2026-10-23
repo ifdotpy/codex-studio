@@ -328,6 +328,16 @@ for (const provider of ["claude", "codex"])
             await page.screenshot({
               path: join(screenshots, `${tab}-${width}-${scheme}.png`),
             });
+            if (tab === "Models") {
+              await roles.getByText("Workers", { exact: true }).click();
+              await expect(
+                dialog.getByRole("radio", { name: "Automatic", exact: true }),
+              ).not.toBeChecked();
+              await page.screenshot({
+                path: join(screenshots, `Workers-${width}-${scheme}.png`),
+              });
+              await roles.getByText("Lead", { exact: true }).click();
+            }
           }
         }
       await writeFile(

@@ -825,9 +825,6 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
       now={now}
       selected={p.opened === row.id}
       projectLabel={priority ? groupMap.get(row.cwd || "")?.name : undefined}
-      defaultServerAlias={
-        aliases[services.cache.ownerId] || DEFAULT_LOCAL_SERVER_ALIAS
-      }
       serverAlias={
         services.alias?.({ kind: "chat", id: row.id }) ||
         aliases[
