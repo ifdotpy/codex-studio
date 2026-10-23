@@ -111,9 +111,9 @@ const BOUNDARY_ALLOWLIST = [
   {
     importer: "codex-agents-desktop",
     file: "bridge.d.ts",
-    specifier: "../web/src/servers/desktopCredentials",
+    specifier: "../web/src/desktop",
     reason:
-      "The desktop bridge declaration shares the renderer's credential wire types until they have a public package owner.",
+      "The desktop bridge declaration re-exports the renderer's single bridge owner until it has a public package owner.",
   },
   {
     importer: "codex-agents-desktop",
