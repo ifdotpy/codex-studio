@@ -4,12 +4,12 @@
   flex-basis: var(--studio-team-size);
   max-inline-size: 100%;
   min-inline-size: 0;
-  padding: var(--mantine-spacing-md) var(--mantine-spacing-xs);
+  padding: var(--mantine-spacing-md);
   background: var(--surface);
   border-inline-start: var(--studio-border-width) solid var(--line);
 }
 #team .team-heading {
-  padding: 0 var(--mantine-spacing-xs) var(--mantine-spacing-sm);
+  padding: 0 0 var(--mantine-spacing-sm);
   gap: var(--mantine-spacing-xs);
 }
 #team .team-heading h2 {
@@ -95,7 +95,7 @@
 }
 #team .team-status-group h3 {
   margin: 0;
-  padding: var(--mantine-spacing-xs) calc(var(--mantine-spacing-xs) / 2);
+  padding: var(--mantine-spacing-xs) 0;
   color: var(--muted);
   font-size: var(--studio-text-meta);
   font-weight: 500;
@@ -345,7 +345,7 @@
   font-size: var(--studio-text-meta);
 }
 #team .worker-group > summary {
-  padding: var(--mantine-spacing-xs) calc(var(--mantine-spacing-xs) / 2);
+  padding: var(--mantine-spacing-xs) 0;
   color: var(--muted);
   cursor: pointer;
   font-size: var(--studio-text-meta);

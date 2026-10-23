@@ -354,3 +354,32 @@ export const ImplicitLead: Story = {
     });
   },
 };
+
+export const SharedGutter: Story = {
+  play: async ({ canvasElement }) => {
+    const panel = canvasElement.querySelector("#team")!;
+    const computed = getComputedStyle(panel);
+    const gutterProbe = document.createElement("div");
+    gutterProbe.style.width = "var(--mantine-spacing-md)";
+    panel.append(gutterProbe);
+    const gutter = gutterProbe.getBoundingClientRect().width;
+    gutterProbe.remove();
+    await expect(parseFloat(computed.paddingInlineStart)).toBe(gutter);
+    const edge =
+      panel.getBoundingClientRect().left +
+      parseFloat(computed.borderInlineStartWidth) +
+      gutter;
+    for (const selector of [
+      ".team-heading h2",
+      ".team-summary-filters",
+      ".mantine-TextInput-root",
+      ".team-status-group h3",
+      ".worker-group > summary",
+      ".worker-entry:not([data-has-parent])",
+    ]) {
+      for (const element of panel.querySelectorAll(selector)) {
+        await expect(element.getBoundingClientRect().left).toBeCloseTo(edge, 0);
+      }
+    }
+  },
+};
