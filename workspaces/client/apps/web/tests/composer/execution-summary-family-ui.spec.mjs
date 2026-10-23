@@ -12,7 +12,7 @@ import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-test("390px fine-pointer composer shows a complete Codex or Claude family name", async ({
+test("390px composer shows the compact Codex or Claude model and reasoning", async ({
   browser,
 }) => {
   test.setTimeout(90_000);
@@ -64,7 +64,7 @@ test("390px fine-pointer composer shows a complete Codex or Claude family name",
           (agent) => agent.source === "managed",
         );
         const page = await browser.newPage({
-          // Touch phones show symbols only; their 44px targets leave no name room.
+          // The compact trigger keeps the model name visible and may ellipsize reasoning.
           viewport: { width: 390, height: 844 },
           colorScheme: scheme,
         });
@@ -109,29 +109,29 @@ test("390px fine-pointer composer shows a complete Codex or Claude family name",
             .first()
             .click();
           await expect(page.locator("#sidebar")).toBeHidden();
-          const trigger = page.locator("#composer .execution-summary-trigger");
+          const trigger = page.locator("#composer .execution-menu");
           await expect(trigger).toHaveAttribute(
             "aria-label",
-            new RegExp(`Lead ${name} Medium`),
+            "Main agent settings",
           );
-          await expect(trigger).toHaveAttribute(
-            "title",
-            new RegExp(`Lead ${name} Medium`),
-          );
-          const label = trigger.locator('[data-role="lead"] .execution-model');
-          await expect(label.locator(".execution-model-family")).toBeVisible();
-          expect(await label.innerText()).toBe(family);
-          const geometry = await label.evaluate((node) => ({
-            text: node.innerText,
-            width: node.clientWidth,
-            scrollWidth: node.scrollWidth,
-            box: node.getBoundingClientRect().toJSON(),
-          }));
+          const label = trigger.locator(".execution-selected");
+          await expect(label).toHaveText(`${name} · Medium`);
+          const geometry = await label.evaluate((node, name) => {
+            const range = document.createRange();
+            range.setStart(node.firstChild, 0);
+            range.setEnd(node.firstChild, name.length);
+            return {
+              text: node.innerText,
+              width: node.clientWidth,
+              modelWidth: range.getBoundingClientRect().width,
+              box: node.getBoundingClientRect().toJSON(),
+            };
+          }, name);
           expect(
-            geometry.scrollWidth,
-            `${provider} family is untruncated`,
-          ).toBe(geometry.width);
-          expect(geometry.text).toMatch(/^[A-Za-z]+$/);
+            geometry.modelWidth,
+            `${provider} model name is untruncated`,
+          ).toBeLessThanOrEqual(geometry.width);
+          expect(geometry.text).toContain(family);
           const triggerBox = await trigger.boundingBox();
           expect(geometry.box.left).toBeGreaterThanOrEqual(triggerBox.x);
           expect(geometry.box.right).toBeLessThanOrEqual(
@@ -144,8 +144,7 @@ test("390px fine-pointer composer shows a complete Codex or Claude family name",
             path: join(evidence, `family-390-${provider}-${scheme}.png`),
           });
           await page.setViewportSize({ width: 1440, height: 900 });
-          await expect(label.locator(".execution-model-family")).toBeHidden();
-          expect(await label.innerText()).toBe(name);
+          expect(await label.innerText()).toBe(`${name} · Medium`);
         } finally {
           await page.context().close();
         }
