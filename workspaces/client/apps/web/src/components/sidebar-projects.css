@@ -213,10 +213,10 @@
   border-radius: 0;
   text-align: start;
 }
-.fleet-strip .chat-row[data-studio-state="answer"] {
+.fleet-strip[data-studio-state="answer"] {
   background: var(--studio-state-answer-soft);
 }
-.fleet-strip .chat-row[data-studio-state="error"] {
+.fleet-strip[data-studio-state="error"] {
   background: var(--studio-state-error-soft);
 }
 .row-copy {
@@ -235,25 +235,79 @@
 .fleet-chat-heading > strong {
   flex: 1;
 }
-.fleet-strip:has([data-studio-state="unread"]) strong {
+.fleet-strip[data-studio-state="unread"] strong {
   font-weight: 600;
 }
-.fleet-chat-project {
-  flex: 0 1 30%;
+.fleet-chat-provider {
+  display: inline-flex;
+  flex: none;
+  color: var(--muted);
+}
+.fleet-chat-provider > svg {
+  inline-size: var(--mantine-font-size-xs);
+  block-size: var(--mantine-font-size-xs);
+}
+.fleet-chat-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--mantine-spacing-xs);
   min-inline-size: 0;
   color: var(--muted);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
   font-size: var(--mantine-font-size-xs);
 }
-.fleet-chat-activity {
-  display: block;
+.fleet-chat-project {
+  flex: 0 1 auto;
+  min-inline-size: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: var(--muted);
-  font-size: var(--mantine-font-size-xs);
+}
+.fleet-chat-activity {
+  display: flex;
+  align-items: center;
+  flex: 1;
+  gap: calc(var(--mantine-spacing-xs) / 2);
+  min-inline-size: 0;
+}
+.fleet-chat-activity
+  :is(.agent-stall, .agent-command-progress, .agent-command-stage) {
+  min-inline-size: 0;
+  margin: 0;
+  font-size: inherit;
+  line-height: inherit;
+  color: inherit;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fleet-chat-activity :is(.agent-stall, .agent-command-progress) {
+  flex: 1;
+}
+.fleet-chat-activity .agent-command-stage {
+  display: block;
+  position: relative;
+  padding-inline-end: calc(var(--mantine-font-size-xs) * 5);
+}
+.fleet-chat-activity .agent-command-stage > [aria-label="Elapsed time"] {
+  position: absolute;
+  inset-inline-end: 0;
+  inset-block-start: 0;
+}
+.fleet-chat-activity .agent-command-progress {
+  pointer-events: none;
+}
+.fleet-chat-project:has(+ .fleet-chat-activity) {
+  max-inline-size: 40%;
+}
+.fleet-chat-activity .agent-command-output {
+  display: none;
+}
+.fleet-chat-activity [aria-label="Elapsed time"],
+.fleet-command-count {
+  font-variant-numeric: tabular-nums;
+}
+.fleet-command-count {
+  flex: none;
 }
 .fleet-chat-time {
   flex: none;

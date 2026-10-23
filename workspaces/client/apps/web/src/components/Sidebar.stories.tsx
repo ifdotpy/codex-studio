@@ -48,6 +48,9 @@ const threads = projects.flatMap((project, projectIndex) =>
         lastCompletedTurn: index === 3 ? "result" : null,
         lastCompletedTurnStatus: index === 3 ? "completed" : null,
         readStateSupported: true,
+        ...(index === 4 && projectIndex === 0
+          ? { stall: { taskId: "review-navigation", since: now - 240 } }
+          : {}),
         ...(index === 2
           ? {
               commandProgress: [
@@ -56,6 +59,12 @@ const threads = projects.flatMap((project, projectIndex) =>
                   stage: "Running focused browser checks",
                   startedAt: now - 46,
                   lastOutputLine: "Checking responsive navigation",
+                },
+                {
+                  monitorId: `${project}-types`,
+                  stage: "Checking TypeScript contracts",
+                  startedAt: now - 12,
+                  lastOutputLine: "No contract errors",
                 },
               ],
             }
@@ -193,8 +202,19 @@ export const Interactions: Story = {
   play: async ({ canvasElement, args }) => {
     const page = within(canvasElement);
     const lane = page.getByRole("region", { name: "Needs you" });
+    const firstStrip = lane.querySelector(".fleet-strip")!;
+    await expect(getComputedStyle(firstStrip).boxShadow).not.toBe("none");
+    await expect(getComputedStyle(firstStrip).backgroundColor).not.toBe(
+      "rgba(0, 0, 0, 0)",
+    );
+    await expect(page.getAllByRole("img", { name: "Codex" })[0]).toBeVisible();
+    const elapsed = page.getAllByLabelText("Elapsed time")[0];
+    const initialElapsed = elapsed.textContent;
+    await waitFor(() => expect(elapsed.textContent).not.toBe(initialElapsed), {
+      timeout: 2500,
+    });
     await expect(
-      [...lane.querySelectorAll(".chat-row")].map((row) =>
+      [...lane.querySelectorAll(".fleet-strip")].map((row) =>
         row.getAttribute("data-studio-state"),
       ),
     ).toEqual(["answer", "answer", "answer", "error", "error", "error"]);
