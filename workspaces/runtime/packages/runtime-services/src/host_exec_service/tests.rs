@@ -235,11 +235,11 @@ fn name_alias_and_page_rules() {
     assert!(protocol::conflicts(&["a".to_owned(), "b/a".to_owned()]).is_empty());
     assert_eq!(
         protocol::mapped(
-            "/tmp/slot/source/file /private/tmp/slot/source/file /private/tmp/slot/sourcex",
-            "/private/tmp/slot/source",
+            "/var/slot/source/file /private/var/slot/source/file /private/var/slot/sourcex",
+            "/private/var/slot/source",
             "/line"
         ),
-        "/line/file /line/file /private/tmp/slot/sourcex"
+        "/line/file /line/file /private/var/slot/sourcex"
     );
     let items: Vec<(String, Value)> = (0..protocol::PAGE_ENTRIES + 10)
         .map(|index| (format!("f{index:05}"), json!({"kind": "directory"})))

@@ -408,7 +408,7 @@ class Contract(unittest.IsolatedAsyncioTestCase):
         # Several manifest pages on the guest side.
         with patch.object(host_exec_protocol, "PAGE_ENTRIES", 100):
             result = await self.execute("paged", 'import os,pathlib,time;value=str(pathlib.Path("main.swift").resolve());'
-                'value=value.replace("/private/tmp/","/tmp/").replace("/private/var/","/var/");data=value.encode();'
+                'value=value.replace("/private/var/","/var/");data=value.encode();'
                 'os.write(1,data[:len(data)//2]);time.sleep(0.05);os.write(1,data[len(data)//2:])')
         self.assertEqual(self.output(), str(self.line / "main.swift"))
         self.assertTrue(result["collected"])
