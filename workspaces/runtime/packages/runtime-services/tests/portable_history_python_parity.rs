@@ -9,6 +9,7 @@ use studio_runtime_services::portable_history::{
     history_context, read_history, validate_history,
 };
 use studio_runtime_store::RuntimeStore;
+use studio_runtime_store::path_identity::CanonicalPath;
 
 #[test]
 fn frozen_archive_writer_and_context_are_read_without_loss() {
@@ -615,6 +616,11 @@ fn frozen_archives(root: &Path) -> Vec<FrozenCase> {
             )
             .expect("private archive fixture directory");
         }
+        // The writer records canonical archive paths (macOS `/var` is
+        // `/private/var`); the state root stays as the caller spells it.
+        let canonical_directory = CanonicalPath::existing(&directory)
+            .expect("canonical archive directory")
+            .into_path_buf();
         let mut descriptors = BTreeMap::<String, ArchiveDescriptor>::new();
         for archive in &mut case.archives {
             let filename = archive
@@ -653,7 +659,7 @@ fn frozen_archives(root: &Path) -> Vec<FrozenCase> {
             )
             .expect("relocated archive footer");
             bytes.push(b'\n');
-            archive.descriptor.path = directory.join(&filename);
+            archive.descriptor.path = canonical_directory.join(&filename);
             archive.descriptor.bytes = bytes.len() as u64;
             archive.descriptor.sha256 = studio_runtime_store::sha256_hex(&bytes);
             let mut file =

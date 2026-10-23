@@ -13,8 +13,16 @@ use studio_runtime_services::change_notifications::ChangeNotificationHub;
 use studio_runtime_services::token_rate::TokenRateHub;
 use studio_runtime_store::RuntimeStore;
 use tokio::sync::Notify;
+use tower_http::compression::{
+    CompressionLayer, CompressionLevel,
+    predicate::{Predicate, SizeAbove},
+};
 
 const COST_REFRESH_SHUTDOWN_WAIT: std::time::Duration = std::time::Duration::from_secs(9);
+/// Minimum final JSON representation size, in bytes, worth compressing over HTTP.
+const MIN_JSON_COMPRESSION_BYTES: u16 = 1024;
+/// Brotli quality level (0–11), balancing JSON size savings and server CPU work.
+const HTTP_BROTLI_QUALITY: i32 = 4;
 
 #[derive(Default)]
 struct CostRefreshWorkers {
@@ -874,6 +882,26 @@ fn with_boundary(router: Router<HttpState>, state: HttpState) -> Router {
             state.clone(),
             middleware::response_safety,
         ))
+        // Encode only after mutation envelopes, ETag hashes and 304 handling are final.
+        .layer(
+            CompressionLayer::new()
+                .no_gzip()
+                .no_deflate()
+                .no_zstd()
+                .quality(CompressionLevel::Precise(HTTP_BROTLI_QUALITY))
+                .compress_when(SizeAbove::new(MIN_JSON_COMPRESSION_BYTES).and(
+                    |_, _, headers: &axum::http::HeaderMap, _: &axum::http::Extensions| {
+                        headers
+                            .get(axum::http::header::CONTENT_TYPE)
+                            .and_then(|value| value.to_str().ok())
+                            .is_some_and(|value| {
+                                value.split(';').next().is_some_and(|media_type| {
+                                    media_type.trim().eq_ignore_ascii_case("application/json")
+                                })
+                            })
+                    },
+                )),
+        )
         .with_state(state)
 }
 
@@ -979,6 +1007,289 @@ mod tests {
             None,
         );
         (state, store, directory)
+    }
+
+    async fn compression_response(
+        app: &Router,
+        path: &str,
+        encoding: &str,
+        etag: Option<&str>,
+    ) -> axum::response::Response {
+        let mut request = Request::builder()
+            .uri(path)
+            .header("host", "127.0.0.1:4620")
+            .header("accept-encoding", encoding)
+            .extension(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 12345))));
+        if let Some(etag) = etag {
+            request = request.header("if-none-match", etag);
+        }
+        app.clone()
+            .oneshot(request.body(Body::empty()).expect("request"))
+            .await
+            .expect("response")
+    }
+
+    #[tokio::test]
+    async fn brotli_json_preserves_bytes_etags_and_excludes_small_json_and_sse() {
+        use axum::{http::header, routing::get};
+        use std::io::Read;
+        let (mut state, _directory) = state();
+        state
+            .etag_operations
+            .insert(("GET".into(), "/api/rules".into()));
+        let payload = serde_json::json!({"rules": ["rule content ".repeat(512)]});
+        let expected = serde_json::to_vec(&payload).expect("JSON");
+        let sse = format!("data: {}\n\n", "event".repeat(1024));
+        let app = super::with_boundary(
+            Router::new()
+                .route("/api/rules", get(move || async move { Json(payload) }))
+                .route(
+                    "/api/session",
+                    get(|| async { Json(serde_json::json!({"ok": true})) }),
+                )
+                .route(
+                    "/api/sync/stream",
+                    get({
+                        let sse = sse.clone();
+                        move || async move { ([(header::CONTENT_TYPE, "text/event-stream")], sse) }
+                    }),
+                )
+                .route(
+                    "/other-events",
+                    get({
+                        let sse = sse.clone();
+                        move || async move { ([(header::CONTENT_TYPE, "text/event-stream")], sse) }
+                    }),
+                ),
+            state,
+        );
+        let identity = compression_response(&app, "/api/rules", "identity", None).await;
+        assert_eq!(identity.status(), StatusCode::OK);
+        let etag = identity.headers()[header::ETAG]
+            .to_str()
+            .expect("ETag")
+            .to_owned();
+        assert_eq!(
+            etag,
+            format!("\"{}\"", studio_runtime_store::sha256_hex(&expected))
+        );
+        assert!(!identity.headers().contains_key(header::CONTENT_ENCODING));
+        assert_eq!(
+            to_bytes(identity.into_body(), usize::MAX)
+                .await
+                .expect("body"),
+            expected
+        );
+        let compressed = compression_response(&app, "/api/rules", "br", None).await;
+        assert_eq!(
+            compressed
+                .headers()
+                .get(header::CONTENT_ENCODING)
+                .and_then(|v| v.to_str().ok()),
+            Some("br")
+        );
+        assert_eq!(compressed.headers()[header::ETAG], etag);
+        assert!(compressed.headers().get_all(header::VARY).iter().any(|v| {
+            v.to_str()
+                .expect("Vary")
+                .split(',')
+                .any(|v| v.trim().eq_ignore_ascii_case("accept-encoding"))
+        }));
+        let bytes = to_bytes(compressed.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let mut decoded = Vec::new();
+        brotli::Decompressor::new(bytes.as_ref(), 4096)
+            .read_to_end(&mut decoded)
+            .expect("Brotli");
+        assert_eq!(decoded, expected);
+        for encoding in ["br", "identity"] {
+            let response = compression_response(&app, "/api/rules", encoding, Some(&etag)).await;
+            assert_eq!(response.status(), StatusCode::NOT_MODIFIED);
+            assert_eq!(response.headers()[header::ETAG], etag);
+            assert!(!response.headers().contains_key(header::CONTENT_ENCODING));
+            assert!(
+                to_bytes(response.into_body(), usize::MAX)
+                    .await
+                    .expect("body")
+                    .is_empty()
+            );
+        }
+        for (path, expected) in [
+            ("/api/session", b"{\"ok\":true}".as_slice()),
+            ("/api/sync/stream", sse.as_bytes()),
+            ("/other-events", sse.as_bytes()),
+        ] {
+            let response = compression_response(&app, path, "br", None).await;
+            assert_eq!(response.status(), StatusCode::OK);
+            assert!(
+                !response.headers().contains_key(header::CONTENT_ENCODING),
+                "{path}"
+            );
+            assert_eq!(
+                to_bytes(response.into_body(), usize::MAX)
+                    .await
+                    .expect("body"),
+                expected
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn brotli_threshold_media_type_and_negotiation_are_exact() {
+        use axum::{http::header, routing::get};
+        let minimum = usize::from(super::MIN_JSON_COMPRESSION_BYTES);
+        for size in [minimum - 1, minimum, minimum + 1] {
+            for content_type in [
+                "application/json",
+                "application/json; charset=utf-8",
+                "text/plain",
+                "application/jsonp",
+            ] {
+                let (state, _directory) = state();
+                let payload = serde_json::to_string(&"x".repeat(size - 2)).expect("JSON string");
+                assert_eq!(payload.len(), size);
+                let app =
+                    super::with_boundary(
+                        Router::new().route(
+                            "/payload",
+                            get(move || async move {
+                                ([(header::CONTENT_TYPE, content_type)], payload)
+                            }),
+                        ),
+                        state,
+                    );
+                for encoding in ["br", "identity", "gzip", "br;q=0"] {
+                    let response = compression_response(&app, "/payload", encoding, None).await;
+                    assert_eq!(
+                        response.headers().contains_key(header::CONTENT_ENCODING),
+                        size >= minimum
+                            && content_type.starts_with("application/json")
+                            && content_type != "application/jsonp"
+                            && encoding == "br",
+                        "size={size} type={content_type} encoding={encoding}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn brotli_compresses_the_final_mutation_sync_envelope() {
+        use axum::http::header;
+        use std::io::Read;
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Envelope {
+            ok: bool,
+            #[serde(rename = "_syncEntities")]
+            entities: Vec<Value>,
+            #[serde(rename = "_syncEntitiesAfter")]
+            after: i64,
+        }
+        let mut bodies = Vec::new();
+        for encoding in ["identity", "br"] {
+            let (mut state, store, _directory) = state_with_store().await;
+            let before = store
+                .read_async("brotli fixture cursor", |tx| {
+                    SyncDocumentsRepository::entity_sequence(tx)
+                })
+                .await
+                .expect("initial entity cursor");
+            state.validators =
+                crate::validation::Registry::compile(&[("POST".into(), "/api/messages".into())])
+                    .expect("validator");
+            let app = super::with_boundary(Router::new().route("/api/messages", post(move || async move {
+                store.transaction(|tx| {
+                    SyncDocumentsRepository::put_entity(tx, "agent", "agent", serde_json::json!({"id": "agent", "text": "entity content ".repeat(512)}), false)?;
+                    Ok(())
+                }).await.expect("entity mutation");
+                Json(serde_json::json!({"ok": true}))
+            })), state);
+            let request = Request::builder()
+                .method("POST")
+                .uri("/api/messages")
+                .header("host", "127.0.0.1:4620")
+                .header("x-canvas-token", "token")
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::ACCEPT_ENCODING, encoding)
+                .extension(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 12345))))
+                .body(Body::from(
+                    r#"{"id":"00000000-0000-4000-8000-000000000000","room":"fixture","text":"hello"}"#,
+                ))
+                .expect("request");
+            let response = app.oneshot(request).await.expect("mutation response");
+            assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(
+                response.headers().contains_key(header::CONTENT_ENCODING),
+                encoding == "br"
+            );
+            let bytes = to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("body");
+            let bytes = if encoding == "br" {
+                let mut decoded = Vec::new();
+                brotli::Decompressor::new(bytes.as_ref(), 4096)
+                    .read_to_end(&mut decoded)
+                    .expect("Brotli");
+                decoded
+            } else {
+                bytes.to_vec()
+            };
+            let envelope: Envelope = serde_json::from_slice(&bytes).expect("final sync envelope");
+            assert!(envelope.ok);
+            assert_eq!(envelope.entities.len(), 1);
+            assert_eq!(envelope.after, before);
+            bodies.push(bytes);
+        }
+        assert_eq!(bodies[0], bodies[1]);
+    }
+
+    #[tokio::test]
+    async fn brotli_real_directory_responses_save_bytes() {
+        use axum::http::header;
+        use std::io::Read;
+        let (state, directory) = state();
+        let app = router(state).expect("production router");
+        for count in [32, 128, 256] {
+            let root = directory.path().join(format!("listing-{count}"));
+            tokio::fs::create_dir(&root).await.expect("listing root");
+            for index in 0..count {
+                tokio::fs::create_dir(root.join(format!("project-{index:04}-fixture-workspace")))
+                    .await
+                    .expect("fixture folder");
+            }
+            let path = format!("/api/directories?path={}", root.display());
+            let plain = compression_response(&app, &path, "identity", None).await;
+            assert_eq!(plain.status(), StatusCode::OK);
+            let expected = to_bytes(plain.into_body(), usize::MAX)
+                .await
+                .expect("JSON bytes");
+            let response = compression_response(&app, &path, "br", None).await;
+            assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(
+                response
+                    .headers()
+                    .get(header::CONTENT_ENCODING)
+                    .and_then(|v| v.to_str().ok()),
+                Some("br")
+            );
+            let compressed = to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("compressed bytes");
+            let mut decoded = Vec::new();
+            brotli::Decompressor::new(compressed.as_ref(), 4096)
+                .read_to_end(&mut decoded)
+                .expect("Brotli");
+            assert_eq!(decoded, expected);
+            assert!(compressed.len() < expected.len());
+            eprintln!(
+                "directory listing {count}: {} -> {} bytes ({:.1}% saved)",
+                expected.len(),
+                compressed.len(),
+                100.0 * (1.0 - compressed.len() as f64 / expected.len() as f64)
+            );
+        }
     }
 
     #[tokio::test]

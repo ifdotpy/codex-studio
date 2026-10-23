@@ -25269,55 +25269,64 @@
       },
       "DiskSpaceStatus": {
         "additionalProperties": false,
+        "description": "The visible disk notice returned by `/api/desktop`.",
         "properties": {
-          "freeBytes": {
-            "anyOf": [
-              {
-                "maximum": 9007199254740991,
-                "minimum": 0,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Freebytes"
-          },
           "level": {
-            "anyOf": [
-              {
-                "enum": [
-                  "warning",
-                  "critical",
-                  "full"
-                ],
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
+            "enum": [
+              "warning",
+              "critical",
+              "full",
+              null
             ],
-            "description": "Set when the free space of the state volume is below the warning or the critical threshold. full: the disk is full; Studio starts no new turn and holds agents until space returns.",
-            "title": "Level"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "message": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "title": "Message"
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
           "level",
-          "freeBytes",
           "message"
         ],
-        "title": "DiskSpaceStatus",
+        "type": "object"
+      },
+      "DraftChangeBatch": {
+        "additionalProperties": false,
+        "description": "Complete draft interval. Each SyncDocument payload is the original stored DraftVersion JSON, validated by the Rust draft owner without rewriting legacy bytes.",
+        "properties": {
+          "after": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "title": "After",
+            "type": "integer"
+          },
+          "documents": {
+            "items": {
+              "$ref": "#/components/schemas/SyncDocument"
+            },
+            "maxItems": 512,
+            "title": "Documents",
+            "type": "array"
+          },
+          "through": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "title": "Through",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "after",
+          "through",
+          "documents"
+        ],
+        "title": "DraftChangeBatch",
         "type": "object"
       },
       "DraftDocumentInput": {
@@ -44146,6 +44155,16 @@
         "additionalProperties": false,
         "description": "Per-resource revision; StateResource uses the entity sequence.",
         "properties": {
+          "draftChanges": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DraftChangeBatch"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "entityChanges": {
             "anyOf": [
               {
@@ -44198,6 +44217,16 @@
             "minimum": 0,
             "title": "Revision",
             "type": "integer"
+          },
+          "transcriptChanges": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TranscriptChangeBatch"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -44208,7 +44237,7 @@
       },
       "ResourceTokenRatesEvent": {
         "additionalProperties": false,
-        "description": "Named `token-rates` SSE payload; values come from workspace_snapshot().",
+        "description": "Named token-rates SSE payload; one complete record per agent with authoritative root membership.",
         "properties": {
           "epoch": {
             "minLength": 1,
@@ -44222,43 +44251,19 @@
             "title": "Protocol",
             "type": "integer"
           },
-          "rates": {
-            "additionalProperties": {
-              "$ref": "#/components/schemas/TokenRateValue"
+          "records": {
+            "items": {
+              "$ref": "#/components/schemas/TokenRateRecord"
             },
-            "maxProperties": 4096,
-            "propertyNames": {
-              "maxLength": 200,
-              "minLength": 1
-            },
-            "title": "Rates",
-            "type": "object"
+            "maxItems": 4096,
+            "title": "Records",
+            "type": "array"
           },
           "revision": {
             "maximum": 9007199254740991,
             "minimum": 0,
             "title": "Revision",
             "type": "integer"
-          },
-          "teams": {
-            "additionalProperties": {
-              "additionalProperties": {
-                "$ref": "#/components/schemas/TokenRateValue"
-              },
-              "maxProperties": 4096,
-              "propertyNames": {
-                "maxLength": 200,
-                "minLength": 1
-              },
-              "type": "object"
-            },
-            "maxProperties": 4096,
-            "propertyNames": {
-              "maxLength": 200,
-              "minLength": 1
-            },
-            "title": "Teams",
-            "type": "object"
           },
           "workspaceId": {
             "minLength": 1,
@@ -44271,8 +44276,7 @@
           "workspaceId",
           "epoch",
           "revision",
-          "rates",
-          "teams"
+          "records"
         ],
         "title": "ResourceTokenRatesEvent",
         "type": "object"
@@ -53918,57 +53922,19 @@
         "title": "TerminalsResource",
         "type": "object"
       },
-      "TokenRateSnapshot": {
-        "additionalProperties": false,
-        "description": "Typed payload accepted from the token-rate producer boundary.",
-        "properties": {
-          "rates": {
-            "additionalProperties": {
-              "$ref": "#/components/schemas/TokenRateValue"
-            },
-            "maxProperties": 4096,
-            "propertyNames": {
-              "maxLength": 200,
-              "minLength": 1
-            },
-            "title": "Rates",
-            "type": "object"
-          },
-          "teams": {
-            "additionalProperties": {
-              "additionalProperties": {
-                "$ref": "#/components/schemas/TokenRateValue"
-              },
-              "maxProperties": 4096,
-              "propertyNames": {
-                "maxLength": 200,
-                "minLength": 1
-              },
-              "type": "object"
-            },
-            "maxProperties": 4096,
-            "propertyNames": {
-              "maxLength": 200,
-              "minLength": 1
-            },
-            "title": "Teams",
-            "type": "object"
-          }
-        },
-        "required": [
-          "rates",
-          "teams"
-        ],
-        "title": "TokenRateSnapshot",
-        "type": "object"
-      },
-      "TokenRateValue": {
+      "TokenRateRecord": {
         "additionalProperties": false,
         "description": "One active or completed agent turn's volatile token-rate snapshot.",
         "properties": {
           "active": {
             "title": "Active",
             "type": "boolean"
+          },
+          "agentId": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Agentid",
+            "type": "string"
           },
           "estimated": {
             "title": "Estimated",
@@ -54002,6 +53968,12 @@
             ],
             "title": "Rate"
           },
+          "rootId": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Rootid",
+            "type": "string"
+          },
           "turnId": {
             "maxLength": 200,
             "minLength": 1,
@@ -54010,13 +53982,34 @@
           }
         },
         "required": [
+          "agentId",
+          "rootId",
           "turnId",
           "active",
           "estimated",
           "rate",
           "outputTokens"
         ],
-        "title": "TokenRateValue",
+        "title": "TokenRateRecord",
+        "type": "object"
+      },
+      "TokenRateSnapshot": {
+        "additionalProperties": false,
+        "description": "Typed payload accepted from the token-rate producer boundary.",
+        "properties": {
+          "records": {
+            "items": {
+              "$ref": "#/components/schemas/TokenRateRecord"
+            },
+            "maxItems": 4096,
+            "title": "Records",
+            "type": "array"
+          }
+        },
+        "required": [
+          "records"
+        ],
+        "title": "TokenRateSnapshot",
         "type": "object"
       },
       "TombstoneMigration": {
@@ -54670,6 +54663,32 @@
         "title": "TranscriptAsset",
         "type": "object"
       },
+      "TranscriptChangeBatch": {
+        "additionalProperties": false,
+        "description": "Complete transcript sync interval. The delta flag is true; oversize or unavailable intervals remain hints.",
+        "properties": {
+          "after": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "delta": {
+            "$ref": "#/components/schemas/TranscriptStreamDelta"
+          },
+          "through": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "after",
+          "through",
+          "delta"
+        ],
+        "title": "TranscriptChangeBatch",
+        "type": "object"
+      },
       "TranscriptContextUsage": {
         "additionalProperties": false,
         "description": "Runtime token usage shape published by tokenUsage notifications.",
@@ -54712,6 +54731,13 @@
         ],
         "title": "TranscriptContextUsage",
         "type": "object"
+      },
+      "TranscriptHistoryVersion": {
+        "description": "The threadId:restoredCheckpoint version, 1 to 8193 Unicode code points (two bounded stream identities and their separator).",
+        "maxLength": 8193,
+        "minLength": 1,
+        "title": "TranscriptHistoryVersion",
+        "type": "string"
       },
       "TranscriptInput": {
         "additionalProperties": {
@@ -55354,6 +55380,12 @@
         ],
         "title": "TranscriptItemResponse",
         "type": "object"
+      },
+      "TranscriptItemRevision": {
+        "description": "Canonical SHA-256 item revision from runtime-store repositories/transcript.rs canonical_hash, encoded as 64 lowercase hexadecimal characters.",
+        "pattern": "^[0-9a-f]{64}$",
+        "title": "TranscriptItemRevision",
+        "type": "string"
       },
       "TranscriptMessageRecord": {
         "additionalProperties": {
@@ -56080,6 +56112,181 @@
         ],
         "title": "TranscriptSearchResult",
         "type": "object"
+      },
+      "TranscriptStreamDelta": {
+        "additionalProperties": false,
+        "description": "Existing full transcript snapshot or sparse sync delta; item records share TranscriptMessageRecord.",
+        "properties": {
+          "agent": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TranscriptAgent"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "delta": {
+            "const": true,
+            "type": "boolean"
+          },
+          "historyVersion": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TranscriptHistoryVersion"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "itemRevisions": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/TranscriptItemRevision"
+            },
+            "maxProperties": 512,
+            "propertyNames": {
+              "$ref": "#/components/schemas/TranscriptStreamItemId"
+            },
+            "type": "object"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/TranscriptMessageRecord"
+            },
+            "maxItems": 512,
+            "title": "Items",
+            "type": "array"
+          },
+          "nextAfterCursor": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TranscriptStreamItemId"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "nextCursor": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TranscriptStreamItemId"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "order": {
+            "items": {
+              "$ref": "#/components/schemas/TranscriptStreamItemId"
+            },
+            "maxItems": 512,
+            "type": "array"
+          },
+          "removed": {
+            "items": {
+              "$ref": "#/components/schemas/TranscriptStreamItemId"
+            },
+            "maxItems": 512,
+            "type": "array"
+          },
+          "tail": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TranscriptStreamTail"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "truncated": {
+            "title": "Truncated",
+            "type": "boolean"
+          },
+          "unavailable": {
+            "default": null,
+            "description": "The transcript projection owner emits only null; unavailable conversations fail the pull with an HTTP error rather than a string-valued reason.",
+            "type": "null"
+          }
+        },
+        "required": [
+          "delta",
+          "items",
+          "truncated",
+          "removed",
+          "itemRevisions"
+        ],
+        "title": "TranscriptStreamDelta",
+        "type": "object"
+      },
+      "TranscriptStreamItemId": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/TranscriptMessageRecord/properties/id"
+          },
+          {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          }
+        ],
+        "description": "TranscriptMessageRecord.id in stream controls and item cursors; 1 to 4096 Unicode code points. Longer stored identities use pull recovery.",
+        "title": "TranscriptStreamItemId"
+      },
+      "TranscriptStreamTail": {
+        "description": "Optional transcript preview, 0 to 300 Unicode code points; the current transcript producer omits this field.",
+        "maxLength": 300,
+        "minLength": 0,
+        "title": "TranscriptStreamTail",
+        "type": "string"
+      },
+      "TranscriptSyncPage": {
+        "additionalProperties": false,
+        "description": "Transcript projection owner result before the HTTP adapter adds generation.",
+        "properties": {
+          "checkpoint": {
+            "$ref": "#/components/schemas/SyncCheckpoint"
+          },
+          "documents": {
+            "items": {
+              "$ref": "#/components/schemas/SyncDocument"
+            },
+            "title": "Documents",
+            "type": "array"
+          },
+          "workspaceId": {
+            "title": "Workspaceid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "workspaceId",
+          "documents",
+          "checkpoint"
+        ],
+        "title": "TranscriptSyncPage",
+        "type": "object"
+      },
+      "TranscriptSyncPayload": {
+        "anyOf": [
+          {
+            "$ref": "#/components/schemas/TranscriptPageResponse"
+          },
+          {
+            "$ref": "#/components/schemas/TranscriptStreamDelta"
+          }
+        ],
+        "description": "Existing complete snapshot or sparse sync delta, decoded at the projection boundary.",
+        "title": "TranscriptSyncPayload"
       },
       "TranscriptsResource": {
         "additionalProperties": false,
@@ -77853,6 +78060,16 @@
             "required": false,
             "schema": {
               "type": "string"
+            }
+          },
+          {
+            "description": "Whether this stream includes token-rate snapshots. Omitted selectors preserve native and signed-client behavior. Browser owners send the aggregate interest of their tabs.",
+            "in": "query",
+            "name": "tokenRates",
+            "required": false,
+            "schema": {
+              "default": true,
+              "type": "boolean"
             }
           },
           {

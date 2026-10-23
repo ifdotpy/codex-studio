@@ -74,6 +74,9 @@ pub mod federation_effects;
 pub mod federation_limits;
 pub mod federation_messaging;
 pub mod file_derived;
+pub mod host_exec;
+#[cfg(unix)]
+pub mod host_exec_service;
 pub mod host_project_runtime;
 pub mod host_worker_create;
 pub mod image_workspace;
@@ -82,6 +85,8 @@ pub mod lifecycle_effects;
 pub mod limit_reset;
 pub mod linux_vm_guest;
 pub mod linux_vm_provider;
+#[cfg(unix)]
+pub mod linux_vm_runtime;
 pub mod linux_vm_settings;
 pub mod mac_sync;
 pub mod maintenance;

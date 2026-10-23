@@ -1781,7 +1781,7 @@ async fn wire_send(peer: &mut tokio::io::BufReader<tokio::net::UnixStream>, valu
         .unwrap();
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn rust_supervisor_binary() -> PathBuf {
     std::env::var_os("STUDIO_SUPERVISOR_BINARY")
         .or_else(|| option_env!("CARGO_BIN_EXE_codex-process-supervisor").map(Into::into))
@@ -1793,7 +1793,7 @@ fn rust_supervisor_binary() -> PathBuf {
         })
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn spawn_rust_supervisor(root: &std::path::Path, stderr: &std::path::Path) -> std::process::Child {
     std::process::Command::new(rust_supervisor_binary())
         .arg("--state")
@@ -1870,6 +1870,7 @@ async fn every_launch_signature_field_matches_frozen_appserver_contract() {
             isolated,
             root.path().into(),
         );
+        let reattach_commands = launch.reattach_commands.clone();
         let listener = tokio::net::UnixListener::bind(root.path().join("supervisor.sock")).unwrap();
         let factory = studio_runtime_process::provider_task::SupervisorProviderTaskFactory::new(
             studio_runtime_process::BackendIdentity {
@@ -1908,6 +1909,22 @@ async fn every_launch_signature_field_matches_frozen_appserver_contract() {
         assert_eq!(open["env"], json!(oracle.env));
         assert_eq!(open["cwd"], json!(oracle.cwd));
         assert_eq!(open["command"], json!(with_unload_override(&oracle)));
+        let environment: BTreeMap<String, String> =
+            serde_json::from_value(open["env"].clone()).unwrap();
+        // The frozen pre-unload-override command remains eligible for reattachment.
+        assert_eq!(reattach_commands, std::slice::from_ref(&oracle.command));
+        assert_eq!(
+            studio_runtime_store::supervisor_journal::launch_signature(
+                &reattach_commands[0],
+                &environment,
+                open["cwd"].as_str()
+            ),
+            studio_runtime_store::supervisor_journal::launch_signature(
+                &oracle.command,
+                &oracle.env,
+                oracle.cwd.as_deref()
+            )
+        );
         wire_send(&mut peer,json!({"requestId":open["requestId"],"result":{"resumed":false,"initResult":null,"acknowledged":0,"sequence":0,"generation":1,"returnCode":null,"pid":1}})).await;
         drop(preparing.await.unwrap());
     }
@@ -1938,6 +1955,10 @@ fn direct_launch_command_and_environment_match_frozen_contract() {
         );
         assert_eq!(launch.command, with_unload_override(&oracle));
         assert_eq!(
+            launch.reattach_commands,
+            std::slice::from_ref(&oracle.command)
+        );
+        assert_eq!(
             serde_json::to_value(launch.environment).unwrap(),
             json!(oracle.env)
         );
@@ -1949,6 +1970,146 @@ fn direct_launch_command_and_environment_match_frozen_contract() {
             oracle.cwd
         );
     }
+}
+
+/// The live install keeps Codex app-servers that earlier builds started with the
+/// frozen commands (no thread unload override). The current host launch must
+/// reattach each one with its own command: same PID and generation, never a
+/// refusal for different launch settings and never a second child.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[tokio::test]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "test fixture; `which` prints one line and exits at once"
+)]
+async fn running_app_server_started_with_the_frozen_command_reattaches() {
+    use std::os::unix::fs::PermissionsExt;
+    use studio_runtime_process::{HealthRequest, SupervisorClient};
+    use studio_runtime_store::supervisor_journal::launch_signature;
+    let directory = tempfile::Builder::new().prefix("rs-").tempdir().unwrap();
+    // The supervisor compares the handshake state directory with its resolved
+    // root; macOS temporary directories sit behind the /var symlink.
+    let root = CanonicalPath::existing(directory.path())
+        .unwrap()
+        .to_path_buf();
+    // A non-platform executable: macOS hides the launch environment of
+    // platform binaries such as /bin/sh, so their reattach is unverifiable.
+    let node = std::process::Command::new("which")
+        .arg("node")
+        .output()
+        .unwrap();
+    assert!(node.status.success());
+    let node = String::from_utf8(node.stdout).unwrap().trim().to_owned();
+    let executable = root.join("codex");
+    std::fs::write(&executable, format!("#!{node}\nprocess.stdin.resume();\n")).unwrap();
+    std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let identity = studio_runtime_process::BackendIdentity {
+        backend_id: studio_runtime_process::BackendId("frozen-command".into()),
+        state_dir: root.clone(),
+    };
+    let mut supervisor = {
+        let identity = identity.clone();
+        studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-server/tests/wave7_p01_registry",
+            move || {
+                let stderr = identity.state_dir.join("supervisor.log");
+                let child = spawn_rust_supervisor(&identity.state_dir, &stderr);
+                let mut fixture = SupervisorFixture {
+                    child,
+                    native: Vec::new(),
+                };
+                supervisor_ready::wait(&mut fixture.child, identity, &stderr);
+                fixture
+            },
+        )
+        .await
+        .unwrap()
+    };
+    let factory =
+        studio_runtime_process::provider_task::SupervisorProviderTaskFactory::new(identity.clone());
+    let attach = |handle: ProviderHandle, launch: ProviderLaunchSpec| {
+        let factory = &factory;
+        async move {
+            let options = || OpenOptions {
+                clock: SessionClock::default(),
+                launch: launch.clone(),
+                expected_generation: None,
+            };
+            let prepared = factory
+                .prepare(handle.clone(), options(), Shutdown::default())
+                .await?;
+            let mut reopened = options();
+            reopened.expected_generation = Some(prepared.generation());
+            let mut attachment = prepared.open(handle, reopened, Shutdown::default()).await?;
+            let info = attachment.status.borrow().info.clone().unwrap();
+            drop(attachment.shutdown().await);
+            Ok::<_, AdapterError>(info)
+        }
+    };
+    for isolated in [false, true] {
+        let account = if isolated { "isolated" } else { "default" };
+        let home = root.join(account);
+        std::fs::create_dir(&home).unwrap();
+        let environment = BTreeMap::from([
+            ("HOME".into(), root.to_string_lossy().into_owned()),
+            ("PATH".into(), "/usr/bin:/bin".into()),
+        ]);
+        let launch = host_runtime::codex_launch(
+            executable.to_str(),
+            environment,
+            home.to_string_lossy().into_owned(),
+            isolated,
+            root.clone(),
+        );
+        // The command an earlier build started this account's app-server with.
+        let mut frozen = launch_fixture(&root, isolated, true).command;
+        frozen[0] = executable.to_string_lossy().into_owned();
+        assert_ne!(frozen, launch.command);
+        let mut earlier = launch.clone();
+        earlier.command = frozen.clone();
+        let handle = ProviderHandle::for_account(account);
+        let started = attach(handle.clone(), earlier).await.unwrap();
+        supervisor.native.push(started.pid);
+
+        let reattached = attach(handle, launch.clone())
+            .await
+            .unwrap_or_else(|error| {
+                panic!("the current Codex launch refused the {account} app-server: {error:?}")
+            });
+        assert!(reattached.resumed);
+        assert_eq!(reattached.pid, started.pid);
+        assert_eq!(reattached.generation, started.generation);
+        let socket = root.join("supervisor.sock");
+        let identity = identity.clone();
+        let health = studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-server/tests/wave7_p01_registry",
+            move || {
+                SupervisorClient::connect(&socket, identity)
+                    .unwrap()
+                    .health(HealthRequest::default())
+                    .unwrap()
+            },
+        )
+        .await
+        .unwrap();
+        let running = health
+            .handles
+            .iter()
+            .find(|running| running.id == format!("account:{account}"))
+            .unwrap();
+        assert_eq!(running.pid, Some(started.pid));
+        assert_eq!(
+            running.signature,
+            launch_signature(&frozen, &launch.environment, None),
+            "the running app-server keeps its own command"
+        );
+    }
+    studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-server/tests/wave7_p01_registry",
+        move || drop(supervisor),
+    )
+    .await
+    .unwrap();
 }
 
 #[cfg(target_os = "linux")]
@@ -2240,16 +2401,16 @@ fn claude_launch_uses_resolved_node_bridge_and_profile_cli_without_invoking_it()
     assert!(!launch.environment.contains_key("ANTHROPIC_API_KEY"));
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[path = "../../../packages/runtime-process/tests/support/supervisor_ready.rs"]
 mod supervisor_ready;
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 struct SupervisorFixture {
     child: std::process::Child,
     native: Vec<u32>,
 }
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 impl Drop for SupervisorFixture {
     #[allow(clippy::disallowed_methods)]
     fn drop(&mut self) {
@@ -2307,13 +2468,15 @@ async fn host_start_reattaches_existing_launch_and_delivers_http_input() {
     .unwrap();
     std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
     let environment: BTreeMap<String, String> = std::env::vars().collect();
-    let launch = host_runtime::codex_launch(
+    let mut launch = host_runtime::codex_launch(
         Some(executable.to_str().unwrap()),
         environment.clone(),
         home.to_string_lossy().into_owned(),
         false,
         fixture._root.path().into(),
     );
+    // Seed the supervisor with the pre-unload-override command to verify reattachment.
+    launch.command = launch.reattach_commands.remove(0);
     let root = fixture._root.path().to_path_buf();
     let mut supervisor = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-server/tests/wave7_p01_registry",

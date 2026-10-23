@@ -92,11 +92,7 @@ impl Worker {
             self.db("retained_actor_mode", move |store| async move {
                 store
                     .read_async("runtime-services/account_worker_read", move |connection| {
-                        let record =
-                            AgentRepository::get(connection, &AgentId::from(actor.as_str()))?;
-                        Ok(record.is_some_and(|record| {
-                            record.extra.get("executionMode").and_then(Value::as_str) == Some("vm")
-                        }))
+                        super::storage::vm_actor(connection, &actor)
                     })
                     .await
             })

@@ -826,7 +826,8 @@ pub(super) fn execute(
         ToolKind::SignIn => Err(CallbackError::Dependency(
             super::runtime_dispatch::SIGN_IN_DEPENDENCY,
         )),
-        ToolKind::HostExec => Err(CallbackError::Dependency("host-exec/layr-bridge")),
+        // The managed-tool dispatcher runs host_exec through its attached runtime.
+        ToolKind::HostExec => Err(CallbackError::Dependency(crate::host_exec::DEPENDENCY)),
         ToolKind::Title => {
             if actor["isLead"] != true {
                 return Err(CallbackError::Invalid(

@@ -84,6 +84,8 @@ test("short and comprehensive recipes preserve their owned test boundaries", () 
   for (const witness of [
     /killed_provider_is_reaped_with_full_journal_and_unobserved_write/,
     /direct_child_sigkill_settles_unknown_without_resend/,
+    /running_child_started_with_a_previous_command_reattaches/,
+    /running_app_server_started_with_the_frozen_command_reattaches/,
   ]) {
     if (linux) assert.match(fast.command, witness);
     else assert.doesNotMatch(fast.command, witness);

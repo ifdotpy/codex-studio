@@ -28,6 +28,10 @@ pub struct ProviderLaunchSpec {
     pub retained_response_ids: BTreeMap<u64, u64>,
     /// Cursor already handled by runtime state, used to make an uncertain ACK idempotent.
     pub handled_cursor: u64,
+    /// Earlier commands of this launch. A running supervised child started
+    /// with one of them is reattached with its own command, so a changed
+    /// launch command reaches new children without refusing running ones.
+    pub reattach_commands: Vec<Vec<String>>,
 }
 
 impl ProviderLaunchSpec {
@@ -46,6 +50,7 @@ impl ProviderLaunchSpec {
             cwd: Some(cwd),
             retained_response_ids: BTreeMap::new(),
             handled_cursor: 0,
+            reattach_commands: Vec::new(),
         }
     }
 }

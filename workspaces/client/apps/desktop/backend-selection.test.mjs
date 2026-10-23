@@ -2,6 +2,7 @@ import { afterEach, expect, test } from "vitest";
 import {
   mkdtemp,
   mkdir,
+  realpath,
   rm,
   writeFile,
   chmod,
@@ -61,8 +62,9 @@ test("desktop identity rejects a Rust backend build that differs from the select
 });
 
 test("desktop starts only the Rust executable with Python unavailable", async () => {
-  const root = await mkdtemp(
-    path.join(os.tmpdir(), "codex-desktop-rust-selection-"),
+  // The backend reports its canonical state directory (macOS /var is /private/var).
+  const root = await realpath(
+    await mkdtemp(path.join(os.tmpdir(), "codex-desktop-rust-selection-")),
   );
   const state = path.join(root, "state");
   const resources = path.join(root, "resources");

@@ -10,7 +10,7 @@ pub const MAX_SAFE_REVISION: i64 = MAX_SAFE_INTEGER;
 /// Minimum spacing of two frames of one kind on one sync stream, in wall time. The UI redraws
 /// far below this rate. The token-rate projector also builds at most one snapshot per interval,
 /// so a token burst costs one snapshot and one frame per interval, not one per observation.
-pub const SYNC_FRAME_MIN_INTERVAL: Duration = Duration::from_millis(100);
+pub const SYNC_FRAME_MIN_INTERVAL: Duration = Duration::from_millis(200);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ChangeSnapshot {

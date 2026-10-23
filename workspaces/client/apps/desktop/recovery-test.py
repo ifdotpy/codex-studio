@@ -86,11 +86,15 @@ class RecoveryTest(unittest.TestCase):
     @unittest.skipUnless(sys.platform == "darwin" or sys.platform.startswith("linux"), "native process reader")
     def test_native_argument_reader_preserves_spaces(self):
         argument = str(self.state / "Codex Studio.app" / "scripts" / "studio-runtime-server")
-        process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)", argument])
+        code = "import time; print('ready', flush=True); time.sleep(30)"
+        process = subprocess.Popen([sys.executable, "-c", code, argument], stdout=subprocess.PIPE, text=True)
         try:
+            # macOS answers EIO for the arguments of a process that has not finished exec.
+            # The child prints only after the interpreter runs, so its arguments are final.
+            self.assertEqual(process.stdout.readline(), "ready\n")
             arguments = recovery.backend_process_arguments(process.pid, self.config["resources"])
             self.assertEqual(arguments[-1], argument)
-            self.assertIn("import time; time.sleep(30)", arguments)
+            self.assertIn(code, arguments)
         finally:
             process.terminate()
             process.wait(timeout=5)

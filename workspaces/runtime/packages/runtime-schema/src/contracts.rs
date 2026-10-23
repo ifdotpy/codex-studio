@@ -56,6 +56,30 @@ fn shared_values_ts() -> String {
         &[
             ("MAX_SAFE_INTEGER", values::MAX_SAFE_INTEGER.to_string()),
             (
+                "SYNC_TRANSCRIPT_STREAM_MAX_ITEMS",
+                values::SYNC_TRANSCRIPT_STREAM_MAX_ITEMS.to_string(),
+            ),
+            (
+                "SYNC_TRANSCRIPT_STREAM_MAX_BYTES",
+                values::SYNC_TRANSCRIPT_STREAM_MAX_BYTES.to_string(),
+            ),
+            (
+                "SYNC_ENTITY_STREAM_MAX_DOCUMENTS",
+                values::SYNC_ENTITY_STREAM_MAX_DOCUMENTS.to_string(),
+            ),
+            (
+                "SYNC_ENTITY_STREAM_MAX_BYTES",
+                values::SYNC_ENTITY_STREAM_MAX_BYTES.to_string(),
+            ),
+            (
+                "SYNC_DRAFT_STREAM_MAX_DOCUMENTS",
+                values::SYNC_DRAFT_STREAM_MAX_DOCUMENTS.to_string(),
+            ),
+            (
+                "SYNC_DRAFT_STREAM_MAX_BYTES",
+                values::SYNC_DRAFT_STREAM_MAX_BYTES.to_string(),
+            ),
+            (
                 "MAX_USER_ATTACHMENT_BYTES",
                 values::MAX_USER_ATTACHMENT_BYTES.to_string(),
             ),
@@ -272,11 +296,10 @@ fn api_schema_ts(schema_hash: &str) -> String {
 /// The Rust-owned constants appended to the generated API declarations.
 fn api_types_tail() -> String {
     format!(
-        "\nexport const SYNC_PROTOCOL_VERSION = {} as const;\nexport const SYNC_ENTITY_SCOPE = {} as const;\nexport const TOKEN_RATE_MAX_ENTRIES = {} as const;\nexport const TOKEN_RATE_MAX_TOTAL_ENTRIES = {} as const;\nexport const TOKEN_RATE_IDENTIFIER_MAX_CODEPOINTS = {} as const;\n",
+        "\nexport const SYNC_PROTOCOL_VERSION = {} as const;\nexport const SYNC_ENTITY_SCOPE = {} as const;\nexport const TOKEN_RATE_MAX_ENTRIES = {} as const;\nexport const TOKEN_RATE_IDENTIFIER_MAX_CODEPOINTS = {} as const;\n",
         crate::SYNC_PROTOCOL_VERSION,
         json_string(crate::SYNC_ENTITY_SCOPE),
         crate::TOKEN_RATE_MAX_ENTRIES,
-        crate::TOKEN_RATE_MAX_TOTAL_ENTRIES,
         crate::TOKEN_RATE_IDENTIFIER_MAX_CODEPOINTS,
     )
 }
@@ -354,6 +377,28 @@ fn check_account_group_parity(openapi: &Value) -> Result<(), String> {
 
 /// Hold the committed OpenAPI document and persisted-state schemas to the Rust owners.
 pub fn check_schema_parity(openapi: &Value, account_transfer: &Value) -> Result<(), String> {
+    expect_number(
+        openapi,
+        "/components/schemas/DraftChangeBatch/properties/documents/maxItems",
+        values::SYNC_DRAFT_STREAM_MAX_DOCUMENTS,
+    )?;
+    expect_number(
+        openapi,
+        "/components/schemas/EntityChangeBatch/properties/documents/maxItems",
+        values::SYNC_ENTITY_STREAM_MAX_DOCUMENTS,
+    )?;
+    for field in ["items", "removed", "order"] {
+        expect_number(
+            openapi,
+            &format!("/components/schemas/TranscriptStreamDelta/properties/{field}/maxItems"),
+            values::SYNC_TRANSCRIPT_STREAM_MAX_ITEMS as i64,
+        )?;
+    }
+    expect_number(
+        openapi,
+        "/components/schemas/TranscriptStreamDelta/properties/itemRevisions/maxProperties",
+        values::SYNC_TRANSCRIPT_STREAM_MAX_ITEMS as i64,
+    )?;
     check_delivery_parity(openapi)?;
     crate::task_results::check_schema_parity(openapi)?;
     check_account_group_parity(openapi)?;
@@ -417,25 +462,22 @@ pub fn check_schema_parity(openapi: &Value, account_transfer: &Value) -> Result<
         &format!("{protocol}/supportedVersions/items/const"),
         version,
     )?;
-    let snapshot = "/components/schemas/TokenRateSnapshot/properties";
-    let entries = crate::TOKEN_RATE_MAX_ENTRIES as i64;
-    let identifier = crate::TOKEN_RATE_IDENTIFIER_MAX_CODEPOINTS as i64;
-    for map in ["/rates", "/teams", "/teams/additionalProperties"] {
-        expect_number(openapi, &format!("{snapshot}{map}/maxProperties"), entries)?;
+    for owner in ["TokenRateSnapshot", "ResourceTokenRatesEvent"] {
         expect_number(
             openapi,
-            &format!("{snapshot}{map}/propertyNames/minLength"),
-            1,
-        )?;
-        expect_number(
-            openapi,
-            &format!("{snapshot}{map}/propertyNames/maxLength"),
-            identifier,
+            &format!("/components/schemas/{owner}/properties/records/maxItems"),
+            crate::TOKEN_RATE_MAX_ENTRIES as i64,
         )?;
     }
-    let turn_id = "/components/schemas/TokenRateValue/properties/turnId";
-    expect_number(openapi, &format!("{turn_id}/minLength"), 1)?;
-    expect_number(openapi, &format!("{turn_id}/maxLength"), identifier)?;
+    for field in ["agentId", "rootId", "turnId"] {
+        let path = format!("/components/schemas/TokenRateRecord/properties/{field}");
+        expect_number(openapi, &format!("{path}/minLength"), 1)?;
+        expect_number(
+            openapi,
+            &format!("{path}/maxLength"),
+            crate::TOKEN_RATE_IDENTIFIER_MAX_CODEPOINTS as i64,
+        )?;
+    }
     expect_number(
         account_transfer,
         "/properties/members/maxProperties",
@@ -544,7 +586,10 @@ fn api_types(root: &Path, document: &Value, argument: &str) -> Result<String, St
 /// Render every contract file. `with_api_types` also runs Node for web types.
 pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String> {
     let mut openapi = read_json(root, OPENAPI_PATH)?;
-    for (name, schema) in crate::agent_progress::schemas() {
+    for (name, schema) in crate::agent_progress::schemas()
+        .into_iter()
+        .chain(crate::desktop::schemas())
+    {
         *openapi
             .pointer_mut(&format!("/components/schemas/{name}"))
             .ok_or_else(|| format!("OpenAPI is missing Rust-owned {name}"))? = schema;

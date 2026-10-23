@@ -12189,17 +12189,23 @@ export interface components {
       /** Tailscaleuser */
       tailscaleUser: null | string;
     };
-    /** DiskSpaceStatus */
+    /** @description The visible disk notice returned by `/api/desktop`. */
     DiskSpaceStatus: {
-      /** Freebytes */
-      freeBytes: number | null;
-      /**
-       * Level
-       * @description Set when the free space of the state volume is below the warning or the critical threshold. full: the disk is full; Studio starts no new turn and holds agents until space returns.
-       */
-      level: ("warning" | "critical" | "full") | null;
-      /** Message */
-      message: null | string;
+      /** @enum {string|null} */
+      level: "warning" | "critical" | "full" | null;
+      message: string | null;
+    };
+    /**
+     * DraftChangeBatch
+     * @description Complete draft interval. Each SyncDocument payload is the original stored DraftVersion JSON, validated by the Rust draft owner without rewriting legacy bytes.
+     */
+    DraftChangeBatch: {
+      /** After */
+      after: number;
+      /** Documents */
+      documents: components["schemas"]["SyncDocument"][];
+      /** Through */
+      through: number;
     };
     /** DraftDocumentInput */
     DraftDocumentInput: {
@@ -19666,6 +19672,7 @@ export interface components {
      * @description Per-resource revision; StateResource uses the entity sequence.
      */
     ResourceRevisionEntry: {
+      draftChanges?: components["schemas"]["DraftChangeBatch"] | null;
       entityChanges?: components["schemas"]["EntityChangeBatch"] | null;
       /** Entitysequencereset */
       entitySequenceReset?: boolean | null;
@@ -19674,10 +19681,11 @@ export interface components {
       resource?: components["schemas"]["ResourceRef"] | null;
       /** Revision */
       revision: number;
+      transcriptChanges?: components["schemas"]["TranscriptChangeBatch"] | null;
     };
     /**
      * ResourceTokenRatesEvent
-     * @description Named `token-rates` SSE payload; values come from workspace_snapshot().
+     * @description Named token-rates SSE payload; one complete record per agent with authoritative root membership.
      */
     ResourceTokenRatesEvent: {
       /** Epoch */
@@ -19687,18 +19695,10 @@ export interface components {
        * @constant
        */
       protocol: 3;
-      /** Rates */
-      rates: {
-        [key: string]: components["schemas"]["TokenRateValue"];
-      };
+      /** Records */
+      records: components["schemas"]["TokenRateRecord"][];
       /** Revision */
       revision: number;
-      /** Teams */
-      teams: {
-        [key: string]: {
-          [key: string]: components["schemas"]["TokenRateValue"];
-        };
-      };
       /** Workspaceid */
       workspaceId: string;
     };
@@ -23486,36 +23486,32 @@ export interface components {
      */
     TerminalState: "running" | "exited" | "closed";
     /**
-     * TokenRateSnapshot
-     * @description Typed payload accepted from the token-rate producer boundary.
-     */
-    TokenRateSnapshot: {
-      /** Rates */
-      rates: {
-        [key: string]: components["schemas"]["TokenRateValue"];
-      };
-      /** Teams */
-      teams: {
-        [key: string]: {
-          [key: string]: components["schemas"]["TokenRateValue"];
-        };
-      };
-    };
-    /**
-     * TokenRateValue
+     * TokenRateRecord
      * @description One active or completed agent turn's volatile token-rate snapshot.
      */
-    TokenRateValue: {
+    TokenRateRecord: {
       /** Active */
       active: boolean;
+      /** Agentid */
+      agentId: string;
       /** Estimated */
       estimated: boolean;
       /** Outputtokens */
       outputTokens: number;
       /** Rate */
       rate: number;
+      /** Rootid */
+      rootId: string;
       /** Turnid */
       turnId: string;
+    };
+    /**
+     * TokenRateSnapshot
+     * @description Typed payload accepted from the token-rate producer boundary.
+     */
+    TokenRateSnapshot: {
+      /** Records */
+      records: components["schemas"]["TokenRateRecord"][];
     };
     /** TombstoneMigration */
     TombstoneMigration: {
@@ -23877,6 +23873,15 @@ export interface components {
       size: number;
     };
     /**
+     * TranscriptChangeBatch
+     * @description Complete transcript sync interval. The delta flag is true; oversize or unavailable intervals remain hints.
+     */
+    TranscriptChangeBatch: {
+      after: number;
+      delta: components["schemas"]["TranscriptStreamDelta"];
+      through: number;
+    };
+    /**
      * TranscriptContextUsage
      * @description Runtime token usage shape published by tokenUsage notifications.
      */
@@ -23894,6 +23899,11 @@ export interface components {
        */
       window?: number | null;
     };
+    /**
+     * TranscriptHistoryVersion
+     * @description The threadId:restoredCheckpoint version, 1 to 8193 Unicode code points (two bounded stream identities and their separator).
+     */
+    TranscriptHistoryVersion: string;
     /**
      * TranscriptInput
      * @description One native/runtime input batch entry shown inside a transcript item.
@@ -24180,6 +24190,11 @@ export interface components {
     } & {
       [key: string]: components["schemas"]["JsonValue"];
     };
+    /**
+     * TranscriptItemRevision
+     * @description Canonical SHA-256 item revision from runtime-store repositories/transcript.rs canonical_hash, encoded as 64 lowercase hexadecimal characters.
+     */
+    TranscriptItemRevision: string;
     /**
      * TranscriptMessageRecord
      * @description Transcript rows always carry their runtime role and display text.
@@ -24490,6 +24505,67 @@ export interface components {
        */
       kind: "transcripts";
     };
+    /**
+     * TranscriptStreamDelta
+     * @description Existing full transcript snapshot or sparse sync delta; item records share TranscriptMessageRecord.
+     */
+    TranscriptStreamDelta: {
+      /** @default null */
+      agent?: components["schemas"]["TranscriptAgent"] | null;
+      /** @constant */
+      delta: true;
+      /** @default null */
+      historyVersion?: components["schemas"]["TranscriptHistoryVersion"] | null;
+      itemRevisions: {
+        [key: string]: components["schemas"]["TranscriptItemRevision"];
+      };
+      /** Items */
+      items: components["schemas"]["TranscriptMessageRecord"][];
+      /** @default null */
+      nextAfterCursor?: components["schemas"]["TranscriptStreamItemId"] | null;
+      /** @default null */
+      nextCursor?: components["schemas"]["TranscriptStreamItemId"] | null;
+      order?: components["schemas"]["TranscriptStreamItemId"][];
+      removed: components["schemas"]["TranscriptStreamItemId"][];
+      /** @default null */
+      tail?: components["schemas"]["TranscriptStreamTail"] | null;
+      /** Truncated */
+      truncated: boolean;
+      /**
+       * @description The transcript projection owner emits only null; unavailable conversations fail the pull with an HTTP error rather than a string-valued reason.
+       * @default null
+       */
+      unavailable?: null;
+    };
+    /**
+     * TranscriptStreamItemId
+     * @description TranscriptMessageRecord.id in stream controls and item cursors; 1 to 4096 Unicode code points. Longer stored identities use pull recovery.
+     */
+    TranscriptStreamItemId: components["schemas"]["TranscriptMessageRecord"]["id"] &
+      string;
+    /**
+     * TranscriptStreamTail
+     * @description Optional transcript preview, 0 to 300 Unicode code points; the current transcript producer omits this field.
+     */
+    TranscriptStreamTail: string;
+    /**
+     * TranscriptSyncPage
+     * @description Transcript projection owner result before the HTTP adapter adds generation.
+     */
+    TranscriptSyncPage: {
+      checkpoint: components["schemas"]["SyncCheckpoint"];
+      /** Documents */
+      documents: components["schemas"]["SyncDocument"][];
+      /** Workspaceid */
+      workspaceId: string;
+    };
+    /**
+     * TranscriptSyncPayload
+     * @description Existing complete snapshot or sparse sync delta, decoded at the projection boundary.
+     */
+    TranscriptSyncPayload:
+      | components["schemas"]["TranscriptPageResponse"]
+      | components["schemas"]["TranscriptStreamDelta"];
     /**
      * TransferAction
      * @enum {string}
@@ -35481,6 +35557,8 @@ export interface operations {
         protocol?: string;
         resources?: string;
         scope?: string;
+        /** @description Whether this stream includes token-rate snapshots. Omitted selectors preserve native and signed-client behavior. Browser owners send the aggregate interest of their tabs. */
+        tokenRates?: boolean;
       };
       header?: {
         "Last-Event-ID"?: number;
@@ -37700,5 +37778,4 @@ export type SyncEntityPayload = components["schemas"]["SyncEntityPayload"];
 export const SYNC_PROTOCOL_VERSION = 3 as const;
 export const SYNC_ENTITY_SCOPE = "state:entities:v1" as const;
 export const TOKEN_RATE_MAX_ENTRIES = 4096 as const;
-export const TOKEN_RATE_MAX_TOTAL_ENTRIES = 8192 as const;
 export const TOKEN_RATE_IDENTIFIER_MAX_CODEPOINTS = 200 as const;

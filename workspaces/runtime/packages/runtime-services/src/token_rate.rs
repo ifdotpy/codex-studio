@@ -7,21 +7,38 @@ use std::sync::{Arc, OnceLock};
 use crate::change_notifications::{ChangeNotificationHub, SYNC_FRAME_MIN_INTERVAL};
 use crate::notification_dispatch::{NotificationObservation, NotificationPostCommit};
 use serde::{Deserialize, Serialize};
-use studio_runtime_schema::{
-    TOKEN_RATE_IDENTIFIER_MAX_CODEPOINTS, TOKEN_RATE_MAX_ENTRIES, TOKEN_RATE_MAX_TOTAL_ENTRIES,
-};
+use studio_runtime_schema::{TOKEN_RATE_IDENTIFIER_MAX_CODEPOINTS, TOKEN_RATE_MAX_ENTRIES};
 use thiserror::Error;
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::time::Instant;
 
-#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct TokenRateValue {
-    turn_id: String,
+pub struct TokenRateRecord {
+    agent_id: TokenRateIdentifier,
+    root_id: TokenRateIdentifier,
+    turn_id: TokenRateIdentifier,
     active: bool,
     estimated: bool,
     rate: FiniteRate,
     output_tokens: FiniteRate,
+}
+
+/// Opaque agent/root/turn identity bounded by the schema-owned Unicode limit.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[serde(try_from = "String")]
+struct TokenRateIdentifier(String);
+
+impl TryFrom<String> for TokenRateIdentifier {
+    type Error = TokenRateError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        if valid_id(&value) {
+            Ok(Self(value))
+        } else {
+            Err(TokenRateError::InvalidSnapshot)
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -55,18 +72,16 @@ impl Serialize for FiniteRate {
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TokenRateSnapshot {
-    rates: BTreeMap<String, TokenRateValue>,
-    teams: BTreeMap<String, BTreeMap<String, TokenRateValue>>,
+    records: Vec<TokenRateRecord>,
     #[serde(skip)]
     wire: WireCache,
 }
 
-/// JSON text of the `rates` and `teams` members of a snapshot, written once for all
+/// JSON text of the record list of a snapshot, written once for all
 /// stream subscribers; a stream frame embeds these fragments verbatim.
 #[derive(Debug)]
 pub struct TokenRateWire {
-    pub rates: String,
-    pub teams: String,
+    pub records: String,
 }
 
 /// Lazily filled serialization of one immutable snapshot. It never takes part in equality.
@@ -174,22 +189,12 @@ impl TokenRateSnapshot {
     /// The snapshot, when it respects the entry and value limits of the wire contract.
     fn validated(self) -> Result<Self, TokenRateError> {
         let snapshot = self;
-        let total_rate_entries =
-            snapshot.rates.len() + snapshot.teams.values().map(BTreeMap::len).sum::<usize>();
-        if snapshot.rates.len() > TOKEN_RATE_MAX_ENTRIES
-            || snapshot.teams.len() > TOKEN_RATE_MAX_ENTRIES
-            || total_rate_entries > TOKEN_RATE_MAX_TOTAL_ENTRIES
+        let mut agents = BTreeSet::new();
+        if snapshot.records.len() > TOKEN_RATE_MAX_ENTRIES
             || snapshot
-                .rates
+                .records
                 .iter()
-                .any(|(id, rate)| !valid_id(id) || !valid_rate(rate))
-            || snapshot.teams.iter().any(|(root, team)| {
-                !valid_id(root)
-                    || team.len() > TOKEN_RATE_MAX_ENTRIES
-                    || team
-                        .iter()
-                        .any(|(id, rate)| !valid_id(id) || !valid_rate(rate))
-            })
+                .any(|record| !agents.insert(&record.agent_id))
         {
             return Err(TokenRateError::InvalidSnapshot);
         }
@@ -203,25 +208,24 @@ impl TokenRateSnapshot {
 
     #[must_use]
     pub fn to_value(&self) -> serde_json::Value {
-        serde_json::to_value(self).unwrap_or_else(|_| serde_json::json!({"rates":{},"teams":{}}))
+        serde_json::to_value(self).unwrap_or_else(|_| serde_json::json!({"records":[]}))
     }
 
-    /// The serialized `rates` and `teams` members, written on first use and then shared.
+    /// The serialized record list, written on first use and then shared.
     #[must_use]
     pub fn wire(&self) -> Arc<TokenRateWire> {
         Arc::clone(self.wire.0.get_or_init(|| {
             let text =
-                |result: serde_json::Result<String>| result.unwrap_or_else(|_| "{}".to_owned());
+                |result: serde_json::Result<String>| result.unwrap_or_else(|_| "[]".to_owned());
             Arc::new(TokenRateWire {
-                rates: text(serde_json::to_string(&self.rates)),
-                teams: text(serde_json::to_string(&self.teams)),
+                records: text(serde_json::to_string(&self.records)),
             })
         }))
     }
 
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.rates.is_empty() && self.teams.is_empty()
+        self.records.is_empty()
     }
 }
 
@@ -467,29 +471,28 @@ impl RateProjector {
     fn snapshot(&self) -> TokenRateSnapshot {
         let mut snapshot = TokenRateSnapshot::empty();
         for (agent_id, state) in &self.agents {
-            if state.turn.is_empty()
-                || !valid_id(agent_id)
-                || !valid_id(&state.turn)
-                || !valid_id(&state.root)
-            {
+            let (Ok(agent_id), Ok(root_id), Ok(turn_id)) = (
+                TokenRateIdentifier::try_from(agent_id.clone()),
+                TokenRateIdentifier::try_from(state.root.clone()),
+                TokenRateIdentifier::try_from(state.turn.clone()),
+            ) else {
+                continue;
+            };
+            let rate = state.rate.clamp(0.0, MAX_TOKEN_RATE);
+            let output_tokens =
+                (state.actual + state.pending + state.response_duration_pending_tokens).max(0.0);
+            if !rate.is_finite() || !output_tokens.is_finite() {
                 continue;
             }
-            let value = TokenRateValue {
-                turn_id: state.turn.clone(),
+            snapshot.records.push(TokenRateRecord {
+                agent_id,
+                root_id,
+                turn_id,
                 active: state.active,
                 estimated: state.estimated,
-                rate: FiniteRate(state.rate.clamp(0.0, MAX_TOKEN_RATE)),
-                output_tokens: FiniteRate(
-                    (state.actual + state.pending + state.response_duration_pending_tokens)
-                        .max(0.0),
-                ),
-            };
-            snapshot.rates.insert(agent_id.clone(), value.clone());
-            snapshot
-                .teams
-                .entry(state.root.clone())
-                .or_default()
-                .insert(agent_id.clone(), value);
+                rate: FiniteRate(rate),
+                output_tokens: FiniteRate(output_tokens),
+            });
         }
         snapshot
     }
@@ -810,20 +813,11 @@ fn valid_id(value: &str) -> bool {
             <= TOKEN_RATE_IDENTIFIER_MAX_CODEPOINTS
 }
 
-fn valid_rate(value: &TokenRateValue) -> bool {
-    valid_id(&value.turn_id)
-        && value.rate.0.is_finite()
-        && value.rate.0 >= 0.0
-        && value.output_tokens.0.is_finite()
-        && value.output_tokens.0 >= 0.0
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
         MAX_PROJECTED_AGENTS, MAX_TOKEN_RATE_WATERMARKS, ProjectedAgent, RateProjector,
-        TOKEN_RATE_IDENTIFIER_MAX_CODEPOINTS, TOKEN_RATE_MAX_ENTRIES, TOKEN_RATE_MAX_TOTAL_ENTRIES,
-        TokenRateHub,
+        TOKEN_RATE_IDENTIFIER_MAX_CODEPOINTS, TOKEN_RATE_MAX_ENTRIES, TokenRateHub,
     };
     use crate::notification_dispatch::{
         NotificationObservation, NotificationPostCommit, ProviderDeliveryIdentity, SharedJson,
@@ -837,21 +831,17 @@ mod tests {
         let hub = TokenRateHub::new();
         let (first, second) = (hub.subscribe(), hub.subscribe());
         hub.publish(json!({
-            "rates": {"agent": {"turnId":"turn","active":true,"estimated":false,"rate":2.5,"outputTokens":7.0}},
-            "teams": {"root": {"agent": {"turnId":"turn","active":true,"estimated":false,"rate":2.5,"outputTokens":7.0}}}
+            "records": [{"agentId":"agent","rootId":"root","turnId":"turn","active":true,"estimated":false,"rate":2.5,"outputTokens":7.0}]
         }))
         .expect("publish");
         let (a, b) = (first.borrow().wire(), second.borrow().wire());
         assert!(std::sync::Arc::ptr_eq(&a, &b));
         let expected = hub.snapshot().to_value();
         assert_eq!(
-            serde_json::from_str::<serde_json::Value>(&a.rates).expect("rates"),
-            expected["rates"]
+            serde_json::from_str::<Vec<super::TokenRateRecord>>(&a.records).expect("records"),
+            hub.snapshot().records
         );
-        assert_eq!(
-            serde_json::from_str::<serde_json::Value>(&a.teams).expect("teams"),
-            expected["teams"]
-        );
+        assert_eq!(expected["records"].as_array().expect("records").len(), 1);
     }
 
     fn usage_effect(
@@ -977,15 +967,13 @@ mod tests {
     async fn latest_snapshot_is_coalesced_for_subscribers() {
         let hub = TokenRateHub::new();
         let mut subscriber = hub.subscribe();
-        let value = json!({"rates":{"agent-a":{"turnId":"turn-a","active":true,
-            "estimated":false,"rate":8.5,"outputTokens":17}},"teams":{}});
+        let value = json!({"records":[{"agentId":"agent-a","rootId":"root","turnId":"turn-a","active":true,
+            "estimated":false,"rate":8.5,"outputTokens":17}]});
         assert!(hub.publish(value.clone()).expect("valid snapshot"));
         assert!(!hub.publish(value.clone()).expect("duplicate snapshot"));
         assert!(subscriber.changed().await.is_ok());
         assert_eq!(
-            subscriber.borrow_and_update().rates["agent-a"]
-                .output_tokens
-                .0,
+            subscriber.borrow_and_update().records[0].output_tokens.0,
             17.0
         );
     }
@@ -994,14 +982,11 @@ mod tests {
     fn malformed_or_oversized_snapshots_are_refused() {
         let hub = TokenRateHub::new();
         assert!(
-            hub.publish(json!({"rates":{"agent-a":{"turnId":"turn-a","active":true,
-            "estimated":false,"rate":-1,"outputTokens":17}},"teams":{}}))
+            hub.publish(json!({"records":[{"agentId":"agent-a","rootId":"root","turnId":"turn-a","active":true,
+            "estimated":false,"rate":-1,"outputTokens":17}]}))
                 .is_err()
         );
-        assert!(
-            hub.publish(json!({"rates":{},"teams":{},"extra":true}))
-                .is_err()
-        );
+        assert!(hub.publish(json!({"records":[],"extra":true})).is_err());
     }
 
     /// A usage observation folded into the projector, as the projector task does.
@@ -1037,12 +1022,24 @@ mod tests {
             &mut projector,
             &usage_effect("agent-zzzz", "provider-b", 1, 1, "turn-b")
         ));
-        assert!(!projector.snapshot().rates.contains_key("agent-0000"));
+        assert!(
+            !projector
+                .snapshot()
+                .records
+                .iter()
+                .any(|record| record.agent_id.0 == "agent-0000")
+        );
         assert!(
             !observe(&mut projector, &original),
             "replay after projection eviction"
         );
-        assert!(!projector.snapshot().rates.contains_key("agent-0000"));
+        assert!(
+            !projector
+                .snapshot()
+                .records
+                .iter()
+                .any(|record| record.agent_id.0 == "agent-0000")
+        );
     }
 
     #[test]
@@ -1086,7 +1083,14 @@ mod tests {
         );
         assert_eq!(projector.snapshot(), current);
         assert_eq!(
-            projector.snapshot().rates["z-agent"].turn_id,
+            projector
+                .snapshot()
+                .records
+                .iter()
+                .find(|record| record.agent_id.0 == "z-agent")
+                .expect("agent")
+                .turn_id
+                .0,
             "current-turn"
         );
     }
@@ -1104,7 +1108,7 @@ mod tests {
             &usage_effect("agent", "provider-a", 8, 99, "old-turn")
         ));
         assert_eq!(projector.snapshot(), current);
-        assert_eq!(projector.snapshot().rates["agent"].turn_id, "new-turn");
+        assert_eq!(projector.snapshot().records[0].turn_id.0, "new-turn");
     }
 
     /// A mixed turn of both providers: Codex streams raw deltas, the Claude bridge streams
@@ -1204,7 +1208,7 @@ mod tests {
         }
         hub.settled().await;
         let snapshot = hub.snapshot();
-        assert_eq!(snapshot.rates.len(), 8);
+        assert_eq!(snapshot.records.len(), 8);
         assert_eq!(snapshot, direct.snapshot());
         assert_eq!(snapshot.to_value(), direct.snapshot().to_value());
     }
@@ -1237,96 +1241,61 @@ mod tests {
             2,
             "one leading and one trailing frame"
         );
-        assert!(subscriber.borrow().rates["agent"].output_tokens.0 > 0.0);
+        assert!(subscriber.borrow().records[0].output_tokens.0 > 0.0);
     }
 
     #[test]
-    fn opaque_unicode_identifiers_use_the_generated_codepoint_bound() {
-        let identifier = "💠".repeat(TOKEN_RATE_IDENTIFIER_MAX_CODEPOINTS);
-        let value =
-            json!({"turnId":identifier,"active":true,"estimated":false,"rate":0,"outputTokens":0});
-        let mut rates = serde_json::Map::new();
-        rates.insert(identifier, value);
-        let mut snapshot = json!({"rates":{},"teams":{}});
-        snapshot["rates"] = serde_json::Value::Object(rates);
-        assert!(TokenRateHub::new().publish(snapshot).is_ok());
-
-        let too_long = "💠".repeat(TOKEN_RATE_IDENTIFIER_MAX_CODEPOINTS + 1);
-        let value =
-            json!({"turnId":too_long,"active":true,"estimated":false,"rate":0,"outputTokens":0});
+    fn record_bounds_and_duplicate_identities_are_enforced_atomically() {
+        let hub = TokenRateHub::new();
+        let id = "💠".repeat(TOKEN_RATE_IDENTIFIER_MAX_CODEPOINTS);
+        let record = json!({"agentId":id,"rootId":id,"turnId":id,"active":true,"estimated":false,"rate":0,"outputTokens":0});
         assert!(
-            TokenRateHub::new()
-                .publish(json!({"rates":{"agent":value},"teams":{}}))
-                .is_err()
+            hub.publish(json!({"records":[record]}))
+                .expect("Unicode boundary")
         );
-
-        let value =
-            json!({"turnId":"turn","active":true,"estimated":false,"rate":0,"outputTokens":0});
-        let mut rates = serde_json::Map::new();
-        rates.insert(too_long, value);
-        let mut snapshot = json!({"rates":{},"teams":{}});
-        snapshot["rates"] = serde_json::Value::Object(rates);
-        assert!(TokenRateHub::new().publish(snapshot).is_err());
+        let saved = hub.snapshot();
+        for field in ["agentId", "rootId", "turnId"] {
+            let mut bad = record.clone();
+            bad[field] = json!("💠".repeat(TOKEN_RATE_IDENTIFIER_MAX_CODEPOINTS + 1));
+            assert!(hub.publish(json!({"records":[bad]})).is_err());
+        }
+        assert!(hub.publish(json!({"records":[record,record]})).is_err());
+        assert_eq!(hub.snapshot(), saved);
+        let records = (0..TOKEN_RATE_MAX_ENTRIES)
+            .map(|index| {
+                let mut next = record.clone();
+                next["agentId"] = json!(format!("a{index}"));
+                next
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            hub.publish(json!({"records":records}))
+                .expect("entry boundary")
+        );
+        let mut overfull = records;
+        overfull.push(record);
+        assert!(hub.publish(json!({"records":overfull})).is_err());
     }
 
     #[test]
-    fn maximum_agent_bound_is_enforced_for_rates_and_team_members() {
-        let value = json!({"turnId":"t","active":true,"estimated":false,"rate":0,"outputTokens":0});
-        let rates = (0..=TOKEN_RATE_MAX_ENTRIES)
-            .map(|index| (format!("a{index}"), value.clone()))
-            .collect::<serde_json::Map<_, _>>();
-        assert!(
-            TokenRateHub::new()
-                .publish(json!({"rates":rates,"teams":{}}))
-                .is_err()
-        );
-        let teams = (0..=TOKEN_RATE_MAX_ENTRIES)
-            .map(|index| (format!("t{index}"), serde_json::json!({})))
-            .collect::<serde_json::Map<_, _>>();
-        assert!(
-            TokenRateHub::new()
-                .publish(json!({"rates":{},"teams":teams}))
-                .is_err()
-        );
-        let team = (0..=TOKEN_RATE_MAX_ENTRIES)
-            .map(|index| (format!("a{index}"), value.clone()))
-            .collect::<serde_json::Map<_, _>>();
-        assert!(
-            TokenRateHub::new()
-                .publish(json!({"rates":{},"teams":{"root":team}}))
-                .is_err()
-        );
-    }
-
-    #[test]
-    fn aggregate_rate_values_are_bounded_across_workspace_and_team_views() {
-        let value = json!({"turnId":"t","active":true,"estimated":false,"rate":0,"outputTokens":0});
-        let rates = (0..TOKEN_RATE_MAX_ENTRIES)
-            .map(|index| (format!("a{index}"), value.clone()))
-            .collect::<serde_json::Map<_, _>>();
-        let team = (0..TOKEN_RATE_MAX_ENTRIES)
-            .map(|index| (format!("a{index}"), value.clone()))
-            .collect::<serde_json::Map<_, _>>();
-        assert_eq!(TOKEN_RATE_MAX_TOTAL_ENTRIES, TOKEN_RATE_MAX_ENTRIES * 2);
-        assert!(
-            TokenRateHub::new()
-                .publish(json!({"rates":rates,"teams":{"root":team}}))
-                .is_ok()
-        );
-
-        let overfull_team = (0..TOKEN_RATE_MAX_ENTRIES)
-            .map(|index| (format!("a{index}"), value.clone()))
-            .collect::<serde_json::Map<_, _>>();
-        let overfull_rates = (0..TOKEN_RATE_MAX_ENTRIES)
-            .map(|index| (format!("a{index}"), value.clone()))
-            .collect::<serde_json::Map<_, _>>();
-        let extra = serde_json::Map::from_iter([("extra".to_owned(), value)]);
-        assert!(
-            TokenRateHub::new()
-                .publish(
-                    json!({"rates":overfull_rates,"teams":{"root":overfull_team,"other":extra}})
-                )
-                .is_err()
-        );
+    fn projector_records_own_root_membership_and_only_serialize_each_agent_once() {
+        let mut projector = RateProjector::default();
+        assert!(observe(
+            &mut projector,
+            &usage_effect("agent", "provider", 1, 1, "turn")
+        ));
+        assert_eq!(projector.snapshot().records[0].root_id.0, "agent");
+        let mut moved = usage_effect("agent", "provider", 1, 2, "turn");
+        if let NotificationPostCommit::TokenRateUsage(observation) = &mut moved {
+            observation.agent = Some(SharedJson::new(
+                json!({"id":"agent","rootId":"other","turnId":"turn"}),
+            ));
+        }
+        assert!(observe(&mut projector, &moved));
+        let snapshot = projector.snapshot();
+        assert_eq!(snapshot.records.len(), 1);
+        assert_eq!(snapshot.records[0].root_id.0, "other");
+        projector.agents.remove("agent");
+        assert!(projector.snapshot().is_empty());
     }
 }

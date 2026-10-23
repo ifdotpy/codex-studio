@@ -1,5 +1,53 @@
 # Managed Codex teams
 
+HTTP JSON responses follow this flow:
+
+1. Produce the final JSON, including any mutation sync envelope.
+2. Hash the uncompressed representation for declared ETags and handle conditional reads.
+3. Negotiate Brotli for sufficiently large JSON using the size and quality constants in
+   [`runtime-http/src/router.rs`](../workspaces/runtime/packages/runtime-http/src/router.rs).
+4. Vary on `Accept-Encoding`; the native client negotiates and decodes Brotli.
+   Small JSON and all `text/event-stream` responses, including sync SSE, stay uncompressed.
+
+Desktop status follows this flow:
+
+1. The [disk gate](../workspaces/runtime/packages/runtime-services/src/disk_space.rs) keeps exact free bytes for admission and projects only the visible level and message through the [disk status contract](../workspaces/runtime/packages/runtime-schema/src/desktop.rs).
+2. `/api/desktop` includes that projection; the existing resource content filter suppresses unchanged responses, so healthy disk writes cause no renderer re-read.
+3. Threshold, message, provider and supervisor changes still notify the existing reader. Failed reads retain the last notices; native attachment keeps using the same endpoint.
+
+State updates follow this flow:
+
+1. Pull the initial state, then consume complete typed entity batches from the stream.
+2. The server merges changes using its [flush interval owner](../workspaces/runtime/packages/runtime-services/src/change_notifications.rs)
+   and reads full records and tombstones from one SQLite snapshot.
+3. Store the batch before advancing its checkpoint. Recover gaps, resets, reconnects,
+   failed storage, and batches outside the [shared limits](../workspaces/runtime/packages/runtime-schema/src/shared_values.rs) through pull.
+4. Open chats pull their baseline, then apply complete typed transcript intervals
+   through the same delta applier as pull; advance the cursor after storing all items.
+5. A hinted subscribed transcript uses the existing pull projection owner in the
+   coalesced flush. Its revision cache shares page computation across subscribers;
+   this stream path may perform the same projection upkeep transaction as a pull.
+6. Transcript gaps, reconnects, epochs, storage failures and oversize reconcile by pull.
+   External `/api/sync/notify` hints proven empty at the same pull cursor are consumed;
+   changed content is delivered, and incomplete intervals retain a pull hint.
+
+Token-rate subscriptions follow this flow:
+
+1. The browser stream owner sends the tabs' aggregate interest through the `tokenRates`
+   query selector owned by [OpenAPI](../workspaces/runtime/packages/runtime-http/openapi.json).
+2. Interest changes reopen the existing shared stream. An interested stream receives
+   the current snapshot immediately, including when a new tab takes ownership.
+3. A stream with explicit false interest receives resources and heartbeats without token frames.
+4. Native and signed clients omitting the selector retain the schema's compatibility default.
+
+Browser draft notifications follow this flow:
+
+1. Read the [draft sequence owner](../workspaces/runtime/packages/runtime-store/src/repositories/sync_documents.rs) when a subscribed draft resource is invalidated.
+2. The shared content filter suppresses hints when that sequence is unchanged.
+3. Read changed drafts and retained tombstones as one bounded typed interval; validate each payload through the draft owner and preserve its stored bytes.
+4. Admit contiguous intervals directly to RxDB's master stream, without another pull. The stream watermark means accepted-contiguous; RxDB owns durability and conflicts.
+5. Pull from RxDB's durable checkpoint for initial load, gaps, reconnects, epoch changes, oversized intervals, or apply/persistence errors.
+
 Server command output follows this flow:
 
 1. Retain the first and last bytes within the command's output limit.
@@ -207,6 +255,14 @@ Use **+** beside a folder to start a chat there. An empty current chat is reused
 Folder registration lives in SQLite. Removing an empty project from the sidebar does not delete files.
 Each folder initially shows five chats. **Show more** expands the list, and search includes hidden chats.
 Folder collapse preferences stay in browser storage. Agent conversations appear in **Messages**.
+UI preferences follow the existing entity projection for every mounted server screen:
+
+1. The screen reads preference rows from its entity projection, including while hidden.
+2. Its bridge merges user preferences globally and server preferences into that server's storage.
+3. Writes use that screen's authenticated API; pending edits retry on resume or connection recovery.
+4. The projection workspace identity names the shell's saved aliases, labels and server order.
+5. The shell applies those fields without a second entity pull or state stream.
+
 Use the sidebar row menu to rename or delete a lead or agent chat.
 Manual names take priority over an automatic lead title. Studio stores both manual
 and generated names in SQLite and copies them to Codex with `thread/name/set`.
@@ -220,11 +276,19 @@ Native composer draft synchronization follows this flow:
 3. Combine simultaneous triggers and retain one follow-up when notified during a refresh.
 4. Keep idle windows quiet; closing the view removes listeners and pending refreshes.
 
+Browser draft push acknowledgement follows this flow:
+
+1. Save edits locally immediately; the existing RxDB push gate groups remote writes, including edits received during an in-flight push.
+2. Accept the conflicts-only HTTP result as acknowledgement of the exact attempted state.
+3. Deliver complete server draft intervals through the same RxDB master stream.
+4. Keep only the last two distinct acknowledged own payloads per branch; suppress a delayed echo only when it exactly matches the earlier payload and deletion state.
+5. Resolve genuine concurrent versions with the [draft conflict owner](../workspaces/client/apps/web/src/sync/conflicts.ts), keeping both texts; retry a lost response with its exact attempted state.
+
 Draft payload compatibility follows this flow:
 
 1. Derive the server schema and web type from [DraftVersion](../workspaces/client/packages/client-domain/src/drafts.rs) with `pnpm run contracts:generate`.
-2. Validate new pushes against that schema; require a JavaScript-safe integer timestamp.
-3. Read historical drafts through the same Rust owner: missing or null timestamps become zero, and fractional timestamps are floored.
+2. Require a JavaScript-safe integer timestamp on pushes; accept historical extension fields until persisted browser and native pending rows have a compatible migration. Generated types for newly authored drafts remain closed.
+3. Read historical drafts and assumed masters through the same Rust compatibility decoder: preserve unknown fields, map missing or null timestamps to zero, and floor fractions.
 4. Preserve stored payload bytes; read normalization never rewrites or drops a draft. `pnpm run contracts:check` rejects generated drift.
 
 Markdown rendering follows this flow:
@@ -496,7 +560,10 @@ so provider memory follows running workers: a Claude thread's CLI exits, and the
 Codex app-server frees the thread at once, because Studio launches it with
 `thread_unload_delay_secs=0` (`CODEX_THREAD_UNLOAD_DELAY` in
 [provider_adapter.rs](../workspaces/runtime/packages/runtime-services/src/provider_adapter.rs);
-Codex's own default keeps it loaded for 30 minutes). The next turn resumes the thread. A deleted agent's thread unloads at once in the same way; deleting a
+Codex's own default keeps it loaded for 30 minutes). An app-server started
+before that override is reattached with its own command
+(`ProviderLaunchSpec::reattach_commands`) and keeps Codex's default until it
+exits. The next turn resumes the thread. A deleted agent's thread unloads at once in the same way; deleting a
 team re-evaluates its members' idle clocks as soon as the deletion commits. A
 live lead's, ordinary chat's, or waiting worker's thread
 unloads after `idleSessionUnloadMinutes` of the same idleness, because each resume costs a
@@ -561,8 +628,8 @@ Supervisor connection and reattachment follow one path:
 
 1. Runtime, operator and VM guest clients request the current supervisor protocol and require its version in the reply.
 2. The supervisor rejects retired versions before admitting a backend.
-3. Open reuses a running child only when its launch signature matches the configured current command, environment and working directory.
-4. Changed launch signatures are refused; no older command is adopted and no duplicate child starts.
+3. Open reuses a running child only when its launch signature matches the configured current command, environment and working directory, or the same values with an earlier command that the launch lists in `ProviderLaunchSpec::reattach_commands`. The child keeps that earlier command until it exits; a child started later gets the current command.
+4. Other changed launch signatures are refused; no unlisted command is adopted and no duplicate child starts. A changed provider launch command lists the command it replaces, so an upgrade does not refuse running children.
 5. Recovery signals only an exact native kernel identity; retired Python identities never authorize a signal or an identity upgrade.
 
 A supervisor event sequence is meaningful only inside one journal epoch.
@@ -1495,6 +1562,16 @@ change with both options. Cross-machine Claude cache reuse remains unverified.
 4. Liveness, context and the canonical renderer view borrow that checked value in source row order; only storage and wire boundaries serialize it.
 5. Source state, receipts and renderer views commit together; a projection failure rolls them all back.
 6. Replaying committed journal identities returns the saved outcomes without decoding or publishing agents again.
+7. The store observer publishes committed entity changes; ordinary analytics receipts only project token rates, preserving complete stream batches without a pull.
+8. Recovered history, unknown publication overflow, and external writer hints retain state resets and pull recovery.
+
+### Token-rate snapshots
+
+1. The token owner publishes one complete record per agent, including its current root and turn.
+2. The shared workspace stream carries that list; the client validates it once before caching or replay.
+3. Footer meters read by agent ID; team meters use a derived identity lookup from each record's root ID.
+4. Replacing the list clears removed agents and previous root memberships, even without an agent entity cache.
+5. Late tabs and newly opened teams read the latest complete snapshot through the same stream coordinator.
 
 ### Held child-result release
 

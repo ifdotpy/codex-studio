@@ -153,8 +153,34 @@ fn link_destination(target: &Path) -> Result<PathBuf> {
     })
 }
 
+/// Whether a command link points at the retired Python entry point of `name`
+/// in `project`. `project` is canonical, so the link destination is compared
+/// both as written and with its deepest existing ancestor resolved: a link
+/// written through a symlinked directory (macOS `/var` is `/private/var`)
+/// still names the project, even after its Python target was deleted.
 fn legacy_link(project: &Path, name: &str, destination: &Path) -> bool {
+    let resolved = resolve_existing_prefix(destination);
     ["workspaces/runtime/apps/server/src", "scripts"]
         .iter()
-        .any(|directory| destination == project.join(directory).join(name))
+        .map(|directory| project.join(directory).join(name))
+        .any(|legacy| destination == legacy || resolved.as_deref() == Some(legacy.as_path()))
+}
+
+/// `path` with its deepest existing ancestor canonicalized and the missing
+/// rest appended unchanged, or `None` when no ancestor exists.
+fn resolve_existing_prefix(path: &Path) -> Option<PathBuf> {
+    let mut existing = path;
+    let mut missing = Vec::new();
+    loop {
+        if let Ok(resolved) = CanonicalPath::existing(existing) {
+            return Some(
+                missing
+                    .iter()
+                    .rev()
+                    .fold(resolved.into_path_buf(), |path, part| path.join(part)),
+            );
+        }
+        missing.push(existing.file_name()?);
+        existing = existing.parent()?;
+    }
 }

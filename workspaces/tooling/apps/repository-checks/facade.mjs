@@ -44,6 +44,10 @@ const UNSAFE_RUST_ALLOWLIST = [
     "FSEvents (lead's W9 decision).",
   ],
   [
+    "workspaces/runtime/packages/runtime-services/src/host_exec_service/clone_ffi.rs",
+    "APFS clonefile(2) for host_exec slot clones.",
+  ],
+  [
     "workspaces/runtime/packages/runtime-services/src/diagnostics/allocator.rs",
     "Opt-in GNU allocator summary through a bounded private diagnostic buffer.",
   ],
@@ -111,9 +115,9 @@ const BOUNDARY_ALLOWLIST = [
   {
     importer: "codex-agents-desktop",
     file: "bridge.d.ts",
-    specifier: "../web/src/servers/desktopCredentials",
+    specifier: "../web/src/desktop",
     reason:
-      "The desktop bridge declaration shares the renderer's credential wire types until they have a public package owner.",
+      "The desktop bridge declaration re-exports the renderer's single bridge owner until it has a public package owner.",
   },
   {
     importer: "codex-agents-desktop",
@@ -707,6 +711,96 @@ function fastTierCommands(root) {
       },
     },
     {
+      item: { name: "studio-runtime-services", ecosystem: "cargo" },
+      label: "host_exec tool and Mac service witnesses",
+      commands: [
+        [
+          "cargo",
+          [
+            "nextest",
+            "run",
+            "--locked",
+            "--no-tests",
+            "fail",
+            "--message-format",
+            "libtest-json-plus",
+            "-p",
+            "studio-runtime-services",
+            "--lib",
+            "-E",
+            "test(/^host_exec(_service)?::/)",
+          ],
+        ],
+        [
+          "cargo",
+          [
+            "nextest",
+            "run",
+            "--locked",
+            "--no-tests",
+            "fail",
+            "--message-format",
+            "libtest-json-plus",
+            "-p",
+            "studio-runtime-server",
+            "-E",
+            "test(/^host_exec_service::/)",
+          ],
+        ],
+      ],
+      options: {
+        selector:
+          "host_exec identities, refusals, Mac service receipts, start rules, and the guest broker",
+        reason:
+          "Check that a lost answer never repeats a Mac command, that only VM writers run commands, and that the unchanged guest broker works with the service process.",
+      },
+    },
+    {
+      item: { name: "studio-runtime-services", ecosystem: "cargo" },
+      label: "Linux VM start witnesses",
+      commands: [
+        [
+          "cargo",
+          [
+            "nextest",
+            "run",
+            "--locked",
+            "--no-tests",
+            "fail",
+            "--message-format",
+            "libtest-json-plus",
+            "-p",
+            "studio-runtime-services",
+            "--lib",
+            "-E",
+            "test(/^linux_vm_runtime::/)",
+          ],
+        ],
+        [
+          "cargo",
+          [
+            "nextest",
+            "run",
+            "--locked",
+            "--no-tests",
+            "fail",
+            "--message-format",
+            "libtest-json-plus",
+            "-p",
+            "studio-runtime-server",
+            "-E",
+            "test(/^linux_vm_start::/)",
+          ],
+        ],
+      ],
+      options: {
+        selector:
+          "VM start after a Mac restart, stops on purpose, restart limits and the helper session",
+        reason:
+          "Check that only a VM that the Mac restart stopped starts by itself, with a fake helper and guest, and that the helper runs in its own session.",
+      },
+    },
+    {
       item: { name: "retained Python helper boundaries", ecosystem: "pnpm" },
       label: "retained Python helper boundaries",
       commands: [
@@ -880,6 +974,36 @@ function fastTierCommands(root) {
         selector: "shared strict push and legacy receive fixtures",
         reason:
           "Keep new draft payloads compatible with native receive without rewriting stored legacy drafts.",
+      },
+    },
+    {
+      item: { name: "HTTP Brotli responses", ecosystem: "cargo" },
+      label: "JSON compression and native decoding witnesses",
+      commands: [
+        [
+          "cargo",
+          [
+            "nextest",
+            "run",
+            "--locked",
+            "--no-tests",
+            "fail",
+            "--message-format",
+            "libtest-json-plus",
+            "-p",
+            "studio-runtime-http",
+            "-p",
+            "studio-client-core",
+            "--lib",
+            "-E",
+            "test(brotli_)",
+          ],
+        ],
+      ],
+      options: {
+        selector: "Brotli JSON bytes, ETags, SSE exclusion and native decoding",
+        reason:
+          "Preserve uncompressed representation hashes and SSE while reducing large JSON transfer bytes.",
       },
     },
     {
@@ -1158,6 +1282,7 @@ function fastTierCommands(root) {
               "test(account_worker::retained::runtime::tests::payload_delivery_)",
               "test(account_worker::tests::retained::automatic_recovery_)",
               "test(account_worker::tests::retained::startup_first_pass_reconciles_exact_history_without_replaying_unknown_input)",
+              "test(account_worker::tests::retained::retained_actor_request_answer_after_same_generation_restart_is_recorded_once)",
             ]),
           ],
         ],
@@ -1195,8 +1320,9 @@ function fastTierCommands(root) {
           "Check that a provider request is durably accepted with its journal batch, that its record owns the answer through every crash point without a repeated answer, and that an unanswered request never stops provider events or new work, that a native approval or question of a lead waits as a card and its user answer reaches the provider once, also after a worker reattach, and that a stamp left by an undelivered steer batch is replaced instead of holding the agent. Monitor output must publish exactly one monitor projection while preserving window membership and rollback. Task submissions keep limits, workspace ownership and replay at the shared manifest bound. Native-history recovery continues authorized workers once, preserves explicit Stop, and never replays uncertain input.",
       },
     },
-    // These witnesses are Linux only (#[cfg(target_os = "linux")]); on another
-    // host nextest selects zero tests, so the step runs only on Linux.
+    // The reaping witnesses are Linux only (#[cfg(target_os = "linux")]), so
+    // the step runs only on Linux. The publication gate also runs its reattach
+    // witnesses on macOS.
     ...(process.platform === "linux"
       ? [
           {
@@ -1222,7 +1348,8 @@ function fastTierCommands(root) {
                   "-E",
                   nextestAnyOf([
                     "test(/^provider_stdio::killed_provider_is_reaped_with_full_journal_and_unobserved_write$/)",
-                    "test(running_child_reattaches_only_with_the_current_command)",
+                    "test(/^wave7_p01_factory::running_child_started_with_a_previous_command_reattaches$/)",
+                    "test(/^wave7_p01_registry::running_app_server_started_with_the_frozen_command_reattaches$/)",
                     "test(/^wave7_p01_registry::direct_child_sigkill_settles_unknown_without_resend$/)",
                     "test(/^state_check::state_check_reads_fixture_rows_without_changing_or_disclosing_them$/)",
                   ]),
@@ -1232,7 +1359,7 @@ function fastTierCommands(root) {
             options: {
               selector: "full stdio lanes and direct provider SIGKILL recovery",
               reason:
-                "Check that child reaping and account session loss do not wait for blocked I/O, and that the registry starts a new generation without resending an uncertain turn.",
+                "Check that child reaping and account session loss do not wait for blocked I/O, that the registry starts a new generation without resending an uncertain turn, and that a changed launch command reattaches a running child with the earlier command it lists.",
             },
           },
         ]
@@ -1258,7 +1385,7 @@ function fastTierCommands(root) {
             "--test",
             "integration",
             "-E",
-            "test(/^project_preparation::/) | test(committed_delete_route_succeeds_with_unrelated_failing_cleanup)",
+            "test(/^project_preparation::/) | test(committed_delete_route_succeeds_with_unrelated_failing_cleanup) | test(real_rxdb_single_writer_draft_ack_echo_ordering)",
           ],
         ],
       ],
@@ -1334,6 +1461,9 @@ function fastTierCommands(root) {
               "test(unavailable_and_racing_content_keep_the_safe_refresh)",
               "test(provider_versions::tests::preference_read_error_fails_closed_without_an_upstream_request)",
               "test(token_publications_do_not_repeat_or_invalidate_content_projections)",
+              "test(drained_notification_effects_use_committed_state_without_resetting_entities)",
+              "test(analytics_receipts_preserve_entity_delivery_but_recovery_still_resets)",
+              "test(publication_bound_keeps_state_invalidation_and_token_rate_usage)",
             ]),
           ],
         ],
@@ -1505,6 +1635,7 @@ function fastTierCommands(root) {
               "test(unrelated_reservation_started_after_path_capture_does_not_refuse_ready_token)",
               "test(room_membership_uses_symlink_paths_resolved_by_the_creation_owner)",
               "test(agent_progress::tests::)",
+              "test(token_rate::tests::)",
               "test(completed_child_turn_reports_unsubmitted_assignment_once_with_final_text)",
               "test(account_worker::tests::continuation_start::capacity_retry_restart_unknown_reports_once_without_resending)",
               "test(agent_progress_schema_matches_strict_serde_contract)",
@@ -1577,8 +1708,256 @@ function fastTierCommands(root) {
     },
     {
       item: web,
+      label: "Single token record footer and team witnesses",
+      commands: [
+        [
+          "pnpm",
+          [
+            "--filter",
+            "codex-agents-web",
+            "exec",
+            "vitest",
+            "run",
+            "--config",
+            "vitest.unit.config.ts",
+            "src/usage/tokenRate.records.test.ts",
+            "src/usage/tokenRate.test.mjs",
+          ],
+        ],
+      ],
+      options: {
+        selector: "one record, root moves, removals, strict bounds and replay",
+        reason:
+          "Token snapshots carry each agent once and derive team membership without entity projections.",
+      },
+    },
+    {
+      item: web,
       label: "web unit safety witnesses",
       options: { script: "test:unit:fast" },
+    },
+    {
+      item: { name: "desktop disk status", ecosystem: "cargo" },
+      label: "Desktop content identity and native attach witnesses",
+      commands: [
+        [
+          "cargo",
+          [
+            "nextest",
+            "run",
+            "--locked",
+            "--no-tests",
+            "fail",
+            "--message-format",
+            "libtest-json-plus",
+            "-p",
+            "studio-runtime-http",
+            "-p",
+            "studio-client-core",
+            "--lib",
+            "-E",
+            nextestAnyOf([
+              "test(desktop_content_ignores_healthy_disk_writes_but_delivers_visible_changes)",
+              "test(desktop_http_)",
+              "test(existing_backend_must_supply_a_valid_build_identity)",
+            ]),
+          ],
+        ],
+      ],
+      options: {
+        selector: "desktop disk projection, content filtering and Rust attach",
+        reason:
+          "Healthy disk writes must not cause renderer reads; visible changes and native identity checks remain live.",
+      },
+    },
+    {
+      item: web,
+      label: "Desktop notice reader witnesses",
+      commands: [
+        [
+          "pnpm",
+          [
+            "--filter",
+            "codex-agents-web",
+            "exec",
+            "vitest",
+            "run",
+            "--config",
+            "vitest.unit.config.ts",
+            "src/components/SupervisorRecoveryNotice.test.ts",
+            "src/components/desktopNotices.test.ts",
+            "src/components/watchResourceReads.test.ts",
+          ],
+        ],
+      ],
+      options: {
+        selector: "mounted desktop reader and retained disk notices",
+        reason:
+          "Read a stable baseline once and retain the full-disk notice across failed reads.",
+      },
+    },
+    {
+      item: { name: "studio-runtime-http", ecosystem: "cargo" },
+      label: "Primary state stream and conversation revision witnesses",
+      commands: [
+        [
+          "cargo",
+          [
+            "nextest",
+            "run",
+            "--locked",
+            "--no-tests",
+            "fail",
+            "--message-format",
+            "libtest-json-plus",
+            "-p",
+            "studio-runtime-http",
+            "--lib",
+            "-E",
+            "test(routes::sync_stream::tests::state_stream_) | test(unchanged_open_chat_ignores_unrelated_agent_commits)",
+          ],
+        ],
+      ],
+      options: {
+        selector:
+          "typed complete stream intervals, bounded flush and per-chat content revision",
+        reason:
+          "Deliver state without extra pulls while retaining gap recovery and unchanged-chat suppression.",
+      },
+    },
+    {
+      item: { name: "studio-runtime-http", ecosystem: "cargo" },
+      label: "Draft stream content witness",
+      commands: [
+        [
+          "cargo",
+          [
+            "nextest",
+            "run",
+            "--locked",
+            "--no-tests",
+            "fail",
+            "--message-format",
+            "libtest-json-plus",
+            "-p",
+            "studio-runtime-http",
+            "--lib",
+            "-E",
+            "test(unchanged_drafts_ignore_unrelated_commits_and_publications)",
+          ],
+        ],
+      ],
+      options: {
+        selector: "unchanged draft revisions and retained tombstones",
+        reason:
+          "Unrelated commits must not request draft pulls; draft changes still notify.",
+      },
+    },
+    {
+      item: web,
+      label: "Draft stream acceptance and durable recovery witnesses",
+      commands: [
+        [
+          "pnpm",
+          [
+            "--filter",
+            "codex-agents-web",
+            "exec",
+            "vitest",
+            "run",
+            "--config",
+            "vitest.unit.config.ts",
+            "src/sync/client.draftStream.test.ts",
+          ],
+        ],
+      ],
+      options: {
+        selector:
+          "draft stream acceptance, tombstones, gaps, reconnects and failed persistence",
+        reason:
+          "Normal draft changes use RxDB's master stream; recovery reads its durable checkpoint.",
+      },
+    },
+    {
+      item: web,
+      label: "Draft stream transport ordering witness",
+      commands: [
+        [
+          "pnpm",
+          [
+            "--filter",
+            "codex-agents-web",
+            "exec",
+            "vitest",
+            "run",
+            "--config",
+            "vitest.unit.config.ts",
+            "src/sync/resourceEvents.test.ts",
+            "-t",
+            "consecutive draft batches",
+          ],
+        ],
+      ],
+      options: {
+        selector:
+          "lossless draft intervals and equal-version reconnect recovery",
+        reason:
+          "Coalescing hints must not discard draft data or mask a recovery baseline.",
+      },
+    },
+    {
+      item: web,
+      label: "State stream persistence and recovery witnesses",
+      commands: [
+        [
+          "pnpm",
+          [
+            "--filter",
+            "codex-agents-web",
+            "exec",
+            "vitest",
+            "run",
+            "--config",
+            "vitest.unit.config.ts",
+            "src/sync/client.dispatchGate.test.ts",
+            "src/sync/client.entityReset.test.ts",
+            "src/sync/resourceEntityDelivery.test.ts",
+            "src/sync/resourceEvents.test.ts",
+            "src/servers/eventSource.test.ts",
+          ],
+        ],
+      ],
+      options: {
+        selector:
+          "persist stream data before dispatch and retain pull recovery",
+        reason:
+          "A complete state batch advances the durable projection with no new pull; storage failures, gaps, reconnects and epochs still reconcile.",
+      },
+    },
+    {
+      item: web,
+      label: "UI preference projection ownership witnesses",
+      commands: [
+        [
+          "pnpm",
+          [
+            "--filter",
+            "codex-agents-web",
+            "exec",
+            "vitest",
+            "run",
+            "--config",
+            "vitest.unit.config.ts",
+            "src/servers/useUiPreferenceSync.test.ts",
+            "src/sync/uiPreferenceBridge.test.ts",
+          ],
+        ],
+      ],
+      options: {
+        selector: "UI preferences reuse each mounted server projection",
+        reason:
+          "Prevent duplicate entity pulls and preserve server storage and API ownership.",
+      },
     },
     {
       item: web,

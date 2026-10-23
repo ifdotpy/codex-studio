@@ -33,6 +33,7 @@ const record = {
   backendBuild: "b".repeat(64),
   pid: process.pid,
   stateDir: state,
+  diskSpace: { level: null, message: null },
 };
 const timing = { attemptTimeoutMs: 50, timeoutMs: 250, retryDelayMs: 10 };
 

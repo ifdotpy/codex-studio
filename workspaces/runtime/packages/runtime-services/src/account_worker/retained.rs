@@ -747,6 +747,37 @@ pub(super) struct Call {
     method: String,
     params: Value,
 }
+/// The retained `command/exec` call of monitor `id`, checked against its
+/// operation identity. `None` when no request was submitted for it.
+fn monitor_call(
+    tx: &rusqlite::Transaction<'_>,
+    id: &str,
+    operation: &crate::monitor_policy::Operation,
+) -> Result<Option<Call>, WorkerError> {
+    #[derive(serde::Deserialize)]
+    struct Submitted {
+        call: Call,
+    }
+    let identity = format!("monitor:{id}");
+    let key = Call::operation_key(&operation.account_key, &identity);
+    let Some(value) = super::store::receipt(tx, &key, "submitted")? else {
+        return Ok(None);
+    };
+    let submitted: Submitted = serde_json::from_value(value).map_err(|_| WorkerError::Capacity)?;
+    let call = submitted.call;
+    if call.operation != identity
+        || call.method != Method::CommandExec.as_str()
+        || call
+            .actor
+            .as_ref()
+            .is_none_or(|actor| actor.agent != operation.agent || actor.epoch != operation.epoch)
+    {
+        return Err(WorkerError::PreparationRefused(
+            "monitor retained receipt identity changed".into(),
+        ));
+    }
+    Ok(Some(call))
+}
 /// Read a monitor's checkpoint-verified retained terminal receipt. This never
 /// creates a provider request; recovered pending requests publish into this ledger.
 pub async fn monitor_result(
@@ -758,28 +789,9 @@ pub async fn monitor_result(
     let operation = operation.clone();
     store
         .read_async("runtime-services/retained_monitor_result", move |tx| {
-            #[derive(serde::Deserialize)]
-            struct Submitted {
-                call: Call,
-            }
-            let identity = format!("monitor:{id}");
-            let key = Call::operation_key(&operation.account_key, &identity);
-            let Some(value) = super::store::receipt(tx, &key, "submitted")? else {
+            let Some(call) = monitor_call(tx, &id, &operation)? else {
                 return Ok(None);
             };
-            let submitted: Submitted =
-                serde_json::from_value(value).map_err(|_| WorkerError::Capacity)?;
-            let call = submitted.call;
-            if call.operation != identity
-                || call.method != Method::CommandExec.as_str()
-                || call.actor.as_ref().is_none_or(|actor| {
-                    actor.agent != operation.agent || actor.epoch != operation.epoch
-                })
-            {
-                return Err(WorkerError::PreparationRefused(
-                    "monitor retained receipt identity changed".into(),
-                ));
-            }
             let receipt = match storage::replay_in_transaction(tx, &call)? {
                 Ok(storage::Replay::Return(receipt)) => receipt,
                 Ok(storage::Replay::Miss | storage::Replay::Retry(_)) => return Ok(None),
@@ -798,6 +810,32 @@ pub async fn monitor_result(
                 ),
                 RequestResult::Unknown | RequestResult::NotSent => None,
             })
+        })
+        .await
+}
+/// The provider generation that received monitor `id`'s retained
+/// `command/exec`. While that generation's provider process runs, its answer
+/// reaches the retained ledger. `None` when no request was submitted for it,
+/// or when the ledger proves that the request was not sent.
+pub async fn monitor_request_generation(
+    store: &RuntimeStore,
+    id: &str,
+    operation: &crate::monitor_policy::Operation,
+) -> Result<Option<u64>, WorkerError> {
+    let id = id.to_owned();
+    let operation = operation.clone();
+    store
+        .read_async("runtime-services/retained_monitor_generation", move |tx| {
+            let Some(call) = monitor_call(tx, &id, &operation)? else {
+                return Ok(None);
+            };
+            if matches!(
+                storage::replay_in_transaction(tx, &call)?,
+                Ok(storage::Replay::Retry(_))
+            ) {
+                return Ok(None);
+            }
+            Ok(Some(call.scope.generation))
         })
         .await
 }
@@ -847,6 +885,7 @@ pub(super) struct PendingBarrier {
 mod runtime;
 mod storage;
 pub(super) use storage::recover;
+pub use storage::vm_actor;
 #[cfg(test)]
 pub(super) async fn test_submitted(
     store: &RuntimeStore,

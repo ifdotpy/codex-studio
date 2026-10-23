@@ -104,6 +104,9 @@ pub struct Actor {
     /// the native review model is the agent model.
     #[serde(default)]
     pub native_review: bool,
+    /// A VM agent (Python `executionMode == "vm"`): its catalog gets the VM tools.
+    #[serde(default)]
+    pub vm: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -357,6 +360,25 @@ pub fn session_tool_of(saved: Option<SessionTool>, has_thread: bool) -> SessionT
     })
 }
 
+/// The VM tool set of a VM agent (Python `Runtime.tool_definitions`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VmRole {
+    /// A writer gets `host_exec`.
+    Writer,
+    /// A read-only reviewer gets no `host_exec`.
+    Reviewer,
+}
+
+impl VmRole {
+    pub fn of(vm: bool, role: Role) -> Option<Self> {
+        vm.then_some(if role == Role::Reviewer {
+            Self::Reviewer
+        } else {
+            Self::Writer
+        })
+    }
+}
+
 /// The actor and root facts that select one agent's tools from a catalog.
 pub struct CatalogFilter<'a> {
     pub provider: ProviderKind,
@@ -365,6 +387,8 @@ pub struct CatalogFilter<'a> {
     pub federation_enabled: bool,
     pub cwd: &'a str,
     pub session_tool: SessionTool,
+    /// `Some` for a VM agent.
+    pub vm: Option<VmRole>,
 }
 
 /// Uses the immutable selected catalog, never a newly discovered live catalog.
@@ -391,6 +415,7 @@ pub fn tool_definitions(s: &Snapshot) -> Result<Vec<ToolDefinition>, Refusal> {
             federation_enabled: s.root.federation_enabled,
             cwd: &s.actor.cwd,
             session_tool: session_tool(s),
+            vm: VmRole::of(s.actor.vm, s.settings.role),
         },
     )
 }
@@ -443,6 +468,15 @@ pub fn filter_tool_definitions(
             });
         }
         result.push(tool);
+    }
+    // Python appends the VM tools after the catalog: `host_exec` for a writer.
+    // A reviewer's `layr_read` has no Rust owner yet.
+    if f.vm == Some(VmRole::Writer) {
+        result.push(
+            crate::host_exec::tool_definition()
+                .ok_or(Refusal::MalformedCatalog)?
+                .clone(),
+        );
     }
     Ok(result)
 }
@@ -1116,6 +1150,7 @@ mod archive_finished_catalog_tests {
                 federation_enabled: false,
                 cwd: "",
                 session_tool: SessionTool::Move,
+                vm: None,
             },
         )
         .expect("catalog filter accepts the bundled tools")
