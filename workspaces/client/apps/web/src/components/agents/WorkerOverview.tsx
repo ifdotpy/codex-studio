@@ -67,11 +67,8 @@ export const TEAM_STATES = [
   ["completed", "Finished"],
 ] as const;
 
-// Keep active work at the top of the panel in compact and grouped layouts.
-export const TEAM_PANEL_STATES = [
-  ...TEAM_STATES.filter(([state]) => state === "working"),
-  ...TEAM_STATES.filter(([state]) => state !== "working"),
-];
+// Operator questions and faults precede running work.
+export const TEAM_PANEL_STATES = TEAM_STATES;
 
 export function TeamSummary({
   workers,
@@ -99,4 +96,17 @@ export function TeamSummary({
       </dl>
     </div>
   );
+}
+
+/** Indentation follows the server-owned parent relation, including filtered parents. */
+export function workerDepth(agent: Agent, agents: Map<string, Agent>) {
+  const seen = new Set([agent.id]);
+  let parentId = agent.parentId;
+  let depth = 0;
+  while (parentId && !seen.has(parentId)) {
+    seen.add(parentId);
+    depth++;
+    parentId = agents.get(parentId)?.parentId;
+  }
+  return depth;
 }

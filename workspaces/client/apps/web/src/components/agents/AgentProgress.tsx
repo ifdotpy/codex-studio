@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { Agent } from "../../types";
+import { busy, type Agent } from "../../types";
 
 /** Renderer clock refresh interval, in milliseconds, for managed-command elapsed time. */
 const PROGRESS_CLOCK_INTERVAL_MS = 1000;
@@ -64,5 +64,33 @@ export function AgentProgress({
         </span>
       ))}
     </>
+  );
+}
+
+/** Age of the current activity; terminal rows freeze at the last server update. */
+export function AgentElapsed({ agent }: { agent: Agent }) {
+  const [now, setNow] = useState(() => Date.now() / 1000);
+  const active = busy.has(agent.status || "");
+  useEffect(() => {
+    if (!active) return;
+    const timer = window.setInterval(
+      () => setNow(Date.now() / 1000),
+      PROGRESS_CLOCK_INTERVAL_MS,
+    );
+    return () => window.clearInterval(timer);
+  }, [active]);
+  const started =
+    agent.commandProgress?.[0]?.startedAt ||
+    agent.activity?.at ||
+    agent.created;
+  if (started == null) return null;
+  return (
+    <span
+      className="worker-elapsed"
+      aria-label="Elapsed time"
+      title="Time since current activity started"
+    >
+      {progressElapsed(started, active ? now : agent.updated || now)}
+    </span>
   );
 }

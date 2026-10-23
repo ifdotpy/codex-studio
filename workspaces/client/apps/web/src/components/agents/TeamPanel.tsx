@@ -12,6 +12,7 @@ import {
   TeamSummary,
   workerState,
   TEAM_PANEL_STATES,
+  workerDepth,
 } from "./WorkerOverview";
 
 type Props = {
@@ -57,10 +58,14 @@ export default function TeamPanel({
   previewResult,
   remove,
 }: Props) {
+  const byId = new Map(
+    [...(lead ? [lead] : []), ...workers].map((a) => [a.id, a]),
+  );
   const worker = (a: Agent) => (
     <UIErrorBoundary key={a.id} label="this subagent" resetKey={a.id}>
       <WorkerCard
         agent={a}
+        depth={workerDepth(a, byId)}
         accounts={accounts}
         selected={opened === a.id}
         awaitingAnswer={workerState(a, answerIds, deferredIds) === "answer"}
@@ -98,7 +103,9 @@ export default function TeamPanel({
   // The same states and names as the team summary; Finished stays collapsed below.
   const panelState = (a: Agent) =>
     a.inFlight && ["running", "starting"].includes(a.status ?? "")
-      ? "working"
+      ? workerState(a, answerIds, deferredIds) === "answer"
+        ? "answer"
+        : "working"
       : workerState(a, answerIds, deferredIds);
   const groups = TEAM_PANEL_STATES.filter(
     ([state]) => state !== "completed",
@@ -190,6 +197,24 @@ export default function TeamPanel({
           </>
         )}
         <div id="workers">
+          {lead && (
+            <WorkerCard
+              agent={lead}
+              lead
+              accounts={accounts}
+              selected={opened === lead.id}
+              awaitingAnswer={answerIds.has(lead.id)}
+              deferred={deferredIds.has(lead.id)}
+              indicator={indicators.get(lead.id)}
+              open={() => open(lead.id)}
+              previewResult={() =>
+                previewResult({
+                  agent: lead.id,
+                  path: lead.overview?.resultFile ?? undefined,
+                })
+              }
+            />
+          )}
           {groups.map((group) =>
             group.workers.length ? (
               <section
@@ -210,7 +235,7 @@ export default function TeamPanel({
                 if (!query) setCompletedOpen(event.currentTarget.open);
               }}
             >
-              <summary>Finished</summary>
+              <summary>Finished ({completed.length})</summary>
               {/* A collapsed group keeps its rows out of the DOM; the summary
                   and the team overview still count them. */}
               {(!!query || completedOpen) && completed.map(worker)}
