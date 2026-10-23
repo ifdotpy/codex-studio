@@ -1569,6 +1569,10 @@ pub fn shim(links: &[String], socket: &str, session: Option<&str>) -> (i32, Stri
 mod lifetime_tests;
 
 #[cfg(test)]
+#[path = "browser_host_local_open_tests.rs"]
+mod local_open_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

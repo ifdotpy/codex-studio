@@ -20,6 +20,15 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Self {
+        Self::build(None)
+    }
+
+    /// A service whose commands send their sign-in links to the host bridge in `folder`.
+    fn with_browser_host(folder: &Path) -> Self {
+        Self::build(Some(folder.to_path_buf()))
+    }
+
+    fn build(browser_host: Option<PathBuf>) -> Self {
         let temp = tempfile::tempdir().unwrap();
         let root =
             studio_runtime_store::path_identity::CanonicalPath::existing_directory(temp.path())
@@ -30,8 +39,11 @@ impl Fixture {
         fs::write(state.join(TOKEN_FILE), TOKEN).unwrap();
         let line = root.join("line");
         fs::create_dir(&line).unwrap();
-        let service =
-            Arc::new(HostService::with_limits(&state, BUILD.into(), 2, DEFAULT_BUDGET).unwrap());
+        let service = Arc::new(
+            HostService::with_limits(&state, BUILD.into(), 2, DEFAULT_BUDGET)
+                .unwrap()
+                .with_browser_host(browser_host),
+        );
         Self {
             _temp: temp,
             root,
@@ -541,6 +553,52 @@ async fn a_command_streams_mapped_output_and_returns_its_changes_and_artifacts()
     let second = fixture.acquire("second").await.unwrap();
     assert_eq!(second["slotPath"], op["slotPath"]);
     assert_eq!(second["generation"], op["generation"]);
+}
+
+/// A VM chat's sign-in command on the Mac reaches the host bridge as that chat
+/// (docs/vm-browser-bridge.md, "Native chats"): `BROWSER` is the launcher, and the session
+/// is the calling agent. Without a launcher the command gets none of these names.
+#[tokio::test]
+async fn a_command_gets_the_browser_launcher_of_its_calling_chat() {
+    let script = "printf '%s|%s|%s' \"${BROWSER-unset}\" \"${STUDIO_BROWSER_SOCKET-unset}\" \"${STUDIO_BROWSER_SESSION-unset}\"";
+    let folder = tempfile::tempdir().unwrap();
+    let folder =
+        studio_runtime_store::path_identity::CanonicalPath::existing_directory(folder.path())
+            .unwrap()
+            .into_path_buf();
+    let browser_host = folder.join("browser-host");
+    fs::create_dir(&browser_host).unwrap();
+    let fixture = Fixture::with_browser_host(&browser_host);
+    fixture
+        .start("before", &["/bin/sh", "-c", script], 30.0)
+        .await;
+    let (_, output) = fixture.finish("before").await;
+    assert_eq!(output, "unset|unset|unset", "no launcher yet");
+    fixture
+        .call(
+            "release:before",
+            "release",
+            json!({"operationId": "before", "agentId": "agent", "collected": true}),
+        )
+        .await
+        .unwrap();
+    fs::write(
+        browser_host.join(crate::browser_environment::BROWSER_LAUNCHER),
+        "#!/bin/sh\n",
+    )
+    .unwrap();
+    fixture
+        .start("after", &["/bin/sh", "-c", script], 30.0)
+        .await;
+    let (_, output) = fixture.finish("after").await;
+    assert_eq!(
+        output,
+        format!(
+            "{}|{}|agent",
+            browser_host.join("studio-browser").display(),
+            browser_host.join("open.sock").display()
+        )
+    );
 }
 
 #[tokio::test]

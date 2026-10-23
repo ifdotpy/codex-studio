@@ -316,3 +316,81 @@ async fn a_card_follows_the_request_deadline_and_tells_the_chat_when_nobody_answ
         "a replaced card gets no event: the chat gave a newer link"
     );
 }
+
+#[tokio::test]
+async fn the_host_bridge_shows_a_card_for_a_vm_chat_command_that_runs_on_the_mac() {
+    let (_dir, store) = store().await;
+    let bridge = "3".repeat(32);
+    let redirect = json!({"host":"localhost","port":8000,"path":"/"});
+    let guest = Arc::new(WaitGuest {
+        batches: Mutex::new(VecDeque::from([json!({"items":[
+            item(&bridge, VM_AGENT, KUBE, redirect, "pending", 1),
+        ], "next": 1})])),
+        calls: Mutex::new(Vec::new()),
+    });
+    let source = CardSource {
+        source: "host",
+        guest: guest.clone(),
+        forwarder: None,
+        http_providers: Default::default(),
+    };
+    poll_once(&store, &source, 0, 0, None)
+        .await
+        .expect("test step");
+    let card = request(&store, &bridge).expect("a host_exec command of a VM chat gets a card");
+    assert_eq!(
+        (card["status"].clone(), card["params"]["source"].clone()),
+        (json!("pending"), json!("host"))
+    );
+    assert!(
+        guest
+            .calls
+            .lock()
+            .expect("test step")
+            .iter()
+            .all(|call| call.0 != "browser.close"),
+        "the host bridge keeps the request"
+    );
+}
+
+#[tokio::test]
+async fn a_card_whose_page_this_mac_opened_closes_as_answered_when_its_command_stops() {
+    let (_dir, store) = store().await;
+    let bridge = "4".repeat(32);
+    let redirect = json!({"host":"localhost","port":8000,"path":"/"});
+    let mut finished = item(&bridge, VM_AGENT, KUBE, redirect.clone(), "closed", 2);
+    finished["localOpen"] = json!(true);
+    finished["closeReason"] = json!("local");
+    let guest = Arc::new(WaitGuest {
+        batches: Mutex::new(VecDeque::from([
+            json!({"items":[item(&bridge, VM_AGENT, KUBE, redirect, "pending", 1)], "next": 1}),
+            json!({"items":[finished], "next": 2}),
+        ])),
+        calls: Mutex::new(Vec::new()),
+    });
+    let source = CardSource {
+        source: "host",
+        guest,
+        forwarder: None,
+        http_providers: Default::default(),
+    };
+    poll_once(&store, &source, 0, 0, None)
+        .await
+        .expect("test step");
+    poll_once(&store, &source, 1, 0, None)
+        .await
+        .expect("test step");
+    let card = request(&store, &bridge).expect("card");
+    assert_eq!(
+        (
+            card["status"].clone(),
+            card["answeredBy"].clone(),
+            card["closeReason"].clone()
+        ),
+        (json!("answered"), json!("browser"), json!("local"))
+    );
+    assert!(
+        events(&store).is_empty(),
+        "the browser of this Mac had the page, so the chat gets no unanswered event"
+    );
+}
