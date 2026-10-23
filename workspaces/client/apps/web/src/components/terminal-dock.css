@@ -1,9 +1,15 @@
+@import "../layout/layout-contract.generated.css";
+
 .terminal-dock {
   position: fixed;
-  bottom: 0;
-  left: 0;
-  right: 0;
-  z-index: 90;
+  top: calc(
+    var(--viewport-surface-top, 0px) + var(--viewport-surface-height, 100dvh) -
+      var(--terminal-dock-height)
+  );
+  bottom: auto;
+  left: env(safe-area-inset-left, 0px);
+  right: env(safe-area-inset-right, 0px);
+  z-index: var(--layout-layers-terminal);
   background: var(--surface);
   border-top: 1px solid var(--line);
   color: var(--text);
@@ -19,8 +25,9 @@
   display: flex;
   align-items: center;
   gap: 10px;
-  height: 37px;
-  min-height: 37px;
+  height: calc(var(--layout-terminal-closed-bar) - 1px);
+  min-height: calc(var(--layout-terminal-closed-bar) - 1px);
+  flex-shrink: 0;
   padding: 0 12px;
 }
 .terminal-dock-toggle {
@@ -76,6 +83,7 @@
   flex: 1;
   min-height: 0;
   border-top: 1px solid var(--line);
+  overflow: auto;
 }
 .terminal-dock-sessions {
   width: 245px;
@@ -145,6 +153,7 @@
 .terminal-dock-detail {
   flex: 1;
   min-width: 0;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   background: var(--surface);
@@ -313,11 +322,13 @@
     height: 100dvh;
   }
   #root:has(.terminal-dock:not(.is-open)) #sidebar {
-    height: calc(100% - 38px);
+    height: calc(
+      100% - var(--terminal-dock-height, var(--layout-terminal-closed-bar))
+    );
   }
   #root:has(#sidebar) .terminal-dock:not(.is-open) {
     right: auto;
-    width: var(--studio-sidebar-width, 240px);
+    width: var(--studio-sidebar-width, var(--layout-sidebar-preferred));
     background: var(--sidebar);
     border-right: 1px solid var(--line);
   }
@@ -429,5 +440,12 @@
     #root:has(.terminal-dock.is-open) {
     box-sizing: border-box;
     padding-left: var(--shell-sidebar-width, 0px);
+  }
+}
+
+/* An in-process server gives its closed bar to the combined shell. */
+@media (min-width: 761px) {
+  .terminal-dock[data-shell-terminal]:not(.is-open) {
+    display: none;
   }
 }

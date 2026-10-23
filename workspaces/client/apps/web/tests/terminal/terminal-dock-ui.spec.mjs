@@ -348,6 +348,12 @@ test("Terminal dock", async () => {
       }
       await route.fulfill({ json: value });
     });
+    await page.addInitScript((stateDir) => {
+      localStorage.setItem(
+        `codex-desktop-opened:${stateDir}`,
+        JSON.stringify("lead"),
+      );
+    }, root);
     await page.goto(`http://127.0.0.1:${server.address().port}`);
     assert.equal(
       await page.locator("#import-chat, #other-sessions").count(),
@@ -474,6 +480,84 @@ test("Terminal dock", async () => {
       (write) => write.path === "/api/terminals/create",
     );
     assert.equal(created.body.agent, "lead");
+    await page
+      .locator("#composer")
+      .waitFor({ timeout: 5000 })
+      .catch(async (error) => {
+        console.error(await page.locator("body").innerText());
+        throw error;
+      });
+    // A smaller host changes the grid of this session, not its identity.
+    const terminalNode = await dock.locator(".xterm").elementHandle();
+    const largeResize = () =>
+      writes
+        .filter(
+          (write) =>
+            write.path === "/api/terminals/resize" &&
+            write.body.id === created.body.id,
+        )
+        .at(-1);
+    await page.waitForFunction(
+      () => document.querySelector(".xterm-screen")?.clientHeight > 0,
+    );
+    await page.waitForTimeout(200);
+    const largeRows = largeResize()?.body.rows;
+    const resizeStart = writes.length;
+    await page.setViewportSize({ width: 1440, height: 420 });
+    await page.waitForTimeout(300);
+    const short = await dock.evaluate((node) => ({
+      dock: node.getBoundingClientRect().toJSON(),
+      composer: document
+        .querySelector("#composer")
+        .getBoundingClientRect()
+        .toJSON(),
+      header: document
+        .querySelector(".workspace-header")
+        .getBoundingClientRect()
+        .toJSON(),
+      reserved: Number.parseFloat(
+        document.documentElement.style.getPropertyValue(
+          "--terminal-dock-height",
+        ),
+      ),
+    }));
+    assert.ok(
+      short.composer.top >= short.header.bottom,
+      "The composer stays below the header in a short host",
+    );
+    assert.ok(
+      short.composer.bottom <= short.dock.top + 1,
+      "The dock leaves the composer visible",
+    );
+    assert.equal(
+      short.dock.height,
+      short.reserved,
+      "The dock and root use the same effective height",
+    );
+    assert.ok(
+      writes
+        .slice(resizeStart)
+        .some(
+          (write) =>
+            write.path === "/api/terminals/resize" &&
+            write.body.id === created.body.id &&
+            write.body.rows < largeRows,
+        ),
+      "The existing resize request changes this terminal grid",
+    );
+    assert.equal(
+      await terminalNode.evaluate(
+        (node) => node === document.querySelector(".terminal-dock .xterm"),
+      ),
+      true,
+      "Host resize preserves the xterm instance",
+    );
+    assert.equal(
+      writes.filter((write) => write.path === "/api/terminals/create").length,
+      1,
+    );
+    await page.setViewportSize({ width: 1440, height: 980 });
+    await page.waitForTimeout(200);
     await dock.locator(".xterm-helper-textarea").focus();
     await page.keyboard.type("printf terminal-ok");
     await page.keyboard.press("Enter");
