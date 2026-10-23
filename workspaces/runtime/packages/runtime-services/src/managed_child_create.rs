@@ -127,20 +127,6 @@ pub trait ManagedCreationEnvironment: Send + Sync {
         &self,
         request: crate::provider_callbacks::WorkerAccountRequest<'_>,
     ) -> Result<(String, crate::host_worker_create::AccountIdentity), ManagedCreationEnvironmentError>;
-    fn validate_worker_choice<'a>(
-        &'a self,
-        store: &'a RuntimeStore,
-        account_key: &'a str,
-        account: &'a crate::host_worker_create::AccountIdentity,
-        requested: &'a str,
-        default: &'a str,
-    ) -> std::pin::Pin<
-        Box<
-            dyn std::future::Future<Output = Result<(), ManagedCreationEnvironmentError>>
-                + Send
-                + 'a,
-        >,
-    >;
     fn catalog(&self) -> &dyn crate::host_worker_create::CreationCatalog;
     fn prepare_workspace(
         &self,
@@ -653,23 +639,6 @@ pub(crate) async fn spawn_agents(
                 active_agents: &account_load,
             })?;
         *account_load.entry(account_key.clone()).or_default() += 1;
-        if spec.get("model").and_then(Value::as_str).is_some() || profile_model.is_some() {
-            let default_model = defaults
-                .get("model")
-                .and_then(Value::as_str)
-                .filter(|model| !model.is_empty())
-                .or_else(|| root_value.get("model").and_then(Value::as_str))
-                .unwrap_or(requested_model);
-            environment
-                .validate_worker_choice(
-                    store,
-                    &account_key,
-                    &account,
-                    requested_model,
-                    default_model,
-                )
-                .await?;
-        }
         let provider = account.provider.key();
         let account_adapter = crate::provider_adapter::adapter(account.provider);
         // An unselected lead default that the account's provider cannot run

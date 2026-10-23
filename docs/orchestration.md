@@ -91,7 +91,10 @@ native Codex delegation disabled in both modes.
 
 **Subagents** sets the account, model, reasoning level, and Fast default for future workers in this team.
 The default is `gpt-6-luna` with `high` reasoning for Codex and Claude leads.
-The orchestrator can select another model and reasoning level for each worker.
+The orchestrator can select any available model and reasoning level for either
+an implementer or reviewer. Explicit models are not limited by the default
+subagent model's price or provider; account selection and model availability
+still apply.
 A worker can use a different provider from its parent. Studio selects an account
 that offers its model, preferring the parent, then the application default.
 The user can select an account in chat settings. All new workers must use it.
