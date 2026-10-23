@@ -671,6 +671,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/claude/repair-report": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Read saved Claude journal repair evidence without repair or replay */
+    get: operations["claude_repair_report"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/claude/session": {
     parameters: {
       query?: never;
@@ -3900,6 +3917,16 @@ export interface components {
       capacityRetry?:
         | components["schemas"]["AgentEntityCapacityRetryDto"]
         | null;
+      /** @description Claude permission mode for the worker launch preview. Other session options remain private. */
+      claudeOptions?: {
+        /** @enum {string} */
+        permissionMode?:
+          | "default"
+          | "acceptEdits"
+          | "auto"
+          | "plan"
+          | "bypassPermissions";
+      } | null;
       /**
        * Commandprogress
        * @default []
@@ -9992,6 +10019,14 @@ export interface components {
       /** @default null */
       options?: components["schemas"]["ClaudeOptions"] | null;
     };
+    ClaudeRepairReport: {
+      invalidSequence: boolean;
+      nativeHistoryConfirmed: boolean | null;
+      scopeConfirmed: boolean | null;
+      skippedRows: number;
+      /** @enum {string} */
+      status: "none" | "needs_repair" | "repaired";
+    };
     /** ClaudeRollbackResponse */
     ClaudeRollbackResponse: {
       /**
@@ -10216,6 +10251,7 @@ export interface components {
     ClaudeTurn: {
       /** @default false */
       canRestoreFiles?: boolean;
+      error?: components["schemas"]["JsonValue"];
       /** Id */
       id: string;
       /** @default null */
@@ -10224,7 +10260,12 @@ export interface components {
        * Status
        * @enum {string}
        */
-      status: "inProgress" | "completed" | "failed" | "interrupted";
+      status:
+        | "inProgress"
+        | "completed"
+        | "failed"
+        | "interrupted"
+        | "uncertain";
       /** Text */
       text: string;
     };
@@ -11543,6 +11584,16 @@ export interface components {
        * @default null
        */
       parent?: string | null;
+      /**
+       * @description Claude child permission mode. Omit to inherit. Reviewers use plan. Bypass requires a bypass parent.
+       * @enum {string}
+       */
+      permission_mode?:
+        | "default"
+        | "acceptEdits"
+        | "auto"
+        | "plan"
+        | "bypassPermissions";
       /**
        * Profile Id
        * @default null
@@ -23279,6 +23330,16 @@ export interface components {
       | "cancelled"
       | "lost"
       | "unknown";
+    TaskSubmissionRefusal: {
+      errors: {
+        message: string;
+        path: string;
+      }[];
+      failedSubmits: number;
+      /** @constant */
+      limit: 3;
+      retryAllowed: boolean;
+    };
     /** TerminalClose */
     TerminalClose: {
       /** Id */
@@ -26542,6 +26603,12 @@ export interface components {
        * @default []
        */
       results?: components["schemas"]["WorkResultRecord"][];
+      /** @description Optional draft 2020-12 result contract for create/update (maximum 32768 UTF-8 bytes). Supports types, properties, required, additionalProperties, arrays, bounds, enum/const and combinators. References, regex and unknown keywords are refused. A new task version resets the submit cap. */
+      resultSchema?:
+        | {
+            [key: string]: components["schemas"]["JsonValue"];
+          }
+        | boolean;
       /** Rootid */
       rootId: string;
       /**
@@ -26555,6 +26622,7 @@ export interface components {
         | "review"
         | "accepted"
         | "cancelled";
+      submissionRefusal?: components["schemas"]["TaskSubmissionRefusal"];
       /** Title */
       title: string;
       /** Updated */
@@ -26578,6 +26646,8 @@ export interface components {
       _syncEntitiesAfter?: number | null;
       /** Items */
       items: components["schemas"]["WorkItem"][];
+      rootId?: string;
+      taskDefaultGate?: components["schemas"]["TaskAcceptanceGate"];
       /** Tasks */
       tasks: components["schemas"]["WorkItem"][];
     };
@@ -27210,6 +27280,12 @@ export interface components {
       releases?: components["schemas"]["JsonValue"][];
       /** Results */
       results: components["schemas"]["WorkResultRecordResponse"][];
+      /** @description Optional draft 2020-12 result contract for create/update (maximum 32768 UTF-8 bytes). Supports types, properties, required, additionalProperties, arrays, bounds, enum/const and combinators. References, regex and unknown keywords are refused. A new task version resets the submit cap. */
+      resultSchema?:
+        | {
+            [key: string]: components["schemas"]["JsonValue"];
+          }
+        | boolean;
       /** Rootid */
       rootId: string;
       /**
@@ -27223,6 +27299,7 @@ export interface components {
         | "review"
         | "accepted"
         | "cancelled";
+      submissionRefusal?: components["schemas"]["TaskSubmissionRefusal"];
       /** Title */
       title: string;
       /** Updated */
@@ -30009,6 +30086,56 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["AccountsResponse"];
+        };
+      };
+      /** @description Bad Request */
+      400: components["responses"]["ApiError400"];
+      /** @description Unauthorized */
+      401: components["responses"]["ApiError401"];
+      /** @description Forbidden */
+      403: components["responses"]["ApiError403"];
+      /** @description Not Found */
+      404: components["responses"]["ApiError404"];
+      /** @description Request Timeout */
+      408: components["responses"]["ApiError408"];
+      /** @description Conflict */
+      409: components["responses"]["ApiError409"];
+      /** @description Gone */
+      410: components["responses"]["ApiError410"];
+      /** @description Content Too Large */
+      413: components["responses"]["ApiError413"];
+      /** @description Unsupported Media Type */
+      415: components["responses"]["ApiError415"];
+      /** @description Upgrade Required */
+      426: components["responses"]["ApiError426"];
+      /** @description Too Many Requests */
+      429: components["responses"]["ApiError429"];
+      /** @description Internal Server Error */
+      500: components["responses"]["ApiError500"];
+      /** @description Bad Gateway */
+      502: components["responses"]["ApiError502"];
+      /** @description Service Unavailable */
+      503: components["responses"]["ApiError503"];
+    };
+  };
+  claude_repair_report: {
+    parameters: {
+      query: {
+        id: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Safe saved repair evidence; no transcript text or paths */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ClaudeRepairReport"];
         };
       };
       /** @description Bad Request */

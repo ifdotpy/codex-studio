@@ -233,6 +233,9 @@ void localQueueStatus;
 void localQueueCreated;
 
 function generatedFacadeRequestAssertions() {
+  post("/api/agents", { prompt: "Read", permission_mode: "auto" });
+  // @ts-expect-error permission modes are constrained by the shared contract
+  post("/api/agents", { prompt: "Read", permission_mode: "unknown" });
   // @ts-expect-error GET-only generated paths are not accepted by the POST facade
   post("/api/accounts", {});
   post("/api/accounts/discover", {});

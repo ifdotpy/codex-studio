@@ -1,3 +1,4 @@
+import Tasks from "./Tasks";
 import ClaudeCheckpointRestore from "../ClaudeCheckpointRestore";
 import { useServerApi } from "../../servers/ServerServicesContext";
 import { SearchContent } from "./SearchOverlay";
@@ -51,6 +52,8 @@ import FilePreview, { type PreviewTarget } from "../FilePreview";
 import { ProfileCapabilities } from "./ProfileCapabilities";
 import { capabilityDraft, parseCapabilities } from "./profileCapabilityFields";
 import "./Workspace.css";
+import { modelProvider } from "../accountPreference";
+import { WorkerLaunchDialog, type WorkerLaunch } from "./WorkerLaunchDialog";
 
 type Props = {
   initialSection?: string;
@@ -82,6 +85,7 @@ const sections = [
   ["messages", "Messages", Inbox],
   ["search", "Search", Search],
   ["plan", "Plan", BookOpen],
+  ["tasks", "Tasks", Layers3],
   ["checkpoints", "Checkpoints", GitBranch],
   ["tools", "Tools", Wrench],
   ["profiles", "Profiles", Users],
@@ -92,6 +96,7 @@ const descriptions: Record<string, string> = {
   messages: "Your messages and this team’s conversations.",
   search: "Find messages, work, plans, and agent conversations.",
   plan: "The agent's current plan.",
+  tasks: "Task assignments, checks, results, and review decisions.",
   checkpoints: "Save and restore points in the work.",
   tools: "Tools the agents can use.",
   profiles: "Reusable instructions and model choices for workers.",
@@ -242,6 +247,7 @@ export function Workspace(props: Props) {
   const needAgent = [
     "changes",
     "plan",
+    "tasks",
     "checkpoints",
     "tools",
     "rules",
@@ -452,6 +458,13 @@ export function Workspace(props: Props) {
                   )}
                   {section === "search" && <SearchContent {...context} />}
                   {section === "plan" && <Plan {...context} />}
+                  {section === "tasks" && selected && (
+                    <Tasks
+                      key={selected.id}
+                      agentId={selected.id}
+                      revision={revision}
+                    />
+                  )}
                   {section === "checkpoints" && <Checkpoints {...context} />}
                   {section === "tools" && <Tools {...context} />}
                   {section === "profiles" && <Profiles {...context} />}
@@ -1037,12 +1050,7 @@ function Profiles(c: Context) {
     [remove, setRemove] = useState<
       GetResult<"/api/profiles">["profiles"][number] | null
     >(null),
-    [launch, setLaunch] = useState<{
-      id: string;
-      profile_id: string;
-      name: string;
-      prompt: string;
-    } | null>(null);
+    [launch, setLaunch] = useState<WorkerLaunch | null>(null);
   const lead = c.data.threads.find(
     (a) => a.id === (c.selected?.rootId || c.selected?.id) && a.isLead,
   );
@@ -1105,8 +1113,10 @@ function Profiles(c: Context) {
                   setLaunch({
                     id: crypto.randomUUID(),
                     profile_id: profile.id,
+                    provider:
+                      modelProvider(profile.model) ?? lead?.provider ?? "codex",
+                    reviewer: profile.role === "reviewer",
                     name: profile.name,
-                    prompt: "",
                   })
                 }
               >
@@ -1280,68 +1290,26 @@ function Profiles(c: Context) {
           Delete profile
         </Button>
       </Modal>
-      <Modal
-        opened={!!launch}
-        onClose={() => !busy && setLaunch(null)}
-        title={`Start ${launch?.name || "subagent"}`}
-        size="lg"
-      >
-        {launch && (
-          <form
-            className="workspace-form"
-            onSubmit={async (e) => {
-              e.preventDefault();
-              if (
-                !launch.prompt.trim() ||
-                Array.from(launch.prompt).length > 32000
-              ) {
-                c.notify("Enter a task with at most 32,000 characters.");
-                return;
-              }
-              setBusy(true);
-              try {
-                const worker = await c.run("/api/agents", {
-                  id: launch.id,
-                  name: launch.name,
-                  profile_id: launch.profile_id,
-                  prompt: launch.prompt,
-                  parent: lead!.id,
-                  cwd: lead!.cwd ?? undefined,
-                });
-                setLaunch(null);
-                c.notify(`Started ${worker.name}`);
-              } catch {
-              } finally {
-                setBusy(false);
-              }
-            }}
-          >
-            <p className="workspace-muted">
-              Main agent: {lead?.name}. The subagent uses this profile's model
-              and instructions.
-            </p>
-            <Textarea
-              label="Task for this subagent"
-              required
-              minRows={5}
-              maxLength={64000}
-              value={launch.prompt}
-              onChange={(e) => setLaunch({ ...launch, prompt: e.target.value })}
-            />
-            <Button
-              variant="filled"
-              type="submit"
-              loading={busy}
-              disabled={
-                !launch.prompt.trim() ||
-                Array.from(launch.prompt).length > 32000
-              }
-            >
-              Start subagent
-            </Button>
-          </form>
-        )}
-      </Modal>
+      {launch && lead && (
+        <WorkerLaunchDialog
+          key={launch.id}
+          launch={launch}
+          lead={lead}
+          busy={busy}
+          onClose={() => setLaunch(null)}
+          onStart={async (body) => {
+            setBusy(true);
+            try {
+              const worker = await c.run("/api/agents", body);
+              setLaunch(null);
+              c.notify(`Started ${worker.name}`);
+            } catch {
+            } finally {
+              setBusy(false);
+            }
+          }}
+        />
+      )}
     </>
   );
 }

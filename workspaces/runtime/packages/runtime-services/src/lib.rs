@@ -50,6 +50,7 @@ pub mod capacity_retry;
 pub mod catalog_reads;
 pub mod change_notifications;
 pub mod checkpoints;
+mod child_permissions;
 pub mod claude_bridge;
 pub mod claude_controls;
 pub mod claude_input_recovery;
