@@ -148,18 +148,16 @@ const meta = {
         </header>
         <section id="conversation">
           <div id="messages">
-            <ConversationStart
-              projectName="codex-studio"
-              location="Linux VM /projects/codex-studio"
-              recentChats={recentChats}
-              onSelect={args.onSelect}
-              execution={
-                <div className="empty-chat-settings">
-                  {(["orchestrator", "worker"] as const).map((role) => (
-                    <div className="empty-chat-setting" key={role}>
-                      <span>
-                        {role === "orchestrator" ? "Model" : "Workers"}
-                      </span>
+            <div className="message-content">
+              <ConversationStart
+                projectName="codex-studio"
+                location="Linux VM /projects/codex-studio"
+                recentChats={recentChats}
+                onSelect={args.onSelect}
+                execution={(["orchestrator", "worker"] as const).map(
+                  (role) => ({
+                    label: role === "orchestrator" ? "Model" : "Workers",
+                    control: (
                       <ExecutionSettings
                         agent={lead}
                         catalog={catalog}
@@ -167,11 +165,11 @@ const meta = {
                         settingsRow
                         initialRole={role}
                       />
-                    </div>
-                  ))}
-                </div>
-              }
-            />
+                    ),
+                  }),
+                )}
+              />
+            </div>
           </div>
           <form id="composer">
             <Textarea

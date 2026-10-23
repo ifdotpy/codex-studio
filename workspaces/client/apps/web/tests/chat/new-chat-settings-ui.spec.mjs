@@ -47,9 +47,7 @@ test("new chat controls open each role, save settings and move to the footer aft
       .getByRole("button", { name: "Start chat", exact: true })
       .click();
     await startChat;
-    const row = page.locator(
-      ".conversation-start-execution .empty-chat-settings",
-    );
+    const row = page.locator(".conversation-start-facts");
     await expect(row).toBeVisible();
     await expect(
       page
@@ -71,6 +69,11 @@ test("new chat controls open each role, save settings and move to the footer aft
     await expect(workers).toContainText(/Luna 6 · High · .+/);
     const composerBounds = await page.locator("#composer").boundingBox();
     const rowBounds = await row.boundingBox();
+    const startBounds = await page.locator(".conversation-start").boundingBox();
+    expect(Math.abs(startBounds.x - composerBounds.x)).toBeLessThanOrEqual(1);
+    expect(
+      Math.abs(startBounds.width - composerBounds.width),
+    ).toBeLessThanOrEqual(1);
     expect(rowBounds.y + rowBounds.height).toBeLessThanOrEqual(
       composerBounds.y,
     );
