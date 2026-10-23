@@ -142,6 +142,7 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`;
       await page.screenshot({
         path: resolve(output, `notice-rejected-${width}.png`),
         fullPage: true,
+        animations: "disabled",
       });
       await page.emulateMedia({ colorScheme: "dark" });
       await expect(page.locator("html")).toHaveAttribute(
@@ -151,6 +152,7 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`;
       await page.screenshot({
         path: resolve(output, `notice-rejected-dark-${width}.png`),
         fullPage: true,
+        animations: "disabled",
       });
       await page.emulateMedia({ colorScheme: "light" });
       await expect(page.locator("html")).toHaveAttribute(
@@ -172,6 +174,10 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`;
           ({ agent, account }) => agent === "worker" && account === "claude",
         ),
       );
+      await expect(page.locator(".account-limits-popover")).toHaveCSS(
+        "opacity",
+        "1",
+      );
       const panelBox = await page
         .locator(".account-limits-popover")
         .boundingBox();
@@ -183,6 +189,7 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`;
       await page.screenshot({
         path: resolve(output, `limits-rejected-${width}.png`),
         fullPage: true,
+        animations: "disabled",
       });
       for (const [value, label] of [
         ["allowed", "Overage allowed"],
@@ -202,6 +209,7 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`;
         await page.screenshot({
           path: resolve(output, `limits-${value}-${width}.png`),
           fullPage: true,
+          animations: "disabled",
         });
       }
       await page.clock.fastForward(61_000);
@@ -229,6 +237,7 @@ createRoot(document.getElementById('root')).render(<Fixture/>);`;
       await page.screenshot({
         path: resolve(output, `accounts-${width}.png`),
         fullPage: true,
+        animations: "disabled",
       });
       assert.deepEqual(errors, []);
       await page.close();
