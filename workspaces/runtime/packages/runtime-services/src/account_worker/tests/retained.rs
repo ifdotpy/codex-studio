@@ -1979,6 +1979,240 @@ async fn monitor_write(
     }
 }
 
+async fn config_read_fixture(state: &State, port: &RetainedSessionPort) -> SessionRequest {
+    let agent = state.agent.clone();
+    let epoch = state.epoch;
+    let cwd = state.record().await["cwd"].as_str().unwrap().to_owned();
+    let saved_cwd = cwd.clone();
+    state
+        .bridge
+        .run(move |store| async move {
+            store
+                .transaction_with::<_, StoreError>(move |tx| {
+                    tx.execute(
+                        "INSERT INTO runtime_monitors(id,record) VALUES('config-watch',?1)",
+                        [json!({"id":"config-watch","agent":agent,"epoch":epoch,
+                    "cwd":saved_cwd,"status":"starting","command":"true"})
+                        .to_string()],
+                    )?;
+                    Ok(())
+                })
+                .await?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    monitor_request(
+        state,
+        port,
+        format!("monitor-config:config-watch:{epoch}"),
+        Method::ConfigRead,
+        json!({"cwd":cwd,"includeLayers":false}),
+    )
+}
+
+#[tokio::test]
+async fn monitor_completion_config_read_finishes_before_an_unrelated_journal_checkpoint() {
+    let state = State::new().await;
+    let mut peer = Peer::new();
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    let port = worker.retained_session();
+    let call = config_read_fixture(&state, &port).await;
+    let mut wrong_epoch = call.clone();
+    wrong_epoch.actor.as_mut().unwrap().epoch += 1;
+    let mut wrong_cwd = call.clone();
+    wrong_cwd.params["cwd"] = json!("/another-directory");
+    let mut wrong_monitor = call.clone();
+    wrong_monitor.operation = format!("monitor-config:another-monitor:{}", state.epoch);
+    for refused in [wrong_epoch, wrong_cwd, wrong_monitor] {
+        assert_eq!(
+            port.request(refused).await.unwrap_err(),
+            PortError::Identity
+        );
+    }
+    assert!(
+        peer.writes.try_recv().is_err(),
+        "authorization failures must not reach the provider"
+    );
+    // An earlier unresolved journal entry holds the contiguous checkpoint.
+    // No live managed callback grants the retained-request completion exception.
+    state
+        .bridge
+        .run(|store| async move {
+            store
+                .transaction_with::<_, WorkerError>(|tx| {
+                    store::replace(
+                        tx,
+                        &store::journal_operation("default", 1, 1),
+                        "settled",
+                        json!({"cursor":1,"digest":"held-entry","ready":false,"committed":true}),
+                    )
+                })
+                .await
+        })
+        .await
+        .unwrap();
+    peer.cursor = 1;
+    let sender = port.clone();
+    let mut task = tokio::spawn(async move { sender.request(call).await });
+    let wire = monitor_write(&mut peer, &mut task, "config/read").await;
+    let reply_cursor = peer
+        .frame(json!({"id":wire["id"],"result":{"config":{}}}))
+        .await;
+    let receipt = tokio::time::timeout(std::time::Duration::from_secs(10), task)
+        .await
+        .expect("a configuration read must not wait for another operation's checkpoint")
+        .unwrap()
+        .unwrap();
+    assert_eq!(receipt.result, RequestResult::Reply(json!({"config":{}})));
+    let checkpoint = state
+        .bridge
+        .run(|store| async move {
+            store
+                .transaction_with::<_, WorkerError>(|tx| store::checkpoint(tx, "default", 1))
+                .await
+        })
+        .await
+        .unwrap();
+    assert!(
+        checkpoint < reply_cursor,
+        "the earlier journal entry is still unresolved"
+    );
+    assert_eq!(
+        retained_receipt_count(&state),
+        0,
+        "read results need no durable receipt"
+    );
+    worker.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn monitor_completion_config_read_retries_legacy_unknown_and_lost_reply() {
+    let state = State::new().await;
+    let peer = Peer::new();
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    let port = worker.retained_session();
+    let call = config_read_fixture(&state, &port).await;
+    let old = call.clone();
+    // A receipt from the old durable ConfigRead path must not hold a start.
+    state
+        .bridge
+        .run(move |store| async move {
+            store
+                .transaction_with::<_, WorkerError>(move |tx| {
+                    let key = format!(
+                        "retained:default:{}",
+                        studio_runtime_store::sha256_hex(old.operation.as_bytes())
+                    );
+                    let request = crate::provider_session_task::RecoveredRequest {
+                        ticket: studio_runtime_providers::RequestTicket {
+                            generation: 1,
+                            id: studio_runtime_providers::RequestId::String(key.clone()),
+                            method: Method::ConfigRead,
+                        },
+                        operation_id: OperationId(key.clone()),
+                        thread_id: None,
+                        lightweight: true,
+                        deadline_ms: 0,
+                        unknown: true,
+                        remote_id: None,
+                    };
+                    store::replace(
+                        tx,
+                        &key,
+                        "submitted",
+                        json!({
+                            "call": {
+                                "scope": old.scope,
+                                "operation": old.operation,
+                                "actor": old.actor,
+                                "transfer": null,
+                                "deleted_actor_session": null,
+                                "method": "config/read",
+                                "params": old.params
+                            },
+                            "request": store::record(&request)
+                        }),
+                    )?;
+                    store::replace(tx, &key, "result", json!({"cursor":0,"result":"Unknown"}))
+                })
+                .await
+        })
+        .await
+        .unwrap();
+    worker.shutdown().await.unwrap();
+    let mut peer = Peer::identity("default", 2, None);
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    let port = worker.retained_session();
+    let mut call = call;
+    call.scope = port.scope().clone();
+    call.expected_scope = Some(port.scope().clone());
+    let receipts_before = retained_receipt_count(&state);
+    let sender = port.clone();
+    let first = call.clone();
+    let mut lost = tokio::spawn(async move { sender.request(first).await });
+    let first_wire = monitor_write(&mut peer, &mut lost, "config/read").await;
+    lost.abort();
+    assert!(lost.await.unwrap_err().is_cancelled());
+    let sender = port.clone();
+    let mut retry = tokio::spawn(async move { sender.request(call).await });
+    let second_wire = monitor_write(&mut peer, &mut retry, "config/read").await;
+    assert_ne!(
+        first_wire["id"], second_wire["id"],
+        "each safe read has its own transport ID"
+    );
+    peer.reply(&first_wire, json!({"config":{"allow_login_shell":false}}))
+        .await;
+    peer.reply(&second_wire, json!({"config":{"allow_login_shell":true}}))
+        .await;
+    assert_eq!(
+        retry.await.unwrap().unwrap().result,
+        RequestResult::Reply(json!({"config":{"allow_login_shell":true}}))
+    );
+    assert_eq!(
+        retained_receipt_count(&state),
+        receipts_before,
+        "the old receipt stays intact"
+    );
+    assert!(peer.writes.try_recv().is_err());
+    worker.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn monitor_completion_config_read_preserves_the_command_unknown_receipt() {
+    let state = State::new().await;
+    let mut peer = Peer::new();
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    let port = worker.retained_session();
+    let mut call = config_read_fixture(&state, &port).await;
+    call.operation = "monitor:config-watch".into();
+    call.method = Method::CommandExec;
+    call.params = json!({"command":["/bin/sh","-c","true"],
+        "cwd":call.params["cwd"],"processId":"config-watch"});
+    let sender = port.clone();
+    let first = call.clone();
+    let task = tokio::spawn(async move { sender.request(first).await });
+    let _wire = peer.write("command/exec").await;
+    worker.shutdown().await.unwrap();
+    let _lost_reply = task.await;
+    let mut peer = Peer::identity("default", 2, None);
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    let port = worker.retained_session();
+    call.scope = port.scope().clone();
+    call.expected_scope = Some(port.scope().clone());
+    assert_eq!(
+        port.request(call.clone()).await.unwrap().result,
+        RequestResult::Unknown
+    );
+    call.params["command"] = json!(["/bin/sh", "-c", "false"]);
+    assert_eq!(port.request(call).await.unwrap_err(), PortError::Identity);
+    assert!(
+        peer.writes.try_recv().is_err(),
+        "an uncertain command must not run again"
+    );
+    worker.shutdown().await.unwrap();
+}
+
 /// Live defect 2026-10-19: an `orchestration_monitor` command of an agent on a
 /// non-default account stayed `starting` forever. The tool records no monitor
 /// `accountKey` (Python never did either), and this check read the missing key
