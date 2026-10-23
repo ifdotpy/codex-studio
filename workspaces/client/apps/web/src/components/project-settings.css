@@ -1,6 +1,6 @@
 .project-settings {
   display: grid;
-  gap: 12px;
+  gap: var(--mantine-spacing-sm);
   min-width: 0;
 }
 .project-settings-path {
@@ -13,8 +13,9 @@
   align-items: flex-start;
 }
 .project-settings .ui-label {
-  flex: 0 0 140px;
-  padding-top: 12px;
+  flex: 0 0
+    calc(var(--studio-settings-nav-size, 10rem) - var(--mantine-spacing-lg));
+  padding-top: var(--mantine-spacing-sm);
 }
 .project-settings .ui-row-control {
   flex: 1;
@@ -33,7 +34,8 @@
 .project-settings-group > .mantine-Button-root {
   justify-self: end;
 }
-@media (max-width: 760px) {
+/* Phone and tablet controls stack at this content breakpoint. */
+@media (max-width: 47.5rem) {
   .project-settings .ui-label {
     flex: auto;
     padding-top: 0;
