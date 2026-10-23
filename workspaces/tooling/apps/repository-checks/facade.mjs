@@ -756,6 +756,51 @@ function fastTierCommands(root) {
       },
     },
     {
+      item: { name: "studio-runtime-services", ecosystem: "cargo" },
+      label: "Linux VM start witnesses",
+      commands: [
+        [
+          "cargo",
+          [
+            "nextest",
+            "run",
+            "--locked",
+            "--no-tests",
+            "fail",
+            "--message-format",
+            "libtest-json-plus",
+            "-p",
+            "studio-runtime-services",
+            "--lib",
+            "-E",
+            "test(/^linux_vm_runtime::/)",
+          ],
+        ],
+        [
+          "cargo",
+          [
+            "nextest",
+            "run",
+            "--locked",
+            "--no-tests",
+            "fail",
+            "--message-format",
+            "libtest-json-plus",
+            "-p",
+            "studio-runtime-server",
+            "-E",
+            "test(/^linux_vm_start::/)",
+          ],
+        ],
+      ],
+      options: {
+        selector:
+          "VM start after a Mac restart, stops on purpose, restart limits and the helper session",
+        reason:
+          "Check that only a VM that the Mac restart stopped starts by itself, with a fake helper and guest, and that the helper runs in its own session.",
+      },
+    },
+    {
       item: { name: "retained Python helper boundaries", ecosystem: "pnpm" },
       label: "retained Python helper boundaries",
       commands: [

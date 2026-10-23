@@ -41,6 +41,9 @@ use tokio::time::timeout;
 const REQUEST_TIMEOUT_MS: u64 = 60_000;
 const HOST_RUNTIME_SHUTDOWN_WAIT: Duration = Duration::from_secs(5);
 const CLAUDE_BRIDGE_RELATIVE: &str = "workspaces/providers/apps/claude-bridge";
+/// Where `native/linux-vm/build.mjs` writes the helper in a source checkout.
+const LINUX_VM_HELPER_RELATIVE: &str =
+    "workspaces/client/apps/desktop/native/linux-vm/studio-linux-vm";
 
 /// Installed root shared by host-side runtime components.
 #[derive(Clone, Debug)]
@@ -49,6 +52,23 @@ pub(crate) struct InstallRoot(PathBuf);
 impl InstallRoot {
     pub(crate) fn workspace_root(&self) -> &Path {
         &self.0
+    }
+    /// The native Linux VM helper: `CODEX_LINUX_VM_HELPER`, the packaged
+    /// `Resources/studio-linux-vm`, or the build in a source checkout.
+    pub(crate) fn linux_vm_helper(&self) -> PathBuf {
+        if let Some(helper) =
+            env::var_os("CODEX_LINUX_VM_HELPER").filter(|helper| !helper.is_empty())
+        {
+            return PathBuf::from(helper);
+        }
+        let packaged = self
+            .0
+            .parent()
+            .map(|resources| resources.join("studio-linux-vm"));
+        match packaged {
+            Some(packaged) if packaged.is_file() => packaged,
+            _ => self.0.join(LINUX_VM_HELPER_RELATIVE),
+        }
     }
     pub(crate) fn claude_bridge_dir(&self) -> PathBuf {
         let packaged = self.0.join("scripts/claude_bridge");
@@ -240,36 +260,72 @@ impl HostRuntime {
             studio_runtime_services::linux_vm_guest::UnixGuestRpc::for_runtime_state(store.root()),
         );
         resources.guest_rpc = Some(Arc::clone(&vm_guest));
+        let vm_state_dir = studio_runtime_services::vault::linux_vm_state_dir(store.root());
+        let program = std::env::current_exe();
+        // VM agents run Mac commands through the guest channel and the Mac
+        // service, which this executable starts in its own session
+        // (docs/host-exec.md).
+        let host_exec = match &program {
+            Ok(program) => Some(studio_runtime_services::host_exec::HostExecRuntime::new(
+                Arc::clone(&vm_guest),
+                Arc::new(
+                    studio_runtime_services::host_exec::RustHostExecService::new(
+                        program.clone(),
+                        vm_state_dir.clone(),
+                        studio_runtime_http::backend_build_identity,
+                    ),
+                ),
+            )),
+            Err(error) => {
+                eprintln!("host_exec is unavailable: the executable path is unknown: {error}");
+                None
+            }
+        };
+        // A created VM starts again when the Mac restarted under it, at startup
+        // and for the first VM chat (docs/linux-vm-workspaces.md, "VM start").
+        #[cfg(unix)]
+        let vm_runtime = program.as_ref().ok().map(|program| {
+            let vm = studio_runtime_services::linux_vm_runtime::VmRuntime::production(
+                vm_state_dir.clone(),
+                install_root.linux_vm_helper(),
+                program.clone(),
+            );
+            if let Some(host_exec) = &host_exec {
+                vm.attach_host_exec(Arc::clone(host_exec));
+            }
+            vm
+        });
+        #[cfg(not(unix))]
+        let vm_runtime = None;
+        #[cfg(target_os = "macos")]
+        if let Some(vm) = vm_runtime.clone() {
+            tokio::spawn(async move {
+                match vm.resume().await {
+                    Ok(outcome) if matches!(outcome.as_str(), "absent" | "stopped" | "running") => {
+                    }
+                    Ok(outcome) => {
+                        eprintln!("linux-vm: automatic start at backend start: {outcome}")
+                    }
+                    Err(error) => {
+                        eprintln!("linux-vm: automatic start at backend start failed: {error}")
+                    }
+                }
+            });
+        }
         resources.vm_provider_launch = Some(Arc::new(ServerVmProviderLaunchResolver {
             accounts: accounts.clone(),
             account_session: state.account_session.clone(),
             store: store.clone(),
             guest: Arc::clone(&vm_guest),
             claude_bridge_dir: claude_bridge_dir.clone(),
+            vm: vm_runtime,
         }));
         let resources = resources.with_account_session(state.account_session.clone());
         let preparation_resources = Arc::new(resources.clone());
         if let Some(managed_tool_runtime) = &managed_tool_runtime {
             managed_tool_runtime.set_preparation_resources(Arc::clone(&preparation_resources));
-            // VM agents run Mac commands through the guest channel and the Mac
-            // service, which this executable starts in its own session
-            // (docs/host-exec.md).
-            match std::env::current_exe() {
-                Ok(program) => managed_tool_runtime.attach_host_exec(
-                    studio_runtime_services::host_exec::HostExecRuntime::new(
-                        Arc::clone(&vm_guest),
-                        Arc::new(
-                            studio_runtime_services::host_exec::RustHostExecService::new(
-                                program,
-                                studio_runtime_services::vault::linux_vm_state_dir(store.root()),
-                                studio_runtime_http::backend_build_identity,
-                            ),
-                        ),
-                    ),
-                ),
-                Err(error) => {
-                    eprintln!("host_exec is unavailable: the executable path is unknown: {error}")
-                }
+            if let Some(host_exec) = host_exec {
+                managed_tool_runtime.attach_host_exec(host_exec);
             }
         }
         let callback_runtime = Arc::new(
@@ -479,6 +535,11 @@ struct ServerVmProviderLaunchResolver {
     store: Arc<RuntimeStore>,
     guest: Arc<dyn studio_runtime_services::linux_vm_guest::GuestRpc>,
     claude_bridge_dir: PathBuf,
+    /// Starts a stopped VM by the automatic rule before a VM chat uses the guest.
+    #[cfg(unix)]
+    vm: Option<Arc<studio_runtime_services::linux_vm_runtime::VmRuntime>>,
+    #[cfg(not(unix))]
+    vm: Option<()>,
 }
 
 const CODEX_ACCESS_REFRESH_WINDOW_SECONDS: f64 = 300.0;
@@ -503,6 +564,17 @@ impl studio_runtime_services::account_worker::preparation::VmProviderLaunchResol
         request: studio_runtime_services::account_worker::preparation::VmProviderLaunchRequest,
     ) -> studio_runtime_services::account_worker::preparation::VmProviderLaunchFuture<'_> {
         Box::pin(async move {
+            #[cfg(unix)]
+            if let Some(vm) = &self.vm {
+                vm.ensure_for_chat().await.map_err(|error| {
+                    WorkerError::PreparationPending(
+                        studio_runtime_services::account_worker::PreparationBlock::new(
+                            studio_runtime_services::account_start_gate::StartWaitReason::ProviderSession,
+                            format!("vm-start/{error}"),
+                        ),
+                    )
+                })?;
+            }
             let accounts = self.accounts.clone();
             let account_session = self.account_session.clone();
             let claude_bridge_dir = self.claude_bridge_dir.clone();
