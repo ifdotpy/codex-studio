@@ -20,6 +20,33 @@ enum Boot {
 #[derive(Default)]
 struct Guest {
     calls: Mutex<Vec<(String, Value)>>,
+    /// The `layr.health` answer; `None` is a ready layr.
+    layr: Mutex<Option<Value>>,
+}
+
+/// Serve the fake guest of `state` on its `guest.sock`.
+fn serve_guest(state: &Path, guest: Arc<Guest>) {
+    drop(fs::remove_file(state.join("guest.sock")));
+    serve(state.join("guest.sock"), move |method, params| {
+        guest
+            .calls
+            .lock()
+            .unwrap()
+            .push((method.to_owned(), params.clone()));
+        match method {
+            "health" => json!({"result": {"service": "ok"}}),
+            "exec" => json!({"result": {"exitCode": 0}}),
+            "layr.health" => json!({"result": guest.layr.lock().unwrap().clone()
+                .unwrap_or_else(|| json!({"state": "ready"}))}),
+            "share.configure" => json!({"result": {"configured": true}}),
+            "project.ensure" => {
+                json!({"result": {"projectId": params["projectId"], "state": "ready"}})
+            }
+            "share.status" => json!({"result": {"state": "ready"}}),
+            "share.name" => json!({"result": {"name": params["name"]}}),
+            _ => json!({"error": {"code": "invalid_params", "message": "Unknown method"}}),
+        }
+    });
 }
 
 struct FakeLauncher {
@@ -99,25 +126,7 @@ impl HelperLauncher for FakeLauncher {
             }
             _ => json!({"error": {"code": "invalid_params", "message": "unknown"}}),
         });
-        let guest = Arc::clone(&self.guest);
-        serve(state.join("guest.sock"), move |method, params| {
-            guest
-                .calls
-                .lock()
-                .unwrap()
-                .push((method.to_owned(), params.clone()));
-            match method {
-                "health" => json!({"result": {"service": "ok"}}),
-                "exec" => json!({"result": {"exitCode": 0}}),
-                "share.configure" => json!({"result": {"configured": true}}),
-                "project.ensure" => {
-                    json!({"result": {"projectId": params["projectId"], "state": "ready"}})
-                }
-                "share.status" => json!({"result": {"state": "ready"}}),
-                "share.name" => json!({"result": {"name": params["name"]}}),
-                _ => json!({"error": {"code": "invalid_params", "message": "Unknown method"}}),
-            }
-        });
+        serve_guest(state, Arc::clone(&self.guest));
         Ok(Box::new(FakeHelper { exits: false }))
     }
 }
@@ -668,6 +677,219 @@ async fn a_stop_on_purpose_keeps_the_vm_stopped() {
     assert_eq!(fixture.stops(), 1);
     assert_eq!(fixture.runtime.check().await.unwrap(), "stopped");
     assert_eq!(fixture.launches(), 1);
+}
+
+/// Python `Client._guest_failure` and `Watchdog._unresponsive`, which
+/// 027f3cfea deleted: a guest that answered in this boot and then gave no
+/// answer for 180 seconds over 3 probes is unresponsive. It is shown and
+/// recorded as an episode, never restarted, and one answer ends the episode.
+#[tokio::test]
+async fn an_unanswered_guest_is_shown_and_recorded_but_never_restarted() {
+    let fixture = Fixture::new(Boot::Healthy);
+    fixture.runtime.start().await.unwrap();
+    // The guest answered in this boot, then two probes failed over 200 seconds.
+    let mut health = fixture.json(HEALTH_FILE);
+    for (field, value) in [
+        ("failingSince", json!(now() - 200.0)),
+        ("lastFailureAt", json!(now() - 30.0)),
+        ("lastProbeAt", json!(now() - 30.0)),
+        ("failures", json!(2)),
+    ] {
+        health[field] = value;
+    }
+    fs::write(fixture.state.join(HEALTH_FILE), health.to_string()).unwrap();
+    fs::remove_file(fixture.state.join("guest.sock")).unwrap();
+    assert_eq!(fixture.runtime.check().await.unwrap(), "unresponsive");
+    let status = fixture.runtime.status().unwrap();
+    assert_eq!(
+        (
+            status["state"].clone(),
+            status["helperState"].clone(),
+            status["guestFailure"]["kind"].clone()
+        ),
+        (json!("unresponsive"), json!("running"), json!("unanswered"))
+    );
+    assert!(
+        status["error"]
+            .as_str()
+            .unwrap()
+            .starts_with("The guest has not answered for")
+    );
+    // A second check keeps the one open episode.
+    assert_eq!(fixture.runtime.check().await.unwrap(), "unresponsive");
+    let episodes = fixture.json(RESTARTS_FILE)["unresponsive"].clone();
+    assert_eq!(episodes.as_array().unwrap().len(), 1, "{episodes}");
+    assert_eq!(episodes[0]["helperPid"], 4242);
+    assert!(episodes[0].get("endedAt").is_none());
+    assert_eq!(
+        fixture.runtime.status().unwrap()["watchdog"]["lastUnresponsive"]["helperPid"],
+        4242
+    );
+    assert_eq!((fixture.launches(), fixture.stops()), (1, 0));
+
+    // One answer ends the episode.
+    serve_guest(&fixture.state, Arc::clone(&fixture.launcher.guest));
+    assert_eq!(fixture.runtime.check().await.unwrap(), "running");
+    assert!(fixture.json(RESTARTS_FILE)["unresponsive"][0]["endedAt"].is_f64());
+    assert_eq!(fixture.json(HEALTH_FILE)["failures"], 0);
+    assert_eq!(fixture.runtime.status().unwrap()["state"], "running");
+}
+
+/// Python `Watchdog.probe_layr` and `layr_fault`: the guest answers while
+/// LAYR does not. After 3 failed `layr.health` answers over 120 seconds the
+/// status shows the fault; the VM keeps running and is not restarted.
+#[tokio::test]
+async fn a_layr_outage_behind_an_answering_guest_is_shown_not_restarted() {
+    let fixture = Fixture::new(Boot::Healthy);
+    fixture.runtime.start().await.unwrap();
+    *fixture.launcher.guest.layr.lock().unwrap() = Some(json!({"state": "unavailable"}));
+    let mut health = fixture.json(HEALTH_FILE);
+    health["layr"] = json!({"failingSince": now() - 150.0, "lastFailureAt": now() - 70.0,
+        "lastProbeAt": now() - 70.0, "failures": 2, "error": "layr state unavailable"});
+    fs::write(fixture.state.join(HEALTH_FILE), health.to_string()).unwrap();
+    assert_eq!(fixture.runtime.check().await.unwrap(), "running");
+    let status = fixture.runtime.status().unwrap();
+    assert_eq!(status["state"], "running");
+    assert_eq!(status["layrFault"]["kind"], "layr_unavailable");
+    assert!(
+        status["error"]
+            .as_str()
+            .unwrap()
+            .starts_with("LAYR in the VM has not answered for"),
+        "{status:?}"
+    );
+    // At most one layr probe in 60 seconds.
+    assert_eq!(fixture.runtime.check().await.unwrap(), "running");
+    assert_eq!(fixture.guest_calls("layr.health").len(), 1);
+    assert_eq!((fixture.launches(), fixture.stops()), (1, 0));
+}
+
+/// The chats of a fake runtime store.
+#[derive(Default)]
+struct FakeNotices {
+    chats: Vec<String>,
+    posted: Mutex<Vec<Map<String, Value>>>,
+}
+
+impl VmChatNotices for FakeNotices {
+    fn chats(&self) -> futures_util::future::BoxFuture<'_, Result<Vec<String>, String>> {
+        Box::pin(async move { Ok(self.chats.clone()) })
+    }
+
+    fn post(
+        &self,
+        record: Map<String, Value>,
+    ) -> futures_util::future::BoxFuture<'_, Result<(), String>> {
+        Box::pin(async move {
+            self.posted.lock().unwrap().push(record);
+            Ok(())
+        })
+    }
+}
+
+/// Python `drop_providers` and `post_notices`: each VM chat with a live turn
+/// in the dead boot shows how the automatic restart ended, once.
+#[tokio::test]
+async fn a_restart_of_a_failed_guest_tells_each_chat_with_a_live_turn_once() {
+    let fixture = Fixture::panicked(Boot::Healthy).await;
+    let notices = Arc::new(FakeNotices {
+        chats: vec!["chat-1".into()],
+        ..FakeNotices::default()
+    });
+    fixture
+        .runtime
+        .attach_chat_notices(Arc::clone(&notices) as Arc<dyn VmChatNotices>);
+    assert_eq!(fixture.runtime.check().await.unwrap(), "restarted");
+    let posted = notices.posted.lock().unwrap().clone();
+    assert_eq!(posted.len(), 1);
+    assert_eq!(posted[0]["chats"], json!(["chat-1"]));
+    assert_eq!(posted[0]["outcome"], "restarted");
+    let text = notices::notice_text(&posted[0]);
+    assert!(
+        text.starts_with(
+            "The Linux VM stopped working (Kernel panic - not syncing: corrupted stack end \
+             detected inside scheduler). Studio restarted it at "
+        ),
+        "{text}"
+    );
+    assert!(text.ends_with("review it before you continue."), "{text}");
+    assert_eq!(fixture.json(RESTARTS_FILE)["restarts"][0]["noticed"], true);
+    let summary = fixture.runtime.status().unwrap()["watchdog"].clone();
+    assert_eq!(
+        (
+            summary["restartsInLastDay"].clone(),
+            summary["lastRestart"]["outcome"].clone()
+        ),
+        (json!(1), json!("restarted"))
+    );
+    assert_eq!(fixture.runtime.check().await.unwrap(), "running");
+    assert_eq!(notices.posted.lock().unwrap().len(), 1);
+}
+
+/// The store names the VM chats with a live turn and writes each notice in
+/// its transcript; a deleted chat gets none.
+#[tokio::test]
+async fn the_store_names_the_vm_chats_and_shows_each_restart_notice() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Arc::new(
+        studio_runtime_store::RuntimeStore::open(Some(directory.path()))
+            .await
+            .unwrap(),
+    );
+    let agent = |id: &str, mode: &str, status: &str, deleted: bool| {
+        let mut record = json!({"id": id, "rootId": id, "epoch": 1, "status": status,
+            "isLead": true, "name": id, "provider": "codex", "accountKey": "default",
+            "executionMode": mode, "cwd": "/line"});
+        if deleted {
+            record["deletedAt"] = json!(10.0);
+        }
+        record
+    };
+    let records = [
+        agent("vm-running", "vm", "running", false),
+        agent("vm-idle", "vm", "completed", false),
+        agent("host-running", "native", "running", false),
+        agent("vm-deleted", "vm", "running", true),
+    ];
+    store
+        .transaction_with(move |tx| {
+            for record in records {
+                studio_runtime_store::AgentRepository::put(
+                    tx,
+                    &studio_runtime_store::AgentRecord::from_value(record).unwrap(),
+                )?;
+            }
+            Ok::<_, studio_runtime_store::StoreError>(())
+        })
+        .await
+        .unwrap();
+    let notices = StoreChatNotices::new(Arc::clone(&store));
+    assert_eq!(notices.chats().await.unwrap(), ["vm-running"]);
+    let record = json!({"id": "r1", "outcome": "cancelled", "reason": "Kernel panic - not syncing",
+        "at": 100.0, "finishedAt": 160.0, "chats": ["vm-running", "vm-deleted", "missing"]});
+    let record = record.as_object().unwrap().clone();
+    notices.post(record.clone()).await.unwrap();
+    let items: Vec<(String, String)> = store
+        .read_async("test", |tx| {
+            let mut statement = tx.prepare(
+                "SELECT agent, json_extract(record,'$.text') FROM runtime_items ORDER BY agent",
+            )?;
+            let rows = statement
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok::<_, studio_runtime_store::StoreError>(rows)
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        items,
+        [(
+            "vm-running".to_owned(),
+            "The Linux VM stopped working (Kernel panic - not syncing). It was stopped on \
+             purpose, so Studio did not start it again."
+                .to_owned()
+        )]
+    );
 }
 
 #[test]

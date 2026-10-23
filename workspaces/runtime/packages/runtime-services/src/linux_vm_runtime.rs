@@ -13,8 +13,11 @@
 //!
 //! The watchdog checks the VM every [`WATCHDOG_INTERVAL_SECONDS`]. It restarts a
 //! failed guest (a kernel panic behind a live helper) under the same restart
-//! limits and `maintenance.lock`. After each start, the registered Finder views
-//! of the layr projects mount again (`linux_vm_share`).
+//! limits and `maintenance.lock`, and each VM chat with a live turn shows how
+//! the restart ended (`notices`). It probes a running guest and its LAYR, and
+//! only shows an unresponsive guest or a LAYR fault (`probes`). After each
+//! start, the registered Finder views of the layr projects mount again
+//! (`linux_vm_share`).
 
 use std::fs;
 use std::io::{self, Read, Seek, SeekFrom, Write};
@@ -27,6 +30,11 @@ use serde_json::{Map, Value, json};
 use crate::host_exec::HostExecRuntime;
 use crate::linux_vm_guest::{GuestError, GuestRpc, GuestSpaceProbe};
 use crate::linux_vm_share::ShareMountTool;
+
+mod notices;
+mod probes;
+
+pub use notices::{StoreChatNotices, VmChatNotices};
 
 /// The subcommand of `studio-runtime-server` that starts the helper in a new session.
 pub const HELPER_SUBCOMMAND: &str = "linux-vm-helper";
@@ -388,6 +396,7 @@ pub struct VmRuntime {
     /// Virtualization runs Linux VMs on macOS with Apple silicon only.
     supported: bool,
     host_exec: OnceLock<Arc<HostExecRuntime>>,
+    chat_notices: OnceLock<Arc<dyn VmChatNotices>>,
     /// `~/Studio`, the parent of the Finder views; `None` without a home folder.
     studio_root: Option<PathBuf>,
     shares: Arc<dyn ShareMountTool>,
@@ -425,6 +434,7 @@ impl VmRuntime {
             boot_time: parts.boot_time,
             supported: parts.supported,
             host_exec: OnceLock::new(),
+            chat_notices: OnceLock::new(),
             studio_root: parts.studio_root,
             shares: parts.shares,
             gate: tokio::sync::Mutex::new(()),
@@ -452,6 +462,13 @@ impl VmRuntime {
     pub fn attach_host_exec(&self, runtime: Arc<HostExecRuntime>) {
         if self.host_exec.set(runtime).is_err() {
             // The first attached runtime stays the owner of host commands.
+        }
+    }
+
+    /// Show each automatic restart in the VM chats with a live turn.
+    pub fn attach_chat_notices(&self, notices: Arc<dyn VmChatNotices>) {
+        if self.chat_notices.set(notices).is_err() {
+            // The first attached owner keeps the notices.
         }
     }
 
@@ -566,6 +583,26 @@ impl VmRuntime {
                 "guestFailure".into(),
                 json!({"kind": kind, "reason": reason}),
             );
+        } else if result.get("state").and_then(Value::as_str) == Some("running") {
+            if let Some(failure) = self.unanswered(result.get("pid")) {
+                // Shown and recorded, never restarted: a full or slow guest gives no answer too.
+                let reason = failure.get("reason").cloned().unwrap_or(Value::Null);
+                result.insert("state".into(), json!("unresponsive"));
+                result.insert("helperState".into(), json!("running"));
+                result.insert("error".into(), reason);
+                result.insert("guestFailure".into(), failure);
+            } else if let Some(fault) = self.layr_fault(result.get("pid"), now()) {
+                // The VM stays running (its chats keep their providers), but
+                // nothing that needs layr works.
+                result.insert(
+                    "error".into(),
+                    fault.get("reason").cloned().unwrap_or(Value::Null),
+                );
+                result.insert("layrFault".into(), fault);
+            }
+        }
+        if let Some(summary) = self.summary() {
+            result.insert("watchdog".into(), summary);
         }
         Ok(result)
     }
@@ -627,28 +664,7 @@ impl VmRuntime {
 
     /// Save the first guest answer of this boot (one helper PID) in `guest-health.json`.
     fn record_health(&self, pid: Option<&Value>) {
-        let Some(pid) = pid.filter(|pid| pid.is_i64() || pid.is_u64()) else {
-            return;
-        };
-        let mut saved = self.read_json(HEALTH_FILE);
-        if saved.get("helperPid") != Some(pid) {
-            saved = Map::new();
-            saved.insert("helperPid".into(), pid.clone());
-        }
-        let at = now();
-        for (field, value) in [
-            ("healthyAt", json!(at)),
-            ("failingSince", Value::Null),
-            ("lastFailureAt", Value::Null),
-            ("failures", json!(0)),
-            ("error", Value::Null),
-            ("lastProbeAt", json!(at)),
-        ] {
-            saved.insert(field.into(), value);
-        }
-        if let Err(error) = write_json(&self.state_dir.join(HEALTH_FILE), &Value::Object(saved)) {
-            eprintln!("linux-vm: the guest health record is not saved: {error}");
-        }
+        self.record_probe(pid, None);
     }
 
     /// Wait until the guest clock is synchronized (`timedatectl`).
@@ -908,9 +924,11 @@ impl VmRuntime {
     }
 
     fn save_restarts(&self, mut saved: Map<String, Value>) {
-        if let Some(Value::Array(rows)) = saved.get_mut("restarts") {
-            let extra = rows.len().saturating_sub(RECORDS_KEPT);
-            rows.drain(..extra);
+        for list in ["restarts", "unresponsive"] {
+            if let Some(Value::Array(rows)) = saved.get_mut(list) {
+                let extra = rows.len().saturating_sub(RECORDS_KEPT);
+                rows.drain(..extra);
+            }
         }
         if let Err(error) = write_json(&self.state_dir.join(RESTARTS_FILE), &Value::Object(saved)) {
             eprintln!("linux-vm: the restart record is not saved: {error}");
@@ -1140,6 +1158,8 @@ impl VmRuntime {
         if outcome == "restarted" {
             self.configure_after_start().await;
         }
+        // A restart that a backend stop interrupted keeps its chats.
+        self.post_notices().await;
         Ok(outcome)
     }
 
@@ -1364,7 +1384,11 @@ impl VmRuntime {
     }
 
     /// Restart a failed VM through the normal start, within the restart limits.
-    fn restart_failed(&self, status: &Map<String, Value>) -> Result<String, VmStartError> {
+    fn restart_failed(
+        &self,
+        status: &Map<String, Value>,
+        chats: Vec<String>,
+    ) -> Result<String, VmStartError> {
         let text = |value: Option<&Value>| value.and_then(Value::as_str).map(str::to_owned);
         let (kind, reason) = match status.get("guestFailure") {
             Some(failure) => (
@@ -1406,6 +1430,8 @@ impl VmRuntime {
         record.insert("reason".into(), json!(reason));
         record.insert("helperPid".into(), pid.clone().unwrap_or(Value::Null));
         record.insert("stage".into(), json!("stopping"));
+        // The chats that the stop ends; each one shows how the restart ended.
+        record.insert("chats".into(), json!(chats));
         match self.stop_failed(pid.as_ref(), &mut record)? {
             FailedStop::Busy => return Ok("busy".into()),
             FailedStop::Recovered => return Ok("recovered".into()),
@@ -1425,24 +1451,88 @@ impl VmRuntime {
         Ok(self.automatic_start(record))
     }
 
-    fn check_blocking(&self) -> Result<String, VmStartError> {
+    fn check_blocking(&self, chats: Vec<String>) -> Result<String, VmStartError> {
         if !self.state_dir.join(CONFIG_FILE).exists() {
             return Ok("absent".into());
         }
-        let Ok(status) = self.status() else {
+        let Ok(mut status) = self.status() else {
             return Ok("unknown".into());
         };
+        let mut answered = false;
+        // Probe an unresponsive guest too: one answer clears that state.
+        if matches!(Self::state_of(&status), "running" | "unresponsive") {
+            answered = self.probe(&status);
+            let Ok(probed) = self.status() else {
+                return Ok("unknown".into());
+            };
+            status = probed;
+        }
         match Self::state_of(&status) {
             "stopped" => self.resume_blocking(),
-            "failed" => self.restart_failed(&status),
+            "failed" => self.restart_failed(&status, chats),
             "running" => {
                 self.hold(None);
-                if self.intent().contains_key("restart") && self.answers() {
+                self.unresponsive_episode(None);
+                if answered {
                     self.settle();
                 }
                 Ok("running".into())
             }
+            "unresponsive" => {
+                // Shown and recorded, never restarted.
+                self.unresponsive_episode(Some(&status));
+                Ok("unresponsive".into())
+            }
             state => Ok(state.to_owned()),
+        }
+    }
+
+    /// Finished automatic restarts whose chats have no notice yet.
+    fn unnoticed(&self) -> Vec<Map<String, Value>> {
+        self.restarts()
+            .get("restarts")
+            .and_then(Value::as_array)
+            .map(|rows| {
+                rows.iter()
+                    .filter_map(Value::as_object)
+                    .filter(|row| {
+                        row.get("outcome")
+                            .and_then(Value::as_str)
+                            .is_some_and(|outcome| notices::NOTICED_OUTCOMES.contains(&outcome))
+                            && row.get("noticed") != Some(&json!(true))
+                            && row
+                                .get("chats")
+                                .and_then(Value::as_array)
+                                .is_some_and(|chats| !chats.is_empty())
+                    })
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Show each finished automatic restart once in its chats.
+    async fn post_notices(self: &Arc<Self>) {
+        let Some(notices) = self.chat_notices.get() else {
+            return;
+        };
+        let runtime = Arc::clone(self);
+        let Ok(records) = on_thread(move || runtime.unnoticed()).await else {
+            return;
+        };
+        for mut record in records {
+            if let Err(error) = notices.post(record.clone()).await {
+                eprintln!("linux-vm: the restart notice is not shown: {error}");
+                continue;
+            }
+            record.insert("noticed".into(), json!(true));
+            let runtime = Arc::clone(self);
+            if on_thread(move || runtime.update_record(&record))
+                .await
+                .is_err()
+            {
+                eprintln!("linux-vm: the restart notice is not recorded");
+            }
         }
     }
 
@@ -1454,11 +1544,24 @@ impl VmRuntime {
     /// stop_failed or abandoned.
     pub async fn check(self: &Arc<Self>) -> Result<String, VmStartError> {
         let _gate = self.gate.lock().await;
+        // A failed guest restarts: name the chats with a live turn first.
         let runtime = Arc::clone(self);
-        let outcome = on_thread(move || runtime.check_blocking()).await??;
+        let failed = on_thread(move || runtime.status())
+            .await?
+            .is_ok_and(|status| Self::state_of(&status) == "failed");
+        let chats = match self.chat_notices.get() {
+            Some(notices) if failed => notices.chats().await.unwrap_or_else(|error| {
+                eprintln!("linux-vm: the chats of the VM are unknown: {error}");
+                Vec::new()
+            }),
+            _ => Vec::new(),
+        };
+        let runtime = Arc::clone(self);
+        let outcome = on_thread(move || runtime.check_blocking(chats)).await??;
         if outcome == "restarted" {
             self.configure_after_start().await;
         }
+        self.post_notices().await;
         Ok(outcome)
     }
 }

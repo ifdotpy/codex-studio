@@ -293,6 +293,9 @@ impl HostRuntime {
             if let Some(host_exec) = &host_exec {
                 vm.attach_host_exec(Arc::clone(host_exec));
             }
+            vm.attach_chat_notices(Arc::new(
+                studio_runtime_services::linux_vm_runtime::StoreChatNotices::new(store.clone()),
+            ));
             vm
         });
         #[cfg(not(unix))]
