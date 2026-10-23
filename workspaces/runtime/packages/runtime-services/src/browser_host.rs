@@ -193,21 +193,26 @@ pub fn parse_lsof_listeners(text: &str) -> Vec<Listener> {
     rows
 }
 
-/// The listeners of this host: /proc on Linux, `lsof` elsewhere.
-pub fn host_listeners() -> Vec<Listener> {
+/// The listeners of this host: /proc on Linux, `lsof` elsewhere. `None` when the
+/// probe failed, timed out or was cut short: the listeners are unknown, which is
+/// not the same as no listener.
+pub fn host_listeners() -> Option<Vec<Listener>> {
     if cfg!(target_os = "linux") {
         let mut rows = Vec::new();
         for name in ["tcp", "tcp6"] {
-            if let Ok(text) = std::fs::read_to_string(Path::new("/proc/net").join(name)) {
-                rows.extend(parse_proc_listeners(&text));
+            match std::fs::read_to_string(Path::new("/proc/net").join(name)) {
+                Ok(text) => rows.extend(parse_proc_listeners(&text)),
+                // A host without IPv6 has no tcp6 table.
+                Err(error) if name == "tcp6" && error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(_) => return None,
             }
         }
-        return rows;
+        return Some(rows);
     }
     // Bound the external listener probe even on a blocking-pool worker.
     const LISTENER_OUTPUT_LIMIT_BYTES: usize = 1024 * 1024;
     // `lsof` reads every process of the host. On a loaded Mac one probe took
-    // up to 1.7 s, and a probe past this bound reads as "no longer listens".
+    // up to 1.7 s; a probe past this bound gives unknown listeners.
     const LISTENER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
     let output = crate::bounded_child::run(crate::bounded_child::Request {
         program: std::ffi::OsStr::new("lsof"),
@@ -220,10 +225,19 @@ pub fn host_listeners() -> Vec<Listener> {
         timeout: LISTENER_TIMEOUT,
     });
     match output {
-        Ok(output) if !output.stdout.truncated => {
-            parse_lsof_listeners(&String::from_utf8_lossy(&output.stdout.bytes))
-        }
-        _ => Vec::new(),
+        Ok(output) if !output.stdout.truncated => Some(parse_lsof_listeners(
+            &String::from_utf8_lossy(&output.stdout.bytes),
+        )),
+        _ => None,
+    }
+}
+
+/// The retryable answer when the listeners of this host are unknown. An open
+/// card stays open; only a known missing listener makes it stale.
+fn listeners_unknown() -> BridgeError {
+    BridgeError {
+        code: "unavailable",
+        message: "Studio could not read the listening ports of this computer. Try again".into(),
     }
 }
 
@@ -477,7 +491,8 @@ fn now_seconds() -> f64 {
 }
 
 type Clock = Arc<dyn Fn() -> f64 + Send + Sync>;
-type Listeners = Arc<dyn Fn() -> Vec<Listener> + Send + Sync>;
+/// This host's listeners, or `None` when the probe failed (see [`host_listeners`]).
+type Listeners = Arc<dyn Fn() -> Option<Vec<Listener>> + Send + Sync>;
 
 struct Queue {
     seq: u64,
@@ -572,6 +587,18 @@ impl HostBridge {
             clock: options.clock,
             connections: Mutex::new(BTreeMap::new()),
         }))
+    }
+
+    /// This host's listeners from the blocking pool, or `None` when they are unknown.
+    async fn probe_listeners(&self) -> Option<Vec<Listener>> {
+        let listeners = Arc::clone(&self.listeners);
+        studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-services/browser_host",
+            move || listeners(),
+        )
+        .await
+        .ok()
+        .flatten()
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Queue> {
@@ -722,13 +749,7 @@ impl HostBridge {
         let final_link = match checked {
             Checked::StartPage { url, port } => {
                 start_url = json!(url);
-                let listeners = Arc::clone(&self.listeners);
-                let rows = studio_runtime_process::blocking_pool::spawn_blocking(
-                    "runtime-services/browser_host",
-                    move || listeners(),
-                )
-                .await
-                .unwrap_or_default();
+                let rows = self.probe_listeners().await.ok_or_else(listeners_unknown)?;
                 let address = connect_address(uid, port, &rows)?;
                 let after = url
                     .split_once("://")
@@ -782,13 +803,7 @@ impl HostBridge {
             Checked::Provider(provider) => provider,
         };
         if let Some(redirect) = &final_link.redirect {
-            let listeners = Arc::clone(&self.listeners);
-            let rows = studio_runtime_process::blocking_pool::spawn_blocking(
-                "runtime-services/browser_host",
-                move || listeners(),
-            )
-            .await
-            .unwrap_or_default();
+            let rows = self.probe_listeners().await.ok_or_else(listeners_unknown)?;
             connect_address(uid, redirect.port, &rows)?;
         }
         let mut queue = self.lock();
@@ -903,13 +918,7 @@ impl HostBridge {
     }
 
     async fn answer(&self, params: &Value) -> Result<Value, BridgeError> {
-        let listeners = Arc::clone(&self.listeners);
-        let rows = studio_runtime_process::blocking_pool::spawn_blocking(
-            "runtime-services/browser_host",
-            move || listeners(),
-        )
-        .await
-        .unwrap_or_default();
+        let rows = self.probe_listeners().await;
         let mut queue = self.lock();
         let (id, state) = item_state(&queue, params)?;
         let item = queue.items[&id].clone();
@@ -944,6 +953,7 @@ impl HostBridge {
         };
         let uid = item["uid"].as_u64().unwrap_or(u64::MAX) as u32;
         let port = redirect["port"].as_u64().unwrap_or(0) as u16;
+        let rows = rows.ok_or_else(listeners_unknown)?;
         if let Err(error) = connect_address(uid, port, &rows) {
             self.update(&mut queue, &id, json!({"state": "stale"}));
             self.save(&mut queue);
@@ -1001,13 +1011,7 @@ impl HostBridge {
             )
         };
         let port = lease["port"].as_u64().unwrap_or(0) as u16;
-        let listeners = Arc::clone(&self.listeners);
-        let rows = studio_runtime_process::blocking_pool::spawn_blocking(
-            "runtime-services/browser_host",
-            move || listeners(),
-        )
-        .await
-        .unwrap_or_default();
+        let rows = self.probe_listeners().await.ok_or_else(listeners_unknown)?;
         let address = connect_address(uid, port, &rows)?;
         let host = lease["host"].as_str().unwrap_or("127.0.0.1");
         let host = if host == "::1" { "[::1]" } else { host };
@@ -1079,16 +1083,11 @@ impl HostBridge {
                     && item.get("redirect").is_some_and(Value::is_object)
             })
         };
+        // `None`: the probe failed, so no card becomes stale in this pass.
         let rows = if needs_rows {
-            let listeners = Arc::clone(&self.listeners);
-            studio_runtime_process::blocking_pool::spawn_blocking(
-                "runtime-services/browser_host",
-                move || listeners(),
-            )
-            .await
-            .unwrap_or_default()
+            self.probe_listeners().await
         } else {
-            Vec::new()
+            Some(Vec::new())
         };
         let now = (self.clock)();
         let mut queue = self.lock();
@@ -1109,10 +1108,12 @@ impl HostBridge {
                 changed = true;
                 continue;
             }
-            if let Some(redirect) = item.get("redirect").filter(|value| value.is_object()) {
+            if let Some(redirect) = item.get("redirect").filter(|value| value.is_object())
+                && let Some(rows) = &rows
+            {
                 let uid = item["uid"].as_u64().unwrap_or(u64::MAX) as u32;
                 let port = redirect["port"].as_u64().unwrap_or(0) as u16;
-                if connect_address(uid, port, &rows).is_err() {
+                if connect_address(uid, port, rows).is_err() {
                     self.update(&mut queue, &key, json!({"state": "stale"}));
                     changed = true;
                 }
@@ -1609,6 +1610,80 @@ mod tests {
             .0,
             1
         );
+    }
+
+    struct NoChats;
+    impl ChatLookup for NoChats {
+        fn chat<'a>(
+            &'a self,
+            _session: &'a str,
+        ) -> futures_util::future::BoxFuture<'a, Option<ChatContext>> {
+            Box::pin(async { None })
+        }
+    }
+
+    /// One saved pending card with a loopback redirect, read by a bridge whose
+    /// listener probe fails. The clock is in seconds.
+    fn bridge_with_failed_probe(
+        folder: &Path,
+        now: Arc<std::sync::atomic::AtomicU64>,
+    ) -> Arc<HostBridge> {
+        let directory = folder.join("browser");
+        std::fs::create_dir_all(&directory).expect("browser folder");
+        let card = json!({
+            "id": "card", "agentId": "agent", "uid": 501, "state": "pending",
+            "url": "https://id.example.com/authorize", "startUrl": null,
+            "redirect": {"host": "localhost", "port": 4242, "path": "/"},
+            "createdAt": 100.0, "expiresAt": 100.0 + TTL_SECONDS, "seq": 1
+        });
+        std::fs::write(
+            directory.join("requests.json"),
+            json!({"seq": 1, "items": {"card": card}}).to_string(),
+        )
+        .expect("saved queue");
+        let clock = Arc::clone(&now);
+        HostBridge::open(
+            folder,
+            Arc::new(NoChats),
+            HostBridgeOptions {
+                // The probe of a loaded host failed: lsof timed out.
+                listeners: Arc::new(|| None),
+                http_providers: BTreeSet::new(),
+                clock: Arc::new(move || {
+                    f64::from_bits(clock.load(std::sync::atomic::Ordering::SeqCst))
+                }),
+            },
+        )
+        .expect("bridge")
+    }
+
+    #[tokio::test]
+    async fn a_failed_listener_probe_keeps_an_open_card_and_answers_retryably() {
+        let folder = tempfile::tempdir().expect("bridge folder");
+        let now = Arc::new(std::sync::atomic::AtomicU64::new(200.0_f64.to_bits()));
+        let bridge = bridge_with_failed_probe(folder.path(), Arc::clone(&now));
+        let state = |bridge: &HostBridge| bridge.lock().items["card"]["state"].clone();
+
+        bridge.check().await;
+        assert_eq!(
+            state(&bridge),
+            "pending",
+            "an unknown probe is not a stale card"
+        );
+        let answered = bridge
+            .answer(&json!({"id": "card", "decision": "approve"}))
+            .await
+            .expect_err("approval needs a known listener");
+        assert_eq!(answered.code, "unavailable", "{}", answered.message);
+        assert_eq!(state(&bridge), "pending", "the card stays open for a retry");
+
+        // Expiry by time still applies while the probe fails.
+        now.store(
+            (101.0 + TTL_SECONDS).to_bits(),
+            std::sync::atomic::Ordering::SeqCst,
+        );
+        bridge.check().await;
+        assert_eq!(state(&bridge), "expired");
     }
 
     #[test]
