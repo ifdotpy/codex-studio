@@ -1,42 +1,38 @@
 # Canvas database maintenance
 
-The runtime owns `canvas.sqlite3`. Two background jobs keep it from growing
-without bound; reclaiming the file space they free is a manual, offline step.
+The runtime owns `canvas.sqlite3`. Studio keeps all user history: no background
+job shortens or deletes transcripts, task output, tool results or analytics.
+Reclaiming free file space is a manual, offline step.
 
-## Background retention
+## Background maintenance
 
 `studio_runtime_services::storage_retention` runs once after startup and then
 every `RETENTION_PASS_INTERVAL` (one hour). Each step is a short writer
 transaction with a pause between batches, so interactive writes keep the
 writer actor.
 
-- **Task output.** A finished task (status in `TRIMMABLE_TASK_STATUSES`:
-  `completed`, `failed` or `interrupted`; any other status keeps its output)
-  created more than `TASK_RETENTION_SECONDS` (seven days) ago, and outside its
-  agent's `TASK_NEWEST_PER_AGENT` (100) newest tasks (read through the
-  `runtime_task_agent_created_id` index, which Rust startup creates if missing),
-  keeps only the last `TASK_PREVIEW_BYTES` (512) bytes of `tail` and is marked
-  `outputTruncated` and `outputPreviewOnly`. Progress is stored in the
-  `payload-v1:tasks` row of `runtime_payload_migrations`. A restart resumes from
-  that cursor; repeating a batch changes nothing. A task with a missing or null
-  `created` is never trimmed. The retired Python job failed on such rows, which
-  left the marker at cursor 0 with status `error`; the first Rust batch replaces
-  that state.
 - **Entity tombstones.** When the non-transcript tombstone count exceeds
   `ENTITY_TOMBSTONE_LIMIT` (10,000) by the prune slack, the oldest tombstones are
   removed in batches of `ENTITY_TOMBSTONE_PRUNE_BATCH` (500) until the limit is
   reached, and `entity_tombstone_floor` is raised to the highest removed
-  sequence. A client whose cursor is below the floor resets.
+  sequence. A client whose cursor is below the floor resets. Tombstones are sync
+  bookkeeping for deleted entities, not user history.
 
 A pass that finds nothing to do submits no writer transaction.
+
+Releases from 2026-10-17 (`478b2e176`) until this was removed also trimmed
+the output of finished tasks: a task created more than seven days ago and
+outside its agent's 100 newest tasks kept only the last 512 bytes of `tail`
+and was marked `outputTruncated` and `outputPreviewOnly`. Those tails cannot be
+restored from the state. Their `payload-v1:tasks` row in
+`runtime_payload_migrations` remains as a historical marker; no current
+release writes it.
 
 ## Offline VACUUM
 
 Freed pages go to the SQLite freelist. New rows reuse them, but the file does
 not shrink. The only way to shrink it is `VACUUM`, which rewrites the whole
-file. Do this only while the backend is stopped, and only after one retention
-pass has finished (the `payload-v1:tasks` marker has `complete=1`), so the
-trimmed space is reclaimed as well.
+file. Do this only while the backend is stopped.
 
 ### Disk space
 
@@ -49,10 +45,10 @@ trimmed space is reclaimed as well.
 - point `SQLITE_TMPDIR` at a directory on the same volume. Do not use `/tmp`,
   which has a per-user quota on the owner's machine.
 
-For example, the 2026-10-17 state had 9.4 GB with a 1.3 GB freelist before
-task retention ran. It needs at least 8.9 GB free (8.1 GB of live data plus
-10 %). After retention the copy is smaller. In-place `VACUUM` needs up to twice
-the file size and leaves no fallback copy, so prefer `VACUUM INTO`.
+For example, the 2026-10-17 state had 9.4 GB with a 1.3 GB freelist. It
+needs at least 8.9 GB free (8.1 GB of live data plus 10 %). In-place `VACUUM`
+needs up to twice the file size and leaves no fallback copy, so prefer
+`VACUUM INTO`.
 
 ### Procedure
 
