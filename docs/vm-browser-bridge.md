@@ -205,6 +205,12 @@ its own `http` and `https` rule.
   redirect (a device code page) has no listener to check and expires after 10 minutes. The
   card shows the moved deadline (`params.expiresAt`). The host bridge (`browser_host.rs`)
   follows the same rules.
+- Unknown listeners: when the probe fails (the guest cannot read `/proc/net/tcp`, or `lsof`
+  on a Mac host fails or is slow), the listeners are unknown, not absent. No request becomes
+  `stale` and no deadline moves in that check; expiry by time still applies. A step that
+  needs a listener (a new link, an approval, a relay) refuses with the retryable code
+  `not_sent` (`SIGN_IN_NOT_SENT_CODE`, owner `runtime-schema/src/shared_values.rs`), sends
+  nothing to the command, and keeps the card open.
 - The server then marks a pending card `expired`. When nobody answered the card and the
   request ended `stale` or `expired`, the server also queues one `browser_unanswered` event
   to the chat. It says that the command gets no sign-in result from this card, that the agent

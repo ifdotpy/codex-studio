@@ -20,10 +20,10 @@ import uuid
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from browser_bridge import (CHECK_SECONDS, KEEP_SECONDS, TTL_SECONDS, BridgeError,  # noqa: E402
-                            BrowserBridge, Listener, connect_address, parse_listeners)
+                            BrowserBridge, Listener, connect_address, parse_listeners, proc_listeners)
 from browser_policy import (USER_CODE_LIMIT, PolicyError, Provider, StartPage, classify, pasted,  # noqa: E402
                             provider, sign_in_links)
-from shared_values_generated import SIGN_IN_OPEN_LIMIT_SECONDS  # noqa: E402
+from shared_values_generated import SIGN_IN_NOT_SENT_CODE, SIGN_IN_OPEN_LIMIT_SECONDS  # noqa: E402
 from test_browser_fakes import SHIM, FakeProvider, FakeTool, install_shim  # noqa: E402
 
 AGENT = str(uuid.uuid4())
@@ -407,6 +407,46 @@ class Bridge(unittest.IsolatedAsyncioTestCase):
         self.now = second["createdAt"] + SIGN_IN_OPEN_LIMIT_SECONDS + 1
         await self.bridge.check()
         self.assertEqual(self.bridge.items[second["id"]]["state"], "expired")
+
+    async def test_an_unreadable_listener_table_is_unknown_not_stale(self) -> None:
+        tool = self.tool("aws")
+        await self.launch(tool)
+        [item] = (await self.bridge.call("browser.wait", {"after": 0, "waitSeconds": 0}))["items"]
+        readable = self.bridge.listeners
+        self.bridge.listeners = lambda: None
+        await self.bridge.check()
+        self.assertEqual(self.bridge.items[item["id"]]["state"], "pending", "an unknown probe is not stale")
+        with self.assertRaises(BridgeError) as unknown:
+            await self.bridge.call("browser.answer", {"id": item["id"], "decision": "approve"})
+        self.assertEqual(unknown.exception.code, SIGN_IN_NOT_SENT_CODE)
+        self.assertEqual(self.bridge.items[item["id"]]["state"], "pending", "the card stays for a retry")
+        # Expiry by time still applies while the probe fails.
+        self.now += 601
+        await self.bridge.check()
+        self.assertEqual(self.bridge.items[item["id"]]["state"], "expired")
+        # A relay needs known listeners and counts nothing when they are unknown.
+        self.bridge.listeners = readable
+        again = self.tool("aws")
+        await self.launch(again)
+        fresh = [row for row in (await self.bridge.call("browser.wait", {"after": 0, "waitSeconds": 0}))["items"]
+                 if row["state"] == "pending"][-1]
+        await self.bridge.call("browser.answer", {"id": fresh["id"], "decision": "approve"})
+        self.bridge.listeners = lambda: None
+        with self.assertRaises(BridgeError) as relay:
+            await self.bridge.call("browser.callback", {"id": fresh["id"], "target": "/oauth/callback?code=x"})
+        self.assertEqual(relay.exception.code, SIGN_IN_NOT_SENT_CODE)
+        self.assertEqual(self.bridge.items[fresh["id"]]["relays"], 0)
+
+    def test_the_proc_probe_is_unknown_when_the_tcp_table_cannot_be_read(self) -> None:
+        empty = self.root / "proc-empty"
+        empty.mkdir()
+        self.assertIsNone(proc_listeners(empty))
+        ipv4_only = self.root / "proc-ipv4"
+        ipv4_only.mkdir()
+        (ipv4_only / "tcp").write_text(
+            "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid\n"
+            "   0: 0100007F:1F40 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1010 0 1 1\n")
+        self.assertEqual(proc_listeners(ipv4_only), [Listener("127.0.0.1", 8000, 1010)])
 
     async def test_decline_close_expiry_and_device_links(self) -> None:
         tool = self.tool("aws")

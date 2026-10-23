@@ -243,7 +243,7 @@ pub fn host_listeners() -> Option<Vec<Listener>> {
 
 /// The error code of a bridge request that sent nothing to the sign-in command,
 /// so a retry cannot repeat a delivery. `browser_answer` keeps the card open.
-pub const NOT_SENT_CODE: &str = "not_sent";
+pub const NOT_SENT_CODE: &str = studio_runtime_schema::shared_values::SIGN_IN_NOT_SENT_CODE;
 
 /// The answer when the listeners of this host are unknown. An open card stays
 /// open; only a known missing listener makes it stale.
@@ -1117,18 +1117,20 @@ impl HostBridge {
                 .and_then(|lease| lease.get("expiresAt"))
                 .and_then(Value::as_f64)
                 .unwrap_or_else(|| item["expiresAt"].as_f64().unwrap_or(0.0));
-            let redirect = item.get("redirect").filter(|value| value.is_object());
-            // `None` with a redirect: the probe failed and the listener is unknown. An unknown
-            // listener is not a stopped command: it never makes the request stale, and it keeps
-            // the deadline moving up to the open limit, as a listening command does.
-            let listening = redirect.zip(rows.as_ref()).map(|(redirect, rows)| {
-                let uid = item["uid"].as_u64().unwrap_or(u64::MAX) as u32;
-                let port = redirect["port"].as_u64().unwrap_or(0) as u16;
-                connect_address(uid, port, rows).is_ok()
-            });
+            // `None`: no loopback redirect, or the probe failed and the listener is unknown. An
+            // unknown listener neither makes the request stale nor moves its deadline: expiry by
+            // time still applies (`a_failed_listener_probe_keeps_an_open_card_and_answers_retryably`).
+            let listening = item
+                .get("redirect")
+                .filter(|value| value.is_object())
+                .zip(rows.as_ref())
+                .map(|(redirect, rows)| {
+                    let uid = item["uid"].as_u64().unwrap_or(u64::MAX) as u32;
+                    let port = redirect["port"].as_u64().unwrap_or(0) as u16;
+                    connect_address(uid, port, rows).is_ok()
+                });
             if item["state"] == "pending"
-                && redirect.is_some()
-                && listening != Some(false)
+                && listening == Some(true)
                 && let Some(deadline) = listening_deadline(&item, now)
             {
                 self.update(&mut queue, &key, json!({"expiresAt": deadline}));

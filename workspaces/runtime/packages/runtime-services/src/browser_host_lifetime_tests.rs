@@ -59,7 +59,7 @@ impl Fixture {
             Arc::new(NoChats),
             HostBridgeOptions {
                 listeners: Arc::new(move || {
-                    if listener.load(Ordering::SeqCst) {
+                    Some(if listener.load(Ordering::SeqCst) {
                         vec![Listener {
                             address: "127.0.0.1".into(),
                             port: PORT,
@@ -67,7 +67,7 @@ impl Fixture {
                         }]
                     } else {
                         Vec::new()
-                    }
+                    })
                 }),
                 http_providers: BTreeSet::new(),
                 clock: Arc::new(move || f64::from_bits(clock.load(Ordering::SeqCst))),

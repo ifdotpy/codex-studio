@@ -279,6 +279,11 @@ pub const LINUX_VM_PROVIDER_HANDLE_PREFIX: &str = "linux-worker:";
 /// It must stay below the 3600 s for which both bridges keep a closed request
 /// (`KEEP_SECONDS`), so the server still reads the final state of a request at this bound.
 pub const SIGN_IN_OPEN_LIMIT_SECONDS: u64 = 1800;
+/// The error code of a sign-in bridge step that sent nothing to the sign-in command because
+/// the listening ports were unknown (a failed or slow probe). The request stays open and a
+/// retry is safe. The host bridge (`browser_host::NOT_SENT_CODE`), the VM guest bridge and
+/// the server's answers (`browser_answer`) use it.
+pub const SIGN_IN_NOT_SENT_CODE: &str = "not_sent";
 
 #[cfg(test)]
 mod tests {
