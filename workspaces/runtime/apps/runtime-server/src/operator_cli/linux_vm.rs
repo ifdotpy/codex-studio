@@ -1,5 +1,5 @@
-//! `studio-runtime-server linux-vm <start|status> [--state DIRECTORY]`: a
-//! person's start of a created Linux VM, and its helper state
+//! `studio-runtime-server linux-vm <start|stop|status> [--state DIRECTORY]`: a
+//! person's start or stop of a created Linux VM, and its helper state
 //! (docs/linux-vm-workspaces.md, "VM start").
 
 use std::path::PathBuf;
@@ -22,7 +22,7 @@ pub(super) fn run(args: &[String]) -> Result<ExitCode> {
             }
             _ => {
                 return Err(
-                    "usage: studio-runtime-server linux-vm <start|status> [--state DIRECTORY]"
+                    "usage: studio-runtime-server linux-vm <start|stop|status> [--state DIRECTORY]"
                         .into(),
                 );
             }
@@ -44,9 +44,13 @@ pub(super) fn run(args: &[String]) -> Result<ExitCode> {
                 .enable_all()
                 .build()?
                 .block_on(vm.start()),
+            "stop" => tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?
+                .block_on(vm.stop()),
             _ => {
                 return Err(
-                    "usage: studio-runtime-server linux-vm <start|status> [--state DIRECTORY]"
+                    "usage: studio-runtime-server linux-vm <start|stop|status> [--state DIRECTORY]"
                         .into(),
                 );
             }

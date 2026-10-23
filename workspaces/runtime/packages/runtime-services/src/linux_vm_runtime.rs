@@ -9,6 +9,7 @@
 //! when the Mac restarted under a running VM, or to finish an automatic restart
 //! that a backend stop interrupted; a VM stopped on purpose or in this Mac boot
 //! stays stopped until a person starts it (`studio-runtime-server linux-vm start`).
+//! A person's stop (`studio-runtime-server linux-vm stop`) keeps it stopped.
 //!
 //! The watchdog checks the VM every [`WATCHDOG_INTERVAL_SECONDS`]. It restarts a
 //! failed guest (a kernel panic behind a live helper) under the same restart
@@ -1319,6 +1320,47 @@ impl VmRuntime {
             }
             pause(Duration::from_millis(100));
         }
+    }
+
+    /// A stop on purpose (Python `Client.stop`), also of a stopped VM: it
+    /// cancels a pending automatic restart. The intent is saved before the
+    /// lock, so it counts even when another VM operation holds the lock.
+    fn stop_blocking(&self) -> Result<Map<String, Value>, VmStartError> {
+        let mut stopped = Map::new();
+        stopped.insert("state".into(), json!("stopped"));
+        self.write_intent("stopped", "stop", None)
+            .map_err(|error| VmStartError::Stays(format!("The stop is not saved: {error}")))?;
+        let _lease = self.client_lock(CLIENT_LOCK_SECONDS)?;
+        if Self::state_of(&self.status()?) == "stopped" {
+            return Ok(stopped);
+        }
+        self.control
+            .call(
+                "host.stop",
+                &json!({}),
+                None,
+                Duration::from_secs_f64(REQUEST_SECONDS),
+            )
+            .map_err(|error| failed(format!("The VM helper did not take the stop: {error}")))?;
+        let deadline = Instant::now() + Duration::from_secs_f64(STOP_SECONDS);
+        while Instant::now() < deadline {
+            if self
+                .status()
+                .is_ok_and(|status| Self::state_of(&status) == "stopped")
+            {
+                return Ok(stopped);
+            }
+            pause(Duration::from_millis(100));
+        }
+        Err(failed("The Linux VM did not stop within its timeout."))
+    }
+
+    /// A person's stop (`studio-runtime-server linux-vm stop`). It does not
+    /// wait for a start or a watchdog check of this process: a stop during an
+    /// automatic restart cancels that restart.
+    pub async fn stop(self: &Arc<Self>) -> Result<Map<String, Value>, VmStartError> {
+        let runtime = Arc::clone(self);
+        on_thread(move || runtime.stop_blocking()).await?
     }
 
     /// Restart a failed VM through the normal start, within the restart limits.

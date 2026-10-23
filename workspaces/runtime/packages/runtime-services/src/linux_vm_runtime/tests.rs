@@ -638,6 +638,38 @@ async fn each_start_mounts_the_registered_project_views_again() {
     assert_eq!(fixture.launches(), 1);
 }
 
+/// Python `Client.stop`, which 027f3cfea deleted: a person's stop ends the
+/// helper and saves its intent, so no automatic start follows.
+#[tokio::test]
+async fn a_stop_on_purpose_keeps_the_vm_stopped() {
+    let fixture = Fixture::new(Boot::Healthy);
+    fixture.runtime.start().await.unwrap();
+    let stopped = fixture.runtime.stop().await.unwrap();
+    assert_eq!(Value::Object(stopped), json!({"state": "stopped"}));
+    assert_eq!(fixture.stops(), 1);
+    assert_eq!(fixture.runtime.status().unwrap()["state"], "stopped");
+    let intent = fixture.json(INTENT_FILE);
+    assert_eq!(
+        (intent["state"].clone(), intent["by"].clone()),
+        (json!("stopped"), json!("stop"))
+    );
+    assert_eq!(fixture.runtime.check().await.unwrap(), "stopped");
+    assert!(fixture.runtime.ensure_for_chat().await.is_err());
+    assert_eq!(fixture.launches(), 1);
+
+    // A stop of a stopped VM ends a pending automatic restart.
+    fixture.intent(
+        json!({"state": "running", "by": "watchdog", "at": now() - 1000.0, "restart": "r1"}),
+    );
+    fixture.runtime.stop().await.unwrap();
+    let intent = fixture.json(INTENT_FILE);
+    assert_eq!(intent["state"], "stopped");
+    assert!(intent.get("restart").is_none(), "{intent}");
+    assert_eq!(fixture.stops(), 1);
+    assert_eq!(fixture.runtime.check().await.unwrap(), "stopped");
+    assert_eq!(fixture.launches(), 1);
+}
+
 #[test]
 fn the_console_tells_a_kernel_death_and_the_provisioning_state() {
     assert_eq!(

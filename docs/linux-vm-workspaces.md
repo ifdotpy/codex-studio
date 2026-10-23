@@ -246,6 +246,10 @@ not create or provision a VM.
 
 - A person starts it with `studio-runtime-server linux-vm start [--state DIRECTORY]`, and
   `studio-runtime-server linux-vm status` prints the helper state.
+- A person stops it with `studio-runtime-server linux-vm stop [--state DIRECTORY]`. The stop
+  saves its intent first, also for a stopped VM and while another VM operation holds the lock.
+  So the VM stays stopped: a pending automatic restart ends, and neither the watchdog nor a VM
+  chat starts it again.
 - At backend startup, and before a VM chat starts its provider, the backend uses the automatic
   rule of the watchdog below. It starts a stopped VM only when its last intent is a start from
   before the current Mac boot (the Mac restarted under the VM), or to finish its own automatic
@@ -270,8 +274,7 @@ not create or provision a VM.
   (`linux_vm_share.rs`; see [vm-layr.md](vm-layr.md), "Mac share"). A failed view keeps its
   reason in `mount-error.json`, and the VM keeps running.
 
-The Rust watchdog has no health or LAYR probes and posts no chat notice about a restart, and
-there is no `stop` command.
+The Rust watchdog has no health or LAYR probes and posts no chat notice about a restart.
 
 ## Guest crash watchdog
 
