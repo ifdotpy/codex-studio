@@ -3729,6 +3729,11 @@ export default function App({ active = true }: { active?: boolean }) {
       />
       <Modal
         opened={!!modal}
+        padding={
+          modal?.title === "New chat"
+            ? "var(--studio-model-dialog-padding)"
+            : undefined
+        }
         closeOnEscape={modal?.title !== "New chat"}
         onClose={() => setModal(null)}
         title={modal?.title}
@@ -3736,7 +3741,7 @@ export default function App({ active = true }: { active?: boolean }) {
           modal?.title === "Project settings"
             ? modalSizes.settings
             : modal?.title === "New chat"
-              ? "lg"
+              ? "var(--studio-model-dialog-size)"
               : undefined
         }
       >

@@ -76,7 +76,6 @@ function Profile({
       <AgentSetupPicker
         role={role}
         onRole={onRole}
-        roles={shared ? [] : ["orchestrator", "worker", "review"]}
         provider="codex"
         providers={[]}
         onProvider={() => {}}
@@ -118,11 +117,28 @@ function Profile({
     </Paper>
   );
 }
-export const AgentSetupSheet: Story = { render: () => <Profile /> };
-export const ManyModels: Story = { render: () => <Profile many /> };
+const allRoles = async ({ canvasElement }: { canvasElement: HTMLElement }) => {
+  const canvas = within(canvasElement);
+  const roles = canvas.getByRole("radiogroup", {
+    name: "Agent role",
+  });
+  for (const name of ["Lead", "Workers", "Review"])
+    await expect(
+      within(roles).getByRole("radio", { name }),
+    ).toBeInTheDocument();
+};
+export const AgentSetupSheet: Story = {
+  render: () => <Profile />,
+  play: allRoles,
+};
+export const ManyModels: Story = {
+  render: () => <Profile many />,
+  play: allRoles,
+};
 export const SharedChatPicker: Story = {
   render: () => <Profile shared />,
   play: async ({ canvasElement, userEvent }) => {
+    await allRoles({ canvasElement });
     const canvas = within(canvasElement);
     const model = canvas.getByRole("listbox", { name: "Main agent model" });
     await expect(model).toBeVisible();
@@ -222,8 +238,8 @@ const previewAgent = {
   workerDefaults: { model: "gpt-6-luna", effort: "high" },
   reviewDefaults: { model: null, effort: null },
 } as Agent;
-export const InlineAgentSettings: Story = {
-  render: () => (
+function InlineSettings({ worker = false }: { worker?: boolean }) {
+  return (
     <ModelCatalogReader.Provider value={previewReader}>
       <Stack
         className="chat-execution-settings"
@@ -235,7 +251,12 @@ export const InlineAgentSettings: Story = {
           presentation="panel"
           settingsRow
           initialRole="worker"
-          agent={previewAgent}
+          agent={
+            worker
+              ? { ...previewAgent, id: "worker-preview", isLead: false }
+              : previewAgent
+          }
+          lead={worker ? previewAgent : undefined}
           catalog={{
             models: previewCatalog,
             loading: false,
@@ -246,5 +267,42 @@ export const InlineAgentSettings: Story = {
         />
       </Stack>
     </ModelCatalogReader.Provider>
-  ),
+  );
+}
+export const InlineAgentSettings: Story = {
+  render: () => <InlineSettings />,
+  play: allRoles,
+};
+export const WorkerChatSettings: Story = {
+  render: () => <InlineSettings worker />,
+  play: async ({ canvasElement, userEvent }) => {
+    await allRoles({ canvasElement });
+    const canvas = within(canvasElement);
+    await expect(
+      canvas.getByRole("listbox", { name: "Subagent model" }),
+    ).toBeVisible();
+    for (const role of ["Lead", "Review"]) {
+      await userEvent.click(
+        within(
+          canvas.getByRole("radiogroup", { name: "Agent role" }),
+        ).getByText(role, { exact: true }),
+      );
+      await expect(
+        canvas.getByText(
+          "Inherited from the lead. Open the lead chat to change these settings.",
+        ),
+      ).toBeVisible();
+      for (const model of canvas.getAllByRole("option"))
+        await expect(model).toBeDisabled();
+    }
+    await userEvent.click(
+      within(canvas.getByRole("radiogroup", { name: "Agent role" })).getByText(
+        "Workers",
+        { exact: true },
+      ),
+    );
+    await expect(
+      canvas.getByRole("listbox", { name: "Subagent model" }),
+    ).toBeVisible();
+  },
 };

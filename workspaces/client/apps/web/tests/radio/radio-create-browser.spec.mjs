@@ -197,6 +197,31 @@ test("radio create browser", async ({ page: runnerPage }) => {
       await modelValue(page.getByLabel("Model for agent 1", { exact: true })),
       "gpt-6-astra",
     );
+    const roles = page.getByRole("radiogroup", {
+      name: "Agent role",
+      exact: true,
+    });
+    for (const name of ["Lead", "Workers", "Review"])
+      await expect(roles.getByRole("radio", { name, exact: true })).toHaveCount(
+        1,
+      );
+    for (const name of ["Workers", "Review"]) {
+      await roles.getByText(name, { exact: true }).click();
+      await expect(
+        page.getByText(
+          "Shared chat participants manage their own worker and review defaults. These settings are inherited and cannot be changed here.",
+        ),
+      ).toBeVisible();
+      await expect(
+        page.getByRole("option", { name: "Inherited", exact: true }),
+      ).toBeDisabled();
+    }
+    await roles.getByText("Lead", { exact: true }).click();
+    assert.equal(
+      await modelValue(page.getByLabel("Model for agent 1", { exact: true })),
+      "gpt-6-astra",
+    );
+
     await chooseSetupValue(
       page.getByRole("radiogroup", {
         name: "Account for agent 1 provider",

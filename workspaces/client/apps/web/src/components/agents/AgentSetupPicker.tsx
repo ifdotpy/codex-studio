@@ -10,7 +10,8 @@ export type SetupRole = "orchestrator" | "worker" | "review";
 export type AgentSetupPickerProps = {
   role: SetupRole;
   onRole: (role: SetupRole) => void;
-  roles: SetupRole[];
+  roleSwitchId?: string;
+  readOnlyReason?: string;
   provider: string;
   onProvider: (provider: string) => void;
   providers: string[];
@@ -43,24 +44,24 @@ export type AgentSetupPickerProps = {
 export function AgentSetupPicker(p: AgentSetupPickerProps) {
   return (
     <Stack gap="sm" className="execution-profile">
-      {p.roles.length > 0 && (
-        <SegmentedControl
-          fullWidth
-          size="xs"
-          role="group"
-          aria-label="Agent role"
-          value={p.role}
-          onChange={(role) => p.onRole(role as SetupRole)}
-          data={p.roles.map((value) => ({
-            value,
-            label:
-              value === "orchestrator"
-                ? "Orchestrator"
-                : value === "worker"
-                  ? "Worker"
-                  : "Review",
-          }))}
-        />
+      <SegmentedControl
+        id={p.roleSwitchId}
+        className="model-picker-role-switch"
+        fullWidth
+        size="xs"
+        aria-label="Agent role"
+        value={p.role}
+        onChange={(role) => p.onRole(role as SetupRole)}
+        data={[
+          { value: "orchestrator", label: "Lead" },
+          { value: "worker", label: "Workers" },
+          { value: "review", label: "Review" },
+        ]}
+      />
+      {p.readOnlyReason && (
+        <Text size="xs" c="dimmed">
+          {p.readOnlyReason}
+        </Text>
       )}
       {p.role === "review" ? (
         <Text size="xs" c="dimmed">
@@ -79,7 +80,7 @@ export function AgentSetupPicker(p: AgentSetupPickerProps) {
           provider={p.provider}
           onProvider={p.onProvider}
           providers={p.providers.length > 1 ? p.providers : []}
-          disabled={p.accountDisabled}
+          disabled={!!p.readOnlyReason || p.accountDisabled}
           accountDisabled={p.isAccountDisabled}
           automatic={p.automaticAccount}
         />
@@ -91,16 +92,18 @@ export function AgentSetupPicker(p: AgentSetupPickerProps) {
         options={p.models}
         value={p.model}
         onChange={p.onModel}
-        disabled={p.disabled}
+        disabled={!!p.readOnlyReason || p.disabled}
       />
       <EffortField
         label={p.effortLabel}
         options={p.efforts}
         value={p.effort}
         onChange={p.onEffort}
-        disabled={p.disabled || p.effortDisabled}
+        disabled={!!p.readOnlyReason || p.disabled || p.effortDisabled}
       />
-      {p.role !== "review" && <ModeToggles {...p} />}
+      {p.role !== "review" && (
+        <ModeToggles {...p} disabled={!!p.readOnlyReason || p.disabled} />
+      )}
     </Stack>
   );
 }

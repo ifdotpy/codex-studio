@@ -1,21 +1,13 @@
 import { lazy, Suspense, useEffect, useState } from "react";
-import {
-  Button,
-  Group,
-  Modal,
-  SegmentedControl,
-  Stack,
-  Tabs,
-} from "@mantine/core";
+import { Button, Group, Modal, Stack, Tabs } from "@mantine/core";
 import { useMediaQuery } from "@mantine/hooks";
 import type { Agent, Snapshot } from "../../types";
 import { modalSizes } from "../../theme";
 import type { Account, useAccounts } from "../Accounts";
 import { UnifiedAgentSettings } from "./UnifiedAgentSettings";
-import { ExecutionSettings } from "./ExecutionSettings";
+import { DelegationSettings, ExecutionPermissions } from "./ExecutionSettings";
 import { AccountExclusionsControl } from "./AccountExclusionsControl";
 import SubagentConcurrencyControl from "./SubagentConcurrencyControl";
-import type { SetupRole } from "./AgentSetupPicker";
 import type { useWorkerModels } from "./WorkerModelPicker";
 import "./chat-settings-dialog.css";
 
@@ -53,20 +45,8 @@ export function ChatSettingsDialog(p: Props) {
   useEffect(() => {
     if (p.settingsOpen) {
       setTab(p.agent?.source === "managed" ? "models" : "team");
-      setRole("orchestrator");
     }
   }, [p.settingsOpen, p.agent?.id, p.agent?.source]);
-  const [role, setRole] = useState<SetupRole>("orchestrator");
-  const roles: { value: SetupRole; label: string }[] = [
-    { value: "orchestrator", label: p.agent?.isLead ? "Lead" : "Agent" },
-    ...(root?.isLead
-      ? [
-          { value: "worker" as const, label: "Workers" },
-          { value: "review" as const, label: "Review" },
-        ]
-      : []),
-  ];
-  const modelsAgent = role === "orchestrator" ? p.agent : root;
   return (
     <Modal
       opened={p.settingsOpen}
@@ -98,33 +78,20 @@ export function ChatSettingsDialog(p: Props) {
           </Tabs.Tab>
         </Tabs.List>
         <Tabs.Panel value="models" pt="sm">
-          {modelsAgent?.source === "managed" && (
-            <>
-              {tab === "models" && (
-                <SegmentedControl
-                  fullWidth
-                  size="xs"
-                  aria-label="Agent role"
-                  value={role}
-                  onChange={(value) => setRole(value as SetupRole)}
-                  className="settings-role-switch model-picker-role-switch"
-                  data={roles}
-                />
-              )}
-              <UnifiedAgentSettings
-                key={role}
-                state={p.accounts}
-                notify={p.notify}
-                settingsRow
-                presentation="panel"
-                initialRole={role}
-                onAccountModalOpenChange={p.updateAccountModalOpen}
-                agent={modelsAgent}
-                catalog={p.agentModels}
-                team={p.data.runtime?.agents || []}
-                refresh={p.refresh}
-              />
-            </>
+          {p.agent?.source === "managed" && (
+            <UnifiedAgentSettings
+              key={p.agent.id}
+              state={p.accounts}
+              notify={p.notify}
+              settingsRow
+              presentation="panel"
+              onAccountModalOpenChange={p.updateAccountModalOpen}
+              agent={p.agent}
+              lead={root?.isLead ? root : undefined}
+              catalog={p.agentModels}
+              team={p.data.runtime?.agents || []}
+              refresh={p.refresh}
+            />
           )}
         </Tabs.Panel>
         <Tabs.Panel value="team" pt="sm">
@@ -138,10 +105,8 @@ export function ChatSettingsDialog(p: Props) {
                     workspaceId={p.workspaceId}
                     refresh={p.refresh}
                   />
-                  <ExecutionSettings
-                    teamOnly
+                  <DelegationSettings
                     settingsRow
-                    initialRole="worker"
                     agent={root}
                     catalog={p.agentModels}
                     accounts={p.accounts.data.accounts}
@@ -162,8 +127,7 @@ export function ChatSettingsDialog(p: Props) {
               <Stack gap="sm" id="chat-settings-permissions">
                 {p.agent?.source === "managed" &&
                   p.agent.provider !== "claude" && (
-                    <ExecutionSettings
-                      permissionsOnly
+                    <ExecutionPermissions
                       settingsRow
                       agent={p.agent}
                       catalog={p.agentModels}

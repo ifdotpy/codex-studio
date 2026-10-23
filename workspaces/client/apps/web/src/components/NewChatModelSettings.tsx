@@ -4,7 +4,7 @@ import { useServerServices } from "../servers/ServerServicesContext";
 import { createServerServices } from "../servers/serverServices";
 import { watchResourceReads } from "./watchResourceReads";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Button, SegmentedControl, Stack } from "@mantine/core";
+import { Button, Stack } from "@mantine/core";
 import { errorText, type GetResult } from "../api";
 import type { Agent } from "../types";
 import { serverResourceScope, type StudioServer } from "../servers/registry";
@@ -101,7 +101,6 @@ export default function NewChatModelSettings(props: Props) {
 }
 
 function ModelDraft({ server, projectId, path, onChange }: Props) {
-  const [role, setRole] = useState<"orchestrator" | "worker">("orchestrator");
   const [accounts, setAccounts] = useState<GetResult<"/api/accounts"> | null>(
     null,
   );
@@ -229,40 +228,22 @@ function ModelDraft({ server, projectId, path, onChange }: Props) {
       className="new-chat-model-settings"
       aria-label="Agent settings"
     >
-      <SegmentedControl
-        className="model-picker-role-switch"
-        fullWidth
-        size="xs"
-        aria-label="Agent role"
-        value={role}
-        onChange={(value) => setRole(value as typeof role)}
-        data={[
-          { value: "orchestrator", label: "Lead" },
-          { value: "worker", label: "Workers" },
-        ]}
+      <ExecutionSettings
+        agent={agent}
+        catalog={catalog}
+        accounts={accounts?.accounts || []}
+        refresh={async () => {}}
+        presentation="panel"
+        settingsRow
+        showAccountSummary
+        onDraftChange={patch}
+        onAccountChange={(key) => {
+          setAccountKey(key);
+          setSettings((previous) =>
+            settingsForNewChatAccount(previous, key, model),
+          );
+        }}
       />
-      <section
-        key={role}
-        aria-label={role === "orchestrator" ? "Lead model" : "Worker model"}
-      >
-        <ExecutionSettings
-          agent={agent}
-          catalog={catalog}
-          accounts={accounts?.accounts || []}
-          refresh={async () => {}}
-          presentation="panel"
-          settingsRow
-          showAccountSummary
-          initialRole={role}
-          onDraftChange={patch}
-          onAccountChange={(key) => {
-            setAccountKey(key);
-            setSettings((previous) =>
-              settingsForNewChatAccount(previous, key, model),
-            );
-          }}
-        />
-      </section>
       {(error || modelError) && (
         <div role="alert">
           {error || modelError}

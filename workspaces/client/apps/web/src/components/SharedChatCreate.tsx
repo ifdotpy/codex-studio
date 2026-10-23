@@ -8,7 +8,7 @@ import { ApiError, errorText, type PostBody } from "../api";
 import type { Snapshot } from "../types";
 import type { AccountsState } from "./Accounts";
 import { useWorkerModels } from "./agents/WorkerModelPicker";
-import { AgentSetupPicker } from "./agents/AgentSetupPicker";
+import { AgentSetupPicker, type SetupRole } from "./agents/AgentSetupPicker";
 import {
   modelDisplayName,
   modelForValue,
@@ -53,6 +53,11 @@ function ParticipantFields({
   onOpenedChange: (opened: boolean) => void;
   valid: (ready: boolean) => void;
 }) {
+  const [role, setRole] = useState<SetupRole>("orchestrator");
+  const readOnlyReason =
+    role === "orchestrator"
+      ? undefined
+      : "Shared chat participants manage their own worker and review defaults. These settings are inherited and cannot be changed here.";
   const catalog = useWorkerModels(value.account_key, !!value.account_key);
   const readyAccounts = accounts.accounts.filter((account) =>
     accountCanStart(account),
@@ -141,9 +146,9 @@ function ParticipantFields({
         <Popover.Dropdown className="execution-dropdown shared-create-picker">
           <AgentSetupPicker
             retainCurrentModel={false}
-            role="orchestrator"
-            roles={[]}
-            onRole={() => {}}
+            role={role}
+            onRole={setRole}
+            readOnlyReason={readOnlyReason}
             provider={browsedProvider}
             providers={providers}
             onProvider={setBrowsedProvider}
@@ -151,12 +156,23 @@ function ParticipantFields({
             accountKey={value.account_key}
             accountLabel={`Account for agent ${index + 1}`}
             onAccount={chooseAccount}
-            models={toModelOptions(catalog.models, { provider })}
-            model={value.model}
+            models={
+              readOnlyReason
+                ? [
+                    {
+                      value: "inherited",
+                      label: "Inherited",
+                      provider,
+                      badges: [],
+                    },
+                  ]
+                : toModelOptions(catalog.models, { provider })
+            }
+            model={readOnlyReason ? "inherited" : value.model}
             modelLabel={`Model for agent ${index + 1}`}
             onModel={(model) => change({ ...value, model, effort: undefined })}
             efforts={
-              reasoningEfforts.length
+              !readOnlyReason && reasoningEfforts.length
                 ? [
                     { value: "", label: "Default" },
                     ...reasoningEfforts.map((item) => ({
