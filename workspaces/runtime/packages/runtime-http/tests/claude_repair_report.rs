@@ -8,14 +8,17 @@ use axum::{
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
-async fn get(app: &axum::Router, path: &str, token: &str) -> (u16, Value) {
+async fn get(app: &axum::Router, path: &str, origin: Option<&str>) -> (u16, Value) {
+    let mut request = Request::builder();
+    if let Some(origin) = origin {
+        request = request.header("origin", origin);
+    }
     let response = app
         .clone()
         .oneshot(
-            Request::builder()
+            request
                 .uri(path)
                 .header("host", "127.0.0.1:49171")
-                .header("x-canvas-token", token)
                 .header(
                     studio_runtime_http::API_SCHEMA_HASH_HEADER,
                     studio_runtime_http::schema::api_schema_hash(),
@@ -45,7 +48,7 @@ async fn repair_report_read_is_scoped_bounded_and_does_not_expose_provider_text(
             |row| row.get(0),
         )
         .unwrap();
-    let (status, report) = get(&app, "/api/claude/repair-report?id=agent", "fixture-token").await;
+    let (status, report) = get(&app, "/api/claude/repair-report?id=agent", None).await;
     assert_eq!(status, 200, "{report}");
     assert_eq!(
         report,
@@ -65,28 +68,24 @@ async fn repair_report_read_is_scoped_bounded_and_does_not_expose_provider_text(
         )
         .unwrap();
     assert_eq!(before, after);
-    assert_ne!(
-        get(&app, "/api/claude/repair-report?id=agent", "wrong")
-            .await
-            .0,
-        200
-    );
-    assert_ne!(
+    // Read routes require a trusted local origin, without a write token.
+    assert_eq!(
         get(
             &app,
-            "/api/claude/repair-report?id=foreign",
-            "fixture-token"
+            "/api/claude/repair-report?id=agent",
+            Some("https://attacker.example")
         )
         .await
         .0,
-        200
+        403
     );
     assert_ne!(
-        get(&app, "/api/claude/repair-report", "fixture-token")
+        get(&app, "/api/claude/repair-report?id=foreign", None)
             .await
             .0,
         200
     );
+    assert_ne!(get(&app, "/api/claude/repair-report", None).await.0, 200);
     assert_eq!(native.calls.lock().unwrap().len(), 1);
     worker.shutdown().await.unwrap();
 }
@@ -105,7 +104,7 @@ async fn repair_report_refuses_invalid_evidence_without_exposing_provider_values
         let mut invalid = report.clone();
         invalid[field] = value;
         *native.repair_report.lock().unwrap() = Some(invalid);
-        let (status, body) = get(&app, "/api/claude/repair-report?id=agent", "fixture-token").await;
+        let (status, body) = get(&app, "/api/claude/repair-report?id=agent", None).await;
         assert_eq!(status, 500, "{field}: {body}");
         assert!(!body.to_string().contains("private-provider-text"));
     }
