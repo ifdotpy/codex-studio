@@ -122,7 +122,7 @@ const queuedFor = (agent: SettingsAgent) =>
   agent.pendingSettingsAccountKey !== accountOf(agent)
     ? null
     : agent.pendingSettings;
-const settingsFor = (
+export const settingsFor = (
   agent: SettingsAgent,
   teamDefaults: boolean,
 ): SettingsValue => {
