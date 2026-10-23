@@ -471,3 +471,40 @@
 .account-transfer-chip[data-blocked] {
   color: light-dark(var(--mantine-color-red-7), var(--mantine-color-red-5));
 }
+
+/* Account strips are shared by local and multi-server settings. */
+.server-accounts-list {
+  display: grid;
+  gap: 10px;
+}
+.server-account-row {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--surface);
+}
+.server-account-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+.server-account-heading > div:first-child {
+  display: grid;
+  justify-items: start;
+  gap: 4px;
+  min-width: 0;
+}
+.server-account-heading strong,
+.server-account-heading small {
+  overflow-wrap: anywhere;
+}
+.server-account-heading small,
+.account-muted,
+.server-accounts-help {
+  color: var(--muted);
+  font-size: 12px;
+}
