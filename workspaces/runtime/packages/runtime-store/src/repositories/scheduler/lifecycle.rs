@@ -17,12 +17,18 @@ impl SchedulerRepository {
         } else {
             NOT_SENT_ERROR
         });
+        let reach = match outcome {
+            "uncertain" => StartReach::Provider,
+            // Callers settle `pending` only for a request proven never written.
+            "pending" => StartReach::NotWritten,
+            _ => StartReach::Preparation,
+        };
         apply_start_error(
             transaction,
             agent,
             identity,
             outcome == "uncertain",
-            outcome != "uncertain",
+            reach,
             message,
             json!({"outcome":outcome,"reason":reason}),
         )?;
@@ -1234,7 +1240,7 @@ impl SchedulerRepository {
         {
             return Ok(false);
         }
-        let decision = start_error_decision(&agent, epoch, false, false);
+        let decision = start_error_decision(&agent, epoch, false, StartReach::Provider);
         if decision.return_busy_input {
             return Err(ExecutionHistoryRepository::invalid(
                 "runtime_execution_attempts",
@@ -1320,7 +1326,7 @@ impl SchedulerRepository {
                 attempt_id: attempt_id.into(),
             },
             false,
-            false,
+            StartReach::Provider,
             &message,
             input,
         )
@@ -1761,6 +1767,19 @@ pub const START_RETURN_LIMIT: usize = 3;
 const WAITING_START: &str =
     "The native start result is unknown. Studio is checking the original input in native history.";
 
+/// What a settled start outcome proves about how far its input went.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum StartReach {
+    /// The provider answered the request, or its outcome is unknown.
+    Provider,
+    /// The start stopped before its request; a submitted start may still have
+    /// been written, so only an unsubmitted one returns its input.
+    Preparation,
+    /// The session proved that it never wrote the request, also after the
+    /// durable submitted mark, so the input never reached the provider.
+    NotWritten,
+}
+
 pub(super) struct StartErrorDecision {
     event_status: &'static str,
     evidence: &'static str,
@@ -1772,7 +1791,7 @@ pub(super) fn start_error_decision(
     agent: &AgentRecord,
     epoch: i64,
     unknown: bool,
-    preparation: bool,
+    reach: StartReach,
 ) -> StartErrorDecision {
     let attempt = &agent.extra.get("startAttempt").unwrap_or(&Value::Null);
     let submitted = attempt["submitted"] == true;
@@ -1790,7 +1809,9 @@ pub(super) fn start_error_decision(
             if submitted { "uncertain" } else { "reserved" }
         } else if !current {
             "cancelled"
-        } else if preparation && !submitted {
+        } else if reach == StartReach::NotWritten
+            || (reach == StartReach::Preparation && !submitted)
+        {
             "pending"
         } else {
             "failed"
@@ -1845,7 +1866,15 @@ fn return_unapplied_input(
         return Ok(false);
     };
     if attempt["activeAtReservation"] == true {
-        return apply_start_error(tx, agent, identity, false, false, message, input);
+        return apply_start_error(
+            tx,
+            agent,
+            identity,
+            false,
+            StartReach::Provider,
+            message,
+            input,
+        );
     }
     if attempt["id"] != identity.attempt_id
         || attempt["epoch"] != identity.epoch
@@ -1883,7 +1912,7 @@ pub(super) fn apply_start_error(
     mut agent: AgentRecord,
     identity: &TurnAttemptIdentity,
     unknown: bool,
-    preparation: bool,
+    reach: StartReach,
     message: &str,
     input: Value,
 ) -> StoreResult<bool> {
@@ -1915,7 +1944,7 @@ pub(super) fn apply_start_error(
     }
     let events = validated_events(tx, &agent, attempt)?;
     let count = attempt["events"].as_array().map_or(0, Vec::len);
-    let decision = start_error_decision(&agent, identity.epoch, unknown, preparation);
+    let decision = start_error_decision(&agent, identity.epoch, unknown, reach);
     if decision.return_busy_input {
         ExecutionHistoryRepository::reject_attempt(tx, &identity.attempt_id, message)?;
         tx.execute_cached("UPDATE runtime_events SET status='pending',turn_id=NULL,error=CASE WHEN EXISTS(SELECT 1 FROM runtime_event_meta m WHERE m.id=runtime_events.id AND json_extract(m.record,'$.sendNow')=1) THEN ?1 ELSE NULL END WHERE agent=?2 AND epoch=?3 AND id IN(SELECT value FROM json_each(?4)) AND status IN ('reserved','dispatching','uncertain')",
