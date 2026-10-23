@@ -18,6 +18,7 @@ import { DISK_FULL_WAIT_LABEL, diskFullHold } from "../../capacityRetry";
 import { startWaitLabel } from "../../startWait";
 import { modelDisplayName } from "../models/modelOption";
 import { TeamModelCatalog } from "./WorkerOverview";
+import Disclosure from "../ui/Disclosure";
 import type { Account } from "../Accounts";
 import { ProviderMark } from "../AccountTiles";
 import { TeamRoleIcon, TeamStateIcon, activityPresentation } from "./TeamFacts";
@@ -57,12 +58,10 @@ function WorkerExcerpt({
   );
   const expanded = disclosures[key] || false;
   return (
-    <details
+    <Disclosure
       className="worker-excerpt"
       open={expanded}
-      onToggle={(event) => {
-        if (event.target !== event.currentTarget) return;
-        const value = event.currentTarget.open;
+      onChange={(value) => {
         const prior = saved<Record<string, boolean>>(storageKey, {});
         save(
           storageKey,
@@ -74,15 +73,14 @@ function WorkerExcerpt({
           ]),
         );
       }}
-    >
-      <summary>
+      summary={
         <span className="worker-excerpt-label">
           <FileText size={11} aria-hidden="true" />
           {label}
           <ChevronRight size={11} aria-hidden="true" />
         </span>
-        <span className="worker-excerpt-preview">{text}</span>
-      </summary>
+      }
+    >
       <div className="worker-excerpt-full">
         <p>{text}</p>
         {truncated && (
@@ -91,7 +89,7 @@ function WorkerExcerpt({
           </Button>
         )}
       </div>
-    </details>
+    </Disclosure>
   );
 }
 
@@ -361,19 +359,22 @@ const WorkerCardView = memo(function WorkerCardView({
         </span>
         <div className="worker-disclosures">
           {Boolean(agent.error) && (
-            <details
+            <Disclosure
               className={
                 stopReason ? "worker-stop-details" : "worker-error-details"
               }
+              ariaLabel={stopReason ? "Stop details" : "Error details"}
+              summary={
+                <>
+                  <CircleAlert aria-hidden="true" />
+                  <span className="sr-only">
+                    {stopReason ? "Stop details" : "Error details"}
+                  </span>
+                </>
+              }
             >
-              <summary title={stopReason ? "Stop details" : "Error details"}>
-                <CircleAlert aria-hidden="true" />
-                <span className="sr-only">
-                  {stopReason ? "Stop details" : "Error details"}
-                </span>
-              </summary>
               <pre>{errorView.details || errorView.message}</pre>
-            </details>
+            </Disclosure>
           )}
           {overview?.result ? (
             <WorkerExcerpt
@@ -385,13 +386,18 @@ const WorkerCardView = memo(function WorkerCardView({
             />
           ) : null}
           {!!agent.commandProgress?.length && (
-            <details className="worker-command-details">
-              <summary title="Command progress">
-                <Terminal aria-hidden="true" />
-                <span className="sr-only">Command progress</span>
-              </summary>
+            <Disclosure
+              className="worker-command-details"
+              ariaLabel="Command progress"
+              summary={
+                <>
+                  <Terminal aria-hidden="true" />
+                  <span className="sr-only">Command progress</span>
+                </>
+              }
+            >
               <AgentProgress agent={agent} />
-            </details>
+            </Disclosure>
           )}
           {agent.stall && (
             <span className="agent-stall" title={statusDetail}>

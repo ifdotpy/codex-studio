@@ -286,7 +286,7 @@ test("Team panel ui", async ({
       await panel
         .locator(".worker-entry")
         .filter({ has: page.locator('[data-worker="worker-active"]') })
-        .locator(".worker-command-details summary")
+        .locator(".worker-command-details > .disclosure-control")
         .click();
       const command = panel.locator('[data-monitor="fixture-gate"]');
       await expect(command).toContainText(/just test-fast · 12m/);
@@ -316,7 +316,7 @@ test("Team panel ui", async ({
       assert.ok((await card.boundingBox()).height < 250, "compact error card");
       assert.equal(await card.locator("pre").isVisible(), false);
       await panel.screenshot({ path: join(evidence, `team-${width}.png`) });
-      await card.locator(".worker-error-details summary").click();
+      await card.locator(".worker-error-details > .disclosure-control").click();
       assert.equal(
         await card.locator("pre").innerText(),
         rawError,
@@ -329,7 +329,7 @@ test("Team panel ui", async ({
         ),
         "no horizontal overflow",
       );
-      await card.locator(".worker-error-details summary").click();
+      await card.locator(".worker-error-details > .disclosure-control").click();
       await panel.locator("#team-close").click();
       await panel.waitFor({ state: "hidden" });
     }

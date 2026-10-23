@@ -1,4 +1,4 @@
-/* Team: facts in compact strips, with shared state rails and native disclosures. */
+/* Team: facts in compact strips, with shared state rails and accessible button disclosures. */
 #team.team-dispatch {
   inline-size: var(--studio-team-size);
   flex-basis: var(--studio-team-size);
@@ -296,21 +296,21 @@
   min-inline-size: 0;
   color: var(--muted);
 }
-#team .worker-disclosures details {
+#team .worker-disclosures .disclosure {
   margin: 0;
   font-size: var(--studio-text-meta);
 }
-#team .worker-disclosures summary {
+#team .worker-disclosures .disclosure-control {
   cursor: pointer;
   white-space: nowrap;
 }
 #team
   :is(.worker-error-details, .worker-stop-details, .worker-command-details)
-  > summary {
+  > .disclosure-control {
   display: inline-flex;
   align-items: center;
 }
-#team .worker-disclosures summary svg {
+#team .worker-disclosures .disclosure-control svg {
   inline-size: var(--studio-text-meta);
   block-size: var(--studio-text-meta);
 }
@@ -319,22 +319,13 @@
   align-items: center;
   gap: calc(var(--mantine-spacing-xs) / 4);
 }
-#team .worker-excerpt > summary {
-  list-style: none;
-}
-#team .worker-excerpt > summary::-webkit-details-marker {
-  display: none;
-}
-.worker-excerpt-preview {
-  display: none;
-}
-#team .worker-excerpt[open] .worker-excerpt-label svg:last-child {
+#team .worker-excerpt[data-expanded] .worker-excerpt-label svg:last-child {
   transform: rotate(90deg);
 }
-#team .worker-bottom:has(details[open]) {
+#team .worker-bottom:has(.disclosure[data-expanded]) {
   flex-wrap: wrap;
 }
-#team .worker-disclosures:has(details[open]) {
+#team .worker-disclosures:has(.disclosure[data-expanded]) {
   display: block;
   flex-basis: 100%;
 }
@@ -348,13 +339,13 @@
 #team .worker-disclosures pre {
   font-size: var(--studio-text-meta);
 }
-#team .worker-group > summary {
+#team .worker-group > .disclosure-control {
   padding: var(--mantine-spacing-xs) 0;
   color: var(--muted);
   cursor: pointer;
   font-size: var(--studio-text-meta);
 }
-#team .worker-group > summary .team-group-label {
+#team .worker-group > .disclosure-control .team-group-label {
   display: inline-flex;
   inline-size: calc(100% - var(--mantine-spacing-md));
 }
@@ -403,7 +394,7 @@
   margin-block-end: var(--mantine-spacing-sm);
   font-size: var(--studio-text-meta);
 }
-#team .team-lead-report summary {
+#team .team-lead-report .disclosure-control {
   cursor: pointer;
   color: var(--muted);
 }
@@ -411,4 +402,25 @@
   margin-block: var(--mantine-spacing-xs);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+#team .disclosure-control {
+  display: inline-flex;
+  align-items: center;
+  gap: calc(var(--mantine-spacing-xs) / 2);
+  padding: 0;
+  color: inherit;
+  font: inherit;
+}
+#team .disclosure-chevron {
+  inline-size: var(--studio-text-meta);
+  block-size: var(--studio-text-meta);
+  flex: none;
+}
+#team .disclosure[data-expanded] > .disclosure-control > .disclosure-chevron {
+  transform: rotate(90deg);
+}
+#team .worker-group > .disclosure-control {
+  inline-size: 100%;
+  padding-block: var(--mantine-spacing-xs);
 }
