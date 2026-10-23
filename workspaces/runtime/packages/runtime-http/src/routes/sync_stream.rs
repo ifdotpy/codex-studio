@@ -17,7 +17,7 @@ use axum::response::sse::{Event, Sse};
 use axum::response::{IntoResponse, Response};
 use futures_util::Stream;
 use futures_util::stream;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use studio_runtime_schema::shared_values::{
     MAX_SYNC_RESOURCE_COUNT, MAX_SYNC_RESOURCE_QUERY_BYTES, SYNC_DRAFT_STREAM_MAX_BYTES,
@@ -186,9 +186,21 @@ async fn sync_stream(
         Some(subscription_snapshot.revision),
         initial_event,
     ));
-    let mut token_rates = state.token_rates.subscribe();
-    let (rates, cursor) = token_snapshot(&mut token_rates, || changes.borrow().clone());
-    initial.push_back(token_rate_event(&state.workspace_id, &cursor, &rates));
+    // OpenAPI owns the omitted-selector compatibility default; the HTTP witness
+    // keeps this native/signed-client behavior in parity with that contract.
+    let token_interest = match query
+        .typed_value("tokenRates")
+        .map(bool::deserialize)
+        .transpose()
+    {
+        Ok(interest) => interest.unwrap_or(true),
+        Err(_) => return ApiError::internal().into_response(),
+    };
+    let mut token_rates = token_interest.then(|| state.token_rates.subscribe());
+    if let Some(receiver) = &mut token_rates {
+        let (rates, cursor) = token_snapshot(receiver, || changes.borrow().clone());
+        initial.push_back(token_rate_event(&state.workspace_id, &cursor, &rates));
+    }
 
     let stream_state = ResourceStream {
         http_state: Some(state.clone()),
@@ -676,7 +688,7 @@ struct ResourceStream {
     store: Option<Arc<RuntimeStore>>,
     changes: tokio::sync::watch::Receiver<ChangeSnapshot>,
     notifications: Arc<ResourceNotifications>,
-    token_rates: tokio::sync::watch::Receiver<Arc<TokenRates>>,
+    token_rates: Option<tokio::sync::watch::Receiver<Arc<TokenRates>>>,
     consecutive_token_frames: usize,
     /// Earliest instant of the next token-rate frame, from `SYNC_FRAME_MIN_INTERVAL`.
     next_token_frame_at: Option<Instant>,
@@ -699,12 +711,12 @@ async fn next_frame(
         let heartbeat = if prefer_resource {
             tokio::select! {
                 biased;
-                changed = changed_not_before(&mut state.changes, state.next_resources_frame_at) => {
+                changed = changed_not_before(Some(&mut state.changes), state.next_resources_frame_at) => {
                     if changed.is_err() { return None; }
                     state.changes.borrow_and_update();
                     false
                 },
-                changed = changed_not_before(&mut state.token_rates, state.next_token_frame_at) => {
+                changed = changed_not_before(state.token_rates.as_mut(), state.next_token_frame_at) => {
                     if changed.is_err() { return None; }
                     state.consecutive_token_frames = state.consecutive_token_frames.saturating_add(1);
                     let frame = token_rate_sse_frame(&mut state)?;
@@ -716,14 +728,14 @@ async fn next_frame(
         } else {
             tokio::select! {
                 biased;
-                changed = changed_not_before(&mut state.token_rates, state.next_token_frame_at) => {
+                changed = changed_not_before(state.token_rates.as_mut(), state.next_token_frame_at) => {
                     if changed.is_err() { return None; }
                     state.consecutive_token_frames = state.consecutive_token_frames.saturating_add(1);
                     let frame = token_rate_sse_frame(&mut state)?;
                     state.next_token_frame_at = Some(Instant::now() + SYNC_FRAME_MIN_INTERVAL);
                     return Some((Ok(frame), state));
                 },
-                changed = changed_not_before(&mut state.changes, state.next_resources_frame_at) => {
+                changed = changed_not_before(Some(&mut state.changes), state.next_resources_frame_at) => {
                     if changed.is_err() { return None; }
                     state.changes.borrow_and_update();
                     false
@@ -819,9 +831,12 @@ async fn next_frame(
 /// because the watch keeps only the newest value. The window is waited out before
 /// `changed()`, which consumes the notification, so dropping this future loses nothing.
 async fn changed_not_before<T>(
-    receiver: &mut tokio::sync::watch::Receiver<T>,
+    receiver: Option<&mut tokio::sync::watch::Receiver<T>>,
     not_before: Option<Instant>,
 ) -> Result<(), tokio::sync::watch::error::RecvError> {
+    let Some(receiver) = receiver else {
+        return std::future::pending().await;
+    };
     if let Some(not_before) = not_before {
         tokio::time::sleep_until(not_before).await;
     }
@@ -829,7 +844,9 @@ async fn changed_not_before<T>(
 }
 
 fn token_rate_sse_frame(state: &mut ResourceStream) -> Option<Event> {
-    let (rates, cursor) = token_snapshot(&mut state.token_rates, || state.changes.borrow().clone());
+    let (rates, cursor) = token_snapshot(state.token_rates.as_mut()?, || {
+        state.changes.borrow().clone()
+    });
     if cursor.closed {
         return None;
     }
@@ -982,6 +999,147 @@ where
 mod tests {
     use super::*;
     use studio_runtime_services::change_notifications::ChangeNotificationHub;
+
+    #[tokio::test(start_paused = true)]
+    async fn state_stream_token_interest_suppresses_tokens_but_preserves_resources_and_heartbeats()
+    {
+        use axum::body::Body;
+        use axum::extract::ConnectInfo;
+        use axum::http::Request;
+        use futures_util::StreamExt;
+        use tower::ServiceExt;
+
+        let root = tempfile::tempdir().expect("isolated state");
+        let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
+        let state = HttpState::new(
+            "token".into(),
+            "workspace".into(),
+            root.path().display().to_string(),
+            4321,
+            None,
+            Some(store.clone()),
+            None,
+        );
+        let app = crate::router(state.clone()).expect("router");
+        let request = |selector: &str| {
+            Request::builder()
+            .uri(format!("/api/sync/stream?protocol={SYNC_PROTOCOL_VERSION_TEXT}&resources=%5B%7B%22kind%22%3A%22drafts%22%7D%5D{selector}"))
+            .header("host", "127.0.0.1:4321")
+            .header("x-canvas-token", "token")
+            .extension(ConnectInfo(std::net::SocketAddr::from(([127,0,0,1],12345))))
+            .body(Body::empty()).expect("request")
+        };
+        let response = app
+            .clone()
+            .oneshot(request("&tokenRates=false"))
+            .await
+            .expect("response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let mut body = response.into_body().into_data_stream();
+        let first = body.next().await.expect("initial").expect("bytes");
+        assert!(String::from_utf8_lossy(&first).contains("event: resources"));
+        state
+            .token_rates
+            .publish(test_rates(1))
+            .expect("token publication");
+        let frame = body.next().await.expect("heartbeat").expect("bytes");
+        assert!(
+            String::from_utf8_lossy(&frame).contains("event: heartbeat"),
+            "uninterested streams must omit initial and subsequent tokens: {}",
+            String::from_utf8_lossy(&frame)
+        );
+        store
+            .transaction(|tx| {
+                SyncDocumentsRepository::put_draft(
+                    tx,
+                    "phone:chat",
+                    r#"{"device":"phone","session":"chat","text":"draft","updated":1}"#,
+                    false,
+                )?;
+                Ok(())
+            })
+            .await
+            .expect("draft change");
+        state
+            .resource_notifications
+            .publish_once(&json!({"requestId":"interest-draft","resources":[{"kind":"drafts"}]}))
+            .expect("draft hint");
+        let frame = body.next().await.expect("resource change").expect("bytes");
+        assert!(String::from_utf8_lossy(&frame).contains("event: resources"));
+        drop(body);
+        // Read only the selector default from the OpenAPI owner, through typed serde.
+        #[derive(Deserialize)]
+        struct Api {
+            paths: Paths,
+        }
+        #[derive(Deserialize)]
+        struct Paths {
+            #[serde(rename = "/api/sync/stream")]
+            stream: Stream,
+        }
+        #[derive(Deserialize)]
+        struct Stream {
+            get: Operation,
+        }
+        #[derive(Deserialize)]
+        struct Operation {
+            parameters: Vec<Parameter>,
+        }
+        #[derive(Deserialize)]
+        struct Parameter {
+            name: String,
+            schema: ParameterSchema,
+        }
+        #[derive(Deserialize)]
+        struct ParameterSchema {
+            default: Option<bool>,
+        }
+        let api: Api =
+            serde_json::from_str(include_str!("../../openapi.json")).expect("OpenAPI owner");
+        let selector = api
+            .paths
+            .stream
+            .get
+            .parameters
+            .iter()
+            .find(|parameter| parameter.name == "tokenRates")
+            .expect("selector owner");
+        assert_eq!(
+            selector.schema.default,
+            Some(true),
+            "omission below must match the schema owner"
+        );
+        for selector in ["", "&tokenRates=true"] {
+            let response = app
+                .clone()
+                .oneshot(request(selector))
+                .await
+                .expect("response");
+            assert_eq!(response.status(), StatusCode::OK);
+            let mut body = response.into_body().into_data_stream();
+            body.next().await.expect("initial").expect("bytes");
+            let frame = body.next().await.expect("current snapshot").expect("bytes");
+            let frame = String::from_utf8_lossy(&frame);
+            assert!(frame.contains("event: token-rates"));
+            assert!(
+                frame.contains("\"rate\":1"),
+                "reconfiguration immediately gets the current snapshot: {frame}"
+            );
+        }
+        for selector in [
+            "&tokenRates=invalid",
+            "&tokenRates=1",
+            "&tokenRates=",
+            "&tokenRates=true&tokenRates=false",
+        ] {
+            let response = app
+                .clone()
+                .oneshot(request(selector))
+                .await
+                .expect("response");
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{selector}");
+        }
+    }
 
     #[tokio::test]
     async fn state_stream_transcript_delta_uses_the_existing_pull_cursor() {
@@ -2102,7 +2260,7 @@ mod tests {
             store: None,
             changes,
             notifications: Arc::new(ResourceNotifications::new(Arc::new(hub.clone()))),
-            token_rates: tokens.subscribe(),
+            token_rates: Some(tokens.subscribe()),
             consecutive_token_frames: 0,
             next_token_frame_at: None,
             next_resources_frame_at: None,
@@ -2147,7 +2305,7 @@ mod tests {
             store: None,
             changes,
             notifications: notifications.clone(),
-            token_rates: token_hub.subscribe(),
+            token_rates: Some(token_hub.subscribe()),
             consecutive_token_frames: 0,
             next_token_frame_at: None,
             next_resources_frame_at: None,
@@ -2262,7 +2420,7 @@ mod tests {
             store: None,
             changes,
             notifications,
-            token_rates: tokens.subscribe(),
+            token_rates: Some(tokens.subscribe()),
             consecutive_token_frames: 0,
             next_token_frame_at: None,
             next_resources_frame_at: None,
@@ -2476,7 +2634,7 @@ mod tests {
             store: None,
             changes,
             notifications: Arc::new(ResourceNotifications::new(Arc::new(hub.clone()))),
-            token_rates: TokenRateHub::new().subscribe(),
+            token_rates: Some(TokenRateHub::new().subscribe()),
             consecutive_token_frames: 0,
             next_token_frame_at: None,
             next_resources_frame_at: None,

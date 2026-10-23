@@ -1804,6 +1804,7 @@ function fastTierCommands(root) {
             "src/sync/client.entityReset.test.ts",
             "src/sync/resourceEntityDelivery.test.ts",
             "src/sync/resourceEvents.test.ts",
+            "src/servers/eventSource.test.ts",
           ],
         ],
       ],

@@ -5,7 +5,11 @@ import {
 
 import { serverStorageName } from "../servers/environment";
 
-import { SYNC_PROTOCOL_VERSION, type components } from "../generated/api";
+import {
+  SYNC_PROTOCOL_VERSION,
+  type components,
+  type operations,
+} from "../generated/api";
 
 import { API_SCHEMA_HASH, API_SCHEMA_HASH_PARAM } from "../generated/apiSchema";
 
@@ -974,11 +978,20 @@ export function createResourceEvents(options: ResourceEventsOptions) {
       setStatus("connecting");
     keepLiveOnReconfigure = false;
     try {
-      const query = new URLSearchParams({
+      const subscription: NonNullable<
+        operations["sync_stream_api_sync_stream_get"]["parameters"]["query"]
+      > = {
         protocol: String(SYNC_PROTOCOL_VERSION),
         resources: JSON.stringify(resources),
+        tokenRates,
         [API_SCHEMA_HASH_PARAM]: API_SCHEMA_HASH,
-      });
+      };
+      const query = new URLSearchParams(
+        Object.entries(subscription).map(([key, value]) => [
+          key,
+          String(value),
+        ]),
+      );
       const connected = openServerEvents(`/api/sync/stream?${query}`);
       source = connected;
       notifyConnectionListeners();

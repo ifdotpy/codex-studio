@@ -77424,6 +77424,16 @@
             }
           },
           {
+            "description": "Whether this stream includes token-rate snapshots. Omitted selectors preserve native and signed-client behavior. Browser owners send the aggregate interest of their tabs.",
+            "in": "query",
+            "name": "tokenRates",
+            "required": false,
+            "schema": {
+              "default": true,
+              "type": "boolean"
+            }
+          },
+          {
             "in": "query",
             "name": "apiSchema",
             "required": false,

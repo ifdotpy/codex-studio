@@ -35390,6 +35390,8 @@ export interface operations {
         protocol?: string;
         resources?: string;
         scope?: string;
+        /** @description Whether this stream includes token-rate snapshots. Omitted selectors preserve native and signed-client behavior. Browser owners send the aggregate interest of their tabs. */
+        tokenRates?: boolean;
       };
       header?: {
         "Last-Event-ID"?: number;
