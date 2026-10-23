@@ -297,11 +297,10 @@ test("Team panel ui", async ({
         "Waiting for lead",
       );
       if (width > 760) {
-        await expect(
-          page.locator(
-            `.project-chats [data-chat="${lead.id}"] [data-monitor="fixture-lead-gate"]`,
-          ),
-        ).toContainText("Final review");
+        const leadRow = page.locator(`.project-chats [data-chat="${lead.id}"]`);
+        await expect(leadRow).toBeVisible();
+        // Sidebar strips reserve space for titles; routine command progress stays in Team.
+        await expect(leadRow.locator("[data-monitor]")).toHaveCount(0);
       }
       assert.equal(
         await panel.locator(".worker-disk, .team-disk-total").count(),

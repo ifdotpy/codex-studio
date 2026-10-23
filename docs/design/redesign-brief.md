@@ -121,19 +121,20 @@ Alignment: text left aligned; numbers right aligned in their column.
 `src/design/layout.css` owns the rem geometry, imported by `studio-theme.css`
 for the application and Storybook. Current reviewed values:
 
-| Token                        |    rem | Purpose                            |
-| ---------------------------- | -----: | ---------------------------------- |
-| `--studio-border-width`      | 0.0625 | Group separator                    |
-| `--studio-control-size`      |      2 | Desktop icon control               |
-| `--studio-touch-target`      |   2.75 | Standalone coarse-pointer control  |
-| `--studio-strip-min-height`  |   2.75 | Dense title/activity strip         |
-| `--studio-strip-indent`      |   0.75 | One hierarchy level                |
-| `--studio-team-size`         |     20 | Team dock inline size              |
-| `--studio-form-max`          |     40 | Readable form column               |
-| `--studio-settings-nav-size` |     12 | Settings navigation inline size    |
-| `--studio-room-list-size`    |     16 | Messages room selector inline size |
-| `--studio-meter-width`       |      3 | Context meter length               |
-| `--studio-meter-size`        | 0.1875 | Context meter thickness            |
+| Token                             |    rem | Purpose                            |
+| --------------------------------- | -----: | ---------------------------------- |
+| `--studio-border-width`           | 0.0625 | Group separator                    |
+| `--studio-control-size`           |      2 | Desktop icon control               |
+| `--studio-touch-target`           |   2.75 | Standalone coarse-pointer control  |
+| `--studio-strip-min-height`       |   2.75 | Dense title/activity strip         |
+| `--studio-strip-indent`           |  0.375 | One hierarchy level                |
+| `--studio-conversation-title-min` |      4 | Phone conversation title minimum   |
+| `--studio-team-size`              |     20 | Team dock inline size              |
+| `--studio-form-max`               |     40 | Readable form column               |
+| `--studio-settings-nav-size`      |     12 | Settings navigation inline size    |
+| `--studio-room-list-size`         |     16 | Messages room selector inline size |
+| `--studio-meter-width`            |      3 | Context meter length               |
+| `--studio-meter-size`             | 0.1875 | Context meter thickness            |
 
 `src/studio-preferences.css` alone owns the custom transcript column through
 `--studio-content-width-ratio` and its computed `--studio-content-column`.

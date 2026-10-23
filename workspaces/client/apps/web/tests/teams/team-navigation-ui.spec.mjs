@@ -7,7 +7,7 @@ import {
 } from "../playwright.mjs";
 // Production client and an isolated fixture. No model calls or user state.
 import assert from "node:assert/strict";
-import { mkdtemp } from "node:fs/promises";
+import { mkdir, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -16,6 +16,8 @@ test.use({ apiSchemaFixtureHeaders: false, hasTouch: true });
 test("team-navigation-ui", async ({ page: fixturePage }) => {
   test.setTimeout(60_000);
   const root = await mkdtemp(join(tmpdir(), "codex-team-navigation-"));
+  const evidence = process.env.TEAM_NAVIGATION_EVIDENCE || root;
+  await mkdir(evidence, { recursive: true });
   const proc = spawn(process.execPath, [rustUiFixture, root], {
     stdio: ["pipe", "pipe", "pipe"],
     env: {
@@ -483,6 +485,36 @@ test("team-navigation-ui", async ({ page: fixturePage }) => {
       await row(39).click();
       await team.waitFor({ state: "hidden" });
       await expect(page.locator("#conversation-title")).toHaveText("Worker 39");
+      await expect(page.locator("#conversation-title")).toBeVisible();
+      expect(
+        await page
+          .locator("#conversation-title")
+          .evaluate((node) => node.getBoundingClientRect().width),
+      ).toBeGreaterThanOrEqual(64);
+      expect(
+        await page.locator(".workspace-header").evaluate((header) => {
+          const title = header
+            .querySelector("#conversation-title")
+            .getBoundingClientRect();
+          return [...header.querySelectorAll("button, summary")].every(
+            (control) => {
+              const rect = control.getBoundingClientRect();
+              return (
+                rect.width === 0 ||
+                rect.height === 0 ||
+                rect.right <= title.left ||
+                rect.left >= title.right ||
+                rect.bottom <= title.top ||
+                rect.top >= title.bottom
+              );
+            },
+          );
+        }),
+        "the title does not overlap header controls",
+      ).toBe(true);
+      await page.screenshot({
+        path: join(evidence, `worker-header-${width}.png`),
+      });
       assert.ok(
         await page.locator("#back-lead").evaluate((n) => {
           const r = n.getBoundingClientRect();
@@ -514,27 +546,15 @@ test("team-navigation-ui", async ({ page: fixturePage }) => {
         exact: true,
       });
       await chatSettings
-        .getByRole("button", { name: "Subagent settings", exact: true })
+        .getByRole("tab", { name: "Models", exact: true })
         .click();
-      const subagentSettings = page.getByRole("dialog").filter({
-        has: page.getByRole("heading", {
-          name: "Subagent settings",
-          exact: true,
-        }),
+      const account = chatSettings.getByRole("group", {
+        name: "Main agent account",
+        exact: true,
       });
-      const accountOptions = subagentSettings.getByRole("button", {
-        name: /^Select account /,
-      });
-      await accountOptions.first().waitFor({ state: "visible" });
-      assert.ok(await accountOptions.count(), "saved accounts are visible");
-      for (const account of await accountOptions.all())
-        assert.equal(
-          await account.isDisabled(),
-          true,
-          "a subagent cannot change accounts",
-        );
-      await subagentSettings.getByRole("button").first().click();
-      await subagentSettings.waitFor({ state: "hidden" });
+      await expect(account).toBeVisible();
+      await expect(account).toHaveAttribute("aria-disabled", "true");
+      await expect(account).not.toBeEmpty();
       await chatSettings
         .getByRole("button", { name: "Close", exact: true })
         .click();
@@ -561,12 +581,12 @@ test("team-navigation-ui", async ({ page: fixturePage }) => {
         chatIsolation: true,
         narrowDesktop: true,
         mobile: [320, 390],
-        screenshots: root,
+        screenshots: evidence,
       }),
     );
   } catch (error) {
     try {
-      await page?.screenshot({ path: join(root, "failure.png") });
+      await page?.screenshot({ path: join(evidence, "failure.png") });
     } catch {
       // Preserve the original test failure if Playwright already closed the page.
     }
