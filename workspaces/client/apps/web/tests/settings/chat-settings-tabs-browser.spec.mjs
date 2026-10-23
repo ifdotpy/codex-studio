@@ -92,6 +92,18 @@ function Fixture(){const[agent,setAgent]=useState(initial),[opened,setOpened]=us
     await expect(
       modal.getByRole("radio", { name: "Same as main agent", exact: true }),
     ).toBeVisible();
+    const automatic = modal.getByRole("radio", {
+      name: "Automatic",
+      exact: true,
+    });
+    await expect(automatic).toBeChecked();
+    await expect(modal.locator(".setup-account-automatic")).toContainText(
+      "Prefers a free slot, project order, then fewer active agents.",
+    );
+    await expect(modal.locator(".setup-account-automatic")).toHaveAttribute(
+      "data-checked",
+      "true",
+    );
     await modal
       .getByRole("radiogroup", {
         name: "Default subagent reasoning",

@@ -25,7 +25,8 @@
   padding-bottom: calc(var(--mantine-spacing-xs) * 0.7);
   border: var(--studio-border-width) solid transparent;
 }
-.setup-account[data-selected] {
+.setup-account[data-selected],
+.setup-account:has(input:checked) {
   border-color: var(--mantine-primary-color-filled);
 }
 .setup-account[data-exhausted] {
@@ -130,4 +131,19 @@
 
 .setup-accounts .setup-account-status:hover {
   background: transparent;
+}
+
+.setup-account-automatic {
+  padding-block: var(--mantine-spacing-xs);
+  cursor: pointer;
+}
+.setup-account-automatic .mantine-Radio-body {
+  align-items: center;
+}
+.setup-account-automatic .mantine-Radio-label,
+.setup-account-automatic .mantine-Radio-radio {
+  cursor: pointer;
+}
+.setup-account-automatic:has(:focus-visible) {
+  outline: auto;
 }

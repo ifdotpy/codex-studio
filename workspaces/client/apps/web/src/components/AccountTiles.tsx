@@ -1,6 +1,6 @@
-import { SegmentedControl, Tooltip } from "@mantine/core";
+import { Radio, SegmentedControl, Tooltip } from "@mantine/core";
 import { Check } from "lucide-react";
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useId, useState, type ReactNode } from "react";
 import { ActionButton } from "./ui/primitives";
 import { useAccountLimits } from "../usage/useAccountLimits";
 import {
@@ -266,6 +266,7 @@ type AccountTilesProps = {
   | { multiple: true; value: string[]; onChange: (value: string[]) => void }
 );
 export function AccountTiles(p: AccountTilesProps) {
+  const automaticName = useId();
   const selected = p.multiple ? p.value[0] : p.value;
   const selectedProvider =
     p.accounts.find((account) => account.id === selected)?.provider || "codex";
@@ -324,14 +325,16 @@ export function AccountTiles(p: AccountTilesProps) {
       )}
       <div className="setup-accounts">
         {p.automatic && (
-          <ActionButton
-            aria-pressed={!selected}
+          <Radio
+            className="setup-account setup-account-automatic"
+            name={automaticName}
+            label="Automatic"
+            description="Prefers a free slot, project order, then fewer active agents."
+            checked={!selected}
             data-selected={!selected || undefined}
             disabled={p.disabled}
-            onClick={() => select("")}
-          >
-            Automatic
-          </ActionButton>
+            onChange={() => select("")}
+          />
         )}
         {p.accounts
           .filter((account) => (account.provider || "codex") === provider)

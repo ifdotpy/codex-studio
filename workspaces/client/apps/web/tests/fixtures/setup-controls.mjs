@@ -15,7 +15,7 @@ export function setupControl(locator) {
         await locator.locator(`label[for="${id}"]`).click();
       } else if (!value)
         await locator
-          .getByRole("button", { name: "Automatic", exact: true })
+          .getByRole("radio", { name: "Automatic", exact: true })
           .click();
       else {
         const tile = locator.locator(`[data-account-key="${value}"]`);
