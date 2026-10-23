@@ -4,6 +4,10 @@ import type { ResourceChangeEvent } from "./resourceEvents";
 import { SYNC_TRANSCRIPT_STREAM_MAX_BYTES } from "../generated/sharedValues";
 import { readRetryDelay } from "./readRetry";
 
+// Real milliseconds a mocked pull may take to settle. The work is local, but a
+// loaded host needed more than 100 ms. The retry delays stay on fake timers.
+const SETTLE_TIMEOUT_MS = 5_000;
+
 const mocks = vi.hoisted(() => ({
   ApiError: class extends Error {
     constructor(
@@ -560,7 +564,7 @@ describe("entity pull reset wiring", () => {
       mocks.transcriptInvalidation?.();
       await vi.waitFor(() => expect(pullCount).toBe(1), {
         interval: 1,
-        timeout: 100,
+        timeout: SETTLE_TIMEOUT_MS,
       });
       await firstPull;
       if (liveBeforeConflict) mocks.connectionListener?.("live");
@@ -625,7 +629,7 @@ describe("entity pull reset wiring", () => {
               ),
             ),
           ).toBe(true),
-        { interval: 1, timeout: 100 },
+        { interval: 1, timeout: SETTLE_TIMEOUT_MS },
       );
 
       expect(pullCount).toBe(3);

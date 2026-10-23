@@ -206,7 +206,9 @@ pub fn host_listeners() -> Vec<Listener> {
     }
     // Bound the external listener probe even on a blocking-pool worker.
     const LISTENER_OUTPUT_LIMIT_BYTES: usize = 1024 * 1024;
-    const LISTENER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+    // `lsof` reads every process of the host. On a loaded Mac one probe took
+    // up to 1.7 s, and a probe past this bound reads as "no longer listens".
+    const LISTENER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
     let output = crate::bounded_child::run(crate::bounded_child::Request {
         program: std::ffi::OsStr::new("lsof"),
         git_directory: None,
