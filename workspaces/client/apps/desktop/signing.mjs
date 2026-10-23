@@ -13,25 +13,25 @@ import { homedir } from "node:os";
 import path from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
 
-function configuration(env = process.env) {
+// Owner of the signing configuration location. Read it at call time so a test
+// can set HOME.
+export function signingConfigPath() {
+  return path.join(homedir(), ".config/codex-studio/signing.json");
+}
+export function configuration(env = process.env) {
   if (env.CODEX_STUDIO_SIGNING_IDENTITY)
     return {
       identity: env.CODEX_STUDIO_SIGNING_IDENTITY,
       keychain: env.CODEX_STUDIO_SIGNING_KEYCHAIN,
     };
   try {
-    return JSON.parse(
-      readFileSync(
-        path.join(homedir(), ".config/codex-studio/signing.json"),
-        "utf8",
-      ),
-    );
+    return JSON.parse(readFileSync(signingConfigPath(), "utf8"));
   } catch (error) {
     if (error.code !== "ENOENT") throw error;
     return {};
   }
 }
-function validate(identity) {
+export function validate(identity) {
   if (typeof identity !== "string" || !/^[a-fA-F0-9]{40}$/.test(identity))
     throw new Error(
       "Configure a persistent Studio signing certificate. Ad hoc signing loses macOS permissions after updates.",
@@ -42,14 +42,42 @@ function privateArgument(value) {
     throw new Error("Invalid dedicated Studio signing input.");
   return `"${value.replace(/[\\"]/g, "\\$&")}"`;
 }
+// The first line of the security stderr names the cause. Keep it short, free of
+// control characters and free of the password. Never include other output.
+function unlockReason(result, keychain, password) {
+  const secrets = [password, privateArgument(password).slice(1, -1)].filter(
+    Boolean,
+  );
+  const clean = (text) =>
+    secrets
+      .reduce((value, secret) => value.split(secret).join("[redacted]"), text)
+      .replaceAll(/\p{Cc}/gu, " ")
+      .trim();
+  if (result.error)
+    return clean(String(result.error.code ?? result.error.message));
+  const line = String(result.stderr ?? "")
+    .split("\n")
+    .map((text) => text.trim())
+    .find(Boolean);
+  if (!line) return `security exited with status ${result.status}`;
+  let reason = line.replace(/^security:\s*/, "");
+  const prefix = `SecKeychainUnlock ${keychain}: `;
+  if (reason.startsWith(prefix)) reason = reason.slice(prefix.length);
+  return clean(reason).slice(0, 300).replace(/\.$/, "");
+}
 export function signingIdentity(env = process.env) {
   const config = configuration(env);
   validate(config.identity);
   if (config.keychain && config.passwordFile) {
-    const input = `unlock-keychain -p ${privateArgument(readFileSync(config.passwordFile, "utf8").trim())} ${privateArgument(config.keychain)}\n`;
+    const password = readFileSync(config.passwordFile, "utf8").trim();
+    const input = `unlock-keychain -p ${privateArgument(password)} ${privateArgument(config.keychain)}\n`;
     // security has a 4096-byte line buffer. Never allow a second parsed command.
     if (Buffer.byteLength(input, "utf8") > 4095)
       throw new Error("Invalid dedicated Studio signing input.");
+    const failure = (reason) =>
+      new Error(
+        `Could not unlock the dedicated Studio signing keychain ${config.keychain}: ${reason}.`,
+      );
     let result;
     try {
       result = spawnSync("/usr/bin/security", ["-i"], {
@@ -58,15 +86,11 @@ export function signingIdentity(env = process.env) {
         stdio: "pipe",
         timeout: 10_000,
       });
-    } catch {
-      throw new Error(
-        "Could not unlock the dedicated Studio signing keychain.",
-      );
+    } catch (error) {
+      throw failure(unlockReason({ error }, config.keychain, password));
     }
-    if (result.status !== 0)
-      throw new Error(
-        "Could not unlock the dedicated Studio signing keychain.",
-      );
+    if (result.status !== 0 || result.error)
+      throw failure(unlockReason(result, config.keychain, password));
   }
   const identities = execFileSync(
     "security",
@@ -80,7 +104,7 @@ export function signingIdentity(env = process.env) {
   );
   if (!identities.toUpperCase().includes(config.identity.toUpperCase()))
     throw new Error(
-      "The configured Studio signing certificate is unavailable in Keychain.",
+      `The configured Studio signing certificate ${config.identity} is not in ${config.keychain ? `keychain ${config.keychain}` : "the default keychain search list"}.`,
     );
   return config.identity;
 }

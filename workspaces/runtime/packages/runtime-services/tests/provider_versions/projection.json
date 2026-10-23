@@ -1,0 +1,73 @@
+{
+  "checkedAt": 200000.0,
+  "providers": [
+    {
+      "accountKey": "connected",
+      "at": 200000.0,
+      "baseline": "0.153.4",
+      "configuredVersion": null,
+      "error": null,
+      "id": "provider-version:connected",
+      "installedVersion": "0.153.3",
+      "message": "The running Codex CLI version 0.153.3 is below this repository's lowest recorded tested version (0.153.4). It may work poorly or fail. You can continue at your own risk.",
+      "provider": "codex",
+      "runningVersion": "0.153.3",
+      "status": "outdated",
+      "updateNotices": [
+        {
+          "availableVersion": "0.153.5",
+          "source": "installed"
+        },
+        {
+          "availableVersion": "0.154.0",
+          "source": "upstream"
+        }
+      ]
+    },
+    {
+      "accountKey": "claude-connected",
+      "at": 200000.0,
+      "baseline": "2.1.278",
+      "configuredVersion": "2.1.279",
+      "error": null,
+      "id": "provider-version:claude-connected",
+      "installedVersion": "2.1.279",
+      "message": "The exact version already running in Claude sessions is unknown.",
+      "provider": "claude",
+      "runningVersion": null,
+      "status": "unknown",
+      "updateNotices": []
+    }
+  ],
+  "warnings": [
+    {
+      "accountKey": "connected",
+      "at": 200000.0,
+      "baseline": "0.153.4",
+      "id": "provider-version:connected",
+      "message": "The running Codex CLI version 0.153.3 is below this repository's lowest recorded tested version (0.153.4). It may work poorly or fail. You can continue at your own risk.",
+      "provider": "codex",
+      "version": "0.153.3"
+    },
+    {
+      "accountKey": "connected",
+      "at": 200000.0,
+      "baseline": "0.153.4",
+      "id": "provider-update:connected",
+      "level": "info",
+      "message": "A newer installed Codex CLI version is selected for runtime updates, but this connection is still using 0.153.3. Available: 0.153.5.",
+      "provider": "codex",
+      "version": "0.153.5"
+    },
+    {
+      "accountKey": "connected",
+      "at": 200000.0,
+      "baseline": "0.153.4",
+      "id": "provider-update:connected:upstream",
+      "level": "info",
+      "message": "A newer Codex CLI release is available upstream than the version currently in use. Current: 0.153.3 · Available: 0.154.0.",
+      "provider": "codex",
+      "version": "0.154.0"
+    }
+  ]
+}

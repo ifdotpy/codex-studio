@@ -16,8 +16,7 @@ the host_exec slots) have their own focused checks:
 `python3 -B -m unittest discover -s workspaces/runtime/apps/vm-guest -p 'test_*layr*.py' -v`
 and `test_host_exec_slot_io.py`. `test_layr_e2e.py` is an opt-in end-to-end run with a
 real layr daemon: run it as root on Linux with btrfs, with `LAYR_E2E_ROOT` set to the
-daemon's store. `test_mac_sync_e2e.py` runs Mac folder sync rounds the same way and also
-needs `STUDIO_SERVER_SRC` (the server `src` folder). Provisioning copies the vendored layr sources
+daemon's store. Provisioning copies the vendored layr sources
 (`workspaces/runtime/apps/layr`) to `/opt/codex-studio/vm/layr` and the vendored layr-desk
 sources (`workspaces/runtime/apps/layr-desk`) to `/opt/codex-studio/vm/layr-desk`, and
 `install-layr.sh` builds both in the guest. The vault broker methods (`vault_admin.py`) run
@@ -34,18 +33,11 @@ send sign-in links on `/run/codex-studio-browser/open.sock`, which the unit's
 at `/usr/local/bin/studio-browser` and links `/usr/local/bin/xdg-open` to it. Focused check:
 `python3 -B -m unittest discover -s workspaces/runtime/apps/vm-guest -p test_browser_bridge.py -v`.
 
-The host sources are `workspaces/runtime/apps/vm-guest` and
-`workspaces/runtime/apps/server/src`. Provisioning copies the guest files to
-`/opt/codex-studio/vm/guest` and the selected runtime files to
-`/opt/codex-studio/scripts`:
-
-- `codex_process_supervisor.py`
-- `codex_open_file_limit.py`
-- `codex_records.py`
-- `codex_file_lock.py`
-- `codex_private_paths.py`
-- `codex_shared_values.py`
-- `codex_turn_limits.py`
+The guest sources are `workspaces/runtime/apps/vm-guest`. The guest relays native
+provider requests to the Rust `codex-process-supervisor` executable at
+`/opt/codex-studio/bin/codex-process-supervisor`; the installer requires that binary.
+Contract tests select a checkout build with `STUDIO_SUPERVISOR_BINARY`.
+The guest does not import the backend's Python modules.
 
 Provisioning also stages the Claude bridge workspace and the pinned pnpm
 workspace metadata under `/opt/codex-studio`. The guest installs the same
@@ -59,8 +51,7 @@ The profile permits user namespaces for the installed Codex executable only.
 Ubuntu's global user namespace restriction stays enabled. Codex still enforces
 its read-only filesystem and network policies. The installer repairs ownership
 of older release archives before it loads the profile. It does not restart any
-provider. Check the installer with `python3 -B -m unittest discover -s
-workspaces/runtime/apps/server/src -p test_codex_sandbox_install.py`.
+provider. The installer requires the staged Rust supervisor before writing service units.
 Mount the btrfs data disk at `/var/lib/codex-studio`. Use the
 `user_subvol_rm_allowed` and `compress=zstd:3` mount options. Run `install.sh` as root.
 

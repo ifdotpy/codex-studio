@@ -1,63 +1,50 @@
 {
-  "$defs": {
-    "JsonValue": {}
-  },
-  "additionalProperties": {
-    "$ref": "#/$defs/JsonValue"
-  },
-  "description": "Extensible browser-owned draft document; unknown values are JSON metadata.",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
   "properties": {
     "alternatives": {
       "items": {
         "type": "string"
       },
-      "title": "Alternatives",
       "type": "array"
     },
     "device": {
-      "title": "Device",
       "type": "string"
     },
     "id": {
-      "anyOf": [
-        {
-          "type": "string"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "default": null,
-      "title": "Id"
+      "type": "string"
+    },
+    "seen": {
+      "additionalProperties": {
+        "format": "uint64",
+        "maximum": 9007199254740991,
+        "minimum": 0,
+        "type": "integer"
+      },
+      "type": "object"
     },
     "session": {
-      "title": "Session",
       "type": "string"
     },
     "text": {
       "maxLength": 2000000,
-      "title": "Text",
       "type": "string"
     },
     "updated": {
-      "anyOf": [
-        {
-          "maximum": 9007199254740991,
-          "minimum": 0,
-          "type": "integer"
-        },
-        {
-          "type": "number"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "default": null,
-      "title": "Updated"
+      "default": 0,
+      "format": "uint64",
+      "maximum": 9007199254740991,
+      "minimum": 0,
+      "type": "integer"
     }
   },
-  "required": ["device", "session", "text"],
-  "title": "DraftPayload",
+  "required": [
+    "id",
+    "session",
+    "device",
+    "text",
+    "updated"
+  ],
+  "title": "DraftVersion",
   "type": "object"
 }

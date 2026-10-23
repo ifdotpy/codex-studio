@@ -1,4 +1,3 @@
-use crate::prepared_python_support as python_test_support;
 use serde_json::{Value, json};
 use studio_runtime_services::claude_input_recovery::runtime::freeze_start;
 
@@ -12,26 +11,8 @@ fn open_state(path: impl AsRef<std::path::Path>) -> rusqlite::Connection {
     db
 }
 
-#[allow(clippy::disallowed_methods)]
 fn fixtures(root: &std::path::Path) -> Vec<Value> {
-    let python = python_test_support::prepared_python(
-        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
-    );
-    let output = std::process::Command::new(python)
-        .arg("-B")
-        .arg(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/tests/wave7_p08_input_oracle.py"
-        ))
-        .arg(root)
-        .output()
-        .expect("oracle");
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    serde_json::from_slice(&output.stdout).expect("corpus")
+    crate::turn_fixtures::database_cases(include_bytes!("wave7_p08_input.json"), root)
 }
 fn row(db: &rusqlite::Connection, table: &str, id: &str) -> Value {
     let text: String = db

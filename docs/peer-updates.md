@@ -45,6 +45,17 @@ An older peer refuses the actions. It answers "Supply a remote-parent link" (`no
 because it sends an unknown action to the remote-parent checks. The puller treats any refusal of
 `update.offer` as no offer and records no failure.
 
+The Rust backend answers the same four actions
+(`workspaces/runtime/packages/runtime-services/src/peer_updates.rs`). Its limits come from
+`codex_peer_updates.py`; a unit test compares them. Its `update.export` waits up to 5 seconds, so
+that a request does not hold the 20-second shutdown grace of the server; the puller asks again
+after `preparing`. It removes update archives older than a day when a puller asks for an offer or
+an export. It does not serve the QUIC export stream, so a
+puller receives the archive in `update.chunk` answers. A Rust backend before this module refused
+the actions with HTTP 501. A paired Python server then got no offer and kept its older build,
+and the UI hid that server's projects because its API schema hash differed. The Rust backend
+has no puller yet: a Mac on the Rust backend does not take a newer build from a paired server.
+
 ## Pull and verify (backend)
 
 `codex_peer_updates.py` runs in the backend of an installed app. Every 10 minutes, and 2 minutes

@@ -89,6 +89,7 @@ pub enum SessionError {
 
 struct Pending {
     ticket: RequestTicket,
+    /// Owns the body only until its first write; emitted requests keep `Null`.
     params: Value,
     deadline_ms: u64,
     thread_id: Option<String>,
@@ -497,15 +498,15 @@ impl SessionState {
         Some(pending)
     }
 
-    fn write_request(&self, ticket: &RequestTicket) -> Result<Vec<Action>, SessionError> {
+    fn write_request(&mut self, ticket: &RequestTicket) -> Result<Vec<Action>, SessionError> {
         let pending = self
             .pending
-            .get(&ticket.id)
+            .get_mut(&ticket.id)
             .ok_or(SessionError::MissingRequest)?;
         let frame = Frame::Request(RequestFrame {
             id: ticket.id.clone(),
             method: ticket.method,
-            params: Some(pending.params.clone()),
+            params: Some(std::mem::take(&mut pending.params)),
             fields: Map::new(),
         });
         Ok(vec![Action::Write(frame)])
@@ -754,4 +755,270 @@ fn is_thread_serialized(method: Method) -> bool {
             | Method::ThreadFork
             | Method::ThreadRead
     )
+}
+
+#[cfg(test)]
+mod request_body_tests {
+    use super::*;
+    use crate::{ClientName, ProviderKind, initialize_params};
+    use serde_json::json;
+
+    fn written_request(actions: &[Action]) -> &RequestFrame {
+        let mut requests = actions.iter().filter_map(|action| match action {
+            Action::Write(Frame::Request(request)) => Some(request),
+            _ => None,
+        });
+        let request = requests.next().expect("one request write");
+        assert!(requests.next().is_none(), "request is emitted only once");
+        request
+    }
+
+    fn reply(ticket: &RequestTicket) -> Frame {
+        Frame::Response {
+            id: ticket.id.clone(),
+            body: ResponseBody::Result(json!({"ok": true})),
+            fields: Map::new(),
+        }
+    }
+
+    fn ready(provider: ProviderKind) -> SessionState {
+        let (mut session, actions) = SessionState::new(
+            9,
+            provider.wire(),
+            0,
+            100,
+            initialize_params(ClientName::AccountSession),
+        )
+        .expect("new session");
+        let request = written_request(&actions);
+        let ticket = session.pending[&request.id].ticket.clone();
+        let initialized = session.receive(reply(&ticket)).expect("initialize reply");
+        assert!(matches!(
+            initialized.as_slice(),
+            [Action::Resolve { ticket: resolved, .. }, Action::Write(Frame::Notification(notification))]
+                if resolved == &ticket && notification.method == Method::Initialized
+        ));
+        session
+            .mark_initialized_notification_written()
+            .expect("initialized write receipt");
+        session
+    }
+
+    fn turn_params() -> Value {
+        json!({"threadId": "t", "input": [{"type": "text", "text": "owned request body".repeat(64)}]})
+    }
+
+    fn text_allocation(params: &Value) -> *const u8 {
+        params["input"][0]["text"]
+            .as_str()
+            .expect("request text")
+            .as_ptr()
+    }
+
+    fn assert_transferred(
+        session: &SessionState,
+        ticket: &RequestTicket,
+        actions: &[Action],
+        expected: &Value,
+        allocation: *const u8,
+    ) {
+        let request = written_request(actions);
+        assert_eq!((&request.id, request.method), (&ticket.id, ticket.method));
+        let params = request.params.as_ref().expect("request params");
+        assert_eq!(params, expected);
+        assert_eq!(
+            text_allocation(params),
+            allocation,
+            "the write owns the original body allocation"
+        );
+        assert!(
+            session.pending[&ticket.id].params.is_null(),
+            "correlation metadata must not retain an emitted body"
+        );
+    }
+
+    #[test]
+    fn initialize_transfers_body_allocation() {
+        for provider in [ProviderKind::Codex, ProviderKind::Claude] {
+            let params = initialize_params(ClientName::AccountSession);
+            let allocation = params["clientInfo"]["name"]
+                .as_str()
+                .expect("client name")
+                .as_ptr();
+            let expected = params.clone();
+            let (session, actions) =
+                SessionState::new(9, provider.wire(), 0, 100, params).expect("new session");
+            let request = written_request(&actions);
+            assert_eq!(request.method, Method::Initialize);
+            assert_eq!(request.params.as_ref(), Some(&expected));
+            assert_eq!(
+                request.params.as_ref().expect("initialize params")["clientInfo"]["name"]
+                    .as_str()
+                    .expect("client name")
+                    .as_ptr(),
+                allocation,
+                "initialize transfers the original allocation to its write"
+            );
+            assert!(session.pending[&request.id].params.is_null());
+            assert_eq!(session.next_deadline_ms(), Some(100));
+        }
+    }
+
+    #[test]
+    fn immediate_requests_transfer_body_allocations() {
+        for provider in [ProviderKind::Codex, ProviderKind::Claude] {
+            let mut session = ready(provider);
+            let params = turn_params();
+            let allocation = text_allocation(&params);
+            let expected = params.clone();
+            let (ticket, actions) = session
+                .submit(Method::TurnStart, params, 1, 20, Some("t".into()), false)
+                .expect("submit turn");
+            assert_eq!(ticket.generation, 9);
+            assert_transferred(&session, &ticket, &actions, &expected, allocation);
+            assert_eq!(session.request_deadline_ms(&ticket.id), Some(21));
+        }
+    }
+
+    #[test]
+    fn queued_successor_keeps_body_until_first_emission() {
+        let mut session = ready(ProviderKind::Claude);
+        let (active, _) = session
+            .submit(
+                Method::TurnStart,
+                turn_params(),
+                1,
+                20,
+                Some("t".into()),
+                false,
+            )
+            .expect("active turn");
+        let params = turn_params();
+        let allocation = text_allocation(&params);
+        let expected = params.clone();
+        let (queued, actions) = session
+            .submit(Method::TurnSteer, params, 2, 20, Some("t".into()), false)
+            .expect("queued turn");
+        assert!(actions.is_empty());
+        assert!(session.pending[&active.id].params.is_null());
+        assert_eq!(session.pending[&queued.id].params, expected);
+        assert_eq!(
+            text_allocation(&session.pending[&queued.id].params),
+            allocation
+        );
+        let released = session.receive(reply(&active)).expect("release successor");
+        assert!(matches!(
+            released.as_slice(),
+            [Action::Resolve { ticket: resolved, .. }, Action::ThreadReleased { thread_id, ticket }, Action::Write(_)]
+                if resolved == &active && thread_id == "t" && ticket == &queued
+        ));
+        assert_transferred(&session, &queued, &released, &expected, allocation);
+        assert!(!session.pending.contains_key(&active.id));
+        assert!(
+            session
+                .receive(reply(&active))
+                .expect("duplicate reply")
+                .is_empty()
+        );
+        assert_eq!(session.active_threads.get("t"), Some(&queued.id));
+    }
+
+    #[test]
+    fn unknown_sent_requests_keep_only_metadata_and_accept_late_replies() {
+        for provider in [ProviderKind::Codex, ProviderKind::Claude] {
+            for transport_lost in [false, true] {
+                let mut session = ready(provider);
+                let params = turn_params();
+                let allocation = text_allocation(&params);
+                let expected = params.clone();
+                let (ticket, writes) = session
+                    .submit(Method::TurnStart, params, 1, 20, Some("t".into()), false)
+                    .expect("submit turn");
+                assert_transferred(&session, &ticket, &writes, &expected, allocation);
+                drop(writes);
+                let unknown = if transport_lost {
+                    session.transport_lost()
+                } else {
+                    let (result, actions) = session.expire(21);
+                    assert_eq!(result, Err(SessionError::DeadlineUnknown));
+                    assert!(session.expire(22).1.is_empty());
+                    actions
+                };
+                assert!(matches!(
+                    unknown.first(),
+                    Some(Action::Resolve { ticket: resolved, outcome: RequestOutcome::Unknown })
+                        if resolved == &ticket
+                ));
+                assert!(
+                    !unknown
+                        .iter()
+                        .any(|action| matches!(action, Action::Write(_)))
+                );
+                assert_eq!(session.pending[&ticket.id].ticket, ticket);
+                assert!(session.pending[&ticket.id].params.is_null());
+                assert_eq!(session.next_deadline_ms(), None);
+                let late = session.receive(reply(&ticket)).expect("late reply");
+                assert!(matches!(
+                    late.as_slice(),
+                    [Action::Resolve { ticket: resolved, outcome: RequestOutcome::Reply { late: true, .. } }]
+                        if resolved == &ticket
+                ));
+                assert!(!session.pending.contains_key(&ticket.id));
+                assert!(
+                    session
+                        .receive(reply(&ticket))
+                        .expect("duplicate late reply")
+                        .is_empty()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn cancelled_or_rejected_unsent_successor_is_never_emitted() {
+        for cancel in [true, false] {
+            let mut session = ready(ProviderKind::Claude);
+            let (active, _) = session
+                .submit(
+                    Method::TurnStart,
+                    turn_params(),
+                    1,
+                    20,
+                    Some("t".into()),
+                    false,
+                )
+                .expect("active turn");
+            let params = turn_params();
+            let allocation = text_allocation(&params);
+            let (queued, writes) = session
+                .submit(Method::TurnSteer, params, 2, 20, Some("t".into()), false)
+                .expect("queued turn");
+            assert!(writes.is_empty());
+            assert_eq!(
+                text_allocation(&session.pending[&queued.id].params),
+                allocation
+            );
+            let removed = if cancel {
+                session.cancel(&queued)
+            } else {
+                session.reject_unsent(&queued)
+            }
+            .expect("remove unsent request");
+            assert!(removed.is_empty());
+            assert!(!session.pending.contains_key(&queued.id));
+            let settled = session.receive(reply(&active)).expect("active reply");
+            assert!(
+                matches!(settled.as_slice(), [Action::Resolve { ticket, .. }] if ticket == &active)
+            );
+            assert!(
+                session
+                    .receive(reply(&queued))
+                    .expect("orphan reply")
+                    .is_empty()
+            );
+            assert!(session.pending.is_empty());
+            assert!(session.active_threads.is_empty());
+            assert_eq!(session.next_deadline_ms(), None);
+        }
+    }
 }

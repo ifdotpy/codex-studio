@@ -1,0 +1,517 @@
+{
+  "buffers": [
+    {
+      "limit": 6,
+      "chunks": ["6162636465666768696a"],
+      "head": "616263",
+      "tail": "68696a",
+      "total": 10,
+      "reads": [
+        {
+          "offset": 0,
+          "limit": 32,
+          "final": true,
+          "page": {
+            "offset": 0,
+            "nextOffset": 3,
+            "gapBytes": 0,
+            "text": "abc",
+            "totalBytes": 10,
+            "truncated": true
+          }
+        },
+        {
+          "offset": 3,
+          "limit": 32,
+          "final": true,
+          "page": {
+            "offset": 7,
+            "nextOffset": 10,
+            "gapBytes": 4,
+            "text": "hij",
+            "totalBytes": 10,
+            "truncated": true
+          }
+        },
+        {
+          "offset": 7,
+          "limit": 2,
+          "final": true,
+          "page": {
+            "offset": 7,
+            "nextOffset": 9,
+            "gapBytes": 0,
+            "text": "hi",
+            "totalBytes": 10,
+            "truncated": true
+          }
+        },
+        {
+          "offset": 10,
+          "limit": 4,
+          "final": true,
+          "page": {
+            "offset": 10,
+            "nextOffset": 10,
+            "gapBytes": 0,
+            "text": "",
+            "totalBytes": 10,
+            "truncated": true
+          }
+        }
+      ]
+    },
+    {
+      "limit": 100,
+      "chunks": ["c3a9", "e282"],
+      "head": "c3a9e282",
+      "tail": "",
+      "total": 4,
+      "reads": [
+        {
+          "offset": 0,
+          "limit": 32,
+          "final": false,
+          "page": {
+            "offset": 0,
+            "nextOffset": 2,
+            "gapBytes": 0,
+            "text": "é",
+            "totalBytes": 4,
+            "truncated": false
+          }
+        },
+        {
+          "offset": 0,
+          "limit": 32,
+          "final": true,
+          "page": {
+            "offset": 0,
+            "nextOffset": 4,
+            "gapBytes": 0,
+            "text": "é�",
+            "totalBytes": 4,
+            "truncated": false
+          }
+        },
+        {
+          "offset": 2,
+          "limit": 32,
+          "final": false,
+          "page": {
+            "offset": 2,
+            "nextOffset": 2,
+            "gapBytes": 0,
+            "text": "",
+            "totalBytes": 4,
+            "truncated": false
+          }
+        }
+      ]
+    },
+    {
+      "limit": 8,
+      "chunks": ["c3a9c3a9c3a9c3a9c3a9"],
+      "head": "c3a9c3a9",
+      "tail": "c3a9c3a9",
+      "total": 10,
+      "reads": [
+        {
+          "offset": 0,
+          "limit": 32,
+          "final": true,
+          "page": {
+            "offset": 0,
+            "nextOffset": 4,
+            "gapBytes": 0,
+            "text": "éé",
+            "totalBytes": 10,
+            "truncated": true
+          }
+        },
+        {
+          "offset": 2,
+          "limit": 32,
+          "final": true,
+          "page": {
+            "offset": 2,
+            "nextOffset": 4,
+            "gapBytes": 0,
+            "text": "é",
+            "totalBytes": 10,
+            "truncated": true
+          }
+        },
+        {
+          "offset": 4,
+          "limit": 32,
+          "final": false,
+          "page": {
+            "offset": 6,
+            "nextOffset": 10,
+            "gapBytes": 2,
+            "text": "éé",
+            "totalBytes": 10,
+            "truncated": true
+          }
+        },
+        {
+          "offset": 4,
+          "limit": 32,
+          "final": true,
+          "page": {
+            "offset": 6,
+            "nextOffset": 10,
+            "gapBytes": 2,
+            "text": "éé",
+            "totalBytes": 10,
+            "truncated": true
+          }
+        }
+      ]
+    },
+    {
+      "limit": 4,
+      "chunks": ["e282ace282ac"],
+      "head": "e282",
+      "tail": "82ac",
+      "total": 6,
+      "reads": [
+        {
+          "offset": 0,
+          "limit": 1,
+          "final": true,
+          "page": {
+            "offset": 5,
+            "nextOffset": 5,
+            "gapBytes": 5,
+            "text": "",
+            "totalBytes": 6,
+            "truncated": true
+          }
+        },
+        {
+          "offset": 0,
+          "limit": 32,
+          "final": false,
+          "page": {
+            "offset": 6,
+            "nextOffset": 6,
+            "gapBytes": 6,
+            "text": "",
+            "totalBytes": 6,
+            "truncated": true
+          }
+        },
+        {
+          "offset": 1,
+          "limit": 32,
+          "final": true,
+          "page": {
+            "offset": 1,
+            "nextOffset": 2,
+            "gapBytes": 0,
+            "text": "�",
+            "totalBytes": 6,
+            "truncated": true
+          }
+        }
+      ]
+    },
+    {
+      "limit": 3,
+      "chunks": ["fffe6162", "63"],
+      "head": "fffe",
+      "tail": "63",
+      "total": 5,
+      "reads": [
+        {
+          "offset": 0,
+          "limit": 32,
+          "final": true,
+          "page": {
+            "offset": 0,
+            "nextOffset": 2,
+            "gapBytes": 0,
+            "text": "��",
+            "totalBytes": 5,
+            "truncated": true
+          }
+        },
+        {
+          "offset": 1,
+          "limit": 32,
+          "final": true,
+          "page": {
+            "offset": 1,
+            "nextOffset": 2,
+            "gapBytes": 0,
+            "text": "�",
+            "totalBytes": 5,
+            "truncated": true
+          }
+        }
+      ]
+    },
+    {
+      "limit": 10,
+      "chunks": [],
+      "head": "",
+      "tail": "",
+      "total": 0,
+      "reads": [
+        {
+          "offset": 0,
+          "limit": 32,
+          "final": true,
+          "page": {
+            "offset": 0,
+            "nextOffset": 0,
+            "gapBytes": 0,
+            "text": "",
+            "totalBytes": 0,
+            "truncated": false
+          }
+        }
+      ]
+    }
+  ],
+  "redactions": [
+    {
+      "secret": "secret",
+      "chunks": ["6120736563", "7265742062", ""],
+      "out": ["6120", "5b70726976617465206d61726b65725d2062", ""]
+    },
+    {
+      "secret": "secret",
+      "chunks": ["736563", ""],
+      "out": ["", "736563"]
+    },
+    {
+      "secret": "secret",
+      "chunks": ["736563726574736563726574", "73", "65637265", "7421", ""],
+      "out": [
+        "5b70726976617465206d61726b65725d5b70726976617465206d61726b65725d",
+        "",
+        "",
+        "5b70726976617465206d61726b65725d21",
+        ""
+      ]
+    },
+    {
+      "secret": "abc",
+      "chunks": ["616162", "636162", "63", ""],
+      "out": [
+        "61",
+        "5b70726976617465206d61726b65725d",
+        "5b70726976617465206d61726b65725d",
+        ""
+      ]
+    }
+  ],
+  "validate": [
+    {
+      "payload": {
+        "cwd": "/tmp",
+        "command": ["true"]
+      },
+      "foreign": false,
+      "value": {
+        "cwd": "/tmp",
+        "command": ["true"],
+        "env": {},
+        "timeout": 120,
+        "output_limit": 262144
+      }
+    },
+    {
+      "payload": {
+        "cwd": "/tmp",
+        "command": "echo hi",
+        "env": {
+          "A_B": "1"
+        },
+        "timeout": 30,
+        "output_limit": 2
+      },
+      "foreign": false,
+      "value": {
+        "cwd": "/tmp",
+        "command": "echo hi",
+        "env": {
+          "A_B": "1"
+        },
+        "timeout": 30,
+        "output_limit": 2
+      }
+    },
+    {
+      "payload": {
+        "cwd": "relative",
+        "command": ["true"]
+      },
+      "foreign": false,
+      "error": "Supply an absolute cwd on the selected server"
+    },
+    {
+      "payload": {
+        "cwd": "C:\\work",
+        "command": ["true"]
+      },
+      "foreign": false,
+      "error": "Supply an absolute cwd on the selected server"
+    },
+    {
+      "payload": {
+        "cwd": "C:\\work",
+        "command": ["true"]
+      },
+      "foreign": true,
+      "value": {
+        "cwd": "C:\\work",
+        "command": ["true"],
+        "env": {},
+        "timeout": 120,
+        "output_limit": 262144
+      }
+    },
+    {
+      "payload": {
+        "cwd": "\\\\host\\share\\dir",
+        "command": ["true"]
+      },
+      "foreign": true,
+      "value": {
+        "cwd": "\\\\host\\share\\dir",
+        "command": ["true"],
+        "env": {},
+        "timeout": 120,
+        "output_limit": 262144
+      }
+    },
+    {
+      "payload": {
+        "cwd": "/tmp/../etc",
+        "command": ["true"]
+      },
+      "foreign": false,
+      "error": "The cwd must not contain parent traversal"
+    },
+    {
+      "payload": {
+        "cwd": "/tmp",
+        "command": ""
+      },
+      "foreign": false,
+      "error": "Supply a command of 1 to 128 KiB without NUL"
+    },
+    {
+      "payload": {
+        "cwd": "/tmp",
+        "command": []
+      },
+      "foreign": false,
+      "error": "Supply command argv of 1 to 256 strings, at most 128 KiB"
+    },
+    {
+      "payload": {
+        "cwd": "/tmp",
+        "command": [""]
+      },
+      "foreign": false,
+      "error": "Supply command argv of 1 to 256 strings, at most 128 KiB"
+    },
+    {
+      "payload": {
+        "cwd": "/tmp",
+        "command": ["a\u0000"]
+      },
+      "foreign": false,
+      "error": "Supply command argv of 1 to 256 strings, at most 128 KiB"
+    },
+    {
+      "payload": {
+        "cwd": "/tmp",
+        "command": ["true"],
+        "env": {
+          "1A": "x"
+        }
+      },
+      "foreign": false,
+      "error": "Supply env additions with valid names and string values, at most 128 KiB"
+    },
+    {
+      "payload": {
+        "cwd": "/tmp",
+        "command": ["true"],
+        "env": {
+          "A": 1
+        }
+      },
+      "foreign": false,
+      "error": "Supply env additions with valid names and string values, at most 128 KiB"
+    },
+    {
+      "payload": {
+        "cwd": "/tmp",
+        "command": ["true"],
+        "timeout": 0
+      },
+      "foreign": false,
+      "error": "Supply timeout seconds from 1 to 1800"
+    },
+    {
+      "payload": {
+        "cwd": "/tmp",
+        "command": ["true"],
+        "timeout": 1801
+      },
+      "foreign": false,
+      "error": "Supply timeout seconds from 1 to 1800"
+    },
+    {
+      "payload": {
+        "cwd": "/tmp",
+        "command": ["true"],
+        "timeout": true
+      },
+      "foreign": false,
+      "error": "Supply timeout seconds from 1 to 1800"
+    },
+    {
+      "payload": {
+        "cwd": "/tmp",
+        "command": ["true"],
+        "timeout": 2.0
+      },
+      "foreign": false,
+      "error": "Supply timeout seconds from 1 to 1800"
+    },
+    {
+      "payload": {
+        "cwd": "/tmp",
+        "command": ["true"],
+        "output_limit": 1
+      },
+      "foreign": false,
+      "error": "Supply output_limit bytes from 2 to 4194304"
+    },
+    {
+      "payload": {
+        "cwd": "/tmp",
+        "command": ["true"],
+        "output_limit": 4194305
+      },
+      "foreign": false,
+      "error": "Supply output_limit bytes from 2 to 4194304"
+    },
+    {
+      "payload": {
+        "cwd": 5,
+        "command": ["true"]
+      },
+      "foreign": false,
+      "error": "Supply an absolute cwd on the selected server"
+    }
+  ]
+}

@@ -4,7 +4,6 @@ import { setBundleDisplayName } from "./bundle-name.mjs";
 import { runtimeBinaries, runtimeBinaryName } from "./runtime-binaries.mjs";
 import {
   cargoReleaseArguments,
-  operationsLibraryName,
   prebuiltReleaseDirectory,
 } from "./release-binaries.mjs";
 import { execFileSync } from "node:child_process";
@@ -27,10 +26,6 @@ const rendererDist = path.join(
   repositoryRoot,
   "workspaces/client/apps/web/dist",
 );
-const backendSource = path.join(
-  repositoryRoot,
-  "workspaces/runtime/apps/server/src",
-);
 const bridgeSource = path.join(
   repositoryRoot,
   "workspaces/providers/apps/claude-bridge",
@@ -51,7 +46,7 @@ if (!uiOnly && !prebuiltRelease) {
   } catch (error) {
     if (error.code === "ENOENT") {
       throw new Error(
-        "Desktop packaging requires Cargo; install Rust 1.99.0, then run `cargo build --release -p studio-operations-python`.",
+        "Desktop packaging requires Cargo; install Rust 1.99.0, then run `cargo build --release -p studio-runtime-server`.",
         { cause: error },
       );
     }
@@ -65,15 +60,6 @@ const diagnosticsBinary = path.join(
   cargoTargetDirectory,
   "release/codex-diagnostics",
 );
-const operationsLibrary = path.join(
-  cargoTargetDirectory,
-  "release",
-  operationsLibraryName(),
-);
-const operationsModuleName =
-  process.platform === "win32"
-    ? "studio_operations_native.pyd"
-    : "studio_operations_native.abi3.so";
 const stage = await mkdtemp(path.join(tmpdir(), "codex-desktop-package-"));
 try {
   const speech = path.join(stage, "studio-speech");
@@ -113,15 +99,7 @@ try {
   const resources = path.join(stage, "workspace");
   await mkdir(path.join(resources, "web"), { recursive: true });
   if (!uiOnly) {
-    await cp(
-      path.join(repositoryRoot, "requirements.txt"),
-      path.join(resources, "requirements.txt"),
-    );
     await mkdir(path.join(resources, "bin"), { recursive: true });
-    await cp(
-      operationsLibrary,
-      path.join(resources, "bin", operationsModuleName),
-    );
     // layr-desk for the Desk disk, vault unlock and Pull on this Mac (docs/vault.md), from
     // the vendored source; Studio installs the disk agent with this binary.
     const layrDeskTarget = path.join(cargoTargetDirectory, "layr-desk");
@@ -154,19 +132,6 @@ try {
     const layrDesk = path.join(resources, "bin", "layr-desk");
     await cp(path.join(layrDeskTarget, "release/layr-desk"), layrDesk);
     signCode(layrDesk, identity);
-    await cp(
-      path.join(repositoryRoot, "workspaces/runtime/apps/server/prompts"),
-      path.join(resources, "prompts"),
-      { recursive: true },
-    );
-    await cp(backendSource, path.join(resources, "scripts"), {
-      recursive: true,
-      filter: (source) =>
-        path.basename(source) !== ".studio-update.lock" &&
-        !source.includes("__pycache__") &&
-        !source.includes("/node_modules") &&
-        !source.endsWith(".pyc"),
-    });
     await cp(diagnosticsBinary, path.join(resources, "bin/codex-diagnostics"));
     for (const { binary } of runtimeBinaries) {
       const name = runtimeBinaryName(binary);

@@ -75,7 +75,7 @@ fn commit(
     if let Some(scope) = write.scope()
         && session
             .as_ref()
-            .and_then(|s| s.current_scope(&account))
+            .and_then(|s| s.current_scope(account))
             .as_ref()
             != Some(scope)
     {
@@ -106,7 +106,7 @@ fn commit(
             id: "current".into(),
         })?;
     let old = by_account.get(account).cloned();
-    let key = watermark_key(&account);
+    let key = watermark_key(account);
     let raw_stamp: Option<String> = tx
         .query_row(
             "SELECT result FROM runtime_operation_receipts WHERE id=?1",
@@ -211,7 +211,7 @@ fn commit(
             value
         }
     };
-    let value = LimitsSnapshot::read(&account, value)
+    let value = LimitsSnapshot::read(account, value)
         .map_err(|error| StoreError::SchemaMismatch(error.to_string()))?
         .into_value();
     if let Some(stamp) = next_stamp {

@@ -229,7 +229,7 @@ test("Team panel ui", async ({
         "Rust checks passed; browser checks running",
       );
       await expect(panel.locator(".agent-stall")).toHaveText(
-        "Stalled · task task-14 unsubmitted",
+        "Waiting for lead · task task-14 not submitted",
       );
       if (width > 760) {
         await expect(

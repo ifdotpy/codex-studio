@@ -1,24 +1,99 @@
 //! Draft branch rules ported from web/src/sync/{conflicts,drafts}.ts.
+use crate::MAX_SAFE_INTEGER;
+use schemars::{JsonSchema, Schema, SchemaGenerator};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+/// Largest draft text, measured in Unicode code points.
+pub const MAX_DRAFT_TEXT_CODEPOINTS: usize = 2_000_000;
+/// Largest stored branch identity, measured in UTF-8 bytes.
+pub const MAX_DRAFT_ID_BYTES: usize = 300;
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, JsonSchema)]
+#[schemars(deny_unknown_fields)]
 pub struct DraftVersion {
     pub id: String,
     pub session: String,
     pub device: String,
+    #[schemars(length(max = MAX_DRAFT_TEXT_CODEPOINTS))]
     pub text: String,
+    // Historical payloads are read without rewriting their stored bytes. The
+    // generated client type stays strict for newly authored drafts.
+    #[serde(default, deserialize_with = "legacy_updated")]
+    #[schemars(schema_with = "safe_integer_schema")]
     pub updated: u64,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub alternatives: Vec<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[schemars(schema_with = "seen_schema")]
     pub seen: BTreeMap<String, u64>,
+    // Historical extras survive decoding, merging, and pending push retries.
     #[serde(flatten)]
+    #[schemars(skip)]
     pub extra: BTreeMap<String, Value>,
 }
 
+fn safe_integer_schema(generator: &mut SchemaGenerator) -> Schema {
+    let mut schema = <u64>::json_schema(generator);
+    schema.insert("maximum".into(), MAX_SAFE_INTEGER.into());
+    schema
+}
+
+fn seen_schema(generator: &mut SchemaGenerator) -> Schema {
+    let mut schema = <BTreeMap<String, u64>>::json_schema(generator);
+    schema.insert(
+        "additionalProperties".into(),
+        safe_integer_schema(generator).to_value(),
+    );
+    schema
+}
+
+fn legacy_updated<'de, D: serde::Deserializer<'de>>(decoder: D) -> Result<u64, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Timestamp {
+        Integer(u64),
+        Fraction(f64),
+    }
+    match Option::<Timestamp>::deserialize(decoder)? {
+        None => Ok(0),
+        Some(Timestamp::Integer(value)) if value <= MAX_SAFE_INTEGER as u64 => Ok(value),
+        Some(Timestamp::Fraction(value)) if value >= 0.0 && value <= MAX_SAFE_INTEGER as f64 => {
+            Ok(value.floor() as u64)
+        }
+        _ => Err(serde::de::Error::custom("Invalid draft timestamp.")),
+    }
+}
+
+/// Push validation keeps historical extensions until persisted browser/native
+/// pending rows have a migration. Generated new-draft types remain closed.
+pub fn schema() -> Schema {
+    let mut schema = schemars::generate::SchemaSettings::draft2020_12()
+        .for_serialize()
+        .into_generator()
+        .into_root_schema_for::<DraftVersion>();
+    schema.insert("additionalProperties".into(), true.into());
+    schema
+}
+
 impl DraftVersion {
+    /// Decode historical stored payloads without changing the original document.
+    pub fn from_stored_value(id: &str, value: Value) -> Result<Self, String> {
+        let mut fields: serde_json::Map<String, Value> =
+            serde_json::from_value(value).map_err(|error| error.to_string())?;
+        fields
+            .entry("id")
+            .or_insert_with(|| Value::String(id.into()));
+        let version: Self =
+            serde_json::from_value(Value::Object(fields)).map_err(|error| error.to_string())?;
+        version.validate()?;
+        if version.id != id {
+            return Err("Invalid draft document.".into());
+        }
+        Ok(version)
+    }
+
     pub fn validate(&self) -> Result<(), String> {
         let legacy_id = format!("{}:{}", self.device, self.session);
         let writer_id = self
@@ -29,9 +104,10 @@ impl DraftVersion {
         if self.device.is_empty()
             || self.session.is_empty()
             || (self.id != legacy_id && !writer_id)
-            || self.id.len() > 300
-            || self.updated > 9_007_199_254_740_991
-            || self.seen.values().any(|n| *n > 9_007_199_254_740_991)
+            || self.id.len() > MAX_DRAFT_ID_BYTES
+            || self.text.chars().count() > MAX_DRAFT_TEXT_CODEPOINTS
+            || self.updated > MAX_SAFE_INTEGER as u64
+            || self.seen.values().any(|n| *n > MAX_SAFE_INTEGER as u64)
         {
             return Err("Invalid draft identity or version.".into());
         }

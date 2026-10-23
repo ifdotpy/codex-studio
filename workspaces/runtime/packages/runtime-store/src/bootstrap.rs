@@ -44,7 +44,6 @@ pub(crate) fn prepare_sync_schema(transaction: &Transaction<'_>) -> StoreResult<
     }
 
     reconcile_derived_objects(transaction, &expected)?;
-    drop_legacy_watch_triggers(transaction)?;
     transaction.execute_batch(sections[0])?;
     transaction.execute_batch(sections[1])?;
     transaction.execute_batch(sections[2])?;
@@ -96,20 +95,6 @@ fn parse_sections(source: &str) -> StoreResult<[&str; 4]> {
         ));
     }
     Ok(bodies)
-}
-
-fn drop_legacy_watch_triggers(transaction: &Transaction<'_>) -> StoreResult<()> {
-    let mut statement = transaction.prepare(
-        "SELECT name FROM sqlite_master WHERE type='trigger' AND (name GLOB 'sync_watch_*' OR name GLOB 'sync_entity_event_window_v2_*')",
-    )?;
-    let names = statement
-        .query_map([], |row| row.get::<_, String>(0))?
-        .collect::<Result<Vec<_>, _>>()?;
-    drop(statement);
-    for name in names {
-        transaction.execute_batch(&format!("DROP TRIGGER {}", quote_identifier(&name)))?;
-    }
-    Ok(())
 }
 
 type ColumnLayout = (String, Option<String>, i64, Option<String>, i64, i64);

@@ -234,38 +234,55 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn rejected_priority_returns_with_a_full_undrained_stderr_pipe() {
-        // Fill one small pipe, not system resources. The read end stays open and is
-        // never drained until the isolated test process has completed its spawn.
-        // Python only sets up the descriptors; the Rust hook injects OS rejections.
-        const PROBE: &str = r#"
-import fcntl, os, subprocess, sys
-reader, writer = os.pipe()
-try:
-    flags = fcntl.fcntl(writer, fcntl.F_GETFL)
-    fcntl.fcntl(writer, fcntl.F_SETFL, flags | os.O_NONBLOCK)
-    while True:
-        try:
-            os.write(writer, b'x' * 4096)
-        except BlockingIOError:
-            break
-    fcntl.fcntl(writer, fcntl.F_SETFL, flags)
-    result = subprocess.run([sys.argv[1], '--exact',
-        'child_priority::tests::rejected_priority_is_advisory_and_child_still_completes',
-        '--nocapture'], stdout=subprocess.PIPE, stderr=writer, timeout=30)
-    assert result.returncode == 0, result.stdout
-finally:
-    os.close(writer)
-    os.close(reader)
-"#;
-        let output = Command::new("python3")
-            .args(["-c", PROBE])
-            .arg(std::env::current_exe().expect("test executable"))
-            .output()
+        use rustix::fs::{OFlags, fcntl_getfl, fcntl_setfl};
+        use std::io::{Read, Write};
+        use std::process::Stdio;
+        use std::time::{Duration, Instant};
+
+        // Fill one small pipe, not system resources. Keep the read end open
+        // and undrained until the isolated priority test has completed.
+        const PIPE_FILL_CHUNK_BYTES: usize = 4096;
+        const SPAWN_HANG_GUARD: Duration = Duration::from_secs(30);
+        let (_reader, mut writer) = std::io::pipe().expect("stderr pipe");
+        let flags = fcntl_getfl(&writer).expect("pipe flags");
+        fcntl_setfl(&writer, flags | OFlags::NONBLOCK).expect("nonblocking fill");
+        loop {
+            match writer.write(&[b'x'; PIPE_FILL_CHUNK_BYTES]) {
+                Ok(_) => {}
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
+                Err(error) => panic!("fill stderr pipe: {error}"),
+            }
+        }
+        fcntl_setfl(&writer, flags).expect("restore blocking stderr");
+        let mut child = Command::new(std::env::current_exe().expect("test executable"))
+            .args([
+                "--exact",
+                "child_priority::tests::rejected_priority_is_advisory_and_child_still_completes",
+                "--nocapture",
+            ])
+            .stdout(Stdio::piped())
+            .stderr(writer)
+            .spawn()
             .expect("full-pipe regression fixture");
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
+        let deadline = Instant::now() + SPAWN_HANG_GUARD;
+        let status = loop {
+            if let Some(status) = child.try_wait().expect("probe status") {
+                break status;
+            }
+            if Instant::now() >= deadline {
+                child.kill().expect("kill stalled probe");
+                child.wait().expect("reap stalled probe");
+                panic!("priority hook blocked on a full stderr pipe");
+            }
+            std::thread::yield_now();
+        };
+        let mut stdout = String::new();
+        child
+            .stdout
+            .take()
+            .expect("probe stdout")
+            .read_to_string(&mut stdout)
+            .expect("probe output");
+        assert!(status.success(), "{stdout}");
     }
 }

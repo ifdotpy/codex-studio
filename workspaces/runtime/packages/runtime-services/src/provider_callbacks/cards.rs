@@ -4,15 +4,163 @@ use serde_json::{Value, json};
 use studio_runtime_providers::{RequestId, ResponseBody};
 use studio_runtime_store::{QuestionsWriteRepository, RuntimeStore, system_reads as records};
 
-pub(super) fn interactive(method: &str) -> bool {
-    matches!(
-        method,
-        "item/commandExecution/requestApproval"
-            | "item/fileChange/requestApproval"
-            | "item/permissions/requestApproval"
-            | "item/tool/requestUserInput"
-            | "mcpServer/elicitation/request"
-    )
+/// The native provider requests that wait for the user as a request card. The
+/// web client renders each of them (`components/questions/Requests.tsx`).
+pub const NATIVE_REQUEST_METHODS: [&str; 5] = [
+    "item/commandExecution/requestApproval",
+    "item/fileChange/requestApproval",
+    "item/permissions/requestApproval",
+    "item/tool/requestUserInput",
+    "mcpServer/elicitation/request",
+];
+
+pub fn interactive(method: &str) -> bool {
+    NATIVE_REQUEST_METHODS.contains(&method)
+}
+
+/// How the account worker settles one native provider request.
+#[derive(Clone, Debug, PartialEq)]
+pub enum NativeAdmission {
+    /// Answer now, without the user: a refusal, or a decline for a deleted agent.
+    Answer(ResponseBody),
+    /// The pending card owns the answer. The user answers it over HTTP.
+    Card(String),
+    /// A card or a resolution of this exact request already settled it.
+    Settled,
+}
+
+/// Admit one native request of the account session as a pending card, in one
+/// transaction. Repeating it for the same request (a worker restart before its
+/// record retired) finds the first card and admits nothing new. The user's
+/// answer is sent only by the card's HTTP path, never from here, so a replay
+/// cannot send it a second time. `cursor` is the request's journal cursor: it
+/// lets the written answer's payload retire with the worker checkpoint.
+pub async fn admit_native(
+    store: std::sync::Arc<RuntimeStore>,
+    context: &CallbackContext,
+    frame: &studio_runtime_providers::Frame,
+    cursor: u64,
+    now: f64,
+) -> Result<NativeAdmission, CallbackError> {
+    let request = Input::from_frame(frame)?
+        .filter(|request| interactive(&request.method))
+        .ok_or(CallbackError::Invalid("Expected a native provider request"))?;
+    if !now.is_finite() || now < 0.0 {
+        return Err(CallbackError::Invalid("Invalid callback clock"));
+    }
+    if cursor == 0 {
+        return Err(CallbackError::Invalid("Invalid callback journal cursor"));
+    }
+    let context = context.clone();
+    store
+        .transaction_with(move |tx| {
+            let identity = ReplyIdentity::new(&context, &request.id);
+            if storage::read(tx, &format!("{}:resolved", identity.key()))?.is_some() {
+                return Ok(NativeAdmission::Settled);
+            }
+            let key = format!("{}:card", identity.key());
+            if let Some(saved) = storage::read(tx, &key)? {
+                if saved["signature"] != request.signature()
+                    || saved["identity"] != serde_json::to_value(&identity)?
+                {
+                    return Err(CallbackError::Conflict);
+                }
+                let id = saved["card"]
+                    .as_str()
+                    .ok_or_else(|| CallbackError::Stored(key.clone()))?;
+                let card = records::get(tx, "runtime_requests", id)?
+                    .ok_or_else(|| CallbackError::Stored(key.clone()))?;
+                return Ok(if card["status"] == "pending" {
+                    NativeAdmission::Card(id.to_owned())
+                } else {
+                    NativeAdmission::Settled
+                });
+            }
+            let snapshot = storage::snapshot(tx, &context)?;
+            if let Some(body) = immediate(&snapshot, &request)? {
+                return Ok(NativeAdmission::Answer(body));
+            }
+            let CallbackDecision::Pending(id) = admit(tx, &context, &snapshot, &request, now)?
+            else {
+                return Err(CallbackError::Unknown);
+            };
+            let mut saved = storage::read(tx, &key)?.ok_or(CallbackError::Unknown)?;
+            saved["journalCursor"] = json!(cursor);
+            storage::update(tx, &key, &saved)?;
+            Ok(NativeAdmission::Card(id))
+        })
+        .await
+}
+
+/// Expire the pending native cards of `account` that another provider
+/// generation sent. That process ended, so no answer can reach the sender and
+/// the card must not wait for the user. Run in the worker's startup recovery
+/// transaction, after the generation is known.
+pub fn expire_ended_generations(
+    tx: &Transaction<'_>,
+    account: &str,
+    generation: u64,
+) -> Result<usize, CallbackError> {
+    let rows = {
+        let mut statement = tx.prepare_cached(
+            "SELECT id,record FROM runtime_requests WHERE json_valid(record) \
+             AND json_extract(record,'$.status') IN ('pending','answering') \
+             AND json_extract(record,'$.method') IN (?1,?2,?3,?4,?5)",
+        )?;
+        statement
+            .query_map(NATIVE_REQUEST_METHODS, |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?
+    };
+    let mut count = 0;
+    for (id, raw) in rows {
+        // A row this build cannot read keeps its state; it was never admitted here.
+        let Ok(mut card) = records::decode("runtime_requests", &id, &raw) else {
+            continue;
+        };
+        if card
+            .get("accountKey")
+            .and_then(Value::as_str)
+            .unwrap_or("default")
+            != account
+            || card
+                .pointer("/supervisor/generation")
+                .and_then(Value::as_u64)
+                == Some(generation)
+        {
+            continue;
+        }
+        // One card that cannot be saved must not stop the worker start: its
+        // writes roll back and it keeps its state.
+        tx.execute_batch("SAVEPOINT native_card_expiry")?;
+        match expire_card(tx, &mut card) {
+            Ok(expired) => {
+                tx.execute_batch("RELEASE native_card_expiry")?;
+                count += usize::from(expired);
+            }
+            Err(error) => {
+                tx.execute_batch("ROLLBACK TO native_card_expiry; RELEASE native_card_expiry")?;
+                eprintln!(
+                    "native request card kept its state; account={account} card={id} generation={generation}: {error}"
+                );
+            }
+        }
+    }
+    Ok(count)
+}
+
+/// A pending card expires; an answer whose delivery started becomes uncertain.
+fn expire_card(tx: &Transaction<'_>, card: &mut Value) -> Result<bool, CallbackError> {
+    let next = match card["status"].as_str() {
+        Some("pending") => "expired",
+        Some("answering") => "uncertain",
+        _ => return Ok(false),
+    };
+    card["status"] = json!(next);
+    tx.execute("UPDATE runtime_operation_receipts SET result=json_set(result,'$.delivery','unknown') WHERE json_extract(result,'$.card')=?1 AND json_extract(result,'$.delivery') IN ('prepared','submitted')", [card["id"].as_str().ok_or(CallbackError::Invalid("Invalid callback card identity"))?])?;
+    save(tx, card)?;
+    Ok(true)
 }
 pub(super) fn immediate(
     snapshot: &CallbackSnapshot,
@@ -287,14 +435,9 @@ fn answer_in(
     let mut outbox = storage::read(tx, &key)?.ok_or(CallbackError::Unknown)?;
     outbox["card"] = json!(id);
     outbox["unanswered"] = unanswered;
-    if let Some(admission) = storage::read(tx, &format!("{key}:card"))? {
-        if let Some(cursor) = admission.get("journalCursor") {
-            outbox["journalCursor"] = cursor.clone();
-        }
-    } else {
-        // Python already admitted this card without the Rust worker journal.
-        // Keep a replay tombstone, but its Written payload needs no Rust ACK.
-        outbox["legacyAdmission"] = json!(true);
+    let admission = storage::read(tx, &format!("{key}:card"))?.ok_or(CallbackError::Stale)?;
+    if let Some(cursor) = admission.get("journalCursor") {
+        outbox["journalCursor"] = cursor.clone();
     }
     storage::update(tx, &key, &outbox)?;
     save(tx, &card)?;
@@ -309,24 +452,20 @@ pub async fn expire(
 ) -> Result<usize, CallbackError> {
     let account = account.to_owned();
     let connection = connection.to_owned();
-    store.transaction_with(move |tx| {
-        let mut count = 0;
-        for mut card in records::all(tx, "runtime_requests")? {
-            if card["accountKey"] != account || card["connectionId"] != connection {
-                continue;
+    store
+        .transaction_with(move |tx| {
+            let mut count = 0;
+            for mut card in records::all(tx, "runtime_requests")? {
+                if card["accountKey"] != account || card["connectionId"] != connection {
+                    continue;
+                }
+                if expire_card(tx, &mut card)? {
+                    count += 1;
+                }
             }
-            let next = match card["status"].as_str() {
-                Some("pending") => "expired",
-                Some("answering") => "uncertain",
-                _ => continue,
-            };
-            card["status"] = json!(next);
-            tx.execute("UPDATE runtime_operation_receipts SET result=json_set(result,'$.delivery','unknown') WHERE json_extract(result,'$.card')=?1 AND json_extract(result,'$.delivery') IN ('prepared','submitted')", [card["id"].as_str().ok_or(CallbackError::Invalid("Invalid callback card identity"))?])?;
-            save(tx, &card)?;
-            count += 1;
-        }
-        Ok(count)
-    }).await
+            Ok(count)
+        })
+        .await
 }
 pub async fn resolve(
     store: &RuntimeStore,

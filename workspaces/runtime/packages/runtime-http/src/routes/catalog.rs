@@ -15,7 +15,7 @@ pub(crate) fn routes() -> RouteGroup {
     ])
 }
 
-async fn accounts(
+pub(super) async fn accounts(
     State(state): State<HttpState>,
 ) -> Result<Json<crate::generated::AccountsResponse>, ApiError> {
     let store = state.store.clone().ok_or_else(ApiError::internal)?;

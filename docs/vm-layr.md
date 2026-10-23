@@ -275,9 +275,8 @@ The command below replaces the folder with a layr commit, so take these fixes in
 
 Run this command to select another committed layr revision:
 
-```sh
-python3 workspaces/runtime/apps/server/src/update-vm-layr.py --source ~/Projects/layr --revision <commit>
-```
+The former Python backend command has been removed. See [testing](testing.md)
+for current Rust checks.
 
 The command reads the Git commit through `git archive`.
 It does not read or change that repository's work files.
@@ -288,13 +287,8 @@ With `--name layr-desk`, the same command vendors the vault writer into
 
 Run each command separately:
 
-```sh
-python3 -B -m unittest discover -s workspaces/runtime/apps/vm-guest -p test_layr_admin.py -v
-python3 -B -m unittest discover -s workspaces/runtime/apps/vm-guest -p test_project_secrets.py -v
-python3 workspaces/runtime/apps/server/src/codex_python.py --exec workspaces/runtime/apps/server/src/test_codex_linux_vm.py
-python3 -B workspaces/runtime/apps/server/tests/linux-vm-layr-host-contract.py -q
-npm run typecheck:runtime
-```
+The former Python backend command has been removed. See [testing](testing.md)
+for current Rust checks.
 
 The layr tests run on Linux as root, with btrfs-progs and git (for example in an OrbStack
 machine): `cargo test --locked` in `workspaces/runtime/apps/layr`. The btrfs regression tests

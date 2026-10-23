@@ -11,7 +11,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
-use std::sync::{Arc, Mutex, RwLock, Weak};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::{Duration, Instant};
 use tokio::sync::Notify;
 
@@ -95,10 +95,9 @@ struct CommandTiming {
 pub(crate) struct RetainedMonitorPort {
     store: Arc<RuntimeStore>,
     session: Arc<dyn AccountSessionPort>,
-    preparation: RwLock<
-        Option<Arc<studio_runtime_services::account_worker::preparation::PreparationResources>>,
-    >,
-    dispatch_wake: RwLock<Option<Arc<Notify>>>,
+    preparation:
+        OnceLock<Arc<studio_runtime_services::account_worker::preparation::PreparationResources>>,
+    dispatch_wake: OnceLock<Arc<Notify>>,
     input_replies: Mutex<BTreeMap<String, InputReply>>,
     /// Monitor IDs whose managed start runs in its own task.
     starts: Arc<Mutex<BTreeSet<String>>>,
@@ -151,8 +150,8 @@ impl RetainedMonitorPort {
         Arc::new_cyclic(|this| Self {
             store,
             session,
-            preparation: RwLock::new(None),
-            dispatch_wake: RwLock::new(None),
+            preparation: OnceLock::new(),
+            dispatch_wake: OnceLock::new(),
             input_replies: Mutex::new(BTreeMap::new()),
             starts: Arc::new(Mutex::new(BTreeSet::new())),
             rule_checks: Arc::new(Mutex::new(BTreeSet::new())),
@@ -169,11 +168,7 @@ impl RetainedMonitorPort {
         lock(set).insert(id.to_owned()).then(|| InFlightId {
             set: Arc::clone(set),
             id: id.to_owned(),
-            wake: self
-                .dispatch_wake
-                .read()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .clone(),
+            wake: self.dispatch_wake.get().cloned(),
         })
     }
 
@@ -341,6 +336,68 @@ impl RetainedMonitorPort {
         Ok(())
     }
 
+    /// Reattach a command from Studio's retained request ledger before any
+    /// provider query. A checkpointed provider answer is the command's outcome.
+    /// A host command that the current provider generation received is still
+    /// owed its answer by that provider process, which outlives a backend
+    /// restart: the host provider has no operation status, so the retained
+    /// request is the proof. `None` leaves the decision to the provider.
+    async fn retained_reattach(
+        &self,
+        snapshot: &MonitorSnapshot,
+        operation: &Operation,
+        operation_id: &str,
+        scope: &studio_runtime_services::account_session_runtime::ConnectionScope,
+    ) -> Result<Option<ReattachOutcome>, MonitorError> {
+        use studio_runtime_services::account_worker::{WorkerError, retained};
+        let id = snapshot.id();
+        match retained::monitor_result(&self.store, id, operation).await {
+            Ok(Some(response)) => {
+                return match self.command_result(id, operation, response).await {
+                    Ok(()) => Ok(Some(ReattachOutcome::TerminalQueued)),
+                    Err(MonitorError::Refused(_)) => Ok(Some(ReattachOutcome::Gone(
+                        "invalid_terminal_receipt".into(),
+                    ))),
+                    Err(error) => Err(error),
+                };
+            }
+            Ok(None) => {}
+            Err(WorkerError::Store(error)) => return Err(error.into()),
+            // A changed identity proves nothing here; the provider decides.
+            Err(_) => return Ok(None),
+        }
+        let generation =
+            match retained::monitor_request_generation(&self.store, id, operation).await {
+                Ok(generation) => generation,
+                Err(WorkerError::Store(error)) => return Err(error.into()),
+                Err(_) => return Ok(None),
+            };
+        if generation != Some(scope.generation) {
+            return Ok(None);
+        }
+        // A VM actor's command runs in its guest provider, which answers
+        // operation status itself and has its own generation.
+        let agent = snapshot.agent().to_owned();
+        let vm_owner = self
+            .store
+            .read_async("runtime-server/monitor-reattach-owner", move |db| {
+                retained::vm_actor(db, &agent)
+            })
+            .await;
+        match vm_owner {
+            Ok(false) => {}
+            Ok(true) => return Ok(None),
+            Err(WorkerError::Store(error)) => return Err(error.into()),
+            Err(_) => return Ok(None),
+        }
+        Ok(Some(ReattachOutcome::Running(ReattachProof {
+            operation: operation.clone(),
+            operation_id: operation_id.to_owned(),
+            native_id: None,
+            current_connection: scope.connection.clone(),
+        })))
+    }
+
     /// Run one managed start in its own task. command/exec answers only when
     /// the process exits, so the monitor timer must not wait for it.
     fn spawn_monitor_start(&self, id: &str, now: f64) -> Result<(), MonitorError> {
@@ -498,20 +555,14 @@ impl RetainedMonitorPort {
             .await
     }
 
-    pub(crate) fn set_dispatch_wake(&self, wake: Arc<Notify>) {
-        *self
-            .dispatch_wake
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(wake);
+    pub(crate) fn set_dispatch_wake(&self, wake: Arc<Notify>) -> Result<(), MonitorError> {
+        self.dispatch_wake
+            .set(wake)
+            .map_err(|_| MonitorError::Refused("Monitor dispatch wake is already installed"))
     }
 
     fn wake_dispatch(&self) {
-        if let Some(wake) = self
-            .dispatch_wake
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .as_ref()
-        {
+        if let Some(wake) = self.dispatch_wake.get() {
             wake.notify_one();
         }
     }
@@ -519,11 +570,10 @@ impl RetainedMonitorPort {
     pub(crate) fn set_preparation_resources(
         &self,
         resources: Arc<studio_runtime_services::account_worker::preparation::PreparationResources>,
-    ) {
-        *self
-            .preparation
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(resources);
+    ) -> Result<(), MonitorError> {
+        self.preparation.set(resources).map_err(|_| {
+            MonitorError::Refused("Monitor preparation resources are already installed")
+        })
     }
 
     fn request<'a>(
@@ -647,9 +697,8 @@ impl RetainedMonitorPort {
         };
         let resources = self
             .preparation
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
+            .get()
+            .cloned()
             .ok_or(MonitorError::Unavailable(
                 "account-worker/monitor-preparation",
             ))?;
@@ -865,9 +914,8 @@ impl RetainedMonitorPort {
         }
         let resources = self
             .preparation
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
+            .get()
+            .cloned()
             .ok_or_else(|| "account-worker/monitor-preparation is unavailable".to_owned())?;
         let prepared_action =
             studio_runtime_services::account_worker::preparation::prepare_monitor_command(
@@ -1211,6 +1259,10 @@ impl MonitorNative for RetainedMonitorPort {
                 return self.terminate_submission(&process_id, receipt.result);
             }
             if method == Method::CommandExec {
+                // The barrier only orders the command's output before its exit.
+                // The provider already answered, so the command ran and ended:
+                // a barrier that does not complete delays the exit, but never
+                // turns it into a refusal or an unknown outcome.
                 if let Err(error) = self
                     .session
                     .callback_barrier(
@@ -1220,14 +1272,9 @@ impl MonitorNative for RetainedMonitorPort {
                     )
                     .await
                 {
-                    return if matches!(error, AccountSessionError::Unknown) {
-                        Submission::Unknown
-                    } else {
-                        Submission::NotSent {
-                            reason: NotSentReason::Transient,
-                            error: error.to_string(),
-                        }
-                    };
+                    studio_runtime_services::diagnostics::log_stderr(format_args!(
+                        "monitor {process_id} output barrier did not complete: {error}; recording its exit"
+                    ));
                 }
                 let id = params["processId"].as_str().unwrap_or_default();
                 if id.is_empty() {
@@ -1266,10 +1313,7 @@ impl MonitorNative for RetainedMonitorPort {
 
 impl RuleMonitor for RetainedMonitorPort {
     fn available(&self) -> bool {
-        self.preparation
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .is_some()
+        self.preparation.get().is_some()
     }
     fn launch<'a>(
         &'a self,
@@ -1390,6 +1434,12 @@ impl MonitorPort for RetainedMonitorPort {
             let Some(scope) = self.session.current_scope(&operation.account_key) else {
                 return Ok(ReattachOutcome::Pending);
             };
+            if let Some(outcome) = self
+                .retained_reattach(snapshot, operation, &operation_id, &scope)
+                .await?
+            {
+                return Ok(outcome);
+            }
             let receipt = match self
                 .request(
                     operation,
@@ -1455,7 +1505,7 @@ impl MonitorPort for RetainedMonitorPort {
             Ok(ReattachOutcome::Running(ReattachProof {
                 operation: operation.clone(),
                 operation_id,
-                native_id,
+                native_id: Some(native_id),
                 current_connection: scope.connection,
             }))
         })
@@ -1505,19 +1555,14 @@ impl MonitorPort for RetainedMonitorPort {
                 .ok_or(MonitorError::Refused("Monitor operation is unavailable"))?;
             let resources = self
                 .preparation
-                .read()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .clone()
+                .get()
+                .cloned()
                 .ok_or(MonitorError::Unavailable(
                     "account-worker/monitor-preparation",
                 ))?;
             let store = Arc::clone(&self.store);
             let session = Arc::clone(&self.session);
-            let dispatch_wake = self
-                .dispatch_wake
-                .read()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .clone();
+            let dispatch_wake = self.dispatch_wake.get().cloned();
             let id = id.to_owned();
             let command = command.to_owned();
             let actor = serde_json::to_value(actor)
@@ -1775,6 +1820,49 @@ mod tests {
     struct NoSession;
     impl AccountSessionPort for NoSession {}
 
+    #[tokio::test]
+    async fn startup_resources_refuse_replacement() {
+        use studio_runtime_services::account_worker::preparation::PreparationResources;
+        use studio_runtime_services::model_catalog::ModelCatalogService;
+
+        let root = tempfile::tempdir().expect("root");
+        let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
+        let port = RetainedMonitorPort::new(store, Arc::new(NoSession));
+        let wake = Arc::new(Notify::new());
+        port.set_dispatch_wake(Arc::clone(&wake))
+            .expect("install wake");
+        assert!(port.set_dispatch_wake(Arc::new(Notify::new())).is_err());
+        assert!(Arc::ptr_eq(
+            port.dispatch_wake.get().expect("installed"),
+            &wake
+        ));
+
+        let resources = Arc::new(
+            PreparationResources::bundled(
+                root.path().to_string_lossy().into_owned(),
+                ModelCatalogService::new(),
+            )
+            .expect("resources"),
+        );
+        port.set_preparation_resources(Arc::clone(&resources))
+            .expect("install resources");
+        let replacement = Arc::new(
+            PreparationResources::bundled(
+                root.path().to_string_lossy().into_owned(),
+                ModelCatalogService::new(),
+            )
+            .expect("replacement resources"),
+        );
+        assert!(port.set_preparation_resources(replacement).is_err());
+        assert!(Arc::ptr_eq(
+            port.preparation.get().expect("installed"),
+            &resources
+        ));
+        port.wake_dispatch();
+        wake.notified().await;
+        assert!(RuleMonitor::available(port.as_ref()));
+    }
+
     /// A provider whose command/exec answers only when released, and whose
     /// terminate answer the test selects.
     #[derive(Default)]
@@ -1963,6 +2051,123 @@ mod tests {
         assert_eq!(port.exit_owned("watch"), Some(false));
     }
 
+    /// The process exited and the provider answered, but the callback barrier
+    /// that orders the command's output before its exit did not complete, as a
+    /// busy account journal does. The command ran: its exit code must reach
+    /// the owner, never a refusal or an unknown outcome.
+    #[tokio::test]
+    async fn monitor_completion_exit_result_survives_an_incomplete_callback_barrier() {
+        struct BarrierFailure(AccountSessionError);
+        impl AccountSessionPort for BarrierFailure {
+            fn current_scope(
+                &self,
+                account: &str,
+            ) -> Option<studio_runtime_services::account_session_runtime::ConnectionScope>
+            {
+                Some(
+                    studio_runtime_services::account_session_runtime::ConnectionScope {
+                        account: account.to_owned(),
+                        connection: "connection".into(),
+                        generation: 1,
+                    },
+                )
+            }
+            fn provider_request<'a>(
+                &'a self,
+                request: ProviderRequest,
+            ) -> studio_runtime_services::account_session_runtime::AccountSessionFuture<
+                'a,
+                SessionReceipt,
+            > {
+                Box::pin(async move {
+                    assert_eq!(request.method, Method::CommandExec);
+                    Ok(SessionReceipt {
+                        scope: request.expected_scope.clone().expect("scope"),
+                        operation: request.operation,
+                        ticket: None,
+                        certainty: RequestCertainty::Written,
+                        result: Some(ProviderResponse::Reply(json!({"exitCode":1}))),
+                        not_sent_reason: None,
+                        replayed: false,
+                    })
+                })
+            }
+            fn callback_barrier<'a>(
+                &'a self,
+                _: &'a str,
+                _: &'a studio_runtime_services::account_session_runtime::ConnectionScope,
+                _: Instant,
+            ) -> studio_runtime_services::account_session_runtime::AccountSessionFuture<'a, ()>
+            {
+                let error = match &self.0 {
+                    AccountSessionError::Unknown => AccountSessionError::Unknown,
+                    _ => AccountSessionError::Refused("Callback barrier was not completed"),
+                };
+                Box::pin(async move { Err(error) })
+            }
+        }
+        for barrier in [
+            AccountSessionError::Refused("Callback barrier was not completed"),
+            AccountSessionError::Unknown,
+        ] {
+            let label = barrier.to_string();
+            let root = tempfile::tempdir().expect("state root");
+            let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
+            let operation = Operation {
+                agent: "owner".into(),
+                epoch: 0,
+                account_key: "default".into(),
+                connection_id: "connection".into(),
+                evidence: BTreeMap::new(),
+            };
+            let mut watch = starting_watch(root.path(), "watch");
+            watch["status"] = json!("running");
+            watch["operation"] = serde_json::to_value(&operation).expect("operation");
+            let owner = owner(root.path(), true);
+            store
+                .transaction(move |tx| {
+                    AgentRepository::put(tx, &AgentRecord::from_value(owner)?)?;
+                    studio_runtime_store::Table::new(tx)
+                        .put(&studio_runtime_store::MonitorRecord::from_value(watch)?)?;
+                    Ok::<_, studio_runtime_store::StoreError>(())
+                })
+                .await
+                .expect("running command");
+            let port = RetainedMonitorPort::new(
+                Arc::clone(&store),
+                Arc::new(BarrierFailure(barrier)) as Arc<dyn AccountSessionPort>,
+            );
+            let effect = Effect::Native {
+                identity: "monitor:watch".into(),
+                method: "command/exec",
+                params: json!({"processId":"watch","timeoutMs":60000}),
+            };
+            let submission =
+                tokio::time::timeout(Duration::from_secs(10), port.submit(&operation, &effect))
+                    .await
+                    .expect("submission ends");
+            assert!(
+                matches!(submission, Submission::Written),
+                "{label}: a command with a known exit is Written"
+            );
+            let record = store
+                .read_async("test/barrier-exit", |tx| {
+                    MonitorsRepository::get(tx, "watch")
+                })
+                .await
+                .expect("read")
+                .expect("watch");
+            let queue = record.value()["streamQueue"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default();
+            assert_eq!(queue.len(), 1, "{label}: one exit result");
+            assert_eq!(queue[0]["kind"], "exit", "{label}");
+            assert_eq!(queue[0]["code"], 1, "{label}: the provider's exit code");
+            assert_eq!(port.exit_owned("watch"), Some(false), "{label}");
+        }
+    }
+
     #[tokio::test]
     async fn monitor_completion_waiting_owner_starts_queued_command_without_a_live_turn() {
         use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -2096,7 +2301,7 @@ mod tests {
                     Arc::clone(&store),
                     Arc::clone(&session) as Arc<dyn AccountSessionPort>,
                 );
-                port.set_preparation_resources(Arc::new(studio_runtime_services::account_worker::preparation::PreparationResources::bundled(root.path().to_string_lossy().into(),studio_runtime_services::model_catalog::ModelCatalogService::new()).expect("resources")));
+                port.set_preparation_resources(Arc::new(studio_runtime_services::account_worker::preparation::PreparationResources::bundled(root.path().to_string_lossy().into(),studio_runtime_services::model_catalog::ModelCatalogService::new()).expect("resources"))).expect("install resources");
                 if replay_config {
                     let error = port
                         .dispatch_monitor_start("watch", now)
@@ -2115,7 +2320,8 @@ mod tests {
                     Arc::clone(&port) as Arc<dyn MonitorPort>,
                     Arc::new(Notify::new()),
                 );
-                port.set_dispatch_wake(runtime.dispatch_wake_handle());
+                port.set_dispatch_wake(runtime.dispatch_wake_handle())
+                    .expect("install wake");
                 let wake = runtime.dispatch_wake_handle();
                 tokio::time::timeout(Duration::from_secs(10), async {
                     loop {
@@ -2205,7 +2411,7 @@ mod tests {
             let proof = ReattachProof {
                 operation: operation.clone(),
                 operation_id: "monitor:watch".into(),
-                native_id: 42,
+                native_id: Some(42),
                 current_connection: "current".into(),
             };
             studio_runtime_services::monitor_runtime::reattach(&store, "watch", &proof, now)
@@ -2213,7 +2419,8 @@ mod tests {
                 .expect("reattach");
             let port = RetainedMonitorPort::new(Arc::clone(&store), Arc::new(NoSession));
             let wake = Arc::new(Notify::new());
-            port.set_dispatch_wake(Arc::clone(&wake));
+            port.set_dispatch_wake(Arc::clone(&wake))
+                .expect("install wake");
             async fn receipt(store: &RuntimeStore, key: String) {
                 store.transaction(move |tx| {
                     for (id, result) in [
@@ -2253,6 +2460,178 @@ mod tests {
                 .expect("owner read")
                 .expect("owner");
             assert_eq!(owner.status, studio_runtime_store::AgentStatus::Queued);
+        }
+    }
+
+    /// A backend restart leaves a host command running in the provider process,
+    /// which keeps its generation. The host provider rejects `operationStatus`,
+    /// so that rejection proves nothing. Studio's retained request for the same
+    /// generation decides: the monitor waits for that answer and reports its
+    /// exit, without another command/exec. A new generation is a new provider
+    /// process, and the outcome stays unknown.
+    #[tokio::test]
+    async fn reattached_exit_host_command_waits_for_its_retained_answer_when_status_is_rejected() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        struct RestartedHost {
+            generation: u64,
+            status_requests: AtomicUsize,
+        }
+        impl AccountSessionPort for RestartedHost {
+            fn current_scope(
+                &self,
+                account: &str,
+            ) -> Option<studio_runtime_services::account_session_runtime::ConnectionScope>
+            {
+                Some(
+                    studio_runtime_services::account_session_runtime::ConnectionScope {
+                        account: account.into(),
+                        connection: "current".into(),
+                        generation: self.generation,
+                    },
+                )
+            }
+            fn provider_request<'a>(
+                &'a self,
+                request: ProviderRequest,
+            ) -> studio_runtime_services::account_session_runtime::AccountSessionFuture<
+                'a,
+                SessionReceipt,
+            > {
+                Box::pin(async move {
+                    assert_eq!(
+                        request.method,
+                        Method::OperationStatus,
+                        "a retained command is never sent again"
+                    );
+                    self.status_requests.fetch_add(1, Ordering::SeqCst);
+                    Ok(SessionReceipt {
+                        scope: request.expected_scope.expect("scope"),
+                        operation: request.operation,
+                        ticket: None,
+                        certainty: RequestCertainty::Written,
+                        result: Some(ProviderResponse::Rejected(
+                            json!({"code":-32601,"message":"method not found"}),
+                        )),
+                        not_sent_reason: None,
+                        replayed: false,
+                    })
+                })
+            }
+        }
+        // (current provider generation, answer recorded before the reattach)
+        for (generation, answered) in [(1, false), (1, true), (2, false)] {
+            let case = format!("generation {generation}, answered {answered}");
+            let root = tempfile::tempdir().expect("state root");
+            let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
+            let now = studio_runtime_services::event_write::unix_time().expect("clock");
+            let operation = Operation {
+                agent: "owner".into(),
+                epoch: 0,
+                account_key: "default".into(),
+                connection_id: "old".into(),
+                evidence: BTreeMap::new(),
+            };
+            let mut watch = starting_watch(root.path(), "watch");
+            watch["status"] = json!("running");
+            watch["created"] = json!(now);
+            watch["operation"] = json!(operation);
+            let owner = owner(root.path(), true);
+            let key = format!(
+                "retained:default:{}",
+                studio_runtime_store::sha256_hex(b"monitor:watch")
+            );
+            let submitted = json!({
+                "call":{"scope":{"account":"default","connection":"old","generation":1},
+                    "operation":"monitor:watch","actor":{"agent":"owner","epoch":0},
+                    "transfer":null,"deleted_actor_session":null,"method":"command/exec",
+                    "params":{"processId":"watch","cwd":root.path().to_string_lossy(),"command":["true"]}},
+                "request":{"id":key,"generation":1,"method":"command/exec","operation":key,
+                    "thread":null,"lightweight":true,"deadline":60000,"remoteId":null}
+            });
+            let submitted_id = format!("account-worker:{key}:submitted");
+            store.transaction(move |tx| {
+                AgentRepository::put(tx, &AgentRecord::from_value(owner)?)?;
+                studio_runtime_store::Table::new(tx).put(&studio_runtime_store::MonitorRecord::from_value(watch)?)?;
+                tx.execute("INSERT INTO runtime_operation_receipts(id,signature,result) VALUES (?1,'test',?2)", (submitted_id, submitted.to_string()))?;
+                Ok::<_, studio_runtime_store::StoreError>(())
+            }).await.expect("persist retained command before restart");
+            async fn answer(store: &RuntimeStore, key: String) {
+                store.transaction(move |tx| {
+                    for (id, result) in [
+                        (format!("account-worker:{key}:result"), json!({"result":{"Reply":{"exitCode":0}},"cursor":1})),
+                        ("account-worker:cursor:default:1:ack".into(),json!(1)),
+                    ] {
+                        tx.execute("INSERT OR REPLACE INTO runtime_operation_receipts(id,signature,result) VALUES (?1,'test',?2)",(id,result.to_string()))?;
+                    }
+                    Ok::<_, studio_runtime_store::StoreError>(())
+                }).await.expect("retained native reply and checkpoint commit");
+            }
+            if answered {
+                answer(&store, key.clone()).await;
+            }
+            studio_runtime_services::monitor_runtime::recover_on_startup(&store, now)
+                .await
+                .expect("startup");
+            let session = Arc::new(RestartedHost {
+                generation,
+                status_requests: AtomicUsize::new(0),
+            });
+            let port = RetainedMonitorPort::new(
+                Arc::clone(&store),
+                Arc::clone(&session) as Arc<dyn AccountSessionPort>,
+            );
+            let wake = Arc::new(Notify::new());
+            port.set_dispatch_wake(Arc::clone(&wake))
+                .expect("install wake");
+            let runtime = studio_runtime_services::monitor_runtime_wiring::MonitorRuntime::new(
+                Arc::clone(&store),
+                Arc::clone(&port) as Arc<dyn MonitorPort>,
+                Arc::new(Notify::new()),
+            );
+            runtime.tick(now + 1.0).await.expect("reattach pass");
+            let read = |store: Arc<RuntimeStore>| async move {
+                store
+                    .read_async("test/reattach-watch", |tx| {
+                        MonitorsRepository::get(tx, "watch")
+                    })
+                    .await
+                    .expect("read")
+                    .expect("watch")
+                    .value()
+                    .clone()
+            };
+            if generation == 2 {
+                let watch = read(Arc::clone(&store)).await;
+                assert_eq!(watch["status"], "lost", "{case}");
+                assert_eq!(session.status_requests.load(Ordering::SeqCst), 1, "{case}");
+                continue;
+            }
+            if !answered {
+                let watch = read(Arc::clone(&store)).await;
+                assert_eq!(watch["status"], "running", "{case}: still owed its answer");
+                assert!(watch["reattachRecovery"].is_null(), "{case}");
+                answer(&store, key.clone()).await;
+            }
+            // The restored waiter queues the exit after the answer commits.
+            let watch = tokio::time::timeout(Duration::from_secs(10), async {
+                loop {
+                    runtime.tick(now + 2.0).await.expect("terminal delivery");
+                    let watch = read(Arc::clone(&store)).await;
+                    if watch["status"] != "running" {
+                        return watch;
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .expect("the retained answer finishes the monitor");
+            assert_eq!(watch["status"], "completed", "{case}");
+            assert_eq!(watch["exitCode"], 0, "{case}");
+            assert_eq!(
+                session.status_requests.load(Ordering::SeqCst),
+                0,
+                "{case}: the retained request is the proof"
+            );
         }
     }
 
@@ -2660,6 +3039,10 @@ mod tests {
             .clone()
     }
 
+    /// Scheduler turns the launch task needs between its settlement write and
+    /// dropping its claim; it awaits nothing in between.
+    const CLAIM_RELEASE_YIELDS: usize = 64;
+
     async fn settled_rule(store: &RuntimeStore) -> Value {
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
@@ -2705,6 +3088,14 @@ mod tests {
         let settled = settled_rule(&store).await;
         assert_eq!(settled["inFlight"], false);
         assert_eq!(settled["error"], "The command was not started");
+        // The launch task records the outcome, then drops its in-flight claim;
+        // the settled row can be visible before that drop.
+        for _ in 0..CLAIM_RELEASE_YIELDS {
+            if lock(&port.rule_checks).is_empty() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
         assert!(lock(&port.rule_checks).is_empty());
         assert_eq!(
             port.reconcile_rule_check(&check).await,

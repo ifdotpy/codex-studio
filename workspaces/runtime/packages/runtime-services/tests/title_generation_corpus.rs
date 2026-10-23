@@ -1,57 +1,23 @@
-use crate::prepared_python_support as prepared_python;
-
-use serde_json::{Value, json};
-use std::io::{BufRead, BufReader, Write};
-use std::path::Path;
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use serde::Deserialize;
+use serde_json::json;
 use studio_runtime_services::title_generation::{normalize_title, title_model, title_prompt};
 
-struct Oracle {
-    child: Child,
-    input: ChildStdin,
-    output: BufReader<ChildStdout>,
-}
-impl Oracle {
-    fn start() -> Self {
-        let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src");
-        let python = prepared_python::prepared_python(&source);
-        let mut child = Command::new(python)
-            .arg("-B")
-            .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/title_generation/oracle.py"))
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .spawn()
-            .expect("start guarded title oracle");
-        Self {
-            input: child.stdin.take().expect("oracle input"),
-            output: BufReader::new(child.stdout.take().expect("oracle output")),
-            child,
-        }
-    }
-
-    fn run(&mut self, value: &Value) -> Value {
-        writeln!(self.input, "{value}").expect("write oracle input");
-        self.input.flush().expect("flush oracle input");
-        let mut line = String::new();
-        self.output
-            .read_line(&mut line)
-            .expect("read oracle output");
-        assert!(!line.is_empty(), "title oracle exited before replying");
-        serde_json::from_str(&line).expect("title oracle JSON")
-    }
-}
-impl Drop for Oracle {
-    fn drop(&mut self) {
-        self.input.write_all(b"null\n").unwrap_or(());
-        self.input.flush().unwrap_or(());
-        self.child.wait().expect("reap title oracle");
-    }
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TitleExpected {
+    model: String,
+    effort: Option<String>,
+    first: Option<String>,
+    recent: Vec<(String, String)>,
+    prompt: String,
+    title: String,
 }
 
 #[test]
 fn title_helpers_match_real_python_on_python_written_item_rows() {
-    let mut oracle = Oracle::start();
+    let expected: Vec<TitleExpected> =
+        serde_json::from_str(include_str!("title_generation/expected.json"))
+            .expect("frozen title corpus");
     let items = vec![
         json!({"id":"i1","role":"user","text":"Plan a small dashboard","created":1.0}),
         json!({"id":"i2","role":"assistant","text":"Use a clear layout","created":2.0}),
@@ -75,15 +41,16 @@ fn title_helpers_match_real_python_on_python_written_item_rows() {
             ]}),
         ),
     ];
-    for (agent, catalog) in cases {
+    assert_eq!(
+        cases.len(),
+        expected.len(),
+        "every title case has an expectation"
+    );
+    for ((agent, catalog), expected) in cases.into_iter().zip(expected) {
         let case = json!({"agent":agent,"catalog":catalog,"items":items,"providerOutput":"  “Build a weekly trends dashboard.”  "});
-        let expected = oracle.run(&case);
         assert_eq!(
             title_model(&case["catalog"], &case["agent"]).expect("Rust model"),
-            (
-                expected["model"].as_str().expect("model").to_owned(),
-                expected["effort"].as_str().map(str::to_owned),
-            )
+            (expected.model, expected.effort)
         );
         let item_rows = case["items"].as_array().expect("Python-written item rows");
         let prompt = title_prompt(&case["agent"], item_rows, item_rows).expect("Rust prompt");
@@ -91,31 +58,29 @@ fn title_helpers_match_real_python_on_python_written_item_rows() {
             .iter()
             .find(|item| item["role"] == "user")
             .and_then(|item| item["text"].as_str());
-        assert_eq!(expected["first"].as_str(), first);
-        assert_eq!(expected["recent"].as_array().map(Vec::len), Some(4));
-        let python_recent = expected["recent"]
-            .as_array()
-            .expect("Python recent messages");
+        assert_eq!(expected.first.as_deref(), first);
+        assert_eq!(expected.recent.len(), 4);
         let rust_recent = item_rows
             .iter()
             .map(|item| {
-                json!([
+                (
                     if item["role"] == "user" {
                         "User"
                     } else {
                         "Agent"
-                    },
-                    item["text"]
-                ])
+                    }
+                    .to_owned(),
+                    item["text"].as_str().expect("item text").to_owned(),
+                )
             })
             .collect::<Vec<_>>();
-        assert_eq!(python_recent, &rust_recent);
-        assert_eq!(prompt, expected["prompt"].as_str().expect("Python prompt"));
+        assert_eq!(expected.recent, rust_recent);
+        assert_eq!(prompt, expected.prompt);
         assert_eq!(
             normalize_title(case["providerOutput"].as_str().expect("provider output"))
                 .expect("Rust title"),
-            expected["title"].as_str().expect("Python title")
+            expected.title
         );
-        assert_eq!(expected["first"].as_str(), Some("Plan a small dashboard"));
+        assert_eq!(expected.first.as_deref(), Some("Plan a small dashboard"));
     }
 }

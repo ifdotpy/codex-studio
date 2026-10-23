@@ -1,9 +1,5 @@
-//! Pure gates versus real Python functions, with an isolated, guarded oracle.
-use crate::prepared_python_support as prepared_python;
+//! Pure gates against captured legacy decisions.
 use serde_json::{Value, json};
-use std::io::{BufRead, BufReader, Write};
-use std::path::Path;
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::time::{Duration, Instant};
 use studio_runtime_services::submit_gates::{
     AuthorizationRecords, AuthorizationSnapshot, CatalogIdentity, CatalogObservation,
@@ -11,65 +7,15 @@ use studio_runtime_services::submit_gates::{
     validate_execution,
 };
 
-struct Oracle {
-    child: Child,
-    input: ChildStdin,
-    output: BufReader<ChildStdout>,
-    _environment: prepared_python::IsolatedTestEnvironment,
-}
-impl Oracle {
+struct CapturedExpectations(crate::turn_fixtures::FrozenResponses);
+impl CapturedExpectations {
     fn new() -> Self {
-        let python = prepared_python::prepared_python(
-            &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
-        );
-        let environment = prepared_python::IsolatedTestEnvironment::new();
-        let mut command = Command::new(python);
-        environment.apply(&mut command);
-        let mut child = command
-            .arg("-B")
-            .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/submit_gates/oracle.py"))
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .spawn()
-            .expect("guarded Python oracle");
-        Self {
-            input: child.stdin.take().expect("stdin"),
-            output: BufReader::new(child.stdout.take().expect("stdout")),
-            child,
-            _environment: environment,
-        }
+        Self(crate::turn_fixtures::FrozenResponses::new(include_bytes!(
+            "submit_gates/expected.json"
+        )))
     }
     fn call(&mut self, value: &Value) -> Value {
-        writeln!(self.input, "{value}").expect("write oracle case");
-        self.input.flush().expect("flush");
-        let mut line = String::new();
-        self.output.read_line(&mut line).expect("read oracle");
-        serde_json::from_str(&line).expect("oracle JSON response")
-    }
-}
-impl Drop for Oracle {
-    fn drop(&mut self) {
-        let graceful =
-            writeln!(self.input, "{{\"close\":true}}").is_ok() && self.input.flush().is_ok();
-        if graceful {
-            if let Err(error) = self.child.wait() {
-                eprintln!("could not reap submit-gates oracle during teardown: {error}");
-            }
-        } else {
-            match self.child.try_wait() {
-                Ok(Some(_)) => {}
-                Ok(None) => match self.child.kill() {
-                    Ok(()) => {
-                        if let Err(error) = self.child.wait() {
-                            eprintln!("could not reap submit-gates oracle: {error}");
-                        }
-                    }
-                    Err(error) => eprintln!("could not stop submit-gates oracle: {error}"),
-                },
-                Err(error) => eprintln!("could not inspect submit-gates oracle: {error}"),
-            }
-        }
+        self.0.call(value)
     }
 }
 fn profile(case: &Value, record: &Value, key: &str) -> CatalogIdentity {
@@ -203,7 +149,7 @@ fn rust(case: &Value, records: Option<&Value>) -> Value {
         _ => panic!("unknown gate"),
     }
 }
-fn compare(oracle: &mut Oracle, name: &str, case: &Value, deviation: Option<&str>) {
+fn compare(oracle: &mut CapturedExpectations, name: &str, case: &Value, deviation: Option<&str>) {
     let mut python = oracle.call(case);
     let actual = rust(case, python.get("records"));
     python.as_object_mut().expect("result").remove("records");
@@ -270,7 +216,7 @@ fn patched(seed: &Value, witness: &Value) -> Value {
 fn submit_gates_python_corpus() {
     let fixtures: Value =
         serde_json::from_str(include_str!("submit_gates/cases.json")).expect("corpus");
-    let mut oracle = Oracle::new();
+    let mut oracle = CapturedExpectations::new();
     let mut count = 0;
     for witness in fixtures["witnesses"].as_array().expect("witnesses") {
         let name = witness["name"].as_str().expect("name");
@@ -359,32 +305,4 @@ fn malformed_settings_fail_closed_at_typed_boundary() {
         case["current"]["fastMode"] = value;
         assert_eq!(rust(&case, None)["allowed"], false);
     }
-}
-
-#[test]
-fn oracle_boundaries_and_separate_preparation_default() {
-    let mut oracle = Oracle::new();
-    assert_eq!(
-        oracle.call(&json!({"gate":"boundary-guard"})),
-        json!({"allowed":true})
-    );
-    let fixtures: Value =
-        serde_json::from_str(include_str!("submit_gates/cases.json")).expect("fixtures");
-    let mut case = fixtures["seeds"]["execution"].clone();
-    case["gate"] = json!("preparation-effort");
-    case["current"]
-        .as_object_mut()
-        .expect("record")
-        .remove("nativeEffort");
-    let prepared = oracle.call(&case);
-    assert_eq!(prepared["record_after"]["nativeEffort"], "medium");
-    assert_eq!(
-        prepared["provider_settings"],
-        json!({"serviceTier":"default","effort":"medium"})
-    );
-    case["current"]["nativeEffort"] = Value::Null;
-    assert_eq!(
-        oracle.call(&case)["provider_settings"],
-        json!({"serviceTier":"default"})
-    );
 }

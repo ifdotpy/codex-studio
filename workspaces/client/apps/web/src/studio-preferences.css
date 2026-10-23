@@ -69,7 +69,7 @@
 
 :root:not([data-studio-content-layout="original"])
   #conversation
-  :is(#composer, .agent-panel, .usage-footer, .message-queue) {
+  :is(#composer, .usage-footer, .message-queue) {
   width: var(--studio-content-column);
   max-width: none;
   margin-inline: auto;
@@ -83,7 +83,7 @@
 
 :root:not([data-studio-typography="original"])
   #conversation
-  :is(#messages .prose, #composer #message, .agent-panel .progress-markdown) {
+  :is(#messages .prose, #composer #message) {
   font-size: var(--studio-main-font-size);
 }
 
@@ -210,7 +210,7 @@
 
   :root:not([data-studio-content-layout="original"])
     #conversation
-    :is(#composer, .agent-panel, .usage-footer, .message-queue) {
+    :is(#composer, .usage-footer, .message-queue) {
     width: var(--studio-content-column);
   }
 }

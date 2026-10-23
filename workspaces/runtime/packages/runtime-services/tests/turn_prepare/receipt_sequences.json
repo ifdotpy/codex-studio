@@ -1,0 +1,205 @@
+{
+  "values": [
+    {
+      "epoch": ["thread", 0],
+      "versions": {
+        "agentMode": "cbaab587bdd3e5b2b44c85e8",
+        "roleSkill": "48f3433b66b738b96aba8d9a"
+      },
+      "sequence": 1
+    },
+    {
+      "status": "accepted",
+      "manifest_upsert": {
+        "$ref": 0
+      },
+      "reminder_insert": null,
+      "transcript_turn_id": "turn-0"
+    },
+    [
+      {
+        "$ref": 0
+      }
+    ],
+    {
+      "manifests": {
+        "$ref": 2
+      },
+      "reminders": [],
+      "transcript_turn_id": "turn-0"
+    },
+    {
+      "$base": 1,
+      "set": {
+        "status": "stale",
+        "manifest_upsert": null,
+        "transcript_turn_id": null
+      }
+    },
+    {
+      "$base": 3,
+      "set": {
+        "transcript_turn_id": null
+      }
+    },
+    {
+      "$base": 0,
+      "set": {
+        "versions": {
+          "agentMode": "cbaab587bdd3e5b2b44c85e8",
+          "roleSkill": "83a28660fcf6ce28e6ef1959"
+        },
+        "sequence": 2
+      }
+    },
+    {
+      "$base": 1,
+      "set": {
+        "manifest_upsert": {
+          "$ref": 6
+        },
+        "transcript_turn_id": "turn-2"
+      }
+    },
+    [
+      {
+        "$ref": 6
+      }
+    ],
+    {
+      "manifests": {
+        "$ref": 8
+      },
+      "reminders": [],
+      "transcript_turn_id": "turn-2"
+    },
+    {
+      "delivery": {
+        "$ref": 7
+      },
+      "stored": {
+        "$ref": 9
+      }
+    },
+    {
+      "$base": 3,
+      "set": {
+        "manifests": {
+          "$ref": 8
+        }
+      }
+    },
+    {
+      "$base": 0,
+      "set": {
+        "versions": {
+          "agentMode": "cbaab587bdd3e5b2b44c85e8",
+          "roleSkill": "8073d4d235de3fcce4c5e40b"
+        }
+      }
+    },
+    {
+      "$base": 1,
+      "set": {
+        "manifest_upsert": {
+          "$ref": 12
+        },
+        "transcript_turn_id": "turn-1"
+      }
+    },
+    [
+      {
+        "$ref": 12
+      }
+    ],
+    {
+      "manifests": {
+        "$ref": 14
+      },
+      "reminders": [],
+      "transcript_turn_id": "turn-1"
+    },
+    {
+      "$base": 5,
+      "set": {
+        "manifests": {
+          "$ref": 14
+        }
+      }
+    },
+    {
+      "$base": 15,
+      "set": {
+        "manifests": {
+          "$ref": 8
+        }
+      }
+    }
+  ],
+  "root": [
+    {
+      "order": [0, 1, 2, 0],
+      "expected": [
+        {
+          "delivery": {
+            "$ref": 1
+          },
+          "stored": {
+            "$ref": 3
+          }
+        },
+        {
+          "delivery": {
+            "$ref": 4
+          },
+          "stored": {
+            "$ref": 5
+          }
+        },
+        {
+          "$ref": 10
+        },
+        {
+          "delivery": {
+            "$ref": 4
+          },
+          "stored": {
+            "$ref": 11
+          }
+        }
+      ]
+    },
+    {
+      "order": [1, 0, 2, 1],
+      "expected": [
+        {
+          "delivery": {
+            "$ref": 13
+          },
+          "stored": {
+            "$ref": 15
+          }
+        },
+        {
+          "delivery": {
+            "$ref": 4
+          },
+          "stored": {
+            "$ref": 16
+          }
+        },
+        {
+          "$ref": 10
+        },
+        {
+          "delivery": {
+            "$ref": 4
+          },
+          "stored": {
+            "$ref": 17
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -3,8 +3,8 @@
 use crate::{
     notification_dispatch::NotificationStreamBuffer,
     provider_session_task::{
-        RecoveredRequest, RequestSpec, SessionControl, SessionEvent, SessionExit, SessionHandle,
-        SessionOutcome, SessionTaskConfig, SessionTaskError, WriteOutcome,
+        NotSentCause, RecoveredRequest, RequestSpec, SessionControl, SessionEvent, SessionExit,
+        SessionHandle, SessionOutcome, SessionTaskConfig, SessionTaskError, WriteOutcome,
     },
     scheduler::{self, TurnIntent, TurnStart},
 };
@@ -892,7 +892,7 @@ type ManagedCallbackResult = (
     Generation,
     Option<String>,
     Option<i64>,
-    Option<Frame>,
+    callback::CallbackHandled,
 );
 /// A callback record held by this worker: provider generation, emitting VM
 /// actor, its epoch and the journal cursor.
@@ -1477,12 +1477,11 @@ impl Worker {
             ServeSignal::VmEvent(None) => return Ok(false),
             ServeSignal::ConnectionRecovery => self.connection_recovery_active = false,
             ServeSignal::ManagedCallback(callback) => {
-                let (cursor, generation, actor, epoch, response) = callback
+                let (cursor, generation, actor, epoch, handled) = callback
                     .ok_or(WorkerError::TaskFailed)?
                     .map_err(|_| WorkerError::TaskFailed)?;
-                if let Some(response) = response {
-                    self.push(Effect::Callback(cursor, generation, response, actor, epoch));
-                }
+                self.callback_handled(cursor, generation, actor, epoch, handled)
+                    .await?;
                 self.callback_scan = true;
             }
             ServeSignal::Prepared(done) => {
@@ -2296,7 +2295,16 @@ impl Worker {
             Err(error) => {
                 // Only the session's explicit pre-admission rejection proves NotSent.
                 // A failure while draining unrelated evidence may follow an enqueued write.
-                let outcome = if definite_rejection(&error) {
+                let not_sent = definite_rejection(&error).then_some(NotSentCause::Refused);
+                if not_sent.is_some() {
+                    eprintln!(
+                        "provider session refused {} before admission; account={} generation={}: {error}",
+                        method.as_str(),
+                        self.account,
+                        self.generation.0
+                    );
+                }
+                let outcome = if not_sent.is_some() {
                     WriteOutcome::NotSent
                 } else {
                     WriteOutcome::Unknown
@@ -2312,6 +2320,7 @@ impl Worker {
                         }),
                         outcome,
                         recovery: None,
+                        not_sent,
                     }],
                 })
                 .await?;
@@ -2341,6 +2350,7 @@ impl Worker {
                 }),
                 outcome: WriteOutcome::NotSent,
                 recovery: None,
+                not_sent: Some(NotSentCause::SessionEnded),
             }],
         })
         .await
@@ -2402,15 +2412,17 @@ impl Worker {
         // A worker that began closing during the durable boundary never writes:
         // that proves the request not sent, so the input returns to the queue.
         let outcome = if self.closing {
-            Some(WriteOutcome::NotSent)
+            Some((WriteOutcome::NotSent, Some(NotSentCause::SessionEnded)))
         } else {
             match self.drive(control.submit(prepared)).await {
                 Ok(_) => None,
-                Err(error) if definite_rejection(&error) => Some(WriteOutcome::NotSent),
-                Err(_) => Some(WriteOutcome::Unknown),
+                Err(error) if definite_rejection(&error) => {
+                    Some((WriteOutcome::NotSent, Some(NotSentCause::Refused)))
+                }
+                Err(_) => Some((WriteOutcome::Unknown, None)),
             }
         };
-        if let Some(outcome) = outcome {
+        if let Some((outcome, not_sent)) = outcome {
             self.event(SessionEvent {
                 journal: None,
                 outcomes: vec![SessionOutcome::Write {
@@ -2422,6 +2434,7 @@ impl Worker {
                     }),
                     outcome,
                     recovery: None,
+                    not_sent,
                 }],
             })
             .await?;
@@ -3937,14 +3950,22 @@ impl Worker {
                 .await
                 {
                     let Frame::Request(request) = &frame else {
-                        return (cursor, origin, actor, actor_epoch, None);
+                        return (
+                            cursor,
+                            origin,
+                            actor,
+                            actor_epoch,
+                            callback::CallbackHandled::Waiting,
+                        );
                     };
                     return (
                         cursor,
                         origin,
                         actor,
                         actor_epoch,
-                        Some(callback::tool_call_failure(request, dependency)),
+                        callback::CallbackHandled::Answer(callback::tool_call_failure(
+                            request, dependency,
+                        )),
                     );
                 }
                 let response = callback::managed_response(
@@ -3961,7 +3982,21 @@ impl Worker {
                     },
                 )
                 .await;
-                (cursor, origin, actor, actor_epoch, response)
+                (cursor, origin, actor, actor_epoch, response.into())
+            });
+        } else if actor.is_none() && callback::is_native_request(&frame) {
+            // A native approval or question waits for the user as a card. VM
+            // actor requests keep the unsupported answer: the card answer path
+            // writes only to the account session.
+            let account = self.account.clone();
+            let generation = self.generation.0;
+            let now = crate::event_write::unix_time().map_err(|_| WorkerError::TaskFailed)?;
+            let store = Arc::clone(&self.bridge.store);
+            self.managed_callbacks.spawn(async move {
+                let handled =
+                    callback::native_response(&store, &account, generation, cursor.0, &frame, now)
+                        .await;
+                (cursor, origin, actor, actor_epoch, handled)
             });
         } else if callback::is_vm_codex_refresh_request(&frame) {
             let account = self.account.clone();
@@ -3977,7 +4012,7 @@ impl Worker {
                     resolver,
                 )
                 .await;
-                (cursor, origin, actor, actor_epoch, response)
+                (cursor, origin, actor, actor_epoch, response.into())
             });
         } else if let Some(response) = callback::response(&frame) {
             self.push(Effect::Callback(
@@ -4066,9 +4101,27 @@ impl Worker {
         actor_id: Option<&str>,
         actor_epoch: Option<i64>,
     ) -> Result<(), WorkerError> {
+        self.retire_callback("callback_abandoned", cursor, origin, actor_id, actor_epoch)
+            .await?;
+        eprintln!(
+            "provider request settled without an answer; account={} generation={} cursor={} current-generation={} outcome=provider-generation-ended",
+            self.account, origin.0, cursor.0, self.generation.0
+        );
+        Ok(())
+    }
+    /// Retire one callback record that owes the provider no answer from this
+    /// worker, and release its handler slot.
+    async fn retire_callback(
+        &mut self,
+        boundary: &'static str,
+        cursor: studio_runtime_process::EventCursor,
+        origin: Generation,
+        actor_id: Option<&str>,
+        actor_epoch: Option<i64>,
+    ) -> Result<(), WorkerError> {
         let operation =
             callback_record::operation(&self.journal_scope(actor_id), origin.0, cursor.0);
-        self.db("callback_abandoned", move |store| async move {
+        self.db(boundary, move |store| async move {
             callback_record::retire_async(&store, &operation).await
         })
         .await?;
@@ -4078,10 +4131,35 @@ impl Worker {
             actor_epoch,
             cursor.0,
         ));
-        eprintln!(
-            "provider request settled without an answer; account={} generation={} cursor={} current-generation={} outcome=provider-generation-ended",
-            self.account, origin.0, cursor.0, self.generation.0
-        );
+        Ok(())
+    }
+    /// Apply the outcome of one finished callback handler.
+    async fn callback_handled(
+        &mut self,
+        cursor: studio_runtime_process::EventCursor,
+        origin: Generation,
+        actor: Option<String>,
+        epoch: Option<i64>,
+        handled: callback::CallbackHandled,
+    ) -> Result<(), WorkerError> {
+        match handled {
+            callback::CallbackHandled::Answer(response) => {
+                self.push(Effect::Callback(cursor, origin, response, actor, epoch));
+            }
+            callback::CallbackHandled::Waiting => {}
+            // The card's commit already holds the obligation; a crash before
+            // this retirement admits the same card again and answers nothing.
+            callback::CallbackHandled::Retire => {
+                self.retire_callback(
+                    "callback_card_owned",
+                    cursor,
+                    origin,
+                    actor.as_deref(),
+                    epoch,
+                )
+                .await?;
+            }
+        }
         Ok(())
     }
     async fn answer_callback(
@@ -4413,10 +4491,10 @@ impl Worker {
         let completed = tokio::time::timeout_at(deadline, async {
             while let Some(callback) = self.managed_callbacks.join_next().await {
                 match callback {
-                    Ok((cursor, generation, actor, epoch, Some(response))) => {
-                        self.push(Effect::Callback(cursor, generation, response, actor, epoch));
+                    Ok((cursor, generation, actor, epoch, handled)) => {
+                        self.callback_handled(cursor, generation, actor, epoch, handled)
+                            .await?;
                     }
-                    Ok((_, _, _, _, None)) => {}
                     Err(error) => {
                         eprintln!(
                             "managed account callback task failed during shutdown; account={} generation={} cursors={:?}: {error}",
@@ -4616,6 +4694,6 @@ pub fn commit_prepared_turn(
     )? {
         return Ok(false);
     }
-    crate::notification_dispatch::record_user_submission(tx, &intent.agent_id, submission)?;
+    crate::notification_dispatch::record_start_submission(tx, &intent.agent_id, submission)?;
     Ok(true)
 }

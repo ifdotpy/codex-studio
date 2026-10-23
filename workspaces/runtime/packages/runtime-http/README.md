@@ -204,76 +204,19 @@ fields such as the deliberate 64-bit aliases and `FileInfo.size` are outside its
 scope. Production startup compiles registered route operations only. The
 all-authority compile test in the fast tier checks all 154 documented operations.
 
-Run the shared corpus differential with the prepared Python interpreter using
-`python3 workspaces/runtime/apps/server/src/codex_python.py --exec workspaces/runtime/apps/server/tests/http_runtime_extractor_differential.py`.
+The HTTP tests run without a Python interpreter. Desktop provider-version and
+sync-stream document assertions use committed JSON fixtures in
+`../runtime-services/tests/provider_versions/projection.json` and
+`src/routes/fixtures/`, captured from the former reference implementation.
+They retain full-document comparisons, including initial and reconnect frames,
+interleaved publications, and live provider filtering. Token-rate `rate` and
+`outputTokens` fields compare by numeric value; every other field remains exact.
 
-### Known differences from the Python server
-
-- Token-rate `rate` and `outputTokens` fields compare by numeric value when
-  integral rates are rendered as integers by Python and as decimals by Rust.
-  The API schema types these fields as `number`; token-rate documents are
-  volatile stream and resource-hub output, never written to `sync_entities` or
-  hashed; and JavaScript parses `400` and `400.0` to the same value. If token-rate
-  snapshots are ever persisted or hashed, the representation must be made
-  identical first. The differential keeps every other document field exact.
-- Validation errors use a short `error` and one `location`; the differential
-  checks the envelope shape on refusals.
-- Rust rejects JSON nested beyond 127 containers to bound parser stack use.
-  The real Python boundary uses `json.loads` and its runtime recursion guard.
-- JSON Schema considers an integral JSON decimal such as `1.0` an integer,
-  while the current Python `StrictInt` models reject it. This standard
-  validator behavior is intentional; typed route DTOs will still reject a
-  value they cannot deserialize. The corpus does not generate integral
-  decimal JSON bodies as rejection cases.
-- Free-form `JsonValue` remains dynamically typed, but integer tokens outside
-  ±9,007,199,254,740,991 are refused with a located 400 before their exact
-  value can be lost during JSON number conversion. Decimal and exponent forms
-  remain governed by JSON Schema. The differential classifies the eight
-  opaque-value positions as expected refusals and compares the rest of each
-  observation without numeric normalization.
-- Echoed values whose OpenAPI schema is `number` compare by numeric value, so
-  `1` and `1.0` are equal. All other types remain strictly typed: booleans are
-  never numbers, and an `integer` value must be integral on both sides.
-- Parameter strings are converted by their declared schema. Integer parameter
-  text accepts ASCII decimal digits, leading zeroes, and a leading minus only
-  where negative values are allowed; plus signs, spaces, underscores,
-  decimals, and empty values are rejected. Repeated scalar query parameters
-  are rejected even when names are percent-encoded or all values are empty;
-  arrays retain repeated occurrences.
-- The only predicted status differences are generated opaque-`JsonValue`
-  large-integer cases at eight schema positions, which Rust refuses with a
-  located 400. Queue and rename identity rules are expressed in the OpenAPI
-  schema. The extractor differential stubs handlers;
-  it reports rules that need parsed payloads or the current time separately as
-  `handler_validation_cases`. Those checks are exercised through the real Rust
-  routes by `rust-rules-http-contract.py` and
-  `rust-sync-documents-http-contract.py`, which compare relevant state before
-  and after each refusal. Any unlisted mismatch, exception, 5xx, or accepted-
-  value difference fails the differential. A 400 refusal from both sides is
-  recorded as agreement for the opaque precision predicate when Rust includes
-  its located error envelope; the predicate must still produce at least one
-  exact normalized difference. Protocol version negotiation (HTTP 426) is covered on Python by
-  `sync-protocol-http-contract.py`; the Rust sync stream slice must add its own
-  handler-level negotiation test.
-
-The undocumented `POST /api/voice/{action}` catch-all remains registered as in
-the Python server; its action is not part of the OpenAPI operation inventory.
-
-The conformance ledger generates the OpenAPI request corpus from
-`openapi.json` into a temporary directory and passes its path to both probes.
-The Rust corpus test is ignored during ordinary test runs and is invoked by the
-ledger with that generated file. The corpus and its summary are derived output,
-so neither is committed; the summary duplicates counts from the corpus and has
-no hand-maintained meaning.
-The Rust corpus observation goes through echo handlers registered through the
-normal composer, plus the real router, middleware, validation, and extractors
-in-process; domain services remain stubbed. The Python differential runs through FastAPI
-route signatures, app-wide dependencies, boundary, and exception handlers
-in-process. Every generated request is compared for acceptance and status;
-accepted body and parameter values are compared after typing, and rejected
-responses are checked for the standard error-envelope shape. Signed federation
-operations are included; the Python probe's stub handlers replace signature
-verification while the request models and boundary still run.
+Run the crate tests with `cargo test -p studio-runtime-http`.
+The Python corpus generator and differential print probe have been removed;
+there is no committed generated OpenAPI request corpus. Request validation
+continues to be exercised by the Rust boundary, router, validation, and extractor
+tests against the committed OpenAPI schema.
 
 Direct dependencies include Axum 0.8.9 (MIT), jsonschema 0.49.9 (MIT; runtime
 validation against the committed OpenAPI schemas, declared with

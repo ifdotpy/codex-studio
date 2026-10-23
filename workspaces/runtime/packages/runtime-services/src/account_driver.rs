@@ -2924,15 +2924,15 @@ fn apply_metadata(row: &mut serde_json::Map<String, Value>, metadata: &AuthMetad
         row.insert("status".into(), Value::String("changed".into()));
         row.insert("error".into(), Value::String(CHANGED_ERROR.into()));
         row.remove("organizationMismatch");
-        if row.get("provider").and_then(Value::as_str) == Some("claude") {
-            if let Some(mismatch) = claude_identity::organization_mismatch(
+        if row.get("provider").and_then(Value::as_str) == Some("claude")
+            && let Some(mismatch) = claude_identity::organization_mismatch(
                 expected_credential.as_deref(),
                 row.get("_organizationName").and_then(Value::as_str),
                 metadata.credential_identity.as_deref(),
                 metadata.organization_name.as_deref(),
-            ) {
-                row.insert("organizationMismatch".into(), mismatch);
-            }
+            )
+        {
+            row.insert("organizationMismatch".into(), mismatch);
         }
         return;
     }

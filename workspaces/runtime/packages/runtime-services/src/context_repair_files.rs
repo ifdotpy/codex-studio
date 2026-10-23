@@ -4,7 +4,7 @@
 //! with explicit paths and captured records, outside any store transaction.
 //! Its filesystem rules port `_rollout_segments`, `_prefix_records`,
 //! `_projected_records`, and `sanitized_rollout` from
-//! `apps/server/src/codex_context_repair.py:704-1005`; provider source lookup
+//! the retired context repair implementation; provider source lookup
 //! follows `_repair` at `:2039-2052`.
 
 use std::collections::{BTreeMap, BTreeSet};

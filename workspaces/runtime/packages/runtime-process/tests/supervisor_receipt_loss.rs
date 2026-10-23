@@ -16,32 +16,24 @@ use support::*;
 #[test]
 fn lost_write_response_never_repeats_child_input() {
     let state = DisposableState::new();
-    let python = python_executable();
-    let mut supervisor = SupervisorProcess::start(&state, &python);
+    let mut supervisor = SupervisorProcess::start(&state);
     let handle = SupervisorHandle("receipt-loss".into());
     let count = state.0.join("writes");
     let script = r#"
-import json, sys
-print(json.dumps({'ready':True}),flush=True)
-for line in sys.stdin:
-    message=json.loads(line)
-    with open(sys.argv[1],'a') as f: f.write(message['method']+'\n')
-    print(json.dumps({'id':message['id'],'result':message['method']}),flush=True)
-    if message['method']=='stop': break
+printf '{"ready":true}\n'
+while IFS= read -r line; do
+ id=$(rpc_id "$line")
+ method=$(printf '%s\n' "$line" | sed -E 's/.*"method":"([^"]*)".*/\1/')
+ printf '%s\n' "$method" >> "$1"
+ printf '{"id":%s,"result":"%s"}\n' "$id" "$method"
+ [ "$method" != stop ] || break
+done
 "#;
+    let mut command = shell_command(script);
+    command.extend(["receipt-loss".into(), count.to_string_lossy().into_owned()]);
     let mut client = connect_client(&state);
     let opened = client
-        .open(open_request(
-            &handle.0,
-            vec![
-                python,
-                "-u".into(),
-                "-c".into(),
-                script.into(),
-                count.to_string_lossy().into_owned(),
-            ],
-            &state.0,
-        ))
+        .open(open_request(&handle.0, command, &state.0))
         .unwrap();
     supervisor.own_child(opened.pid);
     let ready = poll_event(&mut client, &handle, EventCursor(0), |e| {
@@ -52,14 +44,14 @@ for line in sys.stdin:
     writeln!(
         socket,
         "{}",
-        json!({"protocol":1,"stateDir":state.0,"backendId":identity.backend_id.0})
+        json!({"protocol":studio_runtime_process::SUPERVISOR_PROTOCOL_V2,"stateDir":state.0,"backendId":identity.backend_id.0})
     )
     .unwrap();
     let mut reply = String::new();
     BufReader::new(&socket).read_line(&mut reply).unwrap();
     assert_eq!(
         serde_json::from_str::<Value>(&reply).unwrap(),
-        json!({"ok":true})
+        json!({"ok":true,"protocol":studio_runtime_process::SUPERVISOR_PROTOCOL_V2})
     );
     writeln!(socket,"{}",json!({"requestId":99,"action":"write","handle":handle.0,"operationId":"monitor:lost","nativeId":17,"message":{"method":"echo","params":{"text":"one"}}})).unwrap();
     drop(socket); // The action response cannot reach this backend connection.

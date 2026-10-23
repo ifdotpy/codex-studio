@@ -17,7 +17,7 @@ pub async fn execute(
     now: f64,
 ) -> Result<Value, ManagementError> {
     let mut result = execute_prepared(std::sync::Arc::clone(&store), action, now, None).await?;
-    if matches!(action, Action::Delete { .. } | Action::Archive { .. }) {
+    if matches!(action, Action::Delete { .. }) {
         crate::workspace_cleanup_runtime::reconcile_pending_cleanup(std::sync::Arc::clone(&store))
             .await
             .map_err(|_| {
@@ -25,41 +25,63 @@ pub async fn execute(
                     "Lifecycle committed; workspace cleanup remains pending",
                 )
             })?;
-        if let Action::Archive { target, .. } = action {
-            let target = studio_runtime_store::AgentId::from(target.as_str());
-            let current = store
-                .read_async(
-                    "runtime-services/agent_management/archive_readback",
-                    move |tx| studio_runtime_store::AgentRepository::get(tx, &target),
+    }
+    if let Action::Archive { target, .. } = action {
+        let reply: ArchiveReply = serde_json::from_value(result.clone())
+            .map_err(studio_runtime_store::StoreError::from)?;
+        if matches!(reply.status, ArchiveStatus::Blocked) {
+            return Ok(result);
+        }
+        // The lifecycle is committed. A cleanup failure is a pending workspace,
+        // not an unknown archive; retain its cause in the applied response.
+        if let Err(error) = crate::workspace_cleanup_runtime::cleanup_agent_workspace(
+            std::sync::Arc::clone(&store),
+            target.clone(),
+            crate::workspace_cleanup_runtime::CleanupAction::Archive,
+        )
+        .await
+        {
+            result["cleanupPending"] = Value::Bool(true);
+            result["worktree"] = serde_json::json!(CleanupReply {
+                state: CleanupState::Pending,
+                bytes: None,
+                reason: Some(error.to_string()),
+            });
+            result["workspace"] = Value::Null;
+            return Ok(result);
+        }
+        let target = studio_runtime_store::AgentId::from(target.as_str());
+        let current = store
+            .read_async(
+                "runtime-services/agent_management/archive_readback",
+                move |tx| studio_runtime_store::AgentRepository::get(tx, &target),
+            )
+            .await?;
+        if let Some(current) = current {
+            let record = current.value();
+            let progress: ArchiveReadback = serde_json::from_value(record.clone())
+                .map_err(studio_runtime_store::StoreError::from)?;
+            let pending = progress
+                .agent_archive
+                .as_ref()
+                .is_some_and(|archive| archive.cleanup_pending);
+            let (worktree, workspace) = if pending {
+                (
+                    serde_json::json!({"state":"pending","bytes":0}),
+                    Value::Null,
                 )
-                .await?;
-            if let Some(current) = current {
-                let record = current.value();
-                let progress: ArchiveReadback = serde_json::from_value(record.clone())
-                    .map_err(studio_runtime_store::StoreError::from)?;
-                let pending = progress
-                    .agent_archive
-                    .as_ref()
-                    .is_some_and(|archive| archive.cleanup_pending);
-                let (worktree, workspace) = if pending {
-                    (
-                        serde_json::json!({"state":"pending","bytes":0}),
-                        Value::Null,
-                    )
-                } else {
-                    crate::agent_management::archived_cleanup_result(&record)
-                };
-                result["worktree"] = if !pending
-                    && !progress.worktree_ready
-                    && progress.cleaned_worktree.is_none()
-                {
+            } else {
+                crate::agent_management::archived_cleanup_result(&record)
+            };
+            result["worktree"] =
+                if !pending && !progress.worktree_ready && progress.cleaned_worktree.is_none() {
                     serde_json::json!({"state":"none","bytes":0})
                 } else {
                     worktree
                 };
-                result["workspace"] = workspace;
-                result["agent"] = crate::agent_management::brief(&record);
-            }
+            result["cleanupPending"] = Value::Bool(pending);
+            result["workspace"] = workspace;
+            result["agent"] = crate::agent_management::brief(&record);
         }
     }
     Ok(result)
@@ -122,7 +144,7 @@ struct ArchiveBlocker {
     kind: crate::agent_management::ArchiveBlockerKind,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum CleanupState {
     None,
@@ -134,11 +156,16 @@ enum CleanupState {
     Conflict,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 struct CleanupReply {
     state: CleanupState,
     bytes: Option<u64>,
     reason: Option<String>,
+}
+
+/// Default audit reason for a finished-worker batch whose caller omitted it.
+pub(crate) fn finished_archive_reason() -> String {
+    "Finished worker cleanup".into()
 }
 
 /// Batch archive is orchestration of the existing per-worker owner, never a
@@ -148,6 +175,7 @@ pub async fn archive_finished(
     store: std::sync::Arc<RuntimeStore>,
     actor: &str,
     epoch: i64,
+    reason: &str,
     unassign_work: bool,
     now: f64,
 ) -> Result<ArchiveFinishedResult, ManagementError> {
@@ -193,7 +221,7 @@ pub async fn archive_finished(
                 actor: actor.to_owned(),
                 epoch,
                 target: id.clone(),
-                reason: "Finished worker cleanup".into(),
+                reason: reason.to_owned(),
                 unassign_work,
             },
             now,
@@ -263,7 +291,7 @@ pub async fn archive_accepted_result(
     target: &str,
     now: f64,
 ) -> Result<Value, ManagementError> {
-    let result = execute(
+    execute(
         std::sync::Arc::clone(&store),
         &Action::Archive {
             actor: actor.to_owned(),
@@ -274,15 +302,7 @@ pub async fn archive_accepted_result(
         },
         now,
     )
-    .await?;
-    crate::workspace_cleanup_runtime::reconcile_pending_cleanup(std::sync::Arc::clone(&store))
-        .await
-        .map_err(|_| {
-            studio_runtime_store::StoreError::RecordContract(
-                "Archive committed; workspace cleanup remains pending",
-            )
-        })?;
-    Ok(result)
+    .await
 }
 
 pub fn execute_in_transaction(
@@ -349,10 +369,21 @@ fn execute_decision(
         let topology = repository::read_agent_topology(transaction)?;
         let (owners, agents) = lifecycle_scope(&topology, action);
         let mut tables = repository::read_for_agents(transaction, Some(&owners))?;
-        tables.insert(
-            "runtime_agents".to_owned(),
-            repository::read_agents(transaction, &agents)?,
-        );
+        let agents = repository::read_agents(transaction, &agents)?;
+        // Archive and its inspection release a failed provisioning only after
+        // reading the target's journal; other actions never decide from journals.
+        if matches!(action, Action::Archive { .. } | Action::Inspect { .. }) {
+            let target = agents
+                .iter()
+                .filter(|agent| agent.get("id").and_then(Value::as_str) == Some(action.target()))
+                .cloned()
+                .collect::<Vec<_>>();
+            tables.insert(
+                "runtime_workspace_operations".to_owned(),
+                repository::read_reserved_operations(transaction, &target)?,
+            );
+        }
+        tables.insert("runtime_agents".to_owned(), agents);
         tables
     };
     let snapshot = ManagementSnapshot::from_records(Records { tables })?;
@@ -419,6 +450,22 @@ fn execute_decision(
     }
     for agent in &decision.cancel_pending {
         repository::settle_inputs(transaction, agent)?;
+    }
+    if let Some(release) = &decision.archive_release {
+        repository::settle_archived_inputs(
+            transaction,
+            &release.agent,
+            release.epoch,
+            &release.inputs,
+        )?;
+        if let Some(operation) = &release.provision {
+            studio_runtime_store::workspace_ready::WorkspaceReadyRepository::release_archived(
+                transaction,
+                operation,
+                &release.agent,
+                now,
+            )?;
+        }
     }
     if let Some(ports) = ports {
         for effect in &decision.effects {
@@ -677,6 +724,163 @@ mod archive_finished_tests {
     use studio_runtime_store::{AgentId, AgentRecord, AgentRepository, Table, WorkItemRecord};
 
     #[tokio::test]
+    async fn committed_archive_reports_original_cleanup_failure_and_preserves_identity() {
+        const EPOCH: i64 = 1;
+        const ARCHIVE_TIME: f64 = 20.0;
+        let fixture = tempfile::tempdir().expect("fixture");
+        let store = Arc::new(
+            RuntimeStore::open(Some(fixture.path()))
+                .await
+                .expect("store"),
+        );
+        seed_failed_start_team(
+            &store,
+            vec![json!({"id":"worker","rootId":"lead",
+            "parentId":"lead","epoch":EPOCH,"status":"completed","autoWake":true})],
+            vec![],
+            vec![],
+        )
+        .await;
+        store
+            .transaction(|tx| {
+                tx.execute_batch(
+                    "CREATE TRIGGER reject_cleanup BEFORE UPDATE ON runtime_agents
+                WHEN NEW.id='worker' AND json_extract(NEW.record,'$.agentArchive.cleanupPending')=0
+                BEGIN SELECT RAISE(ABORT, 'injected cleanup persistence failure'); END;",
+                )?;
+                Ok(())
+            })
+            .await
+            .expect("deterministic cleanup failure");
+        let result = archive_finished(
+            Arc::clone(&store),
+            "lead",
+            EPOCH,
+            &finished_archive_reason(),
+            false,
+            ARCHIVE_TIME,
+        )
+        .await
+        .expect("committed archive remains an applied result");
+        assert_eq!(result.archived, 1);
+        assert!(result.kept.iter().any(|worker| {
+            worker.id == "worker"
+                && worker
+                    .reason
+                    .contains("injected cleanup persistence failure")
+        }));
+        let read = || {
+            store.read_async("test/committed-archive", |tx| {
+                AgentRepository::get(tx, &AgentId::from("worker"))
+            })
+        };
+        let before = read().await.expect("read").expect("worker").value();
+        assert_eq!(before["agentArchive"]["cleanupPending"], true);
+        store
+            .transaction(|tx| {
+                tx.execute_batch("DROP TRIGGER reject_cleanup")?;
+                Ok(())
+            })
+            .await
+            .expect("release cleanup failure");
+        let action = Action::Archive {
+            actor: "lead".into(),
+            epoch: EPOCH,
+            target: "worker".into(),
+            reason: "must not replace committed receipt".into(),
+            unassign_work: false,
+        };
+        let recovered = execute(Arc::clone(&store), &action, ARCHIVE_TIME)
+            .await
+            .expect("readback");
+        assert_eq!(recovered["status"], "archived");
+        assert_eq!(recovered["replayed"], true);
+        let after = read().await.expect("read").expect("worker").value();
+        assert_eq!(after["agentArchive"]["cleanupPending"], false);
+        assert_eq!(before["agentArchive"]["at"], after["agentArchive"]["at"]);
+        assert_eq!(
+            before["agentArchive"]["reason"],
+            after["agentArchive"]["reason"]
+        );
+        assert_eq!(before["epoch"], after["epoch"]);
+    }
+
+    #[tokio::test]
+    async fn committed_archive_ignores_unrelated_pending_cleanup() {
+        let fixture = tempfile::tempdir().expect("fixture");
+        let store = Arc::new(
+            RuntimeStore::open(Some(fixture.path()))
+                .await
+                .expect("store"),
+        );
+        let unrelated = json!({"id":"unrelated","rootId":"lead","parentId":"lead",
+            "epoch":1,"status":"completed","autoWake":true});
+        seed_failed_start_team(
+            &store,
+            vec![
+                json!({"id":"worker","rootId":"lead",
+            "parentId":"lead","epoch":1,"status":"completed","autoWake":true}),
+                unrelated,
+            ],
+            vec![],
+            vec![],
+        )
+        .await;
+        execute_prepared(
+            Arc::clone(&store),
+            &Action::Archive {
+                actor: "lead".into(),
+                epoch: 1,
+                target: "unrelated".into(),
+                reason: "Earlier archive".into(),
+                unassign_work: false,
+            },
+            10.0,
+            None,
+        )
+        .await
+        .expect("earlier committed archive");
+        let unrelated = store
+            .read_async("test/pending-unrelated-cleanup", |tx| {
+                AgentRepository::get(tx, &AgentId::from("unrelated"))
+            })
+            .await
+            .expect("read")
+            .expect("unrelated")
+            .value();
+        store.transaction(|tx| {
+            tx.execute_batch("CREATE TRIGGER reject_unrelated_cleanup BEFORE UPDATE ON runtime_agents
+                WHEN NEW.id='unrelated' AND json_extract(NEW.record,'$.agentArchive.cleanupPending')=0
+                BEGIN SELECT RAISE(ABORT, 'unrelated cleanup persistence failure'); END;")?;
+            Ok(())
+        }).await.expect("unrelated cleanup failure");
+        let result = archive_finished(
+            Arc::clone(&store),
+            "lead",
+            1,
+            &finished_archive_reason(),
+            false,
+            20.0,
+        )
+        .await
+        .expect("unrelated cleanup cannot fail committed archive");
+        assert_eq!(result.archived, 1);
+        assert!(result.kept.is_empty());
+        let current = store
+            .read_async("test/unrelated-cleanup", |tx| {
+                AgentRepository::get(tx, &AgentId::from("unrelated"))
+            })
+            .await
+            .expect("read")
+            .expect("unrelated")
+            .value();
+        assert_eq!(
+            current["workspaceCleanupIntent"],
+            unrelated["workspaceCleanupIntent"]
+        );
+    }
+
+    #[tokio::test]
     async fn archive_finished_removes_accepted_worktree_and_target_and_keeps_dirty_work() {
         let fixture = tempfile::tempdir().expect("fixture");
         let repository = fixture.path().join("project");
@@ -749,9 +953,16 @@ mod archive_finished_tests {
             ] { Table::<WorkItemRecord>::new(tx).put(&serde_json::from_value(row)?)?; }
             Ok::<_, studio_runtime_store::StoreError>(())
         }).await.expect("agents and tasks");
-        let result = archive_finished(Arc::clone(&store), "lead", 1, false, 20.0)
-            .await
-            .expect("archive batch");
+        let result = archive_finished(
+            Arc::clone(&store),
+            "lead",
+            1,
+            &finished_archive_reason(),
+            false,
+            20.0,
+        )
+        .await
+        .expect("archive batch");
         assert_eq!(result.archived, 1);
         assert_eq!(
             result.unknown_bytes, 1,
@@ -774,9 +985,16 @@ mod archive_finished_tests {
         );
         let archived_head = git(&["rev-parse", "refs/codex-agents/archive/clean"]);
         assert_eq!(archived_head, git(&["rev-parse", "clean"]));
-        let repeat = archive_finished(Arc::clone(&store), "lead", 1, true, 21.0)
-            .await
-            .expect("next batch");
+        let repeat = archive_finished(
+            Arc::clone(&store),
+            "lead",
+            1,
+            &finished_archive_reason(),
+            true,
+            21.0,
+        )
+        .await
+        .expect("next batch");
         assert_eq!(repeat.archived, 1, "only newly unassigned worker archives");
         assert_eq!(repeat.unassigned_work, vec!["open"]);
         let active = store
@@ -788,17 +1006,350 @@ mod archive_finished_tests {
             .expect("active");
         assert!(!active.extra.contains_key("deletedAt"));
         assert!(
-            archive_finished(Arc::clone(&store), "lead", 0, false, 22.0)
-                .await
-                .is_err(),
+            archive_finished(
+                Arc::clone(&store),
+                "lead",
+                0,
+                &finished_archive_reason(),
+                false,
+                22.0
+            )
+            .await
+            .is_err(),
             "stale lead epoch cannot manage workers"
         );
         assert!(
-            archive_finished(store, "dirty", 1, false, 22.0)
+            archive_finished(store, "dirty", 1, &finished_archive_reason(), false, 22.0)
                 .await
                 .is_err(),
             "worker cannot archive team"
         );
+    }
+
+    /// One input row: `(id, worker, kind, status, epoch, error)`.
+    type InputRow = (
+        &'static str,
+        &'static str,
+        &'static str,
+        &'static str,
+        i64,
+        Option<&'static str>,
+    );
+
+    /// Seed a lead and its workers, each with its own input rows.
+    async fn seed_failed_start_team(
+        store: &RuntimeStore,
+        workers: Vec<Value>,
+        inputs: Vec<InputRow>,
+        operations: Vec<Value>,
+    ) {
+        store
+            .transaction_with_error(move |tx| {
+                let lead = json!({"id":"lead","rootId":"lead","epoch":1,"status":"running",
+                    "isLead":true,"autoWake":true});
+                for row in std::iter::once(lead).chain(workers) {
+                    AgentRepository::put(tx, &AgentRecord::from_value(row)?)?;
+                }
+                for (id, agent, kind, status, epoch, error) in inputs {
+                    tx.execute(
+                        "INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch,error) \
+                         VALUES(?1,?2,?3,'input',?4,1,?5,?6)",
+                        rusqlite::params![id, agent, kind, status, epoch, error],
+                    )?;
+                }
+                for operation in operations {
+                    tx.execute(
+                        "INSERT INTO runtime_workspace_operations(id,record) VALUES(?1,?2)",
+                        rusqlite::params![operation["id"].as_str(), operation.to_string()],
+                    )?;
+                }
+                Ok::<_, studio_runtime_store::StoreError>(())
+            })
+            .await
+            .expect("seed failed-start team");
+    }
+
+    async fn archive_worker(store: &Arc<RuntimeStore>, target: &str) -> Value {
+        execute(
+            Arc::clone(store),
+            &Action::Archive {
+                actor: "lead".into(),
+                epoch: 1,
+                target: target.into(),
+                reason: "Replacement finished the task".into(),
+                unassign_work: false,
+            },
+            30.0,
+        )
+        .await
+        .expect("archive decides")
+    }
+
+    async fn input_rows(
+        store: &RuntimeStore,
+        agent: &'static str,
+    ) -> Vec<(String, String, Option<String>)> {
+        store
+            .read_async("test/archive-failed-start/inputs", move |tx| {
+                let mut statement = tx.prepare(
+                    "SELECT id,status,error FROM runtime_events WHERE agent=?1 ORDER BY id",
+                )?;
+                let rows = statement
+                    .query_map([agent], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok::<_, studio_runtime_store::StoreError>(rows)
+            })
+            .await
+            .expect("read inputs")
+    }
+
+    fn blocker_kinds(result: &Value) -> Vec<&str> {
+        result["blockers"]
+            .as_array()
+            .map(|blockers| {
+                blockers
+                    .iter()
+                    .filter_map(|blocker| blocker["kind"].as_str())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Live 2026-10-22: two workers failed before their first submission. One
+    /// kept its start prompt and a later lead message as pending input; the
+    /// other also kept the reservation of a provisioning that needs recovery.
+    /// Archive refused both with `input_delivery` (and `workspace_operation`).
+    #[tokio::test]
+    async fn archive_settles_the_unsent_input_of_a_worker_that_failed_before_its_first_turn() {
+        let fixture = tempfile::tempdir().expect("fixture");
+        let project = fixture.path().join("project");
+        let destination = project.join(".worktrees/codex-agents/provisioning");
+        std::fs::create_dir_all(&destination).expect("provisional worktree");
+        std::fs::write(destination.join("kept.txt"), "provisional files\n").expect("file");
+        std::fs::create_dir(fixture.path().join("state")).expect("state directory");
+        let store = Arc::new(
+            RuntimeStore::open(Some(&fixture.path().join("state")))
+                .await
+                .expect("store"),
+        );
+        let worker = |id: &str| {
+            json!({"id":id,"rootId":"lead","parentId":"lead","epoch":0,"status":"failed",
+                "autoWake":true,"isLead":false,"role":"implementer","threadId":null,
+                "turnId":null,"inFlight":false,"worktree":true,"worktreeReady":false,
+                "cwd":project,"error":"workspace-readiness/token-stale"})
+        };
+        let mut provisioning = worker("provisioning");
+        provisioning["error"] =
+            json!("WorkspaceRecoveryRequired: Provisioning did not establish a complete worktree");
+        provisioning["workspaceOperation"] = json!("provision");
+        provisioning["workspaceReservationId"] = json!("provision:provisioning:0");
+        provisioning["worktreePreparation"] = json!("preparing");
+        seed_failed_start_team(
+            &store,
+            vec![worker("unstarted"), provisioning],
+            vec![
+                (
+                    "unstarted:initial",
+                    "unstarted",
+                    "user",
+                    "pending",
+                    0,
+                    Some("workspace-readiness/token-stale"),
+                ),
+                (
+                    "unstarted:lead-message",
+                    "unstarted",
+                    "followup",
+                    "pending",
+                    0,
+                    None,
+                ),
+                (
+                    "provisioning:initial",
+                    "provisioning",
+                    "user",
+                    "pending",
+                    0,
+                    None,
+                ),
+            ],
+            vec![
+                json!({"id":"provision:provisioning:0","kind":"provision","agent":"provisioning",
+                "epoch":0,"phase":"recovery_required","cwd":destination,
+                "error":"Workspace Git deadline expired at git worktree list --porcelain -z"}),
+            ],
+        )
+        .await;
+
+        let result = archive_worker(&store, "unstarted").await;
+        assert_eq!(result["status"], "archived", "{result}");
+        assert_eq!(
+            result["settledInputs"],
+            json!(["unstarted:initial", "unstarted:lead-message"])
+        );
+        let rows = input_rows(&store, "unstarted").await;
+        assert_eq!(rows.len(), 2, "the input history is kept");
+        for (id, status, error) in rows {
+            assert_eq!(status, "cancelled", "{id} is settled as not delivered");
+            let error = error.unwrap_or_default();
+            assert!(
+                error.starts_with(studio_runtime_store::agent_management::ARCHIVED_INPUT_ERROR),
+                "{id} stores why it was not delivered: {error}"
+            );
+            if id == "unstarted:initial" {
+                assert!(error.contains("workspace-readiness/token-stale"), "{error}");
+            }
+        }
+
+        let result = archive_worker(&store, "provisioning").await;
+        assert_eq!(result["status"], "archived", "{result}");
+        assert_eq!(
+            result["releasedWorkspaceOperation"],
+            "provision:provisioning:0"
+        );
+        assert_eq!(result["settledInputs"], json!(["provisioning:initial"]));
+        let (record, operation) = store
+            .read_async("test/archive-failed-start/provisioning", |tx| {
+                let record = AgentRepository::get(tx, &AgentId::from("provisioning"))?
+                    .expect("archived worker")
+                    .value();
+                let operation =
+                    studio_runtime_store::workspace_ready::WorkspaceReadyRepository::journal(
+                        tx,
+                        "provision:provisioning:0",
+                    )?
+                    .expect("provisioning journal is kept");
+                Ok::<_, studio_runtime_store::StoreError>((record, operation))
+            })
+            .await
+            .expect("read archived provisioning");
+        for field in [
+            "workspaceOperation",
+            "workspaceReservationId",
+            "worktreePreparation",
+        ] {
+            assert!(
+                record.get(field).is_none_or(Value::is_null),
+                "{field} is released: {record}"
+            );
+        }
+        assert!(record["agentArchive"].is_object());
+        assert_eq!(operation["phase"], "failed", "{operation}");
+        assert_eq!(
+            operation["error"],
+            "Workspace Git deadline expired at git worktree list --porcelain -z"
+        );
+        assert_eq!(
+            operation["release"]["reason"],
+            studio_runtime_store::workspace_ready::ARCHIVED_PROVISION_RELEASE
+        );
+        assert_eq!(
+            std::fs::read_to_string(destination.join("kept.txt")).expect("files kept"),
+            "provisional files\n",
+            "archive never removes a provisional worktree it did not verify"
+        );
+        let rows = input_rows(&store, "provisioning").await;
+        assert_eq!(rows[0].1, "cancelled");
+    }
+
+    /// The settlement applies only to input that was never claimed by a
+    /// failed worker without an automatic retry. Everything else is refused
+    /// exactly as before.
+    #[tokio::test]
+    async fn archive_still_refuses_submitted_input_retries_and_unfinished_provisioning() {
+        let fixture = tempfile::tempdir().expect("fixture");
+        let store = Arc::new(
+            RuntimeStore::open(Some(fixture.path()))
+                .await
+                .expect("store"),
+        );
+        let worker = |id: &str, status: &str| {
+            json!({"id":id,"rootId":"lead","parentId":"lead","epoch":0,"status":status,
+                "autoWake":true,"isLead":false,"threadId":null,"turnId":null,"inFlight":false})
+        };
+        let mut retrying = worker("retrying", "failed");
+        retrying["usageResume"] = json!({"status":"scheduled","dueAt":100.0});
+        let mut mutating = worker("mutating", "failed");
+        mutating["workspaceOperation"] = json!("provision");
+        mutating["workspaceReservationId"] = json!("provision:mutating:0");
+        let mut in_flight = worker("in-flight", "failed");
+        in_flight["inFlight"] = json!(true);
+        seed_failed_start_team(
+            &store,
+            vec![
+                worker("uncertain", "failed"),
+                worker("reserved", "failed"),
+                worker("completed", "completed"),
+                retrying,
+                mutating,
+                in_flight,
+            ],
+            vec![
+                ("uncertain:sent", "uncertain", "user", "uncertain", 0, None),
+                (
+                    "uncertain:queued",
+                    "uncertain",
+                    "followup",
+                    "pending",
+                    0,
+                    None,
+                ),
+                ("reserved:claimed", "reserved", "user", "reserved", 0, None),
+                (
+                    "completed:queued",
+                    "completed",
+                    "followup",
+                    "pending",
+                    0,
+                    None,
+                ),
+                ("retrying:queued", "retrying", "user", "pending", 0, None),
+                ("in-flight:queued", "in-flight", "user", "pending", 0, None),
+            ],
+            vec![
+                json!({"id":"provision:mutating:0","kind":"provision","agent":"mutating",
+                "epoch":0,"phase":"local_mutation","cwd":fixture.path().join("mutating")}),
+            ],
+        )
+        .await;
+        for (target, kind) in [
+            ("uncertain", "input_delivery"),
+            ("reserved", "input_delivery"),
+            ("completed", "input_delivery"),
+            ("retrying", "input_delivery"),
+            ("mutating", "workspace_operation"),
+            ("in-flight", "active_turn"),
+        ] {
+            let result = archive_worker(&store, target).await;
+            assert_eq!(result["status"], "blocked", "{target}: {result}");
+            assert!(blocker_kinds(&result).contains(&kind), "{target}: {result}");
+        }
+        for (agent, expected) in [
+            ("uncertain", vec!["pending", "uncertain"]),
+            ("reserved", vec!["reserved"]),
+            ("completed", vec!["pending"]),
+            ("retrying", vec!["pending"]),
+            ("in-flight", vec!["pending"]),
+        ] {
+            let mut statuses = input_rows(&store, agent)
+                .await
+                .into_iter()
+                .map(|(_, status, _)| status)
+                .collect::<Vec<_>>();
+            statuses.sort();
+            assert_eq!(statuses, expected, "{agent} input is unchanged");
+        }
+        let operation = store
+            .read_async("test/archive-failed-start/mutating", |tx| {
+                studio_runtime_store::workspace_ready::WorkspaceReadyRepository::journal(
+                    tx,
+                    "provision:mutating:0",
+                )
+            })
+            .await
+            .expect("read journal")
+            .expect("journal");
+        assert_eq!(operation["phase"], "local_mutation");
     }
 
     #[tokio::test]
@@ -817,7 +1368,7 @@ mod archive_finished_tests {
             ] { AgentRepository::put(tx, &AgentRecord::from_value(row)?)?; }
             Ok::<_, studio_runtime_store::StoreError>(())
         }).await.expect("team");
-        let result = archive_finished(store, "lead", 1, false, 20.0)
+        let result = archive_finished(store, "lead", 1, &finished_archive_reason(), false, 20.0)
             .await
             .expect("nested cleanup");
         assert_eq!(result.archived, 2);

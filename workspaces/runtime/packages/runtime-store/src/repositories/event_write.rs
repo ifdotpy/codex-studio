@@ -203,6 +203,21 @@ impl EventWriteRepository {
         Ok(())
     }
 
+    /// Save a receipt, replacing the signature and result of an earlier one.
+    pub fn replace_receipt(
+        connection: &Connection,
+        id: &str,
+        signature: &str,
+        result: &str,
+    ) -> StoreResult<()> {
+        connection.execute_cached(
+            "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES (?1,?2,?3) \
+             ON CONFLICT(id) DO UPDATE SET signature=excluded.signature,result=excluded.result",
+            params![id, signature, result],
+        )?;
+        Ok(())
+    }
+
     pub fn event_exists(connection: &Connection, id: &str) -> StoreResult<bool> {
         Ok(connection.query_row_cached(
             "SELECT EXISTS(SELECT 1 FROM runtime_events WHERE id=?1)",

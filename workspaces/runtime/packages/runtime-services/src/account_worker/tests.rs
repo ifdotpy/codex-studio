@@ -19,6 +19,7 @@ mod limits_updates;
 mod login_completion;
 #[cfg(unix)]
 mod many_agents;
+mod native_requests;
 mod native_review;
 mod orphan_thread_receipt;
 #[cfg(unix)]
@@ -28,11 +29,14 @@ mod publication_off_path;
 mod retained;
 mod settled_streams;
 mod settled_turn_tasks;
+mod snapshot_changed;
 mod stale_disconnect_recovery;
 mod start_throttle;
 mod steer;
+mod stop_after_reattach;
 mod submission;
 mod tool_reply_retirement;
+mod unsent_start;
 use super::*;
 use crate::event_write::{AnnotationWrite, annotate};
 use std::{
@@ -1646,6 +1650,13 @@ async fn unsupported_callback(method: &str) {
     if method == "item/tool/call" {
         assert_eq!(wire.value["result"]["success"], false);
         assert_eq!(wire.value["result"]["contentItems"][0]["type"], "inputText");
+    } else if crate::provider_callbacks::is_native_request(method) {
+        // A native request without a thread has no card owner; it is refused.
+        assert_eq!(wire.value["error"]["code"], -32000);
+        assert_eq!(
+            wire.value["error"]["message"],
+            "Native provider request has no thread identity"
+        );
     } else {
         assert_eq!(wire.value["error"]["code"], -32601);
         assert_eq!(wire.value["error"]["data"]["kind"], "unsupported_callback");
@@ -1689,10 +1700,10 @@ async fn unsupported_callback(method: &str) {
     );
     worker.shutdown().await.unwrap();
 }
-async fn scenario_unsupported_approval_is_answered_after_commit() {
+async fn scenario_native_approval_without_a_thread_is_refused_after_commit() {
     unsupported_callback("item/commandExecution/requestApproval").await;
 }
-async fn scenario_unsupported_question_is_answered_after_commit() {
+async fn scenario_native_question_without_a_thread_is_refused_after_commit() {
     unsupported_callback("item/tool/requestUserInput").await;
 }
 async fn scenario_unsupported_dynamic_tool_is_answered_after_commit() {
@@ -2235,13 +2246,13 @@ async fn restart_after_submitted_before_written_recovers_unknown_without_resend(
 }
 
 #[tokio::test]
-async fn unsupported_approval_is_answered_after_commit() {
-    scenario_unsupported_approval_is_answered_after_commit().await
+async fn native_approval_without_a_thread_is_refused_after_commit() {
+    scenario_native_approval_without_a_thread_is_refused_after_commit().await
 }
 
 #[tokio::test]
-async fn unsupported_question_is_answered_after_commit() {
-    scenario_unsupported_question_is_answered_after_commit().await
+async fn native_question_without_a_thread_is_refused_after_commit() {
+    scenario_native_question_without_a_thread_is_refused_after_commit().await
 }
 
 #[tokio::test]
@@ -3389,7 +3400,7 @@ async fn callback_burst_is_answered_without_worker_exit() {
         for cursor in 1..=BURST {
             let line = format!(
                 "{}\n",
-                json!({"id":format!("callback-{cursor}"),"method":"item/commandExecution/requestApproval","params":{}})
+                json!({"id":format!("callback-{cursor}"),"method":"unknown/providerMethod","params":{}})
             );
             entries
                 .send(JournalEntry {

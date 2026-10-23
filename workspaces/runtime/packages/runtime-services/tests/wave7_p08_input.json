@@ -1,0 +1,276 @@
+{
+  "values": [
+    {
+      "id": "attempt",
+      "epoch": 2,
+      "accountKey": "account",
+      "threadId": "thread",
+      "connectionId": "connection",
+      "events": ["one", "two"],
+      "submitted": false,
+      "supervisorIdentity": null,
+      "created": 130.0
+    },
+    {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 2,
+      "status": "starting",
+      "provider": "claude",
+      "accountKey": "account",
+      "threadId": "thread",
+      "autoWake": true,
+      "cwd": "/fixture",
+      "role": "lead",
+      "isLead": true,
+      "model": "default",
+      "yoloMode": false,
+      "compactions": 0,
+      "startAttempt": {
+        "$ref": 0
+      },
+      "inFlight": true
+    },
+    {
+      "threadId": "thread",
+      "input": [
+        {
+          "type": "text",
+          "text": "compiled original"
+        }
+      ],
+      "clientUserMessageId": "one",
+      "dynamicTools": [
+        {
+          "name": "refreshed"
+        }
+      ]
+    },
+    {
+      "cwd": "/fixture",
+      "rootId": "agent",
+      "parentId": null,
+      "role": "lead",
+      "isLead": true,
+      "model": "default",
+      "effort": null,
+      "nativeEffort": null,
+      "fastMode": null,
+      "yoloMode": false,
+      "imageWorkspace": null,
+      "imageWorkspaceReady": null,
+      "compactions": 0
+    },
+    {
+      "id": "one",
+      "kind": "user",
+      "created": 100.0,
+      "assets": [],
+      "textHash": "47080470c1aeb2a10e9df746bc6abf3233a453c3b2cd52a5f14d9eb2a308587a"
+    },
+    {
+      "$base": 4,
+      "set": {
+        "id": "two",
+        "created": 101.0,
+        "textHash": "29e0e91a3bcefa7f8d341741d060590ce09bf596765a9e79d58a3b1cb66dbc1d"
+      }
+    },
+    [
+      {
+        "$ref": 4
+      },
+      {
+        "$ref": 5
+      }
+    ],
+    {
+      "input": [
+        {
+          "type": "text",
+          "text": "compiled original"
+        }
+      ],
+      "source": {
+        "$ref": 3
+      },
+      "clientUserMessageId": "one",
+      "configuration": {
+        "threadId": "thread"
+      },
+      "events": {
+        "$ref": 6
+      },
+      "transcriptItemId": "agent:one",
+      "textHash": "fd6be1c4d92b20cf9c6da3f5fcf44b5baff29ac8e949ea88259fd5597c545150"
+    },
+    {
+      "accountKey": "account",
+      "connectionId": "connection",
+      "supervisorIdentity": null,
+      "closed": false
+    },
+    {
+      "retry": false,
+      "path": "fresh.sqlite3",
+      "agent": {
+        "$ref": 1
+      },
+      "attempt": {
+        "$ref": 0
+      },
+      "params": {
+        "$ref": 2
+      },
+      "text": "compiled original",
+      "frozen": {
+        "$ref": 7
+      },
+      "transport": {
+        "$ref": 8
+      }
+    },
+    "CREATE TABLE runtime_events(id TEXT PRIMARY KEY,agent TEXT,epoch INTEGER,kind TEXT,text TEXT,created REAL,status TEXT,turn_id TEXT,error TEXT)",
+    "CREATE TABLE runtime_execution_attempts(id TEXT PRIMARY KEY,run TEXT,record TEXT)",
+    "CREATE TABLE runtime_items(id TEXT PRIMARY KEY,agent TEXT,created REAL,record TEXT)",
+    [
+      "CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT)",
+      "CREATE TABLE runtime_event_meta(id TEXT PRIMARY KEY,record TEXT)",
+      {
+        "$ref": 10
+      },
+      {
+        "$ref": 11
+      },
+      "CREATE TABLE runtime_execution_runs(id TEXT PRIMARY KEY,agent TEXT)",
+      "CREATE TABLE runtime_item_fulltext(id TEXT PRIMARY KEY,body TEXT)",
+      {
+        "$ref": 12
+      },
+      "CREATE TABLE runtime_tasks(id TEXT PRIMARY KEY,record TEXT)"
+    ],
+    "INSERT INTO \"runtime_events\"(\"id\",\"agent\",\"epoch\",\"kind\",\"text\",\"created\",\"status\",\"turn_id\",\"error\") VALUES ('one','agent',2,'user','original one',100.0,'reserved',NULL,NULL);",
+    "INSERT INTO \"runtime_events\"(\"id\",\"agent\",\"epoch\",\"kind\",\"text\",\"created\",\"status\",\"turn_id\",\"error\") VALUES ('two','agent',2,'user','original two',101.0,'reserved',NULL,NULL);",
+    "INSERT INTO \"runtime_execution_runs\"(\"id\",\"agent\") VALUES ('run','agent');",
+    "INSERT INTO \"runtime_items\"(\"id\",\"agent\",\"created\",\"record\") VALUES ('agent:one','agent',100.0,'{\"id\": \"agent:one\", \"role\": \"user\", \"text\": \"compiled original\"}');",
+    {
+      "id": "attempt",
+      "epoch": 2,
+      "accountKey": "account",
+      "threadId": "thread",
+      "connectionId": "connection",
+      "nativeOperationId": "turn:agent:one:attempt:attempt",
+      "events": ["one", "two"],
+      "submitted": true,
+      "supervisorIdentity": null
+    },
+    {
+      "id": "retry",
+      "epoch": 2,
+      "accountKey": "account",
+      "events": ["one", "two"],
+      "submitted": false,
+      "claudeRetryOf": "attempt",
+      "threadId": "thread",
+      "connectionId": "connection",
+      "created": 130.0
+    },
+    {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 2,
+      "status": "starting",
+      "provider": "claude",
+      "accountKey": "account",
+      "threadId": "thread",
+      "autoWake": true,
+      "cwd": "/fixture",
+      "role": "lead",
+      "isLead": true,
+      "model": "default",
+      "yoloMode": false,
+      "compactions": 0,
+      "claudePreInputRetry": {
+        "$ref": 18
+      },
+      "inFlight": true,
+      "turnId": null,
+      "error": null,
+      "startAttempt": {
+        "$ref": 19
+      }
+    },
+    {
+      "$base": 9,
+      "set": {
+        "retry": true,
+        "path": "retry.sqlite3",
+        "agent": {
+          "$ref": 20
+        },
+        "attempt": {
+          "$ref": 19
+        }
+      }
+    }
+  ],
+  "root": [
+    {
+      "case": {
+        "$ref": 9
+      },
+      "database": {
+        "schema": {
+          "$ref": 13
+        },
+        "data": [
+          "INSERT INTO \"runtime_agents\"(\"id\",\"record\") VALUES ('agent','{\"id\": \"agent\", \"rootId\": \"agent\", \"epoch\": 2, \"status\": \"starting\", \"provider\": \"claude\", \"accountKey\": \"account\", \"threadId\": \"thread\", \"autoWake\": true, \"cwd\": \"/fixture\", \"role\": \"lead\", \"isLead\": true, \"model\": \"default\", \"yoloMode\": false, \"compactions\": 0, \"startAttempt\": {\"id\": \"attempt\", \"epoch\": 2, \"accountKey\": \"account\", \"threadId\": \"thread\", \"connectionId\": \"connection\", \"events\": [\"one\", \"two\"], \"submitted\": false, \"supervisorIdentity\": null, \"created\": 130.0}, \"inFlight\": true}');",
+          "INSERT INTO \"runtime_event_meta\"(\"id\",\"record\") VALUES ('one','{}');",
+          "INSERT INTO \"runtime_event_meta\"(\"id\",\"record\") VALUES ('two','{}');",
+          {
+            "$ref": 14
+          },
+          {
+            "$ref": 15
+          },
+          "INSERT INTO \"runtime_execution_attempts\"(\"id\",\"run\",\"record\") VALUES ('attempt','run','{\"id\": \"attempt\", \"epoch\": 2, \"accountKey\": \"account\", \"threadId\": \"thread\", \"connectionId\": \"connection\", \"events\": [\"one\", \"two\"], \"submitted\": false, \"supervisorIdentity\": null, \"created\": 130.0}');",
+          {
+            "$ref": 16
+          },
+          {
+            "$ref": 17
+          }
+        ]
+      }
+    },
+    {
+      "case": {
+        "$ref": 21
+      },
+      "database": {
+        "schema": {
+          "$ref": 13
+        },
+        "data": [
+          "INSERT INTO \"runtime_agents\"(\"id\",\"record\") VALUES ('agent','{\"id\": \"agent\", \"rootId\": \"agent\", \"epoch\": 2, \"status\": \"starting\", \"provider\": \"claude\", \"accountKey\": \"account\", \"threadId\": \"thread\", \"autoWake\": true, \"cwd\": \"/fixture\", \"role\": \"lead\", \"isLead\": true, \"model\": \"default\", \"yoloMode\": false, \"compactions\": 0, \"claudePreInputRetry\": {\"id\": \"attempt\", \"epoch\": 2, \"accountKey\": \"account\", \"threadId\": \"thread\", \"connectionId\": \"connection\", \"nativeOperationId\": \"turn:agent:one:attempt:attempt\", \"events\": [\"one\", \"two\"], \"submitted\": true, \"supervisorIdentity\": null}, \"inFlight\": true, \"turnId\": null, \"error\": null, \"startAttempt\": {\"id\": \"retry\", \"epoch\": 2, \"accountKey\": \"account\", \"events\": [\"one\", \"two\"], \"submitted\": false, \"claudeRetryOf\": \"attempt\", \"threadId\": \"thread\", \"connectionId\": \"connection\", \"created\": 130.0}}');",
+          "INSERT INTO \"runtime_event_meta\"(\"id\",\"record\") VALUES ('one','{\"claudePreInputRetryUsed\": true}');",
+          "INSERT INTO \"runtime_event_meta\"(\"id\",\"record\") VALUES ('two','{\"claudePreInputRetryUsed\": true}');",
+          {
+            "$ref": 14
+          },
+          {
+            "$ref": 15
+          },
+          "INSERT INTO \"runtime_execution_attempts\"(\"id\",\"run\",\"record\") VALUES ('attempt','run','{\"id\": \"attempt\", \"epoch\": 2, \"accountKey\": \"account\", \"threadId\": \"thread\", \"connectionId\": \"connection\", \"nativeOperationId\": \"turn:agent:one:attempt:attempt\", \"events\": [\"one\", \"two\"], \"submitted\": true, \"supervisorIdentity\": null, \"created\": 110.0, \"claudeInputRequest\": {\"input\": [{\"type\": \"text\", \"text\": \"compiled original\"}], \"source\": {\"cwd\": \"/fixture\", \"rootId\": \"agent\", \"parentId\": null, \"role\": \"lead\", \"isLead\": true, \"model\": \"default\", \"effort\": null, \"nativeEffort\": null, \"fastMode\": null, \"yoloMode\": false, \"imageWorkspace\": null, \"imageWorkspaceReady\": null, \"compactions\": 0}, \"clientUserMessageId\": \"one\", \"configuration\": {\"threadId\": \"thread\"}, \"events\": [{\"id\": \"one\", \"kind\": \"user\", \"created\": 100.0, \"assets\": [], \"textHash\": \"47080470c1aeb2a10e9df746bc6abf3233a453c3b2cd52a5f14d9eb2a308587a\"}, {\"id\": \"two\", \"kind\": \"user\", \"created\": 101.0, \"assets\": [], \"textHash\": \"29e0e91a3bcefa7f8d341741d060590ce09bf596765a9e79d58a3b1cb66dbc1d\"}], \"transcriptItemId\": \"agent:one\", \"textHash\": \"fd6be1c4d92b20cf9c6da3f5fcf44b5baff29ac8e949ea88259fd5597c545150\"}, \"claudeInputRejection\": {\"id\": \"attempt\", \"epoch\": 2, \"accountKey\": \"account\", \"threadId\": \"thread\", \"connectionId\": \"connection\", \"nativeOperationId\": \"turn:agent:one:attempt:attempt\", \"events\": [\"one\", \"two\"], \"agent\": \"agent\", \"turnId\": null, \"outcome\": \"not_applied\", \"retry\": true}, \"executionOutcome\": \"not_applied\"}');",
+          "INSERT INTO \"runtime_execution_attempts\"(\"id\",\"run\",\"record\") VALUES ('retry','run','{\"id\": \"retry\", \"epoch\": 2, \"accountKey\": \"account\", \"events\": [\"one\", \"two\"], \"submitted\": false, \"claudeRetryOf\": \"attempt\", \"threadId\": \"thread\", \"connectionId\": \"connection\", \"created\": 130.0}');",
+          {
+            "$ref": 16
+          },
+          {
+            "$ref": 17
+          }
+        ]
+      }
+    }
+  ]
+}

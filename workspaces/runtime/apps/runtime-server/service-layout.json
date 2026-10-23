@@ -1,0 +1,8 @@
+{
+  "unitName": "codex-studio.service",
+  "port": 4620,
+  "binaryRelative": "bin/studio-runtime-server",
+  "currentRelative": "current",
+  "rootRelative": ".local/share/codex-studio/server",
+  "stateRelative": ".local/state/codex-agents"
+}

@@ -2,7 +2,6 @@
 #![allow(clippy::unwrap_used)]
 #[path = "../src/account_registry.rs"]
 pub(crate) mod account_registry;
-use crate::prepared_python_support as prepared_python;
 
 use account_registry::{
     AccountLaunch, AccountLauncher, AccountRegistry, AccountRegistryConfig, AccountSessionBroker,
@@ -31,7 +30,7 @@ use studio_runtime_services::{
 };
 use studio_runtime_store::path_identity::CanonicalPath;
 use studio_runtime_store::{RuntimeStore, StoreError};
-use tokio::sync::{Notify, OnceCell, mpsc, watch};
+use tokio::sync::{Notify, mpsc, watch};
 
 fn test_registry_config() -> AccountRegistryConfig {
     AccountRegistryConfig::default()
@@ -46,197 +45,14 @@ struct Fixture {
     agents: Value,
     changes: watch::Receiver<u64>,
 }
-struct FixtureTemplate {
-    entries: Vec<FixtureEntry>,
-    agents: Value,
-}
-struct FixtureEntry {
-    path: PathBuf,
-    contents: Option<Vec<u8>>,
-    mode: u32,
-}
-
-fn snapshot_fixture(
-    path: &std::path::Path,
-    root: &std::path::Path,
-    entries: &mut Vec<FixtureEntry>,
-) {
-    use std::os::unix::fs::PermissionsExt;
-    let metadata = std::fs::metadata(path).unwrap();
-    let relative = path.strip_prefix(root).unwrap().to_path_buf();
-    let contents = if metadata.is_dir() {
-        None
-    } else {
-        Some(std::fs::read(path).unwrap())
-    };
-    entries.push(FixtureEntry {
-        path: relative,
-        contents,
-        mode: metadata.permissions().mode() & 0o777,
-    });
-    if metadata.is_dir() {
-        for child in std::fs::read_dir(path).unwrap() {
-            snapshot_fixture(&child.unwrap().path(), root, entries);
-        }
-    }
-}
-
-async fn dispatch_template() -> &'static FixtureTemplate {
-    static TEMPLATE: OnceCell<FixtureTemplate> = OnceCell::const_new();
-    TEMPLATE
-        .get_or_init(|| async {
-            let root = tempfile::tempdir().unwrap();
-            let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../server/src");
-            let script =
-                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/wave7_p01_fixture.py");
-            let mut command = std::process::Command::new(prepared_python::prepared_python(&source));
-            command
-                .args(["-B"])
-                .arg(&script)
-                .arg(root.path())
-                .arg("dispatch");
-            let result = prepared_python::output_with_timeout(
-                &mut command,
-                &script,
-                prepared_python::PYTHON_ORACLE_TIMEOUT,
-            )
-            .unwrap_or_else(|error| panic!("wave7_p01_fixture.py dispatch: {error}"));
-            assert!(
-                result.status.success(),
-                "wave7_p01_fixture.py dispatch: {}",
-                String::from_utf8_lossy(&result.stderr)
-            );
-            let agents = serde_json::from_slice(&result.stdout).unwrap();
-            // Run migrations once before snapshotting so each test only copies a
-            // ready-to-open SQLite image instead of starting Python and migrating.
-            let store = RuntimeStore::open(Some(root.path())).await.unwrap();
-            store
-                .checkpoint_wal_passive()
-                .await
-                .expect("checkpoint fixture databases before snapshot");
-            let mut entries = Vec::new();
-            snapshot_fixture(root.path(), root.path(), &mut entries);
-            drop(store);
-            FixtureTemplate { entries, agents }
-        })
-        .await
-}
-
-async fn recovery_template() -> &'static FixtureTemplate {
-    static TEMPLATE: OnceCell<FixtureTemplate> = OnceCell::const_new();
-    TEMPLATE
-        .get_or_init(|| async {
-            let root = tempfile::tempdir().unwrap();
-            let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../server/src");
-            let script =
-                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/wave7_p01_fixture.py");
-            let mut command = std::process::Command::new(prepared_python::prepared_python(&source));
-            command
-                .args(["-B"])
-                .arg(&script)
-                .arg(root.path())
-                .arg("recovery");
-            let result = prepared_python::output_with_timeout(
-                &mut command,
-                &script,
-                prepared_python::PYTHON_ORACLE_TIMEOUT,
-            )
-            .unwrap_or_else(|error| panic!("wave7_p01_fixture.py recovery: {error}"));
-            assert!(
-                result.status.success(),
-                "wave7_p01_fixture.py recovery: {}",
-                String::from_utf8_lossy(&result.stderr)
-            );
-            let agents = serde_json::from_slice(&result.stdout).unwrap();
-            let mut entries = Vec::new();
-            snapshot_fixture(root.path(), root.path(), &mut entries);
-            FixtureTemplate { entries, agents }
-        })
-        .await
-}
-
 impl Fixture {
     async fn new() -> Self {
-        Self::build("dispatch").await
+        Self::build(crate::fixture_support::FixtureKind::Dispatch).await
     }
-    async fn build(mode: &str) -> Self {
-        if mode == "dispatch" {
-            use std::os::unix::fs::PermissionsExt;
-
-            let template = dispatch_template().await;
-            let root = tempfile::tempdir().unwrap();
-            for entry in &template.entries {
-                let path = root.path().join(&entry.path);
-                if let Some(contents) = &entry.contents {
-                    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-                    std::fs::write(&path, contents).unwrap();
-                } else {
-                    std::fs::create_dir_all(&path).unwrap();
-                }
-                std::fs::set_permissions(path, std::fs::Permissions::from_mode(entry.mode))
-                    .unwrap();
-            }
-            let (store, changes) = store_with_change_signal(root.path()).await;
-            let cwd = root.path().to_string_lossy().into_owned();
-            store
-                .transaction_with::<_, StoreError>(move |tx| {
-                    tx.execute(
-                        "UPDATE runtime_agents SET record=json_set(record,'$.cwd',?1)",
-                        [&cwd],
-                    )?;
-                    Ok(())
-                })
-                .await
-                .unwrap();
-            return Self {
-                _root: root,
-                store,
-                agents: template.agents.clone(),
-                changes,
-            };
-        }
-        if mode == "recovery" {
-            use std::os::unix::fs::PermissionsExt;
-
-            let template = recovery_template().await;
-            let root = tempfile::tempdir().unwrap();
-            for entry in &template.entries {
-                let path = root.path().join(&entry.path);
-                if let Some(contents) = &entry.contents {
-                    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-                    std::fs::write(&path, contents).unwrap();
-                } else {
-                    std::fs::create_dir_all(&path).unwrap();
-                }
-                std::fs::set_permissions(path, std::fs::Permissions::from_mode(entry.mode))
-                    .unwrap();
-            }
-            let (store, changes) = store_with_change_signal(root.path()).await;
-            return Self {
-                _root: root,
-                store,
-                agents: template.agents.clone(),
-                changes,
-            };
-        }
+    async fn build(kind: crate::fixture_support::FixtureKind) -> Self {
         let root = tempfile::tempdir().unwrap();
-        let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../server/src");
-        let script = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/wave7_p01_fixture.py");
-        let mut command = std::process::Command::new(prepared_python::prepared_python(&source));
-        command.args(["-B"]).arg(&script).arg(root.path()).arg(mode);
-        let result = prepared_python::output_with_timeout(
-            &mut command,
-            &script,
-            prepared_python::PYTHON_ORACLE_TIMEOUT,
-        )
-        .unwrap_or_else(|error| panic!("wave7_p01_fixture.py {mode}: {error}"));
-        assert!(
-            result.status.success(),
-            "{}",
-            String::from_utf8_lossy(&result.stderr)
-        );
-        let agents = serde_json::from_slice(&result.stdout).unwrap();
         let (store, changes) = store_with_change_signal(root.path()).await;
+        let agents = crate::fixture_support::seed(&store, root.path(), kind).await;
         Self {
             _root: root,
             store,
@@ -409,6 +225,7 @@ struct Scripted {
     /// Accounts for which this predicate holds fail every launch, however often
     /// the registry retries, so a retry timer cannot change the outcome.
     unavailable: std::sync::OnceLock<fn(&str) -> bool>,
+    launch_attempts: std::sync::OnceLock<mpsc::UnboundedSender<String>>,
     stops: Arc<Mutex<Vec<Shutdown>>>,
     opened_notice: Arc<Notify>,
     ready_notice: Arc<Notify>,
@@ -431,6 +248,9 @@ impl Scripted {
 impl AccountLauncher for Scripted {
     fn launch(&self, account: String) -> LaunchFuture<'_> {
         Box::pin(async move {
+            if let Some(attempts) = self.launch_attempts.get() {
+                drop(attempts.send(account.clone()));
+            }
             if self
                 .unavailable
                 .get()
@@ -743,6 +563,7 @@ fn scripted_with_policy(
             launches: AtomicUsize::new(0),
             failures: AtomicUsize::new(0),
             unavailable: std::sync::OnceLock::new(),
+            launch_attempts: std::sync::OnceLock::new(),
             stops: Arc::default(),
             opened_notice: Arc::default(),
             ready_notice: Arc::default(),
@@ -753,83 +574,12 @@ fn scripted_with_policy(
 }
 
 fn radio_snapshot(mode: &str) -> Value {
-    use std::sync::OnceLock;
-
-    static INTERRUPT: OnceLock<Value> = OnceLock::new();
-    static QUEUE: OnceLock<Value> = OnceLock::new();
-    let cache = match mode {
-        "interrupt" => &INTERRUPT,
-        "queue" => &QUEUE,
+    let fixture = match mode {
+        "interrupt" => include_str!("fixtures/radio-interrupt.json"),
+        "queue" => include_str!("fixtures/radio-queue.json"),
         other => panic!("unknown radio fixture mode {other}"),
     };
-    cache
-        .get_or_init(|| {
-    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let source = manifest.join("../server/src");
-    let script = r#"
-import importlib.util, json, pathlib, sqlite3, sys
-from unittest.mock import patch
-mode = sys.argv[2]
-tests = pathlib.Path(sys.argv[1])
-sys.path.insert(0, str(tests))
-spec = importlib.util.spec_from_file_location('radio_fixture', tests / 'radio-contract.py')
-fixture = importlib.util.module_from_spec(spec); spec.loader.exec_module(fixture)
-radio = fixture.Radio('test_two_replies_share_all_text_and_stop')
-radio.setUp()
-try:
-    for key in ('a', 'b', 'c', 'd'):
-        status = 'queued' if mode == 'queue' and key == 'a' else 'idle'
-        radio.mutate_agent(key, epoch=1, name=key, status=status, inFlight=False, events=0,
-                           provider='codex', model='fake-model', role='orchestrator', depth=0,
-                           prompt='', worktree=False, accountKey='default', autoWake=True,
-                           nativeEffort=None, threadId='native-' + key)
-    radio.action('send', text='question', request_id='seed-send')
-    if mode == 'interrupt':
-        radio.tick()
-        active = radio.room()['radio']['active']
-        radio.mutate_agent('a', inFlight=True, status='running', turnId='turn',
-                           startAttempt=dict(id='fixture-attempt', events=[active['eventId']], epoch=1, submitted=True,
-                                             threadId='native-a', observedTurnId='turn'))
-        with radio.runtime.db() as db:
-            db.execute("UPDATE runtime_events SET status='delivered',turn_id='turn'")
-        radio.action('stop')
-    tables = ('agents','projects','rooms','events','chat_messages','requests',
-              'completed_turns','items','operation_receipts','sync_entities','sidebar_order')
-    mapping = {'sync_entities':'sync_entities','sidebar_order':'runtime_sidebar_order'}
-    snapshot = {}
-    with radio.runtime.db() as db:
-        for table in tables:
-            actual = mapping.get(table, 'runtime_' + table)
-            try:
-                snapshot[table] = [dict(row) for row in db.execute('SELECT * FROM ' + actual)]
-            except sqlite3.OperationalError as error:
-                if 'no such table' not in str(error): raise
-    print(json.dumps(snapshot))
-finally:
-    radio.doCleanups()
-"#;
-    let mut command = std::process::Command::new(prepared_python::prepared_python(&source));
-    let isolated_environment = prepared_python::IsolatedTestEnvironment::new();
-    isolated_environment.apply(&mut command);
-    command
-        .arg("-c")
-        .arg(script)
-        .arg(manifest.join("../server/tests"))
-        .arg(mode);
-    let output = prepared_python::output_with_timeout(
-        &mut command,
-        &manifest.join("tests/wave7_p01_radio_fixture.py"),
-        TEST_HANG_GUARD,
-    )
-    .unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    serde_json::from_slice::<Value>(&output.stdout).unwrap()
-        })
-        .clone()
+    serde_json::from_str(fixture).unwrap()
 }
 
 fn radio_interrupt_snapshot() -> Value {
@@ -1639,8 +1389,8 @@ pub(crate) mod provider_ports;
 mod runtime_shutdown;
 
 #[tokio::test]
-async fn recovery_selection_matches_python_scheduler_roster_without_changing_stored_records() {
-    let fixture = Fixture::build("recovery").await;
+async fn recovery_selection_matches_frozen_scheduler_roster_without_changing_stored_records() {
+    let fixture = Fixture::build(crate::fixture_support::FixtureKind::Recovery).await;
     let selected = account_registry::target_page(
         &fixture.store.test_reader().expect("reader"),
         "",
@@ -1937,6 +1687,8 @@ async fn registry_drains_strict_account_pages_after_one_global_wake() {
     // Written receipts: a lost turn/start receipt closes the session by design,
     // and that worker exit would race this test's registry shutdown.
     let (launcher, mut writes) = scripted_with_unknown_writes(false);
+    let (attempted, mut attempts) = mpsc::unbounded_channel();
+    launcher.launch_attempts.set(attempted).unwrap();
     // Every paged account except the last two fails to start on every attempt, so
     // the registry's retry timer cannot open another launch; the strict
     // continuation then reaches the eligible tail without a timer or another
@@ -1960,14 +1712,23 @@ async fn registry_drains_strict_account_pages_after_one_global_wake() {
         Arc::new(Notify::new()),
         stop.clone(),
     ));
-    let (account, request) = tokio::time::timeout(SATURATED_WAKE_TIMEOUT, writes.recv())
+    // Check strict forward progress at every account. A repeated page fails
+    // immediately; slow but ordered traversal does not consume one total deadline.
+    for index in 0..130 {
+        let account = tokio::time::timeout(TEST_HANG_GUARD, attempts.recv())
+            .await
+            .expect("strict account continuation makes progress")
+            .expect("registry retains the launcher");
+        assert_eq!(account, format!("page-{index:06}"));
+    }
+    let (account, request) = tokio::time::timeout(TEST_HANG_GUARD, writes.recv())
         .await
         .expect("strict account continuation reaches the eligible tail")
         .unwrap();
     assert_eq!(account, "account:page-000129");
     assert_eq!(request["method"], "turn/start");
     stop.cancel();
-    tokio::time::timeout(SATURATED_WAKE_TIMEOUT, task)
+    tokio::time::timeout(TEST_HANG_GUARD, task)
         .await
         .expect("registry shutdown completes after strict account paging")
         .unwrap()
@@ -1975,41 +1736,35 @@ async fn registry_drains_strict_account_pages_after_one_global_wake() {
     assert_eq!(launcher.opened.lock().unwrap().len(), 2);
 }
 
-fn python_launch(
-    root: &std::path::Path,
-    environment: &BTreeMap<String, String>,
-    home: &std::path::Path,
-    isolated: bool,
-    executable: &str,
-    mode: &str,
-) -> Value {
-    use std::io::Write;
-    let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../server/src");
-    let mut child = std::process::Command::new(prepared_python::prepared_python(&source))
-        .arg("-B")
-        .arg(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/wave7_p01_launch_oracle.py"))
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .unwrap();
-    child.stdin.take().unwrap().write_all(json!({"root":root,"environment":environment,"home":home,"isolated":isolated,"executable":executable,"mode":mode}).to_string().as_bytes()).unwrap();
-    let output = child.wait_with_output().unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LaunchFixture {
+    command: Vec<String>,
+    env: BTreeMap<String, String>,
+    cwd: Option<String>,
+}
+
+fn launch_fixture(root: &std::path::Path, isolated: bool, supervised: bool) -> LaunchFixture {
+    let data = match (supervised, isolated) {
+        (true, false) => include_str!("fixtures/launch-supervisor-false.json"),
+        (true, true) => include_str!("fixtures/launch-supervisor-true.json"),
+        (false, false) => include_str!("fixtures/launch-direct-false.json"),
+        (false, true) => include_str!("fixtures/launch-direct-true.json"),
+    };
+    serde_json::from_str(&data.replace(
+        crate::fixture_support::STATE_PLACEHOLDER,
+        &root.to_string_lossy(),
+    ))
+    .unwrap()
+}
+
+fn with_unload_override(fixture: &LaunchFixture) -> Vec<String> {
+    let mut command = fixture.command.clone();
+    const APP_SERVER_ARGUMENT_COUNT: usize = 4;
+    command.splice(
+        APP_SERVER_ARGUMENT_COUNT..APP_SERVER_ARGUMENT_COUNT,
+        ["-c".into(), "thread_unload_delay_secs=0".into()],
     );
-    serde_json::from_slice(&output.stdout).unwrap()
-}
-fn oracle_command(oracle: &Value) -> Vec<String> {
-    serde_json::from_value(oracle["command"].clone()).unwrap()
-}
-/// The Rust launch is the Python launch plus Codex's thread unload override
-/// after the app-server arguments; the Python launch stays its reattach command.
-fn with_unload_override(oracle: &Value) -> Vec<String> {
-    let mut command = oracle_command(oracle);
-    command.splice(4..4, ["-c".into(), "thread_unload_delay_secs=0".into()]);
     command
 }
 async fn wire_read(peer: &mut tokio::io::BufReader<tokio::net::UnixStream>) -> Value {
@@ -2026,7 +1781,7 @@ async fn wire_send(peer: &mut tokio::io::BufReader<tokio::net::UnixStream>, valu
         .unwrap();
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn rust_supervisor_binary() -> PathBuf {
     std::env::var_os("STUDIO_SUPERVISOR_BINARY")
         .or_else(|| option_env!("CARGO_BIN_EXE_codex-process-supervisor").map(Into::into))
@@ -2038,7 +1793,7 @@ fn rust_supervisor_binary() -> PathBuf {
         })
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn spawn_rust_supervisor(root: &std::path::Path, stderr: &std::path::Path) -> std::process::Child {
     std::process::Command::new(rust_supervisor_binary())
         .arg("--state")
@@ -2061,7 +1816,7 @@ async fn provider_input_barrier(root: &std::path::Path, backend_id: &str) -> Val
     );
     wire_send(
         &mut peer,
-        json!({"protocol":1,"stateDir":root,"backendId":backend_id}),
+        json!({"protocol":studio_runtime_process::SUPERVISOR_PROTOCOL_V2,"stateDir":root,"backendId":backend_id}),
     )
     .await;
     let attached = wire_read(&mut peer).await;
@@ -2091,7 +1846,7 @@ async fn provider_input_barrier(root: &std::path::Path, backend_id: &str) -> Val
 }
 
 #[tokio::test]
-async fn every_launch_signature_field_matches_real_python_appserver() {
+async fn every_launch_signature_field_matches_frozen_appserver_contract() {
     for isolated in [false, true] {
         let root = tempfile::tempdir().unwrap();
         let home = root.path().join("codex");
@@ -2107,14 +1862,7 @@ async fn every_launch_signature_field_matches_real_python_appserver() {
             ("CODEX_API_KEY".into(), "fixture-codex-key".into()),
             ("UNCHANGED".into(), "Unicode café".into()),
         ]);
-        let oracle = python_launch(
-            root.path(),
-            &environment,
-            &home,
-            isolated,
-            "/fixture/codex",
-            "supervisor",
-        );
+        let oracle = launch_fixture(root.path(), isolated, true);
         let launch = host_runtime::codex_launch(
             Some("/fixture/codex"),
             environment,
@@ -2158,21 +1906,24 @@ async fn every_launch_signature_field_matches_real_python_appserver() {
         )
         .await;
         let open = wire_read(&mut peer).await;
-        for field in ["env", "cwd"] {
-            assert_eq!(open[field], oracle[field], "{field}");
-        }
+        assert_eq!(open["env"], json!(oracle.env));
+        assert_eq!(open["cwd"], json!(oracle.cwd));
         assert_eq!(open["command"], json!(with_unload_override(&oracle)));
         let environment: BTreeMap<String, String> =
             serde_json::from_value(open["env"].clone()).unwrap();
-        // The Python launch is the reattach command, so its app-servers reattach.
-        assert_eq!(reattach_commands, [oracle_command(&oracle)]);
+        // The frozen pre-unload-override command remains eligible for reattachment.
+        assert_eq!(reattach_commands, std::slice::from_ref(&oracle.command));
         assert_eq!(
             studio_runtime_store::supervisor_journal::launch_signature(
                 &reattach_commands[0],
                 &environment,
                 open["cwd"].as_str()
             ),
-            oracle["signature"]
+            studio_runtime_store::supervisor_journal::launch_signature(
+                &oracle.command,
+                &oracle.env,
+                oracle.cwd.as_deref()
+            )
         );
         wire_send(&mut peer,json!({"requestId":open["requestId"],"result":{"resumed":false,"initResult":null,"acknowledged":0,"sequence":0,"generation":1,"returnCode":null,"pid":1}})).await;
         drop(preparing.await.unwrap());
@@ -2180,7 +1931,7 @@ async fn every_launch_signature_field_matches_real_python_appserver() {
 }
 
 #[test]
-fn direct_launch_command_and_environment_match_python() {
+fn direct_launch_command_and_environment_match_frozen_contract() {
     for isolated in [false, true] {
         let root = tempfile::tempdir().unwrap();
         let home = root.path().join("codex");
@@ -2194,14 +1945,7 @@ fn direct_launch_command_and_environment_match_python() {
             ("CODEX_API_KEY".into(), "fixture-codex-key".into()),
             ("UNCHANGED".into(), "Unicode café".into()),
         ]);
-        let oracle = python_launch(
-            root.path(),
-            &environment,
-            &home,
-            isolated,
-            "/fixture/codex",
-            "direct",
-        );
+        let oracle = launch_fixture(root.path(), isolated, false);
         let launch = host_runtime::codex_launch(
             Some("/fixture/codex"),
             environment,
@@ -2210,19 +1954,162 @@ fn direct_launch_command_and_environment_match_python() {
             root.path().into(),
         );
         assert_eq!(launch.command, with_unload_override(&oracle));
-        assert_eq!(launch.reattach_commands, [oracle_command(&oracle)]);
+        assert_eq!(
+            launch.reattach_commands,
+            std::slice::from_ref(&oracle.command)
+        );
         assert_eq!(
             serde_json::to_value(launch.environment).unwrap(),
-            oracle["env"]
+            json!(oracle.env)
         );
         assert_eq!(
             launch
                 .cwd
                 .as_ref()
                 .map(|path| path.to_string_lossy().into_owned()),
-            oracle["cwd"].as_str().map(str::to_owned)
+            oracle.cwd
         );
     }
+}
+
+/// The live install keeps Codex app-servers that earlier builds started with the
+/// frozen commands (no thread unload override). The current host launch must
+/// reattach each one with its own command: same PID and generation, never a
+/// refusal for different launch settings and never a second child.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[tokio::test]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "test fixture; `which` prints one line and exits at once"
+)]
+async fn running_app_server_started_with_the_frozen_command_reattaches() {
+    use std::os::unix::fs::PermissionsExt;
+    use studio_runtime_process::{HealthRequest, SupervisorClient};
+    use studio_runtime_store::supervisor_journal::launch_signature;
+    let directory = tempfile::Builder::new().prefix("rs-").tempdir().unwrap();
+    // The supervisor compares the handshake state directory with its resolved
+    // root; macOS temporary directories sit behind the /var symlink.
+    let root = CanonicalPath::existing(directory.path())
+        .unwrap()
+        .to_path_buf();
+    // A non-platform executable: macOS hides the launch environment of
+    // platform binaries such as /bin/sh, so their reattach is unverifiable.
+    let node = std::process::Command::new("which")
+        .arg("node")
+        .output()
+        .unwrap();
+    assert!(node.status.success());
+    let node = String::from_utf8(node.stdout).unwrap().trim().to_owned();
+    let executable = root.join("codex");
+    std::fs::write(&executable, format!("#!{node}\nprocess.stdin.resume();\n")).unwrap();
+    std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let identity = studio_runtime_process::BackendIdentity {
+        backend_id: studio_runtime_process::BackendId("frozen-command".into()),
+        state_dir: root.clone(),
+    };
+    let mut supervisor = {
+        let identity = identity.clone();
+        studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-server/tests/wave7_p01_registry",
+            move || {
+                let stderr = identity.state_dir.join("supervisor.log");
+                let child = spawn_rust_supervisor(&identity.state_dir, &stderr);
+                let mut fixture = SupervisorFixture {
+                    child,
+                    native: Vec::new(),
+                };
+                supervisor_ready::wait(&mut fixture.child, identity, &stderr);
+                fixture
+            },
+        )
+        .await
+        .unwrap()
+    };
+    let factory =
+        studio_runtime_process::provider_task::SupervisorProviderTaskFactory::new(identity.clone());
+    let attach = |handle: ProviderHandle, launch: ProviderLaunchSpec| {
+        let factory = &factory;
+        async move {
+            let options = || OpenOptions {
+                clock: SessionClock::default(),
+                launch: launch.clone(),
+                expected_generation: None,
+            };
+            let prepared = factory
+                .prepare(handle.clone(), options(), Shutdown::default())
+                .await?;
+            let mut reopened = options();
+            reopened.expected_generation = Some(prepared.generation());
+            let mut attachment = prepared.open(handle, reopened, Shutdown::default()).await?;
+            let info = attachment.status.borrow().info.clone().unwrap();
+            drop(attachment.shutdown().await);
+            Ok::<_, AdapterError>(info)
+        }
+    };
+    for isolated in [false, true] {
+        let account = if isolated { "isolated" } else { "default" };
+        let home = root.join(account);
+        std::fs::create_dir(&home).unwrap();
+        let environment = BTreeMap::from([
+            ("HOME".into(), root.to_string_lossy().into_owned()),
+            ("PATH".into(), "/usr/bin:/bin".into()),
+        ]);
+        let launch = host_runtime::codex_launch(
+            executable.to_str(),
+            environment,
+            home.to_string_lossy().into_owned(),
+            isolated,
+            root.clone(),
+        );
+        // The command an earlier build started this account's app-server with.
+        let mut frozen = launch_fixture(&root, isolated, true).command;
+        frozen[0] = executable.to_string_lossy().into_owned();
+        assert_ne!(frozen, launch.command);
+        let mut earlier = launch.clone();
+        earlier.command = frozen.clone();
+        let handle = ProviderHandle::for_account(account);
+        let started = attach(handle.clone(), earlier).await.unwrap();
+        supervisor.native.push(started.pid);
+
+        let reattached = attach(handle, launch.clone())
+            .await
+            .unwrap_or_else(|error| {
+                panic!("the current Codex launch refused the {account} app-server: {error:?}")
+            });
+        assert!(reattached.resumed);
+        assert_eq!(reattached.pid, started.pid);
+        assert_eq!(reattached.generation, started.generation);
+        let socket = root.join("supervisor.sock");
+        let identity = identity.clone();
+        let health = studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-server/tests/wave7_p01_registry",
+            move || {
+                SupervisorClient::connect(&socket, identity)
+                    .unwrap()
+                    .health(HealthRequest::default())
+                    .unwrap()
+            },
+        )
+        .await
+        .unwrap();
+        let running = health
+            .handles
+            .iter()
+            .find(|running| running.id == format!("account:{account}"))
+            .unwrap();
+        assert_eq!(running.pid, Some(started.pid));
+        assert_eq!(
+            running.signature,
+            launch_signature(&frozen, &launch.environment, None),
+            "the running app-server keeps its own command"
+        );
+    }
+    studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-server/tests/wave7_p01_registry",
+        move || drop(supervisor),
+    )
+    .await
+    .unwrap();
 }
 
 #[cfg(target_os = "linux")]
@@ -2233,7 +2120,7 @@ async fn supervised_child_observes_explicit_and_inherited_working_directories() 
     let root = tempfile::tempdir().unwrap();
     let executable = root.path().join("provider");
     std::fs::copy(
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/wave7_p01_native_fixture.py"),
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/native-provider.mjs"),
         &executable,
     )
     .unwrap();
@@ -2515,16 +2402,16 @@ fn claude_launch_uses_resolved_node_bridge_and_profile_cli_without_invoking_it()
     assert!(!launch.environment.contains_key("ANTHROPIC_API_KEY"));
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[path = "../../../packages/runtime-process/tests/support/supervisor_ready.rs"]
 mod supervisor_ready;
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 struct SupervisorFixture {
     child: std::process::Child,
     native: Vec<u32>,
 }
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 impl Drop for SupervisorFixture {
     #[allow(clippy::disallowed_methods)]
     fn drop(&mut self) {
@@ -2540,7 +2427,7 @@ impl Drop for SupervisorFixture {
 
 #[cfg(target_os = "linux")]
 #[tokio::test]
-async fn host_start_reattaches_python_launch_and_delivers_http_input() {
+async fn host_start_reattaches_existing_launch_and_delivers_http_input() {
     use std::os::unix::fs::PermissionsExt;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tower::ServiceExt;
@@ -2549,7 +2436,7 @@ async fn host_start_reattaches_python_launch_and_delivers_http_input() {
         let output = tokio::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
-                "wave7_p01_registry::host_start_reattaches_python_launch_and_delivers_http_input",
+                "wave7_p01_registry::host_start_reattaches_existing_launch_and_delivers_http_input",
                 "--nocapture",
             ])
             .env("STUDIO_W7_P01_HOST_CHILD", "1")
@@ -2576,20 +2463,21 @@ async fn host_start_reattaches_python_launch_and_delivers_http_input() {
     .unwrap();
     let executable = fixture._root.path().join("provider");
     std::fs::copy(
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/wave7_p01_native_fixture.py"),
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/native-provider.mjs"),
         &executable,
     )
     .unwrap();
     std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
     let environment: BTreeMap<String, String> = std::env::vars().collect();
-    let oracle = python_launch(
-        fixture._root.path(),
-        &environment,
-        &home,
+    let mut launch = host_runtime::codex_launch(
+        Some(executable.to_str().unwrap()),
+        environment.clone(),
+        home.to_string_lossy().into_owned(),
         false,
-        executable.to_str().unwrap(),
-        "supervisor",
+        fixture._root.path().into(),
     );
+    // Seed the supervisor with the pre-unload-override command to verify reattachment.
+    launch.command = launch.reattach_commands.remove(0);
     let root = fixture._root.path().to_path_buf();
     let mut supervisor = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-server/tests/wave7_p01_registry",
@@ -2603,7 +2491,7 @@ async fn host_start_reattaches_python_launch_and_delivers_http_input() {
             supervisor_ready::wait(
                 &mut fixture.child,
                 studio_runtime_process::BackendIdentity {
-                    backend_id: studio_runtime_process::BackendId("python-cutover-fixture".into()),
+                    backend_id: studio_runtime_process::BackendId("reattach-fixture".into()),
                     state_dir: root,
                 },
                 &stderr,
@@ -2620,11 +2508,11 @@ async fn host_start_reattaches_python_launch_and_delivers_http_input() {
     );
     wire_send(
         &mut peer,
-        json!({"protocol":1,"stateDir":fixture._root.path(),"backendId":"python-cutover-fixture"}),
+        json!({"protocol":studio_runtime_process::SUPERVISOR_PROTOCOL_V2,"stateDir":fixture._root.path(),"backendId":"reattach-fixture"}),
     )
     .await;
     assert!(wire_read(&mut peer).await["error"].is_null());
-    wire_send(&mut peer,json!({"requestId":1,"action":"open","handle":"account:default","command":oracle["command"],"env":oracle["env"],"cwd":oracle["cwd"]})).await;
+    wire_send(&mut peer,json!({"requestId":1,"action":"open","handle":"account:default","command":launch.command,"env":launch.environment,"cwd":launch.cwd})).await;
     let opened = wire_read(&mut peer).await;
     assert!(opened["error"].is_null(), "supervisor fixture open failed");
     let pid = opened["result"]["pid"].as_u64().unwrap() as u32;
@@ -2898,26 +2786,13 @@ async fn rust_direct_claude_launch_runs_the_scripted_bridge_turn() {
         )
         .unwrap();
         std::fs::set_permissions(&fake_cli, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let exporter = "import pathlib,runpy,sys; sys.path.insert(0,str(pathlib.Path(sys.argv[1]).parent)); ns=runpy.run_path(sys.argv[1]); sdk=ns['SDK'].replace(\"text==='split-stream'\",\"text.startsWith('split-stream')\").replace(\"text==='wait'\",\"text.startsWith('wait')\"); open(sys.argv[2],'w').write(sdk)";
-        let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../server/src");
-        let python = prepared_python::prepared_python(&source);
         let bridge_node_modules = CanonicalPath::existing(
             PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                 .join("../../../providers/apps/claude-bridge/node_modules"),
         )
         .unwrap();
         std::os::unix::fs::symlink(bridge_node_modules, temp.path().join("node_modules")).unwrap();
-        let output = std::process::Command::new(&python)
-            .args(["-c", exporter, "../server/tests/claude-bridge-contract.py"])
-            .arg(&sdk)
-            .current_dir(env!("CARGO_MANIFEST_DIR"))
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
+        std::fs::write(&sdk, include_str!("fixtures/claude-sdk.mjs")).unwrap();
         std::fs::write(
             &loader,
             "import fs from 'node:fs'; import {registerHooks} from 'node:module'; import {pathToFileURL} from 'node:url'; fs.appendFileSync(process.env.STUDIO_TEST_CLAUDE_LOG,'loader-loaded\\n'); registerHooks({resolve(specifier,context,nextResolve){if(specifier==='@anthropic-ai/claude-agent-sdk'){fs.appendFileSync(process.env.STUDIO_TEST_CLAUDE_LOG,'sdk-resolved\\n');return {url:pathToFileURL(process.env.STUDIO_TEST_CLAUDE_SDK).href,shortCircuit:true};}return nextResolve(specifier,context);}});\n",
@@ -3086,32 +2961,8 @@ async fn rust_direct_claude_launch_runs_the_scripted_bridge_turn() {
     )
     .unwrap();
     assert_eq!(transcript["agent"]["status"], "completed");
-    let bridge_root = std::env::var("STUDIO_W8_CLAUDE_TEST_ROOT").unwrap();
-    let python_source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../server/src");
-    let python = prepared_python::prepared_python(&python_source);
-    let user_text = transcript["items"][0]["text"].as_str().unwrap();
-    let oracle_script = "import json,pathlib,runpy,sys; path=pathlib.Path(sys.argv[1]); sys.path.insert(0,str(path.parent)); ns=runpy.run_path(str(path)); bridge_type=ns['Bridge']; globals=bridge_type.setUp.__globals__; globals['SDK']=globals['SDK'].replace(\"text==='split-stream'\",\"text.startsWith('split-stream')\"); bridge=bridge_type('test_stream_deltas_and_block_snapshots_form_one_final_answer'); bridge.setUp();\ntry:\n bridge.turn(sys.argv[2],sys.argv[3]); turn=bridge.completed(); history=bridge.call('thread/read',{'threadId':bridge.thread,'includeTurns':True}); print(json.dumps({'turn':turn,'thread':history['thread']},sort_keys=True))\nfinally: bridge.doCleanups()";
-    let oracle = std::process::Command::new(python)
-        .args([
-            "-c",
-            oracle_script,
-            "../server/tests/claude-bridge-contract.py",
-            user_text,
-            "086cc3e3-68a8-429f-9ec1-895aad72f181",
-        ])
-        .current_dir(env!("CARGO_MANIFEST_DIR"))
-        .env("STUDIO_W8_CLAUDE_TEST_ROOT", bridge_root)
-        .output()
-        .unwrap();
-    assert!(
-        oracle.status.success(),
-        "Python bridge oracle failed: {}",
-        String::from_utf8_lossy(&oracle.stderr)
-    );
-    let oracle: Value = serde_json::from_slice(&oracle.stdout).unwrap();
-    let python_turn = &oracle["thread"]["turns"][0];
-    let python_items = python_turn["items"].as_array().unwrap();
     let rust_items = transcript["items"].as_array().unwrap();
+    assert_eq!(transcript["agent"]["inFlight"], false);
     let normalize_ids = |items: &[Value], scope_id: &str| {
         items
             .iter()
@@ -3147,24 +2998,11 @@ async fn rust_direct_claude_launch_runs_the_scripted_bridge_turn() {
             })
             .collect::<Vec<_>>()
     };
-    assert_eq!(
-        normalize_ids(rust_items, &agent_id),
-        normalize_ids(python_items, oracle["thread"]["id"].as_str().unwrap())
-    );
-    assert_eq!(
-        python_turn["clientUserMessageId"],
-        "086cc3e3-68a8-429f-9ec1-895aad72f181"
-    );
-    assert_eq!(python_turn["status"], completed["status"]);
-    let python_final_state = json!({
-        "status": python_turn["status"],
-        "inFlight": oracle["thread"]["status"]["type"] != "idle"
-    });
-    let rust_final_state = json!({
-        "status": transcript["agent"]["status"],
-        "inFlight": transcript["agent"]["inFlight"]
-    });
-    assert_eq!(rust_final_state, python_final_state);
+    let mut expected: Vec<Value> =
+        serde_json::from_str(include_str!("fixtures/claude-stream-items.json")).unwrap();
+    // The input includes runtime instructions; compare its complete persisted text.
+    expected[0]["text"] = transcript["items"][0]["text"].clone();
+    assert_eq!(normalize_ids(rust_items, &agent_id), expected);
     let answer = rust_items
         .iter()
         .find(|item| item["phase"] == "final_answer")
@@ -3324,7 +3162,7 @@ async fn direct_launch_mode_completes_http_turn_and_reaps_child() {
     .unwrap();
     let executable = fixture._root.path().join("provider");
     std::fs::copy(
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/wave7_p01_native_fixture.py"),
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/native-provider.mjs"),
         &executable,
     )
     .unwrap();
@@ -3529,7 +3367,7 @@ async fn direct_generation_and_journal_identity_survive_backend_restart() {
     .unwrap();
     let executable = fixture._root.path().join("provider");
     std::fs::copy(
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/wave7_p01_native_fixture.py"),
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/native-provider.mjs"),
         &executable,
     )
     .unwrap();
@@ -3668,7 +3506,7 @@ async fn direct_child_sigkill_settles_unknown_without_resend() {
     .unwrap();
     let executable = fixture._root.path().join("provider");
     std::fs::copy(
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/wave7_p01_native_fixture.py"),
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/native-provider.mjs"),
         &executable,
     )
     .unwrap();
@@ -3836,7 +3674,7 @@ async fn direct_child_crash_before_turn_write_retries_queued_input_once() {
     .unwrap();
     let executable = fixture._root.path().join("provider");
     std::fs::copy(
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/wave7_p01_native_fixture.py"),
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/native-provider.mjs"),
         &executable,
     )
     .unwrap();

@@ -1,0 +1,2003 @@
+[
+  {
+    "name": "absent",
+    "agent": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 0,
+      "status": "completed",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": null,
+      "inFlight": false
+    },
+    "task": {
+      "id": "agent:item",
+      "agent": "agent",
+      "itemId": "item",
+      "turnId": "turn",
+      "type": "commandExecution",
+      "kind": "command",
+      "status": "running",
+      "processId": "42",
+      "created": 10
+    },
+    "source": true,
+    "absent": true,
+    "applied": 1,
+    "after": {
+      "id": "agent:item",
+      "agent": "agent",
+      "itemId": "item",
+      "turnId": "turn",
+      "type": "commandExecution",
+      "kind": "command",
+      "status": "lost",
+      "processId": "42",
+      "created": 10,
+      "finished": 1000.0,
+      "error": "Native command session is absent. Exit outcome unknown; command was not replayed."
+    },
+    "item": {
+      "id": "agent:item",
+      "turnId": "turn",
+      "toolStatus": "lost"
+    },
+    "calls": [
+      {
+        "method": "thread/items/list",
+        "params": {
+          "threadId": "thread",
+          "turnId": "turn",
+          "limit": 1000,
+          "sortDirection": "asc"
+        }
+      },
+      {
+        "method": "thread/read",
+        "params": {
+          "threadId": "thread",
+          "includeTurns": false
+        }
+      },
+      {
+        "method": "thread/backgroundTerminals/list",
+        "params": {
+          "threadId": "thread",
+          "limit": 100
+        }
+      }
+    ],
+    "options": {},
+    "observation": {
+      "scope": {
+        "account": "default",
+        "connection": "connection",
+        "generation": 1
+      },
+      "at": 1000.0,
+      "supervisor": null,
+      "quiet": true,
+      "journal_drained": true,
+      "account_reserved": false,
+      "tools_refreshing": false,
+      "preparation_pending": false,
+      "completed_turn": "agent:turn"
+    }
+  },
+  {
+    "name": "in-progress-absent",
+    "agent": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 0,
+      "status": "completed",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": null,
+      "inFlight": false
+    },
+    "task": {
+      "id": "agent:item",
+      "agent": "agent",
+      "itemId": "item",
+      "turnId": "turn",
+      "type": "commandExecution",
+      "kind": "command",
+      "status": "running",
+      "processId": "42",
+      "created": 10
+    },
+    "source": true,
+    "absent": true,
+    "applied": 1,
+    "after": {
+      "id": "agent:item",
+      "agent": "agent",
+      "itemId": "item",
+      "turnId": "turn",
+      "type": "commandExecution",
+      "kind": "command",
+      "status": "lost",
+      "processId": "42",
+      "created": 10,
+      "finished": 1000.0,
+      "error": "Native command session is absent. Exit outcome unknown; command was not replayed."
+    },
+    "item": {
+      "id": "agent:item",
+      "turnId": "turn",
+      "toolStatus": "lost"
+    },
+    "calls": [
+      {
+        "method": "thread/items/list",
+        "params": {
+          "threadId": "thread",
+          "turnId": "turn",
+          "limit": 1000,
+          "sortDirection": "asc"
+        }
+      },
+      {
+        "method": "thread/read",
+        "params": {
+          "threadId": "thread",
+          "includeTurns": false
+        }
+      },
+      {
+        "method": "thread/backgroundTerminals/list",
+        "params": {
+          "threadId": "thread",
+          "limit": 100
+        }
+      }
+    ],
+    "options": {
+      "progress": true
+    },
+    "observation": {
+      "scope": {
+        "account": "default",
+        "connection": "connection",
+        "generation": 1
+      },
+      "at": 1000.0,
+      "supervisor": null,
+      "quiet": true,
+      "journal_drained": true,
+      "account_reserved": false,
+      "tools_refreshing": false,
+      "preparation_pending": false,
+      "completed_turn": "agent:turn"
+    }
+  },
+  {
+    "name": "live-item",
+    "agent": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 0,
+      "status": "completed",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": null,
+      "inFlight": false
+    },
+    "task": {
+      "id": "agent:item",
+      "agent": "agent",
+      "itemId": "item",
+      "turnId": "turn",
+      "type": "commandExecution",
+      "kind": "command",
+      "status": "running",
+      "processId": "42",
+      "created": 10
+    },
+    "source": true,
+    "absent": false,
+    "applied": 0,
+    "after": {
+      "id": "agent:item",
+      "agent": "agent",
+      "itemId": "item",
+      "turnId": "turn",
+      "type": "commandExecution",
+      "kind": "command",
+      "status": "running",
+      "processId": "42",
+      "created": 10
+    },
+    "item": {
+      "id": "agent:item",
+      "turnId": "turn",
+      "toolStatus": "inProgress"
+    },
+    "calls": [
+      {
+        "method": "thread/items/list",
+        "params": {
+          "threadId": "thread",
+          "turnId": "turn",
+          "limit": 1000,
+          "sortDirection": "asc"
+        }
+      },
+      {
+        "method": "thread/read",
+        "params": {
+          "threadId": "thread",
+          "includeTurns": false
+        }
+      },
+      {
+        "method": "thread/backgroundTerminals/list",
+        "params": {
+          "threadId": "thread",
+          "limit": 100
+        }
+      }
+    ],
+    "options": {
+      "terminals": [
+        {
+          "itemId": "item",
+          "processId": "other"
+        }
+      ]
+    },
+    "observation": {
+      "scope": {
+        "account": "default",
+        "connection": "connection",
+        "generation": 1
+      },
+      "at": 1000.0,
+      "supervisor": null,
+      "quiet": true,
+      "journal_drained": true,
+      "account_reserved": false,
+      "tools_refreshing": false,
+      "preparation_pending": false,
+      "completed_turn": "agent:turn"
+    }
+  },
+  {
+    "name": "live-process",
+    "agent": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 0,
+      "status": "completed",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": null,
+      "inFlight": false
+    },
+    "task": {
+      "id": "agent:item",
+      "agent": "agent",
+      "itemId": "item",
+      "turnId": "turn",
+      "type": "commandExecution",
+      "kind": "command",
+      "status": "running",
+      "processId": "42",
+      "created": 10
+    },
+    "source": true,
+    "absent": false,
+    "applied": 0,
+    "after": {
+      "id": "agent:item",
+      "agent": "agent",
+      "itemId": "item",
+      "turnId": "turn",
+      "type": "commandExecution",
+      "kind": "command",
+      "status": "running",
+      "processId": "42",
+      "created": 10
+    },
+    "item": {
+      "id": "agent:item",
+      "turnId": "turn",
+      "toolStatus": "inProgress"
+    },
+    "calls": [
+      {
+        "method": "thread/items/list",
+        "params": {
+          "threadId": "thread",
+          "turnId": "turn",
+          "limit": 1000,
+          "sortDirection": "asc"
+        }
+      },
+      {
+        "method": "thread/read",
+        "params": {
+          "threadId": "thread",
+          "includeTurns": false
+        }
+      },
+      {
+        "method": "thread/backgroundTerminals/list",
+        "params": {
+          "threadId": "thread",
+          "limit": 100
+        }
+      }
+    ],
+    "options": {
+      "terminals": [
+        {
+          "itemId": "other",
+          "processId": "42"
+        }
+      ]
+    },
+    "observation": {
+      "scope": {
+        "account": "default",
+        "connection": "connection",
+        "generation": 1
+      },
+      "at": 1000.0,
+      "supervisor": null,
+      "quiet": true,
+      "journal_drained": true,
+      "account_reserved": false,
+      "tools_refreshing": false,
+      "preparation_pending": false,
+      "completed_turn": "agent:turn"
+    }
+  },
+  {
+    "name": "paginated-live",
+    "agent": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 0,
+      "status": "completed",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": null,
+      "inFlight": false
+    },
+    "task": {
+      "id": "agent:item",
+      "agent": "agent",
+      "itemId": "item",
+      "turnId": "turn",
+      "type": "commandExecution",
+      "kind": "command",
+      "status": "running",
+      "processId": "42",
+      "created": 10
+    },
+    "source": true,
+    "absent": false,
+    "applied": 0,
+    "after": {
+      "id": "agent:item",
+      "agent": "agent",
+      "itemId": "item",
+      "turnId": "turn",
+      "type": "commandExecution",
+      "kind": "command",
+      "status": "running",
+      "processId": "42",
+      "created": 10
+    },
+    "item": {
+      "id": "agent:item",
+      "turnId": "turn",
+      "toolStatus": "inProgress"
+    },
+    "calls": [
+      {
+        "method": "thread/items/list",
+        "params": {
+          "threadId": "thread",
+          "turnId": "turn",
+          "limit": 1000,
+          "sortDirection": "asc"
+        }
+      },
+      {
+        "method": "thread/read",
+        "params": {
+          "threadId": "thread",
+          "includeTurns": false
+        }
+      },
+      {
+        "method": "thread/backgroundTerminals/list",
+        "params": {
+          "threadId": "thread",
+          "limit": 100
+        }
+      },
+      {
+        "method": "thread/backgroundTerminals/list",
+        "params": {
+          "threadId": "thread",
+          "limit": 100,
+          "cursor": "next"
+        }
+      }
+    ],
+    "options": {
+      "pages": [
+        [],
+        [
+          {
+            "itemId": "item",
+            "processId": "42"
+          }
+        ]
+      ]
+    },
+    "observation": {
+      "scope": {
+        "account": "default",
+        "connection": "connection",
+        "generation": 1
+      },
+      "at": 1000.0,
+      "supervisor": null,
+      "quiet": true,
+      "journal_drained": true,
+      "account_reserved": false,
+      "tools_refreshing": false,
+      "preparation_pending": false,
+      "completed_turn": "agent:turn"
+    }
+  },
+  {
+    "name": "paginated-absent",
+    "agent": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 0,
+      "status": "completed",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": null,
+      "inFlight": false
+    },
+    "task": {
+      "id": "agent:item",
+      "agent": "agent",
+      "itemId": "item",
+      "turnId": "turn",
+      "type": "commandExecution",
+      "kind": "command",
+      "status": "running",
+      "processId": "42",
+      "created": 10
+    },
+    "source": true,
+    "absent": true,
+    "applied": 1,
+    "after": {
+      "id": "agent:item",
+      "agent": "agent",
+      "itemId": "item",
+      "turnId": "turn",
+      "type": "commandExecution",
+      "kind": "command",
+      "status": "lost",
+      "processId": "42",
+      "created": 10,
+      "finished": 1000.0,
+      "error": "Native command session is absent. Exit outcome unknown; command was not replayed."
+    },
+    "item": {
+      "id": "agent:item",
+      "turnId": "turn",
+      "toolStatus": "lost"
+    },
+    "calls": [
+      {
+        "method": "thread/items/list",
+        "params": {
+          "threadId": "thread",
+          "turnId": "turn",
+          "limit": 1000,
+          "sortDirection": "asc"
+        }
+      },
+      {
+        "method": "thread/read",
+        "params": {
+          "threadId": "thread",
+          "includeTurns": false
+        }
+      },
+      {
+        "method": "thread/backgroundTerminals/list",
+        "params": {
+          "threadId": "thread",
+          "limit": 100
+        }
+      },
+      {
+        "method": "thread/backgroundTerminals/list",
+        "params": {
+          "threadId": "thread",
+          "limit": 100,
+          "cursor": "next"
+        }
+      }
+    ],
+    "options": {
+      "pages": [
+        [],
+        [
+          {
+            "itemId": "other",
+            "processId": "other"
+          }
+        ]
+      ]
+    },
+    "observation": {
+      "scope": {
+        "account": "default",
+        "connection": "connection",
+        "generation": 1
+      },
+      "at": 1000.0,
+      "supervisor": null,
+      "quiet": true,
+      "journal_drained": true,
+      "account_reserved": false,
+      "tools_refreshing": false,
+      "preparation_pending": false,
+      "completed_turn": "agent:turn"
+    }
+  },
+  {
+    "name": "busy-before",
+    "agent": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 0,
+      "status": "completed",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": null,
+      "inFlight": false
+    },
+    "task": {
+      "id": "agent:item",
+      "agent": "agent",
+      "itemId": "item",
+      "turnId": "turn",
+      "type": "commandExecution",
+      "kind": "command",
+      "status": "running",
+      "processId": "42",
+      "created": 10
+    },
+    "source": true,
+    "absent": false,
+    "applied": 0,
+    "after": {
+      "id": "agent:item",
+      "agent": "agent",
+      "itemId": "item",
+      "turnId": "turn",
+      "type": "commandExecution",
+      "kind": "command",
+      "status": "running",
+      "processId": "42",
+      "created": 10
+    },
+    "item": {
+      "id": "agent:item",
+      "turnId": "turn",
+      "toolStatus": "inProgress"
+    },
+    "calls": [
+      {
+        "method": "thread/items/list",
+        "params": {
+          "threadId": "thread",
+          "turnId": "turn",
+          "limit": 1000,
+          "sortDirection": "asc"
+        }
+      }
+    ],
+    "options": {
+      "quiet": false
+    },
+    "observation": {
+      "scope": {
+        "account": "default",
+        "connection": "connection",
+        "generation": 1
+      },
+      "at": 1000.0,
+      "supervisor": null,
+      "quiet": false,
+      "journal_drained": true,
+      "account_reserved": false,
+      "tools_refreshing": false,
+      "preparation_pending": false,
+      "completed_turn": "agent:turn"
+    }
+  },
+  {
+    "name": "busy-after",
+    "agent": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 0,
+      "status": "completed",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": null,
+      "inFlight": false
+    },
+    "task": {
+      "id": "agent:item",
+      "agent": "agent",
+      "itemId": "item",
+      "turnId": "turn",
+      "type": "commandExecution",
+      "kind": "command",
+      "status": "running",
+      "processId": "42",
+      "created": 10
+    },
+    "source": true,
+    "absent": false,
+    "applied": 0,
+    "after": {
+      "id": "agent:item",
+      "agent": "agent",
+      "itemId": "item",
+      "turnId": "turn",
+      "type": "commandExecution",
+      "kind": "command",
+      "status": "running",
+      "processId": "42",
+      "created": 10
+    },
+    "item": {
+      "id": "agent:item",
+      "turnId": "turn",
+      "toolStatus": "inProgress"
+    },
+    "calls": [
+      {
+        "method": "thread/items/list",
+        "params": {
+          "threadId": "thread",
+          "turnId": "turn",
+          "limit": 1000,
+          "sortDirection": "asc"
+        }
+      },
+      {
+        "method": "thread/read",
+        "params": {
+          "threadId": "thread",
+          "includeTurns": false
+        }
+      },
+      {
+        "method": "thread/backgroundTerminals/list",
+        "params": {
+          "threadId": "thread",
+          "limit": 100
+        }
+      }
+    ],
+    "options": {
+      "quiet_after": false
+    },
+    "observation": {
+      "scope": {
+        "account": "default",
+        "connection": "connection",
+        "generation": 1
+      },
+      "at": 1000.0,
+      "supervisor": null,
+      "quiet": false,
+      "journal_drained": true,
+      "account_reserved": false,
+      "tools_refreshing": false,
+      "preparation_pending": false,
+      "completed_turn": "agent:turn"
+    }
+  },
+  {
+    "name": "active-thread",
+    "agent": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 0,
+      "status": "completed",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": null,
+      "inFlight": false
+    },
+    "task": {
+      "id": "agent:item",
+      "agent": "agent",
+      "itemId": "item",
+      "turnId": "turn",
+      "type": "commandExecution",
+      "kind": "command",
+      "status": "running",
+      "processId": "42",
+      "created": 10
+    },
+    "source": true,
+    "absent": false,
+    "applied": 0,
+    "after": {
+      "id": "agent:item",
+      "agent": "agent",
+      "itemId": "item",
+      "turnId": "turn",
+      "type": "commandExecution",
+      "kind": "command",
+      "status": "running",
+      "processId": "42",
+      "created": 10
+    },
+    "item": {
+      "id": "agent:item",
+      "turnId": "turn",
+      "toolStatus": "inProgress"
+    },
+    "calls": [
+      {
+        "method": "thread/items/list",
+        "params": {
+          "threadId": "thread",
+          "turnId": "turn",
+          "limit": 1000,
+          "sortDirection": "asc"
+        }
+      },
+      {
+        "method": "thread/read",
+        "params": {
+          "threadId": "thread",
+          "includeTurns": false
+        }
+      }
+    ],
+    "options": {
+      "state": "active"
+    },
+    "observation": {
+      "scope": {
+        "account": "default",
+        "connection": "connection",
+        "generation": 1
+      },
+      "at": 1000.0,
+      "supervisor": null,
+      "quiet": true,
+      "journal_drained": true,
+      "account_reserved": false,
+      "tools_refreshing": false,
+      "preparation_pending": false,
+      "completed_turn": "agent:turn"
+    }
+  },
+  {
+    "name": "terminal-list-unavailable",
+    "agent": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 0,
+      "status": "completed",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": null,
+      "inFlight": false
+    },
+    "task": {
+      "id": "agent:item",
+      "agent": "agent",
+      "itemId": "item",
+      "turnId": "turn",
+      "type": "commandExecution",
+      "kind": "command",
+      "status": "running",
+      "processId": "42",
+      "created": 10
+    },
+    "source": true,
+    "absent": false,
+    "applied": 0,
+    "after": {
+      "id": "agent:item",
+      "agent": "agent",
+      "itemId": "item",
+      "turnId": "turn",
+      "type": "commandExecution",
+      "kind": "command",
+      "status": "running",
+      "processId": "42",
+      "created": 10
+    },
+    "item": {
+      "id": "agent:item",
+      "turnId": "turn",
+      "toolStatus": "inProgress"
+    },
+    "calls": [
+      {
+        "method": "thread/items/list",
+        "params": {
+          "threadId": "thread",
+          "turnId": "turn",
+          "limit": 1000,
+          "sortDirection": "asc"
+        }
+      },
+      {
+        "method": "thread/read",
+        "params": {
+          "threadId": "thread",
+          "includeTurns": false
+        }
+      },
+      {
+        "method": "thread/backgroundTerminals/list",
+        "params": {
+          "threadId": "thread",
+          "limit": 100
+        }
+      }
+    ],
+    "options": {
+      "unavailable": true
+    },
+    "observation": {
+      "scope": {
+        "account": "default",
+        "connection": "connection",
+        "generation": 1
+      },
+      "at": 1000.0,
+      "supervisor": null,
+      "quiet": true,
+      "journal_drained": true,
+      "account_reserved": false,
+      "tools_refreshing": false,
+      "preparation_pending": false,
+      "completed_turn": "agent:turn"
+    }
+  },
+  {
+    "name": "missing-completed",
+    "agent": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 0,
+      "status": "completed",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": null,
+      "inFlight": false
+    },
+    "task": {
+      "id": "agent:item",
+      "agent": "agent",
+      "itemId": "item",
+      "turnId": "turn",
+      "type": "commandExecution",
+      "kind": "command",
+      "status": "running",
+      "processId": "42",
+      "created": 10
+    },
+    "source": false,
+    "absent": false,
+    "applied": 0,
+    "after": {
+      "id": "agent:item",
+      "agent": "agent",
+      "itemId": "item",
+      "turnId": "turn",
+      "type": "commandExecution",
+      "kind": "command",
+      "status": "running",
+      "processId": "42",
+      "created": 10
+    },
+    "item": {
+      "id": "agent:item",
+      "turnId": "turn",
+      "toolStatus": "inProgress"
+    },
+    "calls": [
+      {
+        "method": "thread/items/list",
+        "params": {
+          "threadId": "thread",
+          "turnId": "turn",
+          "limit": 1000,
+          "sortDirection": "asc"
+        }
+      }
+    ],
+    "options": {
+      "completed": false
+    },
+    "observation": {
+      "scope": {
+        "account": "default",
+        "connection": "connection",
+        "generation": 1
+      },
+      "at": 1000.0,
+      "supervisor": null,
+      "quiet": true,
+      "journal_drained": true,
+      "account_reserved": false,
+      "tools_refreshing": false,
+      "preparation_pending": false,
+      "completed_turn": null
+    }
+  },
+  {
+    "name": "reservation",
+    "agent": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 0,
+      "status": "completed",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": null,
+      "inFlight": false
+    },
+    "task": {
+      "id": "agent:item",
+      "agent": "agent",
+      "itemId": "item",
+      "turnId": "turn",
+      "type": "commandExecution",
+      "kind": "command",
+      "status": "running",
+      "processId": "42",
+      "created": 10
+    },
+    "source": false,
+    "absent": false,
+    "applied": 0,
+    "after": {
+      "id": "agent:item",
+      "agent": "agent",
+      "itemId": "item",
+      "turnId": "turn",
+      "type": "commandExecution",
+      "kind": "command",
+      "status": "running",
+      "processId": "42",
+      "created": 10
+    },
+    "item": {
+      "id": "agent:item",
+      "turnId": "turn",
+      "toolStatus": "inProgress"
+    },
+    "calls": [
+      {
+        "method": "thread/items/list",
+        "params": {
+          "threadId": "thread",
+          "turnId": "turn",
+          "limit": 1000,
+          "sortDirection": "asc"
+        }
+      }
+    ],
+    "options": {
+      "reserved": true
+    },
+    "observation": {
+      "scope": {
+        "account": "default",
+        "connection": "connection",
+        "generation": 1
+      },
+      "at": 1000.0,
+      "supervisor": null,
+      "quiet": true,
+      "journal_drained": true,
+      "account_reserved": true,
+      "tools_refreshing": false,
+      "preparation_pending": false,
+      "completed_turn": "agent:turn"
+    }
+  },
+  {
+    "name": "refreshing",
+    "agent": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 0,
+      "status": "completed",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": null,
+      "inFlight": false
+    },
+    "task": {
+      "id": "agent:item",
+      "agent": "agent",
+      "itemId": "item",
+      "turnId": "turn",
+      "type": "commandExecution",
+      "kind": "command",
+      "status": "running",
+      "processId": "42",
+      "created": 10
+    },
+    "source": false,
+    "absent": false,
+    "applied": 0,
+    "after": {
+      "id": "agent:item",
+      "agent": "agent",
+      "itemId": "item",
+      "turnId": "turn",
+      "type": "commandExecution",
+      "kind": "command",
+      "status": "running",
+      "processId": "42",
+      "created": 10
+    },
+    "item": {
+      "id": "agent:item",
+      "turnId": "turn",
+      "toolStatus": "inProgress"
+    },
+    "calls": [
+      {
+        "method": "thread/items/list",
+        "params": {
+          "threadId": "thread",
+          "turnId": "turn",
+          "limit": 1000,
+          "sortDirection": "asc"
+        }
+      }
+    ],
+    "options": {
+      "refreshing": true
+    },
+    "observation": {
+      "scope": {
+        "account": "default",
+        "connection": "connection",
+        "generation": 1
+      },
+      "at": 1000.0,
+      "supervisor": null,
+      "quiet": true,
+      "journal_drained": true,
+      "account_reserved": false,
+      "tools_refreshing": true,
+      "preparation_pending": false,
+      "completed_turn": "agent:turn"
+    }
+  },
+  {
+    "name": "preparation",
+    "agent": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 0,
+      "status": "completed",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": null,
+      "inFlight": false
+    },
+    "task": {
+      "id": "agent:item",
+      "agent": "agent",
+      "itemId": "item",
+      "turnId": "turn",
+      "type": "commandExecution",
+      "kind": "command",
+      "status": "running",
+      "processId": "42",
+      "created": 10
+    },
+    "source": false,
+    "absent": false,
+    "applied": 0,
+    "after": {
+      "id": "agent:item",
+      "agent": "agent",
+      "itemId": "item",
+      "turnId": "turn",
+      "type": "commandExecution",
+      "kind": "command",
+      "status": "running",
+      "processId": "42",
+      "created": 10
+    },
+    "item": {
+      "id": "agent:item",
+      "turnId": "turn",
+      "toolStatus": "inProgress"
+    },
+    "calls": [
+      {
+        "method": "thread/items/list",
+        "params": {
+          "threadId": "thread",
+          "turnId": "turn",
+          "limit": 1000,
+          "sortDirection": "asc"
+        }
+      }
+    ],
+    "options": {
+      "preparing": true
+    },
+    "observation": {
+      "scope": {
+        "account": "default",
+        "connection": "connection",
+        "generation": 1
+      },
+      "at": 1000.0,
+      "supervisor": null,
+      "quiet": true,
+      "journal_drained": true,
+      "account_reserved": false,
+      "tools_refreshing": false,
+      "preparation_pending": true,
+      "completed_turn": "agent:turn"
+    }
+  },
+  {
+    "name": "agent-inflight",
+    "agent": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 0,
+      "status": "completed",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": null,
+      "inFlight": true
+    },
+    "task": {
+      "id": "agent:item",
+      "agent": "agent",
+      "itemId": "item",
+      "turnId": "turn",
+      "type": "commandExecution",
+      "kind": "command",
+      "status": "running",
+      "processId": "42",
+      "created": 10
+    },
+    "source": false,
+    "absent": false,
+    "applied": 0,
+    "after": {
+      "id": "agent:item",
+      "agent": "agent",
+      "itemId": "item",
+      "turnId": "turn",
+      "type": "commandExecution",
+      "kind": "command",
+      "status": "running",
+      "processId": "42",
+      "created": 10
+    },
+    "item": {
+      "id": "agent:item",
+      "turnId": "turn",
+      "toolStatus": "inProgress"
+    },
+    "calls": [
+      {
+        "method": "thread/items/list",
+        "params": {
+          "threadId": "thread",
+          "turnId": "turn",
+          "limit": 1000,
+          "sortDirection": "asc"
+        }
+      }
+    ],
+    "options": {
+      "agent": {
+        "inFlight": true
+      }
+    },
+    "observation": {
+      "scope": {
+        "account": "default",
+        "connection": "connection",
+        "generation": 1
+      },
+      "at": 1000.0,
+      "supervisor": null,
+      "quiet": true,
+      "journal_drained": true,
+      "account_reserved": false,
+      "tools_refreshing": false,
+      "preparation_pending": false,
+      "completed_turn": "agent:turn"
+    }
+  },
+  {
+    "name": "agent-running",
+    "agent": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 0,
+      "status": "running",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": null,
+      "inFlight": false
+    },
+    "task": {
+      "id": "agent:item",
+      "agent": "agent",
+      "itemId": "item",
+      "turnId": "turn",
+      "type": "commandExecution",
+      "kind": "command",
+      "status": "running",
+      "processId": "42",
+      "created": 10
+    },
+    "source": false,
+    "absent": false,
+    "applied": 0,
+    "after": {
+      "id": "agent:item",
+      "agent": "agent",
+      "itemId": "item",
+      "turnId": "turn",
+      "type": "commandExecution",
+      "kind": "command",
+      "status": "running",
+      "processId": "42",
+      "created": 10
+    },
+    "item": {
+      "id": "agent:item",
+      "turnId": "turn",
+      "toolStatus": "inProgress"
+    },
+    "calls": [
+      {
+        "method": "thread/items/list",
+        "params": {
+          "threadId": "thread",
+          "turnId": "turn",
+          "limit": 1000,
+          "sortDirection": "asc"
+        }
+      }
+    ],
+    "options": {
+      "agent": {
+        "status": "running"
+      }
+    },
+    "observation": {
+      "scope": {
+        "account": "default",
+        "connection": "connection",
+        "generation": 1
+      },
+      "at": 1000.0,
+      "supervisor": null,
+      "quiet": true,
+      "journal_drained": true,
+      "account_reserved": false,
+      "tools_refreshing": false,
+      "preparation_pending": false,
+      "completed_turn": "agent:turn"
+    }
+  },
+  {
+    "name": "agent-tools",
+    "agent": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 0,
+      "status": "completed",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": null,
+      "inFlight": false,
+      "activeTools": [
+        {
+          "id": "tool"
+        }
+      ]
+    },
+    "task": {
+      "id": "agent:item",
+      "agent": "agent",
+      "itemId": "item",
+      "turnId": "turn",
+      "type": "commandExecution",
+      "kind": "command",
+      "status": "running",
+      "processId": "42",
+      "created": 10
+    },
+    "source": false,
+    "absent": false,
+    "applied": 0,
+    "after": {
+      "id": "agent:item",
+      "agent": "agent",
+      "itemId": "item",
+      "turnId": "turn",
+      "type": "commandExecution",
+      "kind": "command",
+      "status": "running",
+      "processId": "42",
+      "created": 10
+    },
+    "item": {
+      "id": "agent:item",
+      "turnId": "turn",
+      "toolStatus": "inProgress"
+    },
+    "calls": [
+      {
+        "method": "thread/items/list",
+        "params": {
+          "threadId": "thread",
+          "turnId": "turn",
+          "limit": 1000,
+          "sortDirection": "asc"
+        }
+      }
+    ],
+    "options": {
+      "agent": {
+        "activeTools": [
+          {
+            "id": "tool"
+          }
+        ]
+      }
+    },
+    "observation": {
+      "scope": {
+        "account": "default",
+        "connection": "connection",
+        "generation": 1
+      },
+      "at": 1000.0,
+      "supervisor": null,
+      "quiet": true,
+      "journal_drained": true,
+      "account_reserved": false,
+      "tools_refreshing": false,
+      "preparation_pending": false,
+      "completed_turn": "agent:turn"
+    }
+  },
+  {
+    "name": "moved-account",
+    "agent": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 0,
+      "status": "completed",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": null,
+      "inFlight": false,
+      "accountHistory": [
+        {
+          "at": 11,
+          "accountKey": "other",
+          "threadId": "thread"
+        }
+      ]
+    },
+    "task": {
+      "id": "agent:item",
+      "agent": "agent",
+      "itemId": "item",
+      "turnId": "turn",
+      "type": "commandExecution",
+      "kind": "command",
+      "status": "running",
+      "processId": "42",
+      "created": 10
+    },
+    "source": false,
+    "absent": false,
+    "applied": 0,
+    "after": {
+      "id": "agent:item",
+      "agent": "agent",
+      "itemId": "item",
+      "turnId": "turn",
+      "type": "commandExecution",
+      "kind": "command",
+      "status": "running",
+      "processId": "42",
+      "created": 10
+    },
+    "item": {
+      "id": "agent:item",
+      "turnId": "turn",
+      "toolStatus": "inProgress"
+    },
+    "calls": [
+      {
+        "method": "thread/items/list",
+        "params": {
+          "threadId": "thread",
+          "turnId": "turn",
+          "limit": 1000,
+          "sortDirection": "asc"
+        }
+      }
+    ],
+    "options": {
+      "agent": {
+        "accountHistory": [
+          {
+            "at": 11,
+            "accountKey": "other",
+            "threadId": "thread"
+          }
+        ]
+      }
+    },
+    "observation": {
+      "scope": {
+        "account": "default",
+        "connection": "connection",
+        "generation": 1
+      },
+      "at": 1000.0,
+      "supervisor": null,
+      "quiet": true,
+      "journal_drained": true,
+      "account_reserved": false,
+      "tools_refreshing": false,
+      "preparation_pending": false,
+      "completed_turn": "agent:turn"
+    }
+  },
+  {
+    "name": "old-move",
+    "agent": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 0,
+      "status": "completed",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": null,
+      "inFlight": false,
+      "accountHistory": [
+        {
+          "at": 9,
+          "accountKey": "other",
+          "threadId": "thread"
+        }
+      ]
+    },
+    "task": {
+      "id": "agent:item",
+      "agent": "agent",
+      "itemId": "item",
+      "turnId": "turn",
+      "type": "commandExecution",
+      "kind": "command",
+      "status": "running",
+      "processId": "42",
+      "created": 10
+    },
+    "source": true,
+    "absent": true,
+    "applied": 1,
+    "after": {
+      "id": "agent:item",
+      "agent": "agent",
+      "itemId": "item",
+      "turnId": "turn",
+      "type": "commandExecution",
+      "kind": "command",
+      "status": "lost",
+      "processId": "42",
+      "created": 10,
+      "finished": 1000.0,
+      "error": "Native command session is absent. Exit outcome unknown; command was not replayed."
+    },
+    "item": {
+      "id": "agent:item",
+      "turnId": "turn",
+      "toolStatus": "lost"
+    },
+    "calls": [
+      {
+        "method": "thread/items/list",
+        "params": {
+          "threadId": "thread",
+          "turnId": "turn",
+          "limit": 1000,
+          "sortDirection": "asc"
+        }
+      },
+      {
+        "method": "thread/read",
+        "params": {
+          "threadId": "thread",
+          "includeTurns": false
+        }
+      },
+      {
+        "method": "thread/backgroundTerminals/list",
+        "params": {
+          "threadId": "thread",
+          "limit": 100
+        }
+      }
+    ],
+    "options": {
+      "agent": {
+        "accountHistory": [
+          {
+            "at": 9,
+            "accountKey": "other",
+            "threadId": "thread"
+          }
+        ]
+      }
+    },
+    "observation": {
+      "scope": {
+        "account": "default",
+        "connection": "connection",
+        "generation": 1
+      },
+      "at": 1000.0,
+      "supervisor": null,
+      "quiet": true,
+      "journal_drained": true,
+      "account_reserved": false,
+      "tools_refreshing": false,
+      "preparation_pending": false,
+      "completed_turn": "agent:turn"
+    }
+  },
+  {
+    "name": "malformed-move-time",
+    "agent": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 0,
+      "status": "completed",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": null,
+      "inFlight": false,
+      "accountHistory": [
+        {
+          "at": "unknown"
+        }
+      ]
+    },
+    "task": {
+      "id": "agent:item",
+      "agent": "agent",
+      "itemId": "item",
+      "turnId": "turn",
+      "type": "commandExecution",
+      "kind": "command",
+      "status": "running",
+      "processId": "42",
+      "created": 10
+    },
+    "source": false,
+    "absent": false,
+    "applied": 0,
+    "after": {
+      "id": "agent:item",
+      "agent": "agent",
+      "itemId": "item",
+      "turnId": "turn",
+      "type": "commandExecution",
+      "kind": "command",
+      "status": "running",
+      "processId": "42",
+      "created": 10
+    },
+    "item": {
+      "id": "agent:item",
+      "turnId": "turn",
+      "toolStatus": "inProgress"
+    },
+    "calls": [
+      {
+        "method": "thread/items/list",
+        "params": {
+          "threadId": "thread",
+          "turnId": "turn",
+          "limit": 1000,
+          "sortDirection": "asc"
+        }
+      }
+    ],
+    "options": {
+      "agent": {
+        "accountHistory": [
+          {
+            "at": "unknown"
+          }
+        ]
+      }
+    },
+    "observation": {
+      "scope": {
+        "account": "default",
+        "connection": "connection",
+        "generation": 1
+      },
+      "at": 1000.0,
+      "supervisor": null,
+      "quiet": true,
+      "journal_drained": true,
+      "account_reserved": false,
+      "tools_refreshing": false,
+      "preparation_pending": false,
+      "completed_turn": "agent:turn"
+    }
+  },
+  {
+    "name": "no-process",
+    "agent": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 0,
+      "status": "completed",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": null,
+      "inFlight": false
+    },
+    "task": {
+      "id": "agent:item",
+      "agent": "agent",
+      "itemId": "item",
+      "turnId": "turn",
+      "type": "commandExecution",
+      "kind": "command",
+      "status": "running",
+      "processId": null,
+      "created": 10
+    },
+    "source": false,
+    "absent": false,
+    "applied": 0,
+    "after": {
+      "id": "agent:item",
+      "agent": "agent",
+      "itemId": "item",
+      "turnId": "turn",
+      "type": "commandExecution",
+      "kind": "command",
+      "status": "running",
+      "processId": null,
+      "created": 10
+    },
+    "item": {
+      "id": "agent:item",
+      "turnId": "turn",
+      "toolStatus": "inProgress"
+    },
+    "calls": [
+      {
+        "method": "thread/items/list",
+        "params": {
+          "threadId": "thread",
+          "turnId": "turn",
+          "limit": 1000,
+          "sortDirection": "asc"
+        }
+      }
+    ],
+    "options": {
+      "task": {
+        "processId": null
+      }
+    },
+    "observation": {
+      "scope": {
+        "account": "default",
+        "connection": "connection",
+        "generation": 1
+      },
+      "at": 1000.0,
+      "supervisor": null,
+      "quiet": true,
+      "journal_drained": true,
+      "account_reserved": false,
+      "tools_refreshing": false,
+      "preparation_pending": false,
+      "completed_turn": "agent:turn"
+    }
+  },
+  {
+    "name": "integer-process",
+    "agent": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 0,
+      "status": "completed",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": null,
+      "inFlight": false
+    },
+    "task": {
+      "id": "agent:item",
+      "agent": "agent",
+      "itemId": "item",
+      "turnId": "turn",
+      "type": "commandExecution",
+      "kind": "command",
+      "status": "running",
+      "processId": 42,
+      "created": 10
+    },
+    "source": true,
+    "absent": true,
+    "applied": 1,
+    "after": {
+      "id": "agent:item",
+      "agent": "agent",
+      "itemId": "item",
+      "turnId": "turn",
+      "type": "commandExecution",
+      "kind": "command",
+      "status": "lost",
+      "processId": 42,
+      "created": 10,
+      "finished": 1000.0,
+      "error": "Native command session is absent. Exit outcome unknown; command was not replayed."
+    },
+    "item": {
+      "id": "agent:item",
+      "turnId": "turn",
+      "toolStatus": "lost"
+    },
+    "calls": [
+      {
+        "method": "thread/items/list",
+        "params": {
+          "threadId": "thread",
+          "turnId": "turn",
+          "limit": 1000,
+          "sortDirection": "asc"
+        }
+      },
+      {
+        "method": "thread/read",
+        "params": {
+          "threadId": "thread",
+          "includeTurns": false
+        }
+      },
+      {
+        "method": "thread/backgroundTerminals/list",
+        "params": {
+          "threadId": "thread",
+          "limit": 100
+        }
+      }
+    ],
+    "options": {
+      "task": {
+        "processId": 42
+      }
+    },
+    "observation": {
+      "scope": {
+        "account": "default",
+        "connection": "connection",
+        "generation": 1
+      },
+      "at": 1000.0,
+      "supervisor": null,
+      "quiet": true,
+      "journal_drained": true,
+      "account_reserved": false,
+      "tools_refreshing": false,
+      "preparation_pending": false,
+      "completed_turn": "agent:turn"
+    }
+  },
+  {
+    "name": "duplicate-native",
+    "agent": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 0,
+      "status": "completed",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": null,
+      "inFlight": false
+    },
+    "task": {
+      "id": "agent:item",
+      "agent": "agent",
+      "itemId": "item",
+      "turnId": "turn",
+      "type": "commandExecution",
+      "kind": "command",
+      "status": "running",
+      "processId": "42",
+      "created": 10
+    },
+    "source": true,
+    "absent": false,
+    "applied": 0,
+    "after": {
+      "id": "agent:item",
+      "agent": "agent",
+      "itemId": "item",
+      "turnId": "turn",
+      "type": "commandExecution",
+      "kind": "command",
+      "status": "running",
+      "processId": "42",
+      "created": 10
+    },
+    "item": {
+      "id": "agent:item",
+      "turnId": "turn",
+      "toolStatus": "inProgress"
+    },
+    "calls": [
+      {
+        "method": "thread/items/list",
+        "params": {
+          "threadId": "thread",
+          "turnId": "turn",
+          "limit": 1000,
+          "sortDirection": "asc"
+        }
+      }
+    ],
+    "options": {
+      "duplicate": true
+    },
+    "observation": {
+      "scope": {
+        "account": "default",
+        "connection": "connection",
+        "generation": 1
+      },
+      "at": 1000.0,
+      "supervisor": null,
+      "quiet": true,
+      "journal_drained": true,
+      "account_reserved": false,
+      "tools_refreshing": false,
+      "preparation_pending": false,
+      "completed_turn": "agent:turn"
+    }
+  },
+  {
+    "name": "unsupported-items",
+    "agent": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 0,
+      "status": "completed",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": null,
+      "inFlight": false
+    },
+    "task": {
+      "id": "agent:item",
+      "agent": "agent",
+      "itemId": "item",
+      "turnId": "turn",
+      "type": "commandExecution",
+      "kind": "command",
+      "status": "running",
+      "processId": "42",
+      "created": 10
+    },
+    "source": true,
+    "absent": true,
+    "applied": 1,
+    "after": {
+      "id": "agent:item",
+      "agent": "agent",
+      "itemId": "item",
+      "turnId": "turn",
+      "type": "commandExecution",
+      "kind": "command",
+      "status": "lost",
+      "processId": "42",
+      "created": 10,
+      "finished": 1000.0,
+      "error": "Native command session is absent. Exit outcome unknown; command was not replayed."
+    },
+    "item": {
+      "id": "agent:item",
+      "turnId": "turn",
+      "toolStatus": "lost"
+    },
+    "calls": [
+      {
+        "method": "thread/items/list",
+        "params": {
+          "threadId": "thread",
+          "turnId": "turn",
+          "limit": 1000,
+          "sortDirection": "asc"
+        }
+      },
+      {
+        "method": "thread/read",
+        "params": {
+          "threadId": "thread",
+          "includeTurns": false
+        }
+      },
+      {
+        "method": "thread/backgroundTerminals/list",
+        "params": {
+          "threadId": "thread",
+          "limit": 100
+        }
+      }
+    ],
+    "options": {
+      "unsupported": true
+    },
+    "observation": {
+      "scope": {
+        "account": "default",
+        "connection": "connection",
+        "generation": 1
+      },
+      "at": 1000.0,
+      "supervisor": null,
+      "quiet": true,
+      "journal_drained": true,
+      "account_reserved": false,
+      "tools_refreshing": false,
+      "preparation_pending": false,
+      "completed_turn": "agent:turn"
+    }
+  }
+]
