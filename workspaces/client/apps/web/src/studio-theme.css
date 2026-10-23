@@ -1,16 +1,65 @@
+@import "./design/layout.css";
+
+/* Owner of the application type scale and legacy surface aliases. */
 :root {
-  color-scheme: dark;
-  --studio-text-body: 14px;
-  --studio-text-meta: 12px;
-  --studio-text-code: 13px;
-  --studio-action-size: 32px;
-  --studio-warning: #ffc078;
-  --studio-warning-hover: #ffd8a8;
-  --surface: #1b1b20;
-  --sidebar: #141418;
-  --line: #ffffff0d;
-  --muted: #9696a5;
-  --text: #e9e9ee;
+  --studio-text-meta: 0.75rem;
+  --studio-text-body: 0.875rem;
+  --studio-text-title: 1rem;
+  --studio-text-section: 1.25rem;
+  --studio-text-code: 0.8125rem;
+  --studio-weight-normal: 400;
+  --studio-weight-medium: 500;
+  --studio-weight-strong: 600;
+  --studio-action-size: var(--studio-control-size);
   font-synthesis: none;
   -webkit-font-smoothing: antialiased;
+}
+
+:root,
+[data-mantine-color-scheme="dark"] {
+  color-scheme: dark;
+  --studio-page: var(--mantine-color-dark-7);
+  --surface: var(--mantine-color-dark-6);
+  --sidebar: var(--studio-page);
+  --raised: var(--mantine-color-dark-5);
+  --inset: var(--studio-page);
+  --hover: color-mix(in srgb, var(--text) 5%, transparent);
+  --line: var(--mantine-color-dark-4);
+  --muted: var(--mantine-color-dark-2);
+  --text: var(--mantine-color-dark-0);
+  --accent: var(--mantine-color-signal-4);
+  --studio-warning: #f0b43c;
+  --studio-warning-hover: #ffd078;
+}
+
+[data-mantine-color-scheme="light"] {
+  color-scheme: light;
+  --studio-page: #f3f5f7;
+  --surface: #ffffff;
+  --sidebar: var(--studio-page);
+  --raised: #e5eaf0;
+  --inset: var(--studio-page);
+  --hover: color-mix(in srgb, var(--text) 5%, transparent);
+  --line: #b7c1cd;
+  --muted: #526173;
+  --text: #18202a;
+  --accent: var(--mantine-color-signal-7);
+  --studio-warning: #875800;
+  --studio-warning-hover: #6c4600;
+}
+
+:root[data-mantine-color-scheme],
+[data-mantine-color-scheme] {
+  /* Reviewed neutral foreground for quantities on the raised utility surface. */
+  --studio-text-on-raised: var(--text);
+  --mantine-color-body: var(--studio-page);
+  --mantine-color-text: var(--text);
+  --mantine-color-dimmed: var(--muted);
+  --mantine-color-default: var(--surface);
+  --mantine-color-default-hover: var(--raised);
+  --mantine-color-default-border: var(--line);
+}
+
+.studio-tabular {
+  font-variant-numeric: tabular-nums;
 }

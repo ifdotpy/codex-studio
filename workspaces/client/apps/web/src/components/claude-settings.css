@@ -35,14 +35,22 @@
   padding-top: 10px;
 }
 
-.claude-advanced > summary,
-.claude-advanced-content details > summary {
+.claude-disclosure .mantine-Accordion-control {
   cursor: pointer;
   color: var(--text);
-  font-size: 13px;
+  font-size: var(--studio-text-body);
   font-weight: 500;
-  list-style-position: inside;
-  padding: 4px 0;
+  min-height: var(--studio-touch-target);
+  padding: 0;
+}
+.claude-disclosure .mantine-Accordion-label {
+  padding-block: calc(var(--mantine-spacing-xs) / 2);
+}
+.claude-disclosure .mantine-Accordion-item {
+  border: none;
+}
+.claude-disclosure .mantine-Accordion-content {
+  padding: 0;
 }
 
 .claude-advanced-content {
@@ -51,9 +59,9 @@
   padding: 10px 0 2px;
 }
 
-.claude-advanced-content details {
+.claude-disclosure-content {
   display: grid;
-  gap: 10px;
+  gap: var(--mantine-spacing-xs);
 }
 
 .claude-version,

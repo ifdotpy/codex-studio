@@ -62,7 +62,6 @@ export default class UIErrorBoundary extends Component<
           <p>Your saved chats and drafts remain available.</p>
           <Button
             variant="filled"
-            color="indigo"
             onClick={() => this.setState({ error: null })}
           >
             Try again

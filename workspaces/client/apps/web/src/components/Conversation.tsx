@@ -7,12 +7,10 @@ import {
 } from "../servers/ServerServicesContext";
 import { useServerActivity } from "../servers/activity";
 import {
-  useChatWait,
   type ChatWaitSource,
   type ConversationData,
 } from "../hooks/conversationData";
 import { serviceTimeText } from "../local-time";
-import { nativeStatusMessage } from "./conversation/nativeStatus";
 import AgentAvatar from "./agents/AgentAvatar";
 import MessageQueue, {
   type LocalQueueItem,
@@ -22,7 +20,6 @@ import { useMessageQueue } from "./useMessageQueue";
 import { useMessageReceipts } from "./useMessageReceipts";
 import { receiptOutgoing, receiptTranscript } from "../sync/messageReceipts";
 import { useVisibleChatResult, type ChatReadProof } from "./useChatReadState";
-import { displayError } from "../errorPresentation";
 import {
   NativeError,
   NativeNotice,
@@ -37,8 +34,8 @@ import {
   ListTree,
   Trash2,
   Square,
-  Terminal,
   ListEnd,
+  Ellipsis,
 } from "lucide-react";
 import {
   useCallback,
@@ -51,11 +48,7 @@ import {
 } from "react";
 import { errorText } from "../api";
 import SafetyBuffering from "./conversation/transcript/SafetyBuffering";
-import {
-  currentCapacityRetry,
-  DISK_FULL_CAUSE,
-  DISK_FULL_WAIT_LABEL,
-} from "../capacityRetry";
+import { currentCapacityRetry } from "../capacityRetry";
 import {
   isCyberPolicyRefusal,
   nativeErrorKind,
@@ -83,7 +76,6 @@ import { useAttachmentDrafts } from "./useAttachmentDrafts";
 import { useUploadRecovery } from "./useUploadRecovery";
 import { useServerUploads } from "../servers/ServerServicesContext";
 import {
-  statusLabel,
   type Agent,
   type Json,
   type KnownApiFields,
@@ -120,12 +112,16 @@ import SelectionQuote, {
 import MessageActions from "./conversation/transcript/MessageActions";
 import { LiveAgentPhase } from "./agents/AgentPhase";
 import { UnifiedAgentSettings } from "./agents/UnifiedAgentSettings";
-import type { useAccounts } from "./Accounts";
 import { useWorkerModels } from "./agents/WorkerModelPicker";
+import { ExecutionSummaryTrigger } from "./agents/ExecutionSummaryTrigger";
+import type { useAccounts } from "./Accounts";
 import ComposerAttachments, {
   MessageAttachments,
   type Attachment,
 } from "./ComposerAttachments";
+import ConversationStart, {
+  type RecentProjectChat,
+} from "./conversation/ConversationStart";
 import "./chat-controls.css";
 import "./conversation/empty-chat-settings.css";
 import { copyText } from "../clipboard/clipboard";
@@ -224,44 +220,13 @@ function useCompactHeaderTools() {
   return compact;
 }
 
-// The wait label reaches the shell from here, so a changed wait renders this
-// leaf and never the transcript or the composer.
-function PhaseReport(p: {
-  source: ChatWaitSource;
-  id: string | null;
-  agent?: Agent;
-  connection: string;
-  threadBlock: boolean;
-  capacityRetry: ReturnType<typeof currentCapacityRetry> | null;
-  onPhase: (id: string | null, label: string) => void;
-}) {
-  const wait = useChatWait(p.source, p.agent);
-  const { agent, capacityRetry } = p;
-  const label =
-    p.connection === "reconnecting"
-      ? "Reconnecting"
-      : p.threadBlock
-        ? "Chat stopped as a precaution"
-        : capacityRetry?.status === "scheduled"
-          ? capacityRetry.cause === DISK_FULL_CAUSE
-            ? DISK_FULL_WAIT_LABEL
-            : "Waiting to retry model"
-          : displayError(nativeStatusMessage(agent?.nativeStatus)) ||
-            (["starting", "running"].includes(agent?.status || "")
-              ? "Working"
-              : ["waiting", "parked"].includes(agent?.status || "")
-                ? wait?.label || "Turn ended"
-                : statusLabel(agent?.status || "idle"));
-  useEffect(() => {
-    p.onPhase(p.id, label);
-  }, [p.id, label, p.onPhase]);
-  return null;
-}
-
 export default function Conversation(p: {
   id: string | null;
+  projectName?: string;
+  recentChats?: RecentProjectChat[];
   syncWorkspaceId?: string;
   agent?: Agent;
+  lead?: Agent;
   room?: Room;
   legacy?: Json;
   data: ConversationData;
@@ -278,6 +243,8 @@ export default function Conversation(p: {
     delivery?: DeliveryMoment;
   }) => Promise<void>;
   outgoing?: OutgoingMessage[];
+  offlineSendPending?: boolean;
+  offlineSendDetails?: string;
   onObserved?: (ids: string[]) => void;
   onReadResult?: (proof: ChatReadProof) => void;
   onOutgoingEdit?: (id: string, text: string) => void;
@@ -297,7 +264,6 @@ export default function Conversation(p: {
   onJumpHandled?: (requestId: string) => void;
   limitsAccountLabel?: string;
   reloadLimits: () => void;
-  onPhase: (id: string | null, label: string) => void;
 }) {
   const { removeSendingMessage } = useSendingMessageRemoval();
   const { queueUploads } = useServerUploads();
@@ -664,18 +630,6 @@ export default function Conversation(p: {
     !historical && !after,
   );
   const threadBlock = nativeThreadError(agent);
-  const [, setModelCommandOpen] = useState(false);
-  const [modelCommandRequest, setModelCommandRequest] = useState(0);
-  // Load the chat account catalog up front: the closed composer trigger
-  // needs it to name the model behind a default alias.
-  const modelCatalog = useWorkerModels(
-    p.agent?.accountKey || "default",
-    p.agent?.source === "managed",
-  );
-  useEffect(() => {
-    setModelCommandOpen(false);
-    setModelCommandRequest(0);
-  }, [p.id, p.agent?.accountKey, p.syncWorkspaceId, p.data.stateDir]);
   const capacityRetry = agent ? currentCapacityRetry(agent) : null;
   const errorKind = nativeErrorKind(agent?.error);
   const failureKey = [
@@ -698,6 +652,7 @@ export default function Conversation(p: {
     !!threadBlock ||
     capacityRetry?.status === "scheduled" ||
     connection === "reconnecting" ||
+    !!p.offlineSendPending ||
     !!agent?.error ||
     !!agent?.startAttempt?.prepareError ||
     !!agent?.startAttempt?.responseError ||
@@ -720,8 +675,48 @@ export default function Conversation(p: {
     setLimitsOpen(false);
   }, [p.id]);
   const managed = agent?.source === "managed";
-  const emptyMainChat =
-    loaded && !items.length && !before && !after && !p.room && p.agent?.isLead;
+  const [modelCommandRequest, setModelCommandRequest] = useState({
+    id: p.id,
+    serial: 0,
+  });
+  useEffect(() => {
+    setModelCommandRequest({ id: p.id, serial: 0 });
+  }, [p.id]);
+  const modelCatalog = useWorkerModels(
+    p.agent?.accountKey || "default",
+    managed,
+  );
+  const executionControls =
+    p.agent?.source === "managed" ? (
+      <div
+        className="empty-chat-settings composer-context-row"
+        aria-label="Agent settings"
+      >
+        <UnifiedAgentSettings
+          key={p.agent.id}
+          state={p.accountsState}
+          notify={p.notify}
+          agent={p.agent}
+          lead={p.lead}
+          team={p.data.runtime?.agents || []}
+          catalog={modelCatalog}
+          refresh={p.refresh}
+          openRequest={
+            modelCommandRequest.id === p.id ? modelCommandRequest.serial : 0
+          }
+          renderTrigger={({ opened, ref, onClick }) => (
+            <ExecutionSummaryTrigger
+              ref={ref}
+              agent={p.agent!}
+              lead={p.lead}
+              team={p.data.runtime?.agents || []}
+              aria-expanded={opened}
+              onOpen={onClick}
+            />
+          )}
+        />
+      </div>
+    ) : null;
   const queueScope = `${p.data.stateDir}:${p.syncWorkspaceId || ""}:${p.id}`;
   const messageQueue = useMessageQueue({
     id: p.id,
@@ -827,8 +822,10 @@ export default function Conversation(p: {
         promptRecall.reset();
         input.current?.focus({ preventScroll: true });
         p.setDraft("");
-        setModelCommandOpen(true);
-        setModelCommandRequest((request) => request + 1);
+        setModelCommandRequest((value) => ({
+          id: p.id,
+          serial: value.serial + 1,
+        }));
       }
       return;
     }
@@ -1304,6 +1301,11 @@ export default function Conversation(p: {
         />
       )}
       {m.deliveryError &&
+        !(
+          p.offlineSendPending &&
+          m.localDelivery &&
+          m.deliveryStatus === "queued"
+        ) &&
         ["failed", "uncertain", "queued"].includes(m.deliveryStatus || "") && (
           <div className="message-delivery-error">
             <p>{m.deliveryError}</p>
@@ -1648,17 +1650,24 @@ export default function Conversation(p: {
           {loaded &&
             !items.length &&
             !notice &&
-            !["running", "starting"].includes(agent?.status || "") && (
+            !["running", "starting"].includes(agent?.status || "") &&
+            (p.room ? (
               <div className="empty-chat">
-                {!p.room && (
-                  <span className="empty-mark">
-                    <Terminal size={28} />
-                  </span>
-                )}
-                <h2>{p.room ? "No messages yet" : "New chat"}</h2>
-                {p.room && <p>Agent messages will appear here.</p>}
+                <h2>No messages yet</h2>
+                <p>Agent messages will appear here.</p>
               </div>
-            )}
+            ) : (
+              <ConversationStart
+                projectName={
+                  p.projectName ||
+                  p.agent?.cwd?.split("/").filter(Boolean).at(-1) ||
+                  "Your project"
+                }
+                location={p.agent?.cwd || "Project location unavailable"}
+                recentChats={p.recentChats}
+                onSelect={p.onSelect}
+              />
+            ))}
           {transcript}
           {after && (
             <Button
@@ -1680,15 +1689,6 @@ export default function Conversation(p: {
           {!p.room && agent && (
             <SafetyBuffering key={`safety:${agent.id}`} agent={agent} />
           )}
-          <PhaseReport
-            source={p.waitSource}
-            id={p.id}
-            agent={agent}
-            connection={connection}
-            threadBlock={!!threadBlock}
-            capacityRetry={capacityRetry}
-            onPhase={p.onPhase}
-          />
           <div className="chat-activity">
             {!detailedActivity &&
               !reasoningVisible &&
@@ -1704,6 +1704,8 @@ export default function Conversation(p: {
                     },
                   }}
                   connection={connection}
+                  savedMessagePending={p.offlineSendPending}
+                  connectionDetails={p.offlineSendDetails}
                 />
               )}
           </div>
@@ -1712,6 +1714,8 @@ export default function Conversation(p: {
               source={p.waitSource}
               agent={agent}
               connection={connection}
+              savedMessagePending={p.offlineSendPending}
+              connectionDetails={p.offlineSendDetails}
             />
           )}
           <Requests
@@ -1838,6 +1842,60 @@ export default function Conversation(p: {
               const draftTooLong = draft.length > 12000;
               const modelCommand = /^\/model(?:\s|$)/i.test(draft.trim());
               const exactModelCommand = /^\/model$/i.test(draft.trim());
+              const queueControl = (className: string) =>
+                managed ? (
+                  <ActionIcon
+                    className={className}
+                    type="button"
+                    variant="subtle"
+                    aria-label="Queue for next turn"
+                    title="Queue for the next turn (Tab)"
+                    aria-keyshortcuts="Tab"
+                    disabled={
+                      !canSend ||
+                      p.sending ||
+                      uploading ||
+                      draftTooLong ||
+                      (!draft.trim() && !assets.length)
+                    }
+                    onClick={() => void submit(DeliveryMoment.NextTurn)}
+                  >
+                    <ListEnd size={18} />
+                  </ActionIcon>
+                ) : null;
+              const attachTool = managed && (
+                <ComposerAttachments
+                  notify={p.notify}
+                  assets={assets}
+                  uploading={uploading}
+                  disabled={!canSend || p.sending}
+                  add={addFiles}
+                  remove={(id) => {
+                    const agentId = p.id || "";
+                    void uploadRecovery
+                      .remove(id, () => {
+                        setAttachments((current) => ({
+                          ...current,
+                          [agentId]: (current[agentId] || []).filter(
+                            (asset) => asset.id !== id,
+                          ),
+                        }));
+                      })
+                      .catch((error) => p.notify(errorText(error)));
+                  }}
+                />
+              );
+              const voiceTool = managed &&
+                agent?.isLead &&
+                agent?.provider !== "claude" &&
+                p.id &&
+                !threadBlock && (
+                  <RealtimeVoice
+                    key={`voice:${p.id}`}
+                    agentId={p.id}
+                    notify={p.notify}
+                  />
+                );
               return (
                 <>
                   <PromptInput
@@ -1930,6 +1988,24 @@ export default function Conversation(p: {
                       dismiss={(version) => p.dismissDraft?.(version)}
                     />
                     <div className="composer-tools">
+                      {attachTool}
+                      <div className="composer-tools-inline">{voiceTool}</div>
+                      {managed && (
+                        <details className="composer-tools-disclosure">
+                          <summary
+                            aria-label="Composer tools"
+                            title="Voice conversation and queue"
+                          >
+                            <Ellipsis size={18} />
+                          </summary>
+                          <div className="composer-tools-popover">
+                            {voiceTool}
+                            {queueControl("composer-queue-disclosure")}
+                          </div>
+                        </details>
+                      )}
+                      {executionControls}
+
                       {managed && (
                         <>
                           {!!pendingFiles.length && (
@@ -1976,26 +2052,6 @@ export default function Conversation(p: {
                               </button>
                             </p>
                           )}
-                          <ComposerAttachments
-                            notify={p.notify}
-                            assets={assets}
-                            uploading={uploading}
-                            disabled={!canSend || p.sending}
-                            add={addFiles}
-                            remove={(id) => {
-                              const agentId = p.id || "";
-                              void uploadRecovery
-                                .remove(id, () => {
-                                  setAttachments((current) => ({
-                                    ...current,
-                                    [agentId]: (current[agentId] || []).filter(
-                                      (asset) => asset.id !== id,
-                                    ),
-                                  }));
-                                })
-                                .catch((error) => p.notify(errorText(error)));
-                            }}
-                          />
                         </>
                       )}
                       {managed && p.id && (
@@ -2012,56 +2068,6 @@ export default function Conversation(p: {
                           }}
                         />
                       )}
-                      {managed &&
-                        agent?.isLead &&
-                        agent?.provider !== "claude" &&
-                        p.id &&
-                        !threadBlock && (
-                          <RealtimeVoice
-                            key={`voice:${p.id}`}
-                            agentId={p.id}
-                            notify={p.notify}
-                          />
-                        )}
-                      {p.agent?.source === "managed" && !emptyMainChat && (
-                        <div className="composer-context-row">
-                          <UnifiedAgentSettings
-                            state={p.accountsState}
-                            notify={p.notify}
-                            team={p.data.runtime?.agents || []}
-                            // Transcript metadata can predate a settings change.
-                            agent={p.agent}
-                            catalog={modelCatalog}
-                            refresh={p.refresh}
-                            openRequest={modelCommandRequest}
-                            onOpenChange={setModelCommandOpen}
-                          />
-                          {!items.length && (
-                            <span className="composer-context-values">
-                              <span
-                                title={
-                                  p.limitsAccountLabel ||
-                                  "Account name unavailable"
-                                }
-                              >
-                                {p.limitsAccountLabel ||
-                                  "Account name unavailable"}
-                              </span>
-                              {p.agent.cwd && (
-                                <span title={p.agent.cwd}>
-                                  {p.data.runtime?.projects?.find(
-                                    (project) => project.path === p.agent?.cwd,
-                                  )?.name ||
-                                    p.agent.cwd
-                                      .split("/")
-                                      .filter(Boolean)
-                                      .pop()}
-                                </span>
-                              )}
-                            </span>
-                          )}
-                        </div>
-                      )}
                     </div>
                     <span id="send-state" role="status" aria-live="polite">
                       {p.sending ? "Sending…" : ""}
@@ -2069,28 +2075,11 @@ export default function Conversation(p: {
                     <div className="composer-submit-actions">
                       {managed && (
                         <span className="composer-timing">
-                          Send to current turn · Queue for next turn
+                          <span>Send to current turn</span>
+                          <span>Queue for next turn</span>
                         </span>
                       )}
-                      {managed && (
-                        <ActionIcon
-                          type="button"
-                          variant="subtle"
-                          aria-label="Queue for next turn"
-                          title="Queue for the next turn (Tab)"
-                          aria-keyshortcuts="Tab"
-                          disabled={
-                            !canSend ||
-                            p.sending ||
-                            uploading ||
-                            draftTooLong ||
-                            (!draft.trim() && !assets.length)
-                          }
-                          onClick={() => void submit(DeliveryMoment.NextTurn)}
-                        >
-                          <ListEnd size={18} />
-                        </ActionIcon>
-                      )}
+                      {queueControl("composer-queue-primary")}
                       {agent &&
                         ["running", "starting", "approval"].includes(
                           agent.status || "",
@@ -2170,46 +2159,25 @@ export default function Conversation(p: {
               );
             }}
           </PromptComposer>
-          {emptyMainChat && p.agent?.source === "managed" && (
-            <div className="empty-chat-settings" aria-label="Agent settings">
-              {(["orchestrator", "worker"] as const).map((role) => (
-                <div className="empty-chat-setting" key={role}>
-                  <span>{role === "orchestrator" ? "Model" : "Workers"}</span>
-                  <UnifiedAgentSettings
-                    state={p.accountsState}
-                    notify={p.notify}
-                    team={p.data.runtime?.agents || []}
-                    agent={p.agent!}
-                    catalog={modelCatalog}
-                    refresh={p.refresh}
-                    settingsRow
-                    showAccountSummary
-                    initialRole={role}
-                    openRequest={
-                      role === "orchestrator" ? modelCommandRequest : 0
-                    }
-                    onOpenChange={
-                      role === "orchestrator" ? setModelCommandOpen : undefined
-                    }
-                  />
-                </div>
-              ))}
-            </div>
-          )}
-          {agent?.source === "managed" && (
-            <Usage
-              key={p.agent?.accountKey || "default"}
-              agent={{ ...agent, accountKey: p.agent?.accountKey || "default" }}
-              stateDir={p.data.stateDir}
-              limits={p.limits}
-              accounts={p.limitsAccounts}
-              limitsLoading={p.limitsLoading}
-              accountLabel={p.limitsAccountLabel}
-              reload={p.reloadLimits}
-              opened={limitsOpen}
-              onChange={setLimitsOpen}
-            />
-          )}
+          <div className="conversation-composer-footer">
+            {agent?.source === "managed" && (
+              <Usage
+                key={p.agent?.accountKey || "default"}
+                agent={{
+                  ...agent,
+                  accountKey: p.agent?.accountKey || "default",
+                }}
+                stateDir={p.data.stateDir}
+                limits={p.limits}
+                accounts={p.limitsAccounts}
+                limitsLoading={p.limitsLoading}
+                accountLabel={p.limitsAccountLabel}
+                reload={p.reloadLimits}
+                opened={limitsOpen}
+                onChange={setLimitsOpen}
+              />
+            )}
+          </div>
         </>
       )}
     </section>

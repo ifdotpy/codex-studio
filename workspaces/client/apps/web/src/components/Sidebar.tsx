@@ -58,6 +58,8 @@ import {
 } from "./shell/messages/PeerTeams";
 
 import SidebarRow from "./SidebarRow";
+import { needsYou, projectStateCounts } from "./sidebar/fleet";
+import ProjectStateCounts from "./sidebar/ProjectStateCounts";
 import {
   activeLayrReadiness,
   describeWithLayrReadiness,
@@ -171,6 +173,8 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
   const { canPickDirectory, pickDirectory, revealPath } =
     useServerFileDialogs();
   const services = p.services;
+  const lastOpened = useRef(p.opened);
+  if (p.opened) lastOpened.current = p.opened;
   const canEdit = (target: SidebarTarget) =>
     services.available?.(target) ?? true;
   /** Why an action on this target is disabled, or null when it is available. */
@@ -222,10 +226,27 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
       delete root.dataset.inlineSidebar;
     };
   }, [inline]);
+  useEffect(() => {
+    if (!compact || !p.mobile) return;
+    const background =
+      document.querySelector<HTMLElement>(".server-views") ||
+      document.querySelector<HTMLElement>(".workspace-frame");
+    if (!background) return;
+    const wasInert = background.inert;
+    const wasHidden = background.getAttribute("aria-hidden");
+    background.inert = true;
+    background.setAttribute("aria-hidden", "true");
+    return () => {
+      background.inert = wasInert;
+      if (wasHidden == null) background.removeAttribute("aria-hidden");
+      else background.setAttribute("aria-hidden", wasHidden);
+    };
+  }, [compact, p.mobile]);
   const [query, setQuery] = useState(""),
     [renaming, setRenaming] = useState<string | null>(null),
     [name, setName] = useState(""),
     [archive, setArchive] = useState(false);
+  const [renameInPriority, setRenameInPriority] = useState(false);
   const hideOldChatsThreshold =
     p.hideOldChatsThreshold ?? DEFAULT_HIDE_OLD_CHATS_THRESHOLD;
   const sorting = useSidebarOrder(
@@ -814,11 +835,13 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
       visibleSharedRooms.some((r) => r.projectPath === group.path) ||
       `${group.path} ${group.name}`.toLowerCase().includes(query.toLowerCase()),
   );
-  const renderRow = (row: Agent) => (
+  const attention = needsYou(filtered, p.indicators);
+  const renderRow = (row: Agent, priority = false) => (
     <SidebarRow
       key={row.id}
       row={row}
       selected={p.opened === row.id}
+      showServer={services.serverForChat(row.id) !== services.cache.ownerId}
       serverAlias={
         services.alias?.({ kind: "chat", id: row.id }) ||
         aliases[
@@ -833,9 +856,9 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
       serverOffline={
         p.offlineServers?.has(services.serverForChat(row.id)) ?? false
       }
-      renaming={renaming === row.id}
-      name={renaming === row.id ? name : ""}
+      renaming={renaming === row.id && renameInPriority === priority}
       organizing={organizing === row.id}
+      name={renaming === row.id ? name : ""}
       disabled={!canEdit({ kind: "chat", id: row.id })}
       compact={compact}
       markingRead={p.markingRead.has(row.id)}
@@ -896,6 +919,7 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
         cancelRename: () => setRenaming(null),
         beginRename: () => {
           setName(row.name ?? "");
+          setRenameInPriority(priority);
           setRenaming(row.id);
         },
         unread: () => p.markUnread(row),
@@ -1026,7 +1050,7 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
                 </UnstyledButton>
               ))}
             {(closed ? members.filter((a) => a.id === p.opened) : members).map(
-              renderRow,
+              (row) => renderRow(row),
             )}
           </div>
         </PeerTeamGroup>
@@ -1167,7 +1191,7 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
                           <MoreHorizontal size={15} />
                         </ActionIcon>
                       </Menu.Target>
-                      <Menu.Dropdown>
+                      <Menu.Dropdown className="fleet-menu">
                         <Menu.Item
                           disabled={
                             !canEdit(projectTarget(group.path, folder.id))
@@ -1316,17 +1340,17 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
           >
             <SquarePen size={16} />
           </ActionIcon>
+          {p.newSharedChat && (
+            <ActionIcon
+              className="sidebar-shared-chat"
+              aria-label="New shared chat"
+              title="New shared chat"
+              onClick={() => p.newSharedChat?.()}
+            >
+              <Users size={16} />
+            </ActionIcon>
+          )}
         </div>
-        {p.newSharedChat && (
-          <Button
-            className="sidebar-nav-button sidebar-shared-chat"
-            title="New shared chat"
-            leftSection={<Users size={15} />}
-            onClick={() => p.newSharedChat?.()}
-          >
-            New shared chat
-          </Button>
-        )}
       </div>
       <TextInput
         id="chat-search"
@@ -1339,30 +1363,38 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
           setQuery(e.target.value);
         }}
       />
-      <div className="projects-heading">
-        <span className="projects-heading-label">
-          {archive ? "Archived projects" : "Projects"}
-        </span>
-        <Menu position="bottom-end" withinPortal>
-          <Menu.Target>
-            <ActionIcon aria-label="Project list options">
-              <MoreHorizontal size={16} />
-            </ActionIcon>
-          </Menu.Target>
-          <Menu.Dropdown>
-            <Menu.Item onClick={() => setArchive(!archive)}>
-              {archive ? "Show active chats" : "Show archived chats"}
-            </Menu.Item>
-          </Menu.Dropdown>
-        </Menu>
-        {
-          <ActionIcon aria-label="Add project" onClick={p.addProject}>
-            <Plus size={18} />
-          </ActionIcon>
-        }
-      </div>
       {teamMove.feedback}
       <nav id="chat-list" className="chat-scroll" aria-label="Chats">
+        {!!attention.length && (
+          <section className="fleet-attention" aria-label="Needs you">
+            <h2 className="fleet-lane-heading">
+              Needs you <span>{attention.length}</span>
+            </h2>
+            {attention.map((row) => renderRow(row, true))}
+          </section>
+        )}
+        <div className="projects-heading">
+          <span className="projects-heading-label">
+            {archive ? "Archived projects" : "Projects"}
+          </span>
+          <Menu position="bottom-end" withinPortal>
+            <Menu.Target>
+              <ActionIcon aria-label="Project list options">
+                <MoreHorizontal size={16} />
+              </ActionIcon>
+            </Menu.Target>
+            <Menu.Dropdown className="fleet-menu">
+              <Menu.Item onClick={() => setArchive(!archive)}>
+                {archive ? "Show active chats" : "Show archived chats"}
+              </Menu.Item>
+            </Menu.Dropdown>
+          </Menu>
+          {
+            <ActionIcon aria-label="Add project" onClick={p.addProject}>
+              <Plus size={18} />
+            </ActionIcon>
+          }
+        </div>
         {projectGroups.map((group) => {
           const oldChatCount = Math.max(
             0,
@@ -1472,12 +1504,23 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
                     "Drag to reorder. Alt + Up or Down also works.",
                   )}
                   className="project-tree-toggle"
+                  aria-label={group.name}
                   title={services.displayPath?.(group.path) || group.path}
                   aria-expanded={!closed}
                   onClick={() => toggleTree(projectTreeKey(group.path))}
                 >
                   {closed ? <Folder size={18} /> : <FolderOpen size={18} />}
-                  <span title={group.name}>{group.name}</span>
+                  <span className="project-tree-name" title={group.name}>
+                    {group.name}
+                  </span>
+                  <ProjectStateCounts
+                    counts={projectStateCounts(
+                      (byProject.get(group.path) || []).filter(
+                        (chat) => !!chat.archived === archive,
+                      ),
+                      p.indicators,
+                    )}
+                  />
                 </UnstyledButton>
                 {!archive &&
                   (!compact || !!group.path) &&
@@ -1515,7 +1558,7 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
                         <MoreHorizontal size={15} />
                       </ActionIcon>
                     </Menu.Target>
-                    <Menu.Dropdown>
+                    <Menu.Dropdown className="fleet-menu">
                       <Menu.Label>Create</Menu.Label>
                       <Menu.Item
                         disabled={!canEdit(projectTarget(group.path))}
@@ -1872,15 +1915,28 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
                         >
                           <span className="row-copy">
                             <strong>{room.name}</strong>
-                            <ChatServerLine
-                              provider={
-                                p.data.threads.find((agent) =>
-                                  room.members?.includes(agent.id),
-                                )?.provider || undefined
-                              }
-                              alias={alias}
-                              offline={serverOffline}
-                            />
+                            {services.serverForChat(room.id) !==
+                              services.cache.ownerId && (
+                              <ChatServerLine
+                                provider={
+                                  p.data.threads.find((agent) =>
+                                    room.members?.includes(agent.id),
+                                  )?.provider || undefined
+                                }
+                                alias={alias}
+                                offline={serverOffline}
+                              />
+                            )}
+                            {serverOffline &&
+                              services.serverForChat(room.id) ===
+                                services.cache.ownerId && (
+                                <span
+                                  className="fleet-server-badge"
+                                  data-offline="true"
+                                >
+                                  Offline
+                                </span>
+                              )}
                           </span>
                         </UnstyledButton>
                       );
@@ -1945,8 +2001,16 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
         <Drawer
           zIndex={p.settings ? 190 : undefined}
           opened={p.mobile}
+          onEnterTransitionEnd={() => {
+            if (lastOpened.current)
+              document
+                .querySelector<HTMLElement>(
+                  `#sidebar [data-chat="${CSS.escape(lastOpened.current)}"]`,
+                )
+                ?.focus();
+          }}
           onClose={p.close}
-          size="min(360px, 100vw)"
+          size="100%"
           padding={0}
           withCloseButton={false}
           title="Conversations"

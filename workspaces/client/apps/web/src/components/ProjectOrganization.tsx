@@ -1,7 +1,8 @@
 import { Button, NativeSelect, TextInput } from "@mantine/core";
-import { useRef, useState } from "react";
+import { useId, useRef, useState } from "react";
 import { useProjectSave } from "./useProjectSave";
 import type { Agent, Snapshot } from "../types";
+import { SettingsRow } from "./ui/primitives";
 
 export type Project = NonNullable<Snapshot["runtime"]>["projects"][number];
 export type ProjectFolder = NonNullable<Project["folders"]>[number];
@@ -37,6 +38,7 @@ export function ProjectNameForm({
   const save = useProjectSave("/api/projects", saved);
   const id = useRef(folder === "new" ? crypto.randomUUID() : folder?.id);
   const revision = useRef(project.organizationRevision || 0);
+  const nameId = useId();
   return (
     <form
       onSubmit={(event) => {
@@ -59,17 +61,25 @@ export function ProjectNameForm({
     >
       <p className="project-directory">{displayPath || project.path}</p>
       {parentId && <p>In {folderLabel(project.folders || [], parentId)}</p>}
-      <TextInput
-        label={folder ? "Folder name" : "Project name"}
-        value={name}
-        autoFocus
-        maxLength={255}
-        required
-        disabled={save.pending || save.frozen}
-        onChange={(event) => {
-          setName(event.currentTarget.value);
-        }}
-      />
+      <SettingsRow
+        label={
+          <label htmlFor={nameId}>
+            {folder ? "Folder name" : "Project name"}
+          </label>
+        }
+      >
+        <TextInput
+          id={nameId}
+          value={name}
+          autoFocus
+          maxLength={255}
+          required
+          disabled={save.pending || save.frozen}
+          onChange={(event) => {
+            setName(event.currentTarget.value);
+          }}
+        />
+      </SettingsRow>
       {save.error && <p role="alert">{save.error}</p>}
       <Button
         type="submit"
@@ -93,6 +103,7 @@ export function MoveChatForm({
   saved: () => Promise<void>;
 }) {
   const [folder, setFolder] = useState(agent.projectFolder || "");
+  const folderId = useId();
   const save = useProjectSave("/api/organization", saved, (result) => {
     if ((result.projectFolder || "") !== folder)
       throw new Error("Restart Studio to use project folders.");
@@ -115,21 +126,23 @@ export function MoveChatForm({
         });
       }}
     >
-      <NativeSelect
-        label="Move to folder"
-        value={folder}
-        disabled={save.pending || save.frozen}
-        onChange={(event) => setFolder(event.currentTarget.value)}
-        data={[
-          { value: "", label: project.name || project.path || "Project" },
-          ...(project.folders || [])
-            .map((item) => ({
-              value: item.id,
-              label: folderLabel(project.folders || [], item.id),
-            }))
-            .sort((a, b) => a.label.localeCompare(b.label)),
-        ]}
-      />
+      <SettingsRow label={<label htmlFor={folderId}>Move to folder</label>}>
+        <NativeSelect
+          id={folderId}
+          value={folder}
+          disabled={save.pending || save.frozen}
+          onChange={(event) => setFolder(event.currentTarget.value)}
+          data={[
+            { value: "", label: project.name || project.path || "Project" },
+            ...(project.folders || [])
+              .map((item) => ({
+                value: item.id,
+                label: folderLabel(project.folders || [], item.id),
+              }))
+              .sort((a, b) => a.label.localeCompare(b.label)),
+          ]}
+        />
+      </SettingsRow>
       {save.error && <p role="alert">{save.error}</p>}
       <Button type="submit" mt="md" loading={save.pending}>
         {save.retryLabel || "Move chat"}

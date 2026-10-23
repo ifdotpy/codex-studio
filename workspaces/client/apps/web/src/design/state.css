@@ -1,0 +1,93 @@
+/* Owner of the dispatch-board state colors and rail size.
+   States are ChatIndicatorKind values (chat-status/chatStatusModel.ts).
+   See docs/design/redesign-brief.md. */
+:root {
+  /* Width of the leading state rail on a strip. */
+  --studio-rail-size: 0.1875rem;
+  /* Diameter of an inline state marker. */
+  --studio-dot-size: 0.5rem;
+}
+
+:root,
+[data-mantine-color-scheme="dark"] {
+  /* State tint opacity, a percentage mixed over a page or panel surface. */
+  --studio-state-tint: 14%;
+  --studio-state-working: var(--mantine-color-signal-4);
+  --studio-state-answer: var(--studio-warning);
+  --studio-state-error: #f0776b;
+  --studio-state-unread: #62c08e;
+  --studio-state-paused: var(--mantine-color-dark-2);
+  --studio-state-none: var(--studio-state-paused);
+}
+
+[data-mantine-color-scheme="light"] {
+  --studio-state-tint: 5%;
+  --studio-state-working: var(--mantine-color-signal-7);
+  --studio-state-answer: var(--studio-warning);
+  --studio-state-error: #b52e25;
+  --studio-state-unread: #237448;
+  --studio-state-paused: #5b6675;
+  --studio-state-none: var(--studio-state-paused);
+}
+
+:root,
+[data-mantine-color-scheme] {
+  --studio-state-working-soft: color-mix(
+    in srgb,
+    var(--studio-state-working) var(--studio-state-tint),
+    transparent
+  );
+  --studio-state-answer-soft: color-mix(
+    in srgb,
+    var(--studio-state-answer) var(--studio-state-tint),
+    transparent
+  );
+  --studio-state-error-soft: color-mix(
+    in srgb,
+    var(--studio-state-error) var(--studio-state-tint),
+    transparent
+  );
+  --studio-state-unread-soft: color-mix(
+    in srgb,
+    var(--studio-state-unread) var(--studio-state-tint),
+    transparent
+  );
+  --studio-state-paused-soft: transparent;
+  --studio-state-none-soft: transparent;
+}
+
+[data-studio-state] {
+  --studio-state: var(--studio-state-none);
+}
+[data-studio-state="working"] {
+  --studio-state: var(--studio-state-working);
+}
+[data-studio-state="answer"] {
+  --studio-state: var(--studio-state-answer);
+}
+[data-studio-state="error"] {
+  --studio-state: var(--studio-state-error);
+}
+[data-studio-state="unread"] {
+  --studio-state: var(--studio-state-unread);
+}
+[data-studio-state="none"] {
+  --studio-state: var(--studio-state-none);
+}
+[data-studio-state="paused"] {
+  --studio-state: var(--studio-state-paused);
+}
+
+/* Other surfaces retain rails; fleet and Team use their inline state indicators. */
+[data-studio-state]:not(.studio-state-dot, .fleet-strip, .worker-entry) {
+  box-shadow: inset var(--studio-rail-size) 0 0 var(--studio-state);
+}
+
+.studio-state-dot {
+  display: inline-block;
+  flex: none;
+  inline-size: var(--studio-dot-size);
+  block-size: var(--studio-dot-size);
+  border-radius: 50%;
+  background: var(--studio-state);
+}

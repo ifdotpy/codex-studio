@@ -1,6 +1,6 @@
 import { useServerStorage } from "../../servers/ServerServicesContext";
 import { useServerApi } from "../../servers/ServerServicesContext";
-import { SegmentedControl } from "@mantine/core";
+import { SegmentedControl, NumberInput, Button } from "@mantine/core";
 import { useEffect, useRef, useState } from "react";
 import { ApiError, errorText, type PostBody } from "../../api";
 import {
@@ -14,8 +14,7 @@ import "./subagent-concurrency-control.css";
 const DEFAULT_CONCURRENCY = DEFAULT_SUBAGENT_CONCURRENCY;
 const MIN_CONCURRENCY = MIN_SUBAGENT_CONCURRENCY;
 const MAX_CONCURRENCY = MAX_SUBAGENT_CONCURRENCY;
-const CONCURRENCY_HELP =
-  "0 disables subagents. The lead does not count. Extra work waits in the queue.";
+const CONCURRENCY_HELP = "0 = lead only; extra work queues.";
 const UNSUPPORTED_HELP =
   "Update the backend to enable numeric subagent parallelism. Saved changes are retained until then.";
 const CONCURRENCY_SCHEMA_VERSION = 2;
@@ -379,28 +378,15 @@ function ScopedConcurrencyControl({
           }}
         />
       )}
-      <label className="agent-mode-limit-label">
-        <span className="agent-mode-visible-label">Subagent parallelism</span>
-        <span className={`agent-mode-limit-mode${compact ? " sr-only" : ""}`}>
-          {mode === "single"
-            ? "Single agent"
-            : mode === "multi"
-              ? "Multi agent"
-              : "Unavailable"}
-        </span>
-        <input
-          type="number"
+      <div className="agent-mode-fields">
+        <NumberInput
+          className="agent-mode-field"
+          label="Subagent parallelism"
+          description={supported ? CONCURRENCY_HELP : UNSUPPORTED_HELP}
           min={MIN_CONCURRENCY}
           max={MAX_CONCURRENCY}
           step={1}
-          inputMode="numeric"
-          aria-label="Subagent parallelism"
-          aria-describedby={
-            supported
-              ? `subagent-concurrency-help-${lead.id}`
-              : `subagent-concurrency-help-${lead.id} subagent-concurrency-status-${lead.id}`
-          }
-          title={supported ? CONCURRENCY_HELP : UNSUPPORTED_HELP}
+          allowDecimal={false}
           value={supported ? draft : ""}
           disabled={
             !supported || !workspaceId || saving || !!pending || !!initial.error
@@ -408,17 +394,31 @@ function ScopedConcurrencyControl({
           onBlur={(event) => {
             const nextMode = (event.relatedTarget as HTMLInputElement | null)
               ?.value;
-            if (compact && !(nextMode === (mode === "single" ? "on" : "off")))
+            if (compact && nextMode !== (mode === "single" ? "on" : "off"))
               void submit();
           }}
-          onChange={(event) => {
-            const value = event.currentTarget.valueAsNumber;
+          onChange={(value) => {
             dirty.current = true;
-            setDraft(Number.isNaN(value) ? event.currentTarget.value : value);
+            setDraft(value);
             setError("");
           }}
         />
-      </label>
+        {!compact && draft !== confirmed?.concurrency && (
+          <Button
+            type="submit"
+            className="agent-mode-apply"
+            disabled={
+              !supported ||
+              !workspaceId ||
+              saving ||
+              !!pending ||
+              !!initial.error
+            }
+          >
+            Apply
+          </Button>
+        )}
+      </div>
       <span id={`subagent-concurrency-help-${lead.id}`} className="sr-only">
         {CONCURRENCY_HELP}
       </span>
@@ -431,23 +431,12 @@ function ScopedConcurrencyControl({
           ? ""
           : "Numeric subagent parallelism is unavailable because this backend does not provide the concurrency setting. Update the backend to enable it."}
       </span>
-      {!compact && (
-        <button
-          type="submit"
-          className="agent-mode-apply"
-          disabled={
-            !supported || !workspaceId || saving || !!pending || !!initial.error
-          }
-        >
-          Apply
-        </button>
-      )}
       {saving ? (
         <span role="status" className="agent-mode-note">
           Applying…
         </span>
       ) : pending && supported ? (
-        <button
+        <Button
           type="button"
           className="agent-mode-retry"
           onClick={() => void submit()}
@@ -455,7 +444,7 @@ function ScopedConcurrencyControl({
           {"subagent_concurrency" in pending
             ? "Retry limit change"
             : "Retry mode change"}
-        </button>
+        </Button>
       ) : pending ? (
         <span className="agent-mode-note" role="status">
           Saved change retained. Update the backend to retry it.
@@ -469,7 +458,7 @@ function ScopedConcurrencyControl({
         </span>
       )}
       {initial.error && supported && (
-        <button
+        <Button
           type="button"
           className="agent-mode-retry"
           onClick={() => {
@@ -486,7 +475,7 @@ function ScopedConcurrencyControl({
           }}
         >
           Discard unreadable concurrency request
-        </button>
+        </Button>
       )}
     </form>
   );

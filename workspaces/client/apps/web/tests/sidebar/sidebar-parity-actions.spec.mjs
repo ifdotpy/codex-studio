@@ -76,8 +76,8 @@ async function setup(context, page) {
   const fixture = await sidebarParityFixture(context);
   const sidebar = await fixture.open(page);
   await expect(chat(sidebar, "Remote Saved pin")).toBeVisible();
-  await expect(button(sidebar, "Unpin Local Saved pin")).toBeEnabled();
-  await expect(button(sidebar, "Unpin Remote Saved pin")).toBeEnabled();
+  await expect(button(sidebar, "Actions for Local Saved pin")).toBeEnabled();
+  await expect(button(sidebar, "Actions for Remote Saved pin")).toBeEnabled();
   return { fixture, sidebar };
 }
 const waitForOrderReceipt = (page) =>

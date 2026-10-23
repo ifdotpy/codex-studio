@@ -125,10 +125,28 @@ the remaining weekly allowance.
 
 Chat settings includes Claude permission modes, extended thinking, automatic
 compaction, native commands and skills, and context rollback. Model, effort, and
-fast-mode controls use the native model catalog. The model picker lists one row
-per model with its display name, a **(default)** tag for the catalog default, a
-**(current)** tag for the model the chat uses now, and the catalog description
-in a second column. Hidden catalog models stay hidden. A proposed plan waits for a
+fast-mode controls use the native model catalog. Setup sheets show a compact native radio grid. The grid groups Claude families and Codex generations, newest first, with
+context-size variants shown as badges. The selected model description appears
+below it, followed by reasons for unavailable choices.
+Tab enters the selected model; arrow keys select another enabled model. Compact
+model fields use native selects grouped by provider, with **(default)** and
+**(current)** tags where applicable and the selected model's description below
+the field. Dropdown menus show text labels; their appearance follows the browser.
+Fast and Daybreak switches include visible descriptions. The composer model picker has a compact Lead, Workers, and Review switch above the selected role's account, model, reasoning, and
+mode controls. The same picker always shows all three roles in New chat, the composer, and shared-chat participant settings. New chat saves the chosen review
+model and reasoning with the new lead. In a worker chat, Workers edits that
+worker; Lead and Review display inherited settings read-only. Shared-chat
+participants manage their own worker and review defaults. The New chat dialog
+fits the picker width on desktop and the available width on phones.
+One execution summary in the composer shows the lead, workers,
+and review; its title contains the full settings. On narrow layouts it keeps the lead name beside role and provider icons, using the complete family name at the narrowest stage;
+wider layouts name all three roles. Click it or submit `/model` to open the role picker anchored above the composer on desktop or in a bottom sheet on phones. Escape closes the picker and returns focus to the summary.
+Accounts use a compact grid with remaining limits. Chat settings is one compact Team panel without tabs. It contains
+permissions, subagent parallelism, delegation depth, and account eligibility; zero parallelism
+uses a single agent. Account eligibility is always visible in compact provider groups with remaining limits; long names and emails are ellipsized, with full values in the account title and accessible description.
+Automatic account selection prefers a free slot, project order, then fewer
+active agents. Eligibility is separate from each role's selected account.
+Project actions are available in the shared dialog footer. Hidden catalog models stay hidden. A proposed plan waits for a
 separate implementation request. Rollback preserves the original saved history.
 Commands and rollback retain their request identities after a lost response.
 
@@ -209,7 +227,7 @@ account used by future workers while the lead stays on its current account.
 See [the parity checks](verification/2026-09-22-claude-parity.md) for evidence
 and the tested reference revision.
 
-When a team transfer is blocked, Chat settings shows the saved transfer status
+When a team transfer is blocked, the composer model picker shows the saved transfer status
 and an explicit **Retry** action when the receipt can be retried. Retry continues
 that transfer receipt; it does not resend the chat input.
 
@@ -458,8 +476,7 @@ The sidebar and Team panel can collapse at any window width.
 the same account manager as the chat menu: add accounts, view saved accounts,
 remove them, and choose the application default. Its Appearance and Hotkeys tabs group per-browser appearance,
 text size, transcript width, message author icons, and sidebar shortcut preferences.
-Author icons are hidden by default. Chat settings continues to select the account
-for the current conversation and manage its project, model, and permissions.
+Author icons are hidden by default. Use the composer picker to select the conversation account and model. Chat settings manages its team, project, and permissions.
 
 Prompt history is in the chat header; open **Conversation tools** when space is
 limited. Context usage, session cost, and account limits sit below the composer.
@@ -476,7 +493,14 @@ The search control above the transcript searches the current chat.
 
 On a phone, **Add project** opens the server's folder list.
 The first **New chat** opens this list when no project exists.
-When no last-opened chat is saved, Studio opens the managed lead with the most recent activity (`updated`, then `created`, then zero); timestamp ties use ascending chat ID. Saved mobile or desktop selections keep priority.
+A fresh phone page opens the chats board, showing **Needs you** and project groups.
+Select a chat to open its detail; **← Chats** (announced as **Back to chats**)
+returns to the board and focuses that chat's strip. Existing navigation commands
+and notifications open their target chat directly. Switching apps or restoring a
+page from the browser's back/forward cache keeps the current chat and draft.
+Desktop restores the last-opened chat; when none is saved, it opens the managed
+lead with the most recent activity (`updated`, then `created`, then zero), with
+ascending chat ID breaking timestamp ties.
 **Plan** shows only the plan reported by the agent. Use **Change plan in chat**
 to send instructions. Historical saved plan text remains in storage.
 
