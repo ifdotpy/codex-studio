@@ -232,11 +232,15 @@ pub fn host_listeners() -> Option<Vec<Listener>> {
     }
 }
 
-/// The retryable answer when the listeners of this host are unknown. An open
-/// card stays open; only a known missing listener makes it stale.
+/// The error code of a bridge request that sent nothing to the sign-in command,
+/// so a retry cannot repeat a delivery. `browser_answer` keeps the card open.
+pub const NOT_SENT_CODE: &str = "not_sent";
+
+/// The answer when the listeners of this host are unknown. An open card stays
+/// open; only a known missing listener makes it stale.
 fn listeners_unknown() -> BridgeError {
     BridgeError {
-        code: "unavailable",
+        code: NOT_SENT_CODE,
         message: "Studio could not read the listening ports of this computer. Try again".into(),
     }
 }
@@ -1622,20 +1626,25 @@ mod tests {
         }
     }
 
-    /// One saved pending card with a loopback redirect, read by a bridge whose
-    /// listener probe fails. The clock is in seconds.
+    /// A saved card with a loopback redirect in `state`.
+    fn saved_card(state: &str) -> Value {
+        json!({
+            "id": "card", "agentId": "agent", "uid": 501, "state": state,
+            "url": "https://id.example.com/authorize", "startUrl": null,
+            "redirect": {"host": "localhost", "port": 4242, "path": "/"},
+            "createdAt": 100.0, "expiresAt": 100.0 + TTL_SECONDS, "seq": 1
+        })
+    }
+
+    /// One saved card, read by a bridge whose listener probe fails. The clock
+    /// is in seconds.
     fn bridge_with_failed_probe(
         folder: &Path,
+        card: Value,
         now: Arc<std::sync::atomic::AtomicU64>,
     ) -> Arc<HostBridge> {
         let directory = folder.join("browser");
         std::fs::create_dir_all(&directory).expect("browser folder");
-        let card = json!({
-            "id": "card", "agentId": "agent", "uid": 501, "state": "pending",
-            "url": "https://id.example.com/authorize", "startUrl": null,
-            "redirect": {"host": "localhost", "port": 4242, "path": "/"},
-            "createdAt": 100.0, "expiresAt": 100.0 + TTL_SECONDS, "seq": 1
-        });
         std::fs::write(
             directory.join("requests.json"),
             json!({"seq": 1, "items": {"card": card}}).to_string(),
@@ -1661,7 +1670,8 @@ mod tests {
     async fn a_failed_listener_probe_keeps_an_open_card_and_answers_retryably() {
         let folder = tempfile::tempdir().expect("bridge folder");
         let now = Arc::new(std::sync::atomic::AtomicU64::new(200.0_f64.to_bits()));
-        let bridge = bridge_with_failed_probe(folder.path(), Arc::clone(&now));
+        let bridge =
+            bridge_with_failed_probe(folder.path(), saved_card("pending"), Arc::clone(&now));
         let state = |bridge: &HostBridge| bridge.lock().items["card"]["state"].clone();
 
         bridge.check().await;
@@ -1674,7 +1684,7 @@ mod tests {
             .answer(&json!({"id": "card", "decision": "approve"}))
             .await
             .expect_err("approval needs a known listener");
-        assert_eq!(answered.code, "unavailable", "{}", answered.message);
+        assert_eq!(answered.code, NOT_SENT_CODE, "{}", answered.message);
         assert_eq!(state(&bridge), "pending", "the card stays open for a retry");
 
         // Expiry by time still applies while the probe fails.
@@ -1684,6 +1694,25 @@ mod tests {
         );
         bridge.check().await;
         assert_eq!(state(&bridge), "expired");
+    }
+
+    #[tokio::test]
+    async fn a_failed_listener_probe_relays_nothing_and_says_so() {
+        let folder = tempfile::tempdir().expect("bridge folder");
+        let mut card = saved_card("approved");
+        card["lease"] = json!({
+            "host": "localhost", "port": 4242, "path": "/", "expiresAt": 100.0 + TTL_SECONDS
+        });
+        let now = Arc::new(std::sync::atomic::AtomicU64::new(200.0_f64.to_bits()));
+        let bridge = bridge_with_failed_probe(folder.path(), card, now);
+        let refused = bridge
+            .callback(&json!({"id": "card", "target": "/?code=fake-code&state=S1"}))
+            .await
+            .expect_err("a relay needs a known listener");
+        assert_eq!(refused.code, NOT_SENT_CODE, "{}", refused.message);
+        let item = bridge.lock().items["card"].clone();
+        assert_eq!(item["state"], "approved", "the forward stays open");
+        assert!(item.get("relays").is_none(), "nothing was relayed");
     }
 
     #[test]

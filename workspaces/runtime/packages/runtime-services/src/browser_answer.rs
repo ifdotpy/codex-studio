@@ -639,6 +639,30 @@ async fn paste<V: Fn(&Value) -> bool + Send + Sync + 'static>(
         PASTE_RELAY_TIMEOUT,
     )
     .await;
+    if let Err(error) = &relayed
+        && error.code() == Some(crate::browser_host::NOT_SENT_CODE)
+        && !error.uncertain()
+    {
+        // The bridge sent nothing to the command, so clear this paste's mark: the
+        // card keeps waiting and a retry sends the code once.
+        let retry_id = id.to_owned();
+        store
+            .transaction_with_error(move |tx| {
+                let mut record = load(tx, &retry_id, validate.as_ref())?;
+                if record.get("status").and_then(Value::as_str) == Some("pending")
+                    && let Some(params) = record["params"].as_object_mut()
+                {
+                    params.remove("paste");
+                    put(tx, &retry_id, &record, validate.as_ref())?;
+                }
+                Ok::<_, BrowserAnswerError>(())
+            })
+            .await?;
+        return Err(BrowserAnswerError::Refused(
+            "Studio could not check the sign-in command now. Nothing was sent. Paste the address again."
+                .into(),
+        ));
+    }
     let (outcome, http_status) = match relayed {
         Ok(result) => match relay_status(&result) {
             Some(status) => (
