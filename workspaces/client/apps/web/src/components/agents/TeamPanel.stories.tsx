@@ -224,3 +224,32 @@ export const Attar: Story = {
 
 /** Screenshot fixture leaves interaction state untouched. */
 export const Overview: Story = { ...Dispatch, play: undefined };
+
+export const Workspace: Story = {
+  render: (args) => (
+    <div
+      className="workspace-frame"
+      style={
+        {
+          height: "100dvh",
+          margin: "calc(-1 * var(--mantine-spacing-lg))",
+          "--studio-content-width-ratio": 0.6,
+        } as import("react").CSSProperties
+      }
+    >
+      <main
+        className="workspace"
+        style={{ padding: "var(--mantine-spacing-lg)" }}
+      >
+        <h2 style={{ fontSize: "var(--studio-text-title)", fontWeight: 600 }}>
+          Studio release review
+        </h2>
+        <p style={{ color: "var(--muted)" }}>
+          Team activity stays beside the conversation when the content
+          preference leaves enough room.
+        </p>
+      </main>
+      <TeamPanel {...args} />
+    </div>
+  ),
+};

@@ -108,7 +108,7 @@
   -webkit-line-clamp: 2;
   overflow: hidden;
   width: 100%;
-  padding: var(--mantine-spacing-xs);
+  padding: 0 calc(var(--mantine-spacing-xs) / 2);
   line-height: 1.55;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
