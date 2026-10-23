@@ -12,7 +12,6 @@ import {
   Menu,
   TextInput,
   UnstyledButton,
-  VisuallyHidden,
 } from "@mantine/core";
 import {
   Archive,
@@ -212,6 +211,11 @@ const SidebarRowView = memo(function SidebarRowView({
     >
       <span className="row-copy">
         <span className="fleet-chat-heading">
+          <ChatStatus
+            status={indicator}
+            provider={a.provider ?? undefined}
+            model={a.model ?? undefined}
+          />
           <span
             className="fleet-chat-provider"
             role="img"
@@ -273,13 +277,6 @@ const SidebarRowView = memo(function SidebarRowView({
           {relativeChatTime(timestamp, now)}
         </time>
       )}
-      <VisuallyHidden>
-        <ChatStatus
-          status={indicator}
-          provider={a.provider ?? undefined}
-          model={a.model ?? undefined}
-        />
-      </VisuallyHidden>
     </UnstyledButton>
   );
   return (
