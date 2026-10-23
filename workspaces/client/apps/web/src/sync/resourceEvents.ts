@@ -34,6 +34,7 @@ import { retryableReadError } from "./readRetry";
 import {
   configureTokenRateStream,
   receiveResourceTokenRates,
+  getWorkspaceTokenRates,
 } from "../usage/tokenRate";
 
 export type ResourceRef = components["schemas"]["ResourceRef"];
@@ -159,7 +160,9 @@ export type ResourceEventsOptions = {
   >;
   tokenRates: Pick<
     ReturnType<typeof import("../usage/tokenRate").createTokenRateCache>,
-    "configureTokenRateStream" | "receiveResourceTokenRates"
+    | "configureTokenRateStream"
+    | "receiveResourceTokenRates"
+    | "getWorkspaceTokenRates"
   >;
   openEvents: typeof openServerEvents;
   storageName: typeof serverStorageName;
@@ -174,8 +177,11 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     onApiSchemaMismatch,
   } = options.api;
   const { persistResourceEntityChanges, syncDatabase } = options.sync;
-  const { configureTokenRateStream, receiveResourceTokenRates } =
-    options.tokenRates;
+  const {
+    configureTokenRateStream,
+    receiveResourceTokenRates,
+    getWorkspaceTokenRates,
+  } = options.tokenRates;
   const openServerEvents = options.openEvents;
   const serverStorageName = options.storageName;
 
@@ -599,6 +605,16 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     scheduleFlush();
   }
 
+  function tokenRateReplay(): ResourceTokenRatesEvent | undefined {
+    if (!lastTokenEvent) return;
+    return {
+      ...lastTokenEvent,
+      snapshot: true,
+      removed: [],
+      ...getWorkspaceTokenRates(),
+    };
+  }
+
   function receiveTokenRateEvent(value: unknown, fromPeer = false) {
     if (!hasRevisionFrame(value))
       throw new TypeError("Invalid token-rate frame");
@@ -780,7 +796,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
           (!previous?.tokenRates || reset) &&
           lastTokenEvent
         )
-          broadcast({ kind: "token-rates", event: lastTokenEvent });
+          broadcast({ kind: "token-rates", event: tokenRateReplay()! });
         scheduleCoordinatorIdleStop();
       }
     } else if (record.kind === "tab-heartbeat") {
@@ -1462,7 +1478,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     coordinatorIdleStopTimer = undefined;
     tokenRateListeners.add(listener);
     if (lastTokenEvent && lastTokenEvent.workspaceId === workspaceId)
-      listener(lastTokenEvent);
+      listener(tokenRateReplay()!);
     startCoordinator();
     announceSubscriptions();
     let stopped = false;
@@ -1506,7 +1522,11 @@ const defaultResourceEvents = createResourceEvents({
     syncDatabase: (...args: Parameters<typeof syncDatabase>) =>
       syncDatabase(...args),
   },
-  tokenRates: { configureTokenRateStream, receiveResourceTokenRates },
+  tokenRates: {
+    configureTokenRateStream,
+    receiveResourceTokenRates,
+    getWorkspaceTokenRates,
+  },
   openEvents: openServerEvents,
   storageName: serverStorageName,
 });

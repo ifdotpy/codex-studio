@@ -33,7 +33,10 @@ function validIdentifier(value: unknown): value is string {
 }
 
 // One validation at the untrusted snapshot boundary, using generated types and limits.
-function isTokenRateSnapshot(value: unknown): value is WorkspaceRates {
+function isTokenRateSnapshot(
+  value: unknown,
+  agents = new Set<string>(),
+): value is WorkspaceRates {
   if (
     !value ||
     typeof value !== "object" ||
@@ -42,7 +45,6 @@ function isTokenRateSnapshot(value: unknown): value is WorkspaceRates {
     value.records.length > TOKEN_RATE_MAX_ENTRIES
   )
     return false;
-  const agents = new Set<string>();
   return value.records.every((record: unknown): record is TokenRate => {
     if (!record || typeof record !== "object" || Array.isArray(record))
       return false;
@@ -147,11 +149,58 @@ export function createTokenRateCache() {
   }
 
   function receiveResourceTokenRates(event: TokenRateEvent) {
-    return receiveWorkspaceTokenRates(event);
+    const changed = new Set<string>();
+    if (
+      typeof event.snapshot !== "boolean" ||
+      !Array.isArray(event.removed) ||
+      event.removed.length > TOKEN_RATE_MAX_ENTRIES ||
+      (event.snapshot && event.removed.length !== 0) ||
+      !isTokenRateSnapshot(event, changed)
+    )
+      return false;
+    if (event.snapshot) return replaceWorkspaceTokenRates(event);
+    const removed = new Set<string>();
+    let size = records.size;
+    for (const id of event.removed) {
+      if (!validIdentifier(id) || removed.has(id) || changed.has(id))
+        return false;
+      removed.add(id);
+      if (records.has(id)) size--;
+    }
+    for (const record of event.records)
+      if (!records.has(record.agentId)) size++;
+    if (size > TOKEN_RATE_MAX_ENTRIES) return false;
+    // Apply the entire frame before notifying: every observer sees the same batch.
+    for (const id of event.removed) {
+      const previous = records.get(id);
+      if (previous) teamAgents.delete(workerRateKey(previous.rootId, id));
+      records.delete(id);
+    }
+    for (const record of event.records) {
+      const previous = records.get(record.agentId);
+      if (previous)
+        teamAgents.delete(workerRateKey(previous.rootId, record.agentId));
+      records.set(record.agentId, record);
+      teamAgents.set(
+        workerRateKey(record.rootId, record.agentId),
+        record.agentId,
+      );
+    }
+    for (const id of listeners.keys()) notify(id);
+    return true;
+  }
+
+  // Materialize the merged baseline only when a late local or peer subscriber asks.
+  function getWorkspaceTokenRates(): WorkspaceRates {
+    return { records: Array.from(records.values()) };
   }
 
   function receiveWorkspaceTokenRates(value: unknown) {
     if (!isTokenRateSnapshot(value)) return false;
+    return replaceWorkspaceTokenRates(value);
+  }
+
+  function replaceWorkspaceTokenRates(value: WorkspaceRates) {
     records = new Map(value.records.map((record) => [record.agentId, record]));
     teamAgents = new Map(
       value.records.map((record) => [
@@ -204,6 +253,7 @@ export function createTokenRateCache() {
     receiveResourceTokenRates,
     receiveWorkspaceTokenRates,
     clearWorkspaceTokenRates,
+    getWorkspaceTokenRates,
     subscribeTokenRate,
     getTokenRate,
     getWorkspaceTeamTokenRate,
@@ -216,6 +266,7 @@ export const {
   receiveResourceTokenRates,
   receiveWorkspaceTokenRates,
   clearWorkspaceTokenRates,
+  getWorkspaceTokenRates,
   subscribeTokenRate,
   getTokenRate,
   getWorkspaceTeamTokenRate,

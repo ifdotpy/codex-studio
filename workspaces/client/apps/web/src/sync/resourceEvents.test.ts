@@ -10,9 +10,9 @@ const { resumeListeners, syncDatabase } = vi.hoisted(() => ({
   syncDatabase: vi.fn(),
 }));
 vi.mock("./client", () => ({ syncDatabase }));
-vi.mock("../usage/tokenRate", () => ({
+vi.mock("../usage/tokenRate", async (original) => ({
+  ...(await original<typeof import("../usage/tokenRate")>()),
   configureTokenRateStream: vi.fn(),
-  receiveResourceTokenRates: vi.fn(() => true),
 }));
 vi.mock("./resume", () => ({
   onResume: (listener: () => void) => {
@@ -1661,6 +1661,8 @@ describe("shared resource event transport", () => {
       workspaceId,
       epoch: "epoch-one",
       revision: 1,
+      snapshot: true,
+      removed: [],
       records: [],
     };
     Source.instances[0]!.emit("token-rates", currentSnapshot);
@@ -1891,6 +1893,8 @@ describe("shared resource event transport", () => {
       workspaceId,
       epoch: "epoch-one",
       revision: 3,
+      snapshot: true,
+      removed: [],
       records: [],
     };
     const beforeSnapshot = channel.messages.length;
@@ -1972,6 +1976,8 @@ describe("shared resource event transport", () => {
       workspaceId,
       epoch: "epoch-one",
       revision: 3,
+      snapshot: true,
+      removed: [],
       records: [
         {
           agentId: "worker",
@@ -1987,7 +1993,15 @@ describe("shared resource event transport", () => {
 
     await vi.waitFor(() => expect(onResourceChange).toHaveBeenCalledTimes(1));
     expect(onTokenRates).toHaveBeenCalledTimes(1);
-    const event = onTokenRates.mock.calls[0]![0];
+    const first = onTokenRates.mock.calls[0]![0];
+    const changed = { ...first.records[0], rate: 64, rootId: "other-root" };
+    stream.emit("token-rates", {
+      ...first,
+      revision: 4,
+      snapshot: false,
+      records: [changed],
+    });
+    const event = { ...first, revision: 4, records: [changed] };
     const late = vi.fn();
     const stopLate = transport.watchTokenRateEvents(late);
     expect(late).toHaveBeenCalledExactlyOnceWith(event);

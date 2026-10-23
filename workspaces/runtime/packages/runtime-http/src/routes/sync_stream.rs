@@ -197,9 +197,11 @@ async fn sync_stream(
         Err(_) => return ApiError::internal().into_response(),
     };
     let mut token_rates = token_interest.then(|| state.token_rates.subscribe());
+    let mut last_token_rates = None;
     if let Some(receiver) = &mut token_rates {
         let (rates, cursor) = token_snapshot(receiver, || changes.borrow().clone());
         initial.push_back(token_rate_event(&state.workspace_id, &cursor, &rates));
+        last_token_rates = Some(rates);
     }
 
     let stream_state = ResourceStream {
@@ -216,6 +218,7 @@ async fn sync_stream(
         changes,
         notifications: state.resource_notifications,
         token_rates,
+        last_token_rates,
         consecutive_token_frames: 0,
         next_token_frame_at: None,
         next_resources_frame_at: None,
@@ -689,6 +692,8 @@ struct ResourceStream {
     changes: tokio::sync::watch::Receiver<ChangeSnapshot>,
     notifications: Arc<ResourceNotifications>,
     token_rates: Option<tokio::sync::watch::Receiver<Arc<TokenRates>>>,
+    /// Last snapshot sent by this stream; clearing it makes the next frame a full snapshot.
+    last_token_rates: Option<Arc<TokenRates>>,
     consecutive_token_frames: usize,
     /// Earliest instant of the next token-rate frame, from `SYNC_FRAME_MIN_INTERVAL`.
     next_token_frame_at: Option<Instant>,
@@ -850,7 +855,36 @@ fn token_rate_sse_frame(state: &mut ResourceStream) -> Option<Event> {
     if cursor.closed {
         return None;
     }
-    Some(token_rate_event(&state.workspace_id, &cursor, &rates))
+    let event = match &state.last_token_rates {
+        Some(previous) => {
+            #[derive(Serialize)]
+            #[serde(rename_all = "camelCase")]
+            struct DeltaFrame<'a> {
+                protocol: u32,
+                workspace_id: &'a str,
+                epoch: &'a str,
+                revision: i64,
+                snapshot: bool,
+                #[serde(flatten)]
+                delta: studio_runtime_services::token_rate::TokenRateDelta<'a>,
+            }
+            sse_event(
+                "token-rates",
+                Some(cursor.revision),
+                DeltaFrame {
+                    protocol: SYNC_PROTOCOL_VERSION,
+                    workspace_id: &state.workspace_id,
+                    epoch: &cursor.epoch,
+                    revision: cursor.revision,
+                    snapshot: false,
+                    delta: rates.delta_since(previous),
+                },
+            )
+        }
+        None => token_rate_event(&state.workspace_id, &cursor, &rates),
+    };
+    state.last_token_rates = Some(rates);
+    Some(event)
 }
 
 // Keep the rate read guard until its cursor is captured: publishers take these locks in this order.
@@ -918,7 +952,7 @@ fn token_rate_event(workspace_id: &str, snapshot: &ChangeSnapshot, rates: &Token
     let wire = rates.wire();
     let text = |value: &str| serde_json::to_string(value).unwrap_or_else(|_| "\"\"".to_owned());
     let data = format!(
-        r#"{{"protocol":{},"workspaceId":{},"epoch":{},"revision":{},"records":{}}}"#,
+        r#"{{"protocol":{},"workspaceId":{},"epoch":{},"revision":{},"snapshot":true,"removed":[],"records":{}}}"#,
         SYNC_PROTOCOL_VERSION,
         text(workspace_id),
         text(&snapshot.epoch),
@@ -998,6 +1032,172 @@ where
 mod tests {
     use super::*;
     use studio_runtime_services::change_notifications::ChangeNotificationHub;
+
+    #[tokio::test]
+    async fn state_stream_token_delta_tracks_changes_removals_roots_and_reconnect() {
+        let hub = Arc::new(ChangeNotificationHub::new());
+        let tokens = TokenRateHub::with_change_hub(hub.clone());
+        let notifications = Arc::new(ResourceNotifications::new(hub.clone()));
+        let mut state = test_stream(&hub, &tokens, notifications.clone(), vec![]);
+        let record = |id: &str, root: &str, rate: f64| {
+            json!({
+                "agentId":id,"rootId":root,"turnId":"turn","active":true,
+                "estimated":false,"rate":rate,"outputTokens":100.0
+            })
+        };
+        let idle = record("idle", "root", 0.0);
+        tokens
+            .publish(json!({"records":[record("active", "root", 1.0), idle.clone()]}))
+            .expect("publish");
+        let first = event_document(Ok(token_rate_sse_frame(&mut state).expect("initial"))).await;
+        assert_eq!(first["snapshot"], true);
+        assert_eq!(first["records"].as_array().expect("records").len(), 2);
+        assert_eq!(first["removed"], json!([]));
+
+        // A slow stream skips an intermediate publication, diffing from its own last send.
+        tokens
+            .publish(json!({"records":[record("active", "root", 2.0), idle]}))
+            .expect("publish");
+        let moved = record("active", "other-root", 3.0);
+        tokens
+            .publish(json!({"records":[moved.clone()]}))
+            .expect("publish");
+        let delta = event_document(Ok(token_rate_sse_frame(&mut state).expect("delta"))).await;
+        assert_eq!(delta["snapshot"], false);
+        assert_eq!(delta["records"], json!([moved.clone()]));
+        assert_eq!(delta["removed"], json!(["idle"]));
+        let unchanged =
+            event_document(Ok(token_rate_sse_frame(&mut state).expect("unchanged"))).await;
+        assert_eq!(unchanged["records"], json!([]));
+        assert_eq!(unchanged["removed"], json!([]));
+
+        let mut reconnect = test_stream(&hub, &tokens, notifications, vec![]);
+        let full =
+            event_document(Ok(token_rate_sse_frame(&mut reconnect).expect("reconnect"))).await;
+        assert_eq!(full["snapshot"], true);
+        assert_eq!(full["records"], json!([moved]));
+        tokens.publish(json!({"records":[]})).expect("remove last");
+        let removed = event_document(Ok(token_rate_sse_frame(&mut state).expect("removed"))).await;
+        assert_eq!(removed["records"], json!([]));
+        assert_eq!(removed["removed"], json!(["active"]));
+        // The borrowed frame must remain aligned with the generated OpenAPI DTO.
+        for frame in [first, delta, unchanged, full, removed] {
+            serde_json::from_value::<crate::generated::ResourceTokenRatesEvent>(frame)
+                .expect("generated token-rate frame contract");
+        }
+    }
+
+    #[tokio::test]
+    async fn state_stream_token_delta_bytes_for_fifty_agents_with_two_active() {
+        async fn bytes(event: Event) -> Vec<u8> {
+            axum::body::to_bytes(
+                Sse::new(stream::iter([Ok::<_, Infallible>(event)]))
+                    .into_response()
+                    .into_body(),
+                262144,
+            )
+            .await
+            .expect("frame")
+            .to_vec()
+        }
+        let hub = Arc::new(ChangeNotificationHub::new());
+        let tokens = TokenRateHub::with_change_hub(hub.clone());
+        let notifications = Arc::new(ResourceNotifications::new(hub.clone()));
+        let mut state = test_stream(&hub, &tokens, notifications, vec![]);
+        let mut records: Vec<Value> = (0..50).map(|id| json!({
+            "agentId":format!("agent-{id:02}"),"rootId":"root","turnId":"turn",
+            "active":id < 2,"estimated":false,"rate":if id < 2 {10.0} else {0.0},"outputTokens":100.0
+        })).collect();
+        tokens
+            .publish(json!({"records":records}))
+            .expect("initial publication");
+        let initial = bytes(token_rate_sse_frame(&mut state).expect("initial")).await;
+        for record in &mut records[..2] {
+            record["rate"] = json!(20.0);
+            record["outputTokens"] = json!(120.0);
+        }
+        tokens
+            .publish(json!({"records":records}))
+            .expect("changed publication");
+        let rates = tokens.snapshot();
+        let cursor = hub.subscribe().borrow().clone();
+        // The previous wire protocol sent this complete once-serialized list every time.
+        let old = Event::default().event("token-rates").id(cursor.revision.to_string()).data(format!(
+            r#"{{"protocol":{},"workspaceId":"workspace","epoch":{},"revision":{},"records":{}}}"#,
+            SYNC_PROTOCOL_VERSION, serde_json::to_string(&cursor.epoch).expect("epoch"), cursor.revision, rates.wire().records));
+        let old = bytes(old).await;
+        let delta = bytes(token_rate_sse_frame(&mut state).expect("delta")).await;
+        assert!(delta.len() * 10 < old.len());
+        println!(
+            "token-rate SSE bytes: v3_full={}, v4_initial={}, v4_delta={}, reduction={:.2}%",
+            old.len(),
+            initial.len(),
+            delta.len(),
+            100.0 * (1.0 - delta.len() as f64 / old.len() as f64)
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn state_stream_token_delta_http_starts_full_and_reconnects() {
+        use axum::body::Body;
+        use axum::extract::ConnectInfo;
+        use axum::http::Request;
+        use futures_util::StreamExt;
+        use tower::ServiceExt;
+        fn document(bytes: &[u8]) -> Value {
+            let text = std::str::from_utf8(bytes).expect("UTF8");
+            serde_json::from_str(
+                text.lines()
+                    .find_map(|line| line.strip_prefix("data: "))
+                    .expect("data"),
+            )
+            .expect("JSON")
+        }
+        let root = tempfile::tempdir().expect("isolated state");
+        let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
+        let state = HttpState::new(
+            "token".into(),
+            "workspace".into(),
+            root.path().display().to_string(),
+            4321,
+            None,
+            Some(store),
+            None,
+        );
+        state
+            .token_rates
+            .publish(floating_test_rates(1))
+            .expect("initial rates");
+        let app = crate::router(state.clone()).expect("router");
+        let request = || {
+            Request::builder()
+            .uri(format!("/api/sync/stream?protocol={SYNC_PROTOCOL_VERSION_TEXT}&resources=%5B%7B%22kind%22%3A%22drafts%22%7D%5D&tokenRates=true"))
+            .header("host", "127.0.0.1:4321").header("x-canvas-token", "token")
+            .extension(ConnectInfo(std::net::SocketAddr::from(([127,0,0,1],12345))))
+            .body(Body::empty()).expect("request")
+        };
+        let response = app.clone().oneshot(request()).await.expect("response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let mut body = response.into_body().into_data_stream();
+        body.next().await.expect("resources").expect("bytes");
+        let initial = document(&body.next().await.expect("initial rates").expect("bytes"));
+        assert_eq!(initial["snapshot"], true);
+        assert_eq!(initial["records"], floating_test_rates(1)["records"]);
+        state
+            .token_rates
+            .publish(floating_test_rates(2))
+            .expect("changed rates");
+        let delta = document(&body.next().await.expect("delta").expect("bytes"));
+        assert_eq!(delta["snapshot"], false);
+        assert_eq!(delta["records"], floating_test_rates(2)["records"]);
+        drop(body);
+        let response = app.oneshot(request()).await.expect("reconnect");
+        let mut body = response.into_body().into_data_stream();
+        body.next().await.expect("resources").expect("bytes");
+        let reconnect = document(&body.next().await.expect("reconnect rates").expect("bytes"));
+        assert_eq!(reconnect["snapshot"], true);
+        assert_eq!(reconnect["records"], floating_test_rates(2)["records"]);
+    }
 
     #[tokio::test(start_paused = true)]
     async fn state_stream_token_interest_suppresses_tokens_but_preserves_resources_and_heartbeats()
@@ -2260,6 +2460,7 @@ mod tests {
             changes,
             notifications: Arc::new(ResourceNotifications::new(Arc::new(hub.clone()))),
             token_rates: Some(tokens.subscribe()),
+            last_token_rates: None,
             consecutive_token_frames: 0,
             next_token_frame_at: None,
             next_resources_frame_at: None,
@@ -2305,6 +2506,7 @@ mod tests {
             changes,
             notifications: notifications.clone(),
             token_rates: Some(token_hub.subscribe()),
+            last_token_rates: None,
             consecutive_token_frames: 0,
             next_token_frame_at: None,
             next_resources_frame_at: None,
@@ -2420,6 +2622,7 @@ mod tests {
             changes,
             notifications,
             token_rates: Some(tokens.subscribe()),
+            last_token_rates: None,
             consecutive_token_frames: 0,
             next_token_frame_at: None,
             next_resources_frame_at: None,
@@ -2634,6 +2837,7 @@ mod tests {
             changes,
             notifications: Arc::new(ResourceNotifications::new(Arc::new(hub.clone()))),
             token_rates: Some(TokenRateHub::new().subscribe()),
+            last_token_rates: None,
             consecutive_token_frames: 0,
             next_token_frame_at: None,
             next_resources_frame_at: None,

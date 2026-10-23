@@ -16,7 +16,9 @@
           "rate": 1,
           "outputTokens": 1
         }
-      ]
+      ],
+      "snapshot": true,
+      "removed": []
     },
     {
       "protocol": 3,
@@ -50,7 +52,9 @@
           "rate": 2,
           "outputTokens": 2
         }
-      ]
+      ],
+      "snapshot": false,
+      "removed": []
     },
     {
       "protocol": 3,
@@ -88,7 +92,9 @@
           "rate": 3,
           "outputTokens": 3
         }
-      ]
+      ],
+      "snapshot": true,
+      "removed": []
     },
     {
       "protocol": 3,

@@ -29,7 +29,9 @@
       "workspaceId": "workspace",
       "epoch": "epoch",
       "revision": 0,
-      "records": []
+      "records": [],
+      "snapshot": true,
+      "removed": []
     }
   },
   {
@@ -66,7 +68,9 @@
           "rate": 1.25,
           "outputTokens": 400
         }
-      ]
+      ],
+      "snapshot": true,
+      "removed": []
     }
   }
 ]
