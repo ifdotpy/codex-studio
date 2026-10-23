@@ -8,7 +8,11 @@ import type { Snapshot } from "../types";
 import type { AccountsState } from "./Accounts";
 import { useWorkerModels } from "./agents/WorkerModelPicker";
 import { AgentSetupPicker } from "./agents/AgentSetupPicker";
-import { modelDisplayName, toModelOptions } from "./models/modelOption";
+import {
+  modelDisplayName,
+  modelForValue,
+  toModelOptions,
+} from "./models/modelOption";
 import "./agents/execution-settings.css";
 import "./shared-chat-create.css";
 
@@ -65,7 +69,7 @@ function ParticipantFields({
     if (account_key && account_key !== value.account_key)
       change({ account_key, model: "" });
   };
-  const info = catalog.models.find((row) => row.model === value.model);
+  const info = modelForValue(catalog.models, value.model);
   const reasoningEfforts =
     info?.supportedReasoningEfforts.map((item) => item.reasoningEffort) ?? [];
   useEffect(() => {

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   INHERITED_MODEL,
   modelDisplayName,
+  modelForValue,
   modelOptionLabel,
   toModelOptions,
 } from "./modelOption";
@@ -117,4 +118,26 @@ it("selects the non-default Claude alias for a stored resolved model id", () => 
       .filter((option) => option.badges.includes("current"))
       .map((option) => option.value),
   ).toEqual(["opus"]);
+});
+
+describe("modelForValue", () => {
+  const rows = [
+    { model: "default", isDefault: true, resolvedModel: "claude-opus-5-5" },
+    { model: "opus", resolvedModel: "claude-opus-5-5" },
+  ];
+  it("prefers exact alias values and explicit resolved rows", () => {
+    expect(modelForValue(rows, "default")).toBe(rows[0]);
+    expect(modelForValue(rows, "opus")).toBe(rows[1]);
+    expect(modelForValue(rows, "claude-opus-5-5")).toBe(rows[1]);
+    expect(modelForValue(toModelOptions(rows), "claude-opus-5-5")?.value).toBe(
+      "opus",
+    );
+  });
+  it("preserves default-only catalogs, inherited and unknown values", () => {
+    expect(modelForValue(rows.slice(0, 1), "claude-opus-5-5")).toBe(rows[0]);
+    expect(modelForValue(rows, "missing")).toBeUndefined();
+    expect(
+      modelForValue([{ value: INHERITED_MODEL }], INHERITED_MODEL)?.value,
+    ).toBe(INHERITED_MODEL);
+  });
 });

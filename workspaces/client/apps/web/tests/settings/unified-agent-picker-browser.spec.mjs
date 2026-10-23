@@ -337,8 +337,13 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
       await expect(workersRow.locator(".execution-account")).toHaveText(
         "Work 1",
       );
-      await expect(reviewRow.locator(".execution-model")).toHaveText("Astra 6");
-      await expect(reviewRow.locator(".execution-effort")).toHaveText("Medium");
+      await expect(reviewRow.locator(".execution-model")).toHaveText(
+        "Same as caller",
+      );
+      await expect(reviewRow.locator(".execution-effort")).toHaveCount(0);
+      await expect(reviewRow.locator(".execution-selected > svg")).toHaveCount(
+        0,
+      );
       await expect(reviewRow).not.toContainText("Work 1");
       await expect(reviewRow.locator(".execution-selected")).toHaveAttribute(
         "data-inherited",
