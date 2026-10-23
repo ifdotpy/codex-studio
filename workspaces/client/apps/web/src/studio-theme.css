@@ -50,6 +50,8 @@
 
 :root[data-mantine-color-scheme],
 [data-mantine-color-scheme] {
+  /* Reviewed neutral foreground for quantities on the raised utility surface. */
+  --studio-text-on-raised: var(--text);
   --mantine-color-body: var(--studio-page);
   --mantine-color-text: var(--text);
   --mantine-color-dimmed: var(--muted);

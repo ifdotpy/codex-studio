@@ -203,3 +203,33 @@ export const PrimaryDark: Story = {
   globals: { colorScheme: "dark" },
   play: ({ canvasElement }) => verifyPrimary(canvasElement),
 };
+
+function RaisedAudit() {
+  return (
+    <main className="foundation-sheet" style={{ background: "var(--raised)" }}>
+      <span className="team-button-count">12</span>
+      <span className="attention-count">3</span>
+    </main>
+  );
+}
+async function verifyRaised(canvasElement: HTMLElement) {
+  for (const label of canvasElement.querySelectorAll(
+    ".team-button-count,.attention-count",
+  )) {
+    const result = computedContrast(label);
+    expect(
+      result.ratio,
+      `${label.className}: ${JSON.stringify(result)}`,
+    ).toBeGreaterThanOrEqual(4.5);
+  }
+}
+export const RaisedLight: Story = {
+  render: () => <RaisedAudit />,
+  globals: { colorScheme: "light" },
+  play: ({ canvasElement }) => verifyRaised(canvasElement),
+};
+export const RaisedDark: Story = {
+  render: () => <RaisedAudit />,
+  globals: { colorScheme: "dark" },
+  play: ({ canvasElement }) => verifyRaised(canvasElement),
+};
