@@ -28,9 +28,11 @@ export default function ConversationTitle({
           size="compact-xs"
           leftSection={<ArrowLeft size={13} />}
           id="back-lead"
+          aria-label="Back to main agent"
+          title="Back to main agent"
           onClick={onBack}
         >
-          Back to main agent
+          <span className="conversation-back-label">Back to main agent</span>
         </ActionButton>
       )}
       <h1 id="conversation-title" title={title}>

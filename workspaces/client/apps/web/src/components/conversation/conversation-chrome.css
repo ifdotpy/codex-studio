@@ -219,15 +219,35 @@
     min-height: var(--studio-touch-target);
   }
   .conversation-heading {
-    display: flex;
+    display: grid;
+    grid-template-columns: minmax(var(--studio-conversation-title-min), 1fr);
     align-items: center;
-    gap: var(--mantine-spacing-xs);
+    column-gap: calc(var(--mantine-spacing-xs) / 2);
+    row-gap: 0;
+  }
+  .conversation-heading:has(#back-lead) {
+    grid-template-columns: var(--studio-touch-target) minmax(
+        var(--studio-conversation-title-min),
+        1fr
+      );
+  }
+  #back-lead {
+    grid-row: 1 / 3;
+    width: var(--studio-touch-target);
+    min-height: var(--studio-touch-target);
+  }
+  #back-lead .mantine-Button-section {
+    margin: 0;
+  }
+  .conversation-back-label {
+    display: none;
   }
   #conversation-title {
-    flex: 1;
+    grid-column: -2;
+    min-width: var(--studio-conversation-title-min);
   }
   .conversation-meta {
-    flex: none;
+    grid-column: -2;
   }
   .conversation-meta .workspace-mode-badge,
   .simple-workspace-header .messages-toggle-label {
@@ -251,6 +271,18 @@
   .conversation-start {
     padding-block: var(--mantine-spacing-xs);
     gap: var(--mantine-spacing-sm);
+  }
+}
+@container workspace (max-width: 22.5rem) {
+  .simple-workspace-header #sidebar-toggle {
+    width: var(--studio-touch-target);
+    padding: 0;
+  }
+  .simple-workspace-header #sidebar-toggle .mantine-Button-label {
+    display: none;
+  }
+  .simple-workspace-header #sidebar-toggle .mantine-Button-section {
+    margin: 0;
   }
 }
 

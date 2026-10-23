@@ -11,7 +11,9 @@
   /* A title and optional live activity line on a dispatch strip. */
   --studio-strip-min-height: 2.75rem;
   /* One level of project or agent hierarchy. */
-  --studio-strip-indent: 0.75rem;
+  --studio-strip-indent: 0.375rem;
+  /* Keep a useful part of the conversation title visible in phone headers. */
+  --studio-conversation-title-min: 4rem;
   /* Team dock width when the conversation has room for a second column. */
   --studio-team-size: 20rem;
   /* Readable settings form column. */
@@ -31,8 +33,7 @@
   --studio-voice-control-size: 2.5rem;
   /* Minimum overlay menu width, constrained by the viewport on phones. */
   --studio-menu-min: 13.75rem;
-  /* Compact context usage meter length and thickness. */
-  --studio-meter-width: 3rem;
+  /* Compact context usage meter thickness. */
   --studio-meter-size: 0.1875rem;
   /* Keyboard focus ring stroke, and its gap inward from the control edge.
      Inset rings stay inside scroll containers and clear the state rail. */
