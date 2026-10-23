@@ -1337,6 +1337,7 @@ function ScopedExecutionSettings({
           </Text>
           <SegmentedControl
             className="execution-setting-control"
+            fullWidth
             aria-label="Full access without approval"
             value={
               (pendingYolo?.value ?? agent.yoloMode === true) ? "full" : "ask"
