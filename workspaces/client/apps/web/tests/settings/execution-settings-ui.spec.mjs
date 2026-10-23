@@ -156,9 +156,7 @@ test("execution settings ui", async ({ browser: _browser }) => {
         exact: true,
       });
       if (!(await settings.isVisible()))
-        await page
-          .getByRole("button", { name: "Chat settings", exact: true })
-          .click();
+        await page.locator("#composer .execution-summary-trigger").click();
       await settings.getByRole("tab", { name: "Models", exact: true }).click();
       const role =
         name === "Subagent defaults"
@@ -303,7 +301,7 @@ test("execution settings ui", async ({ browser: _browser }) => {
     await page.keyboard.press("Escape");
     await listBox.waitFor({ state: "hidden" });
     await expect(
-      page.getByRole("button", { name: "Chat settings", exact: true }),
+      page.locator("#composer .execution-summary-trigger"),
     ).toBeFocused();
     await openSettings("Main agent settings");
     const originalModelSaved = settingsResponse(

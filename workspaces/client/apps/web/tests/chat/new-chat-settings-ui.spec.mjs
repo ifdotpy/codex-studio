@@ -54,23 +54,20 @@ test("new chat controls open each role, save settings and stay in the composer a
         .getByRole("navigation", { name: "Recent project chats" })
         .getByRole("button", { name: /Release lead/ }),
     ).toBeVisible();
-    await expect(row.locator(".execution-menu")).toHaveCount(2);
-    await expect(page.locator("#composer .execution-menu")).toHaveCount(2);
+    await expect(row.locator(".execution-menu")).toHaveCount(1);
+    await expect(page.locator("#composer .execution-menu")).toHaveCount(1);
     await expect(page.locator(".empty-chat p")).toHaveCount(0);
-    const main = row.getByRole("button", {
-      name: "Main agent settings",
-      exact: true,
-    });
-    const workers = row.getByRole("button", {
-      name: "Subagent defaults",
-      exact: true,
-    });
+    const trigger = row.getByRole("button", { name: /^Execution settings:/ });
+    const main = trigger.locator('[data-role="lead"]');
+    const workers = trigger.locator('[data-role="worker"]');
     await expect(main.locator(".execution-model")).not.toBeEmpty();
     await expect(main.locator(".execution-effort")).not.toBeEmpty();
-    await expect(main.locator(".execution-account")).not.toBeEmpty();
     await expect(workers.locator(".execution-model")).toHaveText("Luna 6");
     await expect(workers.locator(".execution-effort")).toHaveText("High");
-    await expect(workers.locator(".execution-account")).not.toBeEmpty();
+    await expect(trigger).toHaveAttribute(
+      "aria-label",
+      /Review same as caller/,
+    );
     const composerBounds = await page.locator("#composer").boundingBox();
     const rowBounds = await row.boundingBox();
     const startBounds = await page.locator(".conversation-start").boundingBox();
@@ -82,9 +79,9 @@ test("new chat controls open each role, save settings and stay in the composer a
     expect(rowBounds.y + rowBounds.height).toBeLessThanOrEqual(
       composerBounds.y + composerBounds.height,
     );
-    await main.click();
+    await trigger.click();
     await expect(
-      page.getByRole("radio", { name: "Orchestrator", exact: true }),
+      page.getByRole("radio", { name: /Lead/, exact: false }),
     ).toBeChecked();
     const mainSave = page.waitForResponse(
       (response) =>
@@ -98,12 +95,16 @@ test("new chat controls open each role, save settings and stay in the composer a
     expect((await mainSave).ok()).toBe(true);
     await page.keyboard.press("Escape");
     await expect(
-      page.getByRole("dialog", { name: "Main agent settings", exact: true }),
+      page.getByRole("dialog", { name: "Chat settings", exact: true }),
     ).toHaveCount(0);
     await expect(main.locator(".execution-effort")).toHaveText("High");
-    await workers.click();
+    await trigger.click();
+    await page
+      .getByRole("radiogroup", { name: "Agent role", exact: true })
+      .getByText("Workers", { exact: true })
+      .click();
     await expect(
-      page.getByRole("radio", { name: "Worker", exact: true }),
+      page.getByRole("radio", { name: /Workers/, exact: false }),
     ).toBeChecked();
     const workerSave = page.waitForResponse(
       (response) =>
@@ -117,20 +118,18 @@ test("new chat controls open each role, save settings and stay in the composer a
     expect((await workerSave).ok()).toBe(true);
     await page.keyboard.press("Escape");
     await expect(
-      page.getByRole("dialog", { name: "Subagent defaults", exact: true }),
+      page.getByRole("dialog", { name: "Chat settings", exact: true }),
     ).toHaveCount(0);
     await expect(workers.locator(".execution-effort")).toHaveText("Medium");
     await page.reload();
     await expect(main.locator(".execution-effort")).toHaveText("High");
     await expect(workers.locator(".execution-effort")).toHaveText("Medium");
     await page.setViewportSize({ width: 390, height: 844 });
-    for (const chip of [main, workers]) {
-      await expect(chip).toBeVisible();
-      const label = chip.locator(".execution-selected");
-      expect(
-        await label.evaluate((node) => node.scrollWidth <= node.clientWidth),
-      ).toBe(true);
-    }
+    await expect(trigger).toBeVisible();
+    await expect(trigger.locator(".execution-role-icon")).toHaveCount(3);
+    expect(
+      await trigger.evaluate((node) => node.scrollWidth <= node.clientWidth),
+    ).toBe(true);
     await page.locator("#message").fill("Fixture first message");
     const send = page.waitForResponse(
       (response) =>
@@ -141,14 +140,9 @@ test("new chat controls open each role, save settings and stay in the composer a
     expect((await send).ok()).toBe(true);
     await expect(page.locator(".conversation-start")).toHaveCount(0);
     await expect(row).toBeVisible();
-    await expect(page.locator("#composer .execution-menu")).toHaveCount(2);
+    await expect(page.locator("#composer .execution-menu")).toHaveCount(1);
     const footer = page.locator(".conversation-composer-footer");
-    await expect(
-      row.getByRole("button", { name: "Main agent settings", exact: true }),
-    ).toBeVisible();
-    await expect(
-      row.getByRole("button", { name: "Subagent defaults", exact: true }),
-    ).toBeVisible();
+    await expect(trigger).toBeVisible();
     await expect(footer.locator(".execution-menu")).toHaveCount(0);
   } finally {
     fixture.kill("SIGTERM");

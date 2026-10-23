@@ -129,7 +129,7 @@ test("phone conversation gives the transcript its viewport budget", async ({
           });
           await expect(activity).toBeVisible();
           await expect(page.locator("#composer .execution-menu")).toHaveCount(
-            2,
+            1,
           );
           await expect(
             page.locator(".conversation-composer-footer .execution-menu"),
