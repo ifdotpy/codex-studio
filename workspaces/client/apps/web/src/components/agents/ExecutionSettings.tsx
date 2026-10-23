@@ -1477,6 +1477,27 @@ function ScopedExecutionSettings({
     <Button
       className="execution-menu"
       rightSection={<ChevronDown size={14} />}
+      title={[
+        summaryRole === "worker"
+          ? "Workers"
+          : summaryRole === "review"
+            ? "Review"
+            : agent.isLead
+              ? "Lead"
+              : "Agent",
+        inheritedReview
+          ? "Same as caller"
+          : displayModel(summaryCatalog, summaryModel),
+        !inheritedReview && summaryEffort ? title(summaryEffort) : "",
+        !inheritedReview ? title(summaryProvider) : "",
+        summaryRole !== "review"
+          ? setupAccountName(
+              accounts.find((account) => account.id === summaryAccount),
+            )
+          : "",
+      ]
+        .filter(Boolean)
+        .join(" · ")}
       aria-label={
         settingsRow
           ? initialRole === "worker"
