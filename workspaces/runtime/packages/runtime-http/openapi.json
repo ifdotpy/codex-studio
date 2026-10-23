@@ -43488,6 +43488,17 @@
               }
             ]
           },
+          "clientId": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Clientid"
+          },
           "command": {
             "anyOf": [
               {
@@ -43516,6 +43527,39 @@
             ],
             "title": "Cwd"
           },
+          "expiresAt": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "number"
+              }
+            ],
+            "title": "Expiresat"
+          },
+          "host": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Host"
+          },
+          "linuxUser": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Linuxuser"
+          },
           "message": {
             "anyOf": [
               {
@@ -43526,6 +43570,20 @@
               }
             ],
             "title": "Message"
+          },
+          "paste": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "$ref": "#/components/schemas/JsonValue"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Paste"
           },
           "permissions": {
             "anyOf": [
@@ -43540,6 +43598,17 @@
               }
             ],
             "title": "Permissions"
+          },
+          "phase": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Phase"
           },
           "questions": {
             "anyOf": [
@@ -43566,6 +43635,20 @@
             ],
             "title": "Reason"
           },
+          "redirect": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "$ref": "#/components/schemas/JsonValue"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Redirect"
+          },
           "requestedSchema": {
             "anyOf": [
               {
@@ -43575,6 +43658,28 @@
                 "type": "null"
               }
             ]
+          },
+          "scope": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Scope"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Source"
           },
           "threadId": {
             "anyOf": [
@@ -43608,6 +43713,31 @@
               }
             ],
             "title": "Url"
+          },
+          "userCode": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Usercode"
+          },
+          "waiting": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "$ref": "#/components/schemas/JsonValue"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Waiting"
           }
         },
         "title": "RequestParamsDto",

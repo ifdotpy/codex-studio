@@ -19421,27 +19421,55 @@ export interface components {
      */
     RequestParamsDto: {
       changes?: components["schemas"]["JsonValue"] | null;
+      /** Clientid */
+      clientId?: null | string;
       /** Command */
       command?: string[] | null | string;
       /** Cwd */
       cwd?: null | string;
+      /** Expiresat */
+      expiresAt?: null | number;
+      /** Host */
+      host?: null | string;
+      /** Linuxuser */
+      linuxUser?: null | string;
       /** Message */
       message?: null | string;
+      /** Paste */
+      paste?: {
+        [key: string]: components["schemas"]["JsonValue"];
+      } | null;
       /** Permissions */
       permissions?: {
         [key: string]: components["schemas"]["JsonValue"];
       } | null;
+      /** Phase */
+      phase?: null | string;
       /** Questions */
       questions?: components["schemas"]["RequestQuestionDto"][] | null;
       /** Reason */
       reason?: null | string;
+      /** Redirect */
+      redirect?: {
+        [key: string]: components["schemas"]["JsonValue"];
+      } | null;
       requestedSchema?: components["schemas"]["RequestSchemaDto"] | null;
+      /** Scope */
+      scope?: null | string;
+      /** Source */
+      source?: null | string;
       /** Threadid */
       threadId?: null | string;
       /** Turnid */
       turnId?: null | string;
       /** Url */
       url?: null | string;
+      /** Usercode */
+      userCode?: null | string;
+      /** Waiting */
+      waiting?: {
+        [key: string]: components["schemas"]["JsonValue"];
+      } | null;
     } & {
       [key: string]: components["schemas"]["JsonValue"];
     };

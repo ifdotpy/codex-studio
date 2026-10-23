@@ -791,6 +791,7 @@ fn put(
         ));
     }
     QuestionsWriteRepository::put_request(tx, id, &studio_runtime_store::python_json_utf8(record))?;
+    crate::browser_cards::publish_request(tx, id)?;
     Ok(())
 }
 
@@ -970,6 +971,76 @@ mod tests {
         let call_ids = guest.calls.lock().expect("call log").clone();
         assert_eq!(call_ids.len(), 2);
         assert_eq!(call_ids[0], call_ids[1]);
+    }
+
+    /// Whether the card has a live client entity, as the renderer pulls it.
+    fn card_shown(store: &studio_runtime_store::RuntimeStore, id: &str) -> bool {
+        let id = id.to_owned();
+        store
+            .test_read_transaction(move |tx| {
+                Ok(tx.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sync_entities WHERE collection='request' AND id=?1 AND deleted=0)",
+                    [id],
+                    |row| row.get::<_, bool>(0),
+                )?)
+            })
+            .expect("request entity reads")
+    }
+
+    #[tokio::test]
+    async fn a_declined_card_leaves_the_client() {
+        let (_dir, store, id) = store_with_browser_request().await;
+        let shown_id = id.clone();
+        store
+            .transaction_with(move |tx| {
+                // The decline tells the chat, so the chat exists.
+                tx.execute(
+                    "INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",
+                    [
+                        "browser-answer-agent",
+                        &json!({"id":"browser-answer-agent","rootId":"browser-answer-agent",
+                                 "epoch":1,"status":"idle","autoWake":true})
+                        .to_string(),
+                    ],
+                )
+                .map_err(studio_runtime_store::StoreError::from)?;
+                let raw = studio_runtime_store::QuestionsWriteRepository::request(tx, &shown_id)?
+                    .expect("seeded card");
+                let record: Value = serde_json::from_str(&raw).expect("card JSON");
+                let view = crate::sync_views::project_persisted_record("request", &record)
+                    .expect("card view");
+                studio_runtime_store::SyncDocumentsRepository::put_entity(
+                    tx, "request", &shown_id, view, false,
+                )?;
+                Ok::<_, studio_runtime_store::StoreError>(())
+            })
+            .await
+            .expect("the pending card is shown");
+        assert!(card_shown(&store, &id));
+        let guest = Arc::new(FakeGuest {
+            calls: Mutex::new(Vec::new()),
+            fail_unknown_once: Mutex::new(false),
+        });
+        answer(
+            &store,
+            &id,
+            &json!({"decision":"decline"}),
+            BrowserAnswerContext {
+                local_window: true,
+                guest,
+                local_forwarder: None,
+                now: 10.0,
+                validate: |_: &serde_json::Value| true,
+                http_providers: Default::default(),
+            },
+        )
+        .await
+        .expect("the decline succeeds")
+        .expect("browser card is handled");
+        assert!(
+            !card_shown(&store, &id),
+            "a declined card leaves the client"
+        );
     }
 }
 
