@@ -29,7 +29,7 @@ const PROJECTION_REFUSED: &str = "invalidInput";
 
 /// Log an analytics effect in the caller's Canvas transaction and return the
 /// effect that remains to be published: `AnalyticsCaptured` or
-/// `AnalyticsStreamCaptured` for token rates and state invalidation, or `None`
+/// `AnalyticsStreamCaptured` for token rates without another state reset, or `None`
 /// when the agent identity is stale (nothing is captured or published, as
 /// before). Any other effect passes through unchanged.
 pub(crate) fn log_effect(

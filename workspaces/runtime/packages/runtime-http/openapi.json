@@ -25156,6 +25156,39 @@
         "title": "DiskSpaceStatus",
         "type": "object"
       },
+      "DraftChangeBatch": {
+        "additionalProperties": false,
+        "description": "Complete draft interval. Each SyncDocument payload is the original stored DraftVersion JSON, validated by the Rust draft owner without rewriting legacy bytes.",
+        "properties": {
+          "after": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "title": "After",
+            "type": "integer"
+          },
+          "documents": {
+            "items": {
+              "$ref": "#/components/schemas/SyncDocument"
+            },
+            "maxItems": 512,
+            "title": "Documents",
+            "type": "array"
+          },
+          "through": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "title": "Through",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "after",
+          "through",
+          "documents"
+        ],
+        "title": "DraftChangeBatch",
+        "type": "object"
+      },
       "DraftDocumentInput": {
         "additionalProperties": false,
         "properties": {
@@ -43766,6 +43799,16 @@
         "additionalProperties": false,
         "description": "Per-resource revision; StateResource uses the entity sequence.",
         "properties": {
+          "draftChanges": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DraftChangeBatch"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "entityChanges": {
             "anyOf": [
               {

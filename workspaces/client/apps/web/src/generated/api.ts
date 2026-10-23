@@ -12147,6 +12147,18 @@ export interface components {
       /** Message */
       message: null | string;
     };
+    /**
+     * DraftChangeBatch
+     * @description Complete draft interval. Each SyncDocument payload is the original stored DraftVersion JSON, validated by the Rust draft owner without rewriting legacy bytes.
+     */
+    DraftChangeBatch: {
+      /** After */
+      after: number;
+      /** Documents */
+      documents: components["schemas"]["SyncDocument"][];
+      /** Through */
+      through: number;
+    };
     /** DraftDocumentInput */
     DraftDocumentInput: {
       /**
@@ -19597,6 +19609,7 @@ export interface components {
      * @description Per-resource revision; StateResource uses the entity sequence.
      */
     ResourceRevisionEntry: {
+      draftChanges?: components["schemas"]["DraftChangeBatch"] | null;
       entityChanges?: components["schemas"]["EntityChangeBatch"] | null;
       /** Entitysequencereset */
       entitySequenceReset?: boolean | null;

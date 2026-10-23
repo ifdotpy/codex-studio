@@ -6,8 +6,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::generated::{
-    EntityChangeBatch, ResourceChangeEvent, ResourceChangeEventReason, ResourceRef,
-    ResourceRevisionEntry, TranscriptChangeBatch, TranscriptStreamDelta, TranscriptSyncPage,
+    DraftChangeBatch, EntityChangeBatch, ResourceChangeEvent, ResourceChangeEventReason,
+    ResourceRef, ResourceRevisionEntry, TranscriptChangeBatch, TranscriptStreamDelta,
+    TranscriptSyncPage,
 };
 use axum::Json;
 use axum::extract::State;
@@ -19,7 +20,8 @@ use futures_util::stream;
 use serde::Serialize;
 use serde_json::{Value, json};
 use studio_runtime_schema::shared_values::{
-    MAX_SYNC_RESOURCE_COUNT, MAX_SYNC_RESOURCE_QUERY_BYTES, SYNC_ENTITY_STREAM_MAX_BYTES,
+    MAX_SYNC_RESOURCE_COUNT, MAX_SYNC_RESOURCE_QUERY_BYTES, SYNC_DRAFT_STREAM_MAX_BYTES,
+    SYNC_DRAFT_STREAM_MAX_DOCUMENTS, SYNC_ENTITY_STREAM_MAX_BYTES,
     SYNC_ENTITY_STREAM_MAX_DOCUMENTS, SYNC_RESOURCE_HEARTBEAT_SECONDS,
     SYNC_TRANSCRIPT_STREAM_MAX_BYTES, SYNC_TRANSCRIPT_STREAM_MAX_ITEMS,
 };
@@ -133,6 +135,11 @@ async fn sync_stream(
         Ok(sequence) => sequence,
         Err(error) => return error.into_response(),
     };
+    let initial_draft_sequence =
+        match read_draft_changes(Some(store.clone()), &resources, None).await {
+            Ok((sequence, _)) => sequence,
+            Err(error) => return error.into_response(),
+        };
     let reason = if headers.contains_key("last-event-id") {
         ResourceChangeEventReason::Reconnect
     } else {
@@ -163,6 +170,8 @@ async fn sync_stream(
         reason,
         initial_entity_sequence,
         None,
+        initial_draft_sequence,
+        None,
     ) {
         Ok(event) => event,
         Err(error) => return error.into_response(),
@@ -190,6 +199,7 @@ async fn sync_stream(
         resources,
         entity_sequence: initial_entity_sequence,
         transcript_sequences,
+        draft_sequence: initial_draft_sequence,
         store: Some(store),
         changes,
         notifications: state.resource_notifications,
@@ -212,6 +222,17 @@ async fn resource_content(state: HttpState, resource: Value) -> Option<Vec<u8>> 
     use crate::generated::ResourceRef;
     let resource: ResourceRef = serde_json::from_value(resource).ok()?;
     match resource {
+        ResourceRef::DraftsResource(_) => state
+            .store?
+            .read_async(
+                "runtime-http/routes/sync_stream/draft-revision",
+                |connection| {
+                    let sequence = SyncDocumentsRepository::draft_sequence(connection)?;
+                    serde_json::to_vec(&sequence).map_err(studio_runtime_store::StoreError::from)
+                },
+            )
+            .await
+            .ok(),
         ResourceRef::TranscriptResource(resource) => {
             // A scoped stream hint may precede the next stored transcript flush.
             let publication = state
@@ -550,6 +571,76 @@ fn transcript_change_batch(
     Some(batch)
 }
 
+/// Read the scoped watermark and its complete interval in the same SQLite snapshot.
+async fn read_draft_changes(
+    store: Option<Arc<RuntimeStore>>,
+    resources: &[Value],
+    after: Option<i64>,
+) -> Result<(i64, Option<DraftChangeBatch>), ApiError> {
+    let resources = resources
+        .iter()
+        .cloned()
+        .map(serde_json::from_value::<ResourceRef>)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| ApiError::internal())?;
+    if !resources
+        .iter()
+        .any(|resource| matches!(resource, ResourceRef::DraftsResource(_)))
+    {
+        return Ok((after.unwrap_or(0), None));
+    }
+    store
+        .ok_or_else(ApiError::internal)?
+        .read_async(
+            "runtime-http/routes/sync_stream/drafts",
+            move |connection| {
+                let through = SyncDocumentsRepository::draft_sequence(connection)
+                    .map_err(|_| ApiError::internal())?;
+                if !(0..=MAX_SAFE_REVISION).contains(&through) {
+                    return Err(ApiError::internal());
+                }
+                Ok((through, draft_change_batch(connection, after, through)))
+            },
+        )
+        .await
+}
+
+fn draft_change_batch(
+    connection: &Connection,
+    after: Option<i64>,
+    through: i64,
+) -> Option<DraftChangeBatch> {
+    let after = after?;
+    if after < 0 || after >= through {
+        return None;
+    }
+    let rows = SyncDocumentsRepository::drafts_after(
+        connection,
+        after,
+        SYNC_DRAFT_STREAM_MAX_DOCUMENTS + 1,
+    )
+    .ok()?;
+    if rows.len() as i64 > SYNC_DRAFT_STREAM_MAX_DOCUMENTS {
+        return None;
+    }
+    let mut documents = Vec::with_capacity(rows.len());
+    for row in rows {
+        documents.push(super::sync_documents::draft_document(row).ok()?);
+    }
+    if documents.last()?.seq != through {
+        return None;
+    }
+    let batch = DraftChangeBatch {
+        after,
+        through,
+        documents,
+    };
+    if serde_json::to_vec(&batch).ok()?.len() > SYNC_DRAFT_STREAM_MAX_BYTES {
+        return None;
+    }
+    Some(batch)
+}
+
 fn attach_transcript_changes(
     event: &mut ResourceChangeEvent,
     mut updates: BTreeMap<String, TranscriptStreamUpdate>,
@@ -581,6 +672,7 @@ struct ResourceStream {
     resources: Vec<Value>,
     entity_sequence: i64,
     transcript_sequences: BTreeMap<String, i64>,
+    draft_sequence: i64,
     store: Option<Arc<RuntimeStore>>,
     changes: tokio::sync::watch::Receiver<ChangeSnapshot>,
     notifications: Arc<ResourceNotifications>,
@@ -667,6 +759,14 @@ async fn next_frame(
                 }
             };
             state.entity_sequence = sequence;
+            let (draft_sequence, draft_changes) = read_draft_changes(
+                state.store.clone(),
+                &view.resources,
+                (!view.overflow).then_some(state.draft_sequence),
+            )
+            .await
+            .ok()?;
+            state.draft_sequence = draft_sequence;
             let reason = if view.overflow {
                 ResourceChangeEventReason::Overflow
             } else {
@@ -679,8 +779,16 @@ async fn next_frame(
                 !view.overflow,
             )
             .await;
-            let mut event =
-                resource_changes_event(&state.workspace_id, &view, reason, sequence, batch).ok()?;
+            let mut event = resource_changes_event(
+                &state.workspace_id,
+                &view,
+                reason,
+                sequence,
+                batch,
+                draft_sequence,
+                draft_changes,
+            )
+            .ok()?;
             attach_transcript_changes(&mut event, transcript_updates);
             if event.resources.is_empty() {
                 continue;
@@ -743,6 +851,8 @@ fn resource_changes_event(
     reason: ResourceChangeEventReason,
     sequence: i64,
     changes: Option<EntityChangeBatch>,
+    draft_sequence: i64,
+    draft_changes: Option<DraftChangeBatch>,
 ) -> Result<ResourceChangeEvent, ApiError> {
     let resources = view
         .resources
@@ -756,8 +866,16 @@ fn resource_changes_event(
         .zip(&view.versions)
         .map(|(resource, revision)| {
             let state = matches!(resource, ResourceRef::StateResource(_));
+            let drafts = matches!(resource, ResourceRef::DraftsResource(_));
             ResourceRevisionEntry {
-                revision: if state { sequence } else { *revision },
+                revision: if state {
+                    sequence
+                } else if drafts {
+                    draft_sequence
+                } else {
+                    *revision
+                },
+                draft_changes: drafts.then(|| draft_changes.clone()).flatten().map(Some),
                 entity_changes: state.then(|| changes.clone()).flatten().map(Some),
                 entity_sequence_reset: state.then_some(Some(view.entity_reset)),
                 entity_sequences: None,
@@ -824,6 +942,8 @@ fn resource_event(
             },
             serde_json::from_value(json!(reason)).expect("fixture reason"),
             entity_sequence,
+            None,
+            0,
             None,
         )
         .expect("typed fixture event"),
@@ -1137,6 +1257,188 @@ mod tests {
                 "{scenario}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn state_stream_draft_batches_keep_limits_and_recovery() {
+        for scenario in ["maximum", "documents", "bytes", "payload"] {
+            let root = tempfile::tempdir().expect("isolated state");
+            let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
+            store.transaction(move |tx| {
+                let count = match scenario {
+                    "maximum" => SYNC_DRAFT_STREAM_MAX_DOCUMENTS,
+                    "documents" => SYNC_DRAFT_STREAM_MAX_DOCUMENTS + 1,
+                    _ => 1,
+                };
+                for index in 0..count {
+                    let session = format!("chat-{index}");
+                    let payload = if scenario == "payload" { "broken".to_owned() } else {
+                        json!({"device":"phone", "session":session, "text": if scenario == "bytes" { "é".repeat(SYNC_DRAFT_STREAM_MAX_BYTES) } else { "draft".into() }, "updated":1}).to_string()
+                    };
+                    SyncDocumentsRepository::put_draft(tx, &format!("phone:{session}"), &payload, false)?;
+                }
+                Ok(())
+            }).await.expect("draft interval");
+            let resources = [json!({"kind":"drafts"})];
+            let (through, batch) = read_draft_changes(Some(store.clone()), &resources, Some(0))
+                .await
+                .expect("batch");
+            if scenario == "maximum" {
+                assert_eq!(
+                    batch.expect("maximum fits").documents.len() as i64,
+                    SYNC_DRAFT_STREAM_MAX_DOCUMENTS
+                );
+            } else {
+                assert!(batch.is_none(), "{scenario} needs pull recovery");
+            }
+            assert!(
+                read_draft_changes(Some(store.clone()), &resources, None)
+                    .await
+                    .expect("initial")
+                    .1
+                    .is_none()
+            );
+            assert!(
+                read_draft_changes(Some(store), &resources, Some(through + 1))
+                    .await
+                    .expect("future checkpoint")
+                    .1
+                    .is_none()
+            );
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn state_stream_delivers_draft_edits_and_tombstones_without_pull() {
+        let root = tempfile::tempdir().expect("isolated state");
+        let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
+        let http = HttpState::new(
+            "token".into(),
+            "workspace".into(),
+            root.path().display().to_string(),
+            4321,
+            None,
+            Some(store.clone()),
+            None,
+        );
+        let resources = vec![json!({"kind":"drafts"})];
+        http.resource_notifications
+            .changes_since_with_content(&resources, None, |resource| {
+                resource_content(http.clone(), resource)
+            })
+            .await
+            .expect("baseline");
+        let mut state = test_stream(
+            &http.sync_changes,
+            &http.token_rates,
+            http.resource_notifications.clone(),
+            resources,
+        );
+        state.store = Some(store.clone());
+        state.http_state = Some(http);
+        let raw = r#"{"device":"phone","session":"chat","text":"legacy bytes","updated":1.5}"#;
+        store.transaction(move |tx| {
+            SyncDocumentsRepository::put_draft(tx, "phone:chat", raw, false)?;
+            SyncDocumentsRepository::put_draft(tx, "phone:removed", r#"{"id":"phone:removed","device":"phone","session":"removed","text":"","updated":2}"#, true)?;
+            Ok(())
+        }).await.expect("draft changes");
+        let (event, _) = next_frame(state).await.expect("draft frame");
+        let event = event_document(event).await;
+        let batch = &event["resourceVersions"][0]["draftChanges"];
+        assert_eq!(
+            batch["after"], 0,
+            "draft batches prove their starting checkpoint"
+        );
+        assert_eq!(batch["through"], event["resourceVersions"][0]["revision"]);
+        assert_eq!(
+            batch["documents"][0]["payload"], raw,
+            "legacy payload bytes stay unchanged"
+        );
+        assert_eq!(batch["documents"][1]["_deleted"], true);
+    }
+
+    #[tokio::test]
+    async fn unchanged_drafts_ignore_unrelated_commits_and_publications() {
+        let root = tempfile::tempdir().expect("isolated state");
+        let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
+        let state = HttpState::new(
+            "token".into(),
+            "workspace".into(),
+            root.path().display().to_string(),
+            4321,
+            None,
+            Some(store.clone()),
+            None,
+        );
+        let resources = [json!({"kind":"drafts"})];
+        let baseline = state
+            .resource_notifications
+            .changes_since_with_content(&resources, None, |resource| {
+                resource_content(state.clone(), resource)
+            })
+            .await
+            .expect("baseline");
+        assert_eq!(baseline.resources, resources);
+        store
+            .transaction(|tx| {
+                tx.execute(
+                    "INSERT INTO runtime_agents(id,record) VALUES('other',?1)",
+                    [json!({"id":"other","status":"idle"}).to_string()],
+                )?;
+                Ok(())
+            })
+            .await
+            .expect("unrelated broad commit");
+        state
+            .resource_notifications
+            .publish_once(&json!({
+                "requestId":"unchanged-drafts", "resources":resources
+            }))
+            .expect("redundant external hint");
+        let unchanged = state
+            .resource_notifications
+            .changes_since_with_content(&resources, Some(baseline.cursor.revision), |resource| {
+                resource_content(state.clone(), resource)
+            })
+            .await
+            .expect("unchanged drafts");
+        assert!(
+            unchanged.resources.is_empty(),
+            "unchanged drafts must cause zero pulls"
+        );
+        store
+            .transaction(|tx| {
+                SyncDocumentsRepository::put_draft(tx, "phone:chat", "draft", false)?;
+                Ok(())
+            })
+            .await
+            .expect("draft edit");
+        let edited = state
+            .resource_notifications
+            .changes_since_with_content(&resources, Some(unchanged.cursor.revision), |resource| {
+                resource_content(state.clone(), resource)
+            })
+            .await
+            .expect("edited draft");
+        assert_eq!(edited.resources, resources, "real draft edits still notify");
+        store
+            .transaction(|tx| {
+                SyncDocumentsRepository::put_draft(tx, "phone:chat", "draft", true)?;
+                Ok(())
+            })
+            .await
+            .expect("draft deletion");
+        let deleted = state
+            .resource_notifications
+            .changes_since_with_content(&resources, Some(edited.cursor.revision), |resource| {
+                resource_content(state.clone(), resource)
+            })
+            .await
+            .expect("deleted draft");
+        assert_eq!(
+            deleted.resources, resources,
+            "draft tombstones still notify"
+        );
     }
 
     #[tokio::test(start_paused = true)]
@@ -1796,6 +2098,7 @@ mod tests {
             resources: vec![json!({"kind": "queue", "agentId": "agent-a"})],
             entity_sequence: 0,
             transcript_sequences: BTreeMap::new(),
+            draft_sequence: 0,
             store: None,
             changes,
             notifications: Arc::new(ResourceNotifications::new(Arc::new(hub.clone()))),
@@ -1840,6 +2143,7 @@ mod tests {
             resources: vec![json!({"kind":"accounts"})],
             entity_sequence: 0,
             transcript_sequences: BTreeMap::new(),
+            draft_sequence: 0,
             store: None,
             changes,
             notifications: notifications.clone(),
@@ -1954,6 +2258,7 @@ mod tests {
             resources,
             entity_sequence: 0,
             transcript_sequences: BTreeMap::new(),
+            draft_sequence: 0,
             store: None,
             changes,
             notifications,
@@ -2167,6 +2472,7 @@ mod tests {
             resources: Vec::new(),
             entity_sequence: 0,
             transcript_sequences: BTreeMap::new(),
+            draft_sequence: 0,
             store: None,
             changes,
             notifications: Arc::new(ResourceNotifications::new(Arc::new(hub.clone()))),

@@ -1415,6 +1415,9 @@ function fastTierCommands(root) {
               "test(unavailable_and_racing_content_keep_the_safe_refresh)",
               "test(provider_versions::tests::preference_read_error_fails_closed_without_an_upstream_request)",
               "test(token_publications_do_not_repeat_or_invalidate_content_projections)",
+              "test(drained_notification_effects_use_committed_state_without_resetting_entities)",
+              "test(analytics_receipts_preserve_entity_delivery_but_recovery_still_resets)",
+              "test(publication_bound_keeps_state_invalidation_and_token_rate_usage)",
             ]),
           ],
         ],
@@ -1655,6 +1658,86 @@ function fastTierCommands(root) {
           "typed complete stream intervals, bounded flush and per-chat content revision",
         reason:
           "Deliver state without extra pulls while retaining gap recovery and unchanged-chat suppression.",
+      },
+    },
+    {
+      item: { name: "studio-runtime-http", ecosystem: "cargo" },
+      label: "Draft stream content witness",
+      commands: [
+        [
+          "cargo",
+          [
+            "nextest",
+            "run",
+            "--locked",
+            "--no-tests",
+            "fail",
+            "--message-format",
+            "libtest-json-plus",
+            "-p",
+            "studio-runtime-http",
+            "--lib",
+            "-E",
+            "test(unchanged_drafts_ignore_unrelated_commits_and_publications)",
+          ],
+        ],
+      ],
+      options: {
+        selector: "unchanged draft revisions and retained tombstones",
+        reason:
+          "Unrelated commits must not request draft pulls; draft changes still notify.",
+      },
+    },
+    {
+      item: web,
+      label: "Draft stream acceptance and durable recovery witnesses",
+      commands: [
+        [
+          "pnpm",
+          [
+            "--filter",
+            "codex-agents-web",
+            "exec",
+            "vitest",
+            "run",
+            "--config",
+            "vitest.unit.config.ts",
+            "src/sync/client.draftStream.test.ts",
+          ],
+        ],
+      ],
+      options: {
+        selector:
+          "draft stream acceptance, tombstones, gaps, reconnects and failed persistence",
+        reason:
+          "Normal draft changes use RxDB's master stream; recovery reads its durable checkpoint.",
+      },
+    },
+    {
+      item: web,
+      label: "Draft stream transport ordering witness",
+      commands: [
+        [
+          "pnpm",
+          [
+            "--filter",
+            "codex-agents-web",
+            "exec",
+            "vitest",
+            "run",
+            "--config",
+            "vitest.unit.config.ts",
+            "src/sync/resourceEvents.test.ts",
+            "-t",
+            "consecutive draft batches",
+          ],
+        ],
+      ],
+      options: {
+        selector:
+          "lossless draft intervals and equal-version reconnect recovery",
+        reason:
+          "Coalescing hints must not discard draft data or mask a recovery baseline.",
       },
     },
     {

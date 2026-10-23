@@ -229,7 +229,7 @@ impl RuntimeNotificationPostCommitSink {
         &self,
         effect: &NotificationPostCommit,
     ) -> Result<(), NotificationDispatchError> {
-        let (observation, kind) = match effect {
+        match effect {
             NotificationPostCommit::Recovered { identity, .. } => {
                 self.resources
                     .publish_once(&serde_json::json!({
@@ -239,48 +239,22 @@ impl RuntimeNotificationPostCommitSink {
                     .map_err(|_| {
                         NotificationDispatchError::Dependency("sync/resources/publication")
                     })?;
-                return Ok(());
             }
-            // Analytics rows are projected from the Canvas log; the receipt
-            // publishes the token rate and the state invalidation. A legacy
-            // uncaptured receipt (written before the projection log) publishes
-            // the same, without analytics rows.
+            // The store observer already publishes committed entity changes.
+            // Ordinary receipts own only volatile token rates; a state reset
+            // would force a pull instead of delivering the known entity interval.
             NotificationPostCommit::AnalyticsCaptured(observation)
-            | NotificationPostCommit::Analytics { observation, .. } => {
+            | NotificationPostCommit::Analytics { observation, .. }
+            | NotificationPostCommit::TokenRateStream(observation)
+            | NotificationPostCommit::TokenRateAssociation(observation)
+            | NotificationPostCommit::TokenRateUsage(observation) => {
                 if observation.agent.is_some() {
                     self.project_token_rate(effect)?;
                 }
-                (observation, "analytics")
             }
-            NotificationPostCommit::AnalyticsStreamCaptured(observation)
-            | NotificationPostCommit::AnalyticsStream { observation, .. } => {
-                (observation, "analyticsStream")
-            }
-            NotificationPostCommit::TokenRateStream(observation)
-            | NotificationPostCommit::TokenRateAssociation(observation)
-            | NotificationPostCommit::TokenRateUsage(observation) => {
-                // Unmanaged provider threads have no agent to project. Retire
-                // their committed observation instead of retrying it forever.
-                if observation.agent.is_none() {
-                    return Ok(());
-                }
-                self.project_token_rate(effect)?;
-                // The token-rate hub owns this volatile update and its SSE frame.
-                // No durable state changed here, so a state reset would only
-                // make clients reread the same entity sequence.
-                return Ok(());
-            }
-        };
-        let delivery = &observation.delivery;
-        let request = serde_json::json!({
-            "requestId": format!("provider-publication:{}:{}:{}:{kind}", delivery.provider_handle, delivery.generation, delivery.cursor),
-            "resources": [{"kind":"state"}],
-        });
-        // A repeated full-state invalidation is a set operation: it asks clients
-        // to re-read current state and cannot duplicate or mutate stored rows.
-        self.resources
-            .publish_once(&request)
-            .map_err(|_| NotificationDispatchError::Dependency("sync/resources/publication"))?;
+            NotificationPostCommit::AnalyticsStreamCaptured(_)
+            | NotificationPostCommit::AnalyticsStream { .. } => {}
+        }
         Ok(())
     }
 

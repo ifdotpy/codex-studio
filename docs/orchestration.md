@@ -25,6 +25,14 @@ State updates follow this flow:
    External `/api/sync/notify` hints proven empty at the same pull cursor are consumed;
    changed content is delivered, and incomplete intervals retain a pull hint.
 
+Browser draft notifications follow this flow:
+
+1. Read the [draft sequence owner](../workspaces/runtime/packages/runtime-store/src/repositories/sync_documents.rs) when a subscribed draft resource is invalidated.
+2. The shared content filter suppresses hints when that sequence is unchanged.
+3. Read changed drafts and retained tombstones as one bounded typed interval; validate each payload through the draft owner and preserve its stored bytes.
+4. Admit contiguous intervals directly to RxDB's master stream, without another pull. The stream watermark means accepted-contiguous; RxDB owns durability and conflicts.
+5. Pull from RxDB's durable checkpoint for initial load, gaps, reconnects, epoch changes, oversized intervals, or apply/persistence errors.
+
 Server command output follows this flow:
 
 1. Retain the first and last bytes within the command's output limit.
@@ -1531,6 +1539,8 @@ change with both options. Cross-machine Claude cache reuse remains unverified.
 4. Liveness, context and the canonical renderer view borrow that checked value in source row order; only storage and wire boundaries serialize it.
 5. Source state, receipts and renderer views commit together; a projection failure rolls them all back.
 6. Replaying committed journal identities returns the saved outcomes without decoding or publishing agents again.
+7. The store observer publishes committed entity changes; ordinary analytics receipts only project token rates, preserving complete stream batches without a pull.
+8. Recovered history, unknown publication overflow, and external writer hints retain state resets and pull recovery.
 
 ### Held child-result release
 

@@ -1197,6 +1197,10 @@ impl MonitorNative for RetainedMonitorPort {
                 return self.terminate_submission(&process_id, receipt.result);
             }
             if method == Method::CommandExec {
+                // The barrier only orders the command's output before its exit.
+                // The provider already answered, so the command ran and ended:
+                // a barrier that does not complete delays the exit, but never
+                // turns it into a refusal or an unknown outcome.
                 if let Err(error) = self
                     .session
                     .callback_barrier(
@@ -1206,14 +1210,9 @@ impl MonitorNative for RetainedMonitorPort {
                     )
                     .await
                 {
-                    return if matches!(error, AccountSessionError::Unknown) {
-                        Submission::Unknown
-                    } else {
-                        Submission::NotSent {
-                            reason: NotSentReason::Transient,
-                            error: error.to_string(),
-                        }
-                    };
+                    studio_runtime_services::diagnostics::log_stderr(format_args!(
+                        "monitor {process_id} output barrier did not complete: {error}; recording its exit"
+                    ));
                 }
                 let id = params["processId"].as_str().unwrap_or_default();
                 if id.is_empty() {
@@ -1982,6 +1981,123 @@ mod tests {
         assert_eq!(queue[0]["kind"], "exit");
         assert_eq!(queue[0]["code"], 1);
         assert_eq!(port.exit_owned("watch"), Some(false));
+    }
+
+    /// The process exited and the provider answered, but the callback barrier
+    /// that orders the command's output before its exit did not complete, as a
+    /// busy account journal does. The command ran: its exit code must reach
+    /// the owner, never a refusal or an unknown outcome.
+    #[tokio::test]
+    async fn monitor_completion_exit_result_survives_an_incomplete_callback_barrier() {
+        struct BarrierFailure(AccountSessionError);
+        impl AccountSessionPort for BarrierFailure {
+            fn current_scope(
+                &self,
+                account: &str,
+            ) -> Option<studio_runtime_services::account_session_runtime::ConnectionScope>
+            {
+                Some(
+                    studio_runtime_services::account_session_runtime::ConnectionScope {
+                        account: account.to_owned(),
+                        connection: "connection".into(),
+                        generation: 1,
+                    },
+                )
+            }
+            fn provider_request<'a>(
+                &'a self,
+                request: ProviderRequest,
+            ) -> studio_runtime_services::account_session_runtime::AccountSessionFuture<
+                'a,
+                SessionReceipt,
+            > {
+                Box::pin(async move {
+                    assert_eq!(request.method, Method::CommandExec);
+                    Ok(SessionReceipt {
+                        scope: request.expected_scope.clone().expect("scope"),
+                        operation: request.operation,
+                        ticket: None,
+                        certainty: RequestCertainty::Written,
+                        result: Some(ProviderResponse::Reply(json!({"exitCode":1}))),
+                        not_sent_reason: None,
+                        replayed: false,
+                    })
+                })
+            }
+            fn callback_barrier<'a>(
+                &'a self,
+                _: &'a str,
+                _: &'a studio_runtime_services::account_session_runtime::ConnectionScope,
+                _: Instant,
+            ) -> studio_runtime_services::account_session_runtime::AccountSessionFuture<'a, ()>
+            {
+                let error = match &self.0 {
+                    AccountSessionError::Unknown => AccountSessionError::Unknown,
+                    _ => AccountSessionError::Refused("Callback barrier was not completed"),
+                };
+                Box::pin(async move { Err(error) })
+            }
+        }
+        for barrier in [
+            AccountSessionError::Refused("Callback barrier was not completed"),
+            AccountSessionError::Unknown,
+        ] {
+            let label = barrier.to_string();
+            let root = tempfile::tempdir().expect("state root");
+            let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
+            let operation = Operation {
+                agent: "owner".into(),
+                epoch: 0,
+                account_key: "default".into(),
+                connection_id: "connection".into(),
+                evidence: BTreeMap::new(),
+            };
+            let mut watch = starting_watch(root.path(), "watch");
+            watch["status"] = json!("running");
+            watch["operation"] = serde_json::to_value(&operation).expect("operation");
+            let owner = owner(root.path(), true);
+            store
+                .transaction(move |tx| {
+                    AgentRepository::put(tx, &AgentRecord::from_value(owner)?)?;
+                    studio_runtime_store::Table::new(tx)
+                        .put(&studio_runtime_store::MonitorRecord::from_value(watch)?)?;
+                    Ok::<_, studio_runtime_store::StoreError>(())
+                })
+                .await
+                .expect("running command");
+            let port = RetainedMonitorPort::new(
+                Arc::clone(&store),
+                Arc::new(BarrierFailure(barrier)) as Arc<dyn AccountSessionPort>,
+            );
+            let effect = Effect::Native {
+                identity: "monitor:watch".into(),
+                method: "command/exec",
+                params: json!({"processId":"watch","timeoutMs":60000}),
+            };
+            let submission =
+                tokio::time::timeout(Duration::from_secs(10), port.submit(&operation, &effect))
+                    .await
+                    .expect("submission ends");
+            assert!(
+                matches!(submission, Submission::Written),
+                "{label}: a command with a known exit is Written"
+            );
+            let record = store
+                .read_async("test/barrier-exit", |tx| {
+                    MonitorsRepository::get(tx, "watch")
+                })
+                .await
+                .expect("read")
+                .expect("watch");
+            let queue = record.value()["streamQueue"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default();
+            assert_eq!(queue.len(), 1, "{label}: one exit result");
+            assert_eq!(queue[0]["kind"], "exit", "{label}");
+            assert_eq!(queue[0]["code"], 1, "{label}: the provider's exit code");
+            assert_eq!(port.exit_owned("watch"), Some(false), "{label}");
+        }
     }
 
     #[tokio::test]
