@@ -215,3 +215,59 @@ fn the_guest_broker_runs_against_the_mac_service() {
         String::from_utf8_lossy(&output.stderr)
     );
 }
+
+/// An idle service that an earlier build started without the host bridge folder is
+/// replaced by the current build, which starts with `--browser-host`; its commands then get
+/// the launcher as `BROWSER`. The service has no launch signature: only the build identity
+/// decides, and a busy service of another build stays
+/// (`a_busy_service_of_another_build_stays_with_its_command`).
+#[test]
+fn an_idle_service_without_the_browser_folder_is_replaced_and_its_commands_get_the_launcher() {
+    let state = State::new();
+    let mut old = state.start("old-build");
+    let before = state.health();
+    let browser_host = state.path.parent().unwrap().join("browser-host");
+    std::fs::create_dir(&browser_host).unwrap();
+    let launcher = browser_host.join("studio-browser");
+    std::fs::write(&launcher, "#!/bin/sh\n").unwrap();
+    ensure_service(&state.path, &binary(), "new-build", Some(&browser_host)).unwrap();
+    let after = state.health();
+    assert_eq!(after["buildId"], "new-build");
+    assert_ne!(after["pid"], before["pid"]);
+    assert!(old.wait().unwrap().success());
+    let op = state.acquire();
+    let empty = "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a";
+    state.call(
+        "run",
+        Some(&json!({"operationId": op["operationId"], "agentId": "agent",
+                     "argv": ["/bin/sh", "-c", "printf '%s|%s' \"$BROWSER\" \"$STUDIO_BROWSER_SESSION\""],
+                     "manifestSha256": empty, "timeoutSeconds": 30})),
+    );
+    let mut output = String::new();
+    let mut after_seq = 0;
+    let deadline = Instant::now() + HANG_GUARD;
+    loop {
+        assert!(Instant::now() < deadline, "the command did not end");
+        let attached = state.call(
+            "attach",
+            Some(
+                &json!({"operationId": op["operationId"], "agentId": "agent",
+                         "afterSeq": after_seq, "waitSeconds": 1}),
+            ),
+        );
+        let events = attached["events"].as_array().unwrap();
+        for event in events {
+            after_seq = event["seq"].as_i64().unwrap();
+            output.push_str(
+                event
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default(),
+            );
+        }
+        if attached["status"]["state"] != "running" && events.is_empty() {
+            break;
+        }
+    }
+    assert_eq!(output, format!("{}|agent", launcher.display()));
+}
