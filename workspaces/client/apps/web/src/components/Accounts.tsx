@@ -1040,7 +1040,6 @@ export default function Accounts({
               <div className="accounts-actions">
                 <Button
                   variant="filled"
-                  color="indigo"
                   onClick={() => {
                     setAddIntent(null);
                     setAddOpen(true);
@@ -1522,7 +1521,6 @@ export default function Accounts({
               </Button>
               <Button
                 type="submit"
-                color="indigo"
                 disabled={!renameLabel.trim() || !!pending}
                 loading={pending === `rename:${renameChoice?.id}`}
               >

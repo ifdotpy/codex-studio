@@ -768,7 +768,6 @@ function Checkpoints(c: Context) {
         />
         <Button
           variant="filled"
-          color="indigo"
           type="submit"
           loading={busy}
           disabled={!!c.selected?.inFlight}
@@ -1049,7 +1048,6 @@ function Profiles(c: Context) {
         <Button
           size="xs"
           variant="filled"
-          color="indigo"
           leftSection={<Plus size={14} />}
           onClick={() =>
             setDraft({
@@ -1340,7 +1338,6 @@ function Rules(c: Context) {
         <Button
           size="xs"
           variant="filled"
-          color="indigo"
           leftSection={<Plus size={14} />}
           onClick={() =>
             setDraft({

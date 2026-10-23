@@ -157,10 +157,10 @@
 :root[data-mantine-color-scheme="light"] :is(code, pre) {
   color: var(--text);
 }
-:root[data-mantine-color-scheme="light"]
-  :is(.attention-count, .team-button-count) {
+/* Counts name quantities; adjacent icons and labels carry their state. */
+:is(.attention-count, .team-button-count) {
   background: var(--raised);
-  color: var(--accent);
+  color: var(--studio-text-on-raised);
 }
 .chat-settings-panel #project {
   width: 100%;
