@@ -151,13 +151,35 @@ describe("real fleet strip", () => {
     expect(html).toContain('data-chat-status="answer"');
     expect(html).toContain("Needs your answer");
     expect(html).toContain("Checking permissions");
-    expect(html).not.toContain("Second command");
+    expect(html).toContain('aria-label="1 more managed command"');
+    expect(html).toContain("+1");
+    expect(html).toContain("Second command");
+    expect(html).toContain('aria-label="Elapsed time"');
+    expect(html).toContain("Output details");
+    expect(html).toContain('aria-label="Codex"');
     expect(html).toContain('<time class="fleet-chat-time"');
     expect(renderRow({ now: 160 })).toContain(">1m</time>");
     expect(renderRow({ now: 220 })).toContain(">2m</time>");
     expect(html).toContain('aria-label="Unpin Chat answer"');
     expect(html).toContain('aria-label="Actions for Chat answer"');
     expect(html).not.toContain("chat-server-line");
+  });
+  it("preserves the stall status and puts project context after the full title", () => {
+    const html = renderRow({
+      projectLabel: "Long project name",
+      row: {
+        ...chat("stalled"),
+        provider: "claude",
+        stall: { taskId: "task-4", since: 10 },
+      },
+    });
+    expect(html).toContain('role="status"');
+    expect(html).toContain("Waiting for lead");
+    expect(html).toContain("task-4");
+    expect(html).toContain('aria-label="Claude"');
+    expect(html.indexOf("Long project name")).toBeGreaterThan(
+      html.indexOf("</strong>"),
+    );
   });
   it("keeps nondefault and offline server identity visible", () => {
     expect(renderRow({ serverAlias: "Remote" })).toContain("Remote");
