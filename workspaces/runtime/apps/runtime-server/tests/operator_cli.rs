@@ -127,10 +127,13 @@ fn service_manager_failure_is_visible_and_does_not_remove_configuration() {
 fn command_installation_migrates_only_owned_links_and_preflights_conflicts() {
     use std::os::unix::fs::symlink;
     let root = tempfile::tempdir().unwrap();
-    fixture(root.path());
-    let project = root.path().join("project");
+    // A macOS temporary folder is below the /var link, and the installer compares
+    // canonical paths: the fixture uses the canonical spelling of its folder.
+    let base = fs::canonicalize(root.path()).unwrap();
+    fixture(base.as_path());
+    let project = base.as_path().join("project");
     let binaries = project.join("bin");
-    let destination = root.path().join("commands");
+    let destination = base.as_path().join("commands");
     fs::create_dir_all(&binaries).unwrap();
     fs::create_dir(&destination).unwrap();
     fs::copy(
@@ -148,7 +151,7 @@ fn command_installation_migrates_only_owned_links_and_preflights_conflicts() {
     )
     .unwrap();
     symlink(project.join("scripts/luna"), destination.join("luna")).unwrap();
-    symlink(root.path().join("foreign"), destination.join("codex-chat")).unwrap();
+    symlink(base.as_path().join("foreign"), destination.join("codex-chat")).unwrap();
     fs::write(destination.join("codex-diagnostics"), "unrelated").unwrap();
     let invoke = || {
         Command::new(binaries.join("studio-runtime-server"))
@@ -157,8 +160,8 @@ fn command_installation_migrates_only_owned_links_and_preflights_conflicts() {
             .arg("--project")
             .arg(&project)
             .env_clear()
-            .env("HOME", root.path())
-            .env("PATH", root.path().join("tools"))
+            .env("HOME", base.as_path())
+            .env("PATH", base.as_path().join("tools"))
             .env("CODEX_AGENTS_PYTHON", "/nonexistent")
             .output()
             .unwrap()
@@ -180,7 +183,7 @@ fn command_installation_migrates_only_owned_links_and_preflights_conflicts() {
     assert!(!destination.join("luna").is_symlink());
     assert_eq!(
         fs::read_link(destination.join("codex-chat")).unwrap(),
-        root.path().join("foreign")
+        base.as_path().join("foreign")
     );
     assert_eq!(
         fs::read_link(destination.join("codex-canvas")).unwrap(),
@@ -189,9 +192,9 @@ fn command_installation_migrates_only_owned_links_and_preflights_conflicts() {
     assert!(invoke().status.success());
     let output = Command::new(destination.join("codex-canvas"))
         .arg("--help")
-        .current_dir(root.path())
+        .current_dir(base.as_path())
         .env_clear()
-        .env("HOME", root.path())
+        .env("HOME", base.as_path())
         .env("CODEX_AGENTS_PYTHON", "/nonexistent")
         .output()
         .unwrap();
