@@ -1146,8 +1146,10 @@ function ScopedExecutionSettings({
     teamDefaults && agent.isLead && !onDraftChange ? (
       <NativeSelect
         label="Delegation depth"
+        className="execution-delegation"
         value={String(current.delegation_depth)}
-        description="Lowering blocks new delegation immediately. Existing descendants keep running."
+        description="Existing workers keep their depth."
+        title="Lowering blocks new delegation immediately. Existing descendants keep running."
         data={[
           { value: "1", label: "Lead only (1)" },
           { value: "2", label: "One nested level (2)" },
@@ -1340,12 +1342,12 @@ function ScopedExecutionSettings({
   const permissions =
     agent.isLead && agent.provider !== "claude" ? (
       settingsRow ? (
-        <Stack gap="xs">
+        <div className="execution-setting">
           <Text size="sm" fw={500}>
             Permissions
           </Text>
           <SegmentedControl
-            fullWidth
+            className="execution-setting-control"
             aria-label="Full access without approval"
             value={
               (pendingYolo?.value ?? agent.yoloMode === true) ? "full" : "ask"
@@ -1357,7 +1359,7 @@ function ScopedExecutionSettings({
             ]}
             onChange={(value) => void changeYolo(value === "full")}
           />
-          <Text size="xs" c="dimmed">
+          <Text size="xs" c="dimmed" className="execution-setting-description">
             {permissionsActive
               ? "Available when this turn ends."
               : !("yoloMode" in agent)
@@ -1369,7 +1371,7 @@ function ScopedExecutionSettings({
               {error}
             </p>
           )}
-        </Stack>
+        </div>
       ) : (
         <SettingsSection title="Permissions">
           <p>Applies to the whole team.</p>

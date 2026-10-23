@@ -12,7 +12,7 @@ import {
 } from "../fixtures/setup-controls.mjs";
 // Production client with an isolated runtime. No model service or user state.
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -159,11 +159,10 @@ test("execution settings ui", async ({ browser: _browser }) => {
         await page
           .getByRole("button", { name: "Chat settings", exact: true })
           .click();
-      await expect(settings.getByRole("heading", { level: 3 })).toHaveText([
-        "Agents",
-        "Team",
-        "Access",
-      ]);
+      for (const name of ["Agents", "Team", "Access"])
+        await expect(
+          settings.getByRole("region", { name, exact: true }),
+        ).toBeVisible();
       const role = name === "Subagent defaults" ? "worker" : "orchestrator";
       const disclosure = settings.locator(`details[data-role="${role}"]`);
       if (!(await disclosure.getAttribute("open"))) {
@@ -188,6 +187,8 @@ test("execution settings ui", async ({ browser: _browser }) => {
       exact: true,
     });
     const applyLimit = chatSettingsDialog.locator(".agent-mode-apply");
+    await expect(applyLimit).toHaveCount(0);
+    await parallelInput.fill(String(lead.concurrency + 1));
     await applyLimit.scrollIntoViewIfNeeded();
     const inputBox = await parallelInput.boundingBox();
     const applyBox = await applyLimit.boundingBox();
@@ -195,6 +196,8 @@ test("execution settings ui", async ({ browser: _browser }) => {
     expect(
       Math.abs(applyBox.y + applyBox.height - inputBox.y - inputBox.height),
     ).toBeLessThan(1);
+    await parallelInput.fill(String(lead.concurrency));
+    await expect(applyLimit).toHaveCount(0);
     for (const summary of await chatSettingsDialog
       .locator(".execution-disclosure > summary, .execution-accounts > summary")
       .all()) {
@@ -208,6 +211,7 @@ test("execution settings ui", async ({ browser: _browser }) => {
     const screenshotDirectory = process.env.EXECUTION_COMPACT_SCREENSHOTS;
     if (screenshotDirectory)
       await mkdir(screenshotDirectory, { recursive: true });
+    const layoutMeasurements = [];
     for (const [width, height] of [
       [1440, 900],
       [390, 844],
@@ -240,6 +244,7 @@ test("execution settings ui", async ({ browser: _browser }) => {
           JSON.stringify({ width, height, scheme, ...geometry }),
         ).toBeLessThanOrEqual(geometry.dialogHeight);
         expect(geometry.bodyContent).toBeLessThanOrEqual(geometry.bodyHeight);
+        layoutMeasurements.push({ width, height, scheme, ...geometry });
         if (screenshotDirectory)
           await page.screenshot({
             path: join(
@@ -250,13 +255,32 @@ test("execution settings ui", async ({ browser: _browser }) => {
         await chatSettingsDialog
           .locator('details[data-role="orchestrator"] > summary')
           .click();
-        if (screenshotDirectory)
+        const expanded = await chatSettingsDialog.evaluate((node) => {
+          const body = node.querySelector(".mantine-Modal-body");
+          return {
+            dialogContent: node.scrollHeight,
+            dialogHeight: node.clientHeight,
+            bodyContent: body.scrollHeight,
+            bodyHeight: body.clientHeight,
+            bodyOverflow: getComputedStyle(body).overflowY,
+          };
+        });
+        expect(expanded.dialogContent).toBeLessThanOrEqual(
+          expanded.dialogHeight,
+        );
+        expect(expanded.bodyOverflow).toBe("auto");
+        if (screenshotDirectory) {
           await page.screenshot({
             path: join(
               screenshotDirectory,
               `compact-chat-settings-lead-${width}-${scheme}.png`,
             ),
           });
+          await writeFile(
+            join(screenshotDirectory, "compact-layout-measurements.json"),
+            JSON.stringify(layoutMeasurements, null, 2),
+          );
+        }
       }
     }
     await page.setViewportSize({ width: 1440, height: 960 });
@@ -399,11 +423,7 @@ test("execution settings ui", async ({ browser: _browser }) => {
     });
     assert.equal(await delegationDepth.inputValue(), "1");
     assert.equal(
-      await page
-        .getByText(
-          "Lowering blocks new delegation immediately. Existing descendants keep running.",
-        )
-        .isVisible(),
+      await page.getByText("Existing workers keep their depth.").isVisible(),
       true,
     );
     const nestedDelegationSaved = settingsResponse(

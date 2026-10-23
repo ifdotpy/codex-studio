@@ -1,5 +1,5 @@
 import { useServerApi } from "../servers/ServerServicesContext";
-import { Stack, Text } from "@mantine/core";
+import { Text } from "@mantine/core";
 import { useEffect, useState } from "react";
 import { SettingsRow } from "./ui/primitives";
 import { type GetResult } from "../api";
@@ -35,7 +35,7 @@ export default function BrowserAccessNotice({
 
   if (compact)
     return (
-      <Stack gap="xs">
+      <div className="execution-setting execution-browser">
         <Text size="sm" fw={500}>
           Browser
         </Text>
@@ -43,11 +43,11 @@ export default function BrowserAccessNotice({
           {status?.enabled ? "Available" : "Unavailable"}
         </Text>
         {!status?.enabled && (
-          <Text size="xs" c="dimmed">
+          <Text size="xs" c="dimmed" className="execution-setting-description">
             {status?.reason || "Not available for this account."}
           </Text>
         )}
-      </Stack>
+      </div>
     );
   if (!active || !status || status.enabled) return null;
   return (

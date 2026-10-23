@@ -16,7 +16,8 @@
   align-items: center;
   gap: var(--mantine-spacing-xs);
   list-style: none;
-  padding: var(--mantine-spacing-sm) var(--mantine-spacing-xs);
+  min-height: var(--studio-touch-target);
+  padding: var(--mantine-spacing-xs);
 }
 .execution-disclosure > summary::-webkit-details-marker,
 .execution-accounts > summary::-webkit-details-marker {
@@ -57,7 +58,6 @@
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(min(100%, 26ch), 1fr));
   gap: var(--mantine-spacing-md);
-  margin-block-start: var(--mantine-spacing-sm);
 }
 .execution-team-fields .agent-mode-control {
   display: grid;
@@ -86,7 +86,49 @@
   .execution-team-fields {
     grid-template-columns: minmax(0, 1fr);
   }
-  .execution-disclosure > summary .execution-account {
-    flex-basis: 100%;
+}
+
+#chat-settings-permissions {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+}
+.execution-setting {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: subgrid;
+  align-items: center;
+  column-gap: var(--mantine-spacing-md);
+  row-gap: var(--mantine-spacing-xs);
+}
+.execution-setting-control {
+  justify-self: start;
+}
+.execution-setting-description {
+  grid-column: 2;
+}
+.execution-settings-modal .mantine-Modal-content {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.execution-settings-modal .mantine-Modal-header {
+  flex-shrink: 0;
+}
+.execution-settings-modal .mantine-Modal-body {
+  min-height: 0;
+  overflow-y: auto;
+}
+@container (max-width: 26em) {
+  #chat-settings-permissions {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .execution-browser {
+    grid-template-columns: max-content minmax(0, 1fr);
+  }
+  .execution-setting:not(.execution-browser) {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .execution-setting-description {
+    grid-column: 1 / -1;
   }
 }

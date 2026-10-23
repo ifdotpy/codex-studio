@@ -1,5 +1,5 @@
 import { lazy, Suspense } from "react";
-import { Button, Modal, Stack, Title } from "@mantine/core";
+import { Button, Group, Modal, Stack } from "@mantine/core";
 import { useMediaQuery } from "@mantine/hooks";
 import type { Agent, Snapshot } from "../../types";
 import { modalSizes } from "../../theme";
@@ -55,13 +55,10 @@ export function ChatSettingsDialog(p: Props) {
       fullScreen={mobile}
       className="execution-settings-modal"
     >
-      <Stack gap="xl" className="chat-execution-settings">
+      <Stack gap="md" className="chat-execution-settings">
         {p.agent?.source === "managed" && (
-          <section aria-labelledby="chat-agents-title">
-            <Title order={3} id="chat-agents-title" size="h4">
-              Agents
-            </Title>
-            <Stack gap="xs" mt="sm">
+          <section aria-label="Agents">
+            <Stack gap="0">
               <UnifiedAgentSettings
                 state={p.accounts}
                 notify={p.notify}
@@ -93,10 +90,7 @@ export function ChatSettingsDialog(p: Props) {
           </section>
         )}
         {root?.source === "managed" && (
-          <section aria-labelledby="chat-team-title">
-            <Title order={3} id="chat-team-title" size="h4">
-              Team
-            </Title>
+          <section aria-label="Team">
             <div className="execution-team-fields">
               <SubagentConcurrencyControl
                 lead={root}
@@ -124,11 +118,8 @@ export function ChatSettingsDialog(p: Props) {
             onError={p.notify}
           />
         )}
-        <section aria-labelledby="chat-access-title">
-          <Title order={3} id="chat-access-title" size="h4">
-            Access
-          </Title>
-          <Stack gap="sm" mt="sm" id="chat-settings-permissions">
+        <section aria-label="Access">
+          <Stack gap="sm" id="chat-settings-permissions">
             {p.agent?.source === "managed" && p.agent.provider !== "claude" && (
               <ExecutionSettings
                 permissionsOnly
@@ -159,7 +150,7 @@ export function ChatSettingsDialog(p: Props) {
             />
           </Stack>
         </section>
-        <div className="execution-dialog-actions">
+        <Group justify="flex-end" gap="xs" className="execution-dialog-actions">
           {p.agent?.cwd && (
             <Button
               variant="default"
@@ -183,7 +174,7 @@ export function ChatSettingsDialog(p: Props) {
               Choose project folder
             </Button>
           )}
-        </div>
+        </Group>
       </Stack>
     </Modal>
   );
