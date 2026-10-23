@@ -9,6 +9,12 @@ HTTP JSON responses follow this flow:
 4. Vary on `Accept-Encoding`; the native client negotiates and decodes Brotli.
    Small JSON and all `text/event-stream` responses, including sync SSE, stay uncompressed.
 
+Desktop status follows this flow:
+
+1. The [disk gate](../workspaces/runtime/packages/runtime-services/src/disk_space.rs) keeps exact free bytes for admission and projects only the visible level and message through the [disk status contract](../workspaces/runtime/packages/runtime-schema/src/desktop.rs).
+2. `/api/desktop` includes that projection; the existing resource content filter suppresses unchanged responses, so healthy disk writes cause no renderer re-read.
+3. Threshold, message, provider and supervisor changes still notify the existing reader. Failed reads retain the last notices; native attachment keeps using the same endpoint.
+
 State updates follow this flow:
 
 1. Pull the initial state, then consume complete typed entity batches from the stream.
@@ -24,6 +30,15 @@ State updates follow this flow:
 6. Transcript gaps, reconnects, epochs, storage failures and oversize reconcile by pull.
    External `/api/sync/notify` hints proven empty at the same pull cursor are consumed;
    changed content is delivered, and incomplete intervals retain a pull hint.
+
+Token-rate subscriptions follow this flow:
+
+1. The browser stream owner sends the tabs' aggregate interest through the `tokenRates`
+   query selector owned by [OpenAPI](../workspaces/runtime/packages/runtime-http/openapi.json).
+2. Interest changes reopen the existing shared stream. An interested stream receives
+   the current snapshot immediately, including when a new tab takes ownership.
+3. A stream with explicit false interest receives resources and heartbeats without token frames.
+4. Native and signed clients omitting the selector retain the schema's compatibility default.
 
 Browser draft notifications follow this flow:
 
@@ -261,11 +276,19 @@ Native composer draft synchronization follows this flow:
 3. Combine simultaneous triggers and retain one follow-up when notified during a refresh.
 4. Keep idle windows quiet; closing the view removes listeners and pending refreshes.
 
+Browser draft push acknowledgement follows this flow:
+
+1. Save edits locally immediately; the existing RxDB push gate groups remote writes, including edits received during an in-flight push.
+2. Accept the conflicts-only HTTP result as acknowledgement of the exact attempted state.
+3. Deliver complete server draft intervals through the same RxDB master stream.
+4. Keep only the last two distinct acknowledged own payloads per branch; suppress a delayed echo only when it exactly matches the earlier payload and deletion state.
+5. Resolve genuine concurrent versions with the [draft conflict owner](../workspaces/client/apps/web/src/sync/conflicts.ts), keeping both texts; retry a lost response with its exact attempted state.
+
 Draft payload compatibility follows this flow:
 
 1. Derive the server schema and web type from [DraftVersion](../workspaces/client/packages/client-domain/src/drafts.rs) with `pnpm run contracts:generate`.
-2. Validate new pushes against that schema; require a JavaScript-safe integer timestamp.
-3. Read historical drafts through the same Rust owner: missing or null timestamps become zero, and fractional timestamps are floored.
+2. Require a JavaScript-safe integer timestamp on pushes; accept historical extension fields until persisted browser and native pending rows have a compatible migration. Generated types for newly authored drafts remain closed.
+3. Read historical drafts and assumed masters through the same Rust compatibility decoder: preserve unknown fields, map missing or null timestamps to zero, and floor fractions.
 4. Preserve stored payload bytes; read normalization never rewrites or drops a draft. `pnpm run contracts:check` rejects generated drift.
 
 Markdown rendering follows this flow:
@@ -1541,6 +1564,14 @@ change with both options. Cross-machine Claude cache reuse remains unverified.
 6. Replaying committed journal identities returns the saved outcomes without decoding or publishing agents again.
 7. The store observer publishes committed entity changes; ordinary analytics receipts only project token rates, preserving complete stream batches without a pull.
 8. Recovered history, unknown publication overflow, and external writer hints retain state resets and pull recovery.
+
+### Token-rate snapshots
+
+1. The token owner publishes one complete record per agent, including its current root and turn.
+2. The shared workspace stream carries that list; the client validates it once before caching or replay.
+3. Footer meters read by agent ID; team meters use a derived identity lookup from each record's root ID.
+4. Replacing the list clears removed agents and previous root memberships, even without an agent entity cache.
+5. Late tabs and newly opened teams read the latest complete snapshot through the same stream coordinator.
 
 ### Held child-result release
 

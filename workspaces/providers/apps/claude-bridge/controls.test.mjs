@@ -61,6 +61,8 @@ function fixture() {
   let calls = 0;
   const saves = [];
   const deps = {
+    prepareFileRestore: async () => ({ files: [] }),
+    verifyFileRestore: async () => {},
     persist: async (value) => saves.push(structuredClone(value)),
     getSessionMessages: async (id) =>
       id === "native"
@@ -229,4 +231,138 @@ test("branch rejects missing selected native boundary before native mutation", a
     /boundary is unavailable/,
   );
   assert.equal(f.calls(), 0);
+});
+
+test("combined rewind restores the selected native user message before replacing context", async () => {
+  const f = fixture();
+  f.session.turns[1].fileCheckpointMessageId = "u2";
+  f.session.turns[1].fileCheckpointSource = {
+    nativeId: "native",
+    cwd: "/project",
+  };
+  const calls = [];
+  f.deps.rewindFiles = async (nativeId, messageId, options) => {
+    assert.equal(f.session.nativeId, "native");
+    assert.equal(f.session.turns.length, 2);
+    calls.push({ nativeId, messageId, options });
+    return { canRewind: true, filesChanged: ["file.txt"] };
+  };
+  const request = { requestId: "combined", turnId: "u2", restoreFiles: true };
+  const result = await rollbackSession(f.session, request, f.deps);
+  assert.deepEqual(calls, [
+    { nativeId: "native", messageId: "u2", options: { dryRun: true } },
+    { nativeId: "native", messageId: "u2", options: { dryRun: false } },
+  ]);
+  assert.equal(result.filesRestored, true);
+  assert.equal(f.session.turns.length, 1);
+  assert.equal(f.session.nativeId, "fork");
+  await rollbackSession(f.session, request, f.deps);
+  assert.equal(calls.length, 2);
+  await assert.rejects(
+    rollbackSession(f.session, { ...request, restoreFiles: false }, f.deps),
+    /different content/,
+  );
+});
+
+test("unknown file rewind retains source context and cannot repeat the file write", async () => {
+  const f = fixture();
+  f.session.turns[1].fileCheckpointMessageId = "u2";
+  f.session.turns[1].fileCheckpointSource = {
+    nativeId: "native",
+    cwd: "/project",
+  };
+  let writes = 0;
+  f.deps.rewindFiles = async (_native, _message, { dryRun }) => {
+    if (dryRun) return { canRewind: true };
+    writes++;
+    throw new Error("lost rewind reply");
+  };
+  const request = { requestId: "combined", turnId: "u2", restoreFiles: true };
+  await assert.rejects(
+    rollbackSession(f.session, request, f.deps),
+    /lost rewind reply/,
+  );
+  assert.equal(f.session.nativeId, "native");
+  assert.equal(f.session.turns.length, 2);
+  await assert.rejects(
+    rollbackSession(f.session, request, f.deps),
+    /outcome is unknown/,
+  );
+  await assert.rejects(
+    rollbackSession(f.session, { ...request, requestId: "other" }, f.deps),
+    /needs recovery/,
+  );
+  assert.equal(writes, 1);
+});
+
+test("unavailable file checkpoint refuses combined rewind before the fork", async () => {
+  const f = fixture();
+  await assert.rejects(
+    rollbackSession(
+      f.session,
+      { requestId: "combined", turnId: "u2", restoreFiles: true },
+      f.deps,
+    ),
+    /file checkpoint/,
+  );
+  assert.equal(f.calls(), 0);
+});
+
+test("a file checkpoint from another workspace cannot restore files", async () => {
+  const f = fixture();
+  f.session.turns[1].fileCheckpointMessageId = "u2";
+  f.session.turns[1].fileCheckpointSource = {
+    nativeId: "native",
+    cwd: "/old-project",
+  };
+  await assert.rejects(
+    rollbackSession(
+      f.session,
+      { requestId: "moved", turnId: "u2", restoreFiles: true },
+      f.deps,
+    ),
+    /file checkpoint/,
+  );
+  assert.equal(f.calls(), 0);
+});
+
+test("partial SDK file restore keeps both the source context and an uncertain receipt", async () => {
+  const f = fixture();
+  f.session.turns[1].fileCheckpointMessageId = "u2";
+  f.session.turns[1].fileCheckpointSource = {
+    nativeId: "native",
+    cwd: "/project",
+  };
+  f.deps.rewindFiles = async (_native, _message, { dryRun }) => ({
+    canRewind: true,
+    ...(dryRun ? {} : { skippedLinks: 1 }),
+  });
+  const request = { requestId: "partial", turnId: "u2", restoreFiles: true };
+  await assert.rejects(
+    rollbackSession(f.session, request, f.deps),
+    /could not restore every tracked file/,
+  );
+  assert.equal(f.session.nativeId, "native");
+  assert.equal(f.session.turns.length, 2);
+  assert.equal(f.session.controlRequests.partial.status, "rewind_submitted");
+  await assert.rejects(
+    rollbackSession(f.session, request, f.deps),
+    /outcome is unknown/,
+  );
+});
+
+test("branch from completed turn preserves a running source and refuses its active point", async () => {
+  const f = fixture();
+  f.session.turns[1].status = "inProgress";
+  const before = structuredClone(f.session);
+  const target = await forkAtTurn(f.session, { lastTurnId: "u1" }, f.deps);
+  assert.deepEqual(f.session, before);
+  assert.equal(target.turns.length, 1);
+  assert.equal(target.turns[0].status, "completed");
+  for (const params of [{}, { lastTurnId: "u2" }])
+    await assert.rejects(
+      forkAtTurn(f.session, params, f.deps),
+      /completed Claude turn/,
+    );
+  assert.equal(f.calls(), 1);
 });

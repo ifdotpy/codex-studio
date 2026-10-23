@@ -1011,6 +1011,12 @@ pub(super) async fn outcome(
                     .thread
                     .as_ref()
                     .map(|attempt| attempt.snapshot.actor.cwd.as_str()),
+                context
+                    .thread
+                    .as_ref()
+                    .and_then(|attempt| attempt.snapshot.guidance.thread_config.get("mcp_servers"))
+                    .and_then(Value::as_object)
+                    .map(|servers| servers.keys().cloned().collect()),
             )
             .await?,
     );
@@ -1292,6 +1298,18 @@ fn settle_outcome(
                     }
                 },
                 Method::TurnInterrupt => {
+                    let response = match &body {
+                        ResponseBody::Result(response) => response,
+                        ResponseBody::Error(error) => &error["data"]["interruptReceipt"],
+                    };
+                    SchedulerRepository::settle_interrupt_inputs(
+                        tx,
+                        &i.agent_id,
+                        &i.account_key,
+                        ticket.generation,
+                        i.thread_id.as_deref().unwrap_or_default(),
+                        response,
+                    )?;
                     SchedulerRepository::settle_interrupt(
                         tx,
                         &id_string(&ticket.id),
@@ -1512,6 +1530,14 @@ pub(super) async fn journal_batch(
                             .thread
                             .as_ref()
                             .map(|attempt| attempt.snapshot.actor.cwd.as_str()),
+                        step.context
+                            .thread
+                            .as_ref()
+                            .and_then(|attempt| {
+                                attempt.snapshot.guidance.thread_config.get("mcp_servers")
+                            })
+                            .and_then(Value::as_object)
+                            .map(|servers| servers.keys().cloned().collect()),
                     )
                     .await?,
             );
@@ -1816,7 +1842,29 @@ fn journal_one(
                 params,
             )?;
         }
-        if let Some((method, params)) = notice
+        if let Some(("account/rateLimits/updated", params)) = notice {
+            if let Some(source) = publication.native_source.as_ref()
+                && source.account == account
+                && source.generation == Some(entry.generation.0)
+            {
+                let update = crate::account_session_runtime::LimitsUpdate {
+                    scope: crate::account_session_runtime::ConnectionScope {
+                        account: account.to_owned(),
+                        connection: source.connection.clone(),
+                        generation: entry.generation.0,
+                    },
+                    cursor: entry.cursor.0,
+                    observed_at: now(),
+                    data: params.clone(),
+                };
+                crate::account_session_runtime::LimitsSnapshot::read(
+                    account,
+                    json!({"accountKey":account,"at":update.observed_at,"data":update.data}),
+                )
+                .map_err(|_| invalid(&operation))?;
+                effect = Some(Effect::LimitsUpdated(update));
+            }
+        } else if let Some((method, params)) = notice
             && let Some((agent, epoch)) = steer::acknowledge(tx, account, method, params)?
         {
             // Delivered busy-turn input frees the agent for its next queued input.

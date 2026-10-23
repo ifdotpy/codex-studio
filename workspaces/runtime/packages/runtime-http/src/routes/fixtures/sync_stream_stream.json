@@ -6,16 +6,17 @@
       "workspaceId": "workspace",
       "epoch": "epoch",
       "revision": 2,
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "agent",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {}
+      ]
     },
     {
       "protocol": 3,
@@ -39,16 +40,17 @@
       "workspaceId": "workspace",
       "epoch": "epoch",
       "revision": 5,
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "agent",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 2,
           "outputTokens": 2
         }
-      },
-      "teams": {}
+      ]
     },
     {
       "protocol": 3,
@@ -76,16 +78,17 @@
       "workspaceId": "workspace",
       "epoch": "epoch",
       "revision": 4,
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "agent",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 3,
           "outputTokens": 3
         }
-      },
-      "teams": {}
+      ]
     },
     {
       "protocol": 3,

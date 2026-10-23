@@ -1,4 +1,4 @@
-//! Capture and preview local Git checkpoints; provider-dependent effects stay gated.
+//! Capture, preview, and restore local Git checkpoints with durable reservations.
 
 use super::extractors::ApiJson;
 use super::manifest::{OperationStatus, RouteGroup, post};
@@ -58,10 +58,16 @@ pub(crate) async fn preview(
     let context = checkpoints::preview_context(&store, &body.agent, &body.checkpoint)
         .await
         .map_err(map_error)?;
+    let provider_available = state.account_session.is_some();
     let result = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-http/routes/checkpoints",
         move || {
-            let value = checkpoints::preview(&store, context).map_err(map_error)?;
+            let mut value = checkpoints::preview(&store, context).map_err(map_error)?;
+            if value["canRestore"] == true && !provider_available {
+                value["canRestore"] = json!(false);
+                value["restoreUnavailableReason"] =
+                    json!("The provider session service is unavailable.");
+            }
             super::generated_json::<crate::generated::CheckpointPreviewResponse>(value)
         },
     )
@@ -74,6 +80,22 @@ pub(crate) async fn restore(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<crate::generated::CheckpointRestoreRequest>,
 ) -> Result<Json<Value>, ApiError> {
+    // The owned workflow must outlive a cancelled HTTP caller. A blocking Git
+    // child cannot be cancelled by dropping its awaiting future.
+    tokio::spawn(async move {
+        let wake = state.event_wake.clone();
+        let result = restore_owned(state, body).await;
+        wake.notify_one();
+        result
+    })
+    .await
+    .map_err(|_| ApiError::internal())?
+}
+
+async fn restore_owned(
+    state: HttpState,
+    body: crate::generated::CheckpointRestoreRequest,
+) -> Result<Json<Value>, ApiError> {
     // Port codex_workspace.py:1244-1455: reserve the workspace, fork/start
     // the provider thread, preserve the pre-restore tree, then restore Git and
     // durably settle transcript and workspace metadata.
@@ -84,6 +106,12 @@ pub(crate) async fn restore(
         .filter(|value| !value.is_empty())
         .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Select a checkpoint"))?;
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
+    let _execution = checkpoints::RestoreExecution::acquire(format!(
+        "{}:{}",
+        store.state_dir().display(),
+        body.agent
+    ))
+    .map_err(map_error)?;
     let port = state
         .account_session
         .clone()
@@ -102,20 +130,16 @@ pub(crate) async fn restore(
                 let agent_id = body.agent.clone();
                 let expected_tree = body.expected_tree.clone();
                 move || {
-                    checkpoints::ensure_agent_available(&snapshot.agent).map_err(map_error)?;
-                    if snapshot.agent.record.get("worktreeReady").and_then(Value::as_bool) != Some(true) {
-                        return Err(ApiError::new(StatusCode::BAD_REQUEST, "Restore is available only in an isolated worker worktree"));
-                    }
                     if context.checkpoint.record.get("agent").and_then(Value::as_str) != Some(agent_id.as_str()) {
                         return Err(ApiError::new(StatusCode::BAD_REQUEST, "Checkpoint belongs to another agent"));
                     }
                     if expected_tree.is_empty() {
                         return Err(ApiError::new(StatusCode::BAD_REQUEST, "Preview this checkpoint before restore"));
                     }
-                    let current_tree = checkpoints::snapshot_tree(&store, snapshot.agent.record["cwd"].as_str().ok_or_else(ApiError::internal)?).map_err(map_error)?;
                     let op_id = format!("restore:{agent_id}:{checkpoint_id}:{}", &studio_runtime_store::sha256_hex(expected_tree.as_bytes())[..32]);
                     let own_reservation = (snapshot.agent.record.get("workspaceReservationId").and_then(Value::as_str) == Some(op_id.as_str())).then_some(op_id.as_str());
-                    checkpoints::ensure_workspace_idle(&snapshot, own_reservation).map_err(map_error)?;
+                    checkpoints::ensure_restore_available(&snapshot, own_reservation).map_err(map_error)?;
+                    let current_tree = checkpoints::snapshot_tree(&store, snapshot.agent.record["cwd"].as_str().ok_or_else(ApiError::internal)?).map_err(map_error)?;
                     let signature = studio_runtime_store::sha256_hex(
                         studio_runtime_store::python_json(&json!({"agent":agent_id,"checkpoint":checkpoint_id,"expectedTree":expected_tree})).as_bytes()
                     );
@@ -170,14 +194,32 @@ pub(crate) async fn restore(
                     if old.get("signature").and_then(Value::as_str) != Some(signature.as_str()) {
                         return Err(ApiError::new(StatusCode::CONFLICT, "This restore request has different content"));
                     }
-                    if old.get("source") != Some(&source) {
+                    let mut expected_source = old.get("source").cloned().unwrap_or(Value::Null);
+                    if old["phase"] == "completed" {
+                        expected_source["threadId"] = old["provider"]["thread"]["id"].clone();
+                        if snapshot.agent.record["restoredCheckpoint"] != checkpoint.id {
+                            return Err(ApiError::new(StatusCode::CONFLICT, "Restore state changed. Inspect the operation before retrying"));
+                        }
+                    }
+                    if expected_source != source {
                         return Err(ApiError::new(StatusCode::CONFLICT, "Workspace operation source changed. Inspect the operation before retrying"));
                     }
                     if old["phase"] == "completed" { return Ok(old); }
+                    let reacquire = old["phase"] == "failed";
+                    if reacquire && current_tree != expected_tree {
+                        return Err(ApiError::new(StatusCode::CONFLICT, "Files changed after the preview. Preview again"));
+                    }
                     if !matches!(old["phase"].as_str(), Some("provider_pending" | "provider_ready" | "local_mutation" | "recovery_required")) {
                         old["phase"] = json!("provider_pending");
                         tx.execute("UPDATE runtime_workspace_operations SET record=?1 WHERE id=?2", rusqlite::params![old.to_string(), operation_id]).map_err(|error| ApiError::stored(error.into()))?;
                     }
+                    let mut actor = AgentRepository::get(tx, &AgentId::from(agent_id.as_str())).map_err(ApiError::stored)?.ok_or_else(ApiError::internal)?.value();
+                    if actor["workspaceReservationId"] != operation_id && !(reacquire && actor["workspaceReservationId"].is_null()) {
+                        return Err(ApiError::new(StatusCode::CONFLICT, "Restore reservation changed"));
+                    }
+                    actor["workspaceOperation"] = json!("restore");
+                    actor["workspaceReservationId"] = json!(operation_id);
+                    AgentRepository::put(tx, &AgentRecord::from_value(actor).map_err(|_| ApiError::internal())?).map_err(ApiError::stored)?;
                     return Ok(old);
                 }
                 if current_tree != expected_tree {
@@ -581,7 +623,29 @@ pub(crate) async fn restore(
             agent["checkpointHistoryHead"] = final_checkpoint["id"].clone();
             AgentRepository::put(
                 tx,
-                &AgentRecord::from_value(agent).map_err(|_| ApiError::internal())?,
+                &AgentRecord::from_value(agent.clone()).map_err(|_| ApiError::internal())?,
+            )
+            .map_err(ApiError::stored)?;
+            let fields = [
+                "threadId",
+                "sandbox",
+                "approvalPolicy",
+                "profile",
+                "turnId",
+                "inFlight",
+                "status",
+                "autoWake",
+                "workspaceOperation",
+                "workspaceReservationId",
+                "restoredCheckpoint",
+                "lastCompletedTurn",
+                "checkpointHistoryHead",
+            ]
+            .map(|key| (key, agent.get(key).cloned().unwrap_or(Value::Null)));
+            studio_runtime_store::EventWriteRepository::set_agent_sync_values(
+                tx,
+                &final_agent_id,
+                &fields,
             )
             .map_err(ApiError::stored)?;
             tx.execute(
@@ -676,6 +740,25 @@ async fn settle_restore_failure(
             let mut operation = WorkspaceOperationsRepository::operation(tx, &operation_id)
                 .map_err(ApiError::stored)?
                 .ok_or_else(ApiError::internal)?;
+            if operation["phase"] == "completed" {
+                return Ok(());
+            }
+            let owner = AgentRepository::get(tx, &AgentId::from(agent_id.as_str()))
+                .map_err(ApiError::stored)?
+                .ok_or_else(ApiError::internal)?;
+            if owner
+                .extra
+                .get("workspaceReservationId")
+                .and_then(Value::as_str)
+                != Some(operation_id.as_str())
+                || operation.get("source")
+                    != Some(&CheckpointsRepository::workspace_source(&owner.value()))
+            {
+                return Err(ApiError::new(
+                    StatusCode::CONFLICT,
+                    "Restore reservation changed",
+                ));
+            }
             operation["phase"] = json!(if unknown {
                 "recovery_required"
             } else {
@@ -797,6 +880,10 @@ fn now_seconds() -> f64 {
 fn map_error(error: CheckpointsError) -> ApiError {
     match error {
         CheckpointsError::Worker => ApiError::internal(),
+        CheckpointsError::RestoreWorkspaceRequired => ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "Restore is available only in an isolated worker worktree",
+        ),
         CheckpointsError::UnknownAgent => {
             ApiError::new(StatusCode::BAD_REQUEST, "Unknown managed agent")
         }

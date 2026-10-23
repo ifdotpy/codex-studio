@@ -195,7 +195,7 @@ impl studio_runtime_services::provider_callbacks::ManagedCreationEnvironment
 
 /// Admission fence for a child or monitor of `actor`: only the parent's own
 /// workspace identity, never other agents' rows.
-fn prepare_parent_workspace(
+pub(super) fn prepare_parent_workspace(
     actor: &studio_runtime_store::AgentRecord,
 ) -> Result<
     Box<dyn studio_runtime_services::monitor_runtime::WorkspaceAdmission + Send + Sync>,

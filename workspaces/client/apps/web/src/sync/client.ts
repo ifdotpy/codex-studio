@@ -18,7 +18,7 @@ import { replicateRxCollection } from "rxdb/plugins/replication";
 
 import type { RxCollection, RxDocumentData } from "rxdb";
 
-import { draftConflictHandler } from "./conflicts";
+import { createDraftConflictHandler } from "./conflicts";
 
 import {
   applyEntityRows,
@@ -312,8 +312,9 @@ export function createSyncClient(options: SyncClientOptions) {
       storage: getRxStorageDexie(),
       multiInstance: true,
     });
+    const draftConflicts = createDraftConflictHandler();
     await db.addCollections({
-      drafts: { schema, conflictHandler: draftConflictHandler },
+      drafts: { schema, conflictHandler: draftConflicts.conflictHandler },
       outbox: { schema },
     });
     const currentProjectionDatabase = entityProjectionDatabaseName(
@@ -366,7 +367,7 @@ export function createSyncClient(options: SyncClientOptions) {
       if (doc.id.startsWith("transcript:") && doc.id.split(":").length === 2)
         void cacheStoredTranscript(db.projections, workspaceId, doc.id, doc);
     });
-    return { db, workspaceId, verifyWorkspace };
+    return { db, workspaceId, verifyWorkspace, draftConflicts };
   }
 
   function syncDatabase() {
@@ -1889,7 +1890,8 @@ export function createSyncClient(options: SyncClientOptions) {
       };
     } = {},
   ) {
-    const { db, workspaceId, verifyWorkspace } = await syncDatabase();
+    const { db, workspaceId, verifyWorkspace, draftConflicts } =
+      await syncDatabase();
     // State machine: each invalidation sets `pullTriggered`. The first admitted
     // page consumes that bit; a successful full page permits continuation via
     // `pullContinues`, without consuming any trigger that arrived meanwhile.
@@ -2148,11 +2150,13 @@ export function createSyncClient(options: SyncClientOptions) {
                   },
                 };
               });
-              return syncPost(
+              const conflicts = await syncPost(
                 "/api/sync/drafts",
                 { rows: requestRows },
                 { workspaceId },
               );
+              draftConflicts.acknowledge(rows, conflicts);
+              return conflicts;
             }),
           batchSize: 100,
         },

@@ -1,6 +1,7 @@
 //! Pure lifetime accounting and team admission. All time and history observations
 //! are supplied by the caller; this module never opens native session files.
 use crate::event_write::truthy;
+use crate::provider_adapter::{self, ProviderKind};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -138,6 +139,8 @@ pub struct BudgetSnapshot {
     agent: Agent,
     state: BudgetState,
     initialized: bool,
+    live_only: bool,
+    live_usage: Option<u64>,
 }
 impl BudgetSnapshot {
     pub fn from_records(
@@ -219,6 +222,8 @@ impl BudgetSnapshot {
             agent: durable,
             state,
             initialized,
+            live_only: uses_live_usage(durable_agent),
+            live_usage: None,
         })
     }
     pub fn state(&self) -> &BudgetState {
@@ -230,6 +235,20 @@ impl BudgetSnapshot {
     pub fn agent_id(&self) -> &str {
         &self.agent.id
     }
+    pub(crate) fn needs_live_usage(&self) -> bool {
+        self.live_only
+    }
+    pub(crate) fn bind_live_usage(&mut self, tokens: u64) {
+        self.live_usage = Some(tokens);
+    }
+}
+
+fn uses_live_usage(agent: &Value) -> bool {
+    ProviderKind::of_record(agent).is_ok_and(|provider| {
+        !provider_adapter::adapter(provider)
+            .capabilities()
+            .native_history
+    })
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -486,6 +505,14 @@ impl HistoryObservation {
             request_usage: false,
             runtime_binding: None,
         };
+        // These providers have no rollout to import. Admission checks their
+        // durable response rows against the ledger in the caller's transaction.
+        if uses_live_usage(agent) {
+            if history.is_some_and(|history| history["coverage"] == "partial") {
+                observation.reason = Some("Live usage history is incomplete".into());
+            }
+            return Ok(observation);
+        }
         let Some(history) = history else {
             observation.reason = Some("Native usage history is unavailable".into());
             return Ok(observation);
@@ -580,7 +607,7 @@ fn coverage(snapshot: &BudgetSnapshot, observation: Option<&HistoryObservation>)
     if !state.ambiguous_notices.is_empty() {
         return Some("Native counter reset has no response identity".into());
     }
-    if a.thread_id.as_deref().is_none_or(str::is_empty) {
+    if !snapshot.live_only && a.thread_id.as_deref().is_none_or(str::is_empty) {
         return (state.spent != 0).then(|| "Native usage history is unavailable".into());
     }
     if state.spent == 0
@@ -596,6 +623,14 @@ fn coverage(snapshot: &BudgetSnapshot, observation: Option<&HistoryObservation>)
     };
     if observation.reason.is_some() {
         return observation.reason.clone();
+    }
+    if snapshot.live_only {
+        return (!snapshot.live_usage.is_some_and(|tokens| {
+            tokens == state.before.saturating_add(state.after)
+                && tokens == state.spent
+                && tokens >= a.tokens_used.unwrap_or(0)
+        }))
+        .then(|| "Live response usage is missing or incomplete".into());
     }
     if state.spent != 0 && !observation.request_usage {
         return Some("Native history lacks response usage records".into());

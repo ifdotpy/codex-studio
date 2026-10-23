@@ -296,11 +296,10 @@ fn api_schema_ts(schema_hash: &str) -> String {
 /// The Rust-owned constants appended to the generated API declarations.
 fn api_types_tail() -> String {
     format!(
-        "\nexport const SYNC_PROTOCOL_VERSION = {} as const;\nexport const SYNC_ENTITY_SCOPE = {} as const;\nexport const TOKEN_RATE_MAX_ENTRIES = {} as const;\nexport const TOKEN_RATE_MAX_TOTAL_ENTRIES = {} as const;\nexport const TOKEN_RATE_IDENTIFIER_MAX_CODEPOINTS = {} as const;\n",
+        "\nexport const SYNC_PROTOCOL_VERSION = {} as const;\nexport const SYNC_ENTITY_SCOPE = {} as const;\nexport const TOKEN_RATE_MAX_ENTRIES = {} as const;\nexport const TOKEN_RATE_IDENTIFIER_MAX_CODEPOINTS = {} as const;\n",
         crate::SYNC_PROTOCOL_VERSION,
         json_string(crate::SYNC_ENTITY_SCOPE),
         crate::TOKEN_RATE_MAX_ENTRIES,
-        crate::TOKEN_RATE_MAX_TOTAL_ENTRIES,
         crate::TOKEN_RATE_IDENTIFIER_MAX_CODEPOINTS,
     )
 }
@@ -401,8 +400,10 @@ pub fn check_schema_parity(openapi: &Value, account_transfer: &Value) -> Result<
         values::SYNC_TRANSCRIPT_STREAM_MAX_ITEMS as i64,
     )?;
     check_delivery_parity(openapi)?;
+    crate::task_results::check_schema_parity(openapi)?;
     check_account_group_parity(openapi)?;
     crate::agent_progress::check_schema_parity(openapi)?;
+    crate::task_gate::check_api_contract(openapi)?;
     let expected = serde_json::to_value(crate::agent_progress::StartWaitReason::ALL)
         .map_err(|error| error.to_string())?;
     for pointer in [
@@ -461,25 +462,22 @@ pub fn check_schema_parity(openapi: &Value, account_transfer: &Value) -> Result<
         &format!("{protocol}/supportedVersions/items/const"),
         version,
     )?;
-    let snapshot = "/components/schemas/TokenRateSnapshot/properties";
-    let entries = crate::TOKEN_RATE_MAX_ENTRIES as i64;
-    let identifier = crate::TOKEN_RATE_IDENTIFIER_MAX_CODEPOINTS as i64;
-    for map in ["/rates", "/teams", "/teams/additionalProperties"] {
-        expect_number(openapi, &format!("{snapshot}{map}/maxProperties"), entries)?;
+    for owner in ["TokenRateSnapshot", "ResourceTokenRatesEvent"] {
         expect_number(
             openapi,
-            &format!("{snapshot}{map}/propertyNames/minLength"),
-            1,
-        )?;
-        expect_number(
-            openapi,
-            &format!("{snapshot}{map}/propertyNames/maxLength"),
-            identifier,
+            &format!("/components/schemas/{owner}/properties/records/maxItems"),
+            crate::TOKEN_RATE_MAX_ENTRIES as i64,
         )?;
     }
-    let turn_id = "/components/schemas/TokenRateValue/properties/turnId";
-    expect_number(openapi, &format!("{turn_id}/minLength"), 1)?;
-    expect_number(openapi, &format!("{turn_id}/maxLength"), identifier)?;
+    for field in ["agentId", "rootId", "turnId"] {
+        let path = format!("/components/schemas/TokenRateRecord/properties/{field}");
+        expect_number(openapi, &format!("{path}/minLength"), 1)?;
+        expect_number(
+            openapi,
+            &format!("{path}/maxLength"),
+            crate::TOKEN_RATE_IDENTIFIER_MAX_CODEPOINTS as i64,
+        )?;
+    }
     expect_number(
         account_transfer,
         "/properties/members/maxProperties",
@@ -588,7 +586,10 @@ fn api_types(root: &Path, document: &Value, argument: &str) -> Result<String, St
 /// Render every contract file. `with_api_types` also runs Node for web types.
 pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String> {
     let mut openapi = read_json(root, OPENAPI_PATH)?;
-    for (name, schema) in crate::agent_progress::schemas() {
+    for (name, schema) in crate::agent_progress::schemas()
+        .into_iter()
+        .chain(crate::desktop::schemas())
+    {
         *openapi
             .pointer_mut(&format!("/components/schemas/{name}"))
             .ok_or_else(|| format!("OpenAPI is missing Rust-owned {name}"))? = schema;
@@ -618,6 +619,14 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
     }
     let web = |name: &str| format!("{WEB_GENERATED}/{name}");
     let mut rendered = vec![
+        Rendered {
+            path: "workspaces/providers/apps/claude-bridge/input-origin.generated.mjs".into(),
+            text: format!(
+                "// {HEADER}\nexport const HUMAN_INPUT = {};\nexport const STUDIO_EVENT_INPUT = {};\n",
+                json_string(crate::provider_input::ProviderInputOrigin::Human.as_str()),
+                json_string(crate::provider_input::ProviderInputOrigin::StudioEvent.as_str()),
+            ),
+        },
         Rendered {
             path: OPENAPI_PATH.into(),
             text: serde_json::to_string_pretty(&openapi).map_err(|error| error.to_string())? + "\n",

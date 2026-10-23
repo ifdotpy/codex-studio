@@ -70,6 +70,21 @@ impl BudgetRepository {
         )?;
         Ok(())
     }
+    /// Lifetime tokens in the agent's recorded responses, including zero before any response.
+    pub fn response_tokens(db: &Connection, agent: &str) -> StoreResult<u64> {
+        let (tokens, invalid): (i64, i64) = db.query_row_cached(
+            "SELECT COALESCE(SUM(tokens),0), COUNT(CASE WHEN typeof(tokens)!='integer' OR tokens<0 THEN 1 END) FROM runtime_budget_usage WHERE agent=?1 AND kind='response'",
+            [agent],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        if invalid != 0 {
+            return Err(StoreError::SchemaMismatch(
+                "invalid runtime_budget_usage/tokens".into(),
+            ));
+        }
+        u64::try_from(tokens)
+            .map_err(|_| StoreError::SchemaMismatch("invalid runtime_budget_usage/tokens".into()))
+    }
     pub fn save_agent(tx: &Transaction<'_>, agent: &Value) -> StoreResult<()> {
         let record = AgentRecord::from_value(agent.clone())?;
         Table::<AgentRecord>::new(tx).put(&record)

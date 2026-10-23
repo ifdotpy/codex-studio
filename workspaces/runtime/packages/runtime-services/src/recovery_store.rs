@@ -725,6 +725,7 @@ impl CompletionWriter for LifecycleCompletionWriter {
                 let mut result =
                     json!({"status":"reconciled","turnId":turn_id,"outcome":turn["status"]});
                 let continuation = (turn["status"] == "interrupted"
+                    && !legacy_claude_restart_interruption(turn)
                     && (restart || *mode == CompletionMode::AutomaticConnection)
                     && expected
                         .automatic_turn()
@@ -813,6 +814,20 @@ impl CompletionWriter for LifecycleCompletionWriter {
             _ => Err(RecoveryError::EffectsUnavailable),
         }
     }
+}
+
+// Old Claude mirrors used this error when no native transcript was checked.
+// It is an unknown outcome, even though those mirrors called it interrupted.
+const LEGACY_CLAUDE_RESTART_ERROR: &str =
+    "Claude connection ended. Review the saved transcript before continuing.";
+
+/// A legacy synthetic interruption proves neither completion nor interruption,
+/// so automatic continuation must not treat it as a confirmed interruption.
+fn legacy_claude_restart_interruption(turn: &Value) -> bool {
+    turn["error"]
+        .as_str()
+        .or_else(|| turn["error"]["message"].as_str())
+        == Some(LEGACY_CLAUDE_RESTART_ERROR)
 }
 
 /// Close the restart marker after native history decided its turn. The

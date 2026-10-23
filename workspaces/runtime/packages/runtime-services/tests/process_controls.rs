@@ -35,17 +35,46 @@ fn python_output_state_survives_chunk_boundaries_and_restarts() {
             .unwrap();
         let event = monitor_matches::pending(&mut record, step["now"].as_f64().unwrap(), false)
             .map(|(id, payload)| json!({"id":id,"payload":payload}));
-        assert_eq!(json!(event), step["event"]);
-        assert_eq!(record, step["record"]);
+        assert_eq!(legacy_match_fields(json!(event)), step["event"]);
+        assert_eq!(legacy_match_fields(record.clone()), step["record"]);
         // The next chunk uses only persisted JSON, including incomplete UTF-8.
         record = serde_json::from_str(&record.to_string()).unwrap();
     }
     monitor_matches::flush(&mut record).unwrap();
     let event = monitor_matches::pending(&mut record, 11.4, true)
         .map(|(id, payload)| json!({"id":id,"payload":payload}));
-    assert_eq!(json!(event), fixture["final"]);
+    assert_eq!(legacy_match_fields(json!(event)), fixture["final"]);
     assert_eq!(json!(monitor_matches::summary(&record)), fixture["summary"]);
 }
+// The Python corpus owns the pre-existing matcher fields. Rust's additive wake
+// budget and excerpt fields have separate receipt/restart witnesses.
+fn legacy_match_fields(mut value: Value) -> Value {
+    match &mut value {
+        Value::Object(object) => {
+            for key in [
+                "outputWakeBudget",
+                "outputLineTail",
+                "outputLineOffsets",
+                "outputMatchExcerpts",
+                "excerpt",
+                "logOffset",
+            ] {
+                object.remove(key);
+            }
+            for child in object.values_mut() {
+                *child = legacy_match_fields(child.take());
+            }
+        }
+        Value::Array(values) => {
+            for child in values {
+                *child = legacy_match_fields(child.take());
+            }
+        }
+        _ => (),
+    }
+    value
+}
+
 #[test]
 fn invalid_matchers_are_rejected_before_admission() {
     for value in [

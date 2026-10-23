@@ -1625,9 +1625,8 @@ export function handleEntitySyncFixtureRequest(request, response, fixture) {
     const rates = {
       epoch,
       protocol: RESOURCE_STREAM_PROTOCOL,
-      rates: {},
+      records: [],
       revision,
-      teams: {},
       workspaceId: identity.workspaceId,
     };
     writeFrame("token-rates", rates);

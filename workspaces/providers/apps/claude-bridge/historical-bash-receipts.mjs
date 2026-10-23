@@ -1,15 +1,16 @@
 import fs from "node:fs/promises";
-import { constants } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 
-export const HISTORICAL_BASH_TAIL_BYTES = 8 * 1024 * 1024;
-const RECORD_BYTES = 64 * 1024;
+import {
+  readNativeHistory,
+  nativeHistoryRows,
+  NATIVE_HISTORY_TAIL_BYTES,
+  nativeUuid as uuid,
+} from "./native-history.mjs";
+export const HISTORICAL_BASH_TAIL_BYTES = NATIVE_HISTORY_TAIL_BYTES;
 const MAX_ITEMS = 64;
-const uuid = (value) =>
-  typeof value === "string" &&
-  /^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i.test(value);
 const object = (value) =>
   value !== null && typeof value === "object" && !Array.isArray(value);
 
@@ -49,39 +50,12 @@ function candidates(session) {
   return found;
 }
 
-async function readTail(file, filesystem) {
-  // Resolve the account's own native path. Never follow a transcript symlink.
-  if ((await filesystem.realpath(file)) !== file) return null;
-  const handle = await filesystem.open(
-    file,
-    constants.O_RDONLY | constants.O_NOFOLLOW,
-  );
-  let retained = false;
-  try {
-    const before = await handle.stat();
-    if (!before.isFile() || !Number.isSafeInteger(before.size)) return null;
-    const offset = Math.max(0, before.size - HISTORICAL_BASH_TAIL_BYTES);
-    const raw = Buffer.alloc(before.size - offset);
-    const read = await handle.read(raw, 0, raw.length, offset);
-    if (read.bytesRead !== raw.length || raw.at(-1) !== 10) return null;
-    retained = true;
-    return { handle, before, offset, raw };
-  } finally {
-    if (!retained) await handle.close();
-  }
-}
-
 async function receipts(tail, selected, session) {
   const ids = new Set(selected.map(({ item }) => item.id));
   const uses = new Map(),
     results = new Map(),
     uuids = new Set();
-  let start = tail.offset ? tail.raw.indexOf(10) + 1 : 0;
-  let yielded = start;
-  while (start < tail.raw.length) {
-    const end = tail.raw.indexOf(10, start);
-    if (end < 0 || end - start > RECORD_BYTES) return [];
-    const row = JSON.parse(tail.raw.subarray(start, end).toString("utf8"));
+  for (const { row, offset: start } of await nativeHistoryRows(tail)) {
     if (
       !object(row) ||
       row.isCompactSummary === true ||
@@ -107,12 +81,8 @@ async function receipts(tail, selected, session) {
         map.set(id, { row, block, offset: start });
       }
     }
-    start = end + 1;
-    if (start - yielded >= 256 * 1024) {
-      await new Promise((resolve) => setImmediate(resolve));
-      yielded = start;
-    }
   }
+
   const found = [];
   for (const entry of selected) {
     const use = uses.get(entry.item.id),
@@ -194,18 +164,6 @@ export async function reconcileHistoricalBash(
   if (!isIdle() || !uuid(session.nativeId || session.id)) return 0;
   const selected = candidates(session);
   if (!selected.length || !path.isAbsolute(session.cwd || "")) return 0;
-  const cwd = session.nativeHistoryCwd || session.cwd;
-  if (typeof cwd !== "string" || !path.isAbsolute(cwd)) return 0;
-  // Claude hashes longer project directory names. Leave that unsupported scope
-  // unknown rather than searching other projects or guessing its native path.
-  const project = cwd.replace(/[^a-zA-Z0-9]/g, "-");
-  if (project.length > 200) return 0;
-  const file = path.join(
-    path.resolve(configDir),
-    "projects",
-    project,
-    (session.nativeId || session.id) + ".jsonl",
-  );
   const source = JSON.stringify([
     session.id,
     session.nativeId,
@@ -214,39 +172,13 @@ export async function reconcileHistoricalBash(
   ]);
   const turns = session.turns,
     turnCount = turns.length;
-  let tail, found;
-  try {
-    tail = await readTail(file, filesystem);
-    if (!tail) return 0;
-    found = await receipts(tail, selected, session);
-    if (!found.length) return 0;
-    const current = await filesystem.lstat(file);
-    const after = await tail.handle.stat();
-    if (
-      current.isSymbolicLink() ||
-      current.dev !== tail.before.dev ||
-      current.ino !== tail.before.ino ||
-      after.size !== tail.before.size ||
-      after.mtimeMs !== tail.before.mtimeMs
-    )
-      return 0;
-    const pinned = Buffer.alloc(tail.raw.length);
-    const read = await tail.handle.read(pinned, 0, pinned.length, tail.offset);
-    if (read.bytesRead !== pinned.length || !pinned.equals(tail.raw)) return 0;
-    const finalPath = await filesystem.lstat(file),
-      finalFile = await tail.handle.stat();
-    if (
-      finalPath.dev !== tail.before.dev ||
-      finalPath.ino !== tail.before.ino ||
-      finalFile.size !== tail.before.size ||
-      finalFile.mtimeMs !== tail.before.mtimeMs
-    )
-      return 0;
-  } catch {
-    return 0;
-  } finally {
-    await tail?.handle.close();
-  }
+  const found = await readNativeHistory(
+    session,
+    { configDir, filesystem },
+    (tail) => receipts(tail, selected, session),
+  );
+  if (!found?.length) return 0;
+
   if (
     !isIdle() ||
     session.turns !== turns ||

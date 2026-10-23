@@ -71,6 +71,9 @@ pub(super) fn read(
     payloads: &tool_requests::prepared::Payloads,
 ) -> Result<Value, CallbackError> {
     let key = text(args, "output_ref")?;
+    if let Some(hash) = key.strip_prefix("studio-input:") {
+        return studio_input(tx, snapshot, key, hash, args, payloads);
+    }
     if let Some(id) = key.strip_prefix("chat-message:") {
         let message = tx.query_row(
             "SELECT id,room,sender,seq,created,text FROM runtime_chat_messages WHERE id=?1", [id],
@@ -147,6 +150,43 @@ pub(super) fn read(
         args,
         json!({"success":result["success"],"outcome":receipt["outcome"]}),
         page,
+    )
+}
+
+/// Read an immutable Studio input spill only through an event owned by this
+/// actor. The blob hash identifies content, never permission to read it.
+fn studio_input(
+    tx: &Transaction<'_>,
+    snapshot: &CallbackSnapshot,
+    key: &str,
+    hash: &str,
+    args: &Value,
+    payloads: &tool_requests::prepared::Payloads,
+) -> Result<Value, CallbackError> {
+    let actor = snapshot.context().agent.as_str();
+    let saved = tx.query_row(
+        "SELECT e.id,e.kind,e.text,m.record FROM runtime_events e JOIN runtime_event_meta m ON e.id=m.id
+         WHERE e.agent=?1 AND json_extract(m.record,'$.studioInput.sha256')=?2 ORDER BY e.created,e.id LIMIT 1",
+        [actor, hash], |r| Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?)),
+    ).optional()?.ok_or(CallbackError::Invalid("Studio input reference is not owned by this agent"))?;
+    authorize_event(
+        tx,
+        actor,
+        StoredEvent {
+            id: saved.0,
+            kind: saved.1,
+            text: saved.2,
+        },
+        Some(&saved.3),
+    )?;
+    let metadata: Value = serde_json::from_str(&saved.3)?;
+    let body = payloads.studio_input(&metadata["studioInput"])?;
+    excerpt(
+        key,
+        body,
+        args,
+        json!({"source":"studio-input"}),
+        Map::new(),
     )
 }
 
@@ -442,4 +482,140 @@ fn excerpt(
         fields.extend(page);
     }
     Ok(value)
+}
+
+#[cfg(test)]
+mod studio_input_tests {
+    use super::*;
+    use crate::provider_callbacks::CallbackContext;
+
+    #[test]
+    fn spilled_input_is_durable_paged_and_agent_owned() {
+        let root = tempfile::tempdir().expect("temporary blob directory creates");
+        let body = format!("{}END", "complaint 🦀\n".repeat(10_000));
+        let hash = studio_runtime_store::sha256_hex(body.as_bytes());
+        crate::payload_blobs::write_blobs(
+            root.path(),
+            &[crate::payload_blobs::BlobWrite {
+                sha256: hash.clone(),
+                bytes: body.as_bytes().to_vec(),
+                preview: Value::Null,
+            }],
+        )
+        .expect("payload blob materializes");
+        let mut connection =
+            rusqlite::Connection::open_in_memory().expect("fixture database opens");
+        let tx = connection
+            .transaction()
+            .expect("fixture transaction starts");
+        tx.execute_batch(
+            "CREATE TABLE runtime_events(id TEXT,agent TEXT,kind TEXT,text TEXT,created REAL);
+            CREATE TABLE runtime_event_meta(id TEXT,record TEXT);",
+        )
+        .expect("fixture tables create");
+        tx.execute(
+            "INSERT INTO runtime_events VALUES('wake','lead','user','continue',1)",
+            [],
+        )
+        .expect("agent fixture inserts");
+        tx.execute(
+            "INSERT INTO runtime_event_meta VALUES('wake',?1)",
+            [json!({"studioInput":{"sha256":hash,"size":body.len()}}).to_string()],
+        )
+        .expect("event metadata inserts");
+        let snapshot = |id: &str| {
+            CallbackSnapshot::from_record(
+                &json!({"id":id,"rootId":id,"epoch":1,"status":"running","autoWake":true,
+                "accountKey":"default","threadId":"thread","turnId":"turn","name":id,"cwd":"/work"})
+                .to_string(),
+                &CallbackContext {
+                    agent: id.into(),
+                    account: "default".into(),
+                    connection: "connection".into(),
+                    generation: 1,
+                    epoch: 1,
+                    thread: "thread".into(),
+                    turn: "turn".into(),
+                },
+            )
+            .expect("input page loads")
+        };
+        let key = format!("studio-input:{hash}");
+        let payloads = tool_requests::prepared::Rows::read(
+            &tx,
+            "lead",
+            tool_requests::prepared::Selection::StudioInput(hash.clone()),
+        )
+        .expect("input selection")
+        .prepare(root.path(), 1.0)
+        .expect("input bytes prepare outside the store callback");
+        let mut recovered = String::new();
+        let mut offset = 0;
+        loop {
+            let page = read(
+                &tx,
+                &snapshot("lead"),
+                &json!({"output_ref":key,"offset":offset}),
+                1.0,
+                &payloads,
+            )
+            .expect("input page recovers");
+            recovered.push_str(page["text"].as_str().expect("page text is a string"));
+            assert_eq!(page["outputRef"], key);
+            let Some(next) = page["nextOffset"].as_u64() else {
+                break;
+            };
+            offset = next;
+        }
+        assert_eq!(recovered, body);
+        payloads
+            .revalidate(
+                &tx,
+                "lead",
+                tool_requests::prepared::Selection::StudioInput(hash.clone()),
+            )
+            .expect("unchanged input reference revalidates");
+        tx.execute(
+            "UPDATE runtime_event_meta SET record=?1 WHERE id='wake'",
+            [json!({"studioInput":{"sha256":hash,"size":body.len()+1}}).to_string()],
+        )
+        .expect("change the selected reference");
+        assert!(matches!(
+            payloads.revalidate(
+                &tx,
+                "lead",
+                tool_requests::prepared::Selection::StudioInput(hash.clone())
+            ),
+            Err(CallbackError::Stale)
+        ));
+        tx.execute(
+            "UPDATE runtime_event_meta SET record=?1 WHERE id='wake'",
+            [json!({"studioInput":{"sha256":hash,"size":body.len()}}).to_string()],
+        )
+        .expect("restore the selected reference");
+        assert!(
+            read(
+                &tx,
+                &snapshot("other"),
+                &json!({"output_ref":key}),
+                1.0,
+                &payloads
+            )
+            .is_err()
+        );
+        let tail = read(
+            &tx,
+            &snapshot("lead"),
+            &json!({"output_ref":key,"contains":"END"}),
+            1.0,
+            &payloads,
+        )
+        .expect("tail page loads");
+        assert!(
+            tail["text"]
+                .as_str()
+                .expect("tail text is a string")
+                .ends_with("END")
+        );
+    }
 }

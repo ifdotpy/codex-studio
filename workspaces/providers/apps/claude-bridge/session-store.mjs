@@ -1,6 +1,11 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
+import { reconcileRestartTurns } from "./restart-reconcile.mjs";
+import {
+  validJournalRecord,
+  nativeConfirmsJournal,
+} from "./journal-repair.mjs";
 
 const FORMAT = "studio-claude-session-v1";
 const DEFAULT_CACHE_BYTES = 64 * 1024 * 1024;
@@ -259,19 +264,84 @@ export function createSessionStore(root, options = {}) {
       ? logBytes.lastIndexOf(0x0a) + 1
       : logBytes.length;
     if (tornTail) await fs.truncate(logFor(id), validLogBytes);
-    let records = 0;
+    const originalScope = [
+      base.session.id,
+      base.session.nativeId,
+      base.session.cwd,
+      base.session.nativeHistoryCwd,
+    ];
+    let records = 0,
+      skippedRows = 0,
+      invalidSequence = false,
+      malformedTail = false;
+    const snapshotSequence = base.sequence;
     for (const line of completeLines) {
       if (!line) continue;
-      const record = JSON.parse(line);
-      if (record.sequence <= base.sequence) continue;
-      if (record.sequence !== base.sequence + 1)
-        throw new Error("Claude session journal sequence is invalid");
-      base.session = apply(base.session, record.changes);
+      let record;
+      try {
+        record = JSON.parse(line);
+      } catch {
+        skippedRows++;
+        malformedTail = true;
+        continue;
+      }
+      if (!validJournalRecord(record)) {
+        skippedRows++;
+        invalidSequence = true;
+        continue;
+      }
+      if (record.sequence >= snapshotSequence) malformedTail = false;
+      if (record.sequence <= snapshotSequence) continue;
+      if (record.sequence !== base.sequence + 1) invalidSequence = true;
+      try {
+        base.session = apply(base.session, record.changes);
+      } catch {
+        skippedRows++;
+        invalidSequence = true;
+        continue;
+      }
       base.sequence = record.sequence;
       records++;
     }
+    // A complete corrupt final row can hide settings or a submitted control
+    // operation. Native message text cannot prove that state was never written.
+    invalidSequence ||= malformedTail;
     base.records = records;
     base.journalBytes = validLogBytes;
+    if (skippedRows || invalidSequence) {
+      const marker = fileFor(id).replace(/\.json$/, ".repair.json");
+      const report = { status: "needs_repair", skippedRows, invalidSequence };
+      await writeFileAtomic(marker, JSON.stringify(report));
+      const sameScope =
+        JSON.stringify(originalScope) ===
+        JSON.stringify([
+          base.session?.id,
+          base.session?.nativeId,
+          base.session?.cwd,
+          base.session?.nativeHistoryCwd,
+        ]);
+      const confirmed =
+        sameScope &&
+        !invalidSequence &&
+        (await nativeConfirmsJournal(base.session, options.nativeHistory).catch(
+          () => false,
+        ));
+      if (!confirmed)
+        throw Object.assign(
+          new Error(
+            `Claude session ${id} needs repair: ${skippedRows} malformed journal rows; native history cannot confirm the saved state.`,
+          ),
+          { code: "CLAUDE_SESSION_REPAIR_REQUIRED", data: report },
+        );
+      // Preserve the original bytes before replacing the snapshot and journal.
+      await writeFileAtomic(logFor(id) + ".corrupt", logBytes);
+      base.session.journalRepair = { ...report, status: "repaired" };
+      await atomicSnapshot(id, base.session, base.sequence);
+      await fs.writeFile(logFor(id), "", { mode: 0o600 });
+      await writeFileAtomic(marker, JSON.stringify(base.session.journalRepair));
+      base.records = 0;
+      base.journalBytes = 0;
+    }
     return base;
   };
   // Measure both retained objects only when the cache adopts or creates an entry.
@@ -497,16 +567,7 @@ export function createSessionStore(root, options = {}) {
     const saved = await readAll(id);
     const shadow = copy(saved.session);
     const session = reused || saved.session;
-    if (!reused) {
-      for (const turn of session.turns)
-        if (turn.status === "inProgress") {
-          turn.status = "interrupted";
-          turn.error = {
-            message:
-              "Claude connection ended. Review the saved transcript before continuing.",
-          };
-        }
-    }
+    if (!reused) await reconcileRestartTurns(session, options.nativeHistory);
     const cached = sessions.get(id);
     if (cached) {
       if (cached !== session)

@@ -21,8 +21,6 @@ export interface components {
        * @default 0
        */
       updated: number;
-    } & {
-      [key: string]: unknown;
     };
     MarkdownBlock:
       | components["schemas"]["MarkdownTree"]

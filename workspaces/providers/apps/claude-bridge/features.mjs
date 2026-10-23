@@ -1,3 +1,6 @@
+import usagePolicyJson from "./usage-policy.mjs";
+const usagePolicy = JSON.parse(usagePolicyJson);
+
 // Native Claude values normalized to Studio's existing public protocol.
 export function usageLimits(response) {
   if (!response.rate_limits_available || !response.rate_limits)
@@ -59,7 +62,7 @@ export function limitEvent(current, info) {
       },
     },
   );
-  const all = result.rateLimitsByLimitId;
+  const all = (result.rateLimitsByLimitId ||= {});
   const main = (all.claude ||= { limitId: "claude", limitName: "Claude" });
   const type = info.rateLimitType;
   let bucket = main,
@@ -70,20 +73,38 @@ export function limitEvent(current, info) {
         id !== "claude" &&
         !["claude-opus", "claude-sonnet", "claude-oauth-apps"].includes(id),
     );
-    if (names.length !== 1) return null;
-    bucket = all[names[0]];
+    const id = names.length === 1 ? names[0] : "claude-unknown-limit";
+    bucket = all[id] ||= { limitId: id, limitName: "Claude · Unknown limit" };
   } else if (["seven_day_opus", "seven_day_sonnet"].includes(type)) {
     const name = type.slice(10),
-      id = "claude-" + name;
+      id = usagePolicy.modelBuckets[name];
     bucket = all[id] ||= { limitId: id, limitName: "Claude · " + name };
-  } else if (!["five_hour", "seven_day"].includes(type)) return null;
-  if (!Number.isFinite(info.utilization)) return null;
+  } else if (!["five_hour", "seven_day"].includes(type)) {
+    if (!info.status && !info.overageStatus) return null;
+    const id = type === "overage" ? "claude-overage" : "claude-unknown-limit";
+    bucket = all[id] ||= {
+      limitId: id,
+      limitName: "Claude · " + (type || "Unknown limit"),
+    };
+  }
+  // Native events can grant overage without reporting utilization.
+  const hasStatus =
+    typeof info.status === "string" ||
+    typeof info.overageStatus === "string" ||
+    typeof info.isUsingOverage === "boolean" ||
+    typeof info.overageInUse === "boolean";
+  if (!Number.isFinite(info.utilization) && !hasStatus) return null;
   bucket[key] = {
     ...bucket[key],
-    usedPercent: Math.max(0, Math.min(100, info.utilization * 100)),
+    ...(Number.isFinite(info.utilization)
+      ? { usedPercent: Math.max(0, Math.min(100, info.utilization * 100)) }
+      : {}),
     windowDurationMins: type === "five_hour" ? 300 : 10080,
     ...(Number.isFinite(info.resetsAt) ? { resetsAt: info.resetsAt } : {}),
   };
+  // Replace permission on each event; a later rejection revokes it.
+  bucket.claudeRateLimit = structuredClone(info);
+  result.claudeRateLimit = structuredClone(info);
   result.rateLimits = main;
   return result;
 }
@@ -138,6 +159,15 @@ export function usageTokens(usage) {
 }
 export class InputQueue {
   values = [];
+  nonQueryIds = new Set();
+  pending = [];
+  // Stop removes every SDK message that has not crossed the iterator boundary.
+  withdraw() {
+    const messages = this.pending.splice(0);
+    for (const value of this.values.splice(0))
+      messages.push(...(value.studioInputBatch || [value]));
+    return messages;
+  }
   wake = null;
   closed = false;
   push(value) {
@@ -156,7 +186,85 @@ export class InputQueue {
       if (!this.values.length)
         await new Promise((resolve) => (this.wake = resolve));
       if (this.closed) break;
-      if (this.values.length) yield this.values.shift();
+      if (this.values.length) {
+        const value = this.values.shift();
+        this.pending = [...(value.studioInputBatch || [value])];
+        while (this.pending.length && !this.closed) {
+          const message = this.pending.shift();
+          if (message.shouldQuery === false) this.nonQueryIds.add(message.uuid);
+          yield message;
+        }
+      }
     }
   }
+}
+
+// This is permission from a native rate-limit event, not the billing preference.
+export function overageAllowed(info) {
+  if (info.overageStatus === "rejected") return false;
+  return (
+    usagePolicy.allowedOverageStatuses.includes(info.overageStatus) ||
+    info.isUsingOverage === true ||
+    info.overageInUse === true
+  );
+}
+
+// Keep API failure classification at both assistant and terminal boundaries.
+export function claudeErrorInfo(error, text) {
+  if (error === "rate_limit") return "rateLimitExceeded";
+  if (error === "overloaded") return "serverOverloaded";
+  if (error === "server_error") return "internalServerError";
+  if (error === "authentication_failed") return "unauthorized";
+  if (
+    (!error || error === "unknown") &&
+    /(?:^|\b(?:http(?: error)?|api(?: error)?|status(?: code)?)[ :]+)429\b/i.test(
+      text || "",
+    )
+  )
+    return "rateLimitExceeded";
+  if (
+    error === "unknown" &&
+    /can't reach the api server|ENOTFOUND|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|connection error|socket hang up|fetch failed/i.test(
+      text || "",
+    )
+  )
+    return "httpConnectionFailed";
+  return null;
+}
+
+export function providerNotice(message) {
+  if (message.subtype === "api_retry") {
+    const status =
+      message.error_status == null
+        ? "no HTTP response"
+        : "HTTP " + message.error_status;
+    return `Claude API retry ${message.attempt} of ${message.max_retries}. Delay: ${message.retry_delay_ms} ms. Status: ${status}.`;
+  }
+  if (["model_fallback", "model_consent_fallback"].includes(message.subtype)) {
+    const original =
+      message.original_model || message.originalModel || "unknown";
+    const fallback =
+      message.fallback_model || message.fallbackModel || "unknown";
+    return `Claude model fallback: ${original} to ${fallback}. ${message.content || message.text || ""}`.trim();
+  }
+  return null;
+}
+
+export function modelFamily(model) {
+  if (typeof model !== "string") return null;
+  return (
+    Object.keys(usagePolicy.modelBuckets).find(
+      (family) =>
+        model === family ||
+        model === "claude-" + family ||
+        model.startsWith("claude-" + family + "-"),
+    ) || null
+  );
+}
+export function limitApplies(info, model) {
+  const family = modelFamily(model);
+  const scoped = Object.keys(usagePolicy.modelBuckets).find(
+    (name) => info.rateLimitType === "seven_day_" + name,
+  );
+  return !family || !scoped || family === scoped;
 }
