@@ -336,17 +336,21 @@ export function AccountCapacityView({
                 : remainingText(remaining)}
             </span>
           </div>
-          <Progress
+          <Progress.Root
             className="account-limit-bar"
-            value={remaining ?? 0}
-            color={remainingLimitColor(remaining)}
             size="xs"
             role={remaining === null ? undefined : "meter"}
             aria-label="Remaining limit"
             aria-valuemin={0}
             aria-valuemax={100}
             aria-valuenow={remaining ?? undefined}
-          />
+          >
+            <Progress.Section
+              value={remaining ?? 0}
+              color={remainingLimitColor(remaining)}
+              withAria={false}
+            />
+          </Progress.Root>
           {note && <small className="account-limit-note">{note}</small>}
           {account.status !== "ready" ? null : limitsError ? (
             details
