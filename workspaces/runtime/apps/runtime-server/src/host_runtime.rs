@@ -310,6 +310,33 @@ impl HostRuntime {
                         eprintln!("linux-vm: automatic start at backend start failed: {error}")
                     }
                 }
+                // The watchdog: a failed guest (a kernel panic) restarts within
+                // the restart limits (docs/linux-vm-workspaces.md, "VM start").
+                let period = std::time::Duration::from_secs(
+                    studio_runtime_services::linux_vm_runtime::WATCHDOG_INTERVAL_SECONDS,
+                );
+                let mut checks =
+                    tokio::time::interval_at(tokio::time::Instant::now() + period, period);
+                checks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                loop {
+                    checks.tick().await;
+                    match vm.check().await {
+                        Ok(outcome)
+                            if matches!(
+                                outcome.as_str(),
+                                "absent"
+                                    | "unknown"
+                                    | "stopped"
+                                    | "running"
+                                    | "starting"
+                                    | "unresponsive"
+                                    | "busy"
+                                    | "limited"
+                            ) => {}
+                        Ok(outcome) => eprintln!("linux-vm: watchdog check: {outcome}"),
+                        Err(error) => eprintln!("linux-vm: watchdog check failed: {error}"),
+                    }
+                }
             });
         }
         resources.vm_provider_launch = Some(Arc::new(ServerVmProviderLaunchResolver {

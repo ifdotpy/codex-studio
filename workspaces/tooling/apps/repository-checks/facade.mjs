@@ -757,7 +757,7 @@ function fastTierCommands(root) {
     },
     {
       item: { name: "studio-runtime-services", ecosystem: "cargo" },
-      label: "Linux VM start witnesses",
+      label: "Linux VM start, watchdog and share mount witnesses",
       commands: [
         [
           "cargo",
@@ -773,7 +773,7 @@ function fastTierCommands(root) {
             "studio-runtime-services",
             "--lib",
             "-E",
-            "test(/^linux_vm_runtime::/)",
+            "test(/^linux_vm_(runtime|share)::/)",
           ],
         ],
         [

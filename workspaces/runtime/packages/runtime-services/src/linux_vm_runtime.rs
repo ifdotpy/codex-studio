@@ -9,6 +9,11 @@
 //! when the Mac restarted under a running VM, or to finish an automatic restart
 //! that a backend stop interrupted; a VM stopped on purpose or in this Mac boot
 //! stays stopped until a person starts it (`studio-runtime-server linux-vm start`).
+//!
+//! The watchdog checks the VM every [`WATCHDOG_INTERVAL_SECONDS`]. It restarts a
+//! failed guest (a kernel panic behind a live helper) under the same restart
+//! limits and `maintenance.lock`. After each start, the registered Finder views
+//! of the layr projects mount again (`linux_vm_share`).
 
 use std::fs;
 use std::io::{self, Read, Seek, SeekFrom, Write};
@@ -20,6 +25,7 @@ use serde_json::{Map, Value, json};
 
 use crate::host_exec::HostExecRuntime;
 use crate::linux_vm_guest::{GuestError, GuestRpc, GuestSpaceProbe};
+use crate::linux_vm_share::ShareMountTool;
 
 /// The subcommand of `studio-runtime-server` that starts the helper in a new session.
 pub const HELPER_SUBCOMMAND: &str = "linux-vm-helper";
@@ -67,6 +73,17 @@ const RECORDS_KEPT: usize = 50;
 const DAY_SECONDS: f64 = 86_400.0;
 /// The reason of a start after a Mac restart.
 const HOST_RESTART_REASON: &str = "The Mac restarted while the VM ran";
+/// Interval of the watchdog checks, in seconds.
+pub const WATCHDOG_INTERVAL_SECONDS: u64 = 30;
+/// Wait for a failed VM to stop, in seconds: a dead kernel ignores the ACPI
+/// stop, and the helper forces it after 20 seconds.
+const STOP_SECONDS: f64 = 40.0;
+/// Console copies of failed boots that the state folder keeps.
+const CRASH_LOGS_KEPT: usize = 5;
+/// Console bytes that a restart record keeps.
+const CONSOLE_TAIL_BYTES: usize = 4096;
+/// The name prefix of a console copy of a failed boot.
+const CRASH_LOG_PREFIX: &str = "console-crash-";
 
 /// Why a VM did not start.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -346,6 +363,17 @@ async fn on_thread<T: Send + 'static>(
         .map_err(|_| failed("The VM start ended without a result."))
 }
 
+/// How the stop of a failed VM ended.
+enum FailedStop {
+    /// Another VM operation holds the client lock.
+    Busy,
+    /// The VM is no longer failed with the same helper.
+    Recovered,
+    Stopped,
+    /// The stop has no proven result.
+    Unproven(String),
+}
+
 /// One VM state folder: its helper, its control and guest sockets, and the
 /// rules of an automatic start.
 pub struct VmRuntime {
@@ -359,6 +387,9 @@ pub struct VmRuntime {
     /// Virtualization runs Linux VMs on macOS with Apple silicon only.
     supported: bool,
     host_exec: OnceLock<Arc<HostExecRuntime>>,
+    /// `~/Studio`, the parent of the Finder views; `None` without a home folder.
+    studio_root: Option<PathBuf>,
+    shares: Arc<dyn ShareMountTool>,
     /// One start at a time in this process; the client lock covers other processes.
     gate: tokio::sync::Mutex<()>,
 }
@@ -372,6 +403,9 @@ pub struct VmRuntimeParts {
     pub guest: Arc<dyn GuestRpc>,
     pub boot_time: fn() -> Option<f64>,
     pub supported: bool,
+    /// `~/Studio`, the parent of the Finder views; `None` mounts no view.
+    pub studio_root: Option<PathBuf>,
+    pub shares: Arc<dyn ShareMountTool>,
 }
 
 impl VmRuntime {
@@ -390,6 +424,8 @@ impl VmRuntime {
             boot_time: parts.boot_time,
             supported: parts.supported,
             host_exec: OnceLock::new(),
+            studio_root: parts.studio_root,
+            shares: parts.shares,
             gate: tokio::sync::Mutex::new(()),
         })
     }
@@ -402,6 +438,10 @@ impl VmRuntime {
             launcher: Arc::new(TrampolineLauncher::new(program)),
             boot_time: host_boot_time,
             supported: cfg!(all(target_os = "macos", target_arch = "aarch64")),
+            studio_root: std::env::var_os("HOME")
+                .filter(|home| !home.is_empty())
+                .map(|home| PathBuf::from(home).join("Studio")),
+            shares: Arc::new(crate::linux_vm_share::MacShareMountTool::default()),
             helper,
             state_dir,
         })
@@ -806,13 +846,37 @@ impl VmRuntime {
         Err(Self::provision_error(&self.provision(), true))
     }
 
-    /// After a start: the Mac host_exec service and the guest token. A failure
-    /// leaves the VM running; each host_exec call configures the guest again.
-    async fn configure_after_start(&self) {
+    /// After a start: the Mac host_exec service and the guest token, then the
+    /// Finder views. A failure leaves the VM running; each host_exec call
+    /// configures the guest again, and a failed view keeps its reason.
+    async fn configure_after_start(self: &Arc<Self>) {
         if let Some(host_exec) = self.host_exec.get()
             && let Err(error) = host_exec.configure_guest().await
         {
             eprintln!("linux-vm: the host_exec channel is not configured yet: {error}");
+        }
+        let runtime = Arc::clone(self);
+        if let Err(error) = on_thread(move || runtime.remount_shares()).await {
+            eprintln!("linux-vm: the project shares did not mount again: {error}");
+        }
+    }
+
+    /// Mount the registered Finder views of the layr projects again
+    /// (Python `remount_registered` at the end of `ensure_running`).
+    fn remount_shares(&self) {
+        let Some(studio_root) = &self.studio_root else {
+            return;
+        };
+        let status = self.status().ok();
+        let parts = crate::linux_vm_share::Remount {
+            state_dir: &self.state_dir,
+            studio_root,
+            guest: self.guest.as_ref(),
+            bridge: status.as_ref().and_then(|status| status.get("share")),
+            tool: self.shares.as_ref(),
+        };
+        if let Err(error) = crate::linux_vm_share::remount_registered(&parts) {
+            eprintln!("linux-vm: the project shares did not mount again: {error}");
         }
     }
 
@@ -1108,6 +1172,252 @@ impl VmRuntime {
                     .into(),
             )),
         }
+    }
+
+    /// Copy the console of the failed boot before the next boot clears it.
+    /// Returns the name of the copy and the tail of the console.
+    fn keep_console(&self, at: f64) -> (Option<String>, String) {
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        let Ok(data) = fs::read(self.state_dir.join(CONSOLE_FILE)) else {
+            return (None, String::new());
+        };
+        let tail = String::from_utf8_lossy(&data[data.len().saturating_sub(CONSOLE_TAIL_BYTES)..])
+            .into_owned();
+        let stamp = chrono::DateTime::from_timestamp(at as i64, 0)
+            .map(|time| time.format("%Y%m%dT%H%M%SZ").to_string())
+            .unwrap_or_default();
+        let name = format!("{CRASH_LOG_PREFIX}{stamp}.log");
+        let saved = fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(self.state_dir.join(&name))
+            .and_then(|mut file| {
+                file.set_permissions(fs::Permissions::from_mode(0o600))?;
+                file.write_all(&data)
+            });
+        if let Err(error) = saved {
+            eprintln!("linux-vm: the console of the failed boot is not kept: {error}");
+            return (None, tail);
+        }
+        let mut copies: Vec<PathBuf> = fs::read_dir(&self.state_dir)
+            .map(|entries| {
+                entries
+                    .filter_map(Result::ok)
+                    .map(|entry| entry.path())
+                    .filter(|path| {
+                        path.file_name()
+                            .and_then(|name| name.to_str())
+                            .is_some_and(|name| {
+                                name.starts_with(CRASH_LOG_PREFIX) && name.ends_with(".log")
+                            })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        copies.sort();
+        for old in &copies[..copies.len().saturating_sub(CRASH_LOGS_KEPT)] {
+            drop(fs::remove_file(old));
+        }
+        (Some(name), tail)
+    }
+
+    /// The restart record `id` of `watchdog.json`.
+    fn record(&self, id: &str) -> Option<Map<String, Value>> {
+        self.restarts()
+            .get("restarts")
+            .and_then(Value::as_array)
+            .and_then(|rows| {
+                rows.iter()
+                    .find(|row| row.get("id").and_then(Value::as_str) == Some(id))
+            })
+            .and_then(Value::as_object)
+            .cloned()
+    }
+
+    /// Close an automatic restart whose start a backend stop interrupted
+    /// after the launch: the guest answers, so the VM must not start again
+    /// after a later stop.
+    fn settle(&self) {
+        let Some(restart) = self
+            .intent()
+            .get("restart")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+        else {
+            return;
+        };
+        if let Some(mut record) = self.record(&restart).filter(|record| {
+            matches!(
+                record.get("stage").and_then(Value::as_str),
+                Some("stopping" | "starting")
+            )
+        }) {
+            record.insert("stage".into(), json!("done"));
+            record.insert("outcome".into(), json!("restarted"));
+            record.insert("finishedAt".into(), json!(now()));
+            self.update_record(&record);
+        }
+        self.finish_intent(&restart);
+    }
+
+    /// Stop a failed VM for an automatic restart. Before the stop, the console
+    /// copy, the record and the restart intent are saved: a backend that stops
+    /// during the restart leaves a restart that the next backend can finish.
+    fn stop_failed(
+        &self,
+        pid: Option<&Value>,
+        record: &mut Map<String, Value>,
+    ) -> Result<FailedStop, VmStartError> {
+        {
+            // Create, start and stop hold this lock; the next check tries again.
+            let Ok(_lease) = self.client_lock(0.0) else {
+                return Ok(FailedStop::Busy);
+            };
+            let state = self.status()?;
+            if Self::state_of(&state) != "failed" || state.get("pid") != pid {
+                return Ok(FailedStop::Recovered);
+            }
+            let at = record.get("at").and_then(Value::as_f64).unwrap_or_else(now);
+            let (log, tail) = self.keep_console(at);
+            record.insert("consoleLog".into(), json!(log));
+            record.insert("consoleTail".into(), json!(tail));
+            self.update_record(record);
+            let id = record
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned();
+            self.write_intent("running", "watchdog", Some(&id))
+                .map_err(|error| failed(error.to_string()))?;
+            if let Err(error) = self.control.call(
+                "host.stop",
+                &json!({}),
+                None,
+                Duration::from_secs_f64(REQUEST_SECONDS),
+            ) {
+                // The intent stays: if the helper exits later, a check starts the VM.
+                return Ok(FailedStop::Unproven(format!(
+                    "The VM helper did not take the stop: {error}"
+                )));
+            }
+        }
+        // Wait without the lock: a stop on purpose in this time still runs.
+        let deadline = Instant::now() + Duration::from_secs_f64(STOP_SECONDS);
+        loop {
+            if self
+                .status()
+                .is_ok_and(|status| Self::state_of(&status) == "stopped")
+            {
+                return Ok(FailedStop::Stopped);
+            }
+            if Instant::now() >= deadline {
+                return Ok(FailedStop::Unproven(
+                    "The Linux VM did not stop within its timeout.".into(),
+                ));
+            }
+            pause(Duration::from_millis(100));
+        }
+    }
+
+    /// Restart a failed VM through the normal start, within the restart limits.
+    fn restart_failed(&self, status: &Map<String, Value>) -> Result<String, VmStartError> {
+        let text = |value: Option<&Value>| value.and_then(Value::as_str).map(str::to_owned);
+        let (kind, reason) = match status.get("guestFailure") {
+            Some(failure) => (
+                text(failure.get("kind")).unwrap_or_else(|| "kernel_error".into()),
+                text(failure.get("reason")).unwrap_or_else(|| "no reason".into()),
+            ),
+            None => (
+                "helper_failed".into(),
+                format!(
+                    "The VM helper failed: {}",
+                    text(status.get("error"))
+                        .filter(|error| !error.is_empty())
+                        .unwrap_or_else(|| "no reason".into())
+                ),
+            ),
+        };
+        let Some(_maintenance) = self.maintenance_lock()? else {
+            return Ok("busy".into());
+        };
+        let at = now();
+        let rows = self
+            .restarts()
+            .get("restarts")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        if let Some((until, rule)) = Self::next_allowed(&rows, at) {
+            self.hold(Some(
+                json!({"reason": reason, "rule": rule, "until": until, "untilTime": utc(until)}),
+            ));
+            return Ok("limited".into());
+        }
+        let pid = status.get("pid").cloned();
+        let mut record = Map::new();
+        record.insert("id".into(), json!(uuid::Uuid::new_v4().to_string()));
+        record.insert("at".into(), json!(at));
+        record.insert("time".into(), json!(utc(at)));
+        record.insert("kind".into(), json!(kind));
+        record.insert("reason".into(), json!(reason));
+        record.insert("helperPid".into(), pid.clone().unwrap_or(Value::Null));
+        record.insert("stage".into(), json!("stopping"));
+        match self.stop_failed(pid.as_ref(), &mut record)? {
+            FailedStop::Busy => return Ok("busy".into()),
+            FailedStop::Recovered => return Ok("recovered".into()),
+            FailedStop::Unproven(error) => {
+                record.insert(
+                    "error".into(),
+                    json!(error.chars().take(500).collect::<String>()),
+                );
+                self.update_record(&record);
+                return Ok("stop_failed".into());
+            }
+            FailedStop::Stopped => {}
+        }
+        record.insert("stage".into(), json!("starting"));
+        record.insert("stoppedAt".into(), json!(now()));
+        self.update_record(&record);
+        Ok(self.automatic_start(record))
+    }
+
+    fn check_blocking(&self) -> Result<String, VmStartError> {
+        if !self.state_dir.join(CONFIG_FILE).exists() {
+            return Ok("absent".into());
+        }
+        let Ok(status) = self.status() else {
+            return Ok("unknown".into());
+        };
+        match Self::state_of(&status) {
+            "stopped" => self.resume_blocking(),
+            "failed" => self.restart_failed(&status),
+            "running" => {
+                self.hold(None);
+                if self.intent().contains_key("restart") && self.answers() {
+                    self.settle();
+                }
+                Ok("running".into())
+            }
+            state => Ok(state.to_owned()),
+        }
+    }
+
+    /// One watchdog check (Python `Watchdog.check`): restart a failed guest
+    /// within the limits, finish an interrupted restart, or start a VM that the
+    /// Mac restart stopped. No answer alone never restarts the VM: a busy
+    /// guest can refuse connections. Returns what it did: absent, unknown, a
+    /// VM state, busy, limited, recovered, restarted, failed, cancelled,
+    /// stop_failed or abandoned.
+    pub async fn check(self: &Arc<Self>) -> Result<String, VmStartError> {
+        let _gate = self.gate.lock().await;
+        let runtime = Arc::clone(self);
+        let outcome = on_thread(move || runtime.check_blocking()).await??;
+        if outcome == "restarted" {
+            self.configure_after_start().await;
+        }
+        Ok(outcome)
     }
 }
 
