@@ -70,7 +70,7 @@ test("desktop conversation header keeps title and actions on one row", async ({
     await expect(context).toContainText("Unknown");
     await expect(context.getByRole("progressbar")).toHaveCount(0);
     await page.screenshot({
-      path: "/tmp/redesign/conversation/after/real-header-1440.png",
+      path: test.info().outputPath("real-header-1440.png"),
     });
   } finally {
     fixture.kill("SIGTERM");

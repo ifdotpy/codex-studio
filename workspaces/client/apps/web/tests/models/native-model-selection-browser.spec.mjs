@@ -53,14 +53,18 @@ function Fixture(){const[model,onModel]=useState('astra');return <MantineProvide
     await page.goto(url);
     await expect(page.locator("#model")).toBeVisible();
     if (process.env.NATIVE_MODEL_SCREENSHOTS) {
-      await mkdir("/tmp/native-model-ui", { recursive: true });
+      const shots = join(tmpdir(), "native-model-ui");
+      await mkdir(shots, { recursive: true });
       for (const width of [320, 390, 768, 1440]) {
         await page.setViewportSize({ width, height: 568 });
         for (const theme of ["light", "dark"]) {
           await page.goto(`${url}?theme=${theme}`);
           await expect(page.locator("#model")).toBeVisible();
           await page.screenshot({
-            path: `/tmp/native-model-ui/${process.env.NATIVE_MODEL_SCREENSHOTS}-picker-${width}-${theme}.png`,
+            path: join(
+              shots,
+              `${process.env.NATIVE_MODEL_SCREENSHOTS}-picker-${width}-${theme}.png`,
+            ),
             fullPage: true,
           });
         }
