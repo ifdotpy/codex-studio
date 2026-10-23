@@ -314,6 +314,8 @@
   inset-block: 0;
   inset-inline-end: 0;
   inline-size: var(--studio-team-size);
+  border-inline-start: var(--studio-border-width) solid var(--line);
+  box-shadow: var(--mantine-shadow-lg);
 }
 
 /* 74rem mirrors a readable conversation plus --studio-team-size and gutters.
