@@ -12135,17 +12135,11 @@ export interface components {
       /** Tailscaleuser */
       tailscaleUser: null | string;
     };
-    /** DiskSpaceStatus */
+    /** @description The visible disk notice returned by `/api/desktop`. */
     DiskSpaceStatus: {
-      /** Freebytes */
-      freeBytes: number | null;
-      /**
-       * Level
-       * @description Set when the free space of the state volume is below the warning or the critical threshold. full: the disk is full; Studio starts no new turn and holds agents until space returns.
-       */
-      level: ("warning" | "critical" | "full") | null;
-      /** Message */
-      message: null | string;
+      /** @enum {string|null} */
+      level: "warning" | "critical" | "full" | null;
+      message: string | null;
     };
     /**
      * DraftChangeBatch

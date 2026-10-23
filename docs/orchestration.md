@@ -9,6 +9,12 @@ HTTP JSON responses follow this flow:
 4. Vary on `Accept-Encoding`; the native client negotiates and decodes Brotli.
    Small JSON and all `text/event-stream` responses, including sync SSE, stay uncompressed.
 
+Desktop status follows this flow:
+
+1. The [disk gate](../workspaces/runtime/packages/runtime-services/src/disk_space.rs) keeps exact free bytes for admission and projects only the visible level and message through the [disk status contract](../workspaces/runtime/packages/runtime-schema/src/desktop.rs).
+2. `/api/desktop` includes that projection; the existing resource content filter suppresses unchanged responses, so healthy disk writes cause no renderer re-read.
+3. Threshold, message, provider and supervisor changes still notify the existing reader. Failed reads retain the last notices; native attachment keeps using the same endpoint.
+
 State updates follow this flow:
 
 1. Pull the initial state, then consume complete typed entity batches from the stream.
