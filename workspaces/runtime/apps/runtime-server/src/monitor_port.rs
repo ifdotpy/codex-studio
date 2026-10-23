@@ -666,7 +666,9 @@ impl RetainedMonitorPort {
                 .as_f64()
                 .is_some_and(|deleted| deleted != 0.0)
         {
-            return Err(MonitorError::Refused("The agent turn was stopped"));
+            return Err(MonitorError::Refused(
+                studio_runtime_schema::shared_values::MONITOR_OWNER_STOPPED_ERROR,
+            ));
         }
         let cwd = monitor["cwd"]
             .as_str()

@@ -12,6 +12,7 @@ mod process_controls;
 mod project_preparation;
 mod recovery_http;
 mod remote_access_origin;
+mod studio_errors;
 mod task_output;
 mod task_review;
 mod ui_limits_org;

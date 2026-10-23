@@ -198,6 +198,17 @@ pub const BACKEND_RESTARTED_TURN_ERROR: &str =
     "Server restarted during a turn. Review history, then send a new instruction.";
 /// Turn error after the Linux VM provider connection ended.
 pub const VM_PROVIDER_DISCONNECTED_TURN_ERROR: &str = "Linux VM provider disconnected. The turn outcome is unknown. Review the transcript before resuming.";
+// Persisted input and agent errors that Studio, not the agent's work, causes. The
+// scheduler writes them, and the Studio error list classifies them.
+/// Error of input whose turn/start answer was lost: the provider may have started it.
+pub const PROVIDER_START_UNKNOWN_ERROR: &str = "turn/start response timed out; outcome unknown";
+/// Error of input that the provider proved it never received.
+pub const PROVIDER_START_NOT_SENT_ERROR: &str = "Provider did not send turn/start";
+/// Hold reason of input whose thread resume answer was lost.
+pub const PROVIDER_RESUME_UNKNOWN_ERROR: &str =
+    "Provider thread resume outcome is unknown; input remains pending.";
+/// Refusal of a monitor whose owner stopped its turn: the owner ended it, not Studio.
+pub const MONITOR_OWNER_STOPPED_ERROR: &str = "The agent turn was stopped";
 /// Seconds that the host retries one idempotent Linux VM provider journal read (next,
 /// replay, eventRead, info, status, ack) after a result that the guest could not prove. A
 /// guest supervisor stall shorter than this does not end the provider connection. Writes
