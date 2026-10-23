@@ -203,6 +203,18 @@ export const Interactions: Story = {
     const page = within(canvasElement);
     const lane = page.getByRole("region", { name: "Needs you" });
     const firstStrip = lane.querySelector(".fleet-strip")!;
+    const answerStatus = firstStrip.querySelector(
+      '[data-chat-status="answer"]',
+    )!;
+    await expect(
+      answerStatus.closest(".mantine-VisuallyHidden-root"),
+    ).toBeNull();
+    const workingStatus = canvasElement.querySelector(
+      '[data-chat-status="working"]',
+    )!;
+    await expect(
+      workingStatus.closest(".mantine-VisuallyHidden-root"),
+    ).toBeNull();
     await expect(getComputedStyle(firstStrip).boxShadow).not.toBe("none");
     await expect(getComputedStyle(firstStrip).backgroundColor).not.toBe(
       "rgba(0, 0, 0, 0)",

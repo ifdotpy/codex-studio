@@ -232,6 +232,10 @@
   font-size: var(--mantine-font-size-sm);
   font-weight: 400;
 }
+.fleet-chat-heading > .chat-status {
+  --agent-activity-color: var(--studio-state);
+  color: var(--studio-state);
+}
 .fleet-chat-heading > strong {
   flex: 1;
 }
