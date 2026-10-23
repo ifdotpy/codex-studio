@@ -3061,6 +3061,37 @@ async fn rust_direct_claude_launch_runs_the_scripted_bridge_turn() {
     // The input includes runtime instructions; compare its complete persisted text.
     expected[0]["text"] = transcript["items"][0]["text"].clone();
     assert_eq!(normalize_ids(rust_items, &agent_id), expected);
+    // Human text and Studio instructions retain separate origins, but only
+    // the final SDK message queries. The prefix's zero-turn receipt must not
+    // complete this turn or produce a second assistant reply.
+    let cwd = PathBuf::from(completed["cwd"].as_str().unwrap());
+    let sdk_inputs: Vec<Value> = std::fs::read_to_string(cwd.join(".sdk-inputs"))
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(sdk_inputs.len(), 2);
+    assert_eq!(sdk_inputs[0]["shouldQuery"], false);
+    assert!(sdk_inputs[0].get("origin").is_none());
+    assert!(sdk_inputs[0].get("isSynthetic").is_none());
+    assert!(sdk_inputs[0].get("text_not_typed").is_none());
+    assert_eq!(
+        sdk_inputs[0]["message"]["content"],
+        json!([{"type":"text","text":"split-stream"}])
+    );
+    assert!(sdk_inputs[1].get("shouldQuery").is_none());
+    assert_eq!(sdk_inputs[1]["origin"], json!({"kind":"task-notification"}));
+    assert_eq!(sdk_inputs[1]["isSynthetic"], true);
+    assert_eq!(sdk_inputs[1]["text_not_typed"], true);
+    assert_eq!(sdk_inputs[1]["uuid"], expected[0]["id"]);
+    assert_ne!(sdk_inputs[0]["uuid"], sdk_inputs[1]["uuid"]);
+    assert!(
+        sdk_inputs[1]["message"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .trim_start()
+            .starts_with("[Studio subagent concurrency,")
+    );
     let answer = rust_items
         .iter()
         .find(|item| item["phase"] == "final_answer")
@@ -3069,7 +3100,11 @@ async fn rust_direct_claude_launch_runs_the_scripted_bridge_turn() {
         answer["id"].as_str().unwrap().rsplit(':').next(),
         Some("stream-blocks")
     );
-    let queries = PathBuf::from(completed["cwd"].as_str().unwrap()).join(".queries");
+    let queries = cwd.join(".queries");
+    assert_eq!(
+        std::fs::read_to_string(&queries).unwrap().lines().count(),
+        1
+    );
     let (_query_watcher, mut query_events) = watch_file_changes(&queries);
     // A loaded thread with unchanged settings keeps its live query for the
     // next turn. Changed thread settings resume it in a new query, which the

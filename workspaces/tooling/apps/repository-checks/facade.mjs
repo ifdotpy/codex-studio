@@ -1360,6 +1360,7 @@ function fastTierCommands(root) {
                     "test(/^wave7_p01_factory::running_child_started_with_a_previous_command_reattaches$/)",
                     "test(/^wave7_p01_registry::running_app_server_started_with_the_frozen_command_reattaches$/)",
                     "test(/^wave7_p01_registry::direct_child_sigkill_settles_unknown_without_resend$/)",
+                    "test(/^wave7_p01_registry::rust_direct_claude_launch_runs_the_scripted_bridge_turn$/)",
                     "test(/^state_check::state_check_reads_fixture_rows_without_changing_or_disclosing_them$/)",
                   ]),
                 ],
