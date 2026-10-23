@@ -3,9 +3,8 @@ import { serverDatabaseSuffix } from "../servers/environment";
 import {
   MAX_SAFE_INTEGER,
   SYNC_ENTITY_STREAM_MAX_DOCUMENTS,
-  SYNC_ENTITY_STREAM_MAX_BYTES,
+  SYNC_STREAM_EVENT_MAX_BYTES,
   SYNC_TRANSCRIPT_STREAM_MAX_ITEMS,
-  SYNC_TRANSCRIPT_STREAM_MAX_BYTES,
 } from "../generated/sharedValues";
 
 import { createRxDatabase, addRxPlugin } from "rxdb";
@@ -599,7 +598,7 @@ export function createSyncClient(options: SyncClientOptions) {
           batch.delta.items.length + batch.delta.removed.length >
             SYNC_TRANSCRIPT_STREAM_MAX_ITEMS ||
           new TextEncoder().encode(JSON.stringify(batch)).length >
-            SYNC_TRANSCRIPT_STREAM_MAX_BYTES
+            SYNC_STREAM_EVENT_MAX_BYTES
         )
           throw new TypeError("Invalid stream transcript batch");
         await persistTranscriptProjection(
@@ -647,7 +646,7 @@ export function createSyncClient(options: SyncClientOptions) {
         Math.max(...changes.documents.map((row) => row.seq)) !==
           changes.through ||
         new TextEncoder().encode(JSON.stringify(changes)).length >
-          SYNC_ENTITY_STREAM_MAX_BYTES
+          SYNC_STREAM_EVENT_MAX_BYTES
       )
         throw new TypeError("Invalid stream entity batch");
       await persistEntityDocuments(

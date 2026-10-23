@@ -79,7 +79,7 @@ pub(crate) async fn protocol(
         "maxEntityPage": sync_policy::ENTITY_PAGE_LIMIT,
         "maxOtherPage": sync_policy::OTHER_PAGE_LIMIT,
         "maxStreamDocuments": studio_runtime_schema::shared_values::SYNC_ENTITY_STREAM_MAX_DOCUMENTS,
-        "maxStreamBytes": studio_runtime_schema::shared_values::SYNC_ENTITY_STREAM_MAX_BYTES,
+        "maxStreamBytes": studio_runtime_schema::shared_values::SYNC_STREAM_EVENT_MAX_BYTES,
     });
     Ok(Json(super::generated_json::<
         crate::generated::SyncProtocolResponse,

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { TranscriptPageData } from "../types";
 import type { ResourceChangeEvent } from "./resourceEvents";
-import { SYNC_TRANSCRIPT_STREAM_MAX_BYTES } from "../generated/sharedValues";
+import { SYNC_STREAM_EVENT_MAX_BYTES } from "../generated/sharedValues";
 import { readRetryDelay } from "./readRetry";
 
 const mocks = vi.hoisted(() => ({
@@ -368,7 +368,7 @@ describe("entity pull reset wiring", () => {
                     role: "assistant",
                     text:
                       scenario === "oversize"
-                        ? "x".repeat(SYNC_TRANSCRIPT_STREAM_MAX_BYTES)
+                        ? "x".repeat(SYNC_STREAM_EVENT_MAX_BYTES)
                         : "streamed",
                   },
                 ],

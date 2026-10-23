@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { SYNC_ENTITY_STREAM_MAX_BYTES } from "../generated/sharedValues";
+import { SYNC_STREAM_EVENT_MAX_BYTES } from "../generated/sharedValues";
 import {
   API_SCHEMA_HASH,
   API_SCHEMA_HASH_HEADER,
@@ -306,7 +306,7 @@ describe("entity pull dispatch gate", () => {
                     id: "oversize",
                     value: {
                       id: "oversize",
-                      name: "é".repeat(SYNC_ENTITY_STREAM_MAX_BYTES / 2),
+                      name: "é".repeat(SYNC_STREAM_EVENT_MAX_BYTES / 2),
                       status: "idle",
                       source: "managed",
                     },

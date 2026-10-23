@@ -575,6 +575,63 @@ pub(crate) mod tests {
         assert_eq!(response.result.unwrap(), expected);
     }
 
+    #[tokio::test]
+    async fn brotli_native_event_stream_decodes_each_flush_before_the_next_event() {
+        use std::io::Write;
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let (advance, mut next) = tokio::sync::mpsc::channel::<()>(1);
+        let events = [
+            "event: resources\nid: 1\ndata: {\"revision\":1}\n\n",
+            "event: heartbeat\nid: 2\ndata: {\"revision\":2}\n\n",
+        ];
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let (headers, _) = read_http(&mut socket).await;
+            assert!(
+                headers
+                    .lines()
+                    .any(|line| line.eq_ignore_ascii_case("accept-encoding: br")),
+                "{headers}"
+            );
+            socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Encoding: br\r\nConnection: close\r\n\r\n").await.unwrap();
+            let mut encoder = brotli::CompressorWriter::new(Vec::new(), 4096, 4, 20);
+            for event in events {
+                encoder.write_all(event.as_bytes()).unwrap();
+                encoder.flush().unwrap();
+                socket
+                    .write_all(&std::mem::take(encoder.get_mut()))
+                    .await
+                    .unwrap();
+                next.recv()
+                    .await
+                    .expect("client read event before next production");
+            }
+        });
+        let backend = Backend::new(&origin).unwrap();
+        let mut response = backend
+            .event_stream("/api/sync/stream", "")
+            .await
+            .unwrap()
+            .unwrap();
+        for event in events {
+            let mut actual = Vec::new();
+            tokio::time::timeout(Duration::from_secs(2), async {
+                while actual.len() < event.len() {
+                    actual.extend_from_slice(
+                        &response.chunk().await.unwrap().expect("decoded event"),
+                    );
+                }
+            })
+            .await
+            .expect("flush reaches native client immediately");
+            assert_eq!(actual, event.as_bytes());
+            advance.send(()).await.unwrap();
+        }
+        drop(response);
+        server.await.unwrap();
+    }
+
     #[test]
     fn ui_cannot_choose_an_external_host_or_leave_the_api() {
         assert!(Backend::new("https://example.com").is_err());

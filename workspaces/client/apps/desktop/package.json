@@ -13,6 +13,7 @@
     "start:ui": "pnpm exec install-electron && pnpm exec electron . --ui-only",
     "test": "pnpm exec vitest run --config vitest.config.mjs && python3 -B recovery-test.py && python3 -B recovery-reload-test.py && python3 -B install-update-test.py",
     "test:native": "pnpm exec install-electron && pnpm exec node test.mjs",
+    "test:sync-brotli": "pnpm exec install-electron && pnpm exec node sync-brotli-native.mjs",
     "test:server-frames": "pnpm exec install-electron && pnpm exec node server-frames-native.mjs",
     "test:server-access": "pnpm exec install-electron && pnpm exec node server-access-native.mjs",
     "test:package": "pnpm exec node package-test.mjs",
