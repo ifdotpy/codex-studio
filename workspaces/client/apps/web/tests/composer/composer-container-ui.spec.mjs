@@ -96,11 +96,21 @@ test("composer keeps one tools row and readable mixed-provider execution summary
           );
           await page.goto(origin);
           await page
-            .getByLabel("Toggle conversations", { exact: true })
+            .getByLabel(
+              page.viewportSize().width <= 760
+                ? "Back to chats"
+                : "Toggle conversations",
+              { exact: true },
+            )
             .waitFor();
           if (!(await page.locator("#sidebar").isVisible()))
             await page
-              .getByLabel("Toggle conversations", { exact: true })
+              .getByLabel(
+                page.viewportSize().width <= 760
+                  ? "Back to chats"
+                  : "Toggle conversations",
+                { exact: true },
+              )
               .click();
           await page
             .locator("[data-chat]")

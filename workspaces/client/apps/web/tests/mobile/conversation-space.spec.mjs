@@ -97,9 +97,21 @@ test("phone conversation gives the transcript its viewport budget", async ({
             },
           );
           await page.goto(`http://127.0.0.1:${port}`);
-          await page.getByLabel("Toggle conversations").waitFor();
+          await page
+            .getByLabel(
+              page.viewportSize().width <= 760
+                ? "Back to chats"
+                : "Toggle conversations",
+            )
+            .waitFor();
           if (!(await page.locator("#sidebar").isVisible()))
-            await page.getByLabel("Toggle conversations").click();
+            await page
+              .getByLabel(
+                page.viewportSize().width <= 760
+                  ? "Back to chats"
+                  : "Toggle conversations",
+              )
+              .click();
           await page
             .locator("[data-chat]")
             .filter({ hasText: "Other project" })
