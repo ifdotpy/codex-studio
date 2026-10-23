@@ -579,6 +579,11 @@ export const layoutTokens = {
     unit: "px",
     purpose: "Retained style width threshold 44px, owned by slice1-contract",
   },
+  "sidebar.resizeHitWidth": {
+    value: 0.5,
+    unit: "rem",
+    purpose: "Pointer hit width of the navigation resize control",
+  },
 } as const;
 export const layoutValues = {
   navigation: {
@@ -588,6 +593,7 @@ export const layoutValues = {
     preferred: 15,
     min: 13,
     drawerMax: 22.5,
+    resizeHitWidth: 0.5,
   },
   serverSelector: {
     preferred: 16.875,
@@ -799,6 +805,8 @@ export const layoutQueries = {
   navigationInline: "(width >= 761px)",
   teamCompact: "(width < 1200px)",
   teamInline: "(width >= 1200px)",
+  toolsCompact: "(width < 900px)",
+  teamToggleCompact: "(width <= 660px)",
 } as const;
 export const layerZIndex = layoutValues.layers;
 export type LayoutLengthKey = {

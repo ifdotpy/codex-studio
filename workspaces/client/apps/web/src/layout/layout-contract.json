@@ -529,6 +529,11 @@
       "value": 44,
       "unit": "px",
       "purpose": "Retained style width threshold 44px, owned by slice1-contract"
+    },
+    "sidebar.resizeHitWidth": {
+      "value": 0.5,
+      "unit": "rem",
+      "purpose": "Pointer hit width of the navigation resize control"
     }
   },
   "queries": {
@@ -547,6 +552,14 @@
     "teamInline": {
       "key": "team.inlineMin",
       "operator": ">="
+    },
+    "toolsCompact": {
+      "key": "tools.compactContainerMax",
+      "operator": "<"
+    },
+    "teamToggleCompact": {
+      "key": "tools.teamToggleContainerMax",
+      "operator": "<="
     }
   },
   "legacyConsumers": [

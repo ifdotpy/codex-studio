@@ -106,4 +106,5 @@
   --layout-edge-rail-min-inset: 44px;
   --layout-edge-rail-status-reserve: 112px;
   --layout-legacy_style-dimension120: 44px;
+  --layout-sidebar-resize-hit-width: 0.5rem;
 }

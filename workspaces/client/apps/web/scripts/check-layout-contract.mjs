@@ -122,7 +122,12 @@ export function checkConsumers(
           numeric !== token.value ||
           (entry.kind === "query" &&
             (token.unit !== "px" ||
-              (entry.operator && operator !== entry.operator)))
+              (entry.operator && operator !== entry.operator) ||
+              !Object.values(contract.queries).some(
+                (query) =>
+                  query.key === entry.key && query.operator === operator,
+              ) ||
+              (entry.signature.match(/\bwidth\b/g) ?? []).length !== 1))
         )
           errors.push(
             `owner ${entry.key} differs at consumer ${path}: ${entry.signature}`,

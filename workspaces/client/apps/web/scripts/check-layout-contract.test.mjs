@@ -1,10 +1,19 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import {
+  readFileSync,
+  writeFileSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { scanSource, checkConsumers } from "./check-layout-contract.mjs";
 import {
   readLayoutContract,
   validateContract,
+  generateLayoutContract,
 } from "./generate-layout-contract.mjs";
 const contract = readLayoutContract();
 const check = (path, source) =>
@@ -63,4 +72,35 @@ test("the desktop and compact CSS conditions cover fractional widths", () => {
   );
   assert.doesNotMatch(source, /max-width:\s*760px/);
   assert.match(source, /width\s*<\s*761px/);
+});
+
+test("rejects an inclusive operator that changes the complement", () => {
+  const errors = check(
+    "src/fixture.css",
+    "/* layout-query: navigation.inlineMin <= */\n@media (width <= 761px) {}",
+  );
+  assert.match(errors.join("\n"), /navigation.inlineMin.*src\/fixture.css/);
+});
+
+test("rejects stale generated output without a browser", () => {
+  const root = mkdtempSync(join(tmpdir(), "layout-contract-"));
+  try {
+    mkdirSync(join(root, "src/layout"), { recursive: true });
+    writeFileSync(
+      join(root, "src/layout/layout-contract.json"),
+      JSON.stringify(contract),
+    );
+    generateLayoutContract(root);
+    generateLayoutContract(root, true);
+    writeFileSync(
+      join(root, "src/layout/layout-contract.generated.ts"),
+      "export const layoutValues = {};\n",
+    );
+    assert.throws(
+      () => generateLayoutContract(root, true),
+      /layout-contract.json: stale generated consumer src\/layout\/layout-contract.generated.ts/,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
