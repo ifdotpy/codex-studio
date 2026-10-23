@@ -954,6 +954,37 @@ fn catalog_source(record: &Value) -> Result<thread::CatalogSource, WorkerError> 
     )
 }
 
+/// The definitions an agent's tools come from (Python `Runtime.tool_definitions`):
+/// those of its catalog source, except that a VM agent always gets the
+/// current catalog, also on a thread that Python started with legacy tools.
+/// The legacy catalog lacks tools of VM agents, such as `orchestration_sign_in`.
+fn catalog_definitions<'a>(
+    resources: &'a PreparationResources,
+    record: &Value,
+) -> Result<&'a Vec<thread::ToolDefinition>, WorkerError> {
+    Ok(
+        if catalog_source(record)? == thread::CatalogSource::Legacy
+            && record["executionMode"] != "vm"
+        {
+            &resources.legacy_tools
+        } else {
+            &resources.tools
+        },
+    )
+}
+
+/// The thread role of an agent record: its saved role, else the role of a
+/// lead or a worker.
+fn role(record: &Value) -> Result<thread::Role, WorkerError> {
+    Ok(
+        optional(record, "role")?.unwrap_or(if flag(record, "isLead")? {
+            thread::Role::Orchestrator
+        } else {
+            thread::Role::Implementer
+        }),
+    )
+}
+
 fn federation_enabled(tx: &Transaction<'_>) -> Result<bool, WorkerError> {
     Ok(record_by_id(tx, "runtime_federation_settings", "global")?
         .map(|raw| serde_json::from_str::<Value>(&raw).map_err(|_| invalid("federation settings")))
@@ -961,14 +992,13 @@ fn federation_enabled(tx: &Transaction<'_>) -> Result<bool, WorkerError> {
         .is_some_and(|v| v["enabled"] == true))
 }
 
-/// The tool definitions of one host agent, as Python's
+/// The tool definitions of one agent, as Python's
 /// `Runtime.tool_definitions(actor)` reports them to `orchestration_context`.
-/// `None` means a VM agent, whose catalog transform has no Rust owner yet.
 pub(crate) fn actor_tool_definitions(
     tx: &Transaction<'_>,
     resources: &PreparationResources,
     record: &Value,
-) -> Result<Option<Value>, WorkerError> {
+) -> Result<Value, WorkerError> {
     let root_id = record["rootId"]
         .as_str()
         .ok_or_else(|| invalid("agent/rootId"))?;
@@ -982,19 +1012,12 @@ pub(crate) fn actor_tool_definitions(
         if !delegation {
             definitions.retain(|tool| tool["name"] != "orchestration_spawn");
         }
-        return Ok(Some(Value::Array(definitions)));
+        return Ok(Value::Array(definitions));
     }
     if studio_runtime_store::truthy(record.get("nativeReview")) {
-        return Ok(Some(Value::Array(Vec::new())));
+        return Ok(Value::Array(Vec::new()));
     }
-    if record["executionMode"] == "vm" {
-        return Ok(None);
-    }
-    let definitions = if catalog_source(record)? == thread::CatalogSource::Legacy {
-        &resources.legacy_tools
-    } else {
-        &resources.tools
-    };
+    let definitions = catalog_definitions(resources, record)?;
     let cwd = text(record, "cwd")?.unwrap_or_default();
     let filtered = thread::filter_tool_definitions(
         definitions,
@@ -1009,14 +1032,11 @@ pub(crate) fn actor_tool_definitions(
                 optional(record, "nativeTeleportTool")?,
                 text(record, "threadId")?.is_some(),
             ),
-            // A VM agent returned `None` above.
-            vm: None,
+            vm: thread::VmRole::of(record["executionMode"] == "vm", role(record)?),
         },
     )
     .map_err(|_| invalid("tool catalog"))?;
-    serde_json::to_value(filtered)
-        .map(Some)
-        .map_err(|_| invalid("tool catalog"))
+    serde_json::to_value(filtered).map_err(|_| invalid("tool catalog"))
 }
 
 pub(super) fn native_thread_blocked(record: &Value) -> bool {
@@ -1196,17 +1216,9 @@ pub(super) fn thread_snapshot(
         .ok_or_else(|| invalid("agent/rootId"))?;
     let root = agent(tx, root_id)?.value();
     let source = catalog_source(record)?;
-    let definitions = if source == thread::CatalogSource::Legacy {
-        resources.legacy_tools.clone()
-    } else {
-        resources.tools.clone()
-    };
+    let definitions = catalog_definitions(resources, record)?.clone();
     let lead = flag(record, "isLead")?;
-    let role = optional(record, "role")?.unwrap_or(if lead {
-        thread::Role::Orchestrator
-    } else {
-        thread::Role::Implementer
-    });
+    let role = role(record)?;
     let owned_transfer = account_transfer_owner
         .map(|transfer_id| {
             crate::account_transfer_driver::owns_reading_member(tx, transfer_id, id)
@@ -1755,11 +1767,107 @@ mod resource_tests {
                     "nativeReview":{"target":{"type":"uncommittedChanges"},"requestId":"q"}});
                 let tools = actor_tool_definitions(tx, &resources, &review)
                     .map_err(|error| StoreError::SchemaMismatch(error.to_string()))?;
-                assert_eq!(tools, Some(json!([])));
+                assert_eq!(tools, json!([]));
                 Ok::<_, StoreError>(())
             })
             .await
             .expect("a review object is read as a review child");
+    }
+
+    /// Python `Runtime.tool_definitions` gives a VM agent the current catalog,
+    /// also on a thread that Python started before `nativeToolSource` existed
+    /// and on a new thread of an agent that Python saved as `legacy`. The
+    /// legacy catalog lacks `orchestration_sign_in`; Rust gave it to these VM
+    /// agents. The saved source and a Codex resume stay as they were.
+    #[tokio::test]
+    async fn a_vm_agent_on_an_old_thread_gets_the_current_catalog() {
+        let directory = tempfile::tempdir().expect("temporary state directory");
+        let store = studio_runtime_store::RuntimeStore::open(Some(directory.path()))
+            .await
+            .expect("runtime store opens");
+        let resources = PreparationResources::bundled(String::new(), ModelCatalogService::new())
+            .expect("runtime resources")
+            .capture_filesystem(None);
+        store
+            .transaction_with(move |tx| {
+                let failed = |error: WorkerError| StoreError::SchemaMismatch(error.to_string());
+                let names = |tools: Vec<thread::ToolDefinition>| {
+                    tools.into_iter().map(|tool| tool.name).collect::<Vec<_>>()
+                };
+                for mode in ["vm", "native"] {
+                    let vm = mode == "vm";
+                    // An old thread without a saved source, and a new thread
+                    // of an agent whose saved source is legacy.
+                    for (thread_id, source) in [(Some("thread-old"), None), (None, Some("legacy"))]
+                    {
+                        let mut record = json!({"id":mode, "rootId":mode, "epoch":1,
+                            "status":"running", "isLead":true, "name":"Lead", "provider":"codex",
+                            "accountKey":"default", "executionMode":mode, "cwd":"/line"});
+                        if let Some(thread_id) = thread_id {
+                            record["threadId"] = json!(thread_id);
+                        }
+                        if let Some(source) = source {
+                            record["nativeToolSource"] = json!(source);
+                        }
+                        AgentRepository::put(
+                            tx,
+                            &AgentRecord::from_value(record.clone()).expect("agent"),
+                        )?;
+                        let snapshot = thread_snapshot(
+                            tx,
+                            &resources,
+                            &record,
+                            "connection",
+                            Path::new("/state"),
+                            None,
+                        )
+                        .map_err(failed)?;
+                        let case = format!("{mode} {thread_id:?} {source:?}");
+                        assert_eq!(
+                            snapshot.catalog.source,
+                            thread::CatalogSource::Legacy,
+                            "{case}"
+                        );
+                        let expected = if vm {
+                            &resources.tools
+                        } else {
+                            &resources.legacy_tools
+                        };
+                        assert_eq!(&snapshot.catalog.definitions, expected, "{case}");
+                        let tools = names(thread::tool_definitions(&snapshot).expect("tools"));
+                        assert_eq!(
+                            tools.iter().any(|name| name == "orchestration_sign_in"),
+                            vm,
+                            "{case}"
+                        );
+                        let attempt = match thread::plan(&snapshot, "attempt", "ticket") {
+                            thread::Outcome::Start(attempt) | thread::Outcome::Resume(attempt) => {
+                                attempt
+                            }
+                            other => panic!("{case}: {other:?}"),
+                        };
+                        assert_eq!(
+                            attempt.before_submit.set["nativeToolSource"],
+                            json!("legacy"),
+                            "{case}"
+                        );
+                        // A Codex resume sends no catalog; a start sends the
+                        // catalog above.
+                        let sent = attempt.params.get("dynamicTools").map(|tools| {
+                            tools
+                                .as_array()
+                                .expect("tools")
+                                .iter()
+                                .map(|tool| tool["name"].as_str().expect("name").to_owned())
+                                .collect::<Vec<_>>()
+                        });
+                        assert_eq!(sent, thread_id.is_none().then_some(tools), "{case}");
+                    }
+                }
+                Ok::<_, StoreError>(())
+            })
+            .await
+            .expect("a VM agent keeps its tools");
     }
 
     #[test]

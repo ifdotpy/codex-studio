@@ -335,7 +335,7 @@ pub(crate) async fn run(
 /// Run one guest exchange on its own thread. A command can run for hours, so
 /// it must not hold a thread of the runtime's blocking pool, which serves
 /// store reads (`browser_cards::guest_call` follows the same rule).
-async fn on_guest_thread<T: Send + 'static>(
+pub(crate) async fn on_guest_thread<T: Send + 'static>(
     work: impl FnOnce() -> T + Send + 'static,
 ) -> Result<T, GuestError> {
     let (sender, receiver) = tokio::sync::oneshot::channel();
@@ -476,7 +476,7 @@ fn guest_error_text(error: &GuestError) -> String {
     }
 }
 
-fn refused(message: String) -> DispatchedOperation {
+pub(crate) fn refused(message: String) -> DispatchedOperation {
     DispatchedOperation {
         result: OperationResult {
             value: json!(message),
@@ -487,7 +487,7 @@ fn refused(message: String) -> DispatchedOperation {
     }
 }
 
-fn unknown(message: String) -> DispatchedOperation {
+pub(crate) fn unknown(message: String) -> DispatchedOperation {
     DispatchedOperation {
         result: OperationResult {
             value: json!(message),

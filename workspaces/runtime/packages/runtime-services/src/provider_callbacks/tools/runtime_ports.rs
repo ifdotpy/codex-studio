@@ -160,6 +160,13 @@ impl ManagedToolRuntime {
         }
     }
 
+    /// Attach the VM guest channel that runs `layr_read` (docs/vm-layr.md).
+    pub fn attach_layr_read(&self, guest: Arc<dyn crate::linux_vm_guest::GuestRpc>) {
+        if self.ports.late.layr_read.set(guest).is_err() {
+            // The first attached channel stays the owner of reviewer reads.
+        }
+    }
+
     /// Attach the provider-session voice adapter that plays
     /// `orchestration_speak` in a ready voice session.
     pub fn attach_voice(&self, port: Arc<dyn crate::voice_runtime::VoiceRequestPort>) {
