@@ -225,6 +225,8 @@ struct Scripted {
     /// Accounts for which this predicate holds fail every launch, however often
     /// the registry retries, so a retry timer cannot change the outcome.
     unavailable: std::sync::OnceLock<fn(&str) -> bool>,
+    unavailable_attempts: AtomicUsize,
+    launch_attempts: std::sync::OnceLock<mpsc::UnboundedSender<String>>,
     stops: Arc<Mutex<Vec<Shutdown>>>,
     opened_notice: Arc<Notify>,
     ready_notice: Arc<Notify>,
@@ -247,11 +249,15 @@ impl Scripted {
 impl AccountLauncher for Scripted {
     fn launch(&self, account: String) -> LaunchFuture<'_> {
         Box::pin(async move {
+            if let Some(attempts) = self.launch_attempts.get() {
+                drop(attempts.send(account.clone()));
+            }
             if self
                 .unavailable
                 .get()
                 .is_some_and(|unavailable| unavailable(&account))
             {
+                self.unavailable_attempts.fetch_add(1, Ordering::SeqCst);
                 return Err(WorkerError::TaskFailed);
             }
             if self
@@ -559,6 +565,8 @@ fn scripted_with_policy(
             launches: AtomicUsize::new(0),
             failures: AtomicUsize::new(0),
             unavailable: std::sync::OnceLock::new(),
+            unavailable_attempts: AtomicUsize::new(0),
+            launch_attempts: std::sync::OnceLock::new(),
             stops: Arc::default(),
             opened_notice: Arc::default(),
             ready_notice: Arc::default(),
@@ -1664,9 +1672,16 @@ async fn saturated_wake_lane_does_not_starve_eligible_agent_after_blocked_prefix
 
 #[tokio::test]
 async fn registry_drains_strict_account_pages_after_one_global_wake() {
+    use studio_runtime_services::account_start_gate::{AgentStartWait, StartWaitReason};
+
     let fixture = Fixture::new().await;
     seed_backlog(&fixture, 130, true).await;
     let final_agent = "00000000-0000-4000-8000-000000000129";
+    let provider_wait = serde_json::to_string(&AgentStartWait::new(
+        StartWaitReason::ProviderSession,
+        fixture.agents[0]["epoch"].as_i64().unwrap(),
+    ))
+    .unwrap();
     fixture
         .store
         .transaction(move |tx| {
@@ -1674,14 +1689,48 @@ async fn registry_drains_strict_account_pages_after_one_global_wake() {
                 "UPDATE runtime_agents SET record=json_remove(record,'$.contextRepairWait') WHERE id=?1",
                 [final_agent],
             )?;
+            // These accounts remain unavailable on every attempt. Seed their
+            // existing wait so this paging witness does not first publish 128
+            // unrelated start-wait changes through the lifecycle pipeline.
+            tx.execute(
+                "UPDATE runtime_agents SET record=json_set(record,'$.startWait',json(?1))
+                 WHERE json_extract(record,'$.accountKey') >= 'page-000000'
+                   AND json_extract(record,'$.accountKey') < 'page-000128'",
+                [provider_wait],
+            )?;
+            // Count source writes rather than relying on how quickly a host
+            // can publish the deliberately unavailable first account page.
+            tx.execute_batch(
+                "CREATE TEMP TABLE strict_account_prefix_writes(count INTEGER NOT NULL);
+                 INSERT INTO strict_account_prefix_writes VALUES(0);
+                 CREATE TEMP TRIGGER strict_account_prefix_write
+                 AFTER UPDATE ON main.runtime_agents
+                 WHEN json_extract(NEW.record,'$.accountKey') >= 'page-000000'
+                  AND json_extract(NEW.record,'$.accountKey') < 'page-000128'
+                 BEGIN UPDATE strict_account_prefix_writes SET count=count+1; END;",
+            )?;
             Ok(())
         })
         .await
         .unwrap();
 
+    let db = fixture.store.test_reader().unwrap();
+    let first = account_registry::target_page(&db, "", &BTreeMap::new()).unwrap();
+    assert_eq!(first.len(), 128);
+    let second =
+        account_registry::target_page(&db, first.last_key_value().unwrap().0, &BTreeMap::new())
+            .unwrap();
+    assert_eq!(
+        second.keys().map(String::as_str).collect::<Vec<_>>(),
+        ["page-000128", "page-000129"]
+    );
+    drop(db);
+
     // Written receipts: a lost turn/start receipt closes the session by design,
     // and that worker exit would race this test's registry shutdown.
     let (launcher, mut writes) = scripted_with_unknown_writes(false);
+    let (attempted, mut attempts) = mpsc::unbounded_channel();
+    launcher.launch_attempts.set(attempted).unwrap();
     // Every paged account except the last two fails to start on every attempt, so
     // the registry's retry timer cannot open another launch; the strict
     // continuation then reaches the eligible tail without a timer or another
@@ -1705,19 +1754,45 @@ async fn registry_drains_strict_account_pages_after_one_global_wake() {
         Arc::new(Notify::new()),
         stop.clone(),
     ));
-    let (account, request) = tokio::time::timeout(SATURATED_WAKE_TIMEOUT, writes.recv())
+    // Check strict forward progress at every account. A repeated page fails
+    // immediately; slow but ordered traversal does not consume one total deadline.
+    for index in 0..130 {
+        let account = tokio::time::timeout(TEST_HANG_GUARD, attempts.recv())
+            .await
+            .expect("strict account continuation makes progress")
+            .expect("registry retains the launcher");
+        assert_eq!(account, format!("page-{index:06}"));
+    }
+    let (account, request) = tokio::time::timeout(TEST_HANG_GUARD, writes.recv())
         .await
         .expect("strict account continuation reaches the eligible tail")
         .unwrap();
     assert_eq!(account, "account:page-000129");
     assert_eq!(request["method"], "turn/start");
     stop.cancel();
-    tokio::time::timeout(SATURATED_WAKE_TIMEOUT, task)
+    tokio::time::timeout(TEST_HANG_GUARD, task)
         .await
         .expect("registry shutdown completes after strict account paging")
         .unwrap()
         .unwrap();
     assert_eq!(launcher.opened.lock().unwrap().len(), 2);
+    assert_eq!(launcher.launches.load(Ordering::SeqCst), 2);
+    assert_eq!(launcher.unavailable_attempts.load(Ordering::SeqCst), 128);
+    let prefix_writes: i64 = fixture
+        .store
+        .transaction(|tx| {
+            Ok(tx.query_row(
+                "SELECT count FROM strict_account_prefix_writes",
+                [],
+                |row| row.get(0),
+            )?)
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        prefix_writes, 0,
+        "one paging wake must not publish the unavailable prefix"
+    );
 }
 
 #[derive(serde::Deserialize)]
@@ -2986,6 +3061,37 @@ async fn rust_direct_claude_launch_runs_the_scripted_bridge_turn() {
     // The input includes runtime instructions; compare its complete persisted text.
     expected[0]["text"] = transcript["items"][0]["text"].clone();
     assert_eq!(normalize_ids(rust_items, &agent_id), expected);
+    // Human text and Studio instructions retain separate origins, but only
+    // the final SDK message queries. The prefix's zero-turn receipt must not
+    // complete this turn or produce a second assistant reply.
+    let cwd = PathBuf::from(completed["cwd"].as_str().unwrap());
+    let sdk_inputs: Vec<Value> = std::fs::read_to_string(cwd.join(".sdk-inputs"))
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(sdk_inputs.len(), 2);
+    assert_eq!(sdk_inputs[0]["shouldQuery"], false);
+    assert!(sdk_inputs[0].get("origin").is_none());
+    assert!(sdk_inputs[0].get("isSynthetic").is_none());
+    assert!(sdk_inputs[0].get("text_not_typed").is_none());
+    assert_eq!(
+        sdk_inputs[0]["message"]["content"],
+        json!([{"type":"text","text":"split-stream"}])
+    );
+    assert!(sdk_inputs[1].get("shouldQuery").is_none());
+    assert_eq!(sdk_inputs[1]["origin"], json!({"kind":"task-notification"}));
+    assert_eq!(sdk_inputs[1]["isSynthetic"], true);
+    assert_eq!(sdk_inputs[1]["text_not_typed"], true);
+    assert_eq!(sdk_inputs[1]["uuid"], expected[0]["id"]);
+    assert_ne!(sdk_inputs[0]["uuid"], sdk_inputs[1]["uuid"]);
+    assert!(
+        sdk_inputs[1]["message"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .trim_start()
+            .starts_with("[Studio subagent concurrency,")
+    );
     let answer = rust_items
         .iter()
         .find(|item| item["phase"] == "final_answer")
@@ -2994,7 +3100,11 @@ async fn rust_direct_claude_launch_runs_the_scripted_bridge_turn() {
         answer["id"].as_str().unwrap().rsplit(':').next(),
         Some("stream-blocks")
     );
-    let queries = PathBuf::from(completed["cwd"].as_str().unwrap()).join(".queries");
+    let queries = cwd.join(".queries");
+    assert_eq!(
+        std::fs::read_to_string(&queries).unwrap().lines().count(),
+        1
+    );
     let (_query_watcher, mut query_events) = watch_file_changes(&queries);
     // A loaded thread with unchanged settings keeps its live query for the
     // next turn. Changed thread settings resume it in a new query, which the

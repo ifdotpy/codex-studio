@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import { it } from "vitest";
-import { boundTranscriptPage } from "./transcriptPageBounds.ts";
+import {
+  boundTranscriptPage,
+  updateLiveTranscriptPage,
+} from "./transcriptPageBounds.ts";
 import type { Message } from "./types.ts";
 
 const item = (index: number): Message => ({
@@ -18,6 +21,88 @@ const merge = (first: Message[], second: Message[]) =>
   ].sort(
     (a, b) => Number(a.at ?? a.created ?? 0) - Number(b.at ?? b.created ?? 0),
   );
+
+it("recovers the history cursor when a short cache precedes a disjoint truncated page", () => {
+  const page = {
+    items: [item(0)],
+    before: null as string | null,
+    focused: false,
+  };
+  updateLiveTranscriptPage(page, [item(0), item(1)], { truncated: false });
+  const fresh = Array.from({ length: 120 }, (_, index) => item(index + 120));
+  updateLiveTranscriptPage(page, fresh, {
+    truncated: true,
+    nextCursor: "m120",
+  });
+  assert.equal(page.before, "m120");
+  assert.deepEqual(page.items, fresh);
+});
+
+it("keeps a complete contiguous retained range without inventing an older cursor", () => {
+  const page = { items: [item(0), item(1)], before: null, focused: false };
+  updateLiveTranscriptPage(page, [item(1), item(2)], {
+    truncated: true,
+    nextCursor: "m1",
+  });
+  assert.equal(page.before, null);
+  assert.deepEqual(page.items, [item(0), item(1), item(2)]);
+});
+
+it("preserves an existing older cursor when the live range overlaps", () => {
+  const page = { items: [item(1), item(2)], before: "m1", focused: false };
+  updateLiveTranscriptPage(page, [item(2), item(3)], {
+    truncated: true,
+    nextCursor: "m2",
+  });
+  assert.equal(page.before, "m1");
+  assert.deepEqual(page.items, [item(1), item(2), item(3)]);
+});
+
+it("keeps a focused history page when the fresh range is disjoint", () => {
+  const page = { items: [item(1), item(2)], before: "m1", focused: true };
+  updateLiveTranscriptPage(page, [item(120)], {
+    truncated: true,
+    nextCursor: "m120",
+  });
+  assert.equal(page.before, "m1");
+  assert.deepEqual(page.items, [item(1), item(2)]);
+});
+
+it.each([{ pending: true }, { materialized: false }])(
+  "does not use an optimistic row as evidence of continuity: %j",
+  (optimistic) => {
+    const page = {
+      items: [item(0), { ...item(120), ...optimistic }],
+      before: null as string | null,
+      focused: false,
+    };
+    const fresh = [item(120), item(121)];
+    updateLiveTranscriptPage(page, fresh, {
+      truncated: true,
+      nextCursor: "m120",
+    });
+    assert.equal(page.before, "m120");
+    assert.deepEqual(page.items, fresh);
+  },
+);
+
+it.each([{ pending: true }, { materialized: false }])(
+  "does not use an incoming optimistic row as evidence of continuity: %j",
+  (optimistic) => {
+    const page = {
+      items: [item(0), item(1)],
+      before: null as string | null,
+      focused: false,
+    };
+    const fresh = [{ ...item(1), ...optimistic }, item(120), item(121)];
+    updateLiveTranscriptPage(page, fresh, {
+      truncated: true,
+      nextCursor: "m120",
+    });
+    assert.equal(page.before, "m120");
+    assert.deepEqual(page.items, fresh);
+  },
+);
 
 it("keeps both paging cursors on the held window boundary", () => {
   const all = Array.from({ length: 301 }, (_, index) => item(index));

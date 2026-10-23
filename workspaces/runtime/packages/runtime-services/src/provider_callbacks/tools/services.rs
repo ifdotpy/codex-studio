@@ -626,6 +626,7 @@ impl From<event_write::EventWriteError> for CallbackError {
     fn from(error: event_write::EventWriteError) -> Self {
         use event_write::EventWriteError as E;
         match error {
+            E::InvalidResultSchema(message) => Self::InvalidResultSchema(message),
             E::Store(error) => Self::Store(error),
             E::InvalidRequest(message) | E::Conflict(message) => Self::Invalid(message),
             E::WorkerAssignmentUnavailable => Self::Dependency("worker-driver/work-assignment"),
@@ -1029,6 +1030,13 @@ pub(super) fn payload_selection(
                 Selection::Receipt(key.into())
             }
         }),
+        ToolKind::Read if text(args, "output_ref")?.starts_with("studio-input:") => {
+            Some(Selection::StudioInput(
+                text(args, "output_ref")?
+                    .trim_start_matches("studio-input:")
+                    .into(),
+            ))
+        }
         ToolKind::Read => Some(Selection::Output(reads::receipt_keys(
             tx,
             &snapshot.context().agent,

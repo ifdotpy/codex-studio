@@ -79,6 +79,41 @@ fn equal(name: &str, path: &str, actual: &Value, expected: &Value) {
 }
 
 #[test]
+fn capability_profile_wire_presence_preserves_unrestricted_threads() {
+    for thread_id in [Value::Null, json!("saved-thread")] {
+        let mut value = baseline();
+        value["account"]["provider"] = json!("claude");
+        if thread_id.is_string() {
+            value["catalog"]["source"] = json!("legacy");
+            value["catalog"]["saved_thread_id"] = thread_id.clone();
+            value["catalog"]["saved_digest"] = json!("saved digest");
+        }
+        value["actor"]["thread_id"] = thread_id;
+        let unrestricted = attempt(plan(&snapshot(&value), "attempt", "ticket"));
+        assert!(!unrestricted.params.contains_key("capabilityProfile"));
+        value["settings"]["capability_profile"] = json!({
+            "allowedTools":null,"disallowedTools":null,"mcpServers":null,"skills":null,"maxTurns":null
+        });
+        let nulls = attempt(plan(&snapshot(&value), "attempt", "ticket"));
+        assert_eq!(nulls.params, unrestricted.params);
+        for (field, limit) in [
+            ("allowedTools", json!([])),
+            ("disallowedTools", json!([])),
+            ("mcpServers", json!([])),
+            ("skills", json!([])),
+            ("maxTurns", json!(1)),
+        ] {
+            value["settings"]["capability_profile"] = json!({field:limit});
+            let configured = attempt(plan(&snapshot(&value), "attempt", "ticket"));
+            assert_eq!(configured.params["capabilityProfile"], json!({field:limit}));
+            let mut without_limits = configured.params;
+            without_limits.remove("capabilityProfile");
+            assert_eq!(without_limits, unrestricted.params);
+        }
+    }
+}
+
+#[test]
 fn python_thread_preparation_corpus() {
     let all: Vec<Value> =
         serde_json::from_str(include_str!("thread_prepare/cases.json")).expect("cases");
@@ -153,7 +188,33 @@ fn python_thread_preparation_corpus() {
             }
             Outcome::Start(a) | Outcome::Resume(a) => {
                 equal(name, "method", &json!(a.method), &expected["outcome"]);
-                equal(name, "params", &json!(a.params), &expected["params"]);
+                let mut expected_params = expected["params"].clone();
+                if s.account.provider == studio_runtime_providers::ProviderKind::Claude
+                    && s.settings.role == Role::Reviewer
+                {
+                    // B2-1 makes Claude reviewers read-only even with inherited
+                    // bypass settings. Python retains its yolo-derived policy.
+                    // Assert the Rust contract; compare every other oracle field.
+                    for (field, required) in
+                        [("approvalPolicy", "on-request"), ("sandbox", "read-only")]
+                    {
+                        equal(
+                            name,
+                            &format!("params.{field}"),
+                            &a.params[field],
+                            &json!(required),
+                        );
+                        expected_params[field] = json!(required);
+                    }
+                    equal(
+                        name,
+                        "params.claude.permissionMode",
+                        &a.params["claude"]["permissionMode"],
+                        &json!("plan"),
+                    );
+                    expected_params["claude"]["permissionMode"] = json!("plan");
+                }
+                equal(name, "params", &json!(a.params), &expected_params);
                 equal(
                     name,
                     "context_versions",

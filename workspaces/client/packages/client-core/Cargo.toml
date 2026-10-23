@@ -12,6 +12,8 @@ crate-type = ["rlib", "cdylib"]
 studio-client-domain = { path = "../client-domain" }
 libc.workspace = true
 ring.workspace = true
+rustls.workspace = true
+webpki-roots = "=1.0.10"
 percent-encoding = "=2.3.2"
 uuid.workspace = true
 sha2.workspace = true
@@ -19,23 +21,23 @@ rusqlite.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 unicode-segmentation = "=1.13.3"
-vt100 = "=0.16.2"
-reqwest = { version = "=0.12.28", default-features = false, features = ["brotli", "json", "rustls-tls"] }
+vt100 = "=0.18.1"
+reqwest = { version = "=0.13.5", default-features = false, features = ["brotli", "json", "rustls-no-provider"] }
 tokio = { workspace = true, features = ["fs"] }
 base64.workspace = true
-webrtc = "=0.21.0"
-rtc = { version = "=0.21.0", default-features = false }
+webrtc = "=0.21.1"
+rtc = { version = "=0.21.1", default-features = false }
 unsafe-libopus = "=0.2.0"
-async-trait = "0.1"
+async-trait = "=0.1.92"
 bytes.workspace = true
-usvg = "=0.45.1"
+usvg = "=0.48.1"
 image = { version = "=0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp", "ico"] }
 regex = "=1.13.1"
 tempfile.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 security-framework = "=3.7.0"
-objc2 = "=0.6.4"
+objc2 = "=0.6.5"
 objc2-core-foundation = { version = "=0.3.2", default-features = false, features = ["std", "CFData", "CFCGTypes"] }
 objc2-core-graphics = { version = "=0.3.2", default-features = false, features = ["std", "CGPDFDocument", "CGPDFPage", "CGDataProvider", "CGBitmapContext", "CGColorSpace", "CGContext", "CGImage", "CGAffineTransform"] }
 objc2-web-kit = { version = "=0.3.2", default-features = false, features = ["std", "objc2-app-kit", "objc2-core-foundation", "WKWebView", "WKWebViewConfiguration", "WKWebpagePreferences", "WKWebsiteDataStore", "WKNavigation", "WKNavigationAction", "WKNavigationDelegate", "WKFrameInfo", "WKContentWorld", "WKSnapshotConfiguration", "block2"] }
@@ -51,12 +53,11 @@ block2 = "=0.6.2"
 
 
 [target.'cfg(target_os = "ios")'.dependencies]
-objc2 = "=0.6.4"
+objc2 = "=0.6.5"
 objc2-core-foundation = { version = "=0.3.2", default-features = false, features = ["std", "CFData", "CFCGTypes"] }
 objc2-core-graphics = { version = "=0.3.2", default-features = false, features = ["std", "CGPDFDocument", "CGPDFPage", "CGDataProvider", "CGBitmapContext", "CGColorSpace", "CGContext", "CGImage", "CGAffineTransform"] }
 objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSString", "NSURL", "NSArray", "NSError", "NSProcessInfo", "NSLocale", "NSGeometry", "NSBundle", "NSNotification", "NSOperation", "block2"] }
 
 [dev-dependencies]
 brotli = { workspace = true }
-rustls.workspace = true
 rcgen = "=0.14.10"

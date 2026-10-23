@@ -46,7 +46,7 @@ if (!uiOnly && !prebuiltRelease) {
   } catch (error) {
     if (error.code === "ENOENT") {
       throw new Error(
-        "Desktop packaging requires Cargo; install Rust 1.99.0, then run `cargo build --release -p studio-runtime-server`.",
+        "Desktop packaging requires Cargo; install the toolchain pinned in rust-toolchain.toml, then run `cargo build --release -p studio-runtime-server`.",
         { cause: error },
       );
     }
@@ -183,7 +183,7 @@ try {
       ["package.json", "package.json"],
       ["pnpm-workspace.yaml", "pnpm-workspace.yaml"],
       ["pnpm-lock.yaml", "pnpm-lock.yaml"],
-      ["patches/rxdb@17.5.0.patch", "patches/rxdb@17.5.0.patch"],
+      ["patches/rxdb@17.6.0.patch", "patches/rxdb@17.6.0.patch"],
     ]) {
       const target = path.join(resources, destination);
       await mkdir(path.dirname(target), { recursive: true });
@@ -280,7 +280,6 @@ try {
       appCategoryType: "public.app-category.developer-tools",
       platform: "darwin",
       arch: "arm64",
-      electronVersion: "44.2.0",
       out: packageOutput,
       overwrite: true,
       asar: true,

@@ -1008,7 +1008,7 @@ function fastTierCommands(root) {
     },
     {
       item: { name: "studio-client-core", ecosystem: "cargo" },
-      label: "keyed draft synchronization witness",
+      label: "native client boundary witnesses",
       commands: [
         [
           "cargo",
@@ -1024,14 +1024,22 @@ function fastTierCommands(root) {
             "studio-client-core",
             "--lib",
             "-E",
-            "test(draft_store::tests::synchronization_decodes_only_the_keyed_draft_per_incoming_document)",
+            nextestAnyOf([
+              "test(draft_store::tests::synchronization_decodes_only_the_keyed_draft_per_incoming_document)",
+              "test(terminal::tests::resized_grid_keeps_cursor_output_and_truncation_dimensions)",
+              "test(server_transport::tests::https_transport_rejects_untrusted_certificate_before_sending_request)",
+              "test(server_transport::tests::one_server_cannot_hold_the_slots_of_another_server)",
+              "test(server_transport::tests::https_transport_signs_exact_bytes_and_streams_without_forwarding_local_auth)",
+              "test(svg_normalization_has_no_script_file_or_network_references)",
+            ]),
           ],
         ],
       ],
       options: {
-        selector: "draft synchronization keyed decode count",
+        selector:
+          "draft synchronization, terminal resize, TLS and SVG boundaries",
         reason:
-          "Check one stored draft decode per incoming document, workspace isolation, and a single final response view scan.",
+          "Preserve keyed draft decoding, terminal dimensions, certificate rejection, exact signed HTTP bytes and SVG resource isolation across dependency updates.",
       },
     },
     {
@@ -1348,9 +1356,11 @@ function fastTierCommands(root) {
                   "-E",
                   nextestAnyOf([
                     "test(/^provider_stdio::killed_provider_is_reaped_with_full_journal_and_unobserved_write$/)",
+                    "test(/^provider_stdio::cancellation_stops_the_entire_owned_process_group$/)",
                     "test(/^wave7_p01_factory::running_child_started_with_a_previous_command_reattaches$/)",
                     "test(/^wave7_p01_registry::running_app_server_started_with_the_frozen_command_reattaches$/)",
                     "test(/^wave7_p01_registry::direct_child_sigkill_settles_unknown_without_resend$/)",
+                    "test(/^wave7_p01_registry::rust_direct_claude_launch_runs_the_scripted_bridge_turn$/)",
                     "test(/^state_check::state_check_reads_fixture_rows_without_changing_or_disclosing_them$/)",
                   ]),
                 ],
@@ -1661,6 +1671,39 @@ function fastTierCommands(root) {
           "SQL callback boundaries and agent-list progress/turn-result witnesses",
         reason:
           "Keep filesystem work outside SQLite and verify typed progress, idle assignments, and one parent result per completed turn.",
+      },
+    },
+    {
+      item: { name: "studio-runtime-services", ecosystem: "cargo" },
+      label: "task authority, worker limits, and Claude input witnesses",
+      commands: [
+        [
+          "cargo",
+          [
+            "nextest",
+            "run",
+            "--locked",
+            "--no-tests",
+            "fail",
+            "--message-format",
+            "libtest-json-plus",
+            "-p",
+            "studio-runtime-services",
+            "-p",
+            "studio-runtime-store",
+            "-p",
+            "studio-runtime-schema",
+            "--lib",
+            "-E",
+            "test(authenticated_task_caller_) | test(acceptance_gate_) | test(task_result_schema) | test(capability_) | test(claude_child_) | test(workspace_fence) | test(input_origin) | test(stop_receipt_) | test(live_limits_) | test(archive_keeps_submodule) | test(turn_prepare::budget_tests::)",
+          ],
+        ],
+      ],
+      options: {
+        selector:
+          "task authority, acceptance gates, worker capability limits, and Claude input provenance",
+        reason:
+          "Check that workers cannot act as the lead, gates and limits hold, and Claude input keeps its origin and queue receipts.",
       },
     },
     {

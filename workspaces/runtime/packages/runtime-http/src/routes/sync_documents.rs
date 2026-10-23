@@ -1002,21 +1002,8 @@ mod vault_maintenance_tests {
             json!({"id":"phone:chat","device":"phone","session":"chat","text":"next","updated":2});
         let rows = json!({"rows":[{"newDocumentState":{"id":"phone:chat","payload":canonical.to_string(),"seq":0,"deleted":false},
             "assumedMasterState":{"id":"phone:chat","payload":original,"seq":1,"deleted":false}}]});
-        let mut extra_rows = rows.clone();
-        let mut extra_payload = canonical.clone();
-        extra_payload["legacyExtra"] = json!({"keep":true});
-        extra_rows["rows"][0]["newDocumentState"]["payload"] = json!(extra_payload.to_string());
         let response = app
             .clone()
-            .oneshot(request("POST", "/api/sync/drafts", extra_rows))
-            .await
-            .unwrap();
-        assert_eq!(
-            response.status(),
-            StatusCode::BAD_REQUEST,
-            "new pushes must reject extras while the assumed legacy master stays readable"
-        );
-        let response = app
             .oneshot(request("POST", "/api/sync/drafts", rows))
             .await
             .unwrap();
@@ -1035,6 +1022,53 @@ mod vault_maintenance_tests {
             serde_json::from_str::<Value>(&stored.payload).unwrap(),
             canonical
         );
+        #[derive(serde::Deserialize)]
+        struct DraftFixture {
+            name: String,
+            payload: Value,
+        }
+        let fixtures: Vec<DraftFixture> = serde_json::from_str(include_str!(
+            "../../../../../client/contracts/draft-compatibility.json"
+        ))
+        .unwrap();
+        let native = fixtures
+            .into_iter()
+            .find(|fixture| fixture.name == "extension")
+            .expect("shared native legacy extension fixture");
+        let rows = json!({"rows":[{
+            "newDocumentState":{"id":"phone:chat","payload":native.payload.to_string(),"seq":0,"deleted":false},
+            "assumedMasterState":{"id":"phone:chat","payload":stored.payload,"seq":stored.sequence,"deleted":false}
+        }]});
+        let mut committed_sequence = None;
+        for attempt in ["initial native legacy push", "same-value retry"] {
+            let response = app
+                .clone()
+                .oneshot(request("POST", "/api/sync/drafts", rows.clone()))
+                .await
+                .unwrap();
+            let status = response.status();
+            let body: Value =
+                serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+                    .unwrap();
+            assert_eq!(status, StatusCode::OK, "{attempt}: {body}");
+            assert_eq!(body, json!([]), "{attempt}");
+            let current = store
+                .transaction(|tx| SyncDocumentsRepository::draft(tx, "phone:chat"))
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                serde_json::from_str::<Value>(&current.payload).unwrap(),
+                native.payload,
+                "{attempt}: preserve all historical fields"
+            );
+            if let Some(sequence) = committed_sequence {
+                assert_eq!(current.sequence, sequence, "retry must not write twice");
+            } else {
+                assert!(current.sequence > stored.sequence);
+                committed_sequence = Some(current.sequence);
+            }
+        }
     }
 
     #[test]

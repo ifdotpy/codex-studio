@@ -400,8 +400,10 @@ pub fn check_schema_parity(openapi: &Value, account_transfer: &Value) -> Result<
         values::SYNC_TRANSCRIPT_STREAM_MAX_ITEMS as i64,
     )?;
     check_delivery_parity(openapi)?;
+    crate::task_results::check_schema_parity(openapi)?;
     check_account_group_parity(openapi)?;
     crate::agent_progress::check_schema_parity(openapi)?;
+    crate::task_gate::check_api_contract(openapi)?;
     let expected = serde_json::to_value(crate::agent_progress::StartWaitReason::ALL)
         .map_err(|error| error.to_string())?;
     for pointer in [
@@ -617,6 +619,14 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
     }
     let web = |name: &str| format!("{WEB_GENERATED}/{name}");
     let mut rendered = vec![
+        Rendered {
+            path: "workspaces/providers/apps/claude-bridge/input-origin.generated.mjs".into(),
+            text: format!(
+                "// {HEADER}\nexport const HUMAN_INPUT = {};\nexport const STUDIO_EVENT_INPUT = {};\n",
+                json_string(crate::provider_input::ProviderInputOrigin::Human.as_str()),
+                json_string(crate::provider_input::ProviderInputOrigin::StudioEvent.as_str()),
+            ),
+        },
         Rendered {
             path: OPENAPI_PATH.into(),
             text: serde_json::to_string_pretty(&openapi).map_err(|error| error.to_string())? + "\n",

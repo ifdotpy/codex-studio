@@ -315,6 +315,63 @@ struct Draft {
     workspace_admission: Box<dyn crate::monitor_runtime::WorkspaceAdmission + Send + Sync>,
 }
 
+/// Resolve permissions from the current rows inside the child commit transaction.
+/// Only the permission mode transfers; other Claude settings belong to the child.
+fn inherit_claude_permissions(
+    child: &mut Value,
+    parent: &Value,
+    root: &Value,
+    spec: &Value,
+) -> Result<(), crate::managed_host_tools::Error> {
+    use crate::managed_host_tools::Error;
+    if child["provider"] != "claude" {
+        if spec.get("permission_mode").is_some() {
+            return Err(Error::Invalid("permission_mode requires a Claude child"));
+        }
+        return Ok(());
+    }
+    let requested = spec
+        .get("permission_mode")
+        .map(|value| {
+            value
+                .as_str()
+                .filter(|mode| crate::claude_controls::PERMISSION_MODES.contains(mode))
+                .ok_or(Error::Invalid("Invalid Claude permission_mode"))
+        })
+        .transpose()?;
+    let inherited = if parent["provider"] == "claude" {
+        match parent.pointer("/claudeOptions/permissionMode") {
+            Some(value) => value
+                .as_str()
+                .filter(|mode| crate::claude_controls::PERMISSION_MODES.contains(mode))
+                .ok_or(Error::Invalid("Invalid parent Claude permission mode"))?,
+            None if parent["yoloMode"] == true => "bypassPermissions",
+            None => "default",
+        }
+    } else if root
+        .get("yoloMode")
+        .and_then(Value::as_bool)
+        .unwrap_or(true)
+    {
+        // Preserve the existing Codex-to-Claude root yolo mapping.
+        "bypassPermissions"
+    } else {
+        "default"
+    };
+    let mode = if child["role"] == "reviewer" {
+        "plan"
+    } else {
+        match requested {
+            Some("bypassPermissions") if inherited != "bypassPermissions" => inherited,
+            Some(mode) => mode,
+            None => inherited,
+        }
+    };
+    child["claudeOptions"] = json!({"permissionMode": mode});
+    child["yoloMode"] = json!(mode == "bypassPermissions");
+    Ok(())
+}
+
 /// Create a local host batch using the P02 typed draft and recheck contract.
 /// `request_id` is the callback's durable operation identity, so child ids and
 /// initial-event ids remain stable across retries.
@@ -811,6 +868,28 @@ pub(crate) async fn spawn_agents(
                 record["cwd"].as_str().unwrap_or(child_directory)
             ));
         }
+        let parent_caps = crate::worker_capabilities::from_record(&parent_value)
+            .map_err(crate::managed_host_tools::Error::Invalid)?;
+        let profile_caps = profile
+            .as_ref()
+            .map(|p| p.capabilities.clone())
+            .unwrap_or_default();
+        let profile_caps = crate::worker_capabilities::narrow(&parent_caps, &profile_caps)
+            .map_err(crate::managed_host_tools::Error::Invalid)?;
+        let overrides = crate::worker_capabilities::from_value(spec)
+            .map_err(crate::managed_host_tools::Error::Invalid)?;
+        let capabilities = crate::worker_capabilities::narrow(&profile_caps, &overrides)
+            .map_err(crate::managed_host_tools::Error::Invalid)?;
+        crate::worker_capabilities::for_provider(&capabilities, provider)
+            .map_err(crate::managed_host_tools::Error::Invalid)?;
+        if provider == "codex" && vm_workspace && capabilities.mcp_servers.is_some() {
+            return Err(crate::managed_host_tools::Error::Invalid(
+                "Codex mcpServers profiles are not supported for VM workers",
+            )
+            .into());
+        }
+        record["capabilityProfile"] = json!(capabilities);
+        record["completedWorkerTurns"] = json!(0);
         record["provider"] = json!(provider);
         record["workerBaseMainRef"] = json!(main_ref.clone());
         record["workerBaseBehindMain"] = json!(behind_main);
@@ -870,6 +949,8 @@ pub(crate) async fn spawn_agents(
         recheck_actor(tx, &actor_record)?;
         let current_root = AgentRepository::get(tx, &actor_record.root_id)?
             .ok_or(crate::managed_host_tools::Error::Stale)?;
+        let current_parent = AgentRepository::get(tx, &actor_record.id)?
+            .ok_or(crate::managed_host_tools::Error::Stale)?.value();
         event_write::assert_delegation(&current_root)
             .map_err(|_| crate::managed_host_tools::Error::Invalid("Delegation is disabled"))?;
         let max = current_root.extra.get("maxAgents").and_then(Value::as_i64).unwrap_or(DEFAULT_MAX_TEAM_AGENTS);
@@ -893,11 +974,12 @@ pub(crate) async fn spawn_agents(
         }
         let mut children = Vec::with_capacity(drafts.len());
         let mut signals = Vec::new();
-        for (draft, saved) in drafts.iter().zip(existing) {
+        for (draft, saved) in drafts.iter_mut().zip(existing) {
             if let Some(saved) = saved {
                 children.push(project_child(&saved.value(), draft.task_id.as_deref(), draft.worktree));
                 continue;
             }
+            inherit_claude_permissions(&mut draft.record, &current_parent, &current_root.value(), &draft.intent)?;
             let mut text = draft.prompt.clone();
             if draft.workspace != "image"
                 && let Some(error) = draft
@@ -937,6 +1019,7 @@ pub(crate) async fn spawn_agents(
                     .ok_or(crate::managed_host_tools::Error::Invalid("Unknown task_id in this team; no workers were created"))?;
                 let title = work.get("title").and_then(Value::as_str).unwrap_or("Assigned task");
                 text.push_str(&format!("\n\n[Studio task {task}] {title}\nYou own this task. Submit the result with the work item tools."));
+                text.push_str(&studio_runtime_schema::task_results::assignment_text(&work));
             }
             let record = AgentRecord::from_value(draft.record.clone())
                 .map_err(|_| crate::managed_host_tools::Error::Invalid("Invalid child agent record"))?;

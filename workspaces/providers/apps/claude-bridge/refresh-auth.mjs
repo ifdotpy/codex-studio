@@ -1,3 +1,4 @@
+import { createAccountCheck } from "./account-identity.mjs";
 // Keep the host CLI alive through OAuth refresh without supplying a model prompt.
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import { createInterface } from "node:readline";
@@ -28,16 +29,11 @@ const q = query({
     abortController: controller,
   },
 });
-function verify(account) {
-  if (
-    !process.env.STUDIO_CLAUDE_ACCOUNT ||
-    account?.email !== process.env.STUDIO_CLAUDE_ACCOUNT ||
-    account?.apiProvider !== "firstParty" ||
-    (account?.apiKeySource && account.apiKeySource !== "none")
-  ) {
-    throw new Error("The host Claude account identity changed");
-  }
-}
+const verify = createAccountCheck({
+  requireSubscription: false,
+  expectedEmail: process.env.STUDIO_CLAUDE_ACCOUNT,
+  expectedIdentity: process.env.STUDIO_CLAUDE_CREDENTIAL_IDENTITY,
+});
 const lines = createInterface({ input: process.stdin });
 timer = setTimeout(() => {
   process.exitCode = 1;

@@ -19,6 +19,7 @@ import { createHash } from "node:crypto";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { streamTranscriptFixture } from "../fixtures/streaming-transcript.mjs";
 
 // More rows than HISTORY_WINDOW_THRESHOLD, so the transcript is windowed.
 const TURNS = 100;
@@ -348,8 +349,19 @@ test("a scrolled-up reader keeps its place while the agent streams", async ({
     let streamed = 0;
     let streaming = true;
     const live = transcripts.get(chat.id);
-    const stream = (async () => {
-      while (streaming) {
+    const renderSentence = (sentence) =>
+      page.waitForFunction(
+        (sentence) =>
+          [
+            ...document.querySelectorAll(
+              '#messages [data-message="reply-live"]',
+            ),
+          ].some((reply) => reply.textContent?.includes(sentence)),
+        sentence,
+      );
+    const stream = streamTranscriptFixture({
+      running: () => streaming,
+      publish: async () => {
         streamed++;
         live.items = [
           ...live.items.filter((item) => item.id !== "reply-live"),
@@ -369,20 +381,16 @@ test("a scrolled-up reader keeps its place while the agent streams", async ({
           activity: { phase: streamed % 2 ? "writing" : "thinking" },
         };
         await notify(chat.id);
-        await new Promise((resolve) => setTimeout(resolve, 50));
-      }
-    })();
+        return `Streamed ${width} sentence ${streamed - 1} `;
+      },
+      rendered: renderSentence,
+    });
+    // Observe a producer error immediately; the finally block below awaits and
+    // propagates it after stopping publication.
+    void stream.catch(() => {});
     // Resolves after the renderer commits a stream update sent after this call.
     const nextRender = () =>
-      page.waitForFunction(
-        (sentence) =>
-          [
-            ...document.querySelectorAll(
-              '#messages [data-message="reply-live"]',
-            ),
-          ].some((reply) => reply.textContent?.includes(sentence)),
-        `Streamed ${width} sentence ${streamed} `,
-      );
+      renderSentence(`Streamed ${width} sentence ${streamed} `);
     // The first paragraph whose top is inside the transcript viewport, else
     // the first such message.
     const readingPoint = () =>

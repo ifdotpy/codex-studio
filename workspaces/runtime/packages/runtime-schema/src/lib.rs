@@ -9,7 +9,10 @@ pub mod delivery;
 pub mod desktop;
 pub mod federation_limits;
 pub mod multi_server_protocol;
+pub mod provider_input;
 pub mod shared_values;
+pub mod task_results;
+pub mod worker_capabilities;
 
 pub use delivery::DeliveryMoment;
 
@@ -1286,3 +1289,5 @@ mod tests {
         );
     }
 }
+
+pub mod task_gate;

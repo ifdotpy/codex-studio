@@ -878,6 +878,7 @@ enum Effect {
         Option<String>,
         Option<i64>,
     ),
+    LimitsUpdated(crate::account_session_runtime::LimitsUpdate),
     Submit(TurnIntent),
     Interrupt {
         agent: String,
@@ -1401,6 +1402,15 @@ impl Worker {
                     }
                     result => result?,
                 }
+            }
+            Effect::LimitsUpdated(update) => {
+                let session = self.resources.account_session.as_ref().ok_or_else(|| {
+                    WorkerError::PreparationRefused("provider-session/account-rate-limits".into())
+                })?;
+                session
+                    .ingest_limits(update)
+                    .await
+                    .map_err(|error| WorkerError::PreparationRefused(error.to_string()))?;
             }
             Effect::Submit(intent) => self.submit(intent, Method::TurnStart, None).await?,
             Effect::Interrupt {

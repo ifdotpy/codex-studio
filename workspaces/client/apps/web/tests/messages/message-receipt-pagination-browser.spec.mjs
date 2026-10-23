@@ -58,6 +58,7 @@ async function runMessageReceiptScenario(
   let receiptGateReleased = false;
   let releaseReceiptGate;
   let receiptRequestPaused = false;
+  let releaseFreshTranscript = () => {};
   const receiptGate = new Promise((resolve) => {
     releaseReceiptGate = resolve;
   });
@@ -438,14 +439,14 @@ async function runMessageReceiptScenario(
     await page.locator("#message").waitFor();
     const bubble = (message) =>
       page.locator("#messages .message.user").filter({ hasText: message });
-    const readAppReceipt = (key) =>
-      page.evaluate(async (messageId) => {
-        const { db } = await (
-          await import("/src/sync/client.ts")
-        ).syncDatabase();
-        const doc = await db.outbox.findOne(messageId).exec();
-        return doc && JSON.parse(doc.getLatest().payload);
-      }, key);
+    // Keep the built renderer's runtime isolated from Vite's source dependencies.
+    // The seed tab reads the same durable outbox without loading a second Dexie
+    // version into the app tab.
+    const readOutboxReceipt = (key) =>
+      storage.evaluate(
+        (messageId) => window.readReceiptFixture(messageId),
+        key,
+      );
     await bubble(text)
       .getByRole("status")
       .filter({ hasText: "Waiting for agent" })
@@ -496,13 +497,17 @@ async function runMessageReceiptScenario(
       );
       await changeFixture(agent.id, "observed", target, state.token);
       await until(
-        async () => (await readAppReceipt(id))?.displayPending === false,
+        async () => (await readOutboxReceipt(id))?.displayPending === false,
         "The transcript did not retire the local copy before the delivered receipt",
       );
-      const hiddenAccepted = await readAppReceipt(id);
+      const hiddenAccepted = await readOutboxReceipt(id);
       assert.equal(hiddenAccepted.status, "accepted");
       assert.equal(hiddenAccepted.receipt?.status, "queued");
       assert.equal(hiddenAccepted.displayPending, false);
+      await bubble(text)
+        .getByRole("status")
+        .filter({ hasText: "Waiting for agent" })
+        .waitFor({ state: "detached" });
       await changeFixture(agent.id, "delivered", target, state.token);
       const deliveredReceiptResponse = page.waitForResponse((response) => {
         const url = new URL(response.url());
@@ -536,7 +541,7 @@ async function runMessageReceiptScenario(
       try {
         await until(
           async () => {
-            const value = await readAppReceipt(id);
+            const value = await readOutboxReceipt(id);
             return (
               value?.status === "accepted" &&
               value.receipt?.status === "delivered" &&
@@ -573,18 +578,45 @@ async function runMessageReceiptScenario(
         };
         await page.reload();
         await page.locator("#message").waitFor();
-        const storedAfterReload = await readAppReceipt(id);
+        const storedAfterReload = await readOutboxReceipt(id);
         const visibleAfterReload = {
           bubbleCount: await bubble(text).count(),
           statuses: await bubble(text).getByRole("status").allTextContents(),
         };
         throw new Error(
-          `${error.message}: ${JSON.stringify({ storedInApp: await readAppReceipt(id), requestsContainingIdAfterThreeNotifications: requestsContainingIdAfterNotifications, storedAfterReload, visibleBeforeReload, visibleAfterReload, posts, errors })}`,
+          `${error.message}: ${JSON.stringify({ storedReceipt: await readOutboxReceipt(id), requestsContainingIdAfterThreeNotifications: requestsContainingIdAfterNotifications, storedAfterReload, visibleBeforeReload, visibleAfterReload, posts, errors })}`,
         );
       }
+      assert.equal(
+        posts.length,
+        0,
+        "Hidden receipt reconciliation must not resend input",
+      );
+      assert.deepEqual(errors, []);
       return;
     }
 
+    const shortCachedTranscript = await storage.evaluate(async (agentId) => {
+      const collection = window.receiptFixtureDb.projections;
+      const [meta] = await collection.storageInstance.findDocumentsById(
+        [`transcript:${agentId}`],
+        false,
+      );
+      const payload = JSON.parse(meta.payload);
+      const items = await collection.storageInstance.findDocumentsById(
+        payload.order.map((key) => `transcript:item:${agentId}:${key}`),
+        false,
+      );
+      return [meta, ...items].map(({ id, payload, seq }) => ({
+        id,
+        payload,
+        seq,
+      }));
+    }, agent.id);
+    assert.equal(
+      JSON.parse(shortCachedTranscript[0].payload).metadata.truncated,
+      false,
+    );
     await changeFixture(agent.id, "delivered", target, state.token);
     latest = await get(`/api/transcript?id=${agent.id}`);
     assert.equal(latest.items.length, 120);
@@ -611,7 +643,7 @@ async function runMessageReceiptScenario(
     } catch (error) {
       const status = await bubble(text).getByRole("status").allTextContents();
       throw new Error(
-        `${error.message}: ${JSON.stringify({ status, receiptRequestCount: receiptRequests.length, posts, appReceipt: await readAppReceipt(id), durable: await storage.evaluate(async (key) => (await window.receiptFixtureDb.outbox.storageInstance.findDocumentsById([key], false)).map((doc) => JSON.parse(doc.payload)), id) })}`,
+        `${error.message}: ${JSON.stringify({ status, receiptRequestCount: receiptRequests.length, posts, outboxReceipt: await readOutboxReceipt(id), durable: await storage.evaluate(async (key) => (await window.receiptFixtureDb.outbox.storageInstance.findDocumentsById([key], false)).map((doc) => JSON.parse(doc.payload)), id) })}`,
       );
     }
 
@@ -664,7 +696,37 @@ async function runMessageReceiptScenario(
       .filter({ hasText: "Waiting for agent" })
       .waitFor();
 
-    await page.reload();
+    // Reopen with the real pre-delivery cache before allowing fresh transport.
+    // Otherwise a fast pull can hide the short-cache -> truncated-page race.
+    {
+      await page.goto(origin + "check");
+      await storage.evaluate(async (rows) => {
+        for (const row of [...rows.slice(1), rows[0]])
+          await window.receiptFixtureDb.projections.incrementalUpsert(row);
+      }, shortCachedTranscript);
+      const freshTranscriptGate = new Promise((resolve) => {
+        releaseFreshTranscript = resolve;
+      });
+      await page.route("**/api/sync/**", async (route) => {
+        const url = new URL(route.request().url());
+        if (
+          url.pathname === "/api/sync/stream" ||
+          (url.pathname === "/api/sync/pull" &&
+            url.searchParams.get("scope") === `transcript:${agent.id}`)
+        )
+          await freshTranscriptGate;
+        await route.continue();
+      });
+      await page.goto(origin);
+      await bubble(text).waitFor();
+      assert.equal(
+        await page
+          .getByRole("button", { name: "Earlier messages", exact: true })
+          .count(),
+        0,
+      );
+      releaseFreshTranscript();
+    }
     await page.locator("#message").waitFor();
     await page.getByText(latestPageText, { exact: true }).waitFor();
     await until(
@@ -709,6 +771,7 @@ async function runMessageReceiptScenario(
       }),
     );
   } finally {
+    releaseFreshTranscript();
     receiptGateReleased = true;
     releaseReceiptGate();
     await Promise.all(

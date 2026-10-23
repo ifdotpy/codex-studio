@@ -6,6 +6,7 @@
 
 pub mod auth_cache;
 pub mod claude;
+pub(crate) mod claude_identity;
 
 use crate::account_policy::{AccountsSnapshot, RegistryOrder, decode_registry, encode_registry};
 use crate::event_write::python_strip;
@@ -465,7 +466,19 @@ impl ClaudeCliAuthReader {
         };
         auth_cache::shared().read(&claude_location(profile), || {
             match run_claude_status(&binary, options) {
-                Ok((stdout, succeeded)) => parse_claude_status(&stdout, succeeded),
+                Ok((stdout, succeeded)) => {
+                    let metadata = parse_claude_status(&stdout, succeeded);
+                    let location = claude_location(profile);
+                    location
+                        .directories
+                        .last()
+                        .map_or(metadata.clone(), |directory| {
+                            claude_identity::with_native_identity(
+                                metadata,
+                                &directory.join(".claude.json"),
+                            )
+                        })
+                }
                 Err(kind) => AuthMetadata::error(Some(kind)),
             }
         })
@@ -678,6 +691,8 @@ struct ClaudeStatusOutput {
     auth_method: Option<String>,
     email: Option<String>,
     subscription_type: Option<String>,
+    organization_uuid: Option<String>,
+    account_uuid: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -723,6 +738,14 @@ impl<'de> Deserialize<'de> for ClaudeStatusOutput {
                         "email" => {
                             value.email = lenient_value(map.next_value::<Lenient<String>>()?);
                         }
+                        "orgId" | "organizationUuid" => {
+                            value.organization_uuid =
+                                lenient_value(map.next_value::<Lenient<String>>()?);
+                        }
+                        "accountUuid" => {
+                            value.account_uuid =
+                                lenient_value(map.next_value::<Lenient<String>>()?);
+                        }
                         "subscriptionType" => {
                             value.subscription_type =
                                 lenient_value(map.next_value::<Lenient<String>>()?);
@@ -767,7 +790,11 @@ pub(crate) fn parse_claude_status_with_outcome(
             account_id: Some(account_id.clone()),
             email: Some(email.to_owned()),
             plan: value.subscription_type.filter(|plan| !plan.is_empty()),
-            credential_identity: Some(account_id),
+            credential_identity: Some(claude_identity::identity(
+                email,
+                value.organization_uuid.as_deref(),
+                value.account_uuid.as_deref(),
+            )),
             error: None,
             error_kind: None,
         }
@@ -2875,7 +2902,13 @@ fn apply_metadata(row: &mut serde_json::Map<String, Value>, metadata: &AuthMetad
                     .as_deref()
                     .filter(|v| !v.is_empty()),
             )
-            .is_some_and(|(a, b)| a != b)
+            .is_some_and(|(a, b)| {
+                if row.get("provider").and_then(Value::as_str) == Some("claude") {
+                    !claude_identity::accepts(a, b)
+                } else {
+                    a != b
+                }
+            })
     {
         row.insert("status".into(), Value::String("changed".into()));
         row.insert("error".into(), Value::String(CHANGED_ERROR.into()));
@@ -3878,13 +3911,24 @@ exit 0
             let profile = AuthProfile {
                 provider: studio_runtime_providers::ProviderKind::Claude,
                 home: fixture.path.clone(),
-                claude_options: None,
+                claude_options: Some(serde_json::json!({"configDir":fixture.path})),
             };
+            fs::write(fixture.path.join(".claude.json"), serde_json::json!({"oauthAccount":{
+                "emailAddress":"claude@example.invalid", "organizationUuid":"org-a", "accountUuid":"account-a"
+            }}).to_string()).expect("isolated native account metadata");
             let metadata = ClaudeCliAuthReader::read_with_environment(&profile, &environment);
             assert_eq!(metadata.status, AuthStatus::Ready);
             assert_eq!(
                 metadata.account_id.as_deref(),
                 Some("claude:claude@example.invalid")
+            );
+            assert_eq!(
+                metadata.credential_identity,
+                Some(claude_identity::identity(
+                    "claude@example.invalid",
+                    Some("org-a"),
+                    Some("account-a")
+                ))
             );
             assert_eq!(parse_claude_status(b"[]", true).status, AuthStatus::Error);
 

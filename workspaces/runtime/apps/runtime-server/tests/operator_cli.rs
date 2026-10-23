@@ -231,6 +231,15 @@ fn delivery_and_service_install_share_the_same_escaped_release_command() {
     let root = tempfile::tempdir().unwrap();
     fixture(root.path());
     let tools = root.path().join("tools");
+    // Hosted setup installs Node outside /usr/bin. Preserve the selected executable
+    // explicitly while keeping real service-manager commands out of the fixture PATH.
+    let node = Command::new("node")
+        .args(["-p", "process.execPath"])
+        .output()
+        .expect("resolve the configured Node executable");
+    assert!(node.status.success(), "Node executable lookup failed");
+    let node = String::from_utf8(node.stdout).unwrap();
+    std::os::unix::fs::symlink(node.trim(), tools.join("node")).unwrap();
     let release_root = root.path().join("release space $%\" path");
     let release = release_root.join("releases/fixture-commit");
     fs::create_dir_all(release.join("bin")).unwrap();

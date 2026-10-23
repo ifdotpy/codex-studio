@@ -56,3 +56,37 @@ The per-turn attachment item budget is owned by
 The focused schema tests also compare the Python event reader to this owner on
 shared default, override, legacy, and invalid-input cases using Python's standard
 library and an in-memory SQLite database.
+
+`src/task_results.rs` owns optional task result contracts and their limits.
+The runtime uses the existing `jsonschema` crate from Cargo.lock (0.49.9).
+Task create and update compile the schema before the task changes.
+The supported draft 2020-12 subset includes:
+
+- Object properties, required properties, additional properties, and property names.
+- Types, enum, const, numeric bounds, and string length bounds.
+- Array items, prefix items, contains, uniqueness, and length bounds.
+- Object size bounds, dependent properties, and dependent schemas.
+- allOf, anyOf, oneOf, not, if, then, and else.
+- Boolean schemas and standard description fields.
+
+The runtime refuses references, regular expressions, other drafts, and unknown keywords.
+The owner limits serialized schema size to 32,768 UTF-8 bytes and schema depth to 32.
+The owner limits structured results to 128,000 UTF-8 bytes.
+Submit accepts a JSON value or JSON text that validates against the task schema.
+A directly valid string stays a string.
+Without a schema, submit continues to require text.
+
+Each result record keeps its display text and adds the validated JSON under `result`.
+Task get and history return that JSON value.
+Spawn includes the task schema in the worker's first assignment.
+Task assignment events include the schema and submit instructions.
+
+A refused submission does not change the task, its version, or its result history.
+The runtime stores separate refusal receipts and a failure count.
+A repeated request identity returns its receipt without another failure count.
+After three failures, the runtime refuses further submissions and emits one `work_result_invalid` event to the lead.
+The attempt identity includes the task version, worker epoch, and provider attempt identity.
+A lead update or a new provider attempt permits another set of submissions.
+
+The runtime applies the tool contract to both native and legacy tool catalogs.
+OpenAPI parity checks use this owner, and `studio-contracts` generates the web types.
