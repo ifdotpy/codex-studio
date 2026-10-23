@@ -135,8 +135,8 @@ the field. Dropdown menus show text labels; their appearance follows the browser
 Fast and Daybreak switches include visible descriptions. Chat settings has Models, Team, and Access tabs. Models shows Lead, Workers,
 and Review summaries above the selected role's account, model, reasoning, and
 mode controls. One execution summary in the composer shows the lead, workers,
-and review; its title contains the full settings. On narrow layouts it shows
-role and provider icons. Click it to open Models on Lead, then select a role.
+and review; its title contains the full settings. On narrow layouts it keeps the lead name beside role and provider icons;
+wider layouts name all three roles. Click it to open Models on Lead, then select a role.
 Accounts use a compact grid with remaining limits. Team contains
 subagent parallelism, delegation depth, and account eligibility; zero parallelism
 uses a single agent. Account eligibility is always visible in its own grid.

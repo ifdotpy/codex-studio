@@ -65,7 +65,9 @@ test("composer keeps one tools row and readable mixed-provider execution summary
     }));
     for (const { width, target, team } of [
       { width: 1440, target: 900 },
+      { width: 1440, target: 470, team: true },
       { width: 1440, target: 600, team: true },
+      { width: 1440, target: 440, team: true },
       { width: 1024, target: 480 },
       { width: 1080, target: 760 },
       { width: 768, target: 432 },
@@ -174,6 +176,15 @@ test("composer keeps one tools row and readable mixed-provider execution summary
                   minimum,
                   glyphColor: getComputedStyle(glyph).color,
                   namesHidden: getComputedStyle(label).display === "none",
+                  names: [
+                    ...button.querySelectorAll(
+                      ".execution-model,.execution-inherited-label",
+                    ),
+                  ].map((node) => ({
+                    text: node.textContent,
+                    visible: getComputedStyle(node).display !== "none",
+                    ...r(node),
+                  })),
                   roleIcons: [
                     ...button.querySelectorAll(".execution-role-icon"),
                   ].map(r),
@@ -273,15 +284,22 @@ test("composer keeps one tools row and readable mixed-provider execution summary
         JSON.stringify(result),
       ).toBeLessThanOrEqual(1);
       for (const chip of result.chips) {
+        expect(chip.namesHidden).toBe(false);
+        if (result.composer.width >= 440) {
+          const names = chip.names.filter((name) => name.visible);
+          expect(names).toHaveLength(3);
+          for (const name of names)
+            expect(name.right).toBeLessThanOrEqual(chip.button.right);
+        }
         if (!chip.namesHidden)
           expect(
             chip.label.width,
             JSON.stringify(result),
           ).toBeGreaterThanOrEqual(chip.minimum - 1);
-        else expect(result.composer.width).toBeLessThanOrEqual(560);
+
         expect(chip.roleIcons).toHaveLength(3);
         for (const icon of [...chip.roleIcons, chip.inherited])
-          expect(icon.width).toBeGreaterThanOrEqual(12);
+          expect(icon.width).toBeGreaterThanOrEqual(14);
         expect(chip.glyph.width, JSON.stringify(result)).toBeGreaterThanOrEqual(
           12,
         );
