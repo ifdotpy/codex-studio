@@ -63,6 +63,14 @@ describe("sidebar width policy", () => {
 });
 
 describe("sidebar resize lifecycle", () => {
+  it("does not replace a temporarily clamped preference after a click without movement", () => {
+    const session = new SidebarResizeSession();
+    session.start("a", 1, 240, 240);
+    expect(
+      session.finish("a", 1, 240, { minimum: 220, maximum: 260 }),
+    ).toBeNull();
+  });
+
   it("bounds both ends and commits only the final pointer position", () => {
     const session = new SidebarResizeSession();
     const bounds = { minimum: 220, maximum: 700 };

@@ -9,10 +9,11 @@ export class SidebarResizeSession {
     pointer: number;
     x: number;
     width: number;
+    moved: boolean;
   } | null = null;
 
   start(scope: string, pointer: number, x: number, width: number) {
-    this.drag = { scope, pointer, x, width };
+    this.drag = { scope, pointer, x, width, moved: false };
   }
 
   move(scope: string, pointer: number, x: number, bounds: Bounds) {
@@ -22,6 +23,7 @@ export class SidebarResizeSession {
       this.cancel();
       return null;
     }
+    drag.moved ||= x !== drag.x;
     return clampSidebarWidth(
       drag.width + x - drag.x,
       bounds.minimum,
@@ -31,8 +33,9 @@ export class SidebarResizeSession {
 
   finish(scope: string, pointer: number, x: number, bounds: Bounds) {
     const width = this.move(scope, pointer, x, bounds);
+    const moved = this.drag?.moved;
     if (this.drag?.pointer === pointer) this.cancel();
-    return width;
+    return moved ? width : null;
   }
 
   cancel() {

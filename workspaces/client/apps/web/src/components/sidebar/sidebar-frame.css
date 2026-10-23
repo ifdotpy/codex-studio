@@ -8,6 +8,11 @@
   height: 100%;
   flex-basis: auto;
 }
+#sidebar.sidebar-frame[data-probe="true"] {
+  position: absolute;
+  visibility: hidden;
+  pointer-events: none;
+}
 .sidebar-drawer-body {
   height: 100%;
 }

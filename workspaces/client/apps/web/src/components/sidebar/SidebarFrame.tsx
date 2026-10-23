@@ -1,6 +1,9 @@
 import { Drawer } from "@mantine/core";
 import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
-import { layoutValues } from "../../layout/layout-contract.generated";
+import {
+  layoutQueries,
+  layoutValues,
+} from "../../layout/layout-contract.generated";
 import { resolveSidebarWidth, storedSidebarWidth } from "./sidebarWidth";
 import { useSidebarResize } from "./useSidebarResize";
 import "./sidebar-frame.css";
@@ -65,6 +68,8 @@ export function SidebarFrame(p: SidebarFrameProps) {
     contract: widthContract,
   });
   const compact = policy.mode === "drawer";
+  // Measure once before paint when the saved desktop preference starts closed.
+  const probing = !compact && p.collapsed && headerMinimum.current === 0;
   const live = useRef({ scope: p.scope, compact });
   live.current = { scope: p.scope, compact };
 
@@ -84,7 +89,13 @@ export function SidebarFrame(p: SidebarFrameProps) {
         parseFloat(hostStyle.paddingRight);
       const header =
         aside.current?.querySelector<HTMLElement>(".sidebar-header");
-      if (header && aside.current) {
+      // Drawer touch controls must not raise the desktop header minimum.
+      if (
+        header &&
+        aside.current &&
+        !compact &&
+        window.matchMedia(layoutQueries.navigationInline).matches
+      ) {
         const style = getComputedStyle(header);
         const sideStyle = getComputedStyle(aside.current);
         const children = Array.from(header.children) as HTMLElement[];
@@ -164,6 +175,7 @@ export function SidebarFrame(p: SidebarFrameProps) {
 
   const save = (width: number | null) => {
     if (live.current.scope !== p.scope) return;
+    if (width !== null && storedSidebarWidth(width) === null) return;
     setPreference({ scope: p.scope, width });
     try {
       if (width === null)
@@ -187,6 +199,16 @@ export function SidebarFrame(p: SidebarFrameProps) {
     reset: () => save(null),
     commit: save,
   });
+  useLayoutEffect(() => {
+    if (compact || p.collapsed) return;
+    const root = document.documentElement;
+    const previous = root.style.getPropertyValue("--studio-sidebar-width");
+    root.style.setProperty("--studio-sidebar-width", `${resize.width}px`);
+    return () => {
+      if (previous) root.style.setProperty("--studio-sidebar-width", previous);
+      else root.style.removeProperty("--studio-sidebar-width");
+    };
+  }, [resize.width, compact, p.collapsed]);
   const close = () => {
     restoreSidebarFocus();
     p.close();
@@ -197,6 +219,9 @@ export function SidebarFrame(p: SidebarFrameProps) {
       id="sidebar"
       className="sidebar-frame"
       data-presentation={compact ? "drawer" : "inline"}
+      data-probe={probing || undefined}
+      inert={probing || undefined}
+      aria-hidden={probing || undefined}
       aria-label="Conversations"
       style={
         compact ? undefined : { width: resize.width, flexBasis: resize.width }
@@ -221,7 +246,7 @@ export function SidebarFrame(p: SidebarFrameProps) {
       )}
     </aside>
   );
-  if (!compact) return p.collapsed ? null : content;
+  if (!compact) return p.collapsed && !probing ? null : content;
   return (
     <Drawer
       opened={p.opened}

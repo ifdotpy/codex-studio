@@ -15,6 +15,7 @@ for (const combined of [false, true]) {
         name: "Conversation sidebar width",
       });
       await rail.press("End");
+      await page.evaluate(() => document.fonts.ready);
       const fitBoundary =
         Number(await rail.getAttribute("aria-valuemin")) +
         (await page.evaluate(() => {
@@ -35,6 +36,10 @@ for (const combined of [false, true]) {
         await page.setViewportSize({ width, height: 844 });
         await toggle.click();
         await expect(sidebar).toHaveAttribute("data-presentation", "drawer");
+        if (width === 320)
+          await page.screenshot({
+            path: `/tmp/slice2-sidebar-${combined ? "combined" : "direct"}-320.png`,
+          });
         await sidebar.getByPlaceholder("Filter sidebar").fill("Root A");
         await sidebar
           .getByRole("button", { name: "Close conversations", exact: true })
@@ -100,6 +105,20 @@ for (const combined of [false, true]) {
           sidebar.evaluate((node) => node.getBoundingClientRect().width),
         )
         .toBe(preferred);
+      if (!combined) {
+        await sidebar
+          .getByRole("button", { name: "Close conversations", exact: true })
+          .click();
+        await page.setViewportSize({
+          width: Math.ceil(fitBoundary) - 1,
+          height: 900,
+        });
+        await page.reload();
+        await expect(sidebar).toBeHidden();
+        await toggle.click();
+        await expect(sidebar).toBeVisible();
+        await expect(sidebar).toHaveAttribute("data-presentation", "drawer");
+      }
     } finally {
       await f.close();
     }
@@ -181,6 +200,16 @@ test("the direct sidebar bounds pointer resize, cancels lost capture, and measur
         );
       }),
     ).toBe(true);
+    await page.screenshot({ path: "/tmp/slice2-sidebar-large-text.png" });
+    await expect
+      .poll(async () => {
+        const side = await sidebar.boundingBox();
+        const bar = await page
+          .locator(".terminal-dock:not(.is-open)")
+          .boundingBox();
+        return Math.round(side.width) - Math.round(bar.width);
+      })
+      .toBe(0);
     const keys = await page.evaluate(() =>
       Object.keys(localStorage).filter((key) =>
         key.startsWith("studio-sidebar-width:"),
