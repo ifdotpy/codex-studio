@@ -36,14 +36,11 @@
   gap: 6px 12px;
   min-width: 0;
 }
+/* Limits take their own line under the server chip. */
 .server-account-server > .account-start-throttle {
-  flex: 1 1 220px;
+  flex: 1 1 100%;
   min-width: 0;
   margin-top: 0;
-  font-size: 12px;
-}
-.server-account-server > .account-start-throttle[open] {
-  flex-basis: 100%;
 }
 .server-account-chip {
   min-height: 32px;

@@ -151,6 +151,7 @@ export default function AccountStartThrottle({
   return (
     <Disclosure
       className="account-register account-start-throttle"
+      chevron
       summary={`Turn start limits${scope}: ${throttleSummary(accountThrottle(account))}`}
     >
       <form

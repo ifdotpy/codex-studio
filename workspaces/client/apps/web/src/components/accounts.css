@@ -827,6 +827,22 @@
   min-height: var(--studio-touch-target);
   font-size: var(--studio-text-meta);
 }
+/* Editable settings read as a control, not as a muted note. */
+.account-start-throttle > .disclosure-control {
+  display: inline-flex;
+  align-items: center;
+  gap: calc(var(--mantine-spacing-xs) / 2);
+  color: var(--mantine-primary-color-filled);
+  text-align: start;
+}
+.account-start-throttle .disclosure-chevron {
+  flex: none;
+  inline-size: var(--studio-text-meta);
+  block-size: var(--studio-text-meta);
+}
+.account-start-throttle[data-expanded] .disclosure-chevron {
+  transform: rotate(90deg);
+}
 
 /* Reserve the full name line when the Settings pane itself is narrow. */
 .accounts-grid,
