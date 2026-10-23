@@ -115,6 +115,59 @@ pub async fn require_before_start(
     Ok(false)
 }
 
+/// The hold reason of an account whose provider launch `error` refused for a
+/// reason that only a sign-in clears, or `None` for any other launch failure.
+pub fn launch_hold_reason(error: &crate::account_worker::WorkerError) -> Option<&'static str> {
+    match error {
+        crate::account_worker::WorkerError::PreparationRefused(code)
+            if code == crate::provider_adapter::CLAUDE_ACCOUNT_IDENTITY_REFUSAL =>
+        {
+            Some(adapter(ProviderKind::Claude).sign_in_message())
+        }
+        _ => None,
+    }
+}
+
+/// Hold the queued starts of `agents` (agent, epoch) whose account cannot
+/// launch its provider until it signs in, with `reason`, as a gated start is
+/// held: the agent shows `failed` with the reason and keeps its pending input,
+/// and [`release_held`] requeues it once the account is Ready. An agent that
+/// moved on (another epoch, a claim, a stop or a delete) is left unchanged.
+/// Returns the held agents.
+pub async fn hold_unstarted(
+    store: &RuntimeStore,
+    agents: Vec<(String, i64)>,
+    reason: &'static str,
+) -> Result<Vec<String>> {
+    Ok(
+        crate::scheduler::lifecycle_transaction_with(store, move |tx| {
+            let mut held = Vec::new();
+            for (agent_id, epoch) in agents {
+                let Some(mut agent) = AgentRepository::get(tx, &AgentId::from(agent_id.as_str()))?
+                else {
+                    continue;
+                };
+                if agent.status != AgentStatus::Queued
+                    || agent.epoch != epoch
+                    || agent.extra.get("autoWake") != Some(&json!(true))
+                    || studio_runtime_store::truthy(agent.extra.get("inFlight"))
+                    || agent.extra.contains_key("startAttempt")
+                    || studio_runtime_store::truthy(agent.extra.get("deletedAt"))
+                {
+                    continue;
+                }
+                agent.status = AgentStatus::Failed;
+                agent.extra.insert("error".into(), json!(reason));
+                agent.extra.remove(crate::account_start_gate::WAIT_FIELD);
+                AgentRepository::put(tx, &agent)?;
+                held.push(agent_id);
+            }
+            Ok::<_, StoreError>(held)
+        })
+        .await?,
+    )
+}
+
 /// A held turn: its agent, the epoch of its pending input and its hold reason.
 struct Held {
     agent: String,

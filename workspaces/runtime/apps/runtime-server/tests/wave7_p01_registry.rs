@@ -226,6 +226,9 @@ struct Scripted {
     /// the registry retries, so a retry timer cannot change the outcome.
     unavailable: std::sync::OnceLock<fn(&str) -> bool>,
     unavailable_attempts: AtomicUsize,
+    /// Every launch is refused because the account has no readable Claude
+    /// login, so its saved account identity is missing.
+    identity_refused: std::sync::atomic::AtomicBool,
     launch_attempts: std::sync::OnceLock<mpsc::UnboundedSender<String>>,
     stops: Arc<Mutex<Vec<Shutdown>>>,
     opened_notice: Arc<Notify>,
@@ -259,6 +262,12 @@ impl AccountLauncher for Scripted {
             {
                 self.unavailable_attempts.fetch_add(1, Ordering::SeqCst);
                 return Err(WorkerError::TaskFailed);
+            }
+            if self.identity_refused.load(Ordering::SeqCst) {
+                return Err(WorkerError::PreparationRefused(
+                    studio_runtime_services::provider_adapter::CLAUDE_ACCOUNT_IDENTITY_REFUSAL
+                        .into(),
+                ));
             }
             if self
                 .failures
@@ -567,6 +576,7 @@ fn scripted_with_policy(
             failures: AtomicUsize::new(0),
             unavailable: std::sync::OnceLock::new(),
             unavailable_attempts: AtomicUsize::new(0),
+            identity_refused: std::sync::atomic::AtomicBool::new(false),
             launch_attempts: std::sync::OnceLock::new(),
             stops: Arc::default(),
             opened_notice: Arc::default(),
@@ -1241,6 +1251,45 @@ async fn start_failure_preserves_input_and_post_commit_notify_dispatches_it() {
         .expect("account registry shutdown hang guard")
         .unwrap()
         .unwrap();
+    assert_eq!(launcher.active.load(Ordering::SeqCst), 0);
+}
+
+/// A Claude account without a readable login has no saved account identity,
+/// so its provider cannot launch and no account worker can reach the sign-in
+/// gate. The queued agent must not wait for a provider session without a
+/// message: it shows the sign-in reason and action, keeps its input, and the
+/// held-turn release requeues it once the account is ready.
+#[tokio::test]
+async fn claude_account_without_a_readable_login_holds_its_start_for_sign_in() {
+    let fixture = Fixture::new().await;
+    fixture.enqueue(0, "needs-login").await;
+    let (launcher, _writes) = scripted_with_unknown_writes(false);
+    launcher.identity_refused.store(true, Ordering::SeqCst);
+    let mut registry = AccountRegistry::new(
+        fixture.store.clone(),
+        launcher.clone(),
+        test_registry_config(),
+    )
+    .await
+    .unwrap();
+    assert!(registry.reconcile(None).await.is_err());
+    let agent_id = fixture.agents[0]["id"].as_str().unwrap();
+    let (status, error, wait): (String, Option<String>, Option<String>) = fixture
+        .store
+        .test_reader()
+        .unwrap()
+        .query_row(
+            "SELECT json_extract(record,'$.status'),json_extract(record,'$.error'),json_extract(record,'$.startWait.reason') FROM runtime_agents WHERE id=?1",
+            [agent_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        (status.as_str(), error.as_deref(), wait.as_deref()),
+        ("failed", Some("Sign in with claude auth login first"), None),
+        "the owner sees why the agent does not start and what to do"
+    );
+    assert_eq!(fixture.event_status("annotation:needs-login"), "pending");
     assert_eq!(launcher.active.load(Ordering::SeqCst), 0);
 }
 
