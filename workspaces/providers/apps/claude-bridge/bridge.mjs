@@ -235,6 +235,7 @@ const queryBusy = (id, active) =>
     active.tasks.size ||
     active.pendingSteers.size ||
     active.unknownSteers.size ||
+    active.continuationTimer ||
     active.reservingInput ||
     active.input.values.length ||
     operations.get(id),
@@ -1026,9 +1027,23 @@ function clearUnknownSteer(active, id) {
   clearTimeout(active.unknownSteers.get(id));
   active.unknownSteers.delete(id);
 }
+function clearContinuation(active) {
+  clearTimeout(active.continuationTimer);
+  active.continuationTimer = null;
+}
+function expectContinuation(active) {
+  if (active.continuationTimer) return;
+  active.continuationTimer = setTimeout(() => {
+    active.continuationTimer = null;
+    catalogCache.activityChanged();
+  }, limits.continuationWaitMs);
+  active.continuationTimer.unref();
+}
 function clearTurnTimers(active) {
   clearDeferredResult(active);
+  clearContinuation(active);
   clearTimeout(active.stopTimer);
+  active.stopTimer = null;
   for (const id of active.unknownSteers.keys()) clearUnknownSteer(active, id);
 }
 function lifecycleFailure(s, active, error) {
@@ -1636,6 +1651,9 @@ async function startSession(s, active, p) {
             ? { turn: active.turn, item }
             : submittedSteer(s, m.uuid);
         if (steer?.item.deliveryStatus === "submitted") {
+          // The CLI accepted this input and can pause before its first output.
+          // Keep the query until that continuation starts or its wait expires.
+          if (!active.turn) expectContinuation(active);
           clearUnknownSteer(active, steer.item.id);
           steer.item.deliveryStatus = "delivered";
           turnEvent(s, steer.turn, "item/completed", {
@@ -1657,6 +1675,7 @@ async function startSession(s, active, p) {
           items: [],
           synthetic: true,
         };
+        clearContinuation(active);
         active.reportedTurnOutput = 0;
         s.turns.push(active.turn);
         emit("turn/started", {
@@ -2555,6 +2574,7 @@ async function handle(method, p) {
             !query.tasks.size &&
             !query.pendingSteers.size &&
             !query.unknownSteers.size &&
+            !query.continuationTimer &&
             !query.reservingInput &&
             !query.input.values.length)
         );
@@ -2568,7 +2588,12 @@ async function handle(method, p) {
         });
       // Reattach to a live query without changing its settings or background work.
       // turn/start already steers its current turn or queues the next input.
-      if (!active?.turn && !active?.tasks.size && !active?.unknownSteers.size) {
+      if (
+        !active?.turn &&
+        !active?.tasks.size &&
+        !active?.unknownSteers.size &&
+        !active?.continuationTimer
+      ) {
         if (active) clearTurnTimers(active);
         active?.input.close();
         active?.q?.close();
@@ -2829,6 +2854,7 @@ async function handle(method, p) {
         );
       active.turn = turn;
       active.idleRequestStartedAt = Date.now();
+      clearContinuation(active);
       active.reportedTurnOutput = 0;
       active.reservingInput = true;
     }
@@ -3010,15 +3036,18 @@ async function handle(method, p) {
     if (stopTasks && typeof active.q?.stopTask !== "function")
       throw new Error("Claude does not support stopping background tasks");
     let results = [];
-    if (!reservingInput && !active.stopTimer) {
-      active.stopTimer = setTimeout(() => {
+    if (!reservingInput && !finishingTurns.has(turn) && !active.stopTimer) {
+      const timer = setTimeout(() => {
+        if (active.stopTimer !== timer) return;
+        active.stopTimer = null;
         if (active.turn !== turn) return;
         void recoverStall(s, active, {
           id: "stop:" + turn.id,
           stop: true,
         }).catch((error) => lifecycleFailure(s, active, error));
       }, limits.interruptWaitMs);
-      active.stopTimer.unref();
+      active.stopTimer = timer;
+      timer.unref();
     }
     const receipt = await interruptInputQueue(
       s,

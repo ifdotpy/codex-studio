@@ -19,7 +19,9 @@ completes: unread input is withdrawn and reported for server redelivery with its
 original identity; input already handed to the SDK remains submitted with an
 unknown outcome and is never automatically resent. The CLI stays loaded for a
 bounded late-echo window. A late echo acknowledges the original turn even when
-Claude starts a separate continuation turn. [The lifecycle limits](stall-watch.mjs)
+Claude starts a separate continuation turn. An acknowledged continuation also
+keeps the CLI loaded until its first output or a bounded wait expires.
+[The lifecycle limits](stall-watch.mjs)
 own the grace, retention window, and interrupt deadlines in milliseconds.
 
 Stop finalizes an already deferred result as interrupted. If running Claude does

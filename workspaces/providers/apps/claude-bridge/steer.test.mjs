@@ -95,7 +95,7 @@ afterEach(async () => {
   for (const bridge of bridges.splice(0)) await bridge.close();
 });
 
-async function startBridge(env = {}) {
+async function startBridge(env = {}, sdk = FAKE_SDK) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "claude-steer-"));
   for (const name of await fs.readdir(HERE)) {
     if (!name.endsWith(".mjs") || name.endsWith(".test.mjs")) continue;
@@ -105,7 +105,7 @@ async function startBridge(env = {}) {
       source.replaceAll("@anthropic-ai/claude-agent-sdk", "./fake.mjs"),
     );
   }
-  await fs.writeFile(path.join(root, "fake.mjs"), FAKE_SDK);
+  await fs.writeFile(path.join(root, "fake.mjs"), sdk);
   await fs.symlink(
     path.join(HERE, "node_modules"),
     path.join(root, "node_modules"),
@@ -819,4 +819,97 @@ test("unknown steer retention expires without declaring input unapplied or resen
     "submitted",
   );
   assert.deepEqual(await inputs(bridge), ["pulled", "steer text"]);
+});
+
+test("a late echo keeps the CLI busy before continuation output begins", async () => {
+  const sdk = FAKE_SDK.replace(
+    "yield {type:'user',isReplay:true,uuid:late.value.uuid};yield {type:'stream_event'",
+    "yield {type:'user',isReplay:true,uuid:late.value.uuid};await until(cwd+'/.generation',abort.signal);if(abort.signal.aborted)return;yield {type:'stream_event'",
+  );
+  const bridge = await startBridge({}, sdk);
+  const turn = await running(bridge, "success-late");
+  await steer(bridge, turn, "echo-gap");
+  await read(bridge, "steer text");
+  await end(bridge);
+  await completed(bridge, turn);
+  await release(bridge, ".echo");
+  await bridge.note((n) => ack(bridge, "echo-gap") === n);
+  await assert.rejects(
+    bridge.call("thread/unsubscribe", { threadId: bridge.thread }),
+    /Pause the Claude turn/,
+  );
+  await bridge.call("thread/resume", { threadId: bridge.thread });
+  await release(bridge, ".generation");
+  const continuation = await bridge.note(
+    (n) => n.method === "turn/started" && n.params.turn.id !== turn,
+  );
+  await release(bridge, ".continued");
+  await completed(bridge, continuation.params.turn.id);
+  assert.deepEqual(
+    await bridge.call("thread/unsubscribe", { threadId: bridge.thread }),
+    { status: "unsubscribed" },
+  );
+  assert.deepEqual(await inputs(bridge), ["success-late", "steer text"]);
+});
+
+test("Stop during a blocked final save cannot disable the next turn's Stop deadline", async () => {
+  const sdk = FAKE_SDK.replace(
+    "import fs from 'node:fs';",
+    String.raw`
+import fs from 'node:fs';
+import fsp from 'node:fs/promises';
+const append = fsp.appendFile;
+fsp.appendFile = async(file, data, ...args) => {
+ const value = await append(file, data, ...args), cwd = process.cwd();
+ if(fs.existsSync(cwd+'/.hold-final-save') && String(data).includes('completed') && !fs.existsSync(cwd+'/.final-save-held')) {
+  fs.writeFileSync(cwd+'/.final-save-held','');
+  while(!fs.existsSync(cwd+'/.release-final-save'))await new Promise(r=>setTimeout(r,5));
+ }
+ return value;
+};`,
+  )
+    .replace(
+      "if(idle)return",
+      "fs.writeFileSync(cwd+'/.interrupt-seen','');if(idle)return",
+    )
+    .replace(
+      "if(!queueMode){",
+      "if(fs.existsSync(cwd+'/.ignore-interrupt'))return {cancelled:[],still_queued:[]};if(!queueMode){",
+    );
+  const bridge = await startBridge(
+    {
+      STUDIO_CLAUDE_STALL_INTERRUPT_WAIT_MS: "150",
+      STUDIO_CLAUDE_STALL_EXIT_WAIT_MS: "50",
+    },
+    sdk,
+  );
+  const turn = await running(bridge, "unread-result");
+  await steer(bridge, turn, "save-stop");
+  await release(bridge, ".hold-final-save");
+  await end(bridge);
+  await marker(bridge, ".final-save-held");
+  const stopping = bridge.call("turn/interrupt", {
+    threadId: bridge.thread,
+    turnId: turn,
+  });
+  await marker(bridge, ".interrupt-seen");
+  await release(bridge, ".release-final-save");
+  await stopping;
+  await completed(bridge, turn);
+  await release(bridge, ".release");
+  // Let the first turn's stale deadline expire before starting another turn.
+  await new Promise((resolve) => setTimeout(resolve, 250));
+  await release(bridge, ".ignore-interrupt");
+  const next = await running(bridge, "running-ignore");
+  await read(bridge, "running-ignore");
+  await bridge.call("turn/interrupt", {
+    threadId: bridge.thread,
+    turnId: next,
+  });
+  const done = await completed(bridge, next);
+  assert.equal(done.params.turn.status, "interrupted");
+  assert.match(
+    done.params.turn.error.message,
+    /did not end the turn after Stop/,
+  );
 });
