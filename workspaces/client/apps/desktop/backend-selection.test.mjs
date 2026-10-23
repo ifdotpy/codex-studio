@@ -6,6 +6,7 @@ import {
   writeFile,
   chmod,
   readFile,
+  realpath,
 } from "node:fs/promises";
 import { createServer } from "node:net";
 import { createServer as createHttpServer } from "node:http";
@@ -61,8 +62,9 @@ test("desktop identity rejects a Rust backend build that differs from the select
 });
 
 test("desktop starts only the Rust executable with Python unavailable", async () => {
-  const root = await mkdtemp(
-    path.join(os.tmpdir(), "codex-desktop-rust-selection-"),
+  // The desktop resolves the state folder; a macOS temporary folder is below the /var link.
+  const root = await realpath(
+    await mkdtemp(path.join(os.tmpdir(), "codex-desktop-rust-selection-")),
   );
   const state = path.join(root, "state");
   const resources = path.join(root, "resources");
