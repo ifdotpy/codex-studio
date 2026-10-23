@@ -5,6 +5,15 @@ import { expect, it, vi } from "vitest";
 
 // Token animation requires a browser; the roster and state indicators render unchanged.
 vi.mock("../TokenRate", () => ({ default: () => null }));
+vi.mock("../../servers/ServerServicesContext", async (importOriginal) => ({
+  ...(await importOriginal<
+    typeof import("../../servers/ServerServicesContext")
+  >()),
+  useServerFileDialogs: () => ({
+    canRevealPath: () => false,
+    revealPath: vi.fn(),
+  }),
+}));
 import TeamPanel from "./TeamPanel";
 import type { ChatIndicator } from "../chat-status/chatStatusModel";
 
