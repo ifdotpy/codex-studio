@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { useMantineColorScheme } from "@mantine/core";
 import { expect, fn, userEvent, waitFor, within } from "storybook/test";
+import { publishServerAliases } from "../servers/serverAliases";
+import { readServerAliases } from "../servers/registry";
 import Sidebar, { type SidebarProps } from "./Sidebar";
 import type { Agent, Snapshot } from "../types";
 import { chatIndicators } from "./chat-status/chatStatusModel";
@@ -173,6 +175,9 @@ const meta = {
   parameters: { layout: "fullscreen" },
   beforeEach: () => {
     values.clear();
+    const previous = readServerAliases();
+    publishServerAliases({ local: "MAC" });
+    return () => publishServerAliases(previous);
   },
 } satisfies Meta<typeof Sidebar>;
 export default meta;
@@ -235,9 +240,7 @@ export const Interactions: Story = {
     await expect(
       within(lane).getByRole("textbox", { name: "Chat name" }),
     ).toBeVisible();
-    await userEvent.click(
-      page.getByRole("button", { name: "Cancel", exact: true }),
-    );
+    await userEvent.click(page.getByRole("button", { name: /^Cancel$/ }));
   },
 };
 

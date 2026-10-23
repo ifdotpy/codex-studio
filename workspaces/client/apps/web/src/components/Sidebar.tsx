@@ -826,9 +826,7 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
       selected={p.opened === row.id}
       projectLabel={priority ? groupMap.get(row.cwd || "")?.name : undefined}
       defaultServerAlias={
-        services.alias?.(projectTarget(row.cwd || "")) ||
-        aliases[services.cache.ownerId] ||
-        DEFAULT_LOCAL_SERVER_ALIAS
+        aliases[services.cache.ownerId] || DEFAULT_LOCAL_SERVER_ALIAS
       }
       serverAlias={
         services.alias?.({ kind: "chat", id: row.id }) ||
@@ -1905,8 +1903,7 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
                             <strong>{room.name}</strong>
                             {(serverOffline ||
                               alias !==
-                                (services.alias?.(projectTarget(group.path)) ||
-                                  aliases[services.cache.ownerId] ||
+                                (aliases[services.cache.ownerId] ||
                                   DEFAULT_LOCAL_SERVER_ALIAS)) && (
                               <ChatServerLine
                                 provider={
