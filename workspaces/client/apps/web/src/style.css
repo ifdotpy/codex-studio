@@ -1,15 +1,13 @@
 @import "./studio-theme.css";
 
-:root {
-  --studio-chat-max: 760px;
-}
-
 * {
   box-sizing: border-box;
 }
 body {
   margin: 0;
   font-size: var(--studio-text-body);
+  background: var(--studio-page);
+  color: var(--text);
 }
 #root {
   display: flex;
@@ -27,7 +25,7 @@ body {
   }
 }
 a {
-  color: light-dark(#3e51aa, #b1bcff);
+  color: var(--accent);
 }
 button,
 a,
@@ -40,8 +38,8 @@ button:focus-visible,
 a:focus-visible,
 summary:focus-visible,
 [tabindex]:focus-visible {
-  outline: 2px solid light-dark(#3e51aa, #91a7ff);
-  outline-offset: 3px;
+  outline: calc(2 * var(--studio-border-width)) solid var(--accent);
+  outline-offset: var(--studio-rail-size, 0.1875rem);
 }
 button,
 input,
@@ -2126,22 +2124,6 @@ html body #root:has(.terminal-dock) {
   color: var(--mantine-color-text);
 }
 
-/* Transcript rows share one column. User messages retain their own bubble. */
-:root:not([data-studio-content-layout="original"])
-  .workspace
-  #conversation
-  :is(
-    .message-content,
-    .conversation-navigation,
-    .room-footer,
-    #composer,
-    .usage-footer,
-    .message-queue,
-    .conversation-results
-  ) {
-  max-width: var(--studio-chat-max);
-  margin-inline: auto;
-}
 /* Assistant answers keep their card for emphasis within the shared column. */
 .ai-conversation .message.assistant,
 .agent-conversation .message.bubble:not(.outgoing) {
