@@ -43,7 +43,7 @@
   white-space: nowrap;
 }
 .composer-bar {
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   min-width: 0;
 }
 .composer-submit-actions {
@@ -215,9 +215,6 @@
 @media (max-width: 760px) {
   .message-queue {
     width: calc(100% - 24px);
-  }
-  .composer-bar {
-    flex-wrap: wrap;
   }
   .composer-bar #project {
     max-width: 42%;

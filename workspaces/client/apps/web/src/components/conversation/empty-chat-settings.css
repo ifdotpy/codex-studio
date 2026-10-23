@@ -1,18 +1,26 @@
-/* Execution owns the trigger content; conversation owns compact placement. */
+/* Execution owns trigger content; conversation protects its readable geometry. */
 .empty-chat-settings {
   display: flex;
   align-items: center;
+  flex: 1 1 auto;
   gap: calc(var(--mantine-spacing-xs) / 2);
   min-width: 0;
 }
 .empty-chat-setting {
   display: flex;
-  min-width: 0;
+  flex: 0 1 auto;
+  min-inline-size: calc(
+    var(--studio-composer-model-min) + var(--mantine-font-size-sm) +
+      var(--mantine-spacing-xs)
+  );
+  font-size: var(--studio-text-meta);
 }
-.empty-chat-setting > span {
+.empty-chat-setting > span,
+.empty-chat-setting .execution-account {
   display: none;
 }
 .empty-chat-setting .execution-menu {
+  flex: 1;
   min-width: 0;
   max-width: 100%;
   padding-inline: calc(var(--mantine-spacing-xs) / 2);
@@ -21,30 +29,49 @@
   flex-wrap: nowrap;
   gap: calc(var(--mantine-spacing-xs) / 2);
 }
+.empty-chat-setting .execution-selected > svg {
+  flex: 0 0 var(--mantine-font-size-sm);
+  width: var(--mantine-font-size-sm);
+  height: var(--mantine-font-size-sm);
+  color: var(--text);
+}
+.empty-chat-setting .execution-role,
+.empty-chat-setting .execution-effort {
+  flex: none;
+}
 .empty-chat-setting .execution-model {
+  min-inline-size: var(--studio-composer-model-min);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.empty-chat-setting .execution-account {
-  display: none;
+@container composer (max-width: 60em) {
+  .empty-chat-setting .execution-role {
+    display: none;
+  }
 }
-@container workspace (max-width: 47.5em) {
-  .empty-chat-settings {
-    flex: 1;
-  }
-  .empty-chat-setting {
-    flex: 1;
-  }
-  .empty-chat-setting .execution-role,
+@container composer (max-width: 45em) {
   .empty-chat-setting .execution-effort,
   .empty-chat-setting .mantine-Button-section {
     display: none;
+  }
+}
+@container composer (max-width: 35em) {
+  .empty-chat-setting {
+    flex: 1;
   }
   .empty-chat-setting .execution-menu {
     width: 100%;
     min-width: var(--studio-touch-target);
     padding-inline: calc(var(--mantine-spacing-xs) / 5);
     font-size: var(--studio-text-meta);
+  }
+  .empty-chat-setting .execution-selected {
+    gap: calc(var(--mantine-spacing-xs) / 5);
+  }
+  .empty-chat-setting .execution-selected > svg {
+    flex-basis: var(--mantine-font-size-xs);
+    width: var(--mantine-font-size-xs);
+    height: var(--mantine-font-size-xs);
   }
 }

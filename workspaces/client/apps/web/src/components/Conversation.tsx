@@ -1859,6 +1859,27 @@ export default function Conversation(p: {
               const draftTooLong = draft.length > 12000;
               const modelCommand = /^\/model(?:\s|$)/i.test(draft.trim());
               const exactModelCommand = /^\/model$/i.test(draft.trim());
+              const queueControl = (className: string) =>
+                managed ? (
+                  <ActionIcon
+                    className={className}
+                    type="button"
+                    variant="subtle"
+                    aria-label="Queue for next turn"
+                    title="Queue for the next turn (Tab)"
+                    aria-keyshortcuts="Tab"
+                    disabled={
+                      !canSend ||
+                      p.sending ||
+                      uploading ||
+                      draftTooLong ||
+                      (!draft.trim() && !assets.length)
+                    }
+                    onClick={() => void submit(DeliveryMoment.NextTurn)}
+                  >
+                    <ListEnd size={18} />
+                  </ActionIcon>
+                ) : null;
               const secondaryTools = (
                 <>
                   {managed && (
@@ -2006,6 +2027,7 @@ export default function Conversation(p: {
                           </summary>
                           <div className="composer-tools-popover">
                             {secondaryTools}
+                            {queueControl("composer-queue-disclosure")}
                           </div>
                         </details>
                       )}
@@ -2084,25 +2106,7 @@ export default function Conversation(p: {
                           <span>Queue for next turn</span>
                         </span>
                       )}
-                      {managed && (
-                        <ActionIcon
-                          type="button"
-                          variant="subtle"
-                          aria-label="Queue for next turn"
-                          title="Queue for the next turn (Tab)"
-                          aria-keyshortcuts="Tab"
-                          disabled={
-                            !canSend ||
-                            p.sending ||
-                            uploading ||
-                            draftTooLong ||
-                            (!draft.trim() && !assets.length)
-                          }
-                          onClick={() => void submit(DeliveryMoment.NextTurn)}
-                        >
-                          <ListEnd size={18} />
-                        </ActionIcon>
-                      )}
+                      {queueControl("composer-queue-primary")}
                       {agent &&
                         ["running", "starting", "approval"].includes(
                           agent.status || "",
