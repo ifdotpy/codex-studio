@@ -19736,7 +19736,7 @@ export interface components {
     };
     /**
      * ResourceTokenRatesEvent
-     * @description Named token-rates SSE payload; one complete record per agent with authoritative root membership.
+     * @description Named token-rates SSE payload. The first frame is a full snapshot; later frames contain changed records and removed agent ids.
      */
     ResourceTokenRatesEvent: {
       /** Epoch */
@@ -19748,8 +19748,12 @@ export interface components {
       protocol: 4;
       /** Records */
       records: components["schemas"]["TokenRateRecord"][];
+      /** Removed */
+      removed: string[];
       /** Revision */
       revision: number;
+      /** Snapshot */
+      snapshot: boolean;
       /** Workspaceid */
       workspaceId: string;
     };

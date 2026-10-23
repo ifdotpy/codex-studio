@@ -1,5 +1,10 @@
 import { expect, it } from "vitest";
 import {
+  TOKEN_RATE_IDENTIFIER_MAX_CODEPOINTS,
+  TOKEN_RATE_MAX_ENTRIES,
+  SYNC_PROTOCOL_VERSION,
+} from "../generated/api";
+import {
   createTokenRateCache,
   workerRateKey,
   type TokenRate,
@@ -103,4 +108,127 @@ it("rejects nonfinite, malformed, duplicate and oversized records atomically at 
     cache.receiveWorkspaceTokenRates({ records: [...atLimit, record] }),
   ).toBe(false);
   expect(cache.getTokenRate("0")).toEqual(atLimit[0]);
+});
+
+it("applies token-rate deltas atomically, preserves quiet records, and replaces on reconnect", () => {
+  const cache = createTokenRateCache();
+  const record: TokenRate = {
+    agentId: "active",
+    rootId: "first",
+    turnId: "turn",
+    active: true,
+    estimated: false,
+    rate: 1,
+    outputTokens: 10,
+  };
+  const quiet = { ...record, agentId: "quiet", rate: 0 };
+  const gone = { ...record, agentId: "gone" };
+  const other = { ...record, agentId: "other" };
+  const frame = (
+    snapshot: boolean,
+    records: TokenRate[],
+    removed: string[] = [],
+  ) => ({
+    protocol: SYNC_PROTOCOL_VERSION,
+    workspaceId: "workspace",
+    epoch: "epoch",
+    revision: 1,
+    snapshot,
+    records,
+    removed,
+  });
+  expect(
+    cache.receiveResourceTokenRates(frame(true, [record, quiet, gone, other])),
+  ).toBe(true);
+  const observations: unknown[] = [];
+  cache.subscribeTokenRate("active", () =>
+    observations.push([
+      cache.getTokenRate("quiet"),
+      cache.getTokenRate("gone"),
+      cache.getWorkspaceTeamTokenRate("first", "active"),
+      cache.getWorkspaceTeamTokenRate("second", "active"),
+      cache.getTokenRate("other"),
+    ]),
+  );
+  observations.length = 0;
+  const moved = { ...record, rootId: "second", rate: 5 };
+  const updatedOther = { ...other, rate: 8 };
+  expect(
+    cache.receiveResourceTokenRates(
+      frame(false, [moved, updatedOther], ["gone"]),
+    ),
+  ).toBe(true);
+  expect(observations).toEqual([[quiet, null, null, moved, updatedOther]]);
+  expect(cache.getTokenRate("quiet")).toEqual(quiet);
+  expect(cache.receiveResourceTokenRates(frame(true, [quiet]))).toBe(true);
+  expect(cache.getTokenRate("active")).toBeNull();
+});
+
+it("rejects malformed delta metadata and aggregate overflow without partially applying", () => {
+  const cache = createTokenRateCache();
+  const record: TokenRate = {
+    agentId: "agent",
+    rootId: "root",
+    turnId: "turn",
+    active: true,
+    estimated: false,
+    rate: 1,
+    outputTokens: 10,
+  };
+  const frame = {
+    protocol: SYNC_PROTOCOL_VERSION,
+    workspaceId: "workspace",
+    epoch: "epoch",
+    revision: 1,
+    snapshot: true,
+    records: [record],
+    removed: [] as string[],
+  };
+  expect(cache.receiveResourceTokenRates(frame)).toBe(true);
+  for (const invalid of [
+    { ...frame, snapshot: undefined },
+    { ...frame, removed: undefined },
+    { ...frame, snapshot: false, removed: ["agent", "agent"] },
+    { ...frame, snapshot: false, removed: ["agent"] },
+    { ...frame, snapshot: false, records: [], removed: [""] },
+    { ...frame, removed: ["other"] },
+    {
+      ...frame,
+      snapshot: false,
+      records: [],
+      removed: ["a".repeat(TOKEN_RATE_IDENTIFIER_MAX_CODEPOINTS + 1)],
+    },
+    {
+      ...frame,
+      snapshot: false,
+      records: [],
+      removed: Array.from(
+        { length: TOKEN_RATE_MAX_ENTRIES + 1 },
+        (_, index) => `removed-${index}`,
+      ),
+    },
+  ]) {
+    expect(cache.receiveResourceTokenRates(invalid as typeof frame)).toBe(
+      false,
+    );
+    expect(cache.getTokenRate("agent")).toEqual(record);
+  }
+  const records = Array.from(
+    { length: TOKEN_RATE_MAX_ENTRIES },
+    (_, index) => ({ ...record, agentId: `agent-${index}` }),
+  );
+  expect(cache.receiveResourceTokenRates({ ...frame, records })).toBe(true);
+  expect(cache.receiveResourceTokenRates({ ...frame, snapshot: false })).toBe(
+    false,
+  );
+  expect(cache.getTokenRate("agent")).toBeNull();
+  expect(
+    cache.receiveResourceTokenRates({
+      ...frame,
+      snapshot: false,
+      removed: ["agent-0"],
+    }),
+  ).toBe(true);
+  expect(cache.getTokenRate("agent-0")).toBeNull();
+  expect(cache.getTokenRate("agent")).toEqual(record);
 });

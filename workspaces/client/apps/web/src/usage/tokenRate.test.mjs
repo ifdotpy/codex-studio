@@ -70,6 +70,8 @@ test("team and footer interests share snapshots and replay on reopen", () => {
         workspaceId: "workspace",
         epoch: "epoch",
         revision: 1,
+        snapshot: true,
+        removed: [],
         records: [record],
       };
       assert.equal(cache.receiveResourceTokenRates(event), true);

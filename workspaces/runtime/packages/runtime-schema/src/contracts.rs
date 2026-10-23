@@ -492,6 +492,18 @@ pub fn check_schema_parity(openapi: &Value, account_transfer: &Value) -> Result<
             crate::TOKEN_RATE_MAX_ENTRIES as i64,
         )?;
     }
+    let removed = "/components/schemas/ResourceTokenRatesEvent/properties/removed";
+    expect_number(
+        openapi,
+        &format!("{removed}/maxItems"),
+        crate::TOKEN_RATE_MAX_ENTRIES as i64,
+    )?;
+    expect_number(openapi, &format!("{removed}/items/minLength"), 1)?;
+    expect_number(
+        openapi,
+        &format!("{removed}/items/maxLength"),
+        crate::TOKEN_RATE_IDENTIFIER_MAX_CODEPOINTS as i64,
+    )?;
     for field in ["agentId", "rootId", "turnId"] {
         let path = format!("/components/schemas/TokenRateRecord/properties/{field}");
         expect_number(openapi, &format!("{path}/minLength"), 1)?;

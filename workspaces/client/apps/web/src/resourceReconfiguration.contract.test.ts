@@ -14,6 +14,7 @@ vi.mock("./sync/client", () => ({ syncDatabase }));
 vi.mock("./usage/tokenRate", () => ({
   configureTokenRateStream: vi.fn(),
   receiveResourceTokenRates: vi.fn(),
+  getWorkspaceTokenRates: vi.fn(() => ({ records: [] })),
 }));
 vi.mock("./sync/resume", () => ({
   onResume: (listener: () => void) => {

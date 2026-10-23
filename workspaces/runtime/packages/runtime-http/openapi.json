@@ -44317,7 +44317,7 @@
       },
       "ResourceTokenRatesEvent": {
         "additionalProperties": false,
-        "description": "Named token-rates SSE payload; one complete record per agent with authoritative root membership.",
+        "description": "Named token-rates SSE payload. The first frame is a full snapshot; later frames contain changed records and removed agent ids.",
         "properties": {
           "epoch": {
             "minLength": 1,
@@ -44339,11 +44339,26 @@
             "title": "Records",
             "type": "array"
           },
+          "removed": {
+            "items": {
+              "maxLength": 200,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 4096,
+            "title": "Removed",
+            "type": "array",
+            "uniqueItems": true
+          },
           "revision": {
             "maximum": 9007199254740991,
             "minimum": 0,
             "title": "Revision",
             "type": "integer"
+          },
+          "snapshot": {
+            "title": "Snapshot",
+            "type": "boolean"
           },
           "workspaceId": {
             "minLength": 1,
@@ -44356,7 +44371,9 @@
           "workspaceId",
           "epoch",
           "revision",
-          "records"
+          "records",
+          "snapshot",
+          "removed"
         ],
         "title": "ResourceTokenRatesEvent",
         "type": "object"
