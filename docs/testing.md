@@ -17,7 +17,8 @@ model request or a real reset-credit redemption.
 
 `just test-fast` runs selected deterministic Rust safety witnesses, desktop
 recovery and retained-helper boundaries, web API/type witnesses, tooling tests,
-and generated-contract and dependency guards. It generates web WASM before web
+and generated-contract and dependency guards, and the VM guest Python suite through its
+[runner](../workspaces/runtime/apps/vm-guest/run-guest-suite.mjs). It generates web WASM before web
 checks. The [WASM builder](../workspaces/client/apps/web/scripts/build-client-wasm.mjs)
 requires the exact binding generator version pinned by the client-wasm crate;
 its missing-tool error gives the installation command. Cold builds are outside

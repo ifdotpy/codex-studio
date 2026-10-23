@@ -13,6 +13,7 @@ import signal
 import socket
 import stat
 import sqlite3
+import subprocess
 import sys
 import tarfile
 import tempfile
@@ -63,6 +64,11 @@ def archive(entries):
     return data.getvalue()
 
 
+# The native supervisor lease names its owner with the Linux /proc identity of the guest
+# (native_identity.py). On another host the test cannot prove or stop that owner.
+LINUX_IDENTITY = "the native supervisor lease uses the Linux process identity of the guest"
+
+
 class GuestTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="guest-")
@@ -96,12 +102,23 @@ class GuestTests(unittest.IsolatedAsyncioTestCase):
                     os.kill(record["pid"], signal.SIGTERM)
                 except ProcessLookupError:
                     pass
+        # Stop every process that this test started, also when its own stop failed: a
+        # supervisor left running outlives the suite. A process that did not end in time
+        # fails the test after it is stopped.
+        lingering = []
         for instance in self.instances:
             processes = list(instance.processes)
             if instance.native.process is not None:
+                if instance.native.process.poll() is None:
+                    instance.native.process.terminate()
                 processes.append(instance.native.process)
             for process in processes:
-                await asyncio.to_thread(process.wait, timeout=5)
+                try:
+                    await asyncio.to_thread(process.wait, timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    await asyncio.to_thread(process.wait, timeout=5)
+                    lingering.append(process.args)
         self.service.close()
         await asyncio.sleep(0.1)
         self.temp.cleanup()
@@ -109,6 +126,7 @@ class GuestTests(unittest.IsolatedAsyncioTestCase):
             os.environ.pop("CODEX_WORKSPACE_MIN_FREE_BYTES", None)
         else:
             os.environ["CODEX_WORKSPACE_MIN_FREE_BYTES"] = self.old_floor
+        self.assertEqual(lingering, [], "a process of the test did not end after its stop")
 
     async def call(self, method, params=None, identity=None):
         self.next_id += 1
@@ -228,6 +246,12 @@ class GuestTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(replay, received)
         self.assertEqual(marker.read_text(), "once")
 
+    async def test_worker_processes_get_the_free_space_floor_of_the_service(self):
+        # Upload workers check the data disk floor (`upload.tree_space`) in their own process,
+        # so they must enforce the floor that the service was started with.
+        self.assertEqual(self.service.environment.get("CODEX_WORKSPACE_MIN_FREE_BYTES"), "0")
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), LINUX_IDENTITY)
     async def test_native_recovers_dead_supervisor_socket(self):
         await self.service.native.ensure()
         previous = self.service.native.process
@@ -645,6 +669,7 @@ class GuestTests(unittest.IsolatedAsyncioTestCase):
             await self.call("upload.chunk", {"uploadId": "resume", "seq": 0, "data": encoded(b"changed")})
         self.assertEqual(error.exception.code, "id_conflict")
 
+    @unittest.skipUnless(sys.platform.startswith("linux"), LINUX_IDENTITY)
     async def test_native_supervisor_init_remap_replay_and_restart(self):
         source = """import json,sys
 for line in sys.stdin:
@@ -685,6 +710,7 @@ for line in sys.stdin:
         stopped = await self.call("provider.stop", {"handle": handle})
         self.assertEqual(stopped["state"], "exited")
 
+    @unittest.skipUnless(sys.platform.startswith("linux"), LINUX_IDENTITY)
     async def test_large_native_event_chunks_survive_reattach_and_ack(self):
         text = "é🙂" + "x" * 2_200_000
         source = "import json,time; print(json.dumps({'method':'fixture/large','params':{'text':'é🙂'+'x'*2200000}},ensure_ascii=False),flush=True); time.sleep(60)"
