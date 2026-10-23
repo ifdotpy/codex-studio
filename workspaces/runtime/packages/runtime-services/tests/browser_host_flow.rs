@@ -663,3 +663,136 @@ fn only_a_macos_host_gets_the_open_shim() {
             .exists()
     );
 }
+
+/// A push transport that keeps the endpoint of every push and answers 201.
+struct KeptPushes(Mutex<Vec<String>>);
+
+impl studio_runtime_services::web_push::PushTransport for KeptPushes {
+    fn post(
+        &self,
+        endpoint: &str,
+        _headers: &[(String, String)],
+        _body: &[u8],
+    ) -> Result<u16, String> {
+        self.0.lock().expect("test step").push(endpoint.to_owned());
+        Ok(201)
+    }
+}
+
+/// A new host card reaches the clients (the request sync entity, for the card and the
+/// desktop alerts) and the phone (the server-side push reads the stored card, so it does not
+/// wait for a client).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_new_host_card_is_published_to_clients_and_pushed_to_the_phone() {
+    use base64::Engine as _;
+    use studio_runtime_services::web_push;
+    let agent = "2c9a4e1b-7d3f-4b6a-9e8c-5f1d2a3b4c5d";
+    let (dir, store) = seeded_store(agent).await;
+    let named = json!({"id":agent,"rootId":agent,"epoch":1,"status":"running","autoWake":true,
+                       "threadId":"thread-1","executionMode":"host","name":"Infra"})
+    .to_string();
+    let id = agent.to_owned();
+    store
+        .transaction_with(move |tx| {
+            tx.execute(
+                "UPDATE runtime_agents SET record=?2 WHERE id=?1",
+                [&id, &named],
+            )
+            .map_err(studio_runtime_store::StoreError::from)?;
+            Ok::<_, studio_runtime_store::StoreError>(())
+        })
+        .await
+        .expect("test step");
+    let identity = provider();
+    let tool = kubelogin(identity.port, "S-push");
+    let providers = BTreeSet::from([format!("127.0.0.1:{}", identity.port)]);
+    let service = HostBridgeService::start(
+        dir.path(),
+        Arc::new(StoreChats {
+            store: Arc::clone(&store),
+        }),
+        HostBridgeOptions {
+            http_providers: providers.clone(),
+            ..Default::default()
+        },
+        None,
+    )
+    .expect("test step");
+    let socket = service.open_socket.to_string_lossy().into_owned();
+    let start = format!("http://localhost:{}/", tool.port);
+    let (code, message) = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/browser_host",
+        move || browser_host::shim(&[start], &socket, Some(agent)),
+    )
+    .await
+    .expect("test step");
+    assert_eq!(code, 0, "{message}");
+    let guest: Arc<dyn GuestRpc> =
+        Arc::new(UnixSocketGuestRpc::new(service.control_socket.clone()));
+    let source = CardSource {
+        source: "host",
+        guest,
+        forwarder: None,
+        http_providers: providers,
+    };
+    browser_cards::poll_once(&store, &source, 0, 0, None)
+        .await
+        .expect("test step");
+    let pending = card(&store);
+    assert_eq!(pending["status"], "pending");
+    let card_id = pending["id"].as_str().expect("test step").to_owned();
+
+    // Pushed: one alert after the grace, from the stored card alone, before any client
+    // reads it.
+    let cards = web_push::pending_cards(&store).await.expect("test step");
+    assert_eq!(cards.len(), 1);
+    assert_eq!(
+        (cards[0].id.as_str(), cards[0].chat.as_str()),
+        (card_id.as_str(), "Infra")
+    );
+    let phone = ring::agreement::EphemeralPrivateKey::generate(
+        &ring::agreement::ECDH_P256,
+        &ring::rand::SystemRandom::new(),
+    )
+    .expect("test step");
+    let encode = |bytes: &[u8]| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes);
+    web_push::Subscriptions::new(dir.path())
+        .add(
+            web_push::NewSubscription {
+                endpoint: "https://web.push.apple.com/phone".into(),
+                p256dh: encode(phone.compute_public_key().expect("test step").as_ref()),
+                auth: encode(&[7; 16]),
+                device: "iPhone".into(),
+            },
+            false,
+            1.0,
+        )
+        .expect("test step");
+    let sender = web_push::Sender {
+        state: dir.path().to_path_buf(),
+        key: web_push::ServerKey::load_or_create(dir.path()).expect("test step"),
+        subject: "https://studio.example.org".into(),
+    };
+    let pushes = KeptPushes(Mutex::new(Vec::new()));
+    let created = pending["createdAt"].as_f64().expect("test step");
+    let grace = studio_runtime_schema::shared_values::SIGN_IN_ALERT_GRACE_SECONDS as f64;
+    sender
+        .deliver(&pushes, &cards, created + grace)
+        .expect("test step");
+    assert_eq!(
+        *pushes.0.lock().expect("test step"),
+        ["https://web.push.apple.com/phone"]
+    );
+
+    // Published: the clients read requests as sync entities.
+    let connection = store.test_reader().expect("test step");
+    let entities =
+        studio_runtime_store::SyncDocumentsRepository::entities_after(&connection, 0, 100)
+            .expect("test step");
+    assert!(
+        entities
+            .iter()
+            .any(|row| row.collection == "request" && row.id == card_id && !row.deleted),
+        "the new card is published as a request entity"
+    );
+}

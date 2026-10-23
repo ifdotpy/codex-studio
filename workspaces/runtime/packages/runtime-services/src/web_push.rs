@@ -611,8 +611,9 @@ impl Sender {
     }
 }
 
-/// The pending sign-in cards of the store, with their chat names.
-async fn pending_cards(
+/// The pending sign-in cards of the store, with their chat names. It reads the stored cards,
+/// so a push does not wait for a client to receive the card.
+pub async fn pending_cards(
     store: &studio_runtime_store::RuntimeStore,
 ) -> Result<Vec<DueCard>, studio_runtime_store::StoreError> {
     store
