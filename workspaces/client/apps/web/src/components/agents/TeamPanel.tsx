@@ -61,6 +61,19 @@ export default function TeamPanel({
   previewResult,
   remove,
 }: Props) {
+  // Keep the roster, counters and row indicator aligned with the worker's
+  // operational approval state, even before its request projection arrives.
+  const teamIndicators = new Map(indicators);
+  for (const agent of workers) {
+    if (
+      workerState(agent, answerIds, deferredIds) === "answer" &&
+      teamIndicators.get(agent.id)?.kind !== "answer"
+    )
+      teamIndicators.set(agent.id, {
+        kind: "answer",
+        label: "Needs your answer",
+      });
+  }
   const byId = new Map(
     [...(lead ? [lead] : []), ...workers].map((a) => [a.id, a]),
   );
@@ -73,7 +86,7 @@ export default function TeamPanel({
         selected={opened === a.id}
         awaitingAnswer={workerState(a, answerIds, deferredIds) === "answer"}
         deferred={deferredIds.has(a.id)}
-        indicator={indicators.get(a.id)}
+        indicator={teamIndicators.get(a.id)}
         open={() => open(a.id)}
         previewResult={() =>
           previewResult({
@@ -96,8 +109,8 @@ export default function TeamPanel({
           .toLowerCase()
           .includes(query),
       )
-    : filterTeamWorkers(ordered, indicators, workerFilter);
-  const { groups, completed } = teamDispatchGroups(shown, indicators);
+    : filterTeamWorkers(ordered, teamIndicators, workerFilter);
+  const { groups, completed } = teamDispatchGroups(shown, teamIndicators);
   const smallTeam = workers.length <= 3;
   const showTeamFilters = !smallTeam || !!workerQuery || workerFilter !== "all";
   return (
@@ -158,7 +171,7 @@ export default function TeamPanel({
         )}
         <TeamSummary
           workers={workers}
-          indicators={indicators}
+          indicators={teamIndicators}
           selected={workerFilter}
           onFilter={(value) => {
             setWorkerFilter(value);
