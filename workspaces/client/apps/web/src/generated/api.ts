@@ -19616,7 +19616,7 @@ export interface components {
     };
     /**
      * ResourceTokenRatesEvent
-     * @description Named `token-rates` SSE payload; values come from workspace_snapshot().
+     * @description Named token-rates SSE payload; one complete record per agent with authoritative root membership.
      */
     ResourceTokenRatesEvent: {
       /** Epoch */
@@ -19626,18 +19626,10 @@ export interface components {
        * @constant
        */
       protocol: 3;
-      /** Rates */
-      rates: {
-        [key: string]: components["schemas"]["TokenRateValue"];
-      };
+      /** Records */
+      records: components["schemas"]["TokenRateRecord"][];
       /** Revision */
       revision: number;
-      /** Teams */
-      teams: {
-        [key: string]: {
-          [key: string]: components["schemas"]["TokenRateValue"];
-        };
-      };
       /** Workspaceid */
       workspaceId: string;
     };
@@ -23399,36 +23391,32 @@ export interface components {
      */
     TerminalState: "running" | "exited" | "closed";
     /**
-     * TokenRateSnapshot
-     * @description Typed payload accepted from the token-rate producer boundary.
-     */
-    TokenRateSnapshot: {
-      /** Rates */
-      rates: {
-        [key: string]: components["schemas"]["TokenRateValue"];
-      };
-      /** Teams */
-      teams: {
-        [key: string]: {
-          [key: string]: components["schemas"]["TokenRateValue"];
-        };
-      };
-    };
-    /**
-     * TokenRateValue
+     * TokenRateRecord
      * @description One active or completed agent turn's volatile token-rate snapshot.
      */
-    TokenRateValue: {
+    TokenRateRecord: {
       /** Active */
       active: boolean;
+      /** Agentid */
+      agentId: string;
       /** Estimated */
       estimated: boolean;
       /** Outputtokens */
       outputTokens: number;
       /** Rate */
       rate: number;
+      /** Rootid */
+      rootId: string;
       /** Turnid */
       turnId: string;
+    };
+    /**
+     * TokenRateSnapshot
+     * @description Typed payload accepted from the token-rate producer boundary.
+     */
+    TokenRateSnapshot: {
+      /** Records */
+      records: components["schemas"]["TokenRateRecord"][];
     };
     /** TombstoneMigration */
     TombstoneMigration: {
@@ -35384,6 +35372,8 @@ export interface operations {
         protocol?: string;
         resources?: string;
         scope?: string;
+        /** @description Whether this stream includes token-rate snapshots. Omitted selectors preserve native and signed-client behavior. Browser owners send the aggregate interest of their tabs. */
+        tokenRates?: boolean;
       };
       header?: {
         "Last-Event-ID"?: number;
@@ -37602,5 +37592,4 @@ export type SyncEntityPayload = components["schemas"]["SyncEntityPayload"];
 export const SYNC_PROTOCOL_VERSION = 3 as const;
 export const SYNC_ENTITY_SCOPE = "state:entities:v1" as const;
 export const TOKEN_RATE_MAX_ENTRIES = 4096 as const;
-export const TOKEN_RATE_MAX_TOTAL_ENTRIES = 8192 as const;
 export const TOKEN_RATE_IDENTIFIER_MAX_CODEPOINTS = 200 as const;
