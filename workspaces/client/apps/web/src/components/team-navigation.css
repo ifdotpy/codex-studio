@@ -393,3 +393,18 @@
     min-block-size: var(--studio-touch-target);
   }
 }
+
+#team .team-lead-report {
+  flex-shrink: 0;
+  margin-block-end: var(--mantine-spacing-sm);
+  font-size: var(--studio-text-meta);
+}
+#team .team-lead-report summary {
+  cursor: pointer;
+  color: var(--muted);
+}
+#team .team-lead-report p {
+  margin-block: var(--mantine-spacing-xs);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}

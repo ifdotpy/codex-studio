@@ -303,3 +303,54 @@ export const Workspace: Story = {
     </div>
   ),
 };
+
+export const ImplicitLead: Story = {
+  args: {
+    opened: "running",
+    lead: {
+      ...lead,
+      overview: {
+        result: "Release verification passed.",
+        resultTruncated: true,
+        resultFile: "reports/release.md",
+      },
+    },
+  },
+  play: async ({ canvasElement, args }) => {
+    const canvas = within(canvasElement);
+    await expect(
+      canvasElement.querySelector("[data-lead]"),
+    ).not.toBeInTheDocument();
+    const root = canvasElement
+      .querySelector('[data-worker="running"]')!
+      .closest(".worker-entry")!;
+    const child = canvasElement
+      .querySelector('[data-worker="child"]')!
+      .closest(".worker-entry")!;
+    await expect(
+      (root as HTMLElement).style.getPropertyValue("--worker-depth"),
+    ).toBe("0");
+    await expect(
+      (child as HTMLElement).style.getPropertyValue("--worker-depth"),
+    ).toBe("1");
+    await userEvent.click(
+      canvas.getByRole("button", { name: "Back to main agent" }),
+    );
+    await expect(args.open).toHaveBeenLastCalledWith("lead");
+    await userEvent.click(canvas.getByText("Main agent report"));
+    await expect(
+      canvas.getByText("Release verification passed."),
+    ).toBeVisible();
+    await userEvent.click(
+      canvas.getByRole("button", { name: "Continue in main chat" }),
+    );
+    await expect(args.open).toHaveBeenLastCalledWith("lead");
+    await userEvent.click(
+      canvas.getByRole("link", { name: "Open main agent submitted result" }),
+    );
+    await expect(args.previewResult).toHaveBeenLastCalledWith({
+      agent: "lead",
+      path: "reports/release.md",
+    });
+  },
+};
