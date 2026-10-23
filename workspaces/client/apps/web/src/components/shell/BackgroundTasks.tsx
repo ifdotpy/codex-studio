@@ -7,7 +7,6 @@ import ErrorDescription from "../ErrorDescription";
 import { displayError } from "../../errorPresentation";
 import {
   ActionIcon,
-  Badge,
   Button,
   Checkbox,
   Drawer,
@@ -43,6 +42,7 @@ import {
 } from "../../api";
 import type { paths } from "../../generated/api";
 import "./background-controls.css";
+import type { ChatIndicatorKind } from "../chat-status/chatStatusModel";
 import type { Agent, JsonValue, Monitor, Request, Snapshot } from "../../types";
 import { useServerResourceReads } from "../../servers/ServerServicesContext";
 import { copyText } from "../../clipboard/clipboard";
@@ -164,25 +164,22 @@ const elapsed = (task: DisplayBackgroundTask, now: number) => {
   if (!activeTask(task) && !task.finished) return "";
   return duration(Math.max(0, (task.finished || now) - task.created));
 };
+export function backgroundTaskState(
+  task: DisplayBackgroundTask,
+): ChatIndicatorKind {
+  if (task.status === "approval") return "answer";
+  if (["failed", "lost"].includes(task.status)) return "error";
+  if (activeTask(task)) return "working";
+  if (task.status === "completed") return "unread";
+  return "paused";
+}
 function TaskStatus({ task }: { task: DisplayBackgroundTask }) {
   return (
-    <Badge
-      size="xs"
-      variant="light"
-      color={
-        task.status === "failed"
-          ? "red"
-          : ["approval", "lost"].includes(task.status)
-            ? "yellow"
-            : activeTask(task)
-              ? "indigo"
-              : "gray"
-      }
-    >
+    <span className="task-status">
       {activeTask(task) && task.cancelRequested
         ? "Waiting for exit"
         : labels[task.status] || task.status}
-    </Badge>
+    </span>
   );
 }
 const iconFor = (task: DisplayBackgroundTask) =>
@@ -707,42 +704,19 @@ export default function BackgroundTasks({
                   >
                     {label}
                   </Text>
-                  {groupTasks.map((task) => {
-                    const Icon = iconFor(task);
-                    return (
-                      <UnstyledButton
-                        key={task.id}
-                        data-task={task.id}
-                        className={`task-row ${selectedTask?.id === task.id ? "selected" : ""}`}
-                        aria-pressed={selectedTask?.id === task.id}
-                        onClick={() => {
-                          setSelection({ scope: leadId, id: task.id });
-                          setMobileDetail(true);
-                        }}
-                      >
-                        <div className="task-row-heading">
-                          <span
-                            className={`task-kind-icon ${activeTask(task) ? "active" : ""}`}
-                          >
-                            <Icon size={16} />
-                          </span>
-                          <span className="task-row-kind">
-                            {taskKindLabel(task, owner(task.agent))}
-                          </span>
-                          <span className="task-age">{elapsed(task, now)}</span>
-                        </div>
-                        <strong
-                          className={task.command ? "task-command-title" : ""}
-                        >
-                          {taskName(task)}
-                        </strong>
-                        <div className="task-row-footer">
-                          <span>{owner(task.agent)?.name || "Agent"}</span>
-                          <TaskStatus task={task} />
-                        </div>
-                      </UnstyledButton>
-                    );
-                  })}
+                  {groupTasks.map((task) => (
+                    <BackgroundTaskStrip
+                      key={task.id}
+                      task={task}
+                      owner={owner(task.agent)}
+                      now={now}
+                      selected={selectedTask?.id === task.id}
+                      select={() => {
+                        setSelection({ scope: leadId, id: task.id });
+                        setMobileDetail(true);
+                      }}
+                    />
+                  ))}
                 </section>
               ) : null;
             })}
@@ -803,6 +777,46 @@ export default function BackgroundTasks({
         )}
       </div>
     </Drawer>
+  );
+}
+
+/** Same dispatch-strip geometry as an agent; only actual commands use code type. */
+export function BackgroundTaskStrip({
+  task,
+  owner,
+  now,
+  selected,
+  select,
+}: {
+  task: DisplayBackgroundTask;
+  owner?: Agent;
+  now: number;
+  selected: boolean;
+  select: () => void;
+}) {
+  return (
+    <UnstyledButton
+      data-task={task.id}
+      data-studio-state={backgroundTaskState(task)}
+      className={`task-row ${selected ? "selected" : ""}`}
+      aria-pressed={selected}
+      onClick={select}
+    >
+      <div className="task-row-heading">
+        <span className="task-row-kind">{taskKindLabel(task, owner)}</span>
+        <span className="task-age">{elapsed(task, now)}</span>
+      </div>
+      <strong
+        className={task.command ? "task-command-title" : ""}
+        title={taskName(task)}
+      >
+        {taskName(task)}
+      </strong>
+      <div className="task-row-footer">
+        <span>{owner?.name || "Agent"}</span>
+        <TaskStatus task={task} />
+      </div>
+    </UnstyledButton>
   );
 }
 
@@ -1007,7 +1021,7 @@ function TaskDetail({
                   aria-pressed={follow}
                   onClick={() => setFollow(!follow)}
                   leftSection={<ChevronDown size={12} />}
-                  color={follow ? "indigo" : "gray"}
+                  color={follow ? "signal" : "gray"}
                 >
                   Follow
                 </Button>

@@ -1,19 +1,19 @@
 /* Team is a dispatch list. State rails are owned by design/state.css. */
 #team {
-  inline-size: var(--studio-team-size, 20rem);
-  flex-basis: var(--studio-team-size, 20rem);
+  inline-size: var(--studio-team-size);
+  flex-basis: var(--studio-team-size);
   max-inline-size: 100%;
   min-inline-size: 0;
   padding: var(--mantine-spacing-md) var(--mantine-spacing-xs);
   background: var(--surface);
-  border-inline-start: var(--studio-border-width, 0.0625rem) solid var(--line);
+  border-inline-start: var(--studio-border-width) solid var(--line);
 }
 #team .team-heading {
   padding: 0 var(--mantine-spacing-xs) var(--mantine-spacing-sm);
   gap: var(--mantine-spacing-xs);
 }
 #team .team-heading h2 {
-  font-size: var(--studio-text-section, 1.25rem);
+  font-size: var(--studio-text-section);
   font-weight: 600;
 }
 #team #lead-row {
@@ -52,8 +52,7 @@
   color: var(--text);
 }
 .team-filters button[aria-pressed="true"] {
-  box-shadow: inset 0 calc(-1 * var(--studio-border-width, 0.0625rem))
-    var(--text);
+  box-shadow: inset 0 calc(-1 * var(--studio-border-width)) var(--text);
 }
 .team-status-group + .team-status-group {
   margin-top: var(--mantine-spacing-sm);
@@ -79,7 +78,7 @@
   flex-shrink: 0;
   margin-bottom: var(--mantine-spacing-sm);
   padding: var(--mantine-spacing-xs);
-  border-block: var(--studio-border-width, 0.0625rem) solid var(--line);
+  border-block: var(--studio-border-width) solid var(--line);
 }
 .team-overview dl {
   display: flex;
@@ -108,17 +107,17 @@
 }
 #team .worker-entry {
   gap: var(--mantine-spacing-xs);
-  min-block-size: var(--studio-strip-min-height, 3.5rem);
+  min-block-size: var(--studio-strip-min-height);
   margin: 0 0 var(--mantine-spacing-xs);
   margin-inline-start: calc(
-    min(var(--worker-depth, 0), 3) * var(--studio-strip-indent, 0.75rem)
+    min(var(--worker-depth, 0), 3) * var(--studio-strip-indent)
   );
   padding: var(--mantine-spacing-xs) var(--mantine-spacing-sm);
   border: 0;
   border-radius: 0;
   background: transparent;
   content-visibility: auto;
-  contain-intrinsic-size: auto var(--studio-strip-min-height, 3.5rem);
+  contain-intrinsic-size: auto var(--studio-strip-min-height);
 }
 #team .worker-entry.selected {
   background: var(--hover);
@@ -190,8 +189,8 @@
 }
 #team .worker-status-accessible {
   position: absolute;
-  inline-size: var(--studio-border-width, 0.0625rem);
-  block-size: var(--studio-border-width, 0.0625rem);
+  inline-size: var(--studio-border-width);
+  block-size: var(--studio-border-width);
   overflow: hidden;
   clip-path: inset(50%);
   white-space: nowrap;
@@ -299,10 +298,10 @@
 @media (hover: none), (pointer: coarse) {
   #team .worker-options {
     opacity: 1;
-    min-inline-size: var(--studio-touch-target, 2.75rem);
-    min-block-size: var(--studio-touch-target, 2.75rem);
+    min-inline-size: var(--studio-touch-target);
+    min-block-size: var(--studio-touch-target);
   }
   .team-filters button {
-    min-block-size: var(--studio-touch-target, 2.75rem);
+    min-block-size: var(--studio-touch-target);
   }
 }
