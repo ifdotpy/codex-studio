@@ -81,7 +81,14 @@ byte, a damaged frame, a missing checksum or content size, and a declared size
 above `STORED_TEXT_MAX_DECODED_BYTES`. A release that only reads plain TEXT
 refuses a compressed body as an invalid stored object; it does not misread it.
 `length(body)` and `typeof(body)` therefore describe the stored form, not the
-text.
+text. Current writers store stored format 1. The compaction pass
+([canvas maintenance](canvas-maintenance.md#compressed-full-text)) records its
+progress in the `stored-text-v1:runtime_item_fulltext.body` row of
+`runtime_payload_migrations`. Each converted batch is a row of
+`runtime_stored_text_batches(name, batch, first_rowid, last_rowid, rows,
+plain_bytes, stored_bytes, sha256, created)`, primary key `(name, batch)`.
+`sha256` covers, for each converted row in rowid order, the rowid and the text
+length as little-endian 64-bit integers, then the UTF-8 text.
 
 ### Connection recovery request receipt
 

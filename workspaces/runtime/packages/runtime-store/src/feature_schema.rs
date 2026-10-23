@@ -281,6 +281,7 @@ const FEATURE_SCHEMA: &str = r#"
 
 pub(crate) fn prepare(transaction: &Transaction<'_>) -> StoreResult<()> {
     transaction.execute_batch(FEATURE_SCHEMA)?;
+    transaction.execute_batch(crate::stored_text_compaction::BATCHES_SCHEMA)?;
     Ok(())
 }
 
