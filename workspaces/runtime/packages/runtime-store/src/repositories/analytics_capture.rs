@@ -111,9 +111,17 @@ impl AnalyticsCaptureRepository {
         Ok(())
     }
     pub fn read(db: &Connection, table: CaptureTable, id: &str) -> StoreResult<Option<Value>> {
+        // `main.` and StoredText: the stored form decodes on any connection,
+        // with or without the analytics_items decoding view.
         let raw: Option<String> = db
-            .prepare_cached(&format!("SELECT record FROM {} WHERE id=?", table.name()))?
-            .query_row([id], |r| r.get(0))
+            .prepare_cached(&format!(
+                "SELECT record FROM main.{} WHERE id=?",
+                table.name()
+            ))?
+            .query_row([id], |r| {
+                r.get::<_, crate::stored_text::StoredText>(0)
+                    .map(crate::stored_text::StoredText::into_string)
+            })
             .optional()?;
         raw.map(|raw| {
             let value = serde_json::from_str(&raw)?;
@@ -178,7 +186,14 @@ impl AnalyticsCaptureRepository {
                 db.execute_cached("INSERT INTO analytics_turns VALUES (?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET record=excluded.record",params![id,agent,root,at,raw])?;
             }
             CaptureTable::Items => {
-                db.execute_cached("INSERT INTO analytics_items VALUES (?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET record=excluded.record,at=excluded.at,type=excluded.type,name=excluded.name,is_tool=excluded.is_tool",params![id,agent,root,value["threadId"].as_str(),value["turnId"].as_str(),at,value["type"].as_str(),value["name"].as_str(),value["isTool"].as_bool(),raw])?;
+                let record = crate::stored_text_dictionary::value_for_write(
+                    db,
+                    crate::stored_text_dictionary::ANALYTICS_ITEMS_RECORD,
+                    &raw,
+                )?;
+                // `main.`: Studio connections read the decoding view
+                // `temp.analytics_items`, which shadows the table.
+                db.execute_cached("INSERT INTO main.analytics_items VALUES (?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET record=excluded.record,at=excluded.at,type=excluded.type,name=excluded.name,is_tool=excluded.is_tool",params![id,agent,root,value["threadId"].as_str(),value["turnId"].as_str(),at,value["type"].as_str(),value["name"].as_str(),value["isTool"].as_bool(),record])?;
             }
             CaptureTable::Usage => {
                 db.execute_cached("INSERT INTO analytics_usage(id,agent,root,thread,turn,at,record) VALUES (?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET root=excluded.root,turn=excluded.turn,at=excluded.at,record=excluded.record",params![id,agent,root,value["threadId"].as_str(),value["turnId"].as_str(),at,raw])?;

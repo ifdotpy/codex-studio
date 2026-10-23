@@ -1180,7 +1180,7 @@ function fastTierCommands(root) {
       options: {
         selector: "stored_text_compaction::tests::",
         reason:
-          "Check that the background pass converts every plain full-text body to its exact compressed form, waits while disk space is low, and that inflate restores plain text.",
+          "Check that the background pass converts every plain full-text body and analytics record to its exact compressed form, trains the analytics dictionary from enough rows, waits while disk space is low, and that inflate restores plain text.",
       },
     },
     {
@@ -1251,6 +1251,7 @@ function fastTierCommands(root) {
               "test(repositories::transcript::tests::full_text_)",
               "test(/^stored_text_owner::/)",
               "test(stored_text_compaction::tests::)",
+              "test(stored_text_dictionary::tests::)",
             ]),
           ],
         ],

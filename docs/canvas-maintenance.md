@@ -82,10 +82,16 @@ SQLite 3.35 or later command-line shell.
 To roll back, quit Studio and move `canvas.sqlite3.pre-vacuum` back to
 `canvas.sqlite3`.
 
-## Compressed full text
+## Compressed full text and analytics records
 
 Writers store `runtime_item_fulltext.body` in stored format 1 (see
 [runtime state formats](runtime-state-formats.md#compressed-text-columns)).
+After the full-text pass, the same job handles `analytics_items.record` in
+`analytics.sqlite3`: when the table has `DICTIONARY_MIN_ROWS` (2,048) rows and no
+dictionary, it trains one from `DICTIONARY_SAMPLE_ROWS` (4,096) sampled plain
+records on a read-only connection and stores it, then converts plain records in
+one analytics transaction per batch, with the same checks and its own progress
+row.
 `studio_runtime_services::stored_text_compaction` converts the plain bodies
 that older releases wrote. It starts `COMPACTION_START_DELAY` (one minute)
 after startup and repeats every `COMPACTION_PASS_INTERVAL` (one hour) until the
@@ -113,6 +119,7 @@ offline `VACUUM INTO` procedure above after the progress row shows
 To install a release older than the first release that reads compressed bodies
 (`Read compressed full-text bodies`), stop the backend first and run
 `studio-runtime-server stored-text inflate --state ~/.local/state/codex-agents`.
-It rewrites every compressed body as plain TEXT with the same checks, records
-`:inflate` batches, and forgets the compaction progress. The command refuses a
+It rewrites every compressed full-text body and analytics item record as plain
+TEXT with the same checks, records `:inflate` batches, and forgets the
+compaction progress. The stored dictionaries stay. The command refuses a
 state directory that a running backend owns.

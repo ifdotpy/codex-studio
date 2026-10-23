@@ -29,7 +29,6 @@ const FEATURE_SCHEMA: &str = r#"
                 id INTEGER PRIMARY KEY CHECK(id=1), phase TEXT NOT NULL,
                 cursor INTEGER NOT NULL DEFAULT 0, updated REAL NOT NULL);
             CREATE VIRTUAL TABLE IF NOT EXISTS runtime_search_next USING fts5(body,content='',contentless_delete=1,tokenize='unicode61');
-            CREATE TABLE IF NOT EXISTS runtime_payload_migrations (name TEXT PRIMARY KEY,cursor INTEGER NOT NULL DEFAULT 0,complete INTEGER NOT NULL DEFAULT 0,status TEXT NOT NULL DEFAULT 'pending',updated REAL,error TEXT);
             CREATE TABLE IF NOT EXISTS runtime_assets (id TEXT PRIMARY KEY, record TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS runtime_checkpoints (id TEXT PRIMARY KEY, record TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS runtime_profiles (id TEXT PRIMARY KEY, record TEXT NOT NULL);
@@ -279,15 +278,31 @@ const FEATURE_SCHEMA: &str = r#"
             ON runtime_server_exec_input(handle);
 "#;
 
+/// Progress records of resumable passes, in Canvas and, for compacted
+/// analytics columns, in analytics.
+pub(crate) const PAYLOAD_MIGRATIONS_SCHEMA: &str = "
+    CREATE TABLE IF NOT EXISTS runtime_payload_migrations (name TEXT PRIMARY KEY,cursor INTEGER NOT NULL DEFAULT 0,complete INTEGER NOT NULL DEFAULT 0,status TEXT NOT NULL DEFAULT 'pending',updated REAL,error TEXT);
+";
+
+/// Every statement that [`prepare`] runs, in order.
+fn feature_statements() -> [&'static str; 3] {
+    [
+        FEATURE_SCHEMA,
+        PAYLOAD_MIGRATIONS_SCHEMA,
+        crate::stored_text_compaction::BATCHES_SCHEMA,
+    ]
+}
+
 pub(crate) fn prepare(transaction: &Transaction<'_>) -> StoreResult<()> {
-    transaction.execute_batch(FEATURE_SCHEMA)?;
-    transaction.execute_batch(crate::stored_text_compaction::BATCHES_SCHEMA)?;
+    for schema in feature_statements() {
+        transaction.execute_batch(schema)?;
+    }
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::FEATURE_SCHEMA;
+    use super::{FEATURE_SCHEMA, feature_statements};
     use crate::repositories::schema_registrations;
     use rusqlite::Connection;
     use std::collections::BTreeSet;
@@ -296,7 +311,10 @@ mod tests {
     fn feature_tables_are_not_core_repository_requirements() {
         let connection = Connection::open_in_memory().expect("memory SQLite opens");
         let mut table_statements = 0;
-        for statement in FEATURE_SCHEMA.split(';') {
+        for statement in feature_statements()
+            .iter()
+            .flat_map(|schema| schema.split(';'))
+        {
             let statement = statement.trim();
             let uppercase = statement.to_ascii_uppercase();
             if uppercase.starts_with("CREATE TABLE")
