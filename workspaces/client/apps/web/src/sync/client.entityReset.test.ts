@@ -372,7 +372,7 @@ describe("entity pull reset wiring", () => {
                   },
                 ],
                 removed: [],
-                itemRevisions: { answer: "hash" },
+                itemRevisions: { answer: "0".repeat(64) },
                 truncated: false,
               },
             },

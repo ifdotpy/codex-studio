@@ -54253,6 +54253,13 @@
         "title": "TranscriptContextUsage",
         "type": "object"
       },
+      "TranscriptHistoryVersion": {
+        "description": "The threadId:restoredCheckpoint version, 1 to 8193 Unicode code points (two bounded stream identities and their separator).",
+        "maxLength": 8193,
+        "minLength": 1,
+        "title": "TranscriptHistoryVersion",
+        "type": "string"
+      },
       "TranscriptInput": {
         "additionalProperties": {
           "$ref": "#/components/schemas/JsonValue"
@@ -54894,6 +54901,12 @@
         ],
         "title": "TranscriptItemResponse",
         "type": "object"
+      },
+      "TranscriptItemRevision": {
+        "description": "Canonical SHA-256 item revision from runtime-store repositories/transcript.rs canonical_hash, encoded as 64 lowercase hexadecimal characters.",
+        "pattern": "^[0-9a-f]{64}$",
+        "title": "TranscriptItemRevision",
+        "type": "string"
       },
       "TranscriptMessageRecord": {
         "additionalProperties": {
@@ -55643,18 +55656,21 @@
           "historyVersion": {
             "anyOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/TranscriptHistoryVersion"
               },
               {
-                "type": "string"
+                "type": "null"
               }
             ],
-            "default": null,
-            "title": "Historyversion"
+            "default": null
           },
           "itemRevisions": {
             "additionalProperties": {
-              "type": "string"
+              "$ref": "#/components/schemas/TranscriptItemRevision"
+            },
+            "maxProperties": 512,
+            "propertyNames": {
+              "$ref": "#/components/schemas/TranscriptStreamItemId"
             },
             "type": "object"
           },
@@ -55669,36 +55685,35 @@
           "nextAfterCursor": {
             "anyOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/TranscriptStreamItemId"
               },
               {
-                "type": "string"
+                "type": "null"
               }
             ],
-            "default": null,
-            "title": "Nextaftercursor"
+            "default": null
           },
           "nextCursor": {
             "anyOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/TranscriptStreamItemId"
               },
               {
-                "type": "string"
+                "type": "null"
               }
             ],
-            "default": null,
-            "title": "Nextcursor"
+            "default": null
           },
           "order": {
             "items": {
-              "type": "string"
+              "$ref": "#/components/schemas/TranscriptStreamItemId"
             },
+            "maxItems": 512,
             "type": "array"
           },
           "removed": {
             "items": {
-              "type": "string"
+              "$ref": "#/components/schemas/TranscriptStreamItemId"
             },
             "maxItems": 512,
             "type": "array"
@@ -55706,30 +55721,22 @@
           "tail": {
             "anyOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/TranscriptStreamTail"
               },
               {
-                "type": "string"
+                "type": "null"
               }
             ],
-            "default": null,
-            "title": "Tail"
+            "default": null
           },
           "truncated": {
             "title": "Truncated",
             "type": "boolean"
           },
           "unavailable": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
             "default": null,
-            "title": "Unavailable"
+            "description": "The transcript projection owner emits only null; unavailable conversations fail the pull with an HTTP error rather than a string-valued reason.",
+            "type": "null"
           }
         },
         "required": [
@@ -55741,6 +55748,27 @@
         ],
         "title": "TranscriptStreamDelta",
         "type": "object"
+      },
+      "TranscriptStreamItemId": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/TranscriptMessageRecord/properties/id"
+          },
+          {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          }
+        ],
+        "description": "TranscriptMessageRecord.id in stream controls and item cursors; 1 to 4096 Unicode code points. Longer stored identities use pull recovery.",
+        "title": "TranscriptStreamItemId"
+      },
+      "TranscriptStreamTail": {
+        "description": "Optional transcript preview, 0 to 300 Unicode code points; the current transcript producer omits this field.",
+        "maxLength": 300,
+        "minLength": 0,
+        "title": "TranscriptStreamTail",
+        "type": "string"
       },
       "TranscriptSyncPage": {
         "additionalProperties": false,

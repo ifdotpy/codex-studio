@@ -375,13 +375,18 @@ pub fn check_schema_parity(openapi: &Value, account_transfer: &Value) -> Result<
         "/components/schemas/EntityChangeBatch/properties/documents/maxItems",
         values::SYNC_ENTITY_STREAM_MAX_DOCUMENTS,
     )?;
-    for field in ["items", "removed"] {
+    for field in ["items", "removed", "order"] {
         expect_number(
             openapi,
             &format!("/components/schemas/TranscriptStreamDelta/properties/{field}/maxItems"),
             values::SYNC_TRANSCRIPT_STREAM_MAX_ITEMS as i64,
         )?;
     }
+    expect_number(
+        openapi,
+        "/components/schemas/TranscriptStreamDelta/properties/itemRevisions/maxProperties",
+        values::SYNC_TRANSCRIPT_STREAM_MAX_ITEMS as i64,
+    )?;
     check_delivery_parity(openapi)?;
     check_account_group_parity(openapi)?;
     crate::agent_progress::check_schema_parity(openapi)?;

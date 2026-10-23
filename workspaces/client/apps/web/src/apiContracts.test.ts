@@ -25,6 +25,15 @@ type Equal<Actual, Expected> =
 type Assert<Condition extends true> = Condition;
 type NotNever<Value> = [Value] extends [never] ? false : true;
 
+// The transcript producer has no string-valued unavailable reasons.
+const transcriptUnavailableIsNull: Assert<
+  Equal<
+    components["schemas"]["TranscriptStreamDelta"]["unavailable"],
+    null | undefined
+  >
+> = true;
+void transcriptUnavailableIsNull;
+
 type NumericSuccess = ApiSuccessBodyFor<{
   responses: { 200: { content: { "application/json": { value: number } } } };
 }>;

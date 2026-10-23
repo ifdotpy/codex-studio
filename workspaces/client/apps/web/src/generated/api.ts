@@ -23810,6 +23810,11 @@ export interface components {
       window?: number | null;
     };
     /**
+     * TranscriptHistoryVersion
+     * @description The threadId:restoredCheckpoint version, 1 to 8193 Unicode code points (two bounded stream identities and their separator).
+     */
+    TranscriptHistoryVersion: string;
+    /**
      * TranscriptInput
      * @description One native/runtime input batch entry shown inside a transcript item.
      */
@@ -24095,6 +24100,11 @@ export interface components {
     } & {
       [key: string]: components["schemas"]["JsonValue"];
     };
+    /**
+     * TranscriptItemRevision
+     * @description Canonical SHA-256 item revision from runtime-store repositories/transcript.rs canonical_hash, encoded as 64 lowercase hexadecimal characters.
+     */
+    TranscriptItemRevision: string;
     /**
      * TranscriptMessageRecord
      * @description Transcript rows always carry their runtime role and display text.
@@ -24414,41 +24424,40 @@ export interface components {
       agent?: components["schemas"]["TranscriptAgent"] | null;
       /** @constant */
       delta: true;
-      /**
-       * Historyversion
-       * @default null
-       */
-      historyVersion?: null | string;
+      /** @default null */
+      historyVersion?: components["schemas"]["TranscriptHistoryVersion"] | null;
       itemRevisions: {
-        [key: string]: string;
+        [key: string]: components["schemas"]["TranscriptItemRevision"];
       };
       /** Items */
       items: components["schemas"]["TranscriptMessageRecord"][];
-      /**
-       * Nextaftercursor
-       * @default null
-       */
-      nextAfterCursor?: null | string;
-      /**
-       * Nextcursor
-       * @default null
-       */
-      nextCursor?: null | string;
-      order?: string[];
-      removed: string[];
-      /**
-       * Tail
-       * @default null
-       */
-      tail?: null | string;
+      /** @default null */
+      nextAfterCursor?: components["schemas"]["TranscriptStreamItemId"] | null;
+      /** @default null */
+      nextCursor?: components["schemas"]["TranscriptStreamItemId"] | null;
+      order?: components["schemas"]["TranscriptStreamItemId"][];
+      removed: components["schemas"]["TranscriptStreamItemId"][];
+      /** @default null */
+      tail?: components["schemas"]["TranscriptStreamTail"] | null;
       /** Truncated */
       truncated: boolean;
       /**
-       * Unavailable
+       * @description The transcript projection owner emits only null; unavailable conversations fail the pull with an HTTP error rather than a string-valued reason.
        * @default null
        */
-      unavailable?: null | string;
+      unavailable?: null;
     };
+    /**
+     * TranscriptStreamItemId
+     * @description TranscriptMessageRecord.id in stream controls and item cursors; 1 to 4096 Unicode code points. Longer stored identities use pull recovery.
+     */
+    TranscriptStreamItemId: components["schemas"]["TranscriptMessageRecord"]["id"] &
+      string;
+    /**
+     * TranscriptStreamTail
+     * @description Optional transcript preview, 0 to 300 Unicode code points; the current transcript producer omits this field.
+     */
+    TranscriptStreamTail: string;
     /**
      * TranscriptSyncPage
      * @description Transcript projection owner result before the HTTP adapter adds generation.

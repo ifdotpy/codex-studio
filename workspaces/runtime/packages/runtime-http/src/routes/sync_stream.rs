@@ -531,8 +531,12 @@ fn transcript_change_batch(
     if document.id != scope || document.seq != through || document.deleted {
         return None;
     }
-    let delta: TranscriptStreamDelta = serde_json::from_str(&document.payload).ok()?;
-    if !delta.delta || delta.items.len() + delta.removed.len() > SYNC_TRANSCRIPT_STREAM_MAX_ITEMS {
+    let payload: Value = serde_json::from_str(&document.payload).ok()?;
+    if !studio_runtime_schema::validate("TranscriptStreamDelta", &payload).ok()? {
+        return None;
+    }
+    let delta: TranscriptStreamDelta = serde_json::from_value(payload).ok()?;
+    if delta.items.len() + delta.removed.len() > SYNC_TRANSCRIPT_STREAM_MAX_ITEMS {
         return None;
     }
     let batch = TranscriptChangeBatch {
@@ -1045,9 +1049,59 @@ mod tests {
     }
 
     #[test]
+    fn state_stream_transcript_controls_use_bounded_schema_owners() {
+        let validator = studio_runtime_schema::compiled_validator("TranscriptStreamDelta")
+            .expect("stream delta validator");
+        let delta = json!({"delta":true,"items":[{"id":"answer","role":"assistant","text":"text"}],
+            "order":["answer"],"removed":[],"itemRevisions":{"answer":"0".repeat(64)},"truncated":false,
+            "nextCursor":"answer","nextAfterCursor":"answer","historyVersion":"thread:checkpoint","tail":"","unavailable":null});
+        assert!(validator.is_valid(&delta));
+        for scenario in [
+            "unavailable",
+            "order_count",
+            "removed_id",
+            "order_id",
+            "revision_key",
+            "revision_value",
+            "cursor_empty",
+            "cursor_long",
+            "version_long",
+            "tail_long",
+        ] {
+            let mut payload = delta.clone();
+            match scenario {
+                "unavailable" => payload["unavailable"] = json!("arbitrary-reason"),
+                "order_count" => {
+                    payload["order"] = json!(vec!["answer"; SYNC_TRANSCRIPT_STREAM_MAX_ITEMS + 1])
+                }
+                "removed_id" => payload["removed"] = json!([""]),
+                "order_id" => payload["order"] = json!([""]),
+                "revision_key" => payload["itemRevisions"] = json!({"":"0".repeat(64)}),
+                "revision_value" => {
+                    payload["itemRevisions"]["answer"] = json!("not-a-sha256-digest")
+                }
+                "cursor_empty" => payload["nextCursor"] = json!(""),
+                "cursor_long" => payload["nextAfterCursor"] = json!("x".repeat(4097)),
+                "version_long" => payload["historyVersion"] = json!("x".repeat(8194)),
+                "tail_long" => payload["tail"] = json!("x".repeat(301)),
+                _ => unreachable!(),
+            }
+            assert!(
+                !validator.is_valid(&payload),
+                "{scenario} must be rejected by the stream schema"
+            );
+            let response: TranscriptSyncPage = serde_json::from_value(json!({"workspaceId":"workspace", "checkpoint":{"seq":2}, "documents":[{"id":"transcript:open","seq":2,"payload":payload.to_string(),"_deleted":false}]})).expect("projection response");
+            assert!(
+                transcript_change_batch(response, "transcript:open", 1).is_none(),
+                "{scenario} must preserve pull recovery"
+            );
+        }
+    }
+
+    #[test]
     fn state_stream_transcript_caps_and_incomplete_snapshots_stay_hint_only() {
         let delta = json!({"delta":true,"items":[{"id":"answer","role":"assistant","text":"after"}],
-            "removed":[],"itemRevisions":{"answer":"hash"},"truncated":false});
+            "removed":[],"itemRevisions":{"answer":studio_runtime_store::sha256_hex(b"after")},"truncated":false});
         for scenario in [
             "complete", "items", "bytes", "snapshot", "deleted", "cursor", "unknown",
         ] {
