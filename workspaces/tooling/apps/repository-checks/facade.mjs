@@ -1355,6 +1355,7 @@ function fastTierCommands(root) {
                   "-E",
                   nextestAnyOf([
                     "test(/^provider_stdio::killed_provider_is_reaped_with_full_journal_and_unobserved_write$/)",
+                    "test(/^provider_stdio::cancellation_stops_the_entire_owned_process_group$/)",
                     "test(/^wave7_p01_factory::running_child_started_with_a_previous_command_reattaches$/)",
                     "test(/^wave7_p01_registry::running_app_server_started_with_the_frozen_command_reattaches$/)",
                     "test(/^wave7_p01_registry::direct_child_sigkill_settles_unknown_without_resend$/)",
