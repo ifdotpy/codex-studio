@@ -94,3 +94,27 @@ describe("toModelOptions", () => {
     expect(INHERITED_MODEL).toBe("__model_default__");
   });
 });
+
+it("selects the non-default Claude alias for a stored resolved model id", () => {
+  const catalog = [
+    {
+      model: "default",
+      displayName: "Claude · Default (recommended)",
+      provider: "claude",
+      isDefault: true,
+      resolvedModel: "claude-opus-5-5",
+    },
+    {
+      model: "opus",
+      displayName: "Claude · Opus 5.5",
+      provider: "claude",
+      resolvedModel: "claude-opus-5-5",
+    },
+  ];
+  const options = toModelOptions(catalog, { currentValue: "claude-opus-5-5" });
+  expect(
+    options
+      .filter((option) => option.badges.includes("current"))
+      .map((option) => option.value),
+  ).toEqual(["opus"]);
+});
