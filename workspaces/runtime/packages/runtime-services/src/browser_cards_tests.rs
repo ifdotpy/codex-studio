@@ -394,3 +394,93 @@ async fn a_card_whose_page_this_mac_opened_closes_as_answered_when_its_command_s
         "the browser of this Mac had the page, so the chat gets no unanswered event"
     );
 }
+
+/// A backend restart expires every pending request, but a sign-in request lives in its
+/// bridge, which keeps it across the restart. The first poll after the restart finds the
+/// open request and gives the person the card again, also in the waiting phase of a phone
+/// sign-in. A card that a stopped chat expired stays expired.
+#[tokio::test]
+async fn a_card_comes_back_after_a_backend_restart_while_its_request_is_open() {
+    let (_dir, store) = store().await;
+    let open = "5".repeat(32);
+    let waiting = "6".repeat(32);
+    let ended = "7".repeat(32);
+    let redirect = json!({"host":"localhost","port":8000,"path":"/"});
+    let pending = |id: &str, seq: u64| item(id, VM_AGENT, KUBE, redirect.clone(), "pending", seq);
+    let mut approved = item(&waiting, VM_AGENT, KUBE, redirect.clone(), "approved", 5);
+    approved["lease"] = json!({"host":"localhost","port":8000,"path":"/","expiresAt": 900.0});
+    let guest = Arc::new(WaitGuest {
+        batches: Mutex::new(VecDeque::from([
+            json!({"items":[pending(&open, 1), pending(&waiting, 2), pending(&ended, 3)], "next": 3}),
+            // The first poll after the restart reads the whole queue again.
+            json!({"items":[
+                pending(&open, 1), approved,
+                item(&ended, VM_AGENT, KUBE, redirect.clone(), "stale", 6),
+            ], "next": 6}),
+        ])),
+        calls: Mutex::new(Vec::new()),
+    });
+    let source = CardSource {
+        source: "vm",
+        guest,
+        forwarder: None,
+        http_providers: Default::default(),
+    };
+    poll_once(&store, &source, 0, 0, None)
+        .await
+        .expect("test step");
+    // The person opened the second card on a phone: the waiting phase of a paste.
+    let key = card_id(&waiting);
+    store
+        .transaction_with(move |tx| {
+            let raw = studio_runtime_store::QuestionsWriteRepository::request(tx, &key)?
+                .expect("test step");
+            let mut record: Value = serde_json::from_str(&raw).expect("test step");
+            record["params"]["phase"] = json!("waiting");
+            record["params"]["waiting"] = json!({"expiresAt": 900.0});
+            studio_runtime_store::QuestionsWriteRepository::put_request(
+                tx,
+                &key,
+                &studio_runtime_store::python_json_utf8(&record),
+            )
+        })
+        .await
+        .expect("test step");
+    crate::monitor_runtime::recover_on_startup(&store, 50.0)
+        .await
+        .expect("startup recovery");
+    for bridge in [&open, &waiting, &ended] {
+        assert_eq!(request(&store, bridge).expect("card")["status"], "expired");
+    }
+    poll_once(&store, &source, 0, 0, None)
+        .await
+        .expect("test step");
+    let back = request(&store, &open).expect("card");
+    assert_eq!(
+        (back["status"].clone(), back.get("closeReason").cloned()),
+        (json!("pending"), None),
+        "the open request gets its card back"
+    );
+    let phone = request(&store, &waiting).expect("card");
+    assert_eq!(
+        (phone["status"].clone(), phone["params"]["phase"].clone()),
+        (json!("pending"), json!("waiting")),
+        "a phone sign-in keeps waiting for its pasted result"
+    );
+    assert_eq!(
+        request(&store, &ended).expect("card")["status"],
+        "expired",
+        "an ended request keeps its card closed"
+    );
+    assert_eq!(
+        events(&store)
+            .into_iter()
+            .map(|(id, kind, _)| (id, kind))
+            .collect::<Vec<_>>(),
+        vec![(
+            format!("browser-unanswered:{ended}"),
+            "browser_unanswered".to_owned()
+        )],
+        "the chat learns that nobody answered the ended request"
+    );
+}
