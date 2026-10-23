@@ -368,3 +368,13 @@ header.workspace-header.simple-workspace-header {
   line-height: 1.4;
   white-space: normal;
 }
+
+/* Contains the conversation and Team without affecting the sidebar or terminal. */
+.workspace-frame {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  position: relative;
+  container: workspace-frame / inline-size;
+}
