@@ -2361,6 +2361,47 @@ mod limits_runtime_tests {
     }
 
     #[tokio::test]
+    async fn timestamp_only_limits_keep_sync_sequence_and_refresh_observation() {
+        let (f, _) = fixture([], false).await;
+        let first = update(&f, 1, 50);
+        let mut repeated = first.clone();
+        repeated.cursor = 2;
+        repeated.observed_at += 1.0;
+        assert!(f.runtime.ingest_limits(first).await.unwrap());
+        let store = f.runtime.store.as_ref().unwrap();
+        let before = studio_runtime_store::SyncDocumentsRepository::entity_sequence(
+            &store.test_reader().unwrap(),
+        )
+        .unwrap();
+        assert!(!f.runtime.ingest_limits(repeated.clone()).await.unwrap());
+        let after = studio_runtime_store::SyncDocumentsRepository::entity_sequence(
+            &store.test_reader().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            after, before,
+            "timestamp-only observations must not publish sync changes"
+        );
+        assert_eq!(
+            f.runtime.limits_snapshot("default").unwrap()["at"],
+            repeated.observed_at
+        );
+        assert!(
+            !f.runtime.ingest_limits(repeated).await.unwrap(),
+            "durable cursor replay remains a no-op"
+        );
+        assert!(f.runtime.ingest_limits(update(&f, 3, 60)).await.unwrap());
+        assert!(
+            studio_runtime_store::SyncDocumentsRepository::entity_sequence(
+                &store.test_reader().unwrap(),
+            )
+            .unwrap()
+                > after,
+            "changed provider content still publishes"
+        );
+    }
+
+    #[tokio::test]
     async fn live_limits_reject_old_cursor_generation_and_wrong_account() {
         let (f, _) = fixture([], false).await;
         assert!(f.runtime.ingest_limits(update(&f, 4, 100)).await.unwrap());
