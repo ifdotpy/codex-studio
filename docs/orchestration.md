@@ -16,8 +16,9 @@ State updates follow this flow:
    and reads full records and tombstones from one SQLite snapshot.
 3. Store the batch before advancing its checkpoint. Recover gaps, resets, reconnects,
    failed storage, and batches outside the [shared limits](../workspaces/runtime/packages/runtime-schema/src/shared_values.rs) through pull.
-4. An open chat reads again only when its own stored conversation revision changes;
-   active transcript text still uses the existing pull path.
+4. An open chat reads again when its stored conversation revision changes or its
+   scoped stream publication advances; unrelated commits and exact publication
+   retries cause no pull. Active transcript text uses the existing pull path.
 
 Server command output follows this flow:
 

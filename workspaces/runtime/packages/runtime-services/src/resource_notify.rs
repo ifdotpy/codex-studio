@@ -65,6 +65,15 @@ struct Publications {
     entity_revision: i64,
 }
 
+impl Publications {
+    fn resource_revision(&self, key: &str) -> i64 {
+        self.versions
+            .iter()
+            .find(|(existing, _)| existing == key)
+            .map_or(0, |(_, revision)| *revision)
+    }
+}
+
 /// A consistent resource view, with only the requested resources that changed.
 pub struct ResourceChanges {
     pub cursor: ChangeSnapshot,
@@ -201,11 +210,7 @@ impl ResourceNotifications {
             let explicit = if matches!(scope.kind, ResourceKind::State) {
                 state.entity_reset_revision
             } else {
-                state
-                    .versions
-                    .iter()
-                    .find(|(existing, _)| *existing == key)
-                    .map_or(0, |(_, revision)| *revision)
+                state.resource_revision(&key)
             };
             let version = match scope.kind {
                 // Discovery reads refresh volatile access timestamps; only its
@@ -303,6 +308,14 @@ impl ResourceNotifications {
         view.resources = selected;
         view.versions = versions;
         Ok(view)
+    }
+
+    /// Latest scoped external publication; exact receipt retries do not advance it.
+    pub fn published_revision(&self, resource: &Value) -> Result<i64, ResourceNotifyError> {
+        self.publications
+            .lock()
+            .map(|state| state.resource_revision(&resource.to_string()))
+            .map_err(|_| ResourceNotifyError::Unavailable)
     }
 
     /// External state notifications require a reset even if their entity sequence is unchanged.

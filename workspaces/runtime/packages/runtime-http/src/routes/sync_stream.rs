@@ -202,19 +202,22 @@ async fn resource_content(state: HttpState, resource: Value) -> Option<Vec<u8>> 
     let resource: ResourceRef = serde_json::from_value(resource).ok()?;
     match resource {
         ResourceRef::TranscriptResource(resource) => {
+            // A scoped stream hint may precede the next stored transcript flush.
+            let publication = state
+                .resource_notifications
+                .published_revision(&serde_json::to_value(&resource).ok()?)
+                .ok()?;
             let store = state.store?;
             store
                 .read_async(
                     "runtime-http/routes/sync_stream/transcript-revision",
                     move |connection| {
-                        Ok::<_, studio_runtime_store::StoreError>(
-                            studio_runtime_store::TranscriptRepository::revision(
-                                connection,
-                                &resource.agent_id,
-                            )?
-                            .to_le_bytes()
-                            .to_vec(),
-                        )
+                        let revision = studio_runtime_store::TranscriptRepository::revision(
+                            connection,
+                            &resource.agent_id,
+                        )?;
+                        serde_json::to_vec(&(revision, publication))
+                            .map_err(studio_runtime_store::StoreError::from)
                     },
                 )
                 .await
@@ -856,6 +859,93 @@ mod tests {
         tokio::time::advance(Duration::from_millis(50)).await;
         let (event, _) = next.await.expect("merged frame");
         assert_eq!(event_document(event).await["revision"], 6);
+    }
+
+    #[tokio::test]
+    async fn state_stream_streaming_delta_in_open_chat_invalidates_its_transcript() {
+        let root = tempfile::tempdir().expect("isolated state");
+        let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
+        let state = HttpState::new(
+            "token".into(),
+            "workspace".into(),
+            root.path().display().to_string(),
+            4321,
+            None,
+            Some(store.clone()),
+            None,
+        );
+        let resources = vec![json!({"kind":"transcript","agentId":"open"})];
+        let baseline = state
+            .resource_notifications
+            .changes_since_with_content(&resources, None, |resource| {
+                resource_content(state.clone(), resource)
+            })
+            .await
+            .expect("baseline");
+        let before = store
+            .read_async("streaming-delta-witness", |connection| {
+                studio_runtime_store::TranscriptRepository::revision(connection, "open")
+            })
+            .await
+            .expect("stored conversation revision");
+        // A scoped external stream publication can precede the next stored item flush.
+        let publication = json!({"requestId":"stream-delta-1","resources":resources});
+        assert!(
+            state
+                .resource_notifications
+                .publish_once(&publication)
+                .expect("delta publication")
+        );
+        let after = store
+            .read_async("streaming-delta-witness", |connection| {
+                studio_runtime_store::TranscriptRepository::revision(connection, "open")
+            })
+            .await
+            .expect("same stored conversation revision");
+        let changed = state
+            .resource_notifications
+            .changes_since_with_content(&resources, Some(baseline.cursor.revision), |resource| {
+                resource_content(state.clone(), resource)
+            })
+            .await
+            .expect("streaming delta");
+        assert_eq!(
+            changed.resources, resources,
+            "an open chat must pull its streamed delta even before its stored revision changes"
+        );
+        assert_eq!(
+            before, after,
+            "the witness keeps the stored conversation revision unchanged"
+        );
+        assert!(
+            !state
+                .resource_notifications
+                .publish_once(&publication)
+                .expect("exact retry")
+        );
+        let replay = state
+            .resource_notifications
+            .changes_since_with_content(&resources, Some(changed.cursor.revision), |resource| {
+                resource_content(state.clone(), resource)
+            })
+            .await
+            .expect("replay");
+        assert!(
+            replay.resources.is_empty(),
+            "a retried publication must not cause a repeated pull"
+        );
+        state.resource_notifications.publish_once(&json!({"requestId":"other-chat-delta","resources":[{"kind":"transcript","agentId":"other"}]})).expect("other stream");
+        let unrelated = state
+            .resource_notifications
+            .changes_since_with_content(&resources, Some(replay.cursor.revision), |resource| {
+                resource_content(state.clone(), resource)
+            })
+            .await
+            .expect("other chat");
+        assert!(
+            unrelated.resources.is_empty(),
+            "another chat's stream must not pull the open transcript"
+        );
     }
 
     #[tokio::test]
