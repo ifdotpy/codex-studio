@@ -90,6 +90,8 @@ vi.mock("./entityCacheStorage", () => ({
   holdEntityProjectionDatabaseLock: mocks.holdProjectionDatabaseLock,
   entityProjectionDatabaseName: (workspace: string, hash: string) =>
     `studio-entity-projection-${workspace}-${hash}`,
+  workspaceDatabaseName: (workspace: string, suffix = "") =>
+    `studio${workspace}${suffix}`,
 }));
 
 describe("entity pull reset wiring", () => {

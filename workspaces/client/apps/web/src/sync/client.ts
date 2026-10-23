@@ -93,6 +93,7 @@ import {
 import {
   deleteOtherEntityProjectionDatabases,
   entityProjectionDatabaseName,
+  workspaceDatabaseName,
   holdEntityProjectionDatabaseLock,
 } from "./entityCacheStorage";
 
@@ -308,7 +309,7 @@ export function createSyncClient(options: SyncClientOptions) {
     };
     setWorkspace(workspaceId);
     const db = await createRxDatabase({
-      name: `studio${workspaceId}${serverDatabaseSuffix}`,
+      name: workspaceDatabaseName(workspaceId, serverDatabaseSuffix),
       storage: getRxStorageDexie(),
       multiInstance: true,
     });
