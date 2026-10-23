@@ -150,7 +150,11 @@
   opacity: 0;
   pointer-events: none;
 }
-.project-tree-heading:is(:hover, :focus-within, :has([aria-expanded="true"]))
+.project-tree-heading:is(
+    :hover,
+    :focus-within,
+    :has(> .project-tree-action[aria-expanded="true"])
+  )
   > .project-tree-action {
   inline-size: var(--studio-control-size);
   opacity: 1;
@@ -459,7 +463,11 @@
 
 @media (hover: none) {
   .project-tree-heading > .project-tree-action,
-  .project-tree-heading:is(:hover, :focus-within, :has([aria-expanded="true"]))
+  .project-tree-heading:is(
+      :hover,
+      :focus-within,
+      :has(> .project-tree-action[aria-expanded="true"])
+    )
     > .project-tree-action {
     inline-size: var(--studio-touch-target);
     opacity: 1;
