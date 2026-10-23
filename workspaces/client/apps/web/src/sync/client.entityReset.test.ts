@@ -407,6 +407,119 @@ describe("entity pull reset wiring", () => {
     },
   );
 
+  it("rebuilds a cached transcript that a stopped write left behind its durable base", async () => {
+    const workspaceId = "7".repeat(32);
+    const rows = new Map<string, Record<string, unknown>>();
+    rows.set("transcript:agent", {
+      id: "transcript:agent",
+      seq: 1,
+      payload: JSON.stringify({
+        format: 2,
+        epoch: "epoch",
+        metadata: { truncated: false },
+        order: ["tool"],
+        itemRevisions: {},
+      }),
+    });
+    rows.set("transcript:item:agent:tool", {
+      id: "transcript:item:agent:tool",
+      seq: 1,
+      payload: JSON.stringify({ id: "tool", toolStatus: "running" }),
+    });
+    const storageInstance = {
+      findDocumentsById: vi.fn(async (ids: string[]) =>
+        ids.flatMap((id) => (rows.has(id) ? [rows.get(id)!] : [])),
+      ),
+      bulkWrite: vi.fn(
+        async (writes: { document: Record<string, unknown> }[]) => {
+          for (const { document } of writes)
+            rows.set(String(document.id), document);
+          return { error: [] };
+        },
+      ),
+    };
+    const projections = {
+      database: { name: "transcript-test" },
+      storageInstance,
+      $: { subscribe: vi.fn(() => ({ unsubscribe: vi.fn() })) },
+    };
+    mocks.createRxDatabase
+      .mockResolvedValueOnce({ addCollections: vi.fn(async () => ({})) })
+      .mockResolvedValueOnce({
+        addCollections: vi.fn(async () => ({ projections })),
+      });
+    mocks.syncGet.mockResolvedValue({ workspaceId });
+    vi.stubGlobal("window", { addEventListener: vi.fn() });
+    vi.stubGlobal("navigator", {
+      onLine: true,
+      locks: {
+        request: (_key: string, callback: () => Promise<unknown>) => callback(),
+      },
+    });
+    const client = await import("./client");
+    const cache = await import("./transcriptCache");
+    cache.cacheTranscriptValue(
+      workspaceId,
+      "agent",
+      { truncated: false, items: [{ id: "tool", toolStatus: "running" }] },
+      1,
+    );
+    const event = (
+      after: number,
+      items: Record<string, unknown>[],
+    ): ResourceChangeEvent => ({
+      protocol: 3,
+      workspaceId,
+      epoch: "epoch",
+      revision: after + 1,
+      reason: "change",
+      resources: [{ kind: "transcript", agentId: "agent" }],
+      resourceVersions: [
+        {
+          revision: after + 1,
+          transcriptChanges: {
+            after,
+            through: after + 1,
+            delta: {
+              delta: true,
+              items: items as never,
+              removed: [],
+              itemRevisions: {},
+              truncated: false,
+            },
+          },
+        },
+      ],
+    });
+    // The stream deadline expires after the durable write of revision 2 and
+    // before its cache update.
+    await client.persistResourceEntityChanges(
+      event(1, [
+        { id: "tool", toolStatus: "completed" },
+        { id: "steer", role: "user", clientMessageId: "steer" },
+      ]),
+      () => rows.get("transcript:agent")?.seq !== 2,
+    );
+    expect(rows.get("transcript:agent")?.seq).toBe(2);
+    expect(cache.peekTranscript(workspaceId, "agent")?.seq).toBe(1);
+
+    await client.persistResourceEntityChanges(
+      event(2, [{ id: "answer", role: "assistant" }]),
+      () => true,
+    );
+    expect(cache.peekTranscript(workspaceId, "agent")).toEqual({
+      seq: 3,
+      payload: {
+        truncated: false,
+        items: [
+          { id: "tool", toolStatus: "completed" },
+          { id: "steer", role: "user", clientMessageId: "steer" },
+          { id: "answer", role: "assistant" },
+        ],
+      },
+    });
+  });
+
   it.each([
     { liveBeforeConflict: false, stopDuringBackoff: false },
     { liveBeforeConflict: true, stopDuringBackoff: false },
