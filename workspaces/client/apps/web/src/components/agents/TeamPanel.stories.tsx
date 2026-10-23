@@ -242,7 +242,10 @@ export const Dispatch: Story = {
     await userEvent.click(progress.querySelector(".disclosure-control")!);
     await expect(canvas.queryByText("Storage adapter")).not.toBeInTheDocument();
     await userEvent.click(canvas.getByLabelText("Finished (14)"));
-    await expect(canvas.getByText("Storage adapter")).toBeVisible();
+    // The group opens through an animated Mantine Collapse.
+    await waitFor(() =>
+      expect(canvas.getByText("Storage adapter")).toBeVisible(),
+    );
     await userEvent.type(
       canvas.getByRole("searchbox", { name: "Find a subagent" }),
       "Новые результаты",
