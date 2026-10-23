@@ -169,7 +169,7 @@ const previewCatalog = [
   serviceTiers: [{ id: "priority" }],
 }));
 const previewReader: ContextType<typeof ModelCatalogReader> = {
-  scope: "execution-disclosure-story",
+  scope: "execution-panel-story",
   read: async () => ({ data: previewCatalog }),
   watchResourceReads: (_refs, read, failed) => {
     void read().catch(failed);
@@ -202,22 +202,19 @@ export const InlineAgentSettings: Story = {
         maw="var(--studio-form-max)"
         mx="auto"
       >
-        {(["orchestrator", "worker", "review"] as const).map((role) => (
-          <ExecutionSettings
-            key={role}
-            presentation="disclosure"
-            settingsRow
-            initialRole={role}
-            agent={previewAgent}
-            catalog={{
-              models: previewCatalog,
-              loading: false,
-              error: "",
-              retry: () => {},
-            }}
-            refresh={async () => {}}
-          />
-        ))}
+        <ExecutionSettings
+          presentation="panel"
+          settingsRow
+          initialRole="worker"
+          agent={previewAgent}
+          catalog={{
+            models: previewCatalog,
+            loading: false,
+            error: "",
+            retry: () => {},
+          }}
+          refresh={async () => {}}
+        />
       </Stack>
     </ModelCatalogReader.Provider>
   ),

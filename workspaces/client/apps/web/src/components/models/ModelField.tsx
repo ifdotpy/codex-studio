@@ -1,4 +1,4 @@
-import { NativeSelect, Radio, Stack } from "@mantine/core";
+import { NativeSelect, Radio, Text } from "@mantine/core";
 import {
   INHERITED_MODEL,
   modelOptionLabel,
@@ -17,6 +17,27 @@ type Props = {
   disabled?: boolean;
 };
 
+const contextVariant =
+  /\s*(?:with\s+)?[([]?(\d+(?:\.\d+)?[KM])(?:\s+context)?[)\]]?$/i;
+const contextFor = (option: ModelOption) =>
+  (
+    option.label.match(contextVariant)?.[1] ||
+    option.value.match(/\[(\d+(?:\.\d+)?[KM])\]$/i)?.[1]
+  )?.toUpperCase();
+const choiceLabel = (option: ModelOption) =>
+  option.label.replace(contextVariant, "").trim();
+const groupFor = (option: ModelOption) => {
+  if (option.provider === "claude")
+    return /^(Opus|Sonnet|Haiku)\b/i.exec(choiceLabel(option))?.[1] || "Claude";
+  if (option.provider === "codex") {
+    const generation = /\b(\d+)(?:\.\d+)?$/.exec(choiceLabel(option))?.[1];
+    return generation ? `Codex ${generation}.x` : "Codex";
+  }
+  return option.provider;
+};
+const versionFor = (option: ModelOption) =>
+  /\b(\d+(?:\.\d+)?)$/.exec(choiceLabel(option))?.[1] || "";
+
 export function ModelField({
   label,
   options,
@@ -28,6 +49,25 @@ export function ModelField({
 }: Props) {
   const selected = modelForValue(options, value);
   const selectedValue = selected?.value ?? value;
+  const providers = [...new Set(options.map((option) => option.provider))];
+  const firstModel =
+    options.find((option) => option.value !== INHERITED_MODEL) || options[0];
+  const firstGroup = firstModel ? groupFor(firstModel) : "";
+  const optionGroup = (option: ModelOption) =>
+    option.value === INHERITED_MODEL ? firstGroup : groupFor(option);
+  const groups = [...new Set(options.map(optionGroup))].sort((a, b) => {
+    const family = ["Opus", "Sonnet", "Haiku", "Claude"];
+    if (family.includes(a) && family.includes(b))
+      return family.indexOf(a) - family.indexOf(b);
+    const aProvider =
+      options.find((option) => optionGroup(option) === a)?.provider || "";
+    const bProvider =
+      options.find((option) => optionGroup(option) === b)?.provider || "";
+    return (
+      providers.indexOf(aProvider) - providers.indexOf(bProvider) ||
+      b.localeCompare(a, undefined, { numeric: true })
+    );
+  });
   if (presentation === "select") {
     return (
       <NativeSelect
@@ -70,21 +110,84 @@ export function ModelField({
       data-value={selectedValue}
       disabled={disabled || undefined}
     >
-      <Stack gap={0} className="model-options">
-        {options.map((option) => (
-          <Radio
-            key={option.value}
-            value={option.value}
-            data-value={option.value}
-            data-unavailable={!!option.disabledReason || undefined}
-            data-inherited={option.value === INHERITED_MODEL || undefined}
-            label={modelOptionLabel(option)}
-            description={option.disabledReason || option.description}
-            disabled={disabled || !!option.disabledReason}
-            className="model-radio"
-          />
-        ))}
-      </Stack>
+      {groups.map((group) => (
+        <div key={group} className="model-family-group">
+          {(groups.length > 1 ||
+            !options.every((option) => option.value === INHERITED_MODEL)) && (
+            <Text size="xs" c="dimmed" className="model-family-label">
+              {group}
+            </Text>
+          )}
+          <div className="model-options">
+            {options
+              .filter((option) => optionGroup(option) === group)
+              .sort((a, b) =>
+                a.value === INHERITED_MODEL
+                  ? -1
+                  : b.value === INHERITED_MODEL
+                    ? 1
+                    : versionFor(b).localeCompare(versionFor(a), undefined, {
+                        numeric: true,
+                      }),
+              )
+              .map((option) => (
+                <Radio
+                  key={option.value}
+                  value={option.value}
+                  data-value={option.value}
+                  data-unavailable={!!option.disabledReason || undefined}
+                  data-inherited={option.value === INHERITED_MODEL || undefined}
+                  label={
+                    <span className="model-option-label">
+                      <span className="model-option-name">
+                        {choiceLabel(option)}
+                      </span>
+                      {contextFor(option) && (
+                        <small className="model-context-badge">
+                          {contextFor(option)}
+                        </small>
+                      )}
+                      {option.badges.length > 0 && (
+                        <small className="model-option-badges">
+                          {" "}
+                          ({option.badges.join(", ")})
+                        </small>
+                      )}
+                    </span>
+                  }
+                  aria-description={option.disabledReason}
+                  title={option.disabledReason || option.description}
+                  disabled={disabled || !!option.disabledReason}
+                  className="model-radio"
+                />
+              ))}
+          </div>
+        </div>
+      ))}
+      {selected?.description && (
+        <Text
+          size="xs"
+          c="dimmed"
+          className="model-description"
+          title={selected.description}
+        >
+          {selected.description}
+        </Text>
+      )}
+      {[
+        ...new Set(
+          options.map((option) => option.disabledReason).filter(Boolean),
+        ),
+      ].map((reason) => (
+        <Text
+          size="xs"
+          c="dimmed"
+          key={reason}
+          className="model-unavailable-reason"
+        >
+          {reason}
+        </Text>
+      ))}
     </Radio.Group>
   );
 }

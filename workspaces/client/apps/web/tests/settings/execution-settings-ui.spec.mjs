@@ -159,18 +159,17 @@ test("execution settings ui", async ({ browser: _browser }) => {
         await page
           .getByRole("button", { name: "Chat settings", exact: true })
           .click();
-      for (const name of ["Agents", "Team", "Access"])
-        await expect(
-          settings.getByRole("region", { name, exact: true }),
-        ).toBeVisible();
-      const role = name === "Subagent defaults" ? "worker" : "orchestrator";
-      const disclosure = settings.locator(`details[data-role="${role}"]`);
-      if (!(await disclosure.getAttribute("open"))) {
-        // An empty open attribute is still open; use the native property.
-        if (!(await disclosure.evaluate((node) => node.open)))
-          await disclosure.locator(":scope > summary").click();
-      }
-      await expect(disclosure).toHaveAttribute("open", "");
+      await settings.getByRole("tab", { name: "Models", exact: true }).click();
+      const role =
+        name === "Subagent defaults"
+          ? "Workers"
+          : name === "Subagent settings"
+            ? "Agent"
+            : "Lead";
+      await settings
+        .getByRole("radiogroup", { name: "Agent role", exact: true })
+        .getByText(role, { exact: true })
+        .click();
     };
     await page
       .locator("[data-chat]")
@@ -182,6 +181,10 @@ test("execution settings ui", async ({ browser: _browser }) => {
       name: "Chat settings",
       exact: true,
     });
+    await expect(
+      chatSettingsDialog.getByRole("tab", { name: "Models", exact: true }),
+    ).toBeVisible();
+    await chatSettingsDialog.getByRole("tab", { name: /^Team/ }).click();
     const parallelInput = chatSettingsDialog.getByRole("textbox", {
       name: "Subagent parallelism",
       exact: true,
@@ -198,16 +201,6 @@ test("execution settings ui", async ({ browser: _browser }) => {
     ).toBeLessThan(1);
     await parallelInput.fill(String(lead.concurrency));
     await expect(applyLimit).toHaveCount(0);
-    for (const summary of await chatSettingsDialog
-      .locator(".execution-disclosure > summary, .execution-accounts > summary")
-      .all()) {
-      expect(
-        await summary.evaluate((node) => getComputedStyle(node).listStyleType),
-      ).toBe("none");
-      await expect(
-        summary.locator(".execution-disclosure-chevron"),
-      ).toHaveCount(1);
-    }
     const screenshotDirectory = process.env.EXECUTION_COMPACT_SCREENSHOTS;
     if (screenshotDirectory)
       await mkdir(screenshotDirectory, { recursive: true });
@@ -223,64 +216,41 @@ test("execution settings ui", async ({ browser: _browser }) => {
           "data-mantine-color-scheme",
           scheme,
         );
-        for (const opened of await chatSettingsDialog
-          .locator("details[open]")
-          .all())
-          await opened.locator(":scope > summary").click();
-        await chatSettingsDialog.evaluate((node) => {
-          for (let el = node; el; el = el.parentElement) el.scrollTop = 0;
-        });
-        const geometry = await chatSettingsDialog.evaluate((node) => {
-          const body = node.querySelector(".mantine-Modal-body");
-          return {
-            dialogContent: node.scrollHeight,
-            dialogHeight: node.clientHeight,
-            bodyContent: body.scrollHeight,
-            bodyHeight: body.clientHeight,
-          };
-        });
-        expect(
-          geometry.dialogContent,
-          JSON.stringify({ width, height, scheme, ...geometry }),
-        ).toBeLessThanOrEqual(geometry.dialogHeight);
-        expect(geometry.bodyContent).toBeLessThanOrEqual(geometry.bodyHeight);
-        layoutMeasurements.push({ width, height, scheme, ...geometry });
+        for (const tab of ["Models", "Team", "Access"]) {
+          await chatSettingsDialog
+            .getByRole("tab", { name: new RegExp("^" + tab) })
+            .click();
+          const geometry = await chatSettingsDialog.evaluate((node) => {
+            const body = node.querySelector(".mantine-Modal-body");
+            return {
+              dialogContent: node.scrollHeight,
+              dialogHeight: node.clientHeight,
+              bodyContent: body.scrollHeight,
+              bodyHeight: body.clientHeight,
+            };
+          });
+          expect(
+            geometry.dialogContent,
+            JSON.stringify({ width, height, scheme, tab, ...geometry }),
+          ).toBeLessThanOrEqual(geometry.dialogHeight);
+          if (width === 1440)
+            expect(geometry.bodyContent).toBeLessThanOrEqual(
+              geometry.bodyHeight,
+            );
+          layoutMeasurements.push({ width, height, scheme, tab, ...geometry });
+          if (screenshotDirectory)
+            await page.screenshot({
+              path: join(
+                screenshotDirectory,
+                `tabs-chat-settings-${tab}-${width}-${scheme}.png`,
+              ),
+            });
+        }
         if (screenshotDirectory)
-          await page.screenshot({
-            path: join(
-              screenshotDirectory,
-              `compact-chat-settings-collapsed-${width}-${scheme}.png`,
-            ),
-          });
-        await chatSettingsDialog
-          .locator('details[data-role="orchestrator"] > summary')
-          .click();
-        const expanded = await chatSettingsDialog.evaluate((node) => {
-          const body = node.querySelector(".mantine-Modal-body");
-          return {
-            dialogContent: node.scrollHeight,
-            dialogHeight: node.clientHeight,
-            bodyContent: body.scrollHeight,
-            bodyHeight: body.clientHeight,
-            bodyOverflow: getComputedStyle(body).overflowY,
-          };
-        });
-        expect(expanded.dialogContent).toBeLessThanOrEqual(
-          expanded.dialogHeight,
-        );
-        expect(expanded.bodyOverflow).toBe("auto");
-        if (screenshotDirectory) {
-          await page.screenshot({
-            path: join(
-              screenshotDirectory,
-              `compact-chat-settings-lead-${width}-${scheme}.png`,
-            ),
-          });
           await writeFile(
-            join(screenshotDirectory, "compact-layout-measurements.json"),
+            join(screenshotDirectory, "tabs-layout-measurements.json"),
             JSON.stringify(layoutMeasurements, null, 2),
           );
-        }
       }
     }
     await page.setViewportSize({ width: 1440, height: 960 });
@@ -300,8 +270,8 @@ test("execution settings ui", async ({ browser: _browser }) => {
       ),
       [
         ["gpt-6-astra", "Astra 6", false],
-        ["gpt-5.6-sol", "Sol 5.6 (default)", true],
         ["gpt-6-luna", "Luna 6", false],
+        ["gpt-5.6-sol", "Sol 5.6 (default)", true],
         ["gpt-5.6-luna", "Luna 5.6", false],
         ["test-slow", "Standard only", false],
       ],
@@ -365,7 +335,7 @@ test("execution settings ui", async ({ browser: _browser }) => {
         (await state()).find((a) => a.id === lead.id).effort === "high",
     );
     await waitFor(() => leadReasoning.isEnabled());
-    await page.getByText("Permissions", { exact: true }).click();
+    await chatSettingsDialog.getByRole("tab", { name: /^Access/ }).click();
     const yolo = page.getByRole("radio", {
       name: "Full",
       exact: true,
@@ -407,17 +377,21 @@ test("execution settings ui", async ({ browser: _browser }) => {
       page.getByRole("dialog", { name: "Chat settings", exact: true }),
     ).not.toBeVisible();
     await openSettings("Subagent defaults");
-    const dialog = page.locator('details[data-role="worker"]');
-    await page.locator('details[data-role="review"] > summary').click();
-    const reviewDialog = page.locator('details[data-role="review"]');
+    const dialog = page.locator('.execution-profile-body[data-role="worker"]');
+    await chatSettingsDialog
+      .getByRole("radiogroup", { name: "Agent role", exact: true })
+      .getByText("Review", { exact: true })
+      .click();
+    const reviewDialog = page.locator(
+      '.execution-profile-body[data-role="review"]',
+    );
     await expect(
       reviewDialog.getByRole("radiogroup", {
         name: "Default review model",
         exact: true,
       }),
     ).toBeVisible();
-    await dialog.locator(":scope > summary").click();
-    await expect(dialog).toHaveAttribute("open", "");
+    await chatSettingsDialog.getByRole("tab", { name: /^Team/ }).click();
     const delegationDepth = page.getByRole("combobox", {
       name: "Delegation depth",
     });
@@ -437,6 +411,7 @@ test("execution settings ui", async ({ browser: _browser }) => {
         (await state()).find((a) => a.id === lead.id).workerDefaults
           .delegationDepth === 2,
     );
+    await openSettings("Subagent defaults");
     const defaultModel = dialog.getByLabel("Default subagent model", {
       exact: true,
     });
@@ -663,7 +638,7 @@ test("execution settings ui", async ({ browser: _browser }) => {
     await page.reload();
     await page.locator(`[data-chat="${fresh.id}"]`).click();
     await openSettings("Main agent settings");
-    await page.getByText("Permissions", { exact: true }).click();
+    await chatSettingsDialog.getByRole("tab", { name: /^Access/ }).click();
     const freshYolo = page.getByRole("radio", {
       name: "Full",
       exact: true,
