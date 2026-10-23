@@ -135,6 +135,7 @@ import {
   type StudioPreferences,
 } from "./studioPreferences";
 import { type OutgoingMessage } from "./sync/send";
+import { mergeOutgoing } from "./components/message-delivery/messageDelivery";
 import { useServerDrafts as useSyncedDrafts } from "./servers/ServerServicesContext";
 import {
   ChatWaitSource,
@@ -332,23 +333,10 @@ export default function App({ active = true }: { active?: boolean }) {
     );
     void editOutboxDisplay(id, text).catch(() => {});
   }, []);
-  const outgoingMessages = useMemo(() => {
-    const visibleSends = new Map(
-      outbox.entries
-        .filter(
-          (entry) =>
-            entry.displayPending === true ||
-            (entry.displayPending !== false && entry.status !== "accepted"),
-        )
-        .map((entry) => [entry.id, entry as OutgoingMessage]),
-    );
-    for (const entry of Object.values(outgoing))
-      if (entry.status === "sending" || !visibleSends.has(entry.id))
-        visibleSends.set(entry.id, entry);
-    return [...visibleSends.values()].filter(
-      (entry) => !observedSends.current.has(entry.id),
-    );
-  }, [outbox.entries, outgoing]);
+  const outgoingMessages = useMemo(
+    () => mergeOutgoing(outbox.entries, outgoing, observedSends.current),
+    [outbox.entries, outgoing],
+  );
   const [livePhase, setLivePhase] = useState<{
     id: string | null;
     label: string;
