@@ -4,7 +4,7 @@
   align-items: center;
   flex-wrap: nowrap;
   gap: var(--mantine-spacing-xs);
-  min-height: var(--studio-touch-target, var(--mantine-spacing-xl));
+  min-height: var(--studio-touch-target);
   height: auto;
   padding: var(--mantine-spacing-xs) var(--chat-gutter);
 }
@@ -17,7 +17,7 @@
 #conversation-title {
   min-width: 0;
   margin: 0;
-  font-size: var(--mantine-font-size-md);
+  font-size: var(--studio-text-title);
   font-weight: 600;
   line-height: 1.4;
 }
@@ -42,7 +42,8 @@
 #conversation-status {
   max-width: 100%;
   height: auto;
-  padding-block: var(--mantine-spacing-xs);
+  min-height: var(--mantine-spacing-lg);
+  padding-block: 0;
   padding-inline: var(--mantine-spacing-sm);
   color: var(--text);
   background: var(--hover);
@@ -70,14 +71,17 @@
 .conversation-team-strip {
   display: inline-flex;
   align-items: center;
-  gap: var(--mantine-spacing-xs);
+  gap: calc(var(--studio-dot-size) / 2);
   min-width: 0;
-  min-height: var(--studio-control-size, var(--studio-action-size));
+  min-height: var(--studio-control-size);
   padding: 0;
   border: 0;
   background: transparent;
   color: var(--muted);
   font-size: var(--studio-text-meta);
+}
+.conversation-team-strip > span {
+  white-space: nowrap;
 }
 .conversation-team-strip:hover {
   color: var(--text);
@@ -88,7 +92,8 @@
 .conversation-worker-dots {
   display: flex;
   gap: var(--mantine-spacing-xs);
-  max-inline-size: var(--studio-meter-width, var(--mantine-spacing-xl));
+  max-inline-size: 100%;
+  gap: calc(var(--studio-dot-size) / 2);
   overflow: hidden;
 }
 .conversation-team-strip .studio-state-dot[data-studio-state="none"] {
@@ -113,7 +118,7 @@
 .empty-chat h2,
 .conversation-start h2 {
   margin: 0;
-  font-size: var(--mantine-font-size-xl);
+  font-size: var(--studio-text-section);
   font-weight: 600;
   line-height: 1.4;
   overflow-wrap: anywhere;
@@ -152,10 +157,10 @@
   gap: var(--mantine-spacing-sm);
   width: 100%;
   min-width: 0;
-  min-height: var(--studio-touch-target, var(--studio-action-size));
+  min-height: var(--studio-touch-target);
   padding: var(--mantine-spacing-xs) var(--mantine-spacing-sm);
   border: 0;
-  border-bottom: var(--studio-border-width, thin) solid var(--line);
+  border-bottom: var(--studio-border-width) solid var(--line);
   background: transparent;
   color: var(--text);
   text-align: left;
@@ -173,6 +178,10 @@
 }
 .conversation-recent-status {
   flex: none;
+  max-inline-size: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   color: var(--muted);
   font-size: var(--studio-text-meta);
 }
@@ -200,10 +209,13 @@
   flex-basis: 100%;
 }
 .composer-timing {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--mantine-spacing-xs);
   color: var(--muted);
   font-size: var(--studio-text-meta);
 }
-@media (max-width: 760px) {
+@media (max-width: 47.5em) {
   .workspace-header.simple-workspace-header {
     padding-inline: var(--mantine-spacing-xs);
     gap: 0;
@@ -216,13 +228,13 @@
   }
   .conversation-team-strip {
     flex-basis: 100%;
-    min-height: var(--studio-control-size, var(--studio-action-size));
+    min-height: var(--studio-control-size);
   }
   .simple-workspace-header .messages-toggle-label {
     display: none;
   }
   .simple-workspace-header #messages-toggle {
-    width: var(--studio-touch-target, var(--studio-action-size));
+    width: var(--studio-touch-target);
     padding: 0;
   }
   .simple-workspace-header #messages-toggle .mantine-Button-section {

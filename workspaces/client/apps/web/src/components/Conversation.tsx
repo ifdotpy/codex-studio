@@ -723,8 +723,12 @@ export default function Conversation(p: {
     setLimitsOpen(false);
   }, [p.id]);
   const managed = agent?.source === "managed";
-  const emptyMainChat =
-    loaded && !items.length && !before && !after && !p.room && p.agent?.isLead;
+  const showProjectStart =
+    loaded &&
+    !items.length &&
+    !notice &&
+    !p.room &&
+    !["running", "starting"].includes(agent?.status || "");
   const executionControls =
     p.agent?.source === "managed" ? (
       <div className="empty-chat-settings" aria-label="Agent settings">
@@ -2042,7 +2046,8 @@ export default function Conversation(p: {
                     <div className="composer-submit-actions">
                       {managed && (
                         <span className="composer-timing">
-                          Send to current turn · Queue for next turn
+                          <span>Send to current turn</span>
+                          <span>Queue for next turn</span>
                         </span>
                       )}
                       {managed && (
@@ -2144,7 +2149,7 @@ export default function Conversation(p: {
             }}
           </PromptComposer>
           <div className="conversation-composer-footer">
-            {!emptyMainChat && executionControls}
+            {!showProjectStart && executionControls}
             {agent?.source === "managed" && (
               <Usage
                 key={p.agent?.accountKey || "default"}

@@ -27,7 +27,7 @@
   align-items: flex-start;
   flex-direction: column;
 }
-@media (max-width: 760px) {
+@media (max-width: 47.5em) {
   .empty-chat-settings {
     flex-basis: 100%;
   }

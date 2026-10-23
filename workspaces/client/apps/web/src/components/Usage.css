@@ -392,12 +392,6 @@
   margin: 6px 0 0;
 }
 
-@media (max-width: 600px) {
-  .usage-footer .session-cost-summary {
-    flex: 1 1 calc(100% - 12ch - 8px);
-  }
-}
-
 /* The composer footer keeps context, estimate and allowance in one row. */
 .account-cost-values strong {
   font-size: 14px;
@@ -542,9 +536,9 @@
   font-variant-numeric: tabular-nums;
 }
 .usage-meter {
-  height: var(--studio-meter-size, var(--studio-rail-size));
+  height: var(--studio-meter-size);
   width: 100%;
-  min-width: var(--studio-meter-width, var(--mantine-spacing-xl));
+  min-width: var(--studio-meter-width);
 }
 .account-limits-summary {
   display: grid;
@@ -553,7 +547,7 @@
 }
 .account-limits-toggle {
   height: auto;
-  min-height: var(--studio-control-size, var(--studio-action-size));
+  min-height: var(--studio-control-size);
   padding: var(--mantine-spacing-xs);
   color: var(--text);
   font-size: var(--studio-text-meta);
