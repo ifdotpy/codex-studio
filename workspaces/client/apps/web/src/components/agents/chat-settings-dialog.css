@@ -5,18 +5,6 @@
 .chat-execution-settings section {
   min-width: 0;
 }
-.execution-accounts > summary {
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  gap: var(--mantine-spacing-xs);
-  list-style: none;
-  min-height: var(--studio-touch-target);
-  padding: var(--mantine-spacing-xs);
-}
-.execution-accounts > summary::-webkit-details-marker {
-  display: none;
-}
 .execution-disclosure-chevron {
   flex: none;
   margin-inline-start: auto;
@@ -48,17 +36,6 @@
 .execution-team-fields .agent-mode-control {
   display: grid;
   gap: var(--mantine-spacing-xs);
-}
-.execution-accounts > summary {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--mantine-spacing-xs);
-}
-.execution-accounts > summary > :first-child {
-  margin-inline-end: auto;
-}
-.execution-accounts > summary > .execution-disclosure-chevron {
-  margin-inline-start: 0;
 }
 .execution-dialog-actions {
   display: flex;
@@ -159,4 +136,11 @@
 }
 .chat-execution-settings .claude-save-status:empty {
   display: none;
+}
+
+.execution-account-eligibility {
+  margin-block-start: var(--mantine-spacing-xs);
+}
+.execution-account-eligibility .setup-account {
+  padding: var(--mantine-spacing-xs);
 }

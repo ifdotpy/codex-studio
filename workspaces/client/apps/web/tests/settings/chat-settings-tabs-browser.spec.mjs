@@ -116,14 +116,16 @@ function Fixture(){const[agent,setAgent]=useState(initial),[opened,setOpened]=us
     await page.waitForFunction(() =>
       window.calls.some((call) => call.subagent_concurrency === 0),
     );
-    await modal.locator(".execution-accounts > summary").click();
+    await expect(
+      modal.getByRole("checkbox", { name: "Work 2", exact: true }),
+    ).toBeVisible();
     await modal.getByRole("checkbox", { name: "Work 2", exact: true }).click();
     await page.waitForFunction(() =>
       window.calls.some((call) =>
         call.excluded_account_keys?.includes("account-1"),
       ),
     );
-    await expect(modal.locator(".execution-accounts > summary")).toContainText(
+    await expect(modal.locator(".execution-accounts")).toContainText(
       "4 of 5 enabled",
     );
     await expect(

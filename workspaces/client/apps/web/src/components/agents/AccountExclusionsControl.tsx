@@ -1,5 +1,5 @@
 import { useServerApi } from "../../servers/ServerServicesContext";
-import { AccordionChevron, Checkbox, Group, Stack, Text } from "@mantine/core";
+import { Checkbox, Group, Text } from "@mantine/core";
 import { useState } from "react";
 import { accountDisplayName } from "../../accountName";
 import { errorText } from "../../api";
@@ -25,20 +25,16 @@ export function AccountExclusionsControl({
     .map((account) => account.id);
   if (!lead.isLead || !accounts.accounts.length) return null;
   return (
-    <details className="execution-accounts">
-      <summary>
-        <span>Accounts</span>
-        <Text component="span" size="xs" c="dimmed">
-          {enabled.length} of {accounts.accounts.length} enabled
-        </Text>
-        <AccordionChevron
-          className="execution-disclosure-chevron"
-          size="var(--mantine-font-size-sm)"
-          aria-hidden="true"
-        />
-      </summary>
+    <section className="execution-accounts" aria-label="Account eligibility">
       <Checkbox.Group
-        label="Accounts enabled for this chat"
+        label={
+          <Group gap="xs">
+            <span>Accounts enabled for this chat</span>
+            <Text component="span" size="xs" c="dimmed">
+              {enabled.length} of {accounts.accounts.length} enabled
+            </Text>
+          </Group>
+        }
         value={enabled}
         onChange={(value) => {
           setSaving(true);
@@ -53,9 +49,11 @@ export function AccountExclusionsControl({
             .finally(() => setSaving(false));
         }}
       >
-        <Stack gap="sm" mt="xs">
+        <div className="setup-accounts execution-account-eligibility">
           {accounts.accounts.map((account) => (
             <Checkbox
+              className="setup-account"
+              data-selected={enabled.includes(account.id) || undefined}
               key={account.id}
               value={account.id}
               label={accountDisplayName(account)}
@@ -71,11 +69,11 @@ export function AccountExclusionsControl({
               }
             />
           ))}
-        </Stack>
+        </div>
       </Checkbox.Group>
       <Text size="xs" c="dimmed" mt="sm">
         New accounts are enabled by default.
       </Text>
-    </details>
+    </section>
   );
 }
