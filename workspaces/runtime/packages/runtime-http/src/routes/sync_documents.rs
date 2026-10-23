@@ -10,7 +10,6 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use std::path::PathBuf;
 use std::sync::Arc;
-use studio_runtime_schema::shared_values::SYNC_STREAM_BYTE_LIMIT;
 use studio_runtime_schema::{SYNC_ENTITY_SCOPE, SYNC_PROTOCOL_VERSION};
 use studio_runtime_services::sync_documents::{self, DraftWrite};
 use studio_runtime_services::sync_entity_context::{RoomDirectory, RoomSources};
@@ -79,8 +78,8 @@ pub(crate) async fn protocol(
         "streamEndpoint": "/api/sync/stream",
         "maxEntityPage": sync_policy::ENTITY_PAGE_LIMIT,
         "maxOtherPage": sync_policy::OTHER_PAGE_LIMIT,
-        "maxStreamDocuments": sync_policy::OTHER_PAGE_LIMIT,
-        "maxStreamBytes": SYNC_STREAM_BYTE_LIMIT,
+        "maxStreamDocuments": studio_runtime_schema::shared_values::SYNC_ENTITY_STREAM_MAX_DOCUMENTS,
+        "maxStreamBytes": studio_runtime_schema::shared_values::SYNC_ENTITY_STREAM_MAX_BYTES,
     });
     Ok(Json(super::generated_json::<
         crate::generated::SyncProtocolResponse,
@@ -171,15 +170,6 @@ pub(crate) async fn pull(
                         .map_err(|_| ApiError::internal())?;
                     let documents = SyncDocumentsRepository::pull_drafts(connection, after, limit)
                         .map_err(|_| ApiError::internal())?;
-                    for document in &documents {
-                        if sync_policy::contains_unrepresentable_integer(&document.payload) {
-                            return Err(invalid_stored_draft(&document.id));
-                        }
-                        let payload: Value = serde_json::from_str(&document.payload)
-                            .map_err(|_| invalid_stored_draft(&document.id))?;
-                        validate_draft_value(&document.id, &payload)
-                            .map_err(|_| invalid_stored_draft(&document.id))?;
-                    }
                     let checkpoint = documents.last().map_or(after, |document| document.sequence);
                     let response = crate::generated::SyncPullResponse {
                         sync_entities: None,
@@ -187,13 +177,8 @@ pub(crate) async fn pull(
                         checkpoint: crate::generated::SyncCheckpoint { seq: checkpoint },
                         documents: documents
                             .into_iter()
-                            .map(|document| crate::generated::SyncDocument {
-                                id: document.id,
-                                payload: document.payload,
-                                seq: document.sequence,
-                                deleted: document.deleted,
-                            })
-                            .collect(),
+                            .map(draft_document)
+                            .collect::<Result<Vec<_>, _>>()?,
                         floor: None,
                         generation,
                         initial_high: None,
@@ -767,31 +752,14 @@ fn pull_entities(
             if !seen_sequences.insert(row.sequence) {
                 continue;
             }
-            let Some(raw) = row.payload.as_deref() else {
-                continue;
-            };
-            let Ok(mut payload) = serde_json::from_str::<Value>(raw) else {
-                continue;
-            };
-            if !matches!(
-                studio_runtime_schema::normalize_sync_entity_payload(
-                    &row.collection,
-                    &row.id,
-                    row.deleted,
-                    &mut payload,
-                ),
-                Ok(None)
-            ) {
-                continue;
-            }
-            let Ok(payload) = serde_json::to_string(&payload) else {
+            let Some(document) = entity_document(row) else {
                 continue;
             };
             documents.push(crate::generated::SyncDocument {
-                id: format!("entity:{}:{}", row.collection, row.id),
-                payload,
-                seq: row.sequence,
-                deleted: row.deleted,
+                id: document.id,
+                payload: document.payload,
+                seq: document.seq,
+                deleted: document.deleted,
             });
             if documents.len() == page_limit {
                 reached_limit = true;
@@ -844,6 +812,31 @@ fn pull_entities(
     Ok(SyncPullResponseBody::Page(response))
 }
 
+/// Shared conversion for pull and stream: normalize historical stored payloads once
+/// through the schema owner, then carry the existing typed sync envelope.
+pub(super) fn entity_document(
+    row: &studio_runtime_store::EntityRow,
+) -> Option<crate::generated::SyncEntity> {
+    let mut payload: Value = serde_json::from_str(row.payload.as_deref()?).ok()?;
+    if !matches!(
+        studio_runtime_schema::normalize_sync_entity_payload(
+            &row.collection,
+            &row.id,
+            row.deleted,
+            &mut payload
+        ),
+        Ok(None)
+    ) {
+        return None;
+    }
+    Some(crate::generated::SyncEntity {
+        id: format!("entity:{}:{}", row.collection, row.id),
+        seq: row.sequence,
+        payload: serde_json::to_string(&payload).ok()?,
+        deleted: row.deleted,
+    })
+}
+
 /// The typed response is built from the generated DTOs, which already carry the schema's
 /// shape. The full JSON Schema walk (a second copy of a page of up to ~1 MB as a `Value`,
 /// then the walk) runs in debug builds and tests only, not on every pull of a release server.
@@ -884,6 +877,24 @@ fn invalid_entity(collection: &str, id: &str) -> StoreError {
         scope: collection.to_owned(),
         id: id.to_owned(),
     }
+}
+
+/// Both pull and stream preserve the stored bytes used for conflict comparisons.
+pub(super) fn draft_document(
+    document: studio_runtime_store::SyncDocument,
+) -> Result<crate::generated::SyncDocument, ApiError> {
+    if sync_policy::contains_unrepresentable_integer(&document.payload) {
+        return Err(invalid_stored_draft(&document.id));
+    }
+    let payload =
+        serde_json::from_str(&document.payload).map_err(|_| invalid_stored_draft(&document.id))?;
+    validate_draft_value(&document.id, &payload).map_err(|_| invalid_stored_draft(&document.id))?;
+    Ok(crate::generated::SyncDocument {
+        id: document.id,
+        payload: document.payload,
+        seq: document.sequence,
+        deleted: document.deleted,
+    })
 }
 
 fn invalid_stored_draft(id: &str) -> ApiError {

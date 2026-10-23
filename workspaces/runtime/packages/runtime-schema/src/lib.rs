@@ -654,6 +654,7 @@ fn compile_schemas() -> SchemaResult<CompiledSchemas> {
         "SqliteContention",
         "SyncPullResetResponse",
         "SyncPullResponse",
+        "TranscriptStreamDelta",
         "TaskEntityDto",
         "WorkEntityDto",
         "WorkspaceEntityDto",

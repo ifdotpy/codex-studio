@@ -17,6 +17,8 @@ fn fixture(root: &Path) {
     .unwrap();
 }
 
+// Every service witness that drives the CLI through systemctl is Linux-only.
+#[cfg(target_os = "linux")]
 fn cli(root: &Path, args: &[&str]) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_studio-runtime-server"))
         .args(args)
@@ -180,9 +182,12 @@ fn command_installation_migrates_only_owned_links_and_preflights_conflicts() {
         fs::read_link(destination.join("codex-chat")).unwrap(),
         root.path().join("foreign")
     );
+    // install-cli links the canonical binary (macOS `/var` is `/private/var`).
     assert_eq!(
         fs::read_link(destination.join("codex-canvas")).unwrap(),
-        binaries.join("studio-runtime-server")
+        fs::canonicalize(&binaries)
+            .unwrap()
+            .join("studio-runtime-server")
     );
     assert!(invoke().status.success());
     let output = Command::new(destination.join("codex-canvas"))

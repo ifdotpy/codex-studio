@@ -69,8 +69,18 @@ pub const MAX_SYNC_RESOURCE_COUNT: usize = 256;
 pub const SYNC_BATCH_LIMIT: i64 = 100;
 /// Entities per sync entity page.
 pub const SYNC_ENTITY_PAGE_LIMIT: i64 = 500;
-/// Byte budget of one sync stream response, in bytes.
-pub const SYNC_STREAM_BYTE_LIMIT: i64 = 1048576;
+/// Maximum records in a complete state stream interval, in documents.
+pub const SYNC_ENTITY_STREAM_MAX_DOCUMENTS: i64 = 512;
+/// Maximum encoded state batch (including envelopes), in UTF-8 bytes.
+pub const SYNC_ENTITY_STREAM_MAX_BYTES: usize = 262144;
+/// Maximum changed and removed transcript records in a complete stream interval, in items.
+pub const SYNC_TRANSCRIPT_STREAM_MAX_ITEMS: usize = 512;
+/// Maximum encoded transcript stream interval, in UTF-8 bytes.
+pub const SYNC_TRANSCRIPT_STREAM_MAX_BYTES: usize = 262144;
+/// Maximum records in a complete draft stream interval, in documents.
+pub const SYNC_DRAFT_STREAM_MAX_DOCUMENTS: i64 = 512;
+/// Maximum encoded draft batch (including envelopes), in UTF-8 bytes.
+pub const SYNC_DRAFT_STREAM_MAX_BYTES: usize = 262144;
 /// Seconds between sync resource heartbeats.
 pub const SYNC_RESOURCE_HEARTBEAT_SECONDS: u64 = 15;
 

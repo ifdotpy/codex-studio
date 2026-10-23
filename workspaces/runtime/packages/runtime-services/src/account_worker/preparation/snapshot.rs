@@ -823,6 +823,8 @@ pub(crate) fn actor_tool_definitions(
                 optional(record, "nativeTeleportTool")?,
                 text(record, "threadId")?.is_some(),
             ),
+            // A VM agent returned `None` above.
+            vm: None,
         },
     )
     .map_err(|_| invalid("tool catalog"))?;
@@ -1020,6 +1022,7 @@ pub(super) fn thread_snapshot(
             native_effort_present: record.get("nativeEffort").is_some(),
             deleted: record.get("deletedAt").is_some_and(|v| !v.is_null()),
             native_review: studio_runtime_store::truthy(record.get("nativeReview")),
+            vm: record["executionMode"] == "vm",
         },
         account: thread::Account {
             key: text(record, "accountKey")?.unwrap_or_else(|| "default".into()),

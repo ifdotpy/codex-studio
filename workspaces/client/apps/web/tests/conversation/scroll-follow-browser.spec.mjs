@@ -5,7 +5,8 @@ import {
   rustUiFixture,
   installApiSchemaFixtureHeaders,
   entityPullFixtureForRequest,
-  apiSchemaHeaders,
+  apiSchemaHandshakeSse,
+  protocol3SseEvent,
   readTestState,
   readFixtureSyncContract,
   stubEntityState,
@@ -13,12 +14,17 @@ import {
 // Production renderer, isolated fixture server, and a controlled transcript
 // stream. The reader scrolls with wheel steps while the agent streams.
 import assert from "node:assert/strict";
+import { createServer } from "node:http";
+import { createHash } from "node:crypto";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 // More rows than HISTORY_WINDOW_THRESHOLD, so the transcript is windowed.
 const TURNS = 100;
+
+let stopStreamFixture = async () => {};
+test.afterEach(async () => stopStreamFixture());
 
 function history() {
   const items = [];
@@ -91,22 +97,46 @@ test("a scrolled-up reader keeps its place while the agent streams", async ({
   let transcriptSeq = 1;
   const errors = [];
   page.on("pageerror", (e) => errors.push(e.message));
-  // Both native EventSource and the scoped fetch-based stream must have an
-  // open, successful SSE response before transcript notifications count.
+  // The transcript map owns both pulled baselines and sparse stream deltas.
   const syncStreams = new Map();
-  page.on("response", (response) => {
-    const request = response.request();
-    const url = new URL(request.url());
-    if (
-      url.origin === origin &&
-      url.pathname === "/api/sync/stream" &&
-      response.status() === 200 &&
-      response.headers()["content-type"]?.startsWith("text/event-stream")
-    )
-      syncStreams.set(request, url);
+  let streamRevision = 0;
+  let transcriptPulls = 0;
+  const streamFrame = (resources, reason, batch) => ({
+    protocol: 3,
+    workspaceId: syncContract.identity.workspaceId,
+    epoch: "scroll-follow-transcripts",
+    revision: ++streamRevision,
+    reason,
+    resources,
+    resourceVersions: resources.map((resource) => ({
+      revision: resource.kind === "transcript" ? transcriptSeq : 0,
+      ...(batch && resource.kind === "transcript"
+        ? { transcriptChanges: batch }
+        : {}),
+    })),
   });
-  page.on("requestfinished", (request) => syncStreams.delete(request));
-  page.on("requestfailed", (request) => syncStreams.delete(request));
+  const streamServer = createServer((request, response) => {
+    const resources = JSON.parse(
+      new URL(request.url, "http://fixture").searchParams.get("resources") ||
+        "[]",
+    );
+    response.writeHead(200, {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      "Access-Control-Allow-Origin": "*",
+    });
+    response.write(apiSchemaHandshakeSse());
+    response.write(
+      protocol3SseEvent("resources", streamFrame(resources, "initial")),
+    );
+    syncStreams.set(response, resources);
+    response.on("close", () => syncStreams.delete(response));
+  });
+  await new Promise((resolve) => streamServer.listen(0, "127.0.0.1", resolve));
+  stopStreamFixture = async () => {
+    for (const response of syncStreams.keys()) response.end();
+    await new Promise((resolve) => streamServer.close(resolve));
+  };
   installApiSchemaFixtureHeaders(page);
   // WebKit, the macOS client engine, applies a wheel step to scrollTop
   // before it dispatches the scroll event, and it dispatches that event
@@ -144,9 +174,15 @@ test("a scrolled-up reader keeps its place while the agent streams", async ({
     },
     syncContract,
   );
+  await page.route("**/api/sync/stream?*", (route) => {
+    const url = new URL(route.request().url());
+    url.port = String(streamServer.address().port);
+    return route.continue({ url: url.href });
+  });
   await page.route("**/api/sync/pull?*", (route) => {
     const requestUrl = route.request().url();
     const scope = new URL(requestUrl).searchParams.get("scope") || "";
+    if (scope.startsWith("transcript:")) transcriptPulls++;
     const id = scope.startsWith("transcript:")
       ? scope.slice("transcript:".length)
       : "";
@@ -166,22 +202,50 @@ test("a scrolled-up reader keeps its place while the agent streams", async ({
       json: transcripts.has(id) ? transcript(id) : { items: [] },
     });
   });
+  const publishedItems = new Map();
   const notify = async (id) => {
-    transcriptSeq++;
-    const response = await fetch(new URL("/api/sync/notify", origin), {
-      method: "POST",
-      headers: {
-        Origin: origin,
-        "Content-Type": "application/json",
-        "X-Canvas-Token": state.token,
-        ...apiSchemaHeaders(),
-      },
-      body: JSON.stringify({
-        requestId: crypto.randomUUID(),
-        resources: [{ kind: "transcript", agentId: id }],
-      }),
-    });
-    assert.equal(response.status, 200, await response.text());
+    const after = transcriptSeq++;
+    const live = transcripts.get(id);
+    const previous = publishedItems.get(id) || new Map();
+    const current = new Map(
+      live.items.map((item) => [item.id, JSON.stringify(item)]),
+    );
+    const changed = live.items.filter(
+      (item) => previous.get(item.id) !== current.get(item.id),
+    );
+    const delta = {
+      delta: true,
+      items: changed,
+      removed: [...previous.keys()].filter((key) => !current.has(key)),
+      order: live.items.map((item) => item.id),
+      truncated: false,
+      agent: live.agent,
+      itemRevisions: Object.fromEntries(
+        changed.map((item) => [
+          item.id,
+          createHash("sha256").update(current.get(item.id)).digest("hex"),
+        ]),
+      ),
+    };
+    publishedItems.set(id, current);
+    for (const [response, resources] of syncStreams) {
+      if (
+        resources.some(
+          (resource) =>
+            resource.kind === "transcript" && resource.agentId === id,
+        )
+      )
+        response.write(
+          protocol3SseEvent(
+            "resources",
+            streamFrame([{ kind: "transcript", agentId: id }], "change", {
+              after,
+              through: transcriptSeq,
+              delta,
+            }),
+          ),
+        );
+    }
   };
   const root = page.locator("#conversation #messages:visible");
   const latest = page.locator("#conversation #jump-latest:visible");
@@ -236,8 +300,8 @@ test("a scrolled-up reader keeps its place while the agent streams", async ({
     await expect
       .poll(
         () =>
-          [...syncStreams.values()].some((url) =>
-            JSON.parse(url.searchParams.get("resources") || "[]").some(
+          [...syncStreams.values()].some((resources) =>
+            resources.some(
               (resource) =>
                 resource.kind === "transcript" && resource.agentId === chat.id,
             ),
@@ -271,6 +335,15 @@ test("a scrolled-up reader keeps its place while the agent streams", async ({
       `${width}px: an opened chat starts at the latest message`,
     );
 
+    const baselinePulls = transcriptPulls;
+    publishedItems.set(
+      chat.id,
+      new Map(
+        transcripts
+          .get(chat.id)
+          .items.map((item) => [item.id, JSON.stringify(item)]),
+      ),
+    );
     // One growing reply plus agent activity changes, as a running turn sends.
     let streamed = 0;
     let streaming = true;
@@ -458,7 +531,13 @@ test("a scrolled-up reader keeps its place while the agent streams", async ({
                 window.removeEventListener("scroll", hold, true);
                 scrolled();
                 if (during) {
-                  resolve({ attempts, before, moved, during, grown: !!grown });
+                  resolve({
+                    attempts,
+                    before,
+                    moved,
+                    during,
+                    grown: !!grown,
+                  });
                   return;
                 }
                 // No commit in this gap: return to the start and retry.
@@ -629,6 +708,11 @@ test("a scrolled-up reader keeps its place while the agent streams", async ({
       streaming = false;
       await stream;
     }
+    assert.equal(
+      transcriptPulls,
+      baselinePulls,
+      `${width}px: streaming after baseline requires zero transcript pulls`,
+    );
   }
   expect(errors).toEqual([]);
 });

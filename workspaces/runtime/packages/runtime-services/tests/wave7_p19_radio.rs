@@ -8,6 +8,7 @@ use studio_runtime_services::{
         self, Interrupt, InterruptOutcome, InterruptReceipt, InterruptTransport, RadioIngress,
     },
 };
+use studio_runtime_store::path_identity::CanonicalPath;
 use studio_runtime_store::{
     AgentId, AgentRecord, QueueEvent, QueueEventId, QueueEventRepository, RuntimeStore,
 };
@@ -51,13 +52,59 @@ fn corpus() -> RadioCorpus {
     } else {
         include_str!("wave7_p19/expected.json")
     };
+    let mut cases: Vec<Value> = serde_json::from_str(expected).expect("frozen radio corpus");
+    cases.iter_mut().for_each(relocate_project);
     RadioCorpus {
         databases: ["canvas.sqlite3", "analytics.sqlite3"]
             .into_iter()
             .zip(bytes)
             .map(|(name, bytes)| (name.to_owned(), bytes))
             .collect(),
-        cases: serde_json::from_str(expected).expect("frozen radio corpus"),
+        cases,
+    }
+}
+/// The Python oracle ran on Linux, where its temporary project path is
+/// canonical. Project keys resolve links (macOS links its system temporary
+/// folders below `/private`), so the stored rows, drafts and results of a case
+/// use this host's key for that path. The request body keeps the path as the
+/// client sent it.
+fn relocate_project(case: &mut Value) {
+    let frozen = case["body"]["path"]
+        .as_str()
+        .expect("case project path")
+        .to_owned();
+    let key = host_key(&frozen);
+    if key == frozen {
+        return;
+    }
+    for part in ["before", "after", "result", "drafts"] {
+        if let Some(value) = case.get_mut(part) {
+            replace_text(value, &frozen, &key);
+        }
+    }
+}
+/// This host's project key for a client path: links in its existing prefix
+/// resolve, as in `projects::project_key`.
+fn host_key(path: &str) -> String {
+    CanonicalPath::ancestor_nonstrict(Path::new(path))
+        .expect("host project key")
+        .to_string_lossy()
+        .into_owned()
+}
+fn replace_text(value: &mut Value, from: &str, to: &str) {
+    match value {
+        Value::String(text) => {
+            if text.contains(from) {
+                *text = text.replace(from, to);
+            }
+        }
+        Value::Array(values) => values
+            .iter_mut()
+            .for_each(|value| replace_text(value, from, to)),
+        Value::Object(map) => map
+            .values_mut()
+            .for_each(|value| replace_text(value, from, to)),
+        _ => {}
     }
 }
 fn copy_template(corpus: &RadioCorpus, root: &Path) {
@@ -243,6 +290,8 @@ async fn run(store: std::sync::Arc<RuntimeStore>, case: &Value) -> Result<Value,
     let prepared = PreparedHost::load(&store).await?;
     let case = case.clone();
     let mode = case["mode"].as_str().expect("mode").to_owned();
+    // Binding callers resolve the client path to a project key before SQL.
+    let project_key = host_key(case["body"]["path"].as_str().expect("project path"));
     match mode.as_str() {
         "convert" => studio_runtime_services::peer_conversion::convert(std::sync::Arc::clone(&store), &case["body"]).await,
         "project" => studio_runtime_services::projects::write(
@@ -268,7 +317,7 @@ async fn run(store: std::sync::Arc<RuntimeStore>, case: &Value) -> Result<Value,
             }
         },
         "project-binding" => store.transaction_with(move |db| {
-            let path=case["body"]["path"].as_str().expect("project path");
+            let path=project_key.as_str();
             let binding=prepared.chat_binding(db,path,Some(path),Some("local-test"))?;
             Ok(json!({"binding":binding,"settings":prepared.settings_key(db,path,binding.as_ref())?}))
         }).await,

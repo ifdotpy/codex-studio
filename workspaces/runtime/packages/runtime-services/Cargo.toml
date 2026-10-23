@@ -18,6 +18,8 @@ getrandom = { workspace = true }
 http-body-util = "=0.1.3"
 hyper = { version = "=1.12.0", features = ["server", "http1"] }
 hyper-util = { version = "=0.1.21", features = ["tokio"] }
+# NFD for the macOS name conflicts of host_exec slots (already locked through url).
+icu_normalizer = { version = "=2.3.0", default-features = false, features = ["compiled_data"] }
 nix = { workspace = true, features = ["signal"] }
 notify = { workspace = true }
 process-wrap = { workspace = true }
@@ -54,6 +56,8 @@ uuid = { workspace = true, features = ["v4", "v5"] }
 jsonschema = { version = "=0.49.9", default-features = false }
 
 [target.'cfg(target_os = "macos")'.dependencies]
+# APFS clonefile(2) for host_exec slot clones.
+libc.workspace = true
 # Parses `hdiutil info -plist` for image workspace mount identity checks.
 plist = { version = "=1.10.1", default-features = false }
 dispatch2 = { version = "=0.3.1", default-features = false, features = ["std"] }

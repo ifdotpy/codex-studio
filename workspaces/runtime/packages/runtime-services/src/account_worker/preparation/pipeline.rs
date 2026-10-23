@@ -2280,6 +2280,7 @@ mod daybreak_tests {
                 native_effort_present: false,
                 deleted: false,
                 native_review: false,
+                vm: false,
             },
             root: thread::Root {
                 can_delegate: true,

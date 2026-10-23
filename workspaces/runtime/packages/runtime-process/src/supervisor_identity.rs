@@ -358,7 +358,7 @@ mod tests {
             let child = Command::new("/bin/sleep")
                 .arg("30")
                 .process_group(0)
-                .stdin(Stdio::null())
+                .stdin(std::process::Stdio::null())
                 .spawn()
                 .expect("blocking child starts");
             let pid = child.id();

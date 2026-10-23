@@ -219,7 +219,7 @@ impl ToolCall {
         })
     }
 }
-pub(super) fn put(tx: &Transaction<'_>, record: &Value) -> Result<(), CallbackError> {
+pub(crate) fn put(tx: &Transaction<'_>, record: &Value) -> Result<(), CallbackError> {
     let id = record["id"]
         .as_str()
         .ok_or(CallbackError::Invalid("Invalid tool receipt"))?;

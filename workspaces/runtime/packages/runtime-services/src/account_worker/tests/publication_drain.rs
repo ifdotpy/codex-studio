@@ -818,7 +818,7 @@ async fn saturated_publication_coalescing_has_a_hard_effect_bound_and_never_stop
 }
 
 #[tokio::test]
-async fn drained_token_rate_effect_uses_its_stream_without_resetting_state() {
+async fn drained_notification_effects_use_committed_state_without_resetting_entities() {
     let (root, store) = test_store().await;
     let changes = Arc::new(crate::change_notifications::ChangeNotificationHub::new());
     let token_rates = Arc::new(crate::token_rate::TokenRateHub::with_change_hub(
@@ -832,10 +832,12 @@ async fn drained_token_rate_effect_uses_its_stream_without_resetting_state() {
         token_rates,
         resources: Arc::clone(&resources),
     });
+    let observer = Arc::clone(&resources);
+    store.add_resource_change_observer(move |change| observer.notify_store_commit(change));
     seed_analytics_agent(&store).await;
     let started = analytics_effect(8, "turn/started", json!({"turnId":"turn"}));
     let delta = publication_effect(9);
-    stage(&store, 1, 0, value(1, 0, started)).await;
+    persist_one(&store, 1, started).await;
     assert_eq!(
         store::drain_publications(Arc::clone(&store), "default".into(), sink.clone())
             .await
@@ -843,11 +845,13 @@ async fn drained_token_rate_effect_uses_its_stream_without_resetting_state() {
         1
     );
     let state_resource = [json!({"kind":"state"})];
+    let committed = resources
+        .changes_since(&state_resource, Some(0))
+        .expect("committed analytics state notification");
+    assert_eq!(committed.resources, state_resource);
     assert!(
-        resources
-            .changes_since(&state_resource, Some(0))
-            .expect("analytics state invalidation")
-            .entity_reset
+        !committed.entity_reset,
+        "known committed analytics must preserve stream entity delivery"
     );
     sink.token_rates.settled().await;
     snapshots.borrow_and_update();
@@ -875,6 +879,85 @@ async fn drained_token_rate_effect_uses_its_stream_without_resetting_state() {
         .expect("read unchanged durable resource cursor");
     assert!(resource_changes.resources.is_empty());
     assert!(!resource_changes.entity_reset);
+    assert_eq!(pending_count(&store), 0);
+    std::fs::remove_dir_all(root).expect("remove test state");
+}
+
+#[tokio::test]
+async fn analytics_receipts_preserve_entity_delivery_but_recovery_still_resets() {
+    let (root, store) = test_store().await;
+    let (changes, sink) = production_sink();
+    let sink = Arc::new(sink);
+    let observer = Arc::clone(&sink.resources);
+    store.add_resource_change_observer(move |change| observer.notify_store_commit(change));
+    seed_analytics_agent(&store).await;
+    let NotificationPostCommit::Analytics { observation, .. } =
+        analytics_effect(8, "turn/started", json!({"turnId":"turn"}))
+    else {
+        panic!("analytics fixture");
+    };
+    let state_resource = [json!({"kind":"state"})];
+    for (index, effect) in [
+        NotificationPostCommit::Analytics {
+            observation: observation.clone(),
+            budget_capture_value: None,
+        },
+        NotificationPostCommit::AnalyticsCaptured(observation.clone()),
+        NotificationPostCommit::AnalyticsStream {
+            observation: observation.clone(),
+            metrics: Default::default(),
+        },
+        NotificationPostCommit::AnalyticsStreamCaptured(observation),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let before = changes.snapshot().revision;
+        stage(&store, 1, index, value(1, index, effect)).await;
+        assert_eq!(
+            store::drain_publications(Arc::clone(&store), "default".into(), sink.clone())
+                .await
+                .expect("drain committed or legacy analytics receipt"),
+            1
+        );
+        let view = sink
+            .resources
+            .changes_since(&state_resource, Some(before))
+            .expect("analytics resource view");
+        assert!(
+            !view.entity_reset,
+            "analytics receipt {index} must not reset entities"
+        );
+    }
+    sink.token_rates.settled().await;
+    let before = changes.snapshot().revision;
+    let recovered = NotificationPostCommit::Recovered {
+        identity: "retained-history".into(),
+        observation: crate::notification_dispatch::RecoveredNotificationObservation {
+            agent: rate_agent(),
+            method: "turn/completed".into(),
+            params: json!({"turnId":"turn"}),
+            observed_at: 20.0,
+        },
+    };
+    stage(&store, 2, 0, value(2, 0, recovered.clone())).await;
+    assert_eq!(
+        store::drain_publications(Arc::clone(&store), "default".into(), sink.clone())
+            .await
+            .expect("drain recovered history"),
+        1
+    );
+    assert!(
+        sink.resources
+            .changes_since(&state_resource, Some(before))
+            .expect("recovered state view")
+            .entity_reset
+    );
+    let recovered_revision = changes.snapshot().revision;
+    sink.publish(&recovered)
+        .await
+        .expect("exact recovered replay");
+    assert_eq!(changes.snapshot().revision, recovered_revision);
     assert_eq!(pending_count(&store), 0);
     std::fs::remove_dir_all(root).expect("remove test state");
 }
@@ -988,7 +1071,7 @@ async fn deleted_agent_observation_does_not_recreate_identity() {
 #[tokio::test]
 async fn legacy_uncaptured_analytics_receipts_drain_without_capture() {
     // Receipts written before the projection log still drain in order; the sink
-    // publishes their token rate and state, never analytics rows.
+    // projects their token rate without resetting state or writing analytics rows.
     for first in [
         analytics_effect_for(
             agent_at_epoch(0),

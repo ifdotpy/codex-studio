@@ -1,4 +1,5 @@
-import { syncPost } from "../api";
+import type { syncPost } from "../api";
+import { onResume } from "./resume";
 import {
   acknowledgePreferenceFields,
   initializePreferenceMigration,
@@ -14,7 +15,10 @@ import {
 import type { UiPreferenceProjection } from "./entityProjection";
 
 /** Bridges projected preference rows to local storage and gated API writes. */
-export function createUiPreferenceBridge(storage: Storage) {
+export function createUiPreferenceBridge(
+  storage: Storage,
+  post: typeof syncPost<"/api/sync/preferences">,
+) {
   let active = false;
   let ready = false;
   let sending = false;
@@ -47,7 +51,7 @@ export function createUiPreferenceBridge(storage: Storage) {
             Array.from(new Uint8Array(digest), (byte) =>
               byte.toString(16).padStart(2, "0"),
             ).join("");
-          const result = await syncPost("/api/sync/preferences", body, {
+          const result = await post("/api/sync/preferences", body, {
             requestId,
           });
           if (!active) return;
@@ -62,7 +66,7 @@ export function createUiPreferenceBridge(storage: Storage) {
       } while (sendAgain && active);
     } catch {
       // The API client owns schema gating and transport failures. A later
-      // preference edit or bridge mount will retry pending fields.
+      // preference edit, resume or connection recovery retries pending fields.
     } finally {
       sending = false;
     }
@@ -84,14 +88,17 @@ export function createUiPreferenceBridge(storage: Storage) {
 
   return {
     receiveProjection,
+    retryPendingWrites: () => void send(),
     start() {
       if (active) return () => {};
       active = true;
       initializePreferenceMigration("user", storage);
       initializePreferenceMigration("server", storage);
       const stopWrites = watchPreferenceWrites(() => void send());
+      const stopResume = onResume(() => void send());
       return () => {
         active = false;
+        stopResume();
         stopWrites();
       };
     },

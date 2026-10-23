@@ -127,6 +127,81 @@ async function loadTransport() {
 }
 
 describe("shared resource event transport", () => {
+  it("delivers consecutive draft batches without hint coalescing and retains reconnect recovery", async () => {
+    syncDatabase.mockResolvedValue({ workspaceId });
+    vi.stubGlobal("window", {
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    });
+    vi.stubGlobal("document", {
+      hidden: false,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    });
+    vi.stubGlobal("navigator", { onLine: true });
+    vi.stubGlobal("location", { origin: "http://studio.test" });
+    vi.stubGlobal("crypto", { randomUUID: () => "draft-tab" });
+    vi.stubGlobal("EventSource", Source);
+    const transport = await loadTransport();
+    const listener = vi.fn();
+    const resource = { kind: "drafts" } as const;
+    const stop = transport.watchResourceChanges(resource, listener);
+    await vi.waitFor(() => expect(Source.instances).toHaveLength(1));
+    const emit = (
+      revision: number,
+      reason: "initial" | "change" | "reconnect",
+    ) =>
+      Source.instances[0]!.emit("resources", {
+        protocol: 3,
+        workspaceId,
+        epoch: "drafts",
+        revision,
+        reason,
+        resources: [resource],
+        resourceVersions: [
+          {
+            revision,
+            ...(reason === "change"
+              ? {
+                  draftChanges: {
+                    after: revision - 1,
+                    through: revision,
+                    documents: [
+                      {
+                        id: "phone:chat",
+                        seq: revision,
+                        payload: "{}",
+                        _deleted: false,
+                      },
+                    ],
+                  },
+                }
+              : {}),
+          },
+        ],
+      });
+    emit(0, "initial");
+    await vi.waitFor(() => expect(listener).toHaveBeenCalledOnce());
+    listener.mockClear();
+    emit(1, "change");
+    emit(2, "change");
+    expect(
+      listener.mock.calls.map(([version]) => version.draftChanges.through),
+    ).toEqual([1, 2]);
+    Source.instances[0]!.emit("resources", {
+      protocol: 3,
+      workspaceId,
+      epoch: "drafts",
+      revision: 3,
+      reason: "reconnect",
+      resources: [resource],
+      resourceVersions: [{ revision: 2 }],
+    });
+    await vi.waitFor(() => expect(listener).toHaveBeenCalledTimes(3));
+    expect(listener.mock.calls[2][0].reason).toBe("reconnect");
+    stop();
+  });
+
   afterEach(async () => {
     for (const stop of activeStops) stop();
     const api = await import("../api");
@@ -142,6 +217,57 @@ describe("shared resource event transport", () => {
     Channel.instances = [];
     syncDatabase.mockClear();
     resumeListeners.clear();
+  });
+
+  it("delivers a hint-only transcript failure even when its publication revision is below the durable cursor", async () => {
+    vi.useFakeTimers();
+    syncDatabase.mockResolvedValue({ workspaceId });
+    vi.stubGlobal("window", {
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    });
+    vi.stubGlobal("document", {
+      hidden: false,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    });
+    vi.stubGlobal("navigator", { onLine: true });
+    vi.stubGlobal("location", { origin: "http://studio.test" });
+    vi.stubGlobal("crypto", { randomUUID: () => "tab-one" });
+    vi.stubGlobal("EventSource", Source);
+    const transport = await loadTransport();
+    const onChange = vi.fn();
+    const stop = transport.watchResourceChanges(
+      { kind: "transcript", agentId: "open" },
+      onChange,
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    const source = Source.instances[0]!;
+    const event = {
+      protocol: 3,
+      workspaceId,
+      epoch: "one",
+      revision: 1,
+      reason: "initial",
+      resources: [{ kind: "transcript", agentId: "open" }],
+      resourceVersions: [{ revision: 100 }],
+    };
+    source.emit("resources", event);
+    await vi.advanceTimersByTimeAsync(20);
+    onChange.mockClear();
+    const failure = {
+      ...event,
+      revision: 2,
+      reason: "change",
+      resourceVersions: [{ revision: 2 }],
+    };
+    source.emit("resources", failure);
+    await vi.advanceTimersByTimeAsync(20);
+    expect(onChange).toHaveBeenCalledOnce();
+    source.emit("resources", failure);
+    await vi.advanceTimersByTimeAsync(20);
+    expect(onChange).toHaveBeenCalledOnce();
+    stop();
   });
 
   it("retries a transient initial identity failure without a page resume", async () => {

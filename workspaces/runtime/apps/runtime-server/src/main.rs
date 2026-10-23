@@ -112,6 +112,11 @@ fn main() -> std::process::ExitCode {
     if let Some(code) = studio_runtime_services::browser_host::shim_main(env::args_os()) {
         std::process::exit(code);
     }
+    // The Mac host_exec service of a VM state folder (`host_exec_service::lifecycle`).
+    #[cfg(unix)]
+    if let Some(code) = studio_runtime_services::host_exec_service::main(env::args_os()) {
+        std::process::exit(code);
+    }
     if let Some(code) = operator_cli::dispatch() {
         return code;
     }
