@@ -1,6 +1,6 @@
 :root {
   /* Desktop fleet column; the closed terminal dock consumes the same width. */
-  --studio-sidebar-width: 18rem;
+  --studio-sidebar-width: 19.8rem;
 }
 
 /* Shared geometry for the conversation and its persistent controls. */

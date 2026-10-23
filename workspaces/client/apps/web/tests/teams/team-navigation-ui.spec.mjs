@@ -352,12 +352,14 @@ test("team-navigation-ui", async ({ page: fixturePage }) => {
       2,
       "the header and Team use the same return label",
     );
-    assert.equal(
-      await page
-        .getByRole("button", { name: "Chat settings", exact: true })
-        .count(),
-      1,
-    );
+    // Wider navigation can move header settings into the existing actions menu.
+    await page
+      .getByRole("button", { name: "Chat actions", exact: true })
+      .click();
+    await expect(
+      page.getByRole("menuitem", { name: "Chat settings", exact: true }),
+    ).toBeVisible();
+    await page.keyboard.press("Escape");
     const title = row(2).locator("strong");
     const titleLayout = await title.evaluate((node) => ({
       text: node.textContent,
@@ -440,7 +442,8 @@ test("team-navigation-ui", async ({ page: fixturePage }) => {
       });
       const sidebarToggle = page.locator("#sidebar-toggle");
       if ((await sidebarToggle.getAttribute("aria-expanded")) === "true") {
-        await sidebarToggle.click();
+        // Phone entry starts at the board; explicitly select the lead before typing.
+        await selectLead();
         await page.waitForFunction(
           () =>
             document
@@ -503,6 +506,13 @@ test("team-navigation-ui", async ({ page: fixturePage }) => {
       );
       await page.locator("#message").fill(`Worker draft ${width}`);
       await page.reload();
+      // Reload deliberately returns phones to the board; reopen the worker explicitly.
+      await expect(page.locator("#sidebar")).toBeVisible();
+      await selectLead();
+      await openTeamFromHeader();
+      await search.fill("Worker 39");
+      await row(39).click();
+      await team.waitFor({ state: "hidden" });
       await page
         .locator("#conversation-title")
         .filter({ hasText: "Worker 39" })

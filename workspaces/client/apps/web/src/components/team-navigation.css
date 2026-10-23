@@ -1,4 +1,4 @@
-/* Team: facts in compact strips, with shared state rails and accessible button disclosures. */
+/* Team: facts in compact strips, with inline state indicators and accessible button disclosures. */
 #team.team-dispatch {
   inline-size: var(--studio-team-size);
   flex-basis: var(--studio-team-size);
@@ -120,8 +120,7 @@
   );
   padding: var(--mantine-spacing-xs)
     calc(var(--studio-control-size) + var(--mantine-spacing-xs))
-    var(--mantine-spacing-xs)
-    calc(var(--studio-rail-size) + var(--mantine-spacing-sm));
+    var(--mantine-spacing-xs) var(--mantine-spacing-sm);
   border: 0;
   border-block-end: var(--studio-border-width) solid var(--line);
   border-radius: 0;

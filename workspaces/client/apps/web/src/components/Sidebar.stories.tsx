@@ -131,7 +131,12 @@ const backend: SidebarBackend = {
   },
   subscribePreference: () => () => {},
 };
-const services = createSidebarServices(backend, [backend], () => "local");
+const services = createSidebarServices(
+  backend,
+  [backend, { ...backend, ownerId: "remote" }],
+  (target) =>
+    target.kind === "chat" && target.id === "atlas-api-1" ? "remote" : "local",
+);
 services.alias = (target) =>
   target.kind === "chat" && target.id === "atlas-api-1" ? "BLD" : "MAC";
 const args: SidebarProps = {
@@ -201,9 +206,13 @@ export const Interactions: Story = {
     const page = within(canvasElement);
     const lane = page.getByRole("region", { name: "Needs you" });
     for (const strip of canvasElement.querySelectorAll(".fleet-strip")) {
-      await expect(
-        strip.querySelector(".fleet-server-badge"),
-      ).toHaveTextContent(/^(MAC|BLD)$/);
+      if (strip.getAttribute("data-sidebar-item") === "atlas-api-1") {
+        await expect(
+          strip.querySelector(".fleet-server-badge"),
+        ).toHaveTextContent("BLD");
+      } else {
+        await expect(strip.querySelector(".fleet-server-badge")).toBeNull();
+      }
       await expect(
         strip.querySelector(".fleet-chat-heading .fleet-server-badge"),
       ).toBeNull();
@@ -221,16 +230,15 @@ export const Interactions: Story = {
     await expect(
       workingStatus.closest(".mantine-VisuallyHidden-root"),
     ).toBeNull();
-    await expect(getComputedStyle(firstStrip).boxShadow).not.toBe("none");
+    await expect(getComputedStyle(firstStrip).boxShadow).toBe("none");
     await expect(getComputedStyle(firstStrip).backgroundColor).not.toBe(
       "rgba(0, 0, 0, 0)",
     );
-    await expect(page.getAllByRole("img", { name: "Codex" })[0]).toBeVisible();
-    const elapsed = page.getAllByLabelText("Elapsed time")[0];
-    const initialElapsed = elapsed.textContent;
-    await waitFor(() => expect(elapsed.textContent).not.toBe(initialElapsed), {
-      timeout: 2500,
-    });
+    await expect(page.queryByLabelText("Elapsed time")).not.toBeInTheDocument();
+    await expect(
+      canvasElement.querySelector(".fleet-chat-provider"),
+    ).toBeNull();
+    await expect(canvasElement.querySelector(".fleet-chat-time")).toBeNull();
     await expect(
       [...lane.querySelectorAll(".fleet-strip")].map((row) =>
         row.getAttribute("data-studio-state"),
@@ -300,7 +308,7 @@ export const NoAttention: Story = {
 };
 
 export const Offline: Story = {
-  args: { offlineServers: new Set(["local"]) },
+  args: { offlineServers: new Set(["local", "remote"]) },
   render: (props) => <FleetFixture {...props} scheme="dark" />,
   play: async ({ canvasElement }) => {
     const badges = canvasElement.querySelectorAll<HTMLElement>(
@@ -309,7 +317,7 @@ export const Offline: Story = {
     await expect(badges.length).toBeGreaterThan(0);
     for (const badge of badges) {
       await expect(badge).toHaveAttribute("data-offline", "true");
-      await expect(badge).toHaveAccessibleName(/Offline.*unreachable/);
+      await expect(badge).toHaveAccessibleName(/unreachable/);
       await expect(badge.querySelector("svg")).toBeVisible();
       const color = document.createElement("span");
       color.style.color = "var(--studio-state-error)";

@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 // The built renderer uses real API data and disposable fixture state.
-test("every fleet strip shows its server without reducing long title width", async ({
+test("default-server strips maximize title width and reveal actions on hover or focus", async ({
   browser,
 }) => {
   const root = await mkdtemp(join(tmpdir(), "studio-fleet-server-badge-"));
@@ -23,7 +23,7 @@ test("every fleet strip shows its server without reducing long title width", asy
       ...process.env,
       FIXTURE_SEED: "question",
       FIXTURE_HOLD: "lead,other",
-      FIXTURE_WORKER_COUNT: "0",
+      FIXTURE_WORKER_COUNT: "5",
     },
   });
   let errors = "";
@@ -39,11 +39,16 @@ test("every fleet strip shows its server without reducing long title width", asy
     });
     const origin = `http://127.0.0.1:${port}`;
     const state = await readTestState(origin);
+    const lead = state.runtime.agents.find(
+      (agent) => agent.name === "Release lead",
+    );
     const titles = [
       "Review deployment permissions for all parallel projects and release environments",
       "Обновление интерфейса нескольких параллельных проектов и проверка навигации",
     ];
-    for (const [index, agent] of state.runtime.agents.entries()) {
+    for (const [index, agent] of state.runtime.agents
+      .filter((agent) => agent.isLead)
+      .entries()) {
       const response = await fetch(`${origin}/api/rename`, {
         method: "POST",
         headers: {
@@ -83,34 +88,18 @@ test("every fleet strip shows its server without reducing long title width", asy
         await expect(strips).toHaveCount(3);
         const measurements = [];
         for (const strip of await strips.all()) {
-          const badge = strip.locator(".fleet-server-badge");
-          await expect(badge).toBeVisible();
-          await expect(badge).toHaveText(/^[A-Z]{1,3}$/);
-          await expect(badge).toHaveAccessibleName(/Server [A-Z]{1,3}/);
+          await expect(strip.locator(".fleet-server-badge")).toHaveCount(0);
+          await expect(strip).toHaveCSS("box-shadow", "none");
           const measurement = await strip.evaluate((element) => {
             const title = element.querySelector("strong");
-            const badge = element.querySelector(".fleet-server-badge");
-            const before = title.getBoundingClientRect();
-            const bounds = badge.getBoundingClientRect();
-            badge.style.display = "none";
-            const withoutBadge = title.getBoundingClientRect().width;
-            badge.style.removeProperty("display");
             return {
               title: title.textContent,
-              width: before.width,
-              withoutBadge,
-              titleBottom: before.bottom,
-              badgeTop: bounds.top,
-              badgeRight: bounds.right,
-              rowRight: element.getBoundingClientRect().right,
+              width: title.getBoundingClientRect().width,
+              rowWidth: element.getBoundingClientRect().width,
             };
           });
-          expect(measurement.width).toBeCloseTo(measurement.withoutBadge, 2);
-          expect(measurement.badgeTop).toBeGreaterThanOrEqual(
-            measurement.titleBottom,
-          );
-          expect(measurement.badgeRight).toBeLessThanOrEqual(
-            measurement.rowRight,
+          expect(measurement.width).toBeGreaterThan(
+            measurement.rowWidth * 0.65,
           );
           measurements.push(measurement);
         }
@@ -119,10 +108,69 @@ test("every fleet strip shows its server without reducing long title width", asy
             () => document.documentElement.scrollWidth <= innerWidth,
           ),
         ).toBe(true);
-        if (width === 1440) await expect(sidebar).toHaveCSS("width", "288px");
+        if (width === 1440) {
+          const sidebarWidth = await sidebar.evaluate(
+            (node) => node.getBoundingClientRect().width,
+          );
+          expect(sidebarWidth).toBeCloseTo(18 * 1.1 * 16, 1);
+          const idle = strips
+            .filter({ has: page.locator('.chat-row[aria-current="false"]') })
+            .last();
+          const menu = idle.locator(".row-actions");
+          await page.mouse.move(1400, 900);
+          await page.evaluate(() => document.activeElement?.blur());
+          await expect(menu).toHaveCSS("opacity", "0");
+          const idleTitleWidth = (await idle.locator("strong").boundingBox())
+            .width;
+          await idle.hover();
+          await expect(menu).toHaveCSS("opacity", "1");
+          expect(
+            (await idle.locator("strong").boundingBox()).width,
+          ).toBeLessThan(idleTitleWidth);
+          const titleBounds = await idle.locator("strong").boundingBox();
+          const menuBounds = await menu.boundingBox();
+          expect(titleBounds.x + titleBounds.width).toBeLessThanOrEqual(
+            menuBounds.x,
+          );
+          await page.mouse.move(1400, 900);
+          await menu.focus();
+          await expect(menu).toHaveCSS("opacity", "1");
+          await page.keyboard.press("Enter");
+          await expect(page.getByRole("menu")).toBeVisible();
+          await page.keyboard.press("Escape");
+        }
         await page.evaluate(() => document.activeElement?.blur());
         await page.screenshot({
           path: join(evidence, `server-badge-real-${scheme}-${width}.png`),
+        });
+        // The same built renderer also hosts Team at desktop and phone widths.
+        await sidebar
+          .locator(`.sidebar-project [data-chat="${lead.id}"]`)
+          .click();
+        if (width === 1440) {
+          await page.locator("#team-toggle").click();
+        } else {
+          await page
+            .getByRole("button", { name: "Chat actions", exact: true })
+            .click();
+          await page
+            .getByRole("menuitem", { name: "Team", exact: true })
+            .click();
+        }
+        const team = page.getByRole("complementary", {
+          name: "Team",
+          exact: true,
+        });
+        await expect(team).toBeVisible();
+        await team
+          .getByRole("button", { name: "Finished (5)", exact: true })
+          .click();
+        await expect(team.locator(".worker-entry").first()).toBeVisible();
+        for (const worker of await team.locator(".worker-entry").all())
+          await expect(worker).toHaveCSS("box-shadow", "none");
+        await expect(team).toBeInViewport({ ratio: 1 });
+        await page.screenshot({
+          path: join(evidence, `team-real-${scheme}-${width}.png`),
         });
         console.log(JSON.stringify({ scheme, width, measurements, evidence }));
         await context.close();
