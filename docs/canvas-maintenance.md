@@ -77,3 +77,38 @@ SQLite 3.35 or later command-line shell.
 
 To roll back, quit Studio and move `canvas.sqlite3.pre-vacuum` back to
 `canvas.sqlite3`.
+
+## Compressed full text
+
+Writers store `runtime_item_fulltext.body` in stored format 1 (see
+[runtime state formats](runtime-state-formats.md#compressed-text-columns)).
+`studio_runtime_services::stored_text_compaction` converts the plain bodies
+that older releases wrote. It starts `COMPACTION_START_DELAY` (one minute)
+after startup and repeats every `COMPACTION_PASS_INTERVAL` (one hour) until the
+column is complete:
+
+- A reader scans `COMPACTION_WINDOW_ROWS` (512) rowids at a time and converts
+  at most `COMPACTION_BATCH_ROWS` (64) values or `COMPACTION_BATCH_BYTES`
+  (8 MiB) of text per batch, outside the writer. Each value must decode to its
+  exact text first.
+- One short writer transaction per batch replaces a value only if the row
+  still holds the scanned text. It reads each replaced value back and commits
+  only if it decodes to the original text. The SHA-256 of the batch texts goes
+  to `runtime_stored_text_batches`.
+- Progress is the `stored-text-v1:runtime_item_fulltext.body` row of
+  `runtime_payload_migrations`: `running`, `complete`, `waitingForSpace` or
+  `error`. The pass writes nothing while the state volume has less than
+  `COMPACTION_MIN_FREE_BYTES` free (the 5 GiB critical warning), or when free
+  space is unknown.
+
+The pass never deletes data and never shrinks the file. Freed pages go to the
+freelist and new rows reuse them. To return the space to the disk, run the
+offline `VACUUM INTO` procedure above after the progress row shows
+`complete=1`, at a restart that the owner approves.
+
+To install a release older than the first release that reads compressed bodies
+(`Read compressed full-text bodies`), stop the backend first and run
+`studio-runtime-server stored-text inflate --state ~/.local/state/codex-agents`.
+It rewrites every compressed body as plain TEXT with the same checks, records
+`:inflate` batches, and forgets the compaction progress. The command refuses a
+state directory that a running backend owns.

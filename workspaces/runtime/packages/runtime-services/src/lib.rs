@@ -173,6 +173,7 @@ pub mod shell_command;
 pub mod sign_in;
 pub mod storage_retention;
 pub mod studio_errors;
+pub mod stored_text_compaction;
 pub mod submit_gates;
 pub mod sync_documents;
 pub mod sync_entity_context;

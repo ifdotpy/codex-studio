@@ -8,7 +8,8 @@
 //! as a BLOB in a TEXT-affinity column, so a reader that does not use this
 //! module fails with a type error instead of reading compressed bytes as text.
 //!
-//! Owned columns: `runtime_item_fulltext.body`.
+//! Owned columns: `runtime_item_fulltext.body`. Its writers store stored
+//! format 1, and `stored_text_compaction` converts older plain values.
 
 use std::cell::RefCell;
 use std::sync::OnceLock;
@@ -192,6 +193,11 @@ pub enum StoredTextValue<'a> {
 }
 
 impl<'a> StoredTextValue<'a> {
+    /// Stored format 1. `runtime_item_fulltext.body` writers always store it.
+    pub fn compressed(text: &str) -> Self {
+        Self::Compressed(encode(text))
+    }
+
     /// The form a writer stores now: plain TEXT, or stored format 1 in the
     /// compress-every-write test mode.
     pub fn for_write(text: &'a str) -> Self {

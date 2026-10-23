@@ -1002,6 +1002,10 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
         Arc::clone(&store),
         monitor_shutdown.subscribe(),
     ));
+    let stored_text_task = tokio::spawn(studio_runtime_services::stored_text_compaction::run(
+        Arc::clone(&store),
+        monitor_shutdown.subscribe(),
+    ));
     let analytics_projection_task =
         tokio::spawn(studio_runtime_services::analytics_projection::run(
             Arc::clone(&store),
@@ -1324,6 +1328,7 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
         shutdown_join("browser host bridge", service.stop()).await?;
     }
     shutdown_join("storage retention task", retention_task).await??;
+    shutdown_join("stored text compaction task", stored_text_task).await??;
     shutdown_join("analytics projection task", analytics_projection_task).await??;
     if let Some(task) = orchestration_task {
         shutdown_join("orchestration driver task", task).await??;

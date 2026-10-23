@@ -15,7 +15,15 @@ const FULLTEXT_MENTIONS: &[(&str, &str)] = &[
     ),
     (
         "packages/runtime-store/src/repositories/transcript.rs",
-        "only reader and writer of body: TranscriptRepository::full_text and put_*",
+        "reader and writer of body: TranscriptRepository::full_text and put_*",
+    ),
+    (
+        "packages/runtime-store/src/stored_text_compaction.rs",
+        "compaction pass: converts plain values with compare and set and read-back checks",
+    ),
+    (
+        "packages/runtime-services/src/stored_text_compaction.rs",
+        "tests that insert plain rows and read them through StoredText",
     ),
     ("packages/runtime-store/src/feature_schema.rs", "table DDL"),
     (
