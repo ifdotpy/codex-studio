@@ -150,12 +150,17 @@ test("execution settings ui", async ({ browser: _browser }) => {
       }
       throw Error("Timed out: " + predicate.toString() + " " + log);
     };
-    const openSettings = async (name) => {
-      const settings = page.getByRole("dialog", {
-        name: "Chat settings",
-        exact: true,
-      });
-      if (!(await settings.isVisible())) {
+    const picker = page.locator(".execution-dropdown");
+    const chatSettingsDialog = page.getByRole("dialog", {
+      name: "Chat settings",
+      exact: true,
+    });
+    const openTeam = async () => {
+      if (await picker.isVisible()) {
+        await page.keyboard.press("Escape");
+        await expect(picker).toBeHidden();
+      }
+      if (!(await chatSettingsDialog.isVisible())) {
         const toggle = page.locator("#chat-settings-toggle");
         if (await toggle.isVisible()) await toggle.click();
         else {
@@ -167,18 +172,25 @@ test("execution settings ui", async ({ browser: _browser }) => {
             .click();
         }
       }
-      await settings.getByRole("tab", { name: "Models", exact: true }).click();
+      await expect(chatSettingsDialog.getByRole("tablist")).toHaveCount(0);
+      await expect(chatSettingsDialog.getByRole("listbox")).toHaveCount(0);
+    };
+    const openSettings = async (name) => {
+      if (await chatSettingsDialog.isVisible()) {
+        await page.keyboard.press("Escape");
+        await expect(chatSettingsDialog).toBeHidden();
+      }
+      if (!(await picker.isVisible()))
+        await page.locator("#composer .execution-summary-trigger").click();
       const role =
-        name === "Subagent defaults"
+        name === "Subagent defaults" || name === "Subagent settings"
           ? "Workers"
-          : name === "Subagent settings"
-            ? "Workers"
-            : "Lead";
-      for (const name of ["Lead", "Workers", "Review"])
+          : "Lead";
+      for (const roleName of ["Lead", "Workers", "Review"])
         await expect(
-          settings.getByRole("radio", { name, exact: true }),
+          picker.getByRole("radio", { name: roleName, exact: true }),
         ).toHaveCount(1);
-      await settings
+      await picker
         .getByRole("radiogroup", { name: "Agent role", exact: true })
         .getByText(role, { exact: true })
         .click();
@@ -188,15 +200,18 @@ test("execution settings ui", async ({ browser: _browser }) => {
       .filter({ hasText: "Release lead" })
       .click();
     const lead = (await state()).find((a) => a.name === "Release lead");
-    await openSettings("Main agent settings");
-    const chatSettingsDialog = page.getByRole("dialog", {
-      name: "Chat settings",
-      exact: true,
-    });
+    await page.locator("#message").fill("/model");
+    await page.locator("#message").press("Enter");
+    await expect(picker).toBeVisible();
+    await expect(picker).toHaveClass(/mantine-Popover-dropdown/);
+    await expect(chatSettingsDialog).toBeHidden();
+    await expect(page.locator("#message")).toHaveValue("");
+    await page.keyboard.press("Escape");
+    await expect(picker).toBeHidden();
     await expect(
-      chatSettingsDialog.getByRole("tab", { name: "Models", exact: true }),
-    ).toBeVisible();
-    await chatSettingsDialog.getByRole("tab", { name: /^Team/ }).click();
+      page.locator("#composer .execution-summary-trigger"),
+    ).toBeFocused();
+    await openTeam();
     const parallelInput = chatSettingsDialog.getByRole("textbox", {
       name: "Subagent parallelism",
       exact: true,
@@ -228,69 +243,46 @@ test("execution settings ui", async ({ browser: _browser }) => {
           "data-mantine-color-scheme",
           scheme,
         );
-        for (const tab of ["Models", "Team"]) {
-          await chatSettingsDialog
-            .getByRole("tab", { name: new RegExp("^" + tab) })
-            .click();
-          if (tab === "Models") {
-            await expect(chatSettingsDialog.getByRole("listbox")).toHaveCount(
-              1,
-            );
-            await expect(
-              chatSettingsDialog.getByText("Main agent model", { exact: true }),
-            ).toHaveCount(0);
-            await expect(
-              chatSettingsDialog.getByText("Main agent reasoning", {
-                exact: true,
-              }),
-            ).toHaveCount(0);
-            await expect(
-              chatSettingsDialog.locator(".model-description"),
-            ).toHaveCount(0);
-            if (width === 1440) {
-              const sizes = await chatSettingsDialog
-                .getByRole("listbox")
-                .evaluate((node) => {
-                  const root = getComputedStyle(document.documentElement);
-                  return [
-                    node.getBoundingClientRect().width,
-                    parseFloat(root.getPropertyValue("--studio-form-max")) *
-                      parseFloat(root.fontSize),
-                  ];
-                });
-              expect(sizes[0]).toBeCloseTo(sizes[1] * 0.65, 0);
-            }
-          }
-          const geometry = await chatSettingsDialog.evaluate((node) => {
-            const body = node.querySelector(".mantine-Modal-body");
+        for (const surface of ["composer-picker", "compact-team"]) {
+          if (surface === "composer-picker")
+            await openSettings("Main agent settings");
+          else await openTeam();
+          const visible =
+            surface === "composer-picker" ? picker : chatSettingsDialog;
+          await expect(visible).toBeVisible();
+          const geometry = await visible.evaluate((node) => {
+            const bounds = node.getBoundingClientRect();
             return {
-              dialogContent: node.scrollHeight,
-              dialogHeight: node.clientHeight,
-              bodyContent: body.scrollHeight,
-              bodyHeight: body.clientHeight,
+              left: bounds.left,
+              right: bounds.right,
+              top: bounds.top,
+              bottom: bounds.bottom,
+              content: node.scrollWidth,
+              width: node.clientWidth,
             };
           });
-          expect(
-            geometry.dialogContent,
-            JSON.stringify({ width, height, scheme, tab, ...geometry }),
-          ).toBeLessThanOrEqual(geometry.dialogHeight);
-          if (width === 1440)
-            expect(geometry.bodyContent).toBeLessThanOrEqual(
-              geometry.bodyHeight,
-            );
-          layoutMeasurements.push({ width, height, scheme, tab, ...geometry });
+          expect(geometry.left).toBeGreaterThanOrEqual(0);
+          expect(geometry.right).toBeLessThanOrEqual(width);
+          expect(geometry.content).toBeLessThanOrEqual(geometry.width);
+          layoutMeasurements.push({
+            width,
+            height,
+            scheme,
+            surface,
+            ...geometry,
+          });
           if (screenshotDirectory)
             await page.screenshot({
               animations: "disabled",
               path: join(
                 screenshotDirectory,
-                `tabs-chat-settings-${tab}-${width}-${scheme}.png`,
+                `${surface}-${width}-${scheme}.png`,
               ),
             });
         }
         if (screenshotDirectory)
           await writeFile(
-            join(screenshotDirectory, "tabs-layout-measurements.json"),
+            join(screenshotDirectory, "layout-measurements.json"),
             JSON.stringify(layoutMeasurements, null, 2),
           );
       }
@@ -346,9 +338,7 @@ test("execution settings ui", async ({ browser: _browser }) => {
     await page.keyboard.press("Escape");
     await listBox.waitFor({ state: "hidden" });
     await expect(
-      page
-        .getByRole("button", { name: "Chat settings", exact: true })
-        .filter({ visible: true }),
+      page.locator("#composer .execution-summary-trigger"),
     ).toBeFocused();
     await openSettings("Main agent settings");
     const originalModelSaved = settingsResponse(
@@ -380,7 +370,7 @@ test("execution settings ui", async ({ browser: _browser }) => {
         (await state()).find((a) => a.id === lead.id).effort === "high",
     );
     await waitFor(() => leadReasoning.isEnabled());
-    await chatSettingsDialog.getByRole("tab", { name: /^Team/ }).click();
+    await openTeam();
     const yolo = page.getByRole("radio", {
       name: "Full",
       exact: true,
@@ -418,25 +408,21 @@ test("execution settings ui", async ({ browser: _browser }) => {
     );
     await waitFor(() => leadFastMode.isEnabled());
     await page.keyboard.press("Escape");
-    await expect(
-      page.getByRole("dialog", { name: "Chat settings", exact: true }),
-    ).not.toBeVisible();
+    await expect(picker).toBeHidden();
     await openSettings("Subagent defaults");
-    const dialog = page.locator('.execution-profile-body[data-role="worker"]');
-    await chatSettingsDialog
+    const dialog = picker;
+    await picker
       .getByRole("radiogroup", { name: "Agent role", exact: true })
       .getByText("Review", { exact: true })
       .click();
-    const reviewDialog = page.locator(
-      '.execution-profile-body[data-role="review"]',
-    );
+    const reviewDialog = picker;
     await expect(
       reviewDialog.getByRole("listbox", {
         name: "Default review model",
         exact: true,
       }),
     ).toBeVisible();
-    await chatSettingsDialog.getByRole("tab", { name: /^Team/ }).click();
+    await openTeam();
     const delegationDepth = page.getByRole("combobox", {
       name: "Delegation depth",
     });
@@ -683,7 +669,7 @@ test("execution settings ui", async ({ browser: _browser }) => {
     await page.reload();
     await page.locator(`[data-chat="${fresh.id}"]`).click();
     await openSettings("Main agent settings");
-    await chatSettingsDialog.getByRole("tab", { name: /^Team/ }).click();
+    await openTeam();
     const freshYolo = page.getByRole("radio", {
       name: "Full",
       exact: true,
@@ -734,10 +720,7 @@ test("execution settings ui", async ({ browser: _browser }) => {
     };
     await openWorker();
     await openSettings("Subagent settings");
-    const workerDialog = page.getByRole("dialog", {
-      name: "Chat settings",
-      exact: true,
-    });
+    const workerDialog = picker;
     for (const roleName of ["Lead", "Review"]) {
       await workerDialog.getByText(roleName, { exact: true }).click();
       await expect(

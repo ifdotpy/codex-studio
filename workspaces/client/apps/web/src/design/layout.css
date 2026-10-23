@@ -25,6 +25,8 @@
   --studio-model-dialog-size: calc(
     var(--studio-model-picker-size) + var(--studio-model-dialog-padding) * 2
   );
+  /* Compact Team dialog width, in rem; phone presentation fills the screen. */
+  --studio-team-dialog-size: 32rem;
   /* Vertical settings section navigation. */
   --studio-settings-nav-size: 12rem;
   /* Messages room selector alongside the selected room. */

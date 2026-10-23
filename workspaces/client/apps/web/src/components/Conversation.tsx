@@ -111,6 +111,8 @@ import SelectionQuote, {
 } from "./conversation/transcript/SelectionQuote";
 import MessageActions from "./conversation/transcript/MessageActions";
 import { LiveAgentPhase } from "./agents/AgentPhase";
+import { UnifiedAgentSettings } from "./agents/UnifiedAgentSettings";
+import { useWorkerModels } from "./agents/WorkerModelPicker";
 import { ExecutionSummaryTrigger } from "./agents/ExecutionSummaryTrigger";
 import type { useAccounts } from "./Accounts";
 import ComposerAttachments, {
@@ -224,6 +226,7 @@ export default function Conversation(p: {
   recentChats?: RecentProjectChat[];
   syncWorkspaceId?: string;
   agent?: Agent;
+  lead?: Agent;
   room?: Room;
   legacy?: Json;
   data: ConversationData;
@@ -248,7 +251,6 @@ export default function Conversation(p: {
   onSelect?: (id: string) => void;
   onBranchCreated?: (id: string) => void;
   onNewChat?: () => void;
-  onOpenChatSettings: () => void;
   onChooseChat?: () => void;
   sending: boolean;
   schemaMismatch?: boolean;
@@ -673,16 +675,45 @@ export default function Conversation(p: {
     setLimitsOpen(false);
   }, [p.id]);
   const managed = agent?.source === "managed";
+  const [modelCommandRequest, setModelCommandRequest] = useState({
+    id: p.id,
+    serial: 0,
+  });
+  useEffect(() => {
+    setModelCommandRequest({ id: p.id, serial: 0 });
+  }, [p.id]);
+  const modelCatalog = useWorkerModels(
+    p.agent?.accountKey || "default",
+    managed,
+  );
   const executionControls =
     p.agent?.source === "managed" ? (
       <div
         className="empty-chat-settings composer-context-row"
         aria-label="Agent settings"
       >
-        <ExecutionSummaryTrigger
+        <UnifiedAgentSettings
+          key={p.agent.id}
+          state={p.accountsState}
+          notify={p.notify}
           agent={p.agent}
+          lead={p.lead}
           team={p.data.runtime?.agents || []}
-          onOpen={p.onOpenChatSettings}
+          catalog={modelCatalog}
+          refresh={p.refresh}
+          openRequest={
+            modelCommandRequest.id === p.id ? modelCommandRequest.serial : 0
+          }
+          renderTrigger={({ opened, ref, onClick }) => (
+            <ExecutionSummaryTrigger
+              ref={ref}
+              agent={p.agent!}
+              lead={p.lead}
+              team={p.data.runtime?.agents || []}
+              aria-expanded={opened}
+              onOpen={onClick}
+            />
+          )}
         />
       </div>
     ) : null;
@@ -791,7 +822,10 @@ export default function Conversation(p: {
         promptRecall.reset();
         input.current?.focus({ preventScroll: true });
         p.setDraft("");
-        p.onOpenChatSettings();
+        setModelCommandRequest((value) => ({
+          id: p.id,
+          serial: value.serial + 1,
+        }));
       }
       return;
     }

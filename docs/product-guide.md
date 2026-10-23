@@ -132,17 +132,16 @@ Tab enters the selected model; arrow keys select another enabled model. Compact
 model fields use native selects grouped by provider, with **(default)** and
 **(current)** tags where applicable and the selected model's description below
 the field. Dropdown menus show text labels; their appearance follows the browser.
-Fast and Daybreak switches include visible descriptions. Chat settings has Models and Team tabs. Models has a compact Lead, Workers, and Review switch above the selected role's account, model, reasoning, and
-mode controls. The same picker always shows all three roles in New chat, chat
-settings, and shared-chat participant settings. New chat saves the chosen review
+Fast and Daybreak switches include visible descriptions. The composer model picker has a compact Lead, Workers, and Review switch above the selected role's account, model, reasoning, and
+mode controls. The same picker always shows all three roles in New chat, the composer, and shared-chat participant settings. New chat saves the chosen review
 model and reasoning with the new lead. In a worker chat, Workers edits that
 worker; Lead and Review display inherited settings read-only. Shared-chat
 participants manage their own worker and review defaults. The New chat dialog
 fits the picker width on desktop and the available width on phones.
 One execution summary in the composer shows the lead, workers,
 and review; its title contains the full settings. On narrow layouts it keeps the lead name beside role and provider icons, using the complete family name at the narrowest stage;
-wider layouts name all three roles. Click it to open Models on Lead, then select a role.
-Accounts use a compact grid with remaining limits. Team contains
+wider layouts name all three roles. Click it or submit `/model` to open the role picker anchored above the composer on desktop or in a bottom sheet on phones. Escape closes the picker and returns focus to the summary.
+Accounts use a compact grid with remaining limits. Chat settings is one compact Team panel without tabs. It contains
 permissions, subagent parallelism, delegation depth, and account eligibility; zero parallelism
 uses a single agent. Account eligibility is always visible in compact provider groups with remaining limits; long names and emails are ellipsized, with full values in the account title and accessible description.
 Automatic account selection prefers a free slot, project order, then fewer
@@ -228,7 +227,7 @@ account used by future workers while the lead stays on its current account.
 See [the parity checks](verification/2026-09-22-claude-parity.md) for evidence
 and the tested reference revision.
 
-When a team transfer is blocked, Chat settings shows the saved transfer status
+When a team transfer is blocked, the composer model picker shows the saved transfer status
 and an explicit **Retry** action when the receipt can be retried. Retry continues
 that transfer receipt; it does not resend the chat input.
 
@@ -477,8 +476,7 @@ The sidebar and Team panel can collapse at any window width.
 the same account manager as the chat menu: add accounts, view saved accounts,
 remove them, and choose the application default. Its Appearance and Hotkeys tabs group per-browser appearance,
 text size, transcript width, message author icons, and sidebar shortcut preferences.
-Author icons are hidden by default. Chat settings continues to select the account
-for the current conversation and manage its project, model, and permissions.
+Author icons are hidden by default. Use the composer picker to select the conversation account and model. Chat settings manages its team, project, and permissions.
 
 Prompt history is in the chat header; open **Conversation tools** when space is
 limited. Context usage, session cost, and account limits sit below the composer.

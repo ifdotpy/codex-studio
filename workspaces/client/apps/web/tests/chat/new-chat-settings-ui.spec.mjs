@@ -202,10 +202,7 @@ test("new chat controls are inline, save settings and keep the compact composer 
       composerBounds.y + composerBounds.height,
     );
     await trigger.click();
-    const picker = page.getByRole("dialog", {
-      name: "Chat settings",
-      exact: true,
-    });
+    const picker = page.locator(".execution-dropdown");
     await expect(
       picker.getByLabel("Main agent reasoning", { exact: true }),
     ).toHaveAttribute("data-value", "high");

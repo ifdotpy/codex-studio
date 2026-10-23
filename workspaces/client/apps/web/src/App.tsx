@@ -3082,6 +3082,7 @@ export default function App({ active = true }: { active?: boolean }) {
                 syncWorkspaceId={workspaceId}
                 id={opened}
                 agent={agent}
+                lead={lead || undefined}
                 room={room}
                 legacy={legacy}
                 data={conversationData!}
@@ -3115,7 +3116,6 @@ export default function App({ active = true }: { active?: boolean }) {
                 onSelect={open}
                 onBranchCreated={branchCreated}
                 onNewChat={newConversation}
-                onOpenChatSettings={() => setSettingsOpen(true)}
                 onChooseChat={chooseConversation}
               />
             )}
@@ -3715,12 +3715,10 @@ export default function App({ active = true }: { active?: boolean }) {
         lead={lead}
         accounts={accounts}
         notify={notify}
-        updateAccountModalOpen={updateAccountModalOpen}
         agentModels={agentModels}
         data={data}
         refresh={refresh}
         workspaceId={workspaceId}
-        accountKey={accountKey}
         creating={creating}
         newChat={newChat}
         project={project}

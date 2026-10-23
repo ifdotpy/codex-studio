@@ -1,8 +1,9 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { expect, within } from "storybook/test";
+import { expect, within, waitFor } from "storybook/test";
 import { useState, type ContextType } from "react";
 import { Paper, Stack } from "@mantine/core";
 import { AgentSetupPicker, type SetupRole } from "../agents/AgentSetupPicker";
+import { ExecutionSummaryTrigger } from "../agents/ExecutionSummaryTrigger";
 import { ExecutionSettings } from "../agents/ExecutionSettings";
 import { ModelCatalogReader } from "../agents/WorkerModelPicker";
 import type { Agent } from "../../types";
@@ -304,5 +305,58 @@ export const WorkerChatSettings: Story = {
     await expect(
       canvas.getByRole("listbox", { name: "Subagent model" }),
     ).toBeVisible();
+  },
+};
+
+export const ComposerRolePopover: Story = {
+  render: () => (
+    <ModelCatalogReader.Provider value={previewReader}>
+      <div style={{ padding: "var(--mantine-spacing-md)" }}>
+        <ExecutionSettings
+          agent={previewAgent}
+          catalog={{
+            models: previewCatalog,
+            loading: false,
+            error: "",
+            retry: () => {},
+          }}
+          refresh={async () => {}}
+          renderTrigger={({ opened, ref, onClick }) => (
+            <ExecutionSummaryTrigger
+              ref={ref}
+              agent={previewAgent}
+              team={[]}
+              aria-expanded={opened}
+              onOpen={onClick}
+            />
+          )}
+        />
+      </div>
+    </ModelCatalogReader.Provider>
+  ),
+  play: async ({ canvasElement, userEvent }) => {
+    const canvas = within(canvasElement);
+    const body = within(canvasElement.ownerDocument.body);
+    await userEvent.click(
+      canvas.getByRole("button", { name: /^Execution settings:/ }),
+    );
+    await waitFor(() =>
+      expect(
+        body.getByRole("dialog", { name: "Main agent settings" }),
+      ).toBeVisible(),
+    );
+    const lead = body.getByRole("radio", { name: "Lead" });
+    lead.focus();
+    await userEvent.keyboard("{ArrowRight}");
+    await expect(body.getByRole("radio", { name: "Workers" })).toBeChecked();
+    await expect(body.getByRole("radio", { name: "Workers" })).toHaveFocus();
+    await userEvent.keyboard("{ArrowRight}");
+    await expect(body.getByRole("radio", { name: "Review" })).toBeChecked();
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() =>
+      expect(
+        canvas.getByRole("button", { name: /^Execution settings:/ }),
+      ).toHaveFocus(),
+    );
   },
 };

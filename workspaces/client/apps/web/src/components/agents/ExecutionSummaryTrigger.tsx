@@ -1,24 +1,31 @@
 import { Bot, Equal, ScanEye, UserRound } from "lucide-react";
 import type { Agent } from "../../types";
 import { ProviderMark } from "../AccountTiles";
+import type { ComponentProps } from "react";
 import { ActionButton } from "../ui/primitives";
 import { modelDisplayName, modelForValue } from "../models/modelOption";
 import { settingsFor } from "./ExecutionSettings";
 import { useWorkerModels } from "./WorkerModelPicker";
 
-/** One composer entry point; the dialog supplies full-size role targets. */
+/** The composer anchor for the full role picker. */
 export function ExecutionSummaryTrigger({
   agent,
   team,
+  lead: teamLead,
   onOpen,
-}: {
+  className,
+  ...buttonProps
+}: ComponentProps<typeof ActionButton> & {
   agent: Agent;
   team: Agent[];
+  lead?: Agent | null;
   onOpen: () => void;
 }) {
   const root = agent.isLead
     ? agent
-    : team.find((row) => row.id === agent.rootId && row.isLead) || agent;
+    : teamLead ||
+      team.find((row) => row.id === agent.rootId && row.isLead) ||
+      agent;
   const main = settingsFor(agent, false);
   const defaults = settingsFor(root, true);
   const catalog = useWorkerModels(agent.accountKey || "default", true);
@@ -95,11 +102,14 @@ export function ExecutionSummaryTrigger({
       .join("; ");
   return (
     <ActionButton
-      className="execution-menu execution-summary-trigger"
+      className={["execution-menu execution-summary-trigger", className]
+        .filter(Boolean)
+        .join(" ")}
       aria-label={full}
       title={full}
       aria-haspopup="dialog"
       onClick={onOpen}
+      {...buttonProps}
     >
       <span className="execution-summary-segments" aria-hidden="true">
         {entries.map(({ role, label, Icon, value }) => (

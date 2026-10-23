@@ -176,13 +176,17 @@ test("composer keeps one tools row and readable mixed-provider execution summary
           }
           await expect(page.locator("#toast")).toBeHidden({ timeout: 10_000 });
           await trigger.click();
-          const settings = page.getByRole("dialog", {
-            name: "Chat settings",
-            exact: true,
-          });
+          const settings = page.locator(".execution-dropdown");
+          await expect(settings).toBeVisible();
           await expect(
-            settings.getByRole("tab", { name: "Models", exact: true }),
-          ).toHaveAttribute("aria-selected", "true");
+            page.getByRole("dialog", { name: "Chat settings", exact: true }),
+          ).toHaveCount(0);
+          if (width > 768) {
+            await expect(settings).toHaveClass(/mantine-Popover-dropdown/);
+            const anchor = await trigger.boundingBox();
+            const popup = await settings.boundingBox();
+            expect(Math.abs(popup.x - anchor.x)).toBeLessThanOrEqual(1);
+          }
           await expect(
             settings
               .getByRole("radiogroup", { name: "Agent role", exact: true })
@@ -191,6 +195,7 @@ test("composer keeps one tools row and readable mixed-provider execution summary
           ).toBeChecked();
           await page.keyboard.press("Escape");
           await expect(settings).toBeHidden();
+          await expect(trigger).toBeFocused();
           const geometry = await page
             .locator("#composer")
             .evaluate((composer) => {

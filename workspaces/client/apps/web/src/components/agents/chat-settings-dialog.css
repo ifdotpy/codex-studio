@@ -5,14 +5,6 @@
 .chat-execution-settings section {
   min-width: 0;
 }
-.execution-disclosure-chevron {
-  flex: none;
-  margin-inline-start: auto;
-  color: var(--mantine-color-dimmed);
-}
-[open] > summary > .execution-disclosure-chevron {
-  transform: rotate(180deg);
-}
 .execution-profile-body {
   padding: var(--mantine-spacing-sm) 0 var(--mantine-spacing-md);
 }
@@ -30,8 +22,8 @@
 }
 .execution-team-fields {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 26ch), 1fr));
-  gap: var(--mantine-spacing-md);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--mantine-spacing-sm);
 }
 .execution-team-fields .agent-mode-control {
   display: grid;
@@ -101,19 +93,6 @@
   }
 }
 
-.chat-execution-settings .mantine-Tabs-list {
-  flex-wrap: nowrap;
-}
-.chat-execution-settings .mantine-Tabs-tab {
-  padding-inline: var(--mantine-spacing-xs);
-  min-height: var(--studio-touch-target);
-}
-.settings-tab-summary {
-  margin-inline-start: calc(var(--mantine-spacing-xs) / 2);
-  color: var(--mantine-color-dimmed);
-  font-size: var(--mantine-font-size-xs);
-  font-variant-numeric: tabular-nums;
-}
 .chat-execution-settings .mantine-SegmentedControl-label {
   min-width: 0;
 }
