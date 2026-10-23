@@ -758,8 +758,8 @@ async fn publication_bound_keeps_state_invalidation_and_token_rate_usage() {
     assert_eq!(changes_since.resources, vec![json!({"kind":"state"})]);
     token_rates.settled().await;
     let snapshot = token_rates.snapshot().to_value();
-    assert_eq!(snapshot["rates"]["agent"]["turnId"], "turn");
-    assert_eq!(snapshot["rates"]["agent"]["outputTokens"], 10.0);
+    assert_eq!(snapshot["records"][0]["turnId"], "turn");
+    assert_eq!(snapshot["records"][0]["outputTokens"], 10.0);
     assert_eq!(pending_count(&store), 0);
     std::fs::remove_dir_all(root).expect("remove test state");
 }
@@ -866,10 +866,14 @@ async fn drained_notification_effects_use_committed_state_without_resetting_enti
     );
     sink.token_rates.settled().await;
     assert!(snapshots.has_changed().expect("token-rate hub stays open"));
-    let value = snapshots.borrow_and_update();
-    assert_eq!(value.to_value()["rates"]["agent"]["active"], true);
+    let value = snapshots.borrow_and_update().to_value();
+    let record = value["records"]
+        .as_array()
+        .and_then(|records| records.iter().find(|record| record["agentId"] == "agent"))
+        .expect("token-rate record for the agent");
+    assert_eq!(record["active"], true);
     assert!(
-        value.to_value()["rates"]["agent"]["outputTokens"]
+        record["outputTokens"]
             .as_f64()
             .is_some_and(|tokens| tokens > 0.0)
     );

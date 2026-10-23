@@ -25105,55 +25105,31 @@
       },
       "DiskSpaceStatus": {
         "additionalProperties": false,
+        "description": "The visible disk notice returned by `/api/desktop`.",
         "properties": {
-          "freeBytes": {
-            "anyOf": [
-              {
-                "maximum": 9007199254740991,
-                "minimum": 0,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Freebytes"
-          },
           "level": {
-            "anyOf": [
-              {
-                "enum": [
-                  "warning",
-                  "critical",
-                  "full"
-                ],
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
+            "enum": [
+              "warning",
+              "critical",
+              "full",
+              null
             ],
-            "description": "Set when the free space of the state volume is below the warning or the critical threshold. full: the disk is full; Studio starts no new turn and holds agents until space returns.",
-            "title": "Level"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "message": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "title": "Message"
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
           "level",
-          "freeBytes",
           "message"
         ],
-        "title": "DiskSpaceStatus",
         "type": "object"
       },
       "DraftChangeBatch": {
@@ -43881,7 +43857,7 @@
       },
       "ResourceTokenRatesEvent": {
         "additionalProperties": false,
-        "description": "Named `token-rates` SSE payload; values come from workspace_snapshot().",
+        "description": "Named token-rates SSE payload; one complete record per agent with authoritative root membership.",
         "properties": {
           "epoch": {
             "minLength": 1,
@@ -43895,43 +43871,19 @@
             "title": "Protocol",
             "type": "integer"
           },
-          "rates": {
-            "additionalProperties": {
-              "$ref": "#/components/schemas/TokenRateValue"
+          "records": {
+            "items": {
+              "$ref": "#/components/schemas/TokenRateRecord"
             },
-            "maxProperties": 4096,
-            "propertyNames": {
-              "maxLength": 200,
-              "minLength": 1
-            },
-            "title": "Rates",
-            "type": "object"
+            "maxItems": 4096,
+            "title": "Records",
+            "type": "array"
           },
           "revision": {
             "maximum": 9007199254740991,
             "minimum": 0,
             "title": "Revision",
             "type": "integer"
-          },
-          "teams": {
-            "additionalProperties": {
-              "additionalProperties": {
-                "$ref": "#/components/schemas/TokenRateValue"
-              },
-              "maxProperties": 4096,
-              "propertyNames": {
-                "maxLength": 200,
-                "minLength": 1
-              },
-              "type": "object"
-            },
-            "maxProperties": 4096,
-            "propertyNames": {
-              "maxLength": 200,
-              "minLength": 1
-            },
-            "title": "Teams",
-            "type": "object"
           },
           "workspaceId": {
             "minLength": 1,
@@ -43944,8 +43896,7 @@
           "workspaceId",
           "epoch",
           "revision",
-          "rates",
-          "teams"
+          "records"
         ],
         "title": "ResourceTokenRatesEvent",
         "type": "object"
@@ -53475,57 +53426,19 @@
         "title": "TerminalsResource",
         "type": "object"
       },
-      "TokenRateSnapshot": {
-        "additionalProperties": false,
-        "description": "Typed payload accepted from the token-rate producer boundary.",
-        "properties": {
-          "rates": {
-            "additionalProperties": {
-              "$ref": "#/components/schemas/TokenRateValue"
-            },
-            "maxProperties": 4096,
-            "propertyNames": {
-              "maxLength": 200,
-              "minLength": 1
-            },
-            "title": "Rates",
-            "type": "object"
-          },
-          "teams": {
-            "additionalProperties": {
-              "additionalProperties": {
-                "$ref": "#/components/schemas/TokenRateValue"
-              },
-              "maxProperties": 4096,
-              "propertyNames": {
-                "maxLength": 200,
-                "minLength": 1
-              },
-              "type": "object"
-            },
-            "maxProperties": 4096,
-            "propertyNames": {
-              "maxLength": 200,
-              "minLength": 1
-            },
-            "title": "Teams",
-            "type": "object"
-          }
-        },
-        "required": [
-          "rates",
-          "teams"
-        ],
-        "title": "TokenRateSnapshot",
-        "type": "object"
-      },
-      "TokenRateValue": {
+      "TokenRateRecord": {
         "additionalProperties": false,
         "description": "One active or completed agent turn's volatile token-rate snapshot.",
         "properties": {
           "active": {
             "title": "Active",
             "type": "boolean"
+          },
+          "agentId": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Agentid",
+            "type": "string"
           },
           "estimated": {
             "title": "Estimated",
@@ -53559,6 +53472,12 @@
             ],
             "title": "Rate"
           },
+          "rootId": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Rootid",
+            "type": "string"
+          },
           "turnId": {
             "maxLength": 200,
             "minLength": 1,
@@ -53567,13 +53486,34 @@
           }
         },
         "required": [
+          "agentId",
+          "rootId",
           "turnId",
           "active",
           "estimated",
           "rate",
           "outputTokens"
         ],
-        "title": "TokenRateValue",
+        "title": "TokenRateRecord",
+        "type": "object"
+      },
+      "TokenRateSnapshot": {
+        "additionalProperties": false,
+        "description": "Typed payload accepted from the token-rate producer boundary.",
+        "properties": {
+          "records": {
+            "items": {
+              "$ref": "#/components/schemas/TokenRateRecord"
+            },
+            "maxItems": 4096,
+            "title": "Records",
+            "type": "array"
+          }
+        },
+        "required": [
+          "records"
+        ],
+        "title": "TokenRateSnapshot",
         "type": "object"
       },
       "TombstoneMigration": {
@@ -77421,6 +77361,16 @@
             "required": false,
             "schema": {
               "type": "string"
+            }
+          },
+          {
+            "description": "Whether this stream includes token-rate snapshots. Omitted selectors preserve native and signed-client behavior. Browser owners send the aggregate interest of their tabs.",
+            "in": "query",
+            "name": "tokenRates",
+            "required": false,
+            "schema": {
+              "default": true,
+              "type": "boolean"
             }
           },
           {

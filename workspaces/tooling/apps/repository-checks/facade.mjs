@@ -1385,7 +1385,7 @@ function fastTierCommands(root) {
             "--test",
             "integration",
             "-E",
-            "test(/^project_preparation::/) | test(committed_delete_route_succeeds_with_unrelated_failing_cleanup)",
+            "test(/^project_preparation::/) | test(committed_delete_route_succeeds_with_unrelated_failing_cleanup) | test(real_rxdb_single_writer_draft_ack_echo_ordering)",
           ],
         ],
       ],
@@ -1635,6 +1635,7 @@ function fastTierCommands(root) {
               "test(unrelated_reservation_started_after_path_capture_does_not_refuse_ready_token)",
               "test(room_membership_uses_symlink_paths_resolved_by_the_creation_owner)",
               "test(agent_progress::tests::)",
+              "test(token_rate::tests::)",
               "test(completed_child_turn_reports_unsubmitted_assignment_once_with_final_text)",
               "test(account_worker::tests::continuation_start::capacity_retry_restart_unknown_reports_once_without_resending)",
               "test(agent_progress_schema_matches_strict_serde_contract)",
@@ -1674,8 +1675,93 @@ function fastTierCommands(root) {
     },
     {
       item: web,
+      label: "Single token record footer and team witnesses",
+      commands: [
+        [
+          "pnpm",
+          [
+            "--filter",
+            "codex-agents-web",
+            "exec",
+            "vitest",
+            "run",
+            "--config",
+            "vitest.unit.config.ts",
+            "src/usage/tokenRate.records.test.ts",
+            "src/usage/tokenRate.test.mjs",
+          ],
+        ],
+      ],
+      options: {
+        selector: "one record, root moves, removals, strict bounds and replay",
+        reason:
+          "Token snapshots carry each agent once and derive team membership without entity projections.",
+      },
+    },
+    {
+      item: web,
       label: "web unit safety witnesses",
       options: { script: "test:unit:fast" },
+    },
+    {
+      item: { name: "desktop disk status", ecosystem: "cargo" },
+      label: "Desktop content identity and native attach witnesses",
+      commands: [
+        [
+          "cargo",
+          [
+            "nextest",
+            "run",
+            "--locked",
+            "--no-tests",
+            "fail",
+            "--message-format",
+            "libtest-json-plus",
+            "-p",
+            "studio-runtime-http",
+            "-p",
+            "studio-client-core",
+            "--lib",
+            "-E",
+            nextestAnyOf([
+              "test(desktop_content_ignores_healthy_disk_writes_but_delivers_visible_changes)",
+              "test(desktop_http_)",
+              "test(existing_backend_must_supply_a_valid_build_identity)",
+            ]),
+          ],
+        ],
+      ],
+      options: {
+        selector: "desktop disk projection, content filtering and Rust attach",
+        reason:
+          "Healthy disk writes must not cause renderer reads; visible changes and native identity checks remain live.",
+      },
+    },
+    {
+      item: web,
+      label: "Desktop notice reader witnesses",
+      commands: [
+        [
+          "pnpm",
+          [
+            "--filter",
+            "codex-agents-web",
+            "exec",
+            "vitest",
+            "run",
+            "--config",
+            "vitest.unit.config.ts",
+            "src/components/SupervisorRecoveryNotice.test.ts",
+            "src/components/desktopNotices.test.ts",
+            "src/components/watchResourceReads.test.ts",
+          ],
+        ],
+      ],
+      options: {
+        selector: "mounted desktop reader and retained disk notices",
+        reason:
+          "Read a stable baseline once and retain the full-disk notice across failed reads.",
+      },
     },
     {
       item: { name: "studio-runtime-http", ecosystem: "cargo" },
@@ -1804,6 +1890,7 @@ function fastTierCommands(root) {
             "src/sync/client.entityReset.test.ts",
             "src/sync/resourceEntityDelivery.test.ts",
             "src/sync/resourceEvents.test.ts",
+            "src/servers/eventSource.test.ts",
           ],
         ],
       ],
