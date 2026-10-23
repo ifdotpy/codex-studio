@@ -713,7 +713,12 @@ export default function App({ active = true }: { active?: boolean }) {
       ),
     };
   }, [data, pendingConversationDelete]);
-  const prepareChat = useChatPrefetch(prefetchData, opened, workspaceId);
+  const prepareChat = useChatPrefetch(
+    prefetchData,
+    opened,
+    workspaceId,
+    active,
+  );
   useEffect(() => {
     if (tasksOpen) setTasksRendered(true);
     if (workspaceOpen) setWorkspaceRendered(true);
@@ -1371,10 +1376,11 @@ export default function App({ active = true }: { active?: boolean }) {
   }, [data?.stateDir]);
   useEffect(() => {
     if (!data?.stateDir) return;
-    const keys = new Set([
-      accountKey,
-      ...usageAccountKeys.split("\n").filter(Boolean),
-    ]);
+    const keys = new Set(
+      active
+        ? [accountKey, ...usageAccountKeys.split("\n").filter(Boolean)]
+        : [],
+    );
     for (const [key, stop] of limitsWatchers.current) {
       if (keys.has(key)) continue;
       stop();
@@ -1419,7 +1425,13 @@ export default function App({ active = true }: { active?: boolean }) {
       };
       limitsWatchers.current.set(key, stop);
     }
-  }, [data?.stateDir, accountKey, usageAccountKeys, watchResourceReads]);
+  }, [
+    data?.stateDir,
+    accountKey,
+    usageAccountKeys,
+    watchResourceReads,
+    active,
+  ]);
   useEffect(() => {
     // Keep each account's latest snapshot for immediate return navigation.
     const incoming = { ...data?.runtime?.rateLimitsByAccount };
@@ -3325,6 +3337,7 @@ export default function App({ active = true }: { active?: boolean }) {
             value={studioSettingsTab}
             onChange={activateSettingsTab}
             className="studio-settings-tabs"
+            keepMounted={false}
           >
             <StudioSettingsTabs />
             <Tabs.Panel value="accounts" pt="md">

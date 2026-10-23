@@ -1,5 +1,127 @@
 # Incremental sync measurements
 
+## Compact sync v4: live v3 baseline
+
+Measured 2026-10-23 at 19:50:42 UTC for 30 seconds against the running v3
+server during normal compact-sync team work. These were two concurrent read-only
+SSE subscriptions, with no generated activity and no server changes. Both
+requested the same resources: state, drafts, terminal membership, the open lead's
+transcript, queue and session cost, and one worker transcript as the desktop
+prefetch target. Token rates were enabled. This is an illustrative active-team
+sample, not a controlled before/after benchmark or a measurement of HTTP pulls.
+
+| Accepted encoding | Actual content encoding | HTTP body bytes | Resources events / bytes | Token-rate events / bytes |
+| ----------------- | ----------------------- | --------------: | -----------------------: | ------------------------: |
+| identity          | identity                |         846,405 |             65 / 721,679 |              31 / 124,726 |
+| br                | identity                |         862,707 |             66 / 737,981 |              31 / 124,726 |
+
+The v3 server did not compress SSE even when Brotli was requested. The identity
+sample averaged 28,214 B/s; earlier 30-second windows during the same work ranged
+from 32,534 to 53,825 B/s. The two streams can coalesce changes differently, so
+their byte counts need not match. Initial resource reconciliation was one 710 B
+event in each stream. Counts exclude HTTP headers, transfer chunk framing and
+TLS; all byte figures use UTF-8. There were no incomplete frames in this sample.
+
+| Resource kind | References | Resource plus version JSON bytes, identity |
+| ------------- | ---------: | -----------------------------------------: |
+| state         |         65 |                                    629,433 |
+| transcript    |         13 |                                     77,141 |
+| session-cost  |         18 |                                      1,620 |
+| queue         |          1 |                                         82 |
+| drafts        |          1 |                                         38 |
+| terminals     |          1 |                                         36 |
+
+Resource byte attribution counts each resource reference and its corresponding
+version object. It excludes the shared event envelope and framing, so it does
+not sum to the event bytes. The selected chat transcript accounted for 31,407 B
+over eight references. The one prefetched worker accounted for 45,734 B over five
+references, or 5.4% of the entire stream (1,524 B/s). Prefetch remains enabled for
+visible screens; this sample does not justify removing the existing bounded
+desktop/mobile prefetch. Its HTTP catch-up traffic was not measured here.
+
+| Entity collection | Documents | Serialized document bytes, identity |
+| ----------------- | --------: | ----------------------------------: |
+| agent             |        69 |                             326,369 |
+| workspace         |        17 |                             214,785 |
+| task              |        56 |                              37,081 |
+| event             |        35 |                              19,172 |
+| monitor           |        20 |                              17,496 |
+| room              |         7 |                               6,361 |
+
+Field churn compares consecutive received versions of the same entity. The first
+version is excluded. Whole-value bytes measure the decoded entity value; changed
+bytes measure a JSON object containing only changed top-level fields, including
+their names. This describes redundancy, not an implemented patch wire format.
+
+| Collection | Consecutive updates | Whole-value bytes | Changed-field bytes | Changed share |
+| ---------- | ------------------: | ----------------: | ------------------: | ------------: |
+| agent      |                  60 |           255,922 |              14,664 |          5.7% |
+| workspace  |                  16 |           180,584 |             168,282 |         93.2% |
+| monitor    |                   9 |             9,151 |               4,374 |         47.8% |
+| task       |                  11 |             3,823 |               1,020 |         26.7% |
+
+Workspace churn consisted entirely of `rateLimitsByAccount` (16 changes,
+153,245 B) and `rateLimits` (10 changes, 15,047 B). A representative workspace
+value contained 9,553 B of account limits and 1,489 B of default limits; other
+values together occupied less than 100 B. Agent churn was mainly
+`commandProgress` (11 changes, 4,850 B), `activity` (34 / 3,235 B), `tail`
+(4 / 1,897 B), `contextUsage` (19 / 1,394 B), `lastAnswer` (2 / 1,386 B),
+`lastEvent` (34 / 1,224 B), and `tokensUsed` (20 / 435 B). Monitor `tail`
+accounted for 3,998 B over eight changes. Task `status`, `durationMs`, `finished`
+and `outputTruncated` changed together 11 times.
+
+The T2 optimized Rust Brotli replay of these same 96 recorded frames, retaining
+the encoder dictionary and flushing each event, reduced 846,405 B to 46,666 B
+(94.49%) at quality 3/window 20. It measured 2,286 microseconds of thread CPU
+total (23.81 microseconds/event), 2,678,992 B peak encoder heap and 18 encoder
+allocations. This is encoder replay evidence, not a live compressed connection;
+output-buffer allocations are excluded from the encoder allocation count.
+
+### Reproduce the traffic sample
+
+The reusable [measurement script](../workspaces/tooling/apps/repository-checks/measure-sync-stream.mjs)
+opens plain and Brotli-requested streams for the same interval, reports event and
+resource bytes/counts, and computes field churn for entity records. Supply an
+explicit resource file to include the desired chat IDs:
+
+```sh
+node workspaces/tooling/apps/repository-checks/measure-sync-stream.mjs \
+  --url http://127.0.0.1:4620 --protocol 3 --seconds 30 \
+  --resources-file /tmp/sync-resources.json --output /tmp/sync-report.json
+```
+
+The default protocol follows the current protocol owner; use `--protocol 3` only
+for the historical server. Optional `--record /path/outside/checkout/events.sse`
+saves the identity event stream for compression replay; it can contain private
+conversation content. The measured raw recording and detailed report were kept
+outside this repository in the operator's cache under
+`codex-studio/compact-sync-baseline/`, not committed.
+
+### View and publication audit
+
+Inactive server screens retain state, draft and list membership subscriptions.
+They release foreground transcript, queue, receipts and session-cost subscriptions
+when the conversation unmounts, and now also release offscreen chat prefetch and
+account-limit watchers. Returning restores the selected chat and bounded prefetch.
+Closed workspace/task drawers and terminal output already release their detail
+watchers; terminal membership remains available for the closed bar. Hidden Studio
+settings tabs unmount their contents. Prefetch also releases its subscriptions on
+document hiding or loss of network connectivity.
+
+Entity and transcript caches already coalesce publication within a frame. Draft
+query notifications now retain the latest result and reconcile it once per frame,
+so an SSE batch does not publish each intermediate query result. This introduces
+at most one frame of remote-draft display latency (the existing frame scheduler
+uses a timer for hidden tabs); local typing remains immediate. It avoids repeated
+decoding and reconciliation and retains one query-array reference without cloning
+or serializing it. Focused tests cover hidden-screen release/restore and complete
+draft publication/cancellation, alongside the existing entity/transcript batch
+witnesses. A headless Playwright check against a private Vite dev server and
+isolated API fixtures observes the actual requested resource sets across server
+switches; it makes no live model request.
+
+## Historical snapshot baseline
+
 These measurements preserve the historical `/api/state` baseline; the endpoint
 was removed in the pull request that completed the move to sync entities (round
 3), `#11`.
