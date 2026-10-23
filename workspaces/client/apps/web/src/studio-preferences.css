@@ -1,10 +1,11 @@
+/* Owner of the custom column: ratio of the available conversation width.
+   Original layout remains owned by workspace-layout.css. */
 :root {
   --studio-content-width-ratio: 1;
 }
 
 :root:not([data-studio-typography="original"]) {
-  --studio-font-family:
-    system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --studio-font-family: var(--mantine-font-family);
   --studio-sidebar-font-size: var(--studio-text-body);
   --studio-main-font-size: var(--studio-text-body);
 }
