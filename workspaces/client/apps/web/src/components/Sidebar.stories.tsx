@@ -133,9 +133,7 @@ const backend: SidebarBackend = {
 };
 const services = createSidebarServices(backend, [backend], () => "local");
 services.alias = (target) =>
-  target.kind === "chat" && target.id === "atlas-api-1"
-    ? "Build server"
-    : "MAC";
+  target.kind === "chat" && target.id === "atlas-api-1" ? "BLD" : "MAC";
 const args: SidebarProps = {
   services,
   data,
@@ -202,6 +200,14 @@ export const Interactions: Story = {
   play: async ({ canvasElement, args }) => {
     const page = within(canvasElement);
     const lane = page.getByRole("region", { name: "Needs you" });
+    for (const strip of canvasElement.querySelectorAll(".fleet-strip")) {
+      await expect(
+        strip.querySelector(".fleet-server-badge"),
+      ).toHaveTextContent(/^(MAC|BLD)$/);
+      await expect(
+        strip.querySelector(".fleet-chat-heading .fleet-server-badge"),
+      ).toBeNull();
+    }
     const firstStrip = lane.querySelector(".fleet-strip")!;
     const answerStatus = firstStrip.querySelector(
       '[data-chat-status="answer"]',
@@ -290,5 +296,28 @@ export const NoAttention: Story = {
     await expect(
       within(canvasElement).queryByRole("region", { name: "Needs you" }),
     ).not.toBeInTheDocument();
+  },
+};
+
+export const Offline: Story = {
+  args: { offlineServers: new Set(["local"]) },
+  render: (props) => <FleetFixture {...props} scheme="dark" />,
+  play: async ({ canvasElement }) => {
+    const badges = canvasElement.querySelectorAll<HTMLElement>(
+      ".fleet-server-badge",
+    );
+    await expect(badges.length).toBeGreaterThan(0);
+    for (const badge of badges) {
+      await expect(badge).toHaveAttribute("data-offline", "true");
+      await expect(badge).toHaveAccessibleName(/Offline.*unreachable/);
+      await expect(badge.querySelector("svg")).toBeVisible();
+      const color = document.createElement("span");
+      color.style.color = "var(--studio-state-error)";
+      badge.append(color);
+      await expect(getComputedStyle(badge).color).toBe(
+        getComputedStyle(color).color,
+      );
+      color.remove();
+    }
   },
 };

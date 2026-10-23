@@ -338,20 +338,16 @@
   font-size: var(--mantine-font-size-xs);
   text-align: end;
 }
-.fleet-chat-heading .chat-server-line {
-  display: inline-flex;
-  flex: 0 1 30%;
-  min-inline-size: 0;
-  margin: 0;
+.fleet-server-badge {
+  flex: none;
+  color: var(--muted);
   font-size: var(--mantine-font-size-xs);
+  font-weight: 400;
+  text-transform: none;
 }
-.fleet-chat-heading .chat-server-alias {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.fleet-chat-heading .chat-server-line > svg {
-  display: none;
+.fleet-server-badge[data-offline] {
+  color: var(--studio-state-error);
+  border-color: currentColor;
 }
 .chat-pin {
   margin-inline-end: calc(var(--mantine-spacing-xs) / 2);

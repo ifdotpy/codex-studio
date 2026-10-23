@@ -116,7 +116,6 @@ function renderRow(overrides: Partial<Parameters<typeof SidebarRow>[0]> = {}) {
         },
         selected: true,
         serverAlias: "MAC",
-        defaultServerAlias: "MAC",
         indicator: indicators.get("answer"),
         renaming: false,
         name: "",
@@ -162,7 +161,11 @@ describe("real fleet strip", () => {
     expect(renderRow({ now: 220 })).toContain(">2m</time>");
     expect(html).toContain('aria-label="Unpin Chat answer"');
     expect(html).toContain('aria-label="Actions for Chat answer"');
-    expect(html).not.toContain("chat-server-line");
+    expect(html).toContain('class="fleet-server-badge');
+    expect(html).toContain('aria-label="Server MAC"');
+    expect(html.indexOf('aria-label="Server MAC"')).toBeGreaterThan(
+      html.indexOf("</strong>"),
+    );
   });
   it("preserves the stall status and puts project context after the full title", () => {
     const html = renderRow({
@@ -181,12 +184,18 @@ describe("real fleet strip", () => {
       html.indexOf("</strong>"),
     );
   });
-  it("keeps nondefault and offline server identity visible", () => {
-    expect(renderRow({ serverAlias: "Remote" })).toContain("Remote");
+  it("shows local, remote and offline server badges even without live activity", () => {
+    const quiet = renderRow({ row: chat("quiet") });
+    expect(quiet).toContain('aria-label="Server MAC"');
+    expect(quiet).toContain("fleet-chat-meta");
+    expect(renderRow({ serverAlias: "RMT" })).toContain(
+      'aria-label="Server RMT"',
+    );
     const offline = renderRow({ serverOffline: true });
     expect(offline).toContain(
       "MAC is unreachable. Showing the last known state.",
     );
     expect(offline).toContain("Offline");
+    expect(offline).toContain('data-offline="true"');
   });
 });
