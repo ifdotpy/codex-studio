@@ -28,3 +28,11 @@ test("voice surfaces follow the active scheme instead of hard-coded dark colors"
   expect(voice.includes("var(--surface)")).toBe(true);
   expect(voice.includes("var(--text)")).toBe(true);
 });
+
+test("the composer and submit action consume the shared surface and primary tokens", () => {
+  const source = css("../style.css");
+  for (const selector of ["#composer", "#send", "#send:disabled"]) {
+    const block = source.split(`${selector} {`)[1].split("}")[0];
+    expect(/#[\da-f]{3,8}\b/i.test(block), selector).toBe(false);
+  }
+});
