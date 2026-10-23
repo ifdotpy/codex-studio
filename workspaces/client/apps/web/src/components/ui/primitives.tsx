@@ -22,7 +22,7 @@ export function ActionButton({
     actionRole === "destructive"
       ? "red"
       : actionRole === "primary"
-        ? "indigo"
+        ? undefined
         : "gray";
   return <Button variant={variant} color={color} {...props} />;
 }

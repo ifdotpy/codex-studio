@@ -5,8 +5,7 @@
 }
 
 :root:not([data-studio-typography="original"]) {
-  --studio-font-family:
-    system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --studio-font-family: var(--mantine-font-family);
   --studio-sidebar-font-size: var(--studio-text-body);
   --studio-main-font-size: var(--studio-text-body);
 }

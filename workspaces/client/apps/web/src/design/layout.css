@@ -18,6 +18,8 @@
   --studio-settings-nav-size: 12rem;
   /* Messages room selector alongside the selected room. */
   --studio-room-list-size: 16rem;
+  /* Minimum overlay menu width, constrained by the viewport on phones. */
+  --studio-menu-min: 13.75rem;
   /* Compact context usage meter length and thickness. */
   --studio-meter-width: 3rem;
   --studio-meter-size: 0.1875rem;

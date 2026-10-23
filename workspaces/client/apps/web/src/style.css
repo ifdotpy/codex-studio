@@ -6,6 +6,8 @@
 body {
   margin: 0;
   font-size: var(--studio-text-body);
+  background: var(--studio-page);
+  color: var(--text);
 }
 #root {
   display: flex;
@@ -23,7 +25,7 @@ body {
   }
 }
 a {
-  color: light-dark(#3e51aa, #b1bcff);
+  color: var(--accent);
 }
 button,
 a,
@@ -36,8 +38,8 @@ button:focus-visible,
 a:focus-visible,
 summary:focus-visible,
 [tabindex]:focus-visible {
-  outline: 2px solid light-dark(#3e51aa, #91a7ff);
-  outline-offset: 3px;
+  outline: calc(2 * var(--studio-border-width)) solid var(--accent);
+  outline-offset: var(--studio-rail-size, 0.1875rem);
 }
 button,
 input,
