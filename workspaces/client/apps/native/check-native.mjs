@@ -113,6 +113,7 @@ export async function createFixture(directory) {
         return json({
           application: "codex-agents",
           protocol: 1,
+          backendKind: "rust",
           pid: process.pid,
           stateDir: identityState,
           backendBuild: "a".repeat(64),
