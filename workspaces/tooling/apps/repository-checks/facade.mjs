@@ -712,7 +712,7 @@ function fastTierCommands(root) {
     },
     {
       item: { name: "studio-runtime-services", ecosystem: "cargo" },
-      label: "host_exec tool and Mac service witnesses",
+      label: "VM tools, host_exec tool and Mac service witnesses",
       commands: [
         [
           "cargo",
@@ -728,7 +728,7 @@ function fastTierCommands(root) {
             "studio-runtime-services",
             "--lib",
             "-E",
-            "test(/^host_exec(_service)?::/)",
+            "test(/^(host_exec(_service)?|layr_read)::/) | test(/^thread_prepare::vm_catalog_tests::/) | test(/::context::tests::the_tools_topic_lists_the_tools_of_a_vm_agent$/) | test(/::a_vm_agent_on_an_old_thread_gets_the_current_catalog$/)",
           ],
         ],
         [

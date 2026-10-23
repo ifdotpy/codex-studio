@@ -353,7 +353,7 @@ pub fn session_tool_of(saved: Option<SessionTool>, has_thread: bool) -> SessionT
 pub enum VmRole {
     /// A writer gets `host_exec`.
     Writer,
-    /// A read-only reviewer gets no `host_exec`.
+    /// A read-only reviewer gets `layr_read` and no `host_exec`.
     Reviewer,
 }
 
@@ -455,18 +455,62 @@ pub fn filter_tool_definitions(
                 _ => "",
             });
         }
+        if f.vm.is_some() {
+            vm_tool(&mut tool)?;
+        }
         result.push(tool);
     }
-    // Python appends the VM tools after the catalog: `host_exec` for a writer.
-    // A reviewer's `layr_read` has no Rust owner yet.
-    if f.vm == Some(VmRole::Writer) {
-        result.push(
-            crate::host_exec::tool_definition()
-                .ok_or(Refusal::MalformedCatalog)?
-                .clone(),
-        );
-    }
+    // Python appends the VM tools after the catalog: `host_exec` for a writer,
+    // `layr_read` for a reviewer.
+    let appended = match f.vm {
+        Some(VmRole::Writer) => crate::host_exec::tool_definition(),
+        Some(VmRole::Reviewer) => crate::layr_read::tool_definition(),
+        None => return Ok(result),
+    };
+    result.push(appended.ok_or(Refusal::MalformedCatalog)?.clone());
     Ok(result)
+}
+
+/// The `orchestration_review` description of a VM agent.
+const VM_REVIEW_DESCRIPTION: &str = "Create a read-only layr reviewer in the VM. target commit.sha is the exact layr state ID. \
+    Use custom.instructions for review instructions. The result wakes the lead.";
+/// The `orchestration_spawn` description of a VM agent.
+const VM_SPAWN_DESCRIPTION: &str = "Delegate a batch to VM agents on separate owned layr lines. \
+    Reviewers receive read-only lines. Each completion wakes you. \
+    base_ref selects a layr state ID. Use cwd within your line. \
+    Omit model and effort to use the team defaults.";
+
+/// Python `Runtime.tool_definitions`: a VM agent delegates to VM agents on
+/// layr lines in the same guest, so `orchestration_spawn` offers only the layr
+/// workspace and the Linux environment, and names no paired server.
+fn vm_tool(tool: &mut ToolDefinition) -> Result<(), Refusal> {
+    match tool.name.as_str() {
+        "orchestration_review" => tool.description = VM_REVIEW_DESCRIPTION.into(),
+        "orchestration_spawn" => {
+            tool.description = VM_SPAWN_DESCRIPTION.into();
+            let properties = tool
+                .input_schema
+                .get_mut("properties")
+                .and_then(Value::as_object_mut)
+                .ok_or(Refusal::MalformedCatalog)?;
+            properties.remove("server");
+            let fields = properties
+                .get_mut("agents")
+                .and_then(|agents| agents.pointer_mut("/items/properties"))
+                .and_then(Value::as_object_mut)
+                .ok_or(Refusal::MalformedCatalog)?;
+            for (field, value) in [("workspace", "layr"), ("environment", "linux")] {
+                fields
+                    .get_mut(field)
+                    .and_then(Value::as_object_mut)
+                    .ok_or(Refusal::MalformedCatalog)?
+                    .insert("enum".into(), json!([value]));
+            }
+            fields.remove("server");
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 fn refusal(s: &Snapshot) -> Option<Refusal> {
@@ -1181,5 +1225,120 @@ mod archive_finished_catalog_tests {
                 assert!(!worker.description.contains("archive_finished"));
             }
         }
+    }
+}
+
+/// The VM catalog of Python `Runtime.tool_definitions`, which 027f3cfea
+/// deleted: VM agents delegate and review on layr lines in the guest.
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod vm_catalog_tests {
+    use super::*;
+
+    fn bundled() -> Vec<ToolDefinition> {
+        #[derive(Deserialize)]
+        struct Bundled {
+            tools: Vec<ToolDefinition>,
+        }
+        serde_json::from_str::<Bundled>(include_str!("account_worker/preparation-resources.json"))
+            .unwrap()
+            .tools
+    }
+
+    fn catalog(vm: Option<VmRole>) -> Vec<ToolDefinition> {
+        filter_tool_definitions(
+            &bundled(),
+            &CatalogFilter {
+                provider: ProviderKind::Codex,
+                is_lead: true,
+                can_delegate: true,
+                federation_enabled: false,
+                cwd: "/line",
+                session_tool: SessionTool::Move,
+                vm,
+            },
+        )
+        .unwrap()
+    }
+
+    fn tool(tools: &[ToolDefinition], name: &str) -> ToolDefinition {
+        tools.iter().find(|tool| tool.name == name).unwrap().clone()
+    }
+
+    #[test]
+    fn vm_spawn_delegates_on_layr_lines() {
+        let spawn = tool(&catalog(Some(VmRole::Writer)), "orchestration_spawn");
+        assert_eq!(
+            spawn.description,
+            "Delegate a batch to VM agents on separate owned layr lines. Reviewers receive \
+             read-only lines. Each completion wakes you. base_ref selects a layr state ID. Use \
+             cwd within your line. Omit model and effort to use the team defaults."
+        );
+        let host = tool(&catalog(None), "orchestration_spawn");
+        assert!(
+            host.description
+                .starts_with("Delegate a batch to managed agents.")
+        );
+        assert!(
+            host.description
+                .ends_with("pass cwd when you work in a subfolder.")
+        );
+    }
+
+    #[test]
+    fn vm_spawn_offers_only_the_layr_workspace_in_linux() {
+        let spawn = tool(&catalog(Some(VmRole::Writer)), "orchestration_spawn");
+        let properties = &spawn.input_schema["properties"];
+        let fields = &properties["agents"]["items"]["properties"];
+        assert_eq!(
+            fields["workspace"],
+            json!({"type": "string", "enum": ["layr"]})
+        );
+        assert_eq!(
+            fields["environment"],
+            json!({"type": "string", "enum": ["linux"]})
+        );
+        assert!(fields.get("server").is_none(), "{fields}");
+        assert!(properties.get("server").is_none(), "{properties}");
+        // The bundled catalog itself stays unchanged for host agents.
+        let host = tool(&catalog(None), "orchestration_spawn");
+        let fields = &host.input_schema["properties"]["agents"]["items"]["properties"];
+        assert_eq!(
+            fields["workspace"]["enum"],
+            json!(["image", "worktree", "shared"])
+        );
+        assert!(fields.get("server").is_some());
+    }
+
+    #[test]
+    fn vm_review_creates_a_layr_reviewer() {
+        for role in [VmRole::Writer, VmRole::Reviewer] {
+            let review = tool(&catalog(Some(role)), "orchestration_review");
+            assert_eq!(
+                review.description,
+                "Create a read-only layr reviewer in the VM. target commit.sha is the exact \
+                 layr state ID. Use custom.instructions for review instructions. The result \
+                 wakes the lead."
+            );
+        }
+        assert!(
+            tool(&catalog(None), "orchestration_review")
+                .description
+                .starts_with("Request native Codex review")
+        );
+    }
+
+    #[test]
+    fn a_vm_reviewer_gets_layr_read_and_a_writer_gets_host_exec() {
+        let last = |vm| catalog(vm).last().map(|tool| tool.name.clone());
+        assert_eq!(last(Some(VmRole::Reviewer)).as_deref(), Some("layr_read"));
+        assert_eq!(last(Some(VmRole::Writer)).as_deref(), Some("host_exec"));
+        let host = catalog(None);
+        assert!(
+            !host
+                .iter()
+                .any(|tool| matches!(tool.name.as_str(), "layr_read" | "host_exec"))
+        );
+        assert_eq!(host.len() + 1, catalog(Some(VmRole::Reviewer)).len());
     }
 }

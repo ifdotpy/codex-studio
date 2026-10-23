@@ -42,8 +42,7 @@ pub(super) fn topic(
             resources(preparation)?,
             &record,
         )
-        .map_err(worker_error)?
-        .ok_or(Error::Unavailable("model-context/vm-tool-catalog")),
+        .map_err(worker_error),
         _ => Err(Error::Invalid("Unknown context topic")),
     }
 }
@@ -56,5 +55,60 @@ fn worker_error(error: WorkerError) -> Error {
     match error {
         WorkerError::Store(error) => Error::Store(error),
         _ => Error::Invalid("Studio context is unavailable for this agent"),
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    /// Python `EfficiencyMixin.model_context` answered the `tools` topic of a
+    /// VM agent with `Runtime.tool_definitions`; Rust answered that the VM
+    /// catalog was unavailable.
+    #[tokio::test]
+    async fn the_tools_topic_lists_the_tools_of_a_vm_agent() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = studio_runtime_store::RuntimeStore::open(Some(directory.path()))
+            .await
+            .unwrap();
+        let resources = PreparationResources::bundled(
+            String::new(),
+            crate::model_catalog::ModelCatalogService::new(),
+        )
+        .unwrap();
+        store
+            .transaction_with(move |tx| {
+                let agent = |id: &str, role: &str, thread: &str| {
+                    json!({"id":id, "rootId":"lead", "parentId":(id != "lead").then_some("lead"),
+                        "epoch":1, "status":"running", "isLead":id == "lead", "name":id,
+                        "role":role, "provider":"codex", "accountKey":"default",
+                        "executionMode":"vm", "cwd":"/line", "threadId":thread})
+                };
+                let lead = agent("lead", "orchestrator", "thread-0");
+                let reviewer = agent("reviewer", "reviewer", "thread-1");
+                for record in [&lead, &reviewer] {
+                    studio_runtime_store::AgentRepository::put(
+                        tx,
+                        &studio_runtime_store::AgentRecord::from_value(record.clone()).unwrap(),
+                    )?;
+                }
+                for (record, vm_tool) in [(&lead, "host_exec"), (&reviewer, "layr_read")] {
+                    let actor =
+                        Actor::from_record(record, record["id"].as_str().unwrap(), 1).unwrap();
+                    let tools = topic(tx, &actor, "tools", Some(&resources)).expect("VM tools");
+                    let names = tools
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .map(|tool| tool["name"].as_str().unwrap().to_owned())
+                        .collect::<Vec<_>>();
+                    assert_eq!(names.last().map(String::as_str), Some(vm_tool), "{names:?}");
+                    assert!(names.iter().any(|name| name == "orchestration_sign_in"));
+                }
+                Ok::<_, studio_runtime_store::StoreError>(())
+            })
+            .await
+            .unwrap();
     }
 }

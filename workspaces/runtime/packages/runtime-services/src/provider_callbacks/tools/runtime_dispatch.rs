@@ -411,6 +411,9 @@ pub(crate) struct LatePorts {
     /// The VM guest channel and Mac service of `host_exec`.
     pub(crate) host_exec:
         std::sync::Arc<std::sync::OnceLock<std::sync::Arc<crate::host_exec::HostExecRuntime>>>,
+    /// The VM guest channel of `layr_read`.
+    pub(crate) layr_read:
+        std::sync::Arc<std::sync::OnceLock<std::sync::Arc<dyn crate::linux_vm_guest::GuestRpc>>>,
 }
 
 /// The dependency that a remote worker's forwarded tool names until the host
@@ -721,6 +724,14 @@ pub(super) async fn dispatch(
                 runtime,
             )
             .await
+        }
+        crate::layr_read::TOOL => {
+            let Some(guest) = ports.late.layr_read.get() else {
+                return Ok(Some(not_sent(Error::Unavailable(
+                    crate::layr_read::DEPENDENCY,
+                ))));
+            };
+            crate::layr_read::run(actor, args, request_id, std::sync::Arc::clone(guest)).await
         }
         "orchestration_agent_manage" if super::services::manage::lifecycle_action(args) => {
             return lifecycle_management(store, actor, args, now)

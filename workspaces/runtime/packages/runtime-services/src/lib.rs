@@ -81,6 +81,7 @@ pub mod host_project_runtime;
 pub mod host_worker_create;
 pub mod image_workspace;
 pub mod image_workspace_agents;
+pub(crate) mod layr_read;
 pub mod lifecycle_effects;
 pub mod limit_reset;
 pub mod linux_vm_guest;

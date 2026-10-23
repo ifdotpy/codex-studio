@@ -324,6 +324,7 @@ impl HostRuntime {
         let preparation_resources = Arc::new(resources.clone());
         if let Some(managed_tool_runtime) = &managed_tool_runtime {
             managed_tool_runtime.set_preparation_resources(Arc::clone(&preparation_resources));
+            managed_tool_runtime.attach_layr_read(Arc::clone(&vm_guest));
             if let Some(host_exec) = host_exec {
                 managed_tool_runtime.attach_host_exec(host_exec);
             }
