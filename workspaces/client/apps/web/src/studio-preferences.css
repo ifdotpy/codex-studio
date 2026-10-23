@@ -185,14 +185,26 @@
   display: none;
 }
 
-@media (max-width: 760px) {
+@media (any-pointer: coarse), (max-width: 760px) {
   :root:not([data-studio-typography="original"])
     #conversation
     #composer
     #message {
-    font-size: max(16px, var(--studio-main-font-size));
+    font-size: max(
+      var(--studio-touch-input-min-font-size),
+      var(--studio-main-font-size)
+    ) !important;
   }
 
+  :root:not([data-studio-typography="original"]) #sidebar #chat-search {
+    font-size: max(
+      var(--studio-touch-input-min-font-size),
+      var(--studio-sidebar-font-size)
+    ) !important;
+  }
+}
+
+@media (max-width: 760px) {
   .workspace {
     --studio-content-width-ratio: 1;
   }

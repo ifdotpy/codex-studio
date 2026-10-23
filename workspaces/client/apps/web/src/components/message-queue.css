@@ -254,7 +254,7 @@
     display: none;
   }
   .message-queue-editor textarea {
-    font-size: 16px;
+    font-size: var(--studio-touch-input-min-font-size);
   }
   .message-queue-editor-actions > span {
     display: none;
