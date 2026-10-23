@@ -590,3 +590,101 @@
     gap: calc(var(--mantine-spacing-xs) / 2);
   }
 }
+
+/* Mounted panels share a grid cell, reserving the tallest natural content. */
+.account-limits-tiles,
+.account-limits-detail-stack {
+  display: grid;
+  min-width: 0;
+}
+.account-limits-provider-panel,
+.account-limits-detail-panel {
+  grid-area: 1 / 1;
+  min-width: 0;
+  visibility: hidden;
+}
+.account-limits-provider-panel[data-active],
+.account-limits-detail-panel[data-active] {
+  visibility: visible;
+}
+.account-limits-panel {
+  padding: var(--mantine-spacing-xs);
+  max-block-size: calc(
+    100dvh - var(--studio-touch-target) - var(--mantine-spacing-xl)
+  );
+  overflow-y: auto;
+}
+.account-limits-tiles [role="tablist"] {
+  gap: var(--studio-rail-size);
+}
+.account-limits-tiles .setup-account {
+  height: var(--studio-touch-target);
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--mantine-spacing-xs);
+  padding: var(--studio-rail-size) var(--mantine-spacing-xs);
+}
+.account-limits-tiles .setup-account-label {
+  display: flex;
+  flex: 1;
+  flex-wrap: nowrap;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--mantine-spacing-xs);
+}
+.account-limits-tile-name {
+  flex: 1;
+  width: auto;
+}
+.account-limits-tiles .account-remaining {
+  flex: none;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.account-limits-current {
+  flex: none;
+}
+
+.account-limit-windows {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.account-limit-reset {
+  display: grid;
+  gap: 0;
+}
+.account-limit-reset time {
+  text-align: start;
+}
+.account-limit-group > header {
+  margin-bottom: var(--studio-rail-size);
+}
+.account-cost-values > div {
+  display: flex;
+  justify-content: space-between;
+}
+.account-limits-tiles .mantine-Tabs-tabLabel {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  align-items: center;
+  gap: var(--mantine-spacing-xs);
+}
+.account-limits-popover .account-tiles {
+  gap: var(--studio-rail-size);
+  margin-block: var(--studio-rail-size);
+}
+.account-limits-selected-name {
+  margin-block: var(--studio-rail-size);
+}
+.account-limits-panel .account-reset-credit,
+.account-limits-panel .account-reset-credits,
+.account-limits-panel .account-costs {
+  margin-top: var(--mantine-spacing-xs);
+  padding-top: var(--studio-rail-size);
+}
+.account-limits-heading,
+.account-limits-panel .limits-session-estimate {
+  margin-bottom: var(--studio-rail-size);
+}

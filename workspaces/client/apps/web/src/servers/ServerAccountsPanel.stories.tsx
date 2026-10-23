@@ -119,12 +119,12 @@ export const WarningAndActions: Story = {
     await expect(
       canvas.getByText("Sign in needed", { exact: true }),
     ).toBeVisible();
-    await expect(row.getBoundingClientRect().height).toBeLessThanOrEqual(56);
     await waitFor(() =>
       expect(
         account.getByRole("meter", { name: "Remaining limit" }),
       ).toHaveAttribute("aria-valuenow", "76"),
     );
+    await expect(row.querySelector(".account-window-grid")).toBeVisible();
     const details = row.querySelector(".account-limit-details > summary");
     if (!(details instanceof HTMLElement))
       throw new Error("Missing limit details");

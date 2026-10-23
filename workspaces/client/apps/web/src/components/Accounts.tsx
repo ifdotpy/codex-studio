@@ -282,7 +282,7 @@ export function AccountCapacityView({
   extraDetails?: ReactNode;
 }) {
   const { limits, buckets, remaining, error: limitsError } = view;
-  const details = (
+  const status = (
     <>
       {!limits && !limitsError && <small>Reading limits…</small>}
       {limitsError && (
@@ -292,12 +292,16 @@ export function AccountCapacityView({
           value={limits?.readError || limitsError}
         />
       )}
+    </>
+  );
+  const windows = (
+    <>
       {buckets.map((bucket) => (
         <div key={bucket.id} className="account-capacity-pool">
           <span>{/spark/i.test(bucket.name) ? "Spark" : bucket.name}</span>
           <div>
             {bucket.windows.map((window) => (
-              <span key={window.label} className="account-capacity-window">
+              <div key={window.label} className="account-capacity-window">
                 <strong>
                   {window.label}{" "}
                   {window.remaining === null
@@ -306,6 +310,23 @@ export function AccountCapacityView({
                       ? "Reset due"
                       : remainingText(window.remaining)}
                 </strong>
+                {card && window.remaining !== null && !window.expired && (
+                  <Progress.Root
+                    className="account-window-meter"
+                    size="xs"
+                    role="meter"
+                    aria-label={`${bucket.name} ${window.label} remaining`}
+                    aria-valuemin={0}
+                    aria-valuemax={100}
+                    aria-valuenow={window.remaining}
+                  >
+                    <Progress.Section
+                      value={window.remaining}
+                      color={remainingLimitColor(window.remaining)}
+                      withAria={false}
+                    />
+                  </Progress.Root>
+                )}
                 {window.reset && (
                   <time
                     dateTime={new Date(window.reset * 1000).toISOString()}
@@ -320,14 +341,11 @@ export function AccountCapacityView({
                     })}
                   </time>
                 )}
-              </span>
+              </div>
             ))}
           </div>
         </div>
       ))}
-      {limits && !limitsError && !limits.error && !buckets.length && (
-        <small>Limits unavailable</small>
-      )}
     </>
   );
   return (
@@ -339,7 +357,13 @@ export function AccountCapacityView({
         <>
           <div className="account-limit-summary">
             <span>Remaining limit</span>
-            <span>
+            <span
+              role={remaining === null ? undefined : "meter"}
+              aria-label="Remaining limit"
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuenow={remaining ?? undefined}
+            >
               {remaining === null
                 ? view.reading
                   ? "Reading limits…"
@@ -347,31 +371,34 @@ export function AccountCapacityView({
                 : remainingText(remaining)}
             </span>
           </div>
-          <Progress.Root
-            className="account-limit-bar"
-            size="xs"
-            role={remaining === null ? undefined : "meter"}
-            aria-label="Remaining limit"
-            aria-valuemin={0}
-            aria-valuemax={100}
-            aria-valuenow={remaining ?? undefined}
-          >
-            <Progress.Section
-              value={remaining ?? 0}
-              color={remainingLimitColor(remaining)}
-              withAria={false}
-            />
-          </Progress.Root>
+          <div className="account-window-grid">
+            {windows}
+            {!buckets.length && (
+              <small>
+                {limitsError
+                  ? "Limits temporarily unavailable"
+                  : view.reading
+                    ? "Reading limits…"
+                    : "Limits unavailable"}
+              </small>
+            )}
+          </div>
           {(account.status === "ready" || extraDetails) && (
             <AccountLimitDetails>
               {note && <small className="account-limit-note">{note}</small>}
-              {details}
+              {status}
               {extraDetails}
             </AccountLimitDetails>
           )}
         </>
       ) : (
-        details
+        <>
+          {status}
+          {windows}
+          {limits && !limitsError && !limits.error && !buckets.length && (
+            <small>Limits unavailable</small>
+          )}
+        </>
       )}
     </div>
   );
@@ -1045,6 +1072,11 @@ export default function Accounts({
                                 onSaved={state.setData}
                                 disabled={!!pending}
                               />
+                              {account.plan && (
+                                <span className="account-plan">
+                                  {account.plan}
+                                </span>
+                              )}
                               <Menu
                                 opened={openActionMenuAccountId === account.id}
                                 onChange={(nextOpened) => {
@@ -1252,11 +1284,6 @@ export default function Accounts({
                                           ? "Signed in"
                                           : "Sign in needed"}
                                     </span>
-                                    {account.plan && (
-                                      <span className="account-plan">
-                                        {account.plan}
-                                      </span>
-                                    )}
                                     {account.id ===
                                       state.data.defaultAccountKey && (
                                       <span className="account-default">

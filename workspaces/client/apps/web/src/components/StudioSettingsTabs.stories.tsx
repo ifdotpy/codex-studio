@@ -163,7 +163,7 @@ export const SectionSelectionPreservesFields: Story = {
       canvas.queryByRole("textbox", { name: "Group of Release team" }),
     ).not.toBeVisible();
     for (const row of canvasElement.querySelectorAll(".account-row")) {
-      await expect(row.getBoundingClientRect().height).toBeLessThanOrEqual(56);
+      await expect(row.querySelector(".account-window-grid")).toBeVisible();
     }
     await userEvent.click(summary);
     await expect(

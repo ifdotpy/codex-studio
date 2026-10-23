@@ -412,10 +412,6 @@
 .account-limit-summary > :last-child {
   font-variant-numeric: tabular-nums;
 }
-.account-limit-bar {
-  background: var(--mantine-color-default-hover);
-  border-radius: 0;
-}
 .account-limit-details {
   color: var(--muted);
   font-size: var(--studio-text-meta);
@@ -561,11 +557,6 @@
   clip-path: inset(50%);
   white-space: nowrap;
 }
-:is(.account-row, .server-account-row) .account-limit-bar {
-  grid-column: 1 / -1;
-  grid-row: 2;
-  height: var(--studio-meter-size);
-}
 :is(.account-row, .server-account-row) .account-limit-details {
   display: contents;
 }
@@ -619,4 +610,66 @@
     overflow: hidden;
     clip-path: inset(50%);
   }
+}
+
+/* Identity and plan sit above labeled quota windows, with space between accounts. */
+.accounts-grid,
+.server-accounts-list {
+  gap: var(--mantine-spacing-lg);
+}
+.account-row,
+.server-account-row {
+  border: 0;
+  padding-block: 0;
+  row-gap: var(--mantine-spacing-xs);
+}
+.account-plan {
+  flex: none;
+  white-space: nowrap;
+}
+.account-window-grid {
+  grid-column: 1 / -1;
+  grid-row: 2;
+  display: grid;
+  gap: var(--mantine-spacing-xs);
+  min-width: 0;
+}
+.account-window-grid .account-capacity-pool {
+  grid-template-columns: calc(var(--studio-action-size) * 1.5) minmax(0, 1fr);
+  gap: var(--mantine-spacing-xs);
+}
+.account-window-grid .account-capacity-window {
+  gap: var(--studio-rail-size);
+}
+.account-window-meter {
+  height: var(--studio-meter-size);
+  background: var(--mantine-color-default-hover);
+  border-radius: 0;
+}
+.account-window-grid time {
+  font-variant-numeric: tabular-nums;
+}
+@media (max-width: 37.5rem) {
+  .account-window-grid .account-capacity-pool {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--studio-rail-size);
+  }
+}
+.server-accounts-panel > .ui-settings-section > .ui-panel-header {
+  flex-wrap: wrap;
+}
+.server-accounts-panel > .ui-settings-section > .ui-panel-header > .ui-label {
+  flex: none;
+}
+@media (max-width: 37.5rem) {
+  .server-accounts-panel
+    > .ui-settings-section
+    > .ui-panel-header
+    > .ui-actions {
+    flex-basis: 100%;
+  }
+}
+
+.server-account-heading .mantine-Badge-label {
+  text-transform: none;
 }
