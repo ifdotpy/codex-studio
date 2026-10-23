@@ -144,3 +144,48 @@ index 9a2061f27464dc10164940c9efbe6e0b195c88c1..eaad0283892d82b43863e84f7072cdd4
            return true;
          }
  
+diff --git a/src/replication-protocol/upstream.ts b/src/replication-protocol/upstream.ts
+--- a/src/replication-protocol/upstream.ts
++++ b/src/replication-protocol/upstream.ts
+@@ -258,6 +258,11 @@
+             if (openTasks.length === 0) {
+                 state.events.active.up.next(false);
+             } else {
++                // Studio: RxDB 17.5.0 upstream.ts:257-261 bypasses the existing
++                // waitBeforePersist hook when draining edits received during a push.
++                if (state.input.waitBeforePersist) {
++                    return state.input.waitBeforePersist().then(() => processTasks());
++                }
+                 return processTasks();
+             }
+         });
+diff --git a/dist/esm/replication-protocol/upstream.js b/dist/esm/replication-protocol/upstream.js
+--- a/dist/esm/replication-protocol/upstream.js
++++ b/dist/esm/replication-protocol/upstream.js
+@@ -168,6 +168,11 @@
+       if (openTasks.length === 0) {
+         state.events.active.up.next(false);
+       } else {
++        // Studio: RxDB 17.5.0 upstream.ts:257-261 bypasses the existing
++        // waitBeforePersist hook when draining edits received during a push.
++        if (state.input.waitBeforePersist) {
++            return state.input.waitBeforePersist().then(() => processTasks());
++        }
+         return processTasks();
+       }
+     });
+diff --git a/dist/cjs/replication-protocol/upstream.js b/dist/cjs/replication-protocol/upstream.js
+--- a/dist/cjs/replication-protocol/upstream.js
++++ b/dist/cjs/replication-protocol/upstream.js
+@@ -173,6 +173,11 @@
+       if (openTasks.length === 0) {
+         state.events.active.up.next(false);
+       } else {
++        // Studio: RxDB 17.5.0 upstream.ts:257-261 bypasses the existing
++        // waitBeforePersist hook when draining edits received during a push.
++        if (state.input.waitBeforePersist) {
++            return state.input.waitBeforePersist().then(() => processTasks());
++        }
+         return processTasks();
+       }
+     });

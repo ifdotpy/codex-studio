@@ -336,10 +336,8 @@ it
       expect(posts.filter((post) => post.conflicts.length)).toHaveLength(
         order === "second-writer" ? 1 : 0,
       );
-      // The first commit only fixes echo ordering. The recursive drain still
-      // sends the intermediate edit before the existing quiet gate settles.
       expect(posts.length).toBeLessThanOrEqual(
-        order === "echo-first" ? 2 : order === "second-writer" ? 4 : 3,
+        order === "ack-first" || order === "echo-first" ? 2 : 3,
       );
     } finally {
       release.resolve();

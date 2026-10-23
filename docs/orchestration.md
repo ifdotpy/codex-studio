@@ -263,7 +263,7 @@ Native composer draft synchronization follows this flow:
 
 Browser draft push acknowledgement follows this flow:
 
-1. Save edits locally immediately; the existing RxDB push gate groups remote writes.
+1. Save edits locally immediately; the existing RxDB push gate groups remote writes, including edits received during an in-flight push.
 2. Accept the conflicts-only HTTP result as acknowledgement of the exact attempted state.
 3. Deliver complete server draft intervals through the same RxDB master stream.
 4. Keep the fork and assumed master when a delayed echo is an ancestor already replaced in the fork's `seen` map.
