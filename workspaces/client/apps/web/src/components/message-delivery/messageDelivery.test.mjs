@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import {
+  mergeOutgoing,
   outgoingTranscript,
   deliveryLabel,
   explicitQueue,
@@ -516,4 +517,131 @@ it("labels every delivery state used by the chat and hides unknown states", () =
   assert.equal(deliveryLabel({ pending: true }), "Queued");
   assert.equal(deliveryLabel({}), "");
   assert.equal(deliveryLabel({ deliveryStatus: "future-status" }), "");
+});
+
+// The App merges the durable outbox with this tab's send copies. The chat then
+// renders local cards; OutboxControls shows retry actions for queued entries.
+const steer = {
+  id: "steer",
+  room: "lead",
+  text: "Steer the turn",
+  assets: [],
+  delivery: "current_turn",
+};
+function localCards(outbox, local, observed = new Set(), history = []) {
+  const shown = mergeOutgoing(outbox, local, observed).filter(
+    (entry) => entry.body.room === "lead",
+  );
+  return outgoingTranscript(history, shown)
+    .items.filter((item) => item.localDelivery)
+    .map((item) => ({
+      label: deliveryLabel(item),
+      retryControls: ["queued", "paused"].includes(
+        shown.find((entry) => entry.id === item.clientMessageId)?.status,
+      ),
+    }));
+}
+
+it("hides a delivered message whose first send result was queued after a chat switch", () => {
+  const sending = {
+    id: "steer",
+    body: steer,
+    status: "sending",
+    created: 1,
+    attachments: [],
+    displayPending: true,
+  };
+  assert.deepEqual(localCards([], { steer: sending }), [
+    { label: "Sending…", retryControls: false },
+  ]);
+
+  // The first response is lost, so the send result stays queued for retry.
+  const local = { steer: { ...sending, status: "queued", error: "Timed out" } };
+  const stored = {
+    id: "steer",
+    body: steer,
+    status: "queued",
+    attempted: true,
+    error: "Timed out",
+    created: 1,
+    displayPending: true,
+    attachments: [],
+  };
+  assert.deepEqual(localCards([stored], local), [
+    { label: "Waiting to send", retryControls: true },
+  ]);
+
+  // Another chat is open. The outbox retry delivers the message and receipt
+  // recovery confirms the saved transcript input. No chat observes it.
+  const delivered = {
+    ...stored,
+    status: "accepted",
+    error: undefined,
+    receipt: { id: "steer", status: "delivered", materialized: true },
+    displayPending: false,
+  };
+
+  // Back in the chat, the transcript page does not contain the input yet.
+  assert.deepEqual(localCards([delivered], local), []);
+});
+
+it("lets the durable outbox state replace an in-flight send copy", () => {
+  const sending = {
+    id: "steer",
+    body: steer,
+    status: "sending",
+    created: 1,
+    attachments: [],
+    displayPending: true,
+  };
+  const stored = {
+    id: "steer",
+    body: steer,
+    status: "queued",
+    attempted: false,
+    created: 1,
+    displayPending: true,
+    attachments: [],
+  };
+  // The outbox has not resolved the request yet, so the copy reports it.
+  assert.deepEqual(localCards([stored], { steer: sending }), [
+    { label: "Sending…", retryControls: false },
+  ]);
+  // A rejected send that the outbox never stored keeps its local failure.
+  assert.deepEqual(
+    localCards([], { steer: { ...sending, status: "failed", error: "No" } }),
+    [{ label: "Not sent", retryControls: false }],
+  );
+  // A stored uncertain outcome stays uncertain while a repeat send of the same
+  // identity is in flight. The outbox does not send it again.
+  for (const copy of ["sending", "queued", "accepted"])
+    assert.deepEqual(
+      localCards(
+        [{ ...stored, status: "uncertain", attempted: true, error: "Lost" }],
+        { steer: { ...sending, status: copy } },
+      ),
+      [{ label: "Delivery unconfirmed", retryControls: false }],
+    );
+  // A confirmed outbox result is not shown again as an earlier send state.
+  for (const copy of ["sending", "queued"])
+    assert.deepEqual(
+      localCards(
+        [
+          {
+            ...stored,
+            status: "accepted",
+            attempted: true,
+            receipt: { id: "steer", status: "delivered", materialized: true },
+            displayPending: false,
+          },
+        ],
+        { steer: { ...sending, status: copy } },
+      ),
+      [],
+    );
+  // An observed send stays hidden whatever its local state is.
+  assert.deepEqual(
+    localCards([stored], { steer: sending }, new Set(["steer"])),
+    [],
+  );
 });

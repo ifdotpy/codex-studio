@@ -1067,15 +1067,19 @@ export function createSyncClient(options: SyncClientOptions) {
         );
       } else if (incoming !== null) {
         const cacheMetadata = transcriptMetadata(incoming);
-        const patched = patchTranscriptValue(
-          workspaceId,
-          id,
-          cacheMetadata,
-          document.seq,
-          changedItems,
-          removed,
-          delta?.order ? order : undefined,
-        );
+        // Patch only a cache entry at this delta's durable base. A write that
+        // stopped after its durable update can leave the cache behind it.
+        const patched =
+          peekTranscript(workspaceId, id)?.seq === previous?.seq &&
+          patchTranscriptValue(
+            workspaceId,
+            id,
+            cacheMetadata,
+            document.seq,
+            changedItems,
+            removed,
+            delta?.order ? order : undefined,
+          );
         if (!patched)
           await cacheStoredTranscript(
             collection,
