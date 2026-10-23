@@ -10,6 +10,7 @@ import type { AccountsState } from "./Accounts";
 import { useWorkerModels } from "./agents/WorkerModelPicker";
 import { AgentSetupPicker, type SetupRole } from "./agents/AgentSetupPicker";
 import {
+  INHERITED_MODEL,
   modelDisplayName,
   modelForValue,
   toModelOptions,
@@ -160,7 +161,7 @@ function ParticipantFields({
               readOnlyReason
                 ? [
                     {
-                      value: "inherited",
+                      value: INHERITED_MODEL,
                       label: "Inherited",
                       provider,
                       badges: [],
@@ -168,7 +169,7 @@ function ParticipantFields({
                   ]
                 : toModelOptions(catalog.models, { provider })
             }
-            model={readOnlyReason ? "inherited" : value.model}
+            model={readOnlyReason ? INHERITED_MODEL : value.model}
             modelLabel={`Model for agent ${index + 1}`}
             onModel={(model) => change({ ...value, model, effort: undefined })}
             efforts={
