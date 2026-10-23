@@ -7,6 +7,7 @@ vi.mock("./client", () => ({ syncDatabase: vi.fn() }));
 vi.mock("../usage/tokenRate", () => ({
   configureTokenRateStream: vi.fn(),
   receiveResourceTokenRates: vi.fn(),
+  getWorkspaceTokenRates: vi.fn(() => ({ records: [] })),
 }));
 vi.mock("./resume", () => ({ onResume: () => () => {} }));
 
@@ -69,6 +70,7 @@ async function fixture() {
     tokenRates: {
       configureTokenRateStream: vi.fn(),
       receiveResourceTokenRates: vi.fn(() => true),
+      getWorkspaceTokenRates: vi.fn(() => ({ records: [] })),
     },
     openEvents: (url) => {
       const source = new Source();
