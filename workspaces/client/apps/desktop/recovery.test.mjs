@@ -9,7 +9,7 @@ import {
   rmSync,
   statSync,
   realpathSync,
-  symlinkSync,
+  chmodSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -28,13 +28,13 @@ function fixture() {
     path.join(tmpdir(), "studio-recovery-registration-"),
   );
   const resources = path.join(root, "resources & source");
-  mkdirSync(path.join(resources, "scripts"), { recursive: true });
+  mkdirSync(path.join(resources, "bin"), { recursive: true });
   mkdirSync(path.join(resources, "web/dist"), { recursive: true });
-  writeFileSync(path.join(resources, "scripts/codex-canvas"), "fixture");
-  writeFileSync(
-    path.join(resources, "scripts/codex_process_supervisor.py"),
-    "fixture",
-  );
+  for (const name of ["studio-runtime-server", "codex-process-supervisor"]) {
+    const binary = path.join(resources, "bin", name);
+    writeFileSync(binary, "#!/bin/sh\nexit 0\n");
+    chmodSync(binary, 0o755);
+  }
   writeFileSync(path.join(resources, "web/dist/index.html"), "fixture");
   const supervisor = path.join(root, "recover_backend.py");
   writeFileSync(supervisor, "fixture");
@@ -42,6 +42,7 @@ function fixture() {
     CODEX_AGENTS_STATE_DIR: path.join(root, "state"),
     PATH: process.env.PATH,
     CODEX_BIN: "/usr/bin/true",
+    CODEX_AGENTS_PYTHON: "/nonexistent",
     CODEX_HOME: path.join(root, "accounts"),
     CODEX_CANVAS_CWD: path.join(root, "workspace"),
     CODEX_BOARD_STATE_DIR: path.join(root, "legacy-board"),
@@ -266,102 +267,6 @@ test("a resource policy update preserves the registered recovery process", async
 });
 
 test.each([false, true])(
-  "Python selection change preserves recovery unless explicitly configured (%s)",
-  async (explicit) => {
-    const data = fixture();
-    const calls = [];
-    try {
-      const initial = await configureRecovery({
-        ...data,
-        enabled: true,
-        restartEnvironment: { CODEX_BIN: "/usr/bin/true" },
-        run: async () => {},
-      });
-      const saved = JSON.parse(readFileSync(initial.config, "utf8"));
-      const nextDirectory = path.join(data.root, "another Python");
-      mkdirSync(nextDirectory);
-      const nextPython = path.join(nextDirectory, "python3");
-      symlinkSync(saved.python, nextPython);
-      await configureRecovery({
-        ...data,
-        env: {
-          ...data.env,
-          PATH: `${nextDirectory}${path.delimiter}${data.env.PATH}`,
-          ...(explicit ? { CODEX_AGENTS_PYTHON: nextPython } : {}),
-        },
-        enabled: true,
-        run: async (_file, args) => {
-          calls.push(args[0]);
-          return { stdout: "pid = 4242\n" };
-        },
-      });
-      const updated = JSON.parse(readFileSync(initial.config, "utf8"));
-      assert.equal(updated.python, nextPython);
-      assert.equal(updated.environment.CODEX_HOME, undefined);
-      assert.ok(updated.unsetEnvironment.includes("CODEX_HOME"));
-      assert.equal(updated.environment.PATH, saved.environment.PATH);
-      assert.equal(
-        updated.environment.CODEX_AGENTS_PYTHON,
-        explicit ? nextPython : undefined,
-      );
-      assert.equal(
-        updated.unsetEnvironment.includes("CODEX_AGENTS_PYTHON"),
-        !explicit,
-      );
-      assert.equal(
-        readFileSync(initial.plist, "utf8").includes(nextPython),
-        true,
-      );
-      assert.deepEqual(
-        calls,
-        explicit
-          ? ["print", "bootout", "bootstrap", "print"]
-          : ["print", "print"],
-      );
-    } finally {
-      rmSync(data.root, { recursive: true, force: true });
-    }
-  },
-);
-
-test("a verified backend Python selection overrides the attaching desktop", async () => {
-  const data = fixture();
-  try {
-    const initial = await configureRecovery({
-      ...data,
-      enabled: true,
-      run: async () => {},
-    });
-    const saved = JSON.parse(readFileSync(initial.config, "utf8"));
-    const nextDirectory = path.join(data.root, "another Python");
-    mkdirSync(nextDirectory);
-    const nextPython = path.join(nextDirectory, "python3");
-    symlinkSync(saved.python, nextPython);
-    await configureRecovery({
-      ...data,
-      env: {
-        ...data.env,
-        CODEX_AGENTS_PYTHON: nextPython,
-        PATH: `${nextDirectory}${path.delimiter}${data.env.PATH}`,
-      },
-      restartEnvironment: {
-        CODEX_BIN: "/usr/bin/true",
-        CODEX_AGENTS_PYTHON: saved.python,
-      },
-      enabled: true,
-      run: async () => {},
-    });
-    const updated = JSON.parse(readFileSync(initial.config, "utf8"));
-    assert.equal(updated.python, saved.python);
-    assert.equal(updated.environment.CODEX_AGENTS_PYTHON, saved.python);
-    assert.equal(updated.environment.CODEX_HOME, undefined);
-    assert.ok(updated.unsetEnvironment.includes("CODEX_HOME"));
-  } finally {
-    rmSync(data.root, { recursive: true, force: true });
-  }
-});
-
-test.each([false, true])(
   "a lost bootstrap response preserves registration or restores the previous service (%s)",
   async (applied) => {
     const data = fixture();
@@ -468,7 +373,7 @@ test.each([false, true])(
   },
 );
 
-test("recovery rewrite refuses to stop its legacy supervisor while handles are live", async () => {
+test("recovery rewrite refuses to stop its supervisor while handles are live", async () => {
   const data = fixture();
   const paths = recoveryPaths(data.env, data.home);
   const registered = new Set();
@@ -512,7 +417,7 @@ test("recovery rewrite refuses to stop its legacy supervisor while handles are l
         enabled: true,
         run,
       }),
-      /legacy supervisor pid \d+ owns 1 live handle/,
+      /supervisor pid \d+ owns 1 live handle/,
     );
     assert.equal(readFileSync(initial.plist, "utf8"), originalPlist);
     assert.equal(
@@ -563,8 +468,11 @@ test("a desktop launch keeps the service-owned Rust selection and its supervisor
     mkdirSync(path.dirname(files.config), { recursive: true });
     const selection = {
       backend: "rust",
-      runtimeServer: path.join(data.root, "bin/studio-runtime-server"),
-      processSupervisor: path.join(data.root, "bin/codex-process-supervisor"),
+      runtimeServer: path.join(data.resources, "bin/studio-runtime-server"),
+      processSupervisor: path.join(
+        data.resources,
+        "bin/codex-process-supervisor",
+      ),
     };
     writeFileSync(
       files.config,

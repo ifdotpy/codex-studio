@@ -1,11 +1,8 @@
-use crate::prepared_python_support as python_test_support;
 use serde_json::json;
 use std::collections::VecDeque;
 use std::fs;
-use std::path::Path;
-use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 use studio_runtime_providers::{Method, RequestId, RequestTicket};
 use studio_runtime_services::account_session_runtime::{
@@ -388,29 +385,13 @@ async fn callback_actor_flushes_fallback_tail_and_loses_session_on_disconnect() 
 
 #[allow(clippy::disallowed_methods)]
 async fn seeded_store() -> (tempfile::TempDir, RuntimeStore) {
-    static TEMPLATE: OnceLock<python_test_support::StateTemplate> = OnceLock::new();
-    let template = TEMPLATE.get_or_init(|| {
-        let template = fixture_directory();
-        let python = python_test_support::prepared_python(
-            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
-        );
-        let codex_home = template.path().join("codex-home");
-        let status = Command::new(python)
-            .arg(
-                Path::new(env!("CARGO_MANIFEST_DIR"))
-                    .join("tests/voice_provider/prepare_state_template.py"),
-            )
-            .arg(template.path())
-            .env("CODEX_HOME", codex_home)
-            .status()
-            .expect("Python writes the disposable runtime fixture template");
-        assert!(status.success(), "Python fixture creation failed");
-        python_test_support::StateTemplate::capture(template.path())
-    });
     let root = fixture_directory();
     let state = root.path().join("state");
-    fs::create_dir(&state).expect("disposable clone state root");
-    template.write(&state);
+    fs::create_dir(&state).expect("disposable state root");
+    crate::media_auth_fixtures::write_state(
+        &state,
+        include_str!("voice_provider/initial-state.json"),
+    );
     let store = RuntimeStore::open(Some(&state))
         .await
         .expect("open voice fixture store");
@@ -453,7 +434,7 @@ async fn seeded_store() -> (tempfile::TempDir, RuntimeStore) {
 }
 
 fn fixture_directory() -> tempfile::TempDir {
-    python_test_support::disposable_state_dir()
+    tempfile::tempdir().expect("voice fixture directory")
 }
 
 #[tokio::test]
@@ -1240,6 +1221,20 @@ async fn account_session_voice_approval_uses_the_shared_callback_lane() {
         })
         .await
         .expect("seed callback request and live actor");
+    let card: String = store
+        .test_reader()
+        .expect("fixture reader")
+        .query_row(
+            "SELECT record FROM runtime_requests WHERE id=?1",
+            [&callback_request_id],
+            |row| row.get(0),
+        )
+        .expect("callback card");
+    crate::callback_fixtures::seed_admission(
+        &store,
+        &serde_json::from_str(&card).expect("callback record"),
+    )
+    .await;
 
     let store = Arc::new(store);
     let reply_port = Arc::new(LiveCallbackReplyPort::default());
@@ -1401,7 +1396,7 @@ async fn changed_speech_text_after_written_receipt_refuses_without_writes() {
 #[tokio::test]
 #[allow(clippy::disallowed_methods)]
 async fn python_approval_speech_rows_and_voice_views_match_rust() {
-    let (root, store) = seeded_store().await;
+    let (_root, store) = seeded_store().await;
     let store = Arc::new(store);
     let request = json!({
         "id":"oracle-approval", "agent":"agent", "epoch":0,
@@ -1419,25 +1414,16 @@ async fn python_approval_speech_rows_and_voice_views_match_rust() {
         .await
         .expect("seed Python-readable approval");
 
-    let python = python_test_support::prepared_python(
-        &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
-    );
-    let script =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/voice_provider/python_oracle.py");
-    let output = Command::new(python)
-        .arg(script)
-        .arg(root.path().join("state"))
-        .arg("agent")
-        .arg("oracle-approval")
-        .env("PYTHONDONTWRITEBYTECODE", "1")
-        .output()
-        .expect("run guarded Python voice oracle");
-    assert!(
-        output.status.success(),
-        "Python oracle: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let expected: serde_json::Value = serde_json::from_slice(&output.stdout).expect("oracle JSON");
+    let expected: serde_json::Value =
+        serde_json::from_str(include_str!("voice_provider/approval-expected.json"))
+            .expect("frozen approval speech corpus");
+    store
+        .transaction(|tx| {
+            tx.execute_batch(include_str!("voice_provider/approval-seed.sql"))?;
+            Ok(())
+        })
+        .await
+        .expect("historical approval speech row");
 
     let approvals = voice::approvals(&store, "agent")
         .await
@@ -1480,31 +1466,10 @@ async fn python_approval_speech_rows_and_voice_views_match_rust() {
 #[tokio::test]
 #[allow(clippy::disallowed_methods)]
 async fn real_python_start_speech_end_rows_match_rust_with_rpc_boundary_stub() {
-    let (root, store) = seeded_store().await;
-    let python_root = root.path().join("python-lifecycle-state");
-    fs::create_dir(&python_root).expect("Python lifecycle state root");
-    for name in ["canvas.sqlite3", "analytics.sqlite3"] {
-        fs::copy(store.root().join(name), python_root.join(name))
-            .expect("clone Python lifecycle fixture");
-    }
-    let python = python_test_support::prepared_python(
-        &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
-    );
-    let script =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/voice_provider/lifecycle_oracle.py");
-    let output = Command::new(python)
-        .arg(script)
-        .arg(&python_root)
-        .env("PYTHONDONTWRITEBYTECODE", "1")
-        .output()
-        .expect("run real Python lifecycle functions");
-    assert!(
-        output.status.success(),
-        "Python lifecycle oracle: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    let (_root, store) = seeded_store().await;
     let expected: serde_json::Value =
-        serde_json::from_slice(&output.stdout).expect("Python lifecycle JSON");
+        serde_json::from_str(include_str!("voice_provider/lifecycle-expected.json"))
+            .expect("frozen voice lifecycle corpus");
 
     store.transaction(|tx| {
         tx.execute("INSERT INTO voice_records(id,agent,session,kind,text,item_id,previous_item_id,payload,created) VALUES('oracle-speech','agent','oracle-session','orchestrator','hello','item','', '{}',100)", [])?;

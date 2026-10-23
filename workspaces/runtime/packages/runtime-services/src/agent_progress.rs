@@ -55,12 +55,21 @@ pub(crate) fn derive(
     let agent: AgentSource = serde_json::from_value(record.clone())?;
     let mut commands = Vec::new();
     if crate::sync_policy::table_exists(connection, "runtime_monitors")? {
-        // Guard before JSON extraction: one malformed sibling must not refuse
-        // an owner's projection (including startup recovery). Parse bad rows to
-        // report their ids while bounding valid rows to this owner.
+        // This runs for every agent write inside the writer transaction. The
+        // owner index bounds it to the agent's live monitors; a guarded scan
+        // parsed every historical monitor (93,116 rows, 198 MB, for each
+        // journal batch on 22 October 2026). Without the index, guard before
+        // JSON extraction: one malformed sibling must not refuse an owner's
+        // projection (including startup recovery). Parse bad rows to report
+        // their ids while bounding valid rows to this owner.
         let mut statement = connection.prepare_cached(
-            "SELECT id,record FROM runtime_monitors WHERE CASE WHEN json_valid(record) \
-             THEN json_extract(record,'$.agent')=?1 ELSE 1 END ORDER BY rowid",
+            if crate::sync_policy::monitor_owner_index_exists(connection)? {
+                "SELECT id,record FROM runtime_monitors WHERE json_extract(record,'$.agent')=?1 \
+                 AND json_extract(record,'$.status') IN ('starting','running') ORDER BY rowid"
+            } else {
+                "SELECT id,record FROM runtime_monitors WHERE CASE WHEN json_valid(record) \
+                 THEN json_extract(record,'$.agent')=?1 ELSE 1 END ORDER BY rowid"
+            },
         )?;
         let rows = statement.query_map([&agent.id], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
@@ -280,6 +289,58 @@ mod tests {
                 &json!({"collection":"agent","id":"worker","value":view})
             )
             .expect("test fixture value")
+        );
+    }
+
+    /// SQLite work of one projection, in virtual machine steps. The count is
+    /// deterministic for a given database state, unlike wall time.
+    fn derive_work(connection: &Connection, agent: &serde_json::Value) -> (u64, AgentProgress) {
+        let ticks = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let counter = std::sync::Arc::clone(&ticks);
+        connection
+            .progress_handler(
+                1,
+                Some(move || {
+                    counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    false
+                }),
+            )
+            .expect("progress counter");
+        let progress = derive(connection, agent, &[]).expect("projection");
+        connection
+            .progress_handler(1, None::<fn() -> bool>)
+            .expect("progress counter");
+        (ticks.load(std::sync::atomic::Ordering::Relaxed), progress)
+    }
+
+    /// Every agent write projects progress inside the writer transaction. With
+    /// the owner index, that work must not grow with historical monitors of
+    /// other agents (93,116 rows parsed per journal batch on 22 October 2026).
+    #[test]
+    fn indexed_progress_work_is_independent_of_finished_monitor_history() {
+        const HISTORY: usize = 2_000;
+        let connection = Connection::open_in_memory().expect("test fixture value");
+        connection.execute_batch("CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY, record TEXT NOT NULL);
+            CREATE INDEX runtime_monitor_agent_status ON runtime_monitors(json_extract(record,'$.agent'),json_extract(record,'$.status'));").expect("test fixture value");
+        let insert = |from: usize| {
+            for index in from..from + HISTORY {
+                let id = format!("old-{index}");
+                connection.execute("INSERT INTO runtime_monitors VALUES(?1,?2)", rusqlite::params![id, json!({"id":id,"agent":format!("other-{index}"),"status":"completed","command":"old","created":1,"tail":"done"}).to_string()]).expect("test fixture value");
+            }
+        };
+        connection.execute("INSERT INTO runtime_monitors VALUES('live',?1)", [json!({"id":"live","agent":"worker","status":"running","command":"owner gate","created":5,"tail":"still running"}).to_string()]).expect("test fixture value");
+        let agent = json!({"id":"worker","status":"idle"});
+        insert(0);
+        let (small, progress) = derive_work(&connection, &agent);
+        assert_eq!(progress.commands.len(), 1);
+        assert_eq!(progress.commands[0].monitor_id, "live");
+        insert(HISTORY);
+        let (large, progress) = derive_work(&connection, &agent);
+        assert_eq!(progress.commands.len(), 1);
+        assert!(
+            large <= small + small / 20,
+            "progress work grew with history: {small} steps, then {large} with {} more finished monitors",
+            HISTORY
         );
     }
 

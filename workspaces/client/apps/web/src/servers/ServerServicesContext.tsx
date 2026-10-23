@@ -1,4 +1,3 @@
-import * as defaultProgress from "../components/agents/progressCache";
 import * as defaultSessionCosts from "../usage/sessionCostCache";
 import * as defaultUploads from "../sync/uploads";
 import { defaultServerAudio } from "../native/serverAudio";
@@ -121,7 +120,5 @@ export const useServerAudio = () =>
 export const useServerUploads = () =>
   useServerServices()?.uploads ?? defaultUploads;
 
-export const useServerProgress = () =>
-  useServerServices()?.progress ?? defaultProgress;
 export const useServerSessionCosts = () =>
   useServerServices()?.sessionCosts ?? defaultSessionCosts;

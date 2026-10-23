@@ -57,7 +57,6 @@ impl Store {
         crate::outbox::initialize(&connection)?;
         crate::projections::initialize(&connection)?;
         crate::draft_store::initialize(&connection)?;
-        crate::progress::initialize(&connection)?;
         crate::uploads::initialize(&connection)?;
         crate::dictation::initialize(&connection)?;
         Ok(Self { connection })
@@ -84,9 +83,6 @@ impl Store {
             }
             method if method.starts_with("file_link.") => Ok(crate::file_links::dispatch(request)),
             "markdown.parse" => Ok(crate::markdown::dispatch(request)),
-            method if method.starts_with("progress.cache_") => {
-                crate::progress::stored(&self.connection, request)
-            }
             method
                 if method == "system.uuid"
                     || method == "text.sentences"

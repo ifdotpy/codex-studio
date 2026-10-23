@@ -29,8 +29,7 @@ fn fixture_directory() -> tempfile::TempDir {
         .expect("disposable fixture directory")
 }
 fn fixture() -> (tempfile::TempDir, Value) {
-    static TEMPLATE: OnceLock<(crate::prepared_python_support::StateTemplate, Value)> =
-        OnceLock::new();
+    static TEMPLATE: OnceLock<(crate::state_template::StateTemplate, Value)> = OnceLock::new();
     let (root, agent) = TEMPLATE.get_or_init(|| {
         let root = fixture_directory();
         let path = root.path().to_owned();
@@ -57,7 +56,7 @@ fn fixture() -> (tempfile::TempDir, Value) {
                 .expect("clone uses WAL");
         }
         (
-            crate::prepared_python_support::StateTemplate::capture(copy.path()),
+            crate::state_template::StateTemplate::capture(copy.path()),
             agent,
         )
     });
@@ -609,16 +608,20 @@ async fn collector_tick_imports_rollout_usage_and_replay_is_exactly_once() {
     fs::write(&path, bytes).expect("fixture rollout");
     let store = RuntimeStore::open(Some(root.path())).await.expect("store");
     let cancel = Arc::new(AtomicBool::new(false));
-    let mut collector = HistoryCollector::default();
-    let budget = StoreHistoryBudgetSink::new(&store);
     let roster = [agent];
+    let mut collector = HistoryCollector::default();
+    collector
+        .schedule
+        .refresh(&roster)
+        .expect("ingest history roster");
+    let budget = StoreHistoryBudgetSink::new(&store);
     let profile_path = root.path().to_path_buf();
 
     assert!(
         collector
             .step(
                 &store,
-                &roster,
+                |row| roster.get(usize::try_from(row).ok()?),
                 move |_| Ok(profile_path),
                 HistoryClock {
                     observed_at: 200.0,
@@ -667,7 +670,7 @@ async fn collector_tick_imports_rollout_usage_and_replay_is_exactly_once() {
     let _replay_advanced = collector
         .step(
             &store,
-            &roster,
+            |row| roster.get(usize::try_from(row).ok()?),
             |_| panic!("idle poll must not rediscover files"),
             HistoryClock {
                 observed_at: 205.0,
@@ -737,12 +740,16 @@ async fn historical_budget_capture_accepts_prior_turn_notices_and_keeps_other_id
     let cancel = Arc::new(AtomicBool::new(false));
     let budget = StoreHistoryBudgetSink::new(&store);
     let mut collector = HistoryCollector::default();
+    collector
+        .schedule
+        .refresh(std::slice::from_ref(&agent))
+        .expect("ingest history roster");
     let profile_path = root.path().to_path_buf();
     assert!(
         collector
             .step(
                 &store,
-                std::slice::from_ref(&agent),
+                |row| std::slice::from_ref(&agent).get(usize::try_from(row).ok()?),
                 move |_| Ok(profile_path),
                 HistoryClock {
                     observed_at: 200.0,
@@ -867,23 +874,18 @@ fn active_import_quota_notification_waits_for_event() {
     archive["deletedAt"] = json!(10.);
     let actors = vec![active.clone(), archive.clone()];
     let mut schedule = HistorySchedule::default();
+    schedule.refresh(&actors).expect("ingest roster");
     let mut checkpoint = json!({"id":"a:default:thread","agent":"a","accountKey":"default","threadId":"thread","offset":0,"importedRecords":0,"malformedLines":0,"context":{"threadId":"thread"},"status":"catchingUp"});
     for _ in 0..8 {
-        assert_eq!(
-            schedule
-                .next(&actors, 10.)
-                .expect("selection")
-                .expect("active")["id"],
-            "a"
-        );
+        assert_eq!(schedule.next(10.).expect("selection").expect("active"), 0);
         schedule.completed(&active, &checkpoint, 10.).expect("poll");
     }
     assert_eq!(
         schedule
-            .next(&actors, 10.)
+            .next(10.)
             .expect("selection")
-            .expect("archive fair turn")["id"],
-        "archive"
+            .expect("archive fair turn"),
+        1
     );
     checkpoint["status"] = json!("current");
     schedule
@@ -892,15 +894,9 @@ fn active_import_quota_notification_waits_for_event() {
     schedule
         .completed(&active, &checkpoint, 10.)
         .expect("watch");
-    assert!(schedule.next(&actors, 11.).expect("selection").is_none());
+    assert!(schedule.next(11.).expect("selection").is_none());
     schedule.notify("a").expect("notification");
-    assert_eq!(
-        schedule
-            .next(&actors, 11.)
-            .expect("selection")
-            .expect("dirty")["id"],
-        "a"
-    );
+    assert_eq!(schedule.next(11.).expect("selection").expect("dirty"), 0);
     assert!(schedule.has_pending());
     schedule
         .completed(&active, &checkpoint, 11.)
@@ -916,11 +912,15 @@ async fn background_consumer_imports_selected_roster_actor() {
     file(&session, &records(), b"");
     let store = RuntimeStore::open(Some(root.path())).await.expect("store");
     let mut collector = history::HistoryCollector::default();
+    collector
+        .schedule
+        .refresh(std::slice::from_ref(&agent))
+        .expect("ingest history roster");
     assert!(
         collector
             .step(
                 &store,
-                std::slice::from_ref(&agent),
+                |row| std::slice::from_ref(&agent).get(usize::try_from(row).ok()?),
                 {
                     let profile_path = root.path().to_path_buf();
                     move |_| Ok(profile_path)
@@ -940,7 +940,7 @@ async fn background_consumer_imports_selected_roster_actor() {
         !collector
             .step(
                 &store,
-                &[agent],
+                |row| std::slice::from_ref(&agent).get(usize::try_from(row).ok()?),
                 |_| panic!("idle poll must not rediscover files"),
                 history::HistoryClock {
                     observed_at: 201.,
@@ -1352,10 +1352,14 @@ async fn unavailable_account_profile_records_checkpoint_instead_of_read_error() 
         let store = RuntimeStore::open(Some(root.path())).await.expect("store");
         let absent = root.path().join("removed-login-home");
         let mut collector = history::HistoryCollector::default();
+        collector
+            .schedule
+            .refresh(std::slice::from_ref(&agent))
+            .expect("ingest history roster");
         let advanced = collector
             .step(
                 &store,
-                std::slice::from_ref(&agent),
+                |row| std::slice::from_ref(&agent).get(usize::try_from(row).ok()?),
                 move |_| {
                     if absent_directory {
                         Ok(absent)
@@ -1457,12 +1461,16 @@ async fn collector_updates_shared_discovery_from_file_event_across_rounds() {
     let actors = [agent, second];
     let cancel = Arc::new(AtomicBool::new(false));
     let mut collector = history::HistoryCollector::default();
+    collector
+        .schedule
+        .refresh(&actors)
+        .expect("ingest history roster");
     for index in 0..2 {
         let profile_path = root.path().to_path_buf();
         let advanced = collector
             .step(
                 &store,
-                &actors,
+                |row| actors.get(usize::try_from(row).ok()?),
                 move |_| Ok(profile_path),
                 history::HistoryClock {
                     observed_at: 200.,
@@ -1506,7 +1514,7 @@ async fn collector_updates_shared_discovery_from_file_event_across_rounds() {
         !collector
             .step(
                 &store,
-                &actors,
+                |row| actors.get(usize::try_from(row).ok()?),
                 move |_| Ok(profile_path),
                 history::HistoryClock {
                     observed_at: 201.,

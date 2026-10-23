@@ -231,6 +231,20 @@ pub struct Decision {
     pub cancel_pending: Vec<String>,
     #[serde(skip)]
     pub(crate) effects: Vec<LifecycleEffect>,
+    #[serde(skip)]
+    pub(crate) archive_release: Option<ArchiveRelease>,
+}
+
+/// What the archive of a failed worker settles besides its record: input that
+/// no turn ever claimed, and the reservation of a provisioning that ended in
+/// `recovery_required`. See [`failed_without_retry`].
+#[derive(Clone, Debug)]
+pub(crate) struct ArchiveRelease {
+    pub(crate) agent: String,
+    /// The epoch the inputs were queued for, before the archive advanced it.
+    pub(crate) epoch: i64,
+    pub(crate) inputs: Vec<String>,
+    pub(crate) provision: Option<String>,
 }
 impl Decision {
     fn result(result: Value) -> Self {
@@ -239,6 +253,7 @@ impl Decision {
             writes: Vec::new(),
             cancel_pending: Vec::new(),
             effects: Vec::new(),
+            archive_release: None,
         }
     }
     fn write(&mut self, table: &str, record: Value) {
@@ -510,13 +525,7 @@ impl ManagementSnapshot {
         {
             stage(LifecycleEffectKind::Interrupt)?;
         }
-        if (agent.flag("capacityRetry") && !capacity_retry_is_local)
-            || agent
-                .record
-                .get("usageResume")
-                .and_then(|r| r.get("status"))
-                .and_then(Value::as_str)
-                .is_some_and(|s| matches!(s, "scheduled" | "started"))
+        if (agent.flag("capacityRetry") && !capacity_retry_is_local) || usage_resume_pending(agent)
         {
             stage(LifecycleEffectKind::CancelResume)?;
         }
@@ -548,7 +557,7 @@ impl ManagementSnapshot {
                 vec![agent.record["parkedEvent"].clone()],
             );
         }
-        if agent.flag("workspaceOperation") {
+        if agent.flag("workspaceOperation") && self.failed_provision(agent).is_none() {
             add(
                 ArchiveBlockerKind::WorkspaceOperation,
                 vec![json!(agent.id())],
@@ -583,13 +592,17 @@ impl ManagementSnapshot {
                 .map(|a| json!(a.id()))
                 .collect(),
         );
+        // Pending input of a failed worker without a retry was never claimed;
+        // archive settles it (`unsent_inputs`) instead of waiting for it.
+        let unsent = failed_without_retry(agent);
         add(
             ArchiveBlockerKind::InputDelivery,
             self.owned("runtime_events", "agent", agent.id())
                 .into_iter()
                 .filter(|r| {
                     r.get("epoch").and_then(Value::as_i64) == Some(agent.identity.epoch)
-                        && is_status(r, &["pending", "reserved", "dispatching", "uncertain"])
+                        && (is_status(r, &["reserved", "dispatching", "uncertain"])
+                            || (!unsent && is_status(r, &["pending"])))
                 })
                 .map(|r| r["id"].clone())
                 .collect(),
@@ -646,6 +659,52 @@ impl ManagementSnapshot {
         );
         blocks
     }
+    /// Current-epoch input of a failed worker without a retry that no turn
+    /// claimed: `pending` rows, in row order. Archive settles them as not
+    /// delivered. Claimed rows (`reserved` and later) stay blockers.
+    fn unsent_inputs(&self, agent: &Agent) -> Vec<String> {
+        if !failed_without_retry(agent) {
+            return Vec::new();
+        }
+        self.owned("runtime_events", "agent", agent.id())
+            .into_iter()
+            .filter(|r| {
+                r.get("epoch").and_then(Value::as_i64) == Some(agent.identity.epoch)
+                    && is_status(r, &["pending"])
+            })
+            .filter_map(|r| r.get("id").and_then(Value::as_str))
+            .map(str::to_owned)
+            .collect()
+    }
+    /// The reservation id of a failed worker's provisioning that ended in
+    /// `recovery_required`. The provisioning owner sets that phase only after
+    /// its Git effect returned (`WorkspaceReadyRepository::uncertain`), so no
+    /// workspace change is in flight and archive may release the reservation.
+    /// An unfinished journal (`local_mutation`) or any other operation blocks.
+    fn failed_provision<'a>(&self, agent: &'a Agent) -> Option<&'a str> {
+        if !failed_without_retry(agent)
+            || agent
+                .record
+                .get("workspaceOperation")
+                .and_then(Value::as_str)
+                != Some("provision")
+        {
+            return None;
+        }
+        let id = agent
+            .record
+            .get("workspaceReservationId")
+            .and_then(Value::as_str)?;
+        self.rows("runtime_workspace_operations")
+            .iter()
+            .any(|operation| {
+                operation.get("id").and_then(Value::as_str) == Some(id)
+                    && operation.get("kind").and_then(Value::as_str) == Some("provision")
+                    && operation.get("agent").and_then(Value::as_str) == Some(agent.id())
+                    && operation.get("phase").and_then(Value::as_str) == Some("recovery_required")
+            })
+            .then_some(id)
+    }
     /// Tool requests whose outcome stays unknown, kept with the archive record.
     fn unknown_tool_requests(&self, agent: &Agent) -> Vec<Value> {
         let mut ids = self
@@ -679,6 +738,29 @@ fn finished(agent: &Agent) -> bool {
         agent.identity.status,
         AgentStatus::Completed | AgentStatus::Failed | AgentStatus::Interrupted
     ) || (agent.identity.status == AgentStatus::Paused && agent.identity.auto_wake != Some(true))
+}
+
+/// A usage-limit resume is scheduled or running for `agent`.
+fn usage_resume_pending(agent: &Agent) -> bool {
+    agent
+        .record
+        .get("usageResume")
+        .and_then(|r| r.get("status"))
+        .and_then(Value::as_str)
+        .is_some_and(|s| matches!(s, "scheduled" | "started"))
+}
+
+/// A failed worker that nothing starts again by itself: no turn is in flight,
+/// no start attempt is saved, and no capacity or usage retry is scheduled.
+/// The scheduler claims input only for queued agents, so its pending input
+/// waits for a manual resume that an archive rules out. Python `_blockers`
+/// refused this archive with `input_delivery`; the Rust owner settles it.
+fn failed_without_retry(agent: &Agent) -> bool {
+    agent.identity.status == AgentStatus::Failed
+        && !agent.active()
+        && !agent.flag("startAttempt")
+        && !agent.flag("capacityRetry")
+        && !usage_resume_pending(agent)
 }
 
 /// Python `_completed_native_turn`: a durable completion of the last submitted
@@ -1246,6 +1328,17 @@ fn archive(
         }
     }
     let mut record = agent.record.clone();
+    let inputs = snapshot.unsent_inputs(agent);
+    let provision = snapshot.failed_provision(agent).map(str::to_owned);
+    if provision.is_some() {
+        // Release the reservation as publication does; the journal keeps history.
+        let object = record
+            .as_object_mut()
+            .ok_or(ManagementError::Invalid("Invalid agent"))?;
+        object.insert("workspaceOperation".to_owned(), Value::Null);
+        object.remove("workspaceReservationId");
+        object.remove("worktreePreparation");
+    }
     record["deletedAt"] = json!(now);
     record["autoWake"] = json!(false);
     record["status"] = json!("paused");
@@ -1259,6 +1352,20 @@ fn archive(
         crate::workspace_cleanup_runtime::CleanupAction::Archive,
     );
     decision.result = json!({"status":"archived","agent":brief(&record),"worktree":{"state":"none","bytes":0},"unassignedWork":unassigned});
+    if !inputs.is_empty() {
+        decision.result["settledInputs"] = json!(inputs);
+    }
+    if let Some(provision) = &provision {
+        decision.result["releasedWorkspaceOperation"] = json!(provision);
+    }
+    if !inputs.is_empty() || provision.is_some() {
+        decision.archive_release = Some(ArchiveRelease {
+            agent: agent.id().to_owned(),
+            epoch: agent.identity.epoch,
+            inputs,
+            provision,
+        });
+    }
     decision.write("runtime_agents", record);
     Ok(decision)
 }

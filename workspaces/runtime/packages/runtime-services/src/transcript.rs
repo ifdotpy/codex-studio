@@ -155,14 +155,7 @@ fn pull_scope_cached_in(
 ) -> Result<Option<Value>, TranscriptError> {
     let actor = TranscriptRepository::agent(transaction, agent)?;
     let deleted = actor.as_ref().is_none_or(|a| truthy(a.get("deletedAt")));
-    let revision = transaction
-        .query_row(
-            "SELECT revision FROM runtime_transcript_revisions WHERE agent=?1",
-            [agent],
-            |r| r.get::<_, i64>(0),
-        )
-        .optional()?
-        .unwrap_or(0);
+    let revision = TranscriptRepository::revision(transaction, agent)?;
     let high = transaction.query_row(
         "SELECT coalesce(max(seq),0) FROM sync_entities WHERE collection=?1",
         [scope],
@@ -225,14 +218,7 @@ fn pull_scope_in(
     }
     let actor = TranscriptRepository::agent(transaction, agent)?;
     let deleted = actor.as_ref().is_none_or(|a| truthy(a.get("deletedAt")));
-    let revision = transaction
-        .query_row(
-            "SELECT revision FROM runtime_transcript_revisions WHERE agent=?1",
-            [agent],
-            |r| r.get::<_, i64>(0),
-        )
-        .optional()?
-        .unwrap_or(0);
+    let revision = TranscriptRepository::revision(transaction, agent)?;
     let payload = if deleted {
         json!({})
     } else {

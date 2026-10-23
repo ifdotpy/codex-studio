@@ -152,6 +152,14 @@ impl ManagedToolRuntime {
         }
     }
 
+    /// Attach the VM guest channel and Mac service of `host_exec`
+    /// (docs/host-exec.md).
+    pub fn attach_host_exec(&self, runtime: Arc<crate::host_exec::HostExecRuntime>) {
+        if self.ports.late.host_exec.set(runtime).is_err() {
+            // The first attached runtime stays the owner of host commands.
+        }
+    }
+
     /// Attach the provider-session voice adapter that plays
     /// `orchestration_speak` in a ready voice session.
     pub fn attach_voice(&self, port: Arc<dyn crate::voice_runtime::VoiceRequestPort>) {
@@ -550,18 +558,6 @@ impl super::runtime_dispatch::InterruptPort for ManagedInterruptAdapter {
                     certainty: DeliveryCertainty::Written,
                     applied: Some(true),
                 }),
-                Err(crate::agent_management::ManagementError::Store(
-                    studio_runtime_store::StoreError::RecordContract(
-                        "Lifecycle committed; effect delivery remains pending",
-                    ),
-                )) => Ok(DispatchedOperation {
-                    result: OperationResult {
-                        value: json!("Lifecycle outcome unknown; do not repeat it"),
-                        signals: Vec::new(),
-                    },
-                    certainty: DeliveryCertainty::Unknown,
-                    applied: None,
-                }),
                 Err(error) => Err(management_error(error)),
             }
         })
@@ -603,6 +599,8 @@ fn monitor_error(error: crate::monitor_policy::MonitorError) -> Error {
             id,
             location,
         },
+        // Python returns the reason of its ValueError to the agent.
+        E::Refused(reason) => Error::Invalid(reason),
         _ => Error::Invalid("Monitor action was refused"),
     }
 }
@@ -613,5 +611,32 @@ fn management_error(error: crate::agent_management::ManagementError) -> Error {
         E::Store(error) => Error::Store(error),
         E::Unavailable(name) => Error::Unavailable(name),
         E::Invalid(_) | E::Stored { .. } => Error::Invalid("Agent stop was refused"),
+    }
+}
+
+#[cfg(test)]
+mod monitor_error_tests {
+    use super::monitor_error;
+    use crate::monitor_policy::MonitorError;
+
+    /// igor-mbp rehearsal 2026-10-22: every monitor refusal reached the agent as
+    /// "Monitor action was refused", so it could not see why. Python returns the
+    /// reason of its ValueError.
+    #[test]
+    fn a_monitor_refusal_keeps_its_reason() {
+        for reason in [
+            "This interactive monitor is not active",
+            "wake_on must be exit or failure",
+            "Unknown monitor in this caller's scope",
+        ] {
+            assert_eq!(
+                monitor_error(MonitorError::Refused(reason)).to_string(),
+                reason
+            );
+        }
+        assert_eq!(
+            monitor_error(MonitorError::TaskFailed).to_string(),
+            "Monitor action was refused"
+        );
     }
 }

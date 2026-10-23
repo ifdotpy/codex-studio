@@ -125,9 +125,9 @@ describe("UI preference cache", () => {
     );
   });
   it("does not change versions for identical values or device settings", () => {
-    capturePreferenceWrite("codex-progress-hidden:/state", "true", null);
+    capturePreferenceWrite("codex-project-compact:/state", "true", null);
     const first = readPreferenceFields("server");
-    capturePreferenceWrite("codex-progress-hidden:/state", "true", "true");
+    capturePreferenceWrite("codex-project-compact:/state", "true", "true");
     capturePreferenceWrite("codex.terminal.height", "800", "300");
     expect(readPreferenceFields("server")).toEqual(first);
   });

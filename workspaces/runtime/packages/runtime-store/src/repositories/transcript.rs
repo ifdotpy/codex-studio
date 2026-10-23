@@ -1,4 +1,4 @@
-//! Read-only access to Python-written transcript rows.
+//! Persisted transcript rows, full text, and the current search projection.
 
 use crate::CachedSql;
 use crate::records::{RecordOrder, RecordPredicate, Table, TranscriptItemId, TranscriptItemRecord};
@@ -10,14 +10,6 @@ use studio_runtime_schema::delivery::DeliveryMoment;
 use studio_runtime_schema::shared_values::TRANSCRIPT_MAX_TOMBSTONES;
 use thiserror::Error;
 
-const LEGACY_TABLES: &[TableRequirement] = &[TableRequirement {
-    name: "runtime_search",
-    columns: &["id", "body"],
-}];
-const LEGACY_ADDRESS_TABLES: &[TableRequirement] = &[TableRequirement {
-    name: "runtime_search_rows",
-    columns: &["id", "search_rowid"],
-}];
 const BOOTSTRAP_TABLES: &[TableRequirement] = &[TableRequirement {
     name: "runtime_item_fulltext",
     columns: &["id", "body"],
@@ -25,10 +17,6 @@ const BOOTSTRAP_TABLES: &[TableRequirement] = &[TableRequirement {
 const TRANSCRIPT_PAGE_SIZE: usize = 120;
 // Keep each IN query below SQLite's legacy 999-variable default, reserving one slot for the agent.
 const TRANSCRIPT_IN_QUERY_ID_CHUNK_SIZE: usize = 900;
-const SEARCH_INDEXED_TABLES: &[TableRequirement] = &[TableRequirement {
-    name: "runtime_search_indexed",
-    columns: &["id"],
-}];
 const SEARCH_NEXT_META_TABLES: &[TableRequirement] = &[TableRequirement {
     name: "runtime_search_next_meta",
     columns: &["id", "agent", "kind", "search_rowid"],
@@ -54,18 +42,6 @@ pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
         },
     ],
     conditional_tables: &[
-        ConditionalTableRequirement {
-            table_exists: "runtime_search",
-            tables: LEGACY_TABLES,
-        },
-        ConditionalTableRequirement {
-            table_exists: "runtime_search_rows",
-            tables: LEGACY_ADDRESS_TABLES,
-        },
-        ConditionalTableRequirement {
-            table_exists: "runtime_search_indexed",
-            tables: SEARCH_INDEXED_TABLES,
-        },
         ConditionalTableRequirement {
             table_exists: "runtime_search_next_meta",
             tables: SEARCH_NEXT_META_TABLES,
@@ -114,6 +90,18 @@ pub struct TranscriptSearchKind<'a> {
 pub struct TranscriptRepository;
 
 impl TranscriptRepository {
+    /// Durable conversation content revision, independent of other agents.
+    pub fn revision(connection: &Connection, agent: &str) -> crate::StoreResult<i64> {
+        Ok(connection
+            .query_row_cached(
+                "SELECT revision FROM runtime_transcript_revisions WHERE agent=?1",
+                [agent],
+                |row| row.get(0),
+            )
+            .optional()?
+            .unwrap_or(0))
+    }
+
     /// Project an already checked transcript snapshot using the existing durable sync cursor.
     pub fn pull_payload(
         transaction: &Transaction<'_>,
@@ -145,16 +133,7 @@ impl TranscriptRepository {
             return Err(TranscriptStoreError::ActiveTurn);
         }
         let revision = if table_exists(transaction, "runtime_transcript_revisions")? {
-            Some(
-                transaction
-                    .query_row_cached(
-                        "SELECT revision FROM runtime_transcript_revisions WHERE agent=?1",
-                        [agent],
-                        |row| row.get::<_, i64>(0),
-                    )
-                    .optional()?
-                    .unwrap_or(0),
-            )
+            Some(Self::revision(transaction, agent)?)
         } else {
             None
         };
@@ -247,20 +226,7 @@ impl TranscriptRepository {
             })?;
             return rows.collect::<Result<Vec<_>, _>>().map_err(Into::into);
         }
-        if !table_exists(connection, "runtime_search")? {
-            return Ok(Vec::new());
-        }
-        let mut statement = connection.prepare_cached(
-            "SELECT s.id,s.agent,s.kind FROM runtime_search s \
-             JOIN runtime_items i ON i.id=s.id \
-             WHERE runtime_search MATCH ?1 \
-               AND json_extract(i.record,'$.afterRestore') IS NULL \
-             ORDER BY rank LIMIT 1000",
-        )?;
-        let rows = statement.query_map([match_query], |row| {
-            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
-        })?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+        Ok(Vec::new())
     }
 
     /// The checked agent row as JSON, without a typed round trip.
@@ -396,35 +362,6 @@ impl TranscriptRepository {
         if let Some(Some(full)) = full {
             return Ok(Some(full));
         }
-        if item.record.get("truncated").and_then(Value::as_bool) == Some(true)
-            && table_exists(connection, "runtime_search")?
-        {
-            let full = if table_exists(connection, "runtime_search_rows")? {
-                connection
-                    .query_row_cached(
-                        "SELECT s.body FROM runtime_search_rows r \
-                         JOIN runtime_search s ON s.rowid=r.search_rowid WHERE r.id=?1",
-                        [&item.id],
-                        |row| row.get::<_, Option<String>>(0),
-                    )
-                    .optional()
-                    .map_err(|error| map_column_error(error, "runtime_search", &item.id))?
-                    .flatten()
-            } else {
-                connection
-                    .query_row_cached(
-                        "SELECT body FROM runtime_search WHERE id=?1",
-                        [&item.id],
-                        |row| row.get::<_, Option<String>>(0),
-                    )
-                    .optional()
-                    .map_err(|error| map_column_error(error, "runtime_search", &item.id))?
-                    .flatten()
-            };
-            if let Some(full) = full {
-                return Ok(Some(full));
-            }
-        }
         if let Some(text) = item.record.get("text") {
             let text = text
                 .as_str()
@@ -438,7 +375,7 @@ impl TranscriptRepository {
         Ok(None)
     }
 
-    /// Persist a Python-shaped transcript row and keep whichever search
+    /// Persist a transcript row and keep the current search
     /// projections are present in the same transaction.
     pub fn put_item(
         transaction: &Transaction<'_>,
@@ -888,45 +825,6 @@ fn index_search_item(
     body: &str,
 ) -> TranscriptStoreResult<()> {
     let phase = search_phase(transaction)?;
-    if !matches!(phase.as_str(), "active" | "dropping" | "complete")
-        && table_exists(transaction, "runtime_search")?
-    {
-        let search_rows_exists = table_exists(transaction, "runtime_search_rows")?;
-        let previous = if search_rows_exists {
-            transaction
-                .query_row_cached(
-                    "SELECT search_rowid FROM runtime_search_rows WHERE id=?1",
-                    [id],
-                    |row| row.get::<_, i64>(0),
-                )
-                .optional()?
-        } else {
-            None
-        };
-        if let Some(rowid) = previous {
-            transaction.execute_cached("DELETE FROM runtime_search WHERE rowid=?1", [rowid])?;
-        } else if !search_rows_exists {
-            transaction.execute_cached("DELETE FROM runtime_search WHERE id=?1", [id])?;
-        }
-        transaction.execute_cached(
-            "INSERT INTO runtime_search(id,agent,kind,body) VALUES(?1,?2,?3,?4)",
-            params![id, agent, kind, body],
-        )?;
-        let rowid = transaction.last_insert_rowid();
-        if search_rows_exists {
-            transaction.execute_cached(
-                "INSERT INTO runtime_search_rows(id,search_rowid) VALUES(?1,?2) \
-                 ON CONFLICT(id) DO UPDATE SET search_rowid=excluded.search_rowid",
-                params![id, rowid],
-            )?;
-        }
-        if table_exists(transaction, "runtime_search_indexed")? {
-            transaction.execute_cached(
-                "INSERT OR IGNORE INTO runtime_search_indexed(id) VALUES(?1)",
-                [id],
-            )?;
-        }
-    }
     if matches!(
         phase.as_str(),
         "building" | "active" | "dropping" | "complete"
@@ -970,27 +868,6 @@ fn index_search_item(
 
 fn delete_search_item(transaction: &Transaction<'_>, id: &str) -> TranscriptStoreResult<()> {
     let phase = search_phase(transaction)?;
-    if !matches!(phase.as_str(), "active" | "dropping" | "complete")
-        && table_exists(transaction, "runtime_search_rows")?
-    {
-        let rowid = transaction
-            .query_row_cached(
-                "SELECT search_rowid FROM runtime_search_rows WHERE id=?1",
-                [id],
-                |row| row.get::<_, i64>(0),
-            )
-            .optional()?;
-        if let Some(rowid) = rowid {
-            if table_exists(transaction, "runtime_search")? {
-                transaction.execute_cached("DELETE FROM runtime_search WHERE rowid=?1", [rowid])?;
-            }
-            transaction.execute_cached("DELETE FROM runtime_search_rows WHERE id=?1", [id])?;
-            if table_exists(transaction, "runtime_search_indexed")? {
-                transaction
-                    .execute_cached("DELETE FROM runtime_search_indexed WHERE id=?1", [id])?;
-            }
-        }
-    }
     if matches!(
         phase.as_str(),
         "building" | "active" | "dropping" | "complete"
@@ -1299,7 +1176,7 @@ pub(crate) fn hash_only_sync_entity_storage_error(
 
 fn search_phase(connection: &Connection) -> TranscriptStoreResult<String> {
     if !table_exists(connection, "runtime_search_rollout")? {
-        return Ok("legacy".to_owned());
+        return Ok(String::new());
     }
     Ok(connection
         .query_row_cached(
@@ -1308,7 +1185,7 @@ fn search_phase(connection: &Connection) -> TranscriptStoreResult<String> {
             |row| row.get(0),
         )
         .optional()?
-        .unwrap_or_else(|| "legacy".to_owned()))
+        .unwrap_or_default())
 }
 
 #[cfg(test)]
@@ -1319,9 +1196,7 @@ mod tests {
     use rusqlite::trace::{TraceEvent, TraceEventCodes};
     use serde_json::json;
 
-    use super::{
-        TranscriptRepository, TranscriptStoreError, enrich_persisted_items, index_search_item,
-    };
+    use super::{TranscriptRepository, TranscriptStoreError, enrich_persisted_items};
 
     thread_local! {
         static TRACED_SQL: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
@@ -1540,38 +1415,6 @@ mod tests {
             TranscriptStoreError::InvalidStoredObject { table: "runtime_event_meta", id }
                 if id == "e1"
         ));
-    }
-
-    #[test]
-    fn legacy_search_row_table_presence_is_reused() {
-        let mut connection = Connection::open_in_memory().expect("in-memory database opens");
-        connection
-            .execute_batch(
-                "CREATE TABLE runtime_search(id TEXT,agent TEXT,kind TEXT,body TEXT);
-                 CREATE TABLE runtime_search_rows(id TEXT PRIMARY KEY,search_rowid INTEGER);
-                 CREATE TABLE runtime_search_indexed(id TEXT PRIMARY KEY);
-                 CREATE TABLE runtime_search_rollout(id INTEGER PRIMARY KEY,phase TEXT);
-                 INSERT INTO runtime_search_rollout VALUES(1,'legacy');",
-            )
-            .expect("legacy search fixtures create");
-        TRACED_SQL.with_borrow_mut(Vec::clear);
-        connection.trace_v2(TraceEventCodes::SQLITE_TRACE_STMT, Some(trace_sql));
-
-        let transaction = connection.transaction().expect("transaction starts");
-        index_search_item(&transaction, "item-1", "agent", "assistant", "body")
-            .expect("search item indexes");
-        transaction.commit().expect("transaction commits");
-
-        TRACED_SQL.with_borrow(|statements| {
-            assert_eq!(
-                statements
-                    .iter()
-                    .filter(|sql| sql.starts_with("SELECT EXISTS(SELECT 1 FROM sqlite_master"))
-                    .count(),
-                4,
-                "the row-table presence result removes two catalog queries"
-            );
-        });
     }
 }
 inventory::submit! {

@@ -1,5 +1,6 @@
 import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { spawn, spawnSync } from "node:child_process";
+import { DatabaseSync } from "node:sqlite";
 import { randomUUID } from "node:crypto";
 import {
   mkdir,
@@ -64,6 +65,7 @@ import {
   parseStages,
   readCurrentTeamChildren,
   readRetainedInputRows,
+  runEventEvidenceQuery,
   summarizeEventTiming,
   summarizeProviderThreadReplies,
   readServedModelRecords,
@@ -955,26 +957,38 @@ describe("scale verifier cleanup and served-model witnesses", () => {
   it("proves unsent cleanup only from one cancelled initial event and its exact attempt", async () => {
     const directory = await mkdtemp(join(tmpdir(), "studio-scale-cleanup-"));
     temporaryPaths.push(directory);
-    const setup = spawnSync(
-      "python3",
-      [
-        "-c",
-        String.raw`
-import json,pathlib,sqlite3,sys
-with sqlite3.connect(pathlib.Path(sys.argv[1])/'canvas.sqlite3') as db:
- db.executescript("CREATE TABLE sync_identity(id TEXT PRIMARY KEY); INSERT INTO sync_identity VALUES ('workspace'); CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT); CREATE TABLE runtime_events(id TEXT PRIMARY KEY,agent TEXT,status TEXT);")
- for agent in ['unsent','unknown','submitted','extra-input','delivered']:
-  event=agent+':initial'
-  attempt={'submitted':agent=='submitted','executionOutcome':'unknown' if agent=='unknown' else 'unsent','events':[event]}
-  db.execute('INSERT INTO runtime_agents VALUES (?,?)',(agent,json.dumps({'deletedAt':1,'startAttempt':attempt})))
-  db.execute('INSERT INTO runtime_events VALUES (?,?,?)',(event,agent,'delivered' if agent=='delivered' else 'cancelled'))
-  if agent=='extra-input':db.execute('INSERT INTO runtime_events VALUES (?,?,?)',('later',agent,'pending'))
-`,
-        directory,
-      ],
-      { encoding: "utf8" },
-    );
-    expect(setup.status, setup.stderr).toBe(0);
+    const database = new DatabaseSync(join(directory, "canvas.sqlite3"));
+    try {
+      database.exec(
+        "CREATE TABLE sync_identity(id TEXT PRIMARY KEY); INSERT INTO sync_identity VALUES ('workspace'); CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT); CREATE TABLE runtime_events(id TEXT PRIMARY KEY,agent TEXT,status TEXT);",
+      );
+      for (const agent of [
+        "unsent",
+        "unknown",
+        "submitted",
+        "extra-input",
+        "delivered",
+      ]) {
+        const event = agent + ":initial";
+        const startAttempt = {
+          submitted: agent === "submitted",
+          executionOutcome: agent === "unknown" ? "unknown" : "unsent",
+          events: [event],
+        };
+        database
+          .prepare("INSERT INTO runtime_agents VALUES (?,?)")
+          .run(agent, JSON.stringify({ deletedAt: 1, startAttempt }));
+        database
+          .prepare("INSERT INTO runtime_events VALUES (?,?,?)")
+          .run(event, agent, agent === "delivered" ? "delivered" : "cancelled");
+        if (agent === "extra-input")
+          database
+            .prepare("INSERT INTO runtime_events VALUES (?,?,?)")
+            .run("later", agent, "pending");
+      }
+    } finally {
+      database.close();
+    }
     const rows = await readCurrentTeamChildren(
       directory,
       "workspace",
@@ -996,27 +1010,41 @@ with sqlite3.connect(pathlib.Path(sys.argv[1])/'canvas.sqlite3') as db:
   it("reads served models from the separate analytics database and fences workspace identity", async () => {
     const directory = await mkdtemp(join(tmpdir(), "studio-scale-usage-"));
     temporaryPaths.push(directory);
-    const setup = spawnSync(
-      "python3",
-      [
-        "-c",
-        String.raw`
-import json,pathlib,sqlite3,sys
-root=pathlib.Path(sys.argv[1])
-with sqlite3.connect(root/'canvas.sqlite3') as canvas:
- canvas.execute('CREATE TABLE sync_identity(id TEXT PRIMARY KEY)')
- canvas.execute("INSERT INTO sync_identity VALUES ('workspace')")
-with sqlite3.connect(root/'analytics.sqlite3') as analytics:
- analytics.execute('CREATE TABLE analytics_usage(seq INTEGER PRIMARY KEY,agent TEXT,turn TEXT,record TEXT)')
- for agent,turn,model in [('owned','first','claude-haiku-fixture'),('owned','second','claude-haiku-fixture'),('foreign','other','claude-opus-fixture')]:
-  analytics.execute('INSERT INTO analytics_usage(agent,turn,record) VALUES (?,?,?)',(agent,turn,json.dumps({'model':model,'responseId':turn,'usageSource':'claudeResponse'})))
- analytics.execute('INSERT INTO analytics_usage(agent,turn,record) VALUES (?,?,?)',('codex-owned','turn-1',json.dumps({'model':'gpt-6-luna'})))
-`,
-        directory,
-      ],
-      { encoding: "utf8" },
-    );
-    expect(setup.status, setup.stderr).toBe(0);
+    const canvas = new DatabaseSync(join(directory, "canvas.sqlite3"));
+    const analytics = new DatabaseSync(join(directory, "analytics.sqlite3"));
+    try {
+      canvas.exec(
+        "CREATE TABLE sync_identity(id TEXT PRIMARY KEY); INSERT INTO sync_identity VALUES ('workspace')",
+      );
+      analytics.exec(
+        "CREATE TABLE analytics_usage(seq INTEGER PRIMARY KEY,agent TEXT,turn TEXT,record TEXT)",
+      );
+      const insert = analytics.prepare(
+        "INSERT INTO analytics_usage(agent,turn,record) VALUES (?,?,?)",
+      );
+      for (const [agent, turn, model] of [
+        ["owned", "first", "claude-haiku-fixture"],
+        ["owned", "second", "claude-haiku-fixture"],
+        ["foreign", "other", "claude-opus-fixture"],
+      ])
+        insert.run(
+          agent,
+          turn,
+          JSON.stringify({
+            model,
+            responseId: turn,
+            usageSource: "claudeResponse",
+          }),
+        );
+      insert.run(
+        "codex-owned",
+        "turn-1",
+        JSON.stringify({ model: "gpt-6-luna" }),
+      );
+    } finally {
+      analytics.close();
+      canvas.close();
+    }
     const records = readServedModelRecords(
       directory,
       "workspace",
@@ -1314,28 +1342,123 @@ describe("scale verifier retained-input audit", () => {
     ).toThrow(/Unknown retained-input phase/);
   });
 
+  it("reads exact events, execution attempts and native turn counts from the fenced snapshot", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "studio-scale-exact-"));
+    temporaryPaths.push(directory);
+    const canvas = new DatabaseSync(join(directory, "canvas.sqlite3"));
+    try {
+      canvas.exec(
+        "CREATE TABLE sync_identity(id TEXT PRIMARY KEY); INSERT INTO sync_identity VALUES ('workspace');" +
+          "CREATE TABLE runtime_events(id TEXT PRIMARY KEY,agent TEXT,kind TEXT,status TEXT,error TEXT);" +
+          "CREATE TABLE runtime_event_meta(id TEXT PRIMARY KEY,record TEXT);" +
+          "CREATE TABLE runtime_execution_inputs(event TEXT,run TEXT);" +
+          "CREATE TABLE runtime_execution_runs(id TEXT PRIMARY KEY,agent TEXT,account TEXT);" +
+          "CREATE TABLE runtime_execution_attempts(id TEXT PRIMARY KEY,run TEXT,record TEXT);" +
+          "CREATE TABLE runtime_completed_turns(id TEXT PRIMARY KEY);" +
+          "INSERT INTO runtime_events VALUES ('event','owned','user','delivered',NULL);" +
+          "INSERT INTO runtime_execution_inputs VALUES ('event','run');" +
+          "INSERT INTO runtime_execution_runs VALUES ('run','owned','account');" +
+          "INSERT INTO runtime_completed_turns VALUES ('owned:one'),('owned:two'),('other:one');",
+      );
+      canvas.prepare("INSERT INTO runtime_event_meta VALUES (?,?)").run(
+        "event",
+        JSON.stringify({
+          timing: { enqueuedAt: 42, privateText: "omit" },
+          text: "omit",
+        }),
+      );
+      canvas
+        .prepare("INSERT INTO runtime_execution_attempts VALUES (?,?,?)")
+        .run(
+          "attempt",
+          "run",
+          JSON.stringify({
+            requestTicket: "ticket",
+            connectionGeneration: 2,
+            accountKey: "account",
+            events: ["event"],
+          }),
+        );
+    } finally {
+      canvas.close();
+    }
+    const evidence = runEventEvidenceQuery(
+      directory,
+      "workspace",
+      [
+        { id: "event", agentId: "owned", exchange: 1 },
+        { id: "event", agentId: "foreign", exchange: 2 },
+      ],
+      ["owned"],
+      performance.now() + 5000,
+    );
+    expect(evidence.nativeTurnCounts).toEqual({ owned: 2 });
+    expect(evidence.events).toEqual([
+      {
+        id: "event",
+        agentId: "owned",
+        kind: "user",
+        status: "delivered",
+        exchange: 1,
+        error: "",
+        timing: { enqueuedAt: 42 },
+        attempts: [
+          {
+            id: "attempt",
+            requestTicket: "ticket",
+            connectionGeneration: 2,
+            accountKey: "account",
+            events: ["event"],
+            runAccountKey: "account",
+          },
+        ],
+      },
+      { id: "event", agentId: "foreign", exchange: 2, missing: true },
+    ]);
+    expect(evidence.retainedInputs).toEqual([]);
+    expect(JSON.stringify(evidence)).not.toContain("omit");
+    expect(() =>
+      runEventEvidenceQuery(
+        directory,
+        "foreign",
+        [],
+        [],
+        performance.now() + 5000,
+      ),
+    ).toThrow(/workspace identity/);
+    expect(() =>
+      runEventEvidenceQuery(
+        directory,
+        "workspace",
+        [],
+        [],
+        performance.now() - 1,
+      ),
+    ).toThrow(/deadline expired/);
+  });
+
   it("reads every agent's retained inputs from one fenced snapshot without message text", async () => {
     const directory = await mkdtemp(join(tmpdir(), "studio-scale-retained-"));
     temporaryPaths.push(directory);
-    const setup = spawnSync(
-      "python3",
-      [
-        "-c",
-        String.raw`
-import pathlib,sqlite3,sys
-root=pathlib.Path(sys.argv[1])
-with sqlite3.connect(root/'canvas.sqlite3') as canvas:
- canvas.execute('CREATE TABLE sync_identity(id TEXT PRIMARY KEY)')
- canvas.execute("INSERT INTO sync_identity VALUES ('workspace')")
- canvas.execute('CREATE TABLE runtime_events(id TEXT PRIMARY KEY,agent TEXT NOT NULL,kind TEXT NOT NULL,status TEXT NOT NULL,text TEXT NOT NULL)')
- rows=[('foreign-held','foreign-agent','user','pending'),('foreign-uncertain','foreign-agent','followup','uncertain'),('worker-initial','worker','user','delivered'),('child:worker:1','lead','child_result','pending'),('lead-cancelled','lead','user','cancelled')]
- for row in rows: canvas.execute('INSERT INTO runtime_events VALUES (?,?,?,?,?)',row+('secret message text',))
-`,
-        directory,
-      ],
-      { encoding: "utf8" },
-    );
-    expect(setup.status, setup.stderr).toBe(0);
+    const canvas = new DatabaseSync(join(directory, "canvas.sqlite3"));
+    try {
+      canvas.exec(
+        "CREATE TABLE sync_identity(id TEXT PRIMARY KEY); INSERT INTO sync_identity VALUES ('workspace'); CREATE TABLE runtime_events(id TEXT PRIMARY KEY,agent TEXT NOT NULL,kind TEXT NOT NULL,status TEXT NOT NULL,text TEXT NOT NULL)",
+      );
+      const rows = [
+        ["foreign-held", "foreign-agent", "user", "pending"],
+        ["foreign-uncertain", "foreign-agent", "followup", "uncertain"],
+        ["worker-initial", "worker", "user", "delivered"],
+        ["child:worker:1", "lead", "child_result", "pending"],
+        ["lead-cancelled", "lead", "user", "cancelled"],
+      ];
+      for (const row of rows)
+        canvas
+          .prepare("INSERT INTO runtime_events VALUES (?,?,?,?,?)")
+          .run(...row, "secret message text");
+    } finally {
+      canvas.close();
+    }
     const rows = readRetainedInputRows(
       directory,
       "workspace",

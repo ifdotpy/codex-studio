@@ -1,5 +1,76 @@
 # Managed Codex teams
 
+HTTP JSON responses follow this flow:
+
+1. Produce the final JSON, including any mutation sync envelope.
+2. Hash the uncompressed representation for declared ETags and handle conditional reads.
+3. Negotiate Brotli for sufficiently large JSON using the size and quality constants in
+   [`runtime-http/src/router.rs`](../workspaces/runtime/packages/runtime-http/src/router.rs).
+4. Vary on `Accept-Encoding`; the native client negotiates and decodes Brotli.
+   Small JSON and all `text/event-stream` responses, including sync SSE, stay uncompressed.
+
+Desktop status follows this flow:
+
+1. The [disk gate](../workspaces/runtime/packages/runtime-services/src/disk_space.rs) keeps exact free bytes for admission and projects only the visible level and message through the [disk status contract](../workspaces/runtime/packages/runtime-schema/src/desktop.rs).
+2. `/api/desktop` includes that projection; the existing resource content filter suppresses unchanged responses, so healthy disk writes cause no renderer re-read.
+3. Threshold, message, provider and supervisor changes still notify the existing reader. Failed reads retain the last notices; native attachment keeps using the same endpoint.
+
+State updates follow this flow:
+
+1. Pull the initial state, then consume complete typed entity batches from the stream.
+2. The server merges changes using its [flush interval owner](../workspaces/runtime/packages/runtime-services/src/change_notifications.rs)
+   and reads full records and tombstones from one SQLite snapshot.
+3. Store the batch before advancing its checkpoint. Recover gaps, resets, reconnects,
+   failed storage, and batches outside the [shared limits](../workspaces/runtime/packages/runtime-schema/src/shared_values.rs) through pull.
+4. Open chats pull their baseline, then apply complete typed transcript intervals
+   through the same delta applier as pull; advance the cursor after storing all items.
+5. A hinted subscribed transcript uses the existing pull projection owner in the
+   coalesced flush. Its revision cache shares page computation across subscribers;
+   this stream path may perform the same projection upkeep transaction as a pull.
+6. Transcript gaps, reconnects, epochs, storage failures and oversize reconcile by pull.
+   External `/api/sync/notify` hints proven empty at the same pull cursor are consumed;
+   changed content is delivered, and incomplete intervals retain a pull hint.
+
+Token-rate subscriptions follow this flow:
+
+1. The browser stream owner sends the tabs' aggregate interest through the `tokenRates`
+   query selector owned by [OpenAPI](../workspaces/runtime/packages/runtime-http/openapi.json).
+2. Interest changes reopen the existing shared stream. An interested stream receives
+   the current snapshot immediately, including when a new tab takes ownership.
+3. A stream with explicit false interest receives resources and heartbeats without token frames.
+4. Native and signed clients omitting the selector retain the schema's compatibility default.
+
+Browser draft notifications follow this flow:
+
+1. Read the [draft sequence owner](../workspaces/runtime/packages/runtime-store/src/repositories/sync_documents.rs) when a subscribed draft resource is invalidated.
+2. The shared content filter suppresses hints when that sequence is unchanged.
+3. Read changed drafts and retained tombstones as one bounded typed interval; validate each payload through the draft owner and preserve its stored bytes.
+4. Admit contiguous intervals directly to RxDB's master stream, without another pull. The stream watermark means accepted-contiguous; RxDB owns durability and conflicts.
+5. Pull from RxDB's durable checkpoint for initial load, gaps, reconnects, epoch changes, oversized intervals, or apply/persistence errors.
+
+Server command output follows this flow:
+
+1. Retain the first and last bytes within the command's output limit.
+2. Evict old tail bytes without shifting retained bytes on every output block.
+3. Copy only the requested page on read; keep the same offsets, gap reporting,
+   UTF-8 decoding, and durable snapshot format.
+
+Large checkpoint and tool payloads keep their existing blob format. The server
+moves ordinary fields into the stored record and inserts only the preview for
+an externalized field; it does not copy the discarded payload into that record.
+
+Streaming analytics appends each delta to its existing text and updates retained
+JSON bytes from that fragment's escaped size. Command-output trimming subtracts
+the escaped size of the removed prefix, preserving the existing character limit.
+
+Branching before a message follows this flow:
+
+1. Read native turn IDs in descending pages with item bodies omitted.
+2. Stop at the selected turn's predecessor, including across a page boundary.
+   If the selected turn is first, start an empty thread instead.
+3. Keep each page's durable operation identity and the existing fork recovery
+   handling, so a lost response cannot duplicate the native branch.
+
 Use the [Electron desktop app](../workspaces/client/apps/desktop/README.md), or build the [React interface](../workspaces/client/apps/web/README.md), start `codex-canvas`, and open <http://127.0.0.1:4620>.
 Use the new-chat action inside a project. The server creates an empty lead conversation immediately.
 If the current lead chat is empty, it reuses that chat and preserves the draft.
@@ -82,12 +153,27 @@ Provider session expiry keeps request order:
    predecessor releases the thread. Written requests retain uncertain identities.
 4. Pending outcomes and remaining actions stay owned by the session for shutdown.
 
-Workers appear on the right. Select a worker to read its conversation, then select **Lead** to return.
-On a narrow screen, **Team** opens the worker panel.
-Worker cards show the original assignment and the last report from a completed
-turn. Open each excerpt to read more. Reports do not imply acceptance by the lead.
-The team summary counts workers who are active, need your answer, or have finished.
-Deferred questions remain unanswered and leave the attention count.
+Transcript reasoning projection follows the stored row order:
+
+1. Read one reasoning record from the page's time interval.
+2. Decode and validate it, including records for turns absent from the page.
+3. Add its timing to the existing groups and drop the raw record before reading
+   the next. Group intervals remain retained until the page is assembled.
+
+Provider payload ownership follows readiness and delivery:
+
+1. Write readiness borrows the front action; errors leave that action retained.
+2. A retained result moves into its database transaction and back to its request.
+3. Before checkpoint, only a committed reply with a waiter is copied for delivery;
+   its correlation stays retained until checkpoint, including after waiter loss.
+4. At checkpoint the result moves to its waiter. Unknown correlation stays
+   available for exact late evidence without resending the request.
+   Workers appear on the right. Select a worker to read its conversation, then select **Lead** to return.
+   On a narrow screen, **Team** opens the worker panel.
+   Worker cards show the original assignment and the last report from a completed
+   turn. Open each excerpt to read more. Reports do not imply acceptance by the lead.
+   The team summary counts workers who are active, need your answer, or have finished.
+   Deferred questions remain unanswered and leave the attention count.
 
 Assistant text stays visible in chronological order, outside tool disclosures.
 Only consecutive tool calls share a group. Groups start closed and retain the
@@ -169,21 +255,80 @@ Use **+** beside a folder to start a chat there. An empty current chat is reused
 Folder registration lives in SQLite. Removing an empty project from the sidebar does not delete files.
 Each folder initially shows five chats. **Show more** expands the list, and search includes hidden chats.
 Folder collapse preferences stay in browser storage. Agent conversations appear in **Messages**.
+UI preferences follow the existing entity projection for every mounted server screen:
+
+1. The screen reads preference rows from its entity projection, including while hidden.
+2. Its bridge merges user preferences globally and server preferences into that server's storage.
+3. Writes use that screen's authenticated API; pending edits retry on resume or connection recovery.
+4. The projection workspace identity names the shell's saved aliases, labels and server order.
+5. The shell applies those fields without a second entity pull or state stream.
+
 Use the sidebar row menu to rename or delete a lead or agent chat.
 Manual names take priority over an automatic lead title. Studio stores both manual
 and generated names in SQLite and copies them to Codex with `thread/name/set`.
 The copy uses the session's account and thread. It starts no model turn. A native
 failure preserves the Studio name and retries with backoff. Drafts sync when they
 have a native thread; existing sessions and transferred threads sync as well.
+Native composer draft synchronization follows this flow:
+
+1. Recover committed local text and queued writes before the first server refresh.
+2. Refresh on draft notifications, connection recovery, resume, and completed local writes.
+3. Combine simultaneous triggers and retain one follow-up when notified during a refresh.
+4. Keep idle windows quiet; closing the view removes listeners and pending refreshes.
+
+Browser draft push acknowledgement follows this flow:
+
+1. Save edits locally immediately; the existing RxDB push gate groups remote writes, including edits received during an in-flight push.
+2. Accept the conflicts-only HTTP result as acknowledgement of the exact attempted state.
+3. Deliver complete server draft intervals through the same RxDB master stream.
+4. Keep only the last two distinct acknowledged own payloads per branch; suppress a delayed echo only when it exactly matches the earlier payload and deletion state.
+5. Resolve genuine concurrent versions with the [draft conflict owner](../workspaces/client/apps/web/src/sync/conflicts.ts), keeping both texts; retry a lost response with its exact attempted state.
+
+Draft payload compatibility follows this flow:
+
+1. Derive the server schema and web type from [DraftVersion](../workspaces/client/packages/client-domain/src/drafts.rs) with `pnpm run contracts:generate`.
+2. Require a JavaScript-safe integer timestamp on pushes; accept historical extension fields until persisted browser and native pending rows have a compatible migration. Generated types for newly authored drafts remain closed.
+3. Read historical drafts and assumed masters through the same Rust compatibility decoder: preserve unknown fields, map missing or null timestamps to zero, and floor fractions.
+4. Preserve stored payload bytes; read normalization never rewrites or drops a draft. `pnpm run contracts:check` rejects generated drift.
+
+Markdown rendering follows this flow:
+
+1. Parse in the client-domain Rust owner into typed blocks, nodes, and sentences.
+2. Serialize the same output through native IPC or WebAssembly.
+3. Generate the renderer types from those Rust structs with the existing contract commands.
+
 Deleting an agent chat removes it from the user list until the next agent message. Its participants retain their history.
 Deletion stops the selected agent and its descendants and removes them from the interface.
 Stored transcripts and project files remain on disk. Deleted agents cannot resume from late events or message retries.
+Delete confirmation and pending cleanup follow this flow:
+
+1. Commit the authorized deletion and return its committed result.
+2. Drain saved effects; log failures and retain their intents without changing that result.
+3. Reconcile each cleanup intent independently, so one failure cannot block other chats.
+4. Settle an already missing owned worktree without filesystem or Git mutations.
+5. After a lost response, read server state without resending the delete. A newer
+   refresh cannot discard this readback; confirmation requires the same workspace.
+
 Monitor projection updates follow this flow:
 
 1. Creation, status, owner, and creation-time changes select the canonical monitor window.
 2. Output, byte counts, and activity changes publish only that monitor's projection.
 3. Terminal monitors outside the window stay retired; owner deletion maintains the window.
 4. Source changes, projections, and tombstones commit in the same transaction.
+
+The retained monitor port installs its startup resources once:
+
+1. Startup installs the dispatch notifier and command preparation resources.
+2. A second installation returns an error and preserves the original resource.
+3. Monitor requests read those resources without taking a read lock.
+
+Monitor processing follows this flow:
+
+1. Stall and orphan scans each advance through bounded pages.
+2. A finished monitor scan stays finished while other scans and queued results continue.
+3. Staged orphan recovery requests reattach for the saved operation on the next pass.
+4. When a cycle finishes, even with an error, cursors reset. Wake notifications
+   received during scanning remain pending and start that next cycle.
 
 Agents use `orchestration_monitor` for all long commands, checks, and watchers.
 A settled turn with active owned commands stays in `waiting_on_monitor`. Each
@@ -219,6 +364,9 @@ Server command output snapshots follow one flow:
 4. Snapshot serialization, atomic replacement, and fsync run on the labeled
    blocking pool. Each write finishes before another begins.
 5. The final snapshot finishes before the final record is saved and released.
+6. A short synchronous request waits for that Job to finish, then reads output once.
+   Its bounded wait or a lost response leaves the Job running; cancellation remains
+   an explicit control request.
 
 Inbox, workspace agent choices, and attention counts use the same lead tree.
 Two chats remain separate even when they use the same account or project folder.
@@ -256,7 +404,7 @@ On iPhone, Save a copy uses the system share sheet when file sharing is availabl
 Other browsers use an explicit download fallback.
 
 The file API limits inline previews to the server-owned
-[workspace preview byte cap](../workspaces/runtime/apps/server/src/codex_shared_values.py).
+[workspace preview byte cap](../workspaces/runtime/packages/runtime-schema/src/shared_values.rs).
 Native file actions remain available when that limit prevents a preview.
 Table previews show at most 200 rows and 100 columns.
 Their text parser stops after 1,048,576 UTF-16 code units.
@@ -272,54 +420,6 @@ Source and Save a copy retain the complete file within the file API limit.
 5. A matching parent permits descendant input; a missing edge ends the check,
    malformed edges and cycles refuse it, and other targets use authorized chat routing.
 6. The existing transaction saves effects and replay receipts together.
-
-### Agent progress file
-
-Each managed conversation displays its agent's plain `PROGRESS.md` between the
-transcript and composer. The file path is `<stateDir>/progress/<agentId>/PROGRESS.md`.
-Studio supplies the exact path in runtime instructions and through
-`orchestration_context topic=panel`, together with the bundled
-[progress guide](../.agents/skills/codex-workspace/references/panel.md).
-The file remains outside Git. Agents that share a working directory have separate
-files. A project's own `PROGRESS.md` does not control this display.
-
-Agents read and edit the file with ordinary file tools. Content must be UTF-8
-Markdown and no larger than the server-owned [progress byte limit](../workspaces/runtime/apps/server/src/codex_shared_values.py).
-The display has a maximum height of 150px.
-Its current width, font and available height determine fit. Studio uses passive
-Markdown and checks the complete rendered revision before display. Overflow or
-unsupported content produces a compact notice with access to the original file.
-The panel does not scroll, cut content or shrink the font.
-It does not execute scripts or provide agent callbacks. An update does not require command output or a model
-turn. Existing read-only permissions remain unchanged.
-
-The file persists across restarts. Provisioning creates an empty file only if it
-is absent; it never overwrites agent content. An empty or missing file clears the
-display. Read errors, invalid UTF-8, and oversized files produce a visible error.
-A read failure does not present an old revision as current. A later successful
-read checks the new revision. File reads occur outside the global runtime lock.
-Atomic file replacement is supported; the next read observes the new revision.
-
-The selected visible conversation refreshes `GET /api/panel?agent=<id>` in the
-background. The response contains `format=markdown`, `markdown`, `path`,
-`revision`, `updated`, `exists`, and `error`. Hidden and offline views pause these
-reads. Old responses from another chat cannot replace the current display.
-File content stays outside shared snapshots. File changes do not wake agents.
-
-On chat switch, Studio restores a bounded local copy before the file request
-finishes. The existing background chat scheduler also prepares likely switch
-targets. Cached content carries a Saved copy label until the server confirms it.
-Read failures retain this labelled copy and show an error. Empty or missing
-files clear it after a successful read. Cache entries use the state directory
-and agent ID; cache eviction does not remove drafts or source files. Cached
-content must still fit the current viewport. Layout reports wait for a live read.
-
-The visible client reports measured dimensions to `POST /api/panel/layout`.
-The server writes revision-specific, expiring feedback to `PROGRESS.layout.json`
-beside the source file. Separate clients retain separate results. Agents use the
-check command in their runtime instructions after edits. The
-[progress guide](../.agents/skills/codex-workspace/references/panel.md) defines this workflow.
-An absent or stale measurement means unmeasured, not success.
 
 `/compact`, `/review`, `/stop`, and `/stop-team` are local commands.
 Team capacity and token budgets remain available through `codex-control configure`.
@@ -362,12 +462,10 @@ The lead receives these additional tools:
 | `orchestration_request`        | List, recover, or cancel your own durable tool requests.                                                                     |
 | `orchestration_sign_in`        | Show the person a sign-in card for a link to open. Every agent has it. See docs/vm-browser-bridge.md, section 7.             |
 
-Current sender tool declarations in the Rust preparation bundle are checked against
-[`codex_runtime.TOOLS`](../workspaces/runtime/apps/server/src/codex_runtime.py).
-After changing those declarations, refresh the current bundle with
-`python3 workspaces/runtime/apps/server/src/codex_python.py --exec -B workspaces/runtime/apps/server/src/generate_delivery_tools.py --write`.
-The fast delivery contract checks this production bundle. Historical native tool
-snapshots remain frozen for existing sessions.
+Current sender tool declarations and generated delivery bundles are owned by the
+Rust runtime schema. Use `pnpm run contracts:generate` after changing the owner,
+and `just contracts-check` to check drift. Historical native tool snapshots stay
+frozen for existing sessions.
 
 After delegation, the lead can finish its turn. The runtime sends each child
 result into an active lead turn or starts a turn when idle, including after a final answer.
@@ -478,11 +576,16 @@ the user question for leads, and a worker refuses it. Codex has no such prompt:
 `thread/resume` loads the stored history without a dialog.
 Studio checks ownership before unsubscribing a thread and stops the provider
 process only when all loaded threads have been released and no work remains.
-An unknown unsubscribe result keeps the thread loaded.
+An unknown unsubscribe result keeps the thread loaded. A thread whose last turn
+ended with a provider error (native status `systemError`) has no running turn
+and unloads like an idle one.
 
 Idle checks follow provider events, committed ownership changes, and the next
-idle deadline. Pending local requests park the deadline until their completion
-event. Queued commands prevent process shutdown without erasing its idle time.
+idle deadline. A pending local request for a thread parks that thread's deadline
+until the request completes. Requests for other threads, or for no thread (another
+agent's turn, a monitor command), do not park it. Process shutdown waits until
+the worker holds no local work. Queued commands prevent process shutdown without
+erasing its idle time.
 The worker loop owns this reconciliation; it does not start periodic scans.
 
 Account worker shutdown settles callback answers through the session owner:
@@ -520,6 +623,14 @@ Authenticated `POST /api/context-repair` with `id` requests the same repair for 
 Its receipt retains source and copy hashes, event IDs, and the resulting native thread.
 The operation requires free space for the source copy and native fork.
 Unsupported or ambiguous history remains unchanged.
+
+Supervisor connection and reattachment follow one path:
+
+1. Runtime, operator and VM guest clients request the current supervisor protocol and require its version in the reply.
+2. The supervisor rejects retired versions before admitting a backend.
+3. Open reuses a running child only when its launch signature matches the configured current command, environment and working directory, or the same values with an earlier command that the launch lists in `ProviderLaunchSpec::reattach_commands`. The child keeps that earlier command until it exits; a child started later gets the current command.
+4. Other changed launch signatures are refused; no unlisted command is adopted and no duplicate child starts. A changed provider launch command lists the command it replaces, so an upgrade does not refuse running children.
+5. Recovery signals only an exact native kernel identity; retired Python identities never authorize a signal or an identity upgrade.
 
 A supervisor event sequence is meaningful only inside one journal epoch.
 A new supervisor journal and a recreated handle row both number their events from one again.
@@ -745,7 +856,9 @@ with [`CODEX_WORKER_BUILD_ROOTS`](product-guide.md#state).
 
 Before claiming queued implementer input, the gate checks every watched workspace
 and build-output filesystem against
-[`WORKER_STORAGE_MIN_FREE_BYTES`](../workspaces/runtime/packages/runtime-services/src/disk_space.rs).
+[`WORKER_STORAGE_MIN_FREE_BYTES`](../workspaces/runtime/packages/runtime-services/src/disk_space.rs),
+which equals the disk-full floor of the state volume. Studio does not keep a
+larger reserve for agent builds: work waits only when a volume is really full.
 A low or unreadable filesystem leaves the input queued with the original identity
 and publishes a storage-hold reason on the agent. The account worker rechecks
 using the existing disk recheck interval. The hold ends at the same floor;
@@ -790,11 +903,33 @@ consumes generated copies. Both backends use them:
 5. Recovery never resends that input. A late acceptance can bind the same retry
    to its existing turn; repeated recovery does not repeat the notice.
 
+## Starts held for authentication
+
+1. A turn whose account is signed out or changed keeps its input pending and
+   records the authentication reason on the agent.
+2. Account changes and published auth invalidations wake the release loop;
+   elapsed time alone does not wake it.
+3. When the account is ready again, the loop requeues the held input once.
+   Its paused-time witness waits for credential-watch publication before
+   measuring the interval without a wake, including process-wide auth signals.
+
 ## Stop and recovery
 
 **Stop agent** stops only the selected agent. **Stop team** stops its lead and all
 descendants. Stop disables automatic continuation, increments the agent generation,
 cancels pending events and requests interruption of active turns and commands.
+The interrupt goes to the provider process that runs the turn, also after Studio
+reconnects to that process. A Codex interrupt leaves the thread's background
+terminals running, so Stop and delete then send `thread/backgroundTerminals/clean`.
+The Claude bridge stops its background tasks as part of the interrupt.
+
+Claude tool stall recovery follows the [bridge watchdog](../workspaces/providers/apps/claude-bridge/stall-watch.mjs):
+
+1. An unfinished tool call arms one timer for the earliest eligible deadline.
+2. CLI progress moves the silence deadline; tool results remove their deadline.
+3. Studio approvals, questions and tool waits pause detection; answering restarts the tool budget.
+4. A deadline starts the existing interrupt and close recovery once. Idle queries have no watchdog timer.
+
 A late result from an earlier generation cannot resume that agent.
 A new user message explicitly resumes the target. Other stopped agents stay stopped
 until the user or a resumed lead sends them a new task.
@@ -1034,7 +1169,7 @@ The settings are stored with the account and edited under "Turn start limits"
 on its account card; a change applies to waiting turns at once. A new account
 takes its provider's defaults. The bounds, the defaults, and the measurements
 behind them belong to the
-[shared values](../workspaces/runtime/apps/server/src/codex_shared_values.py)
+[shared values](../workspaces/runtime/packages/runtime-schema/src/shared_values.rs)
 (`ACCOUNT_START_*`, `ACCOUNT_RUNNING_TURNS_*`); the gate is
 [`account_start_gate`](../workspaces/runtime/packages/runtime-services/src/account_start_gate.rs).
 A worker spawned without an account prefers an account below its running-turn
@@ -1066,35 +1201,11 @@ do not run a fresh save to discover whether the previous one applied.
 
 ## Verification
 
-```bash
-pnpm install --frozen-lockfile
-pnpm --filter codex-agents-web test
-pnpm --filter codex-agents-web run format:check
-python3 workspaces/runtime/apps/server/tests/runtime-contract.py
-python3 workspaces/runtime/apps/server/tests/turn-start-contract.py
-python3 workspaces/runtime/apps/server/tests/prepare-steer-contract.py
-python3 workspaces/runtime/apps/server/tests/monitor-lifecycle-contract.py
-python3 workspaces/runtime/apps/server/tests/harness-response-contract.py
-python3 workspaces/runtime/apps/server/tests/canvas-contract.py
-node workspaces/runtime/apps/server/tests/portable-smoke.mjs
-```
-
-`runtime-contract.py` exercises a 40-worker team, bounded concurrency, parent wakeup,
-Monitor exit delivery without model polling, stop races, duplicate events, budgets,
-worktree isolation and restart behavior against a protocol fixture.
-The browser test checks the production React bundle in headless Chrome with an isolated
-HTTP server and SQLite database. It covers complaints, agent chats, sidebar actions,
-context, limits, a lost creation response, and command monitoring. The model protocol
-is a fixture; this test does not call a live model.
-
-The optional live check uses the configured account and model:
-
-```bash
-python3 workspaces/runtime/apps/server/tests/runtime-live.py --run
-```
-
-It requires one lead, two reviewers, one successful command watch and all three
-completion events delivered to the lead. The test prints its evidence directory.
+1. Run `pnpm install --frozen-lockfile` for the locked tools.
+2. Run `just check studio-runtime-services` for runtime changes and
+   `pnpm --filter codex-agents-web test` for renderer changes.
+3. Run `just test-fast` before a PR and `just test-comprehensive` on the
+   publication commit. See [testing](testing.md) for manual/live evidence rules.
 
 See [UI and tool evidence](ui-and-tools.md) for the interface decisions and Codex tool checks.
 
@@ -1193,9 +1304,7 @@ Codex tools such as `exec_command` retain Codex's own output controls.
   Set `liveness_command` to run a sandboxed check at the stall point. The stall
   event includes its result. File watches support `stallTimeoutSeconds` and
   `livenessCommand` with the same defaults and behavior. One event is sent per
-  quiet period, and new output or a file change starts another period. Record
-  verified status in the per-agent `PROGRESS.md` file with ordinary file tools.
-  Its display updates without model turns.
+  quiet period, and new output or a file change starts another period.
 
 Existing native threads keep their original tool schemas. They can use new fields
 through `orchestration_send` with `agent_id="workspace"` and a JSON `text` value:
@@ -1258,6 +1367,14 @@ the archive receipt. Repeated calls keep the same request result.
 `archive_finished` checks completed, failed, interrupted, and stopped paused
 descendants. It archives workers with safe workspaces or no workspace. The result reports
 the archive count, measured freed bytes, and a reason for each worker kept.
+The optional `reason` follows this flow:
+
+1. The tool accepts a string reason and rejects unrelated fields.
+2. If omitted, the [batch owner](../workspaces/runtime/packages/runtime-services/src/agent_management_store.rs)
+   supplies its default audit reason.
+3. Each archived worker stores that reason through the existing archive owner.
+4. Repeating the same request returns its receipt without rewriting the reason.
+
 The Rust backend runs the existing archive owner deepest-first. Safe Git cleanup
 removes the entire worktree, including ignored `target/` output, after preserving
 its commit under an archive ref. Dirty or unverified worktrees remain intact.
@@ -1268,6 +1385,16 @@ Set `unassign_work=true` on `archive` or `archive_finished` to return open assig
 tasks to the unassigned ready backlog. The archive and task changes commit in one
 transaction. Task results and decisions remain. The default keeps the
 `assigned_work` blocker. Active work and all other blockers still prevent archive.
+
+Archive commit and workspace cleanup follow one flow:
+
+1. Commit the authorized archive and retain its original receipt.
+2. Run cleanup for that worker only; unrelated pending workspaces stay separate.
+3. If cleanup fails, report the worker as archived with cleanup pending and the
+   original error as the workspace reason. Batch results count the archive and
+   include that reason among kept workspaces.
+4. Recover through the saved tool receipt after a lost response. A later archive
+   call preserves the original archive identity; uncertain effects stay held.
 
 After an image detach interruption, make a new `archive` call to finish detaching. After partial Git removal, make a new `archive` call to retry cleanup. Studio
 preserves the failed cleanup record and Git error. It can repair the exact saved
@@ -1431,6 +1558,124 @@ change with both options. Cross-machine Claude cache reuse remains unverified.
 
 1. The account worker applies a notification batch or stream flush in the existing lifecycle transaction.
 2. Dispatch stores normalized agent state, transcript changes, stream state and exact replay receipts.
-3. The lifecycle owner validates each final changed agent row and publishes its canonical renderer view once.
-4. Source state, receipts and renderer views commit together; a projection failure rolls them all back.
-5. Replaying committed journal identities returns the saved outcomes without publishing agents again.
+3. The lifecycle owner decodes, merges volatile fields and validates each final changed agent row once.
+4. Liveness, context and the canonical renderer view borrow that checked value in source row order; only storage and wire boundaries serialize it.
+5. Source state, receipts and renderer views commit together; a projection failure rolls them all back.
+6. Replaying committed journal identities returns the saved outcomes without decoding or publishing agents again.
+7. The store observer publishes committed entity changes; ordinary analytics receipts only project token rates, preserving complete stream batches without a pull.
+8. Recovered history, unknown publication overflow, and external writer hints retain state resets and pull recovery.
+
+### Token-rate snapshots
+
+1. The token owner publishes one complete record per agent, including its current root and turn.
+2. The shared workspace stream carries that list; the client validates it once before caching or replay.
+3. Footer meters read by agent ID; team meters use a derived identity lookup from each record's root ID.
+4. Replacing the list clears removed agents and previous root memberships, even without an agent entity cache.
+5. Late tabs and newly opened teams read the latest complete snapshot through the same stream coordinator.
+
+### Held child-result release
+
+1. The account registry captures wall time and monotonic time together before
+   reading the earliest held child-result deadline from SQLite.
+2. It converts the stored deadline using that same clock anchor, so waiting for
+   read admission or completion consumes the hold; an elapsed hold wakes at once.
+3. A failed read keeps the existing registry retry delay. The next wake remains
+   the earliest child-result release, archive, checkpoint, or worker retry.
+
+### History scheduling
+
+1. The history runner ingests the initial roster in store row order.
+2. Store notifications validate changed rows and update the retained ready order.
+3. Each step selects one checked actor, preserving active priority, the active quota,
+   checked-time order and store-row ties; it does not rescan the roster.
+4. Partial imports remain ready; current imports wait for a notification.
+5. Input failures wait for relevant input, budget or profile changes; deletion
+   and retirement remove the actor and its scheduling state.
+
+### Callback saved-output reads
+
+1. The callback claims its exact request identity before reading saved output.
+2. A pooled SQL reader snapshots the selected receipts, results and blob references.
+3. Outside SQL, the payload owner reads and verifies blobs and durably writes any recovered output.
+4. The Canvas writer rechecks the active actor, claim owner, selection and complete raw rows.
+5. Changed epochs, references or late results refuse stale settlement without repeating the operation.
+6. The existing receipt owner atomically commits recovery and the callback result using prepared payloads only.
+7. Panel guidance is read once before its callback transaction; the transaction still checks lead authority.
+8. A lost response uses the saved request identity and existing uncertain-outcome recovery.
+
+### Rust command installation
+
+1. Run `just install` to build and link the Rust server, supervisor, and diagnostics.
+2. The installer removes only obsolete Python links belonging to that checkout and reports them.
+3. Use managed orchestration tools for agent commands; the removed Python CLIs have no aliases.
+4. `studio-runtime-server service install` enables user startup without restarting work.
+5. `service status` reads the manager; `service uninstall` disables startup and leaves running work alone.
+6. On Linux, only `just deliver-server` selects and restarts a server release.
+
+## Desktop background recovery
+
+1. The installed desktop saves the Rust runtime and supervisor executable paths for its canonical state directory.
+2. Recovery probes the Rust supervisor socket with protocol 2 and takes no provider ownership; an unavailable owner makes recovery wait.
+3. Recovery attaches to an existing backend or starts the saved Rust server only when the runtime lease is free.
+4. Recovery restarts its own job without unloading the supervisor or its live provider children. Desktop Python helpers use only local desktop modules.
+
+### Retained guest and desktop helpers
+
+1. Desktop recovery reads process arguments and pending updates from its local helpers.
+2. The installer verifies the staged app and waits for the VM maintenance lock.
+3. The guest relays native provider requests to the Rust process supervisor.
+4. Guest restarts reuse the supervisor socket and journal; an uncertain owner stays blocked.
+
+## Desktop runtime startup
+
+1. Electron and Tauri verify the backend identity and canonical state directory before attaching.
+2. After a confirmed connection refusal, the client starts `studio-runtime-server` and verifies its executable build identity.
+3. Recovery owns the independent Rust process supervisor; quitting the client leaves runtime work active.
+4. A timeout or incompatible owner fails visibly without starting a replacement.
+
+## Rust state recovery
+
+1. Open the current Rust database layouts; Python marker and journal layouts are no longer upgraded.
+2. Restore account limits from `rateLimitsByAccount` and transcript text from its current full-text owner.
+3. Reconcile uncertain input with the accepted native attempt and current native history. Missing evidence stays held.
+4. Answer provider cards only with their Rust journal admission; retire replies after the worker checkpoint.
+5. Keep the Rust receipt upgrades and dated Rust agent migrations for already written Rust state.
+
+### Local draft synchronization
+
+1. Import, receive, and acknowledge look up each stored draft by workspace and ID
+   inside the command transaction, preserving pending edits and newer master versions.
+2. The command commits its changes and returns one complete draft view; it does not
+   scan every stored draft again for each incoming document.
+
+## Lost server identity warnings
+
+1. The access snapshot identifies references to a previous server identity.
+2. Server settings display these warnings without a replacement action.
+3. References keep their original identity; historical replacement records remain readable.
+
+## Task history reads
+
+1. The server reads the workspace agents and their volatile fields together.
+2. It selects task IDs and records for the requested page in one query.
+3. It validates only the served records; the extra row indicates more history.
+4. Current and older-page cursors retain their timestamp and ID ordering.
+
+## Resource refreshes
+
+1. After commit, the writer compares SQLite's update count with its receipt and entity-table hook counts.
+2. Receipt-only commits need no resource wake; entity-only commits carry `Entities`; unknown, mixed, and uncertain commits carry `All`.
+3. `Entities` advances state, transcript, room, task, and workspace refs without moving the broad resource cursor; it never forces an entity reset.
+4. A connected stream asks the resource notification owner about its subscribed keys.
+5. After a coalesced wake, the owner reads each affected projection once per revision, shared across streams.
+6. A resource version advances when its content digest changes; unchanged content causes no client re-read.
+7. A publication during a projection read stays pending at the sampled cursor, even when the digest is unchanged.
+8. Limits use the cached per-account snapshot without starting provider reads or refreshes; explicit refresh keeps its existing path.
+9. Unknown, unavailable, or evicted projections retain the safe refresh.
+10. Initial connections still receive every subscribed resource; publication receipts and retry identities stay unchanged.
+
+Progress contract generation follows this flow:
+
+1. Derive command progress and stall schemas from the Rust structs in [agent_progress.rs](../workspaces/runtime/packages/runtime-schema/src/agent_progress.rs).
+2. Refresh their OpenAPI components and the renderer types with `pnpm run contracts:generate`.
+3. Run `pnpm run contracts:check` to reject drift; HTTP routes continue to consume OpenAPI.

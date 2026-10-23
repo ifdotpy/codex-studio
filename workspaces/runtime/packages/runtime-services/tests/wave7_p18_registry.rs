@@ -1,7 +1,41 @@
-use crate::prepared_python_support;
 use serde_json::{Value, json};
-use std::{path::Path, process::Command};
+use std::path::Path;
 use studio_runtime_services::account_driver::{AccountDriver, CodexLoginRequest, LoginReservation};
+
+#[derive(serde::Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+enum Outcome {
+    Written,
+    NotSent,
+    Unknown,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LoginCase {
+    initial: Value,
+    existing: bool,
+    outcome: Outcome,
+    response: Value,
+    result: Value,
+    stored: Value,
+    home: String,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "lowercase", deny_unknown_fields)]
+enum ProfileCase {
+    Discover {
+        initial: Value,
+        expected: Value,
+        home: String,
+    },
+    Update {
+        initial: Value,
+        expected: Value,
+        options: Value,
+    },
+}
 
 const REQUEST: &str = "4b154e4b-80bb-4f1f-b07f-dcaa15563190";
 fn request(existing: bool) -> CodexLoginRequest {
@@ -19,27 +53,17 @@ fn read(path: &Path) -> Value {
 #[test]
 #[allow(clippy::disallowed_methods)]
 fn registry_login_writes_match_python_and_replay_without_writes() {
-    let source = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let output = Command::new(prepared_python_support::prepared_python(
-        &source.join("../../apps/server/src"),
-    ))
-    .arg(source.join("tests/wave7_p18_registry_oracle.py"))
-    .output()
-    .expect("oracle");
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let cases: Vec<Value> = serde_json::from_slice(&output.stdout).expect("corpus");
+    let cases: Vec<LoginCase> =
+        serde_json::from_str(include_str!("wave7_p18_registry_corpus.json"))
+            .expect("frozen registry corpus");
     assert_eq!(cases.len(), 6);
     for case in cases {
         let root = tempfile::tempdir().expect("state");
         let path = root.path().join("registry.json");
-        std::fs::write(&path, case["initial"].to_string()).expect("Python-written registry");
+        std::fs::write(&path, case.initial.to_string()).expect("Python-written registry");
         let driver = AccountDriver::open(&path).expect("open");
-        let request = request(case["existing"].as_bool().expect("existing"));
-        let home = Path::new(case["home"].as_str().expect("home"));
+        let request = request(case.existing);
+        let home = Path::new(&case.home);
         let LoginReservation::Dispatch(reserved) = driver
             .reserve_codex_login(&request, home, 10.0)
             .expect("reserve")
@@ -51,14 +75,14 @@ fn registry_login_writes_match_python_and_replay_without_writes() {
             .finish_codex_login(
                 REQUEST,
                 reserved["accountKey"].as_str().expect("account"),
-                (case["outcome"] == "written").then_some(&case["response"]),
-                case["outcome"] != "not_sent",
+                (case.outcome == Outcome::Written).then_some(&case.response),
+                case.outcome != Outcome::NotSent,
                 None,
                 10.0,
             )
             .expect("receipt");
-        assert_eq!(result, case["result"]);
-        assert_eq!(read(&path), case["stored"]);
+        assert_eq!(result, case.result);
+        assert_eq!(read(&path), case.stored);
         let saved = std::fs::read(&path).expect("saved");
         assert!(matches!(
             driver
@@ -290,49 +314,46 @@ fn local_auth_reconciliation_only_commits_a_terminal_result() {
 #[allow(clippy::disallowed_methods)]
 fn discovery_and_settings_registry_rows_match_python() {
     use studio_runtime_services::account_driver::{AuthMetadata, AuthStatus};
-    let source = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let output = Command::new(prepared_python_support::prepared_python(
-        &source.join("../../apps/server/src"),
-    ))
-    .arg(source.join("tests/wave7_p18_profile_registry_oracle.py"))
-    .output()
-    .expect("oracle");
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let cases: Vec<Value> = serde_json::from_slice(&output.stdout).expect("cases");
+    let cases: Vec<ProfileCase> =
+        serde_json::from_str(include_str!("wave7_p18_profile_registry_corpus.json"))
+            .expect("frozen registry corpus");
     assert_eq!(cases.len(), 2);
     for case in cases {
         let root = tempfile::tempdir().expect("state");
         let path = root.path().join("registry.json");
-        std::fs::write(&path, case["initial"].to_string()).expect("initial");
+        let (initial, expected) = match &case {
+            ProfileCase::Discover {
+                initial, expected, ..
+            }
+            | ProfileCase::Update {
+                initial, expected, ..
+            } => (initial, expected),
+        };
+        std::fs::write(&path, initial.to_string()).expect("initial");
         let driver = AccountDriver::open(&path).expect("driver");
-        if case["kind"] == "discover" {
-            driver
-                .discover_claude_verified(
-                    Path::new(case["home"].as_str().expect("home")),
-                    &AuthMetadata {
-                        status: AuthStatus::Ready,
-                        account_id: Some("claude:fixture@example.invalid".into()),
-                        email: Some("fixture@example.invalid".into()),
-                        plan: Some("max".into()),
-                        credential_identity: None,
-                        error: None,
-                        error_kind: None,
-                    },
-                )
-                .expect("discover");
-        } else {
-            driver
-                .update_claude_settings(
-                    "claude-local",
-                    case["options"].clone(),
-                    Some("  Updated  "),
-                )
-                .expect("update");
+        match &case {
+            ProfileCase::Discover { home, .. } => {
+                driver
+                    .discover_claude_verified(
+                        Path::new(home),
+                        &AuthMetadata {
+                            status: AuthStatus::Ready,
+                            account_id: Some("claude:fixture@example.invalid".into()),
+                            email: Some("fixture@example.invalid".into()),
+                            plan: Some("max".into()),
+                            credential_identity: None,
+                            error: None,
+                            error_kind: None,
+                        },
+                    )
+                    .expect("discover");
+            }
+            ProfileCase::Update { options, .. } => {
+                driver
+                    .update_claude_settings("claude-local", options.clone(), Some("  Updated  "))
+                    .expect("update");
+            }
         }
-        assert_eq!(read(&path), case["expected"], "{}", case["kind"]);
+        assert_eq!(read(&path), *expected);
     }
 }

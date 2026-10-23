@@ -268,14 +268,6 @@ pub async fn delivery(
                 }
             }
         }
-        if next == "written" && saved["legacyAdmission"] == true {
-            // Legacy admission has no worker cursor. Written and payload
-            // retirement commit together, including a crash before HTTP replay.
-            saved.as_object_mut().ok_or_else(|| CallbackError::Stored(key.clone()))?.remove("body");
-            saved.as_object_mut().ok_or_else(|| CallbackError::Stored(key.clone()))?.remove("unanswered");
-            saved["delivery"] = json!("retired");
-            update(tx, &key, &saved)?;
-        }
         Ok(true)
     }).await
 }
@@ -367,7 +359,7 @@ pub fn retire_checkpointed(
     })
     .transpose()?
     .unwrap_or(0);
-    let mut stmt = tx.prepare_cached("SELECT id FROM runtime_operation_receipts WHERE signature='provider-callback' AND json_extract(result,'$.identity.context.account')=?1 AND json_extract(result,'$.identity.context.generation')=?2 AND json_extract(result,'$.delivery')='written' AND (json_extract(result,'$.journalCursor')<=?3 OR json_extract(result,'$.legacyAdmission')=1) LIMIT 128")?;
+    let mut stmt = tx.prepare_cached("SELECT id FROM runtime_operation_receipts WHERE signature='provider-callback' AND json_extract(result,'$.identity.context.account')=?1 AND json_extract(result,'$.identity.context.generation')=?2 AND json_extract(result,'$.delivery')='written' AND json_extract(result,'$.journalCursor')<=?3 LIMIT 128")?;
     let ids = stmt
         .query_map(
             params![
@@ -384,10 +376,9 @@ pub fn retire_checkpointed(
             .map_err(|_| CallbackError::Stored(id.clone()))?;
         if identity.key() != *id
             || identity.attempt.is_empty()
-            || (saved["legacyAdmission"] != true
-                && !saved["journalCursor"]
-                    .as_u64()
-                    .is_some_and(|cursor| cursor > 0 && cursor <= checkpoint))
+            || !saved["journalCursor"]
+                .as_u64()
+                .is_some_and(|cursor| cursor > 0 && cursor <= checkpoint)
         {
             return Err(CallbackError::Stored(id.clone()));
         }

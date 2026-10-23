@@ -2,6 +2,7 @@ import { afterEach, expect, test } from "vitest";
 import {
   mkdtemp,
   mkdir,
+  realpath,
   rm,
   writeFile,
   chmod,
@@ -9,16 +10,13 @@ import {
 } from "node:fs/promises";
 import { createServer } from "node:net";
 import { createServer as createHttpServer } from "node:http";
-import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import { createRequire } from "node:module";
-import { fileURLToPath } from "node:url";
 
 const require = createRequire(import.meta.url);
-const desktopDirectory = path.dirname(fileURLToPath(import.meta.url));
-const { ensureBackend, backendSelection, identity } = require("./backend.cjs");
+const { ensureBackend, identity } = require("./backend.cjs");
 const fixtures = [];
 
 afterEach(async () => {
@@ -32,15 +30,6 @@ afterEach(async () => {
   }
 });
 
-test("Python remains the default backend and Rust requires an explicit selection", () => {
-  expect(backendSelection({})).toBe("python");
-  expect(backendSelection({ CODEX_DESKTOP_BACKEND: "python" })).toBe("python");
-  expect(backendSelection({ CODEX_DESKTOP_BACKEND: "rust" })).toBe("rust");
-  expect(() => backendSelection({ CODEX_DESKTOP_BACKEND: "other" })).toThrow(
-    "CODEX_DESKTOP_BACKEND",
-  );
-});
-
 test("desktop identity rejects a Rust backend build that differs from the selected executable", async () => {
   const state = path.join(os.tmpdir(), "codex-desktop-identity-fixture");
   const server = createHttpServer((request, response) => {
@@ -49,6 +38,7 @@ test("desktop identity rejects a Rust backend build that differs from the select
       JSON.stringify({
         application: "codex-agents",
         protocol: 1,
+        backendKind: "rust",
         backendBuild: "b".repeat(64),
         pid: process.pid,
         stateDir: state,
@@ -71,19 +61,17 @@ test("desktop identity rejects a Rust backend build that differs from the select
   }
 });
 
-test("explicit Rust selection starts the configured executable with desktop identity", async () => {
-  const root = await mkdtemp(
-    path.join(os.tmpdir(), "codex-desktop-rust-selection-"),
+test("desktop starts only the Rust executable with Python unavailable", async () => {
+  // The backend reports its canonical state directory (macOS /var is /private/var).
+  const root = await realpath(
+    await mkdtemp(path.join(os.tmpdir(), "codex-desktop-rust-selection-")),
   );
   const state = path.join(root, "state");
   const resources = path.join(root, "resources");
-  const scripts = path.join(resources, "workspaces/runtime/apps/server/src");
   const renderer = path.join(resources, "workspaces/client/apps/web/dist");
   const binary = path.join(root, "fake-runtime-server");
   fixtures.push({ root });
-  await mkdir(scripts, { recursive: true });
   await mkdir(renderer, { recursive: true });
-  await writeFile(path.join(scripts, "codex-canvas"), "fixture");
   await writeFile(path.join(renderer, "index.html"), "fixture");
   await writeFile(
     binary,
@@ -95,6 +83,8 @@ http.createServer((request, response) => {
   response.setHeader("content-type", "application/json");
   response.end(JSON.stringify({ application: "codex-agents", protocol: 1, backendKind: "rust", backendBuild: process.env.CODEX_BACKEND_BUILD, pid: process.pid, stateDir: process.env.CODEX_AGENTS_STATE_DIR }));
 }).listen(port, "127.0.0.1");
+const fixtureLifetimeMs = 15000;
+setTimeout(() => process.exit(0), fixtureLifetimeMs);
 `,
   );
   await chmod(binary, 0o755);
@@ -111,7 +101,7 @@ http.createServer((request, response) => {
     port,
     env: {
       ...process.env,
-      CODEX_DESKTOP_BACKEND: "rust",
+      CODEX_AGENTS_PYTHON: "/nonexistent",
       CODEX_RUNTIME_SERVER: binary,
       CODEX_AGENTS_STATE_DIR: state,
       CODEX_BIN: process.execPath,
@@ -139,45 +129,4 @@ http.createServer((request, response) => {
     pid: backend.pid,
     stateDir: state,
   });
-  const marker = JSON.parse(
-    await readFile(path.join(state, "rust-state-owner.json"), "utf8"),
-  );
-  expect(marker).toEqual({
-    runtime: "rust",
-    formatVersion: 1,
-    backendBuild: backend.backendBuild,
-  });
-});
-
-test("Python refuses the Rust-owned state marker unless an exact owner is allowlisted", async () => {
-  const root = await mkdtemp(
-    path.join(os.tmpdir(), "codex-python-rust-fence-"),
-  );
-  fixtures.push({ root });
-  await writeFile(
-    path.join(root, "rust-state-owner.json"),
-    JSON.stringify({
-      runtime: "rust",
-      formatVersion: 1,
-      backendBuild: "a".repeat(64),
-    }),
-  );
-  const source = path.resolve(
-    desktopDirectory,
-    "../../../runtime/apps/server/src",
-  );
-  const result = spawnSync(
-    process.env.CODEX_AGENTS_PYTHON || "python3",
-    ["-c", "from codex_state import state_dir; state_dir()"],
-    {
-      encoding: "utf8",
-      env: {
-        ...process.env,
-        CODEX_AGENTS_STATE_DIR: root,
-        PYTHONPATH: source,
-      },
-    },
-  );
-  expect(result.status).not.toBe(0);
-  expect(result.stderr).toContain("Python is fenced from Rust-owned state");
 });

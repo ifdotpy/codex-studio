@@ -15,9 +15,10 @@ rsync --fsync --version >/dev/null 2>&1 || {
 }
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 repo_dir=$(CDPATH= cd -- "$script_dir/../.." && pwd)
-for script in codex_process_supervisor.py codex_open_file_limit.py codex_records.py codex_shared_values.py codex_turn_limits.py; do
-    [ -f "$repo_dir/scripts/$script" ] || { echo "The runtime script is missing: $script" >&2; exit 1; }
-done
+[ -x "$repo_dir/bin/codex-process-supervisor" ] || {
+    echo 'The Rust process supervisor is missing from bin/codex-process-supervisor.' >&2
+    exit 1
+}
 [ "$repo_dir" = /opt/codex-studio ] || { echo 'Copy the runtime into /opt/codex-studio before installation.' >&2; exit 1; }
 # Remove only the old Studio overlay payload and its VM-specific policy, and the Python vault
 # writer that layr-desk push replaced (docs/vault.md).
@@ -30,10 +31,12 @@ if [ -f /etc/sysctl.d/90-codex-studio-userns.conf ]; then
         sysctl -q -w kernel.apparmor_restrict_unprivileged_userns=1
     fi
 fi
-chown root:root "$repo_dir" "$repo_dir/vm" "$script_dir" "$repo_dir/scripts"
-chmod 0755 "$repo_dir" "$repo_dir/vm" "$script_dir" "$repo_dir/scripts"
+chown root:root "$repo_dir" "$repo_dir/vm" "$script_dir" "$repo_dir/bin"
+chmod 0755 "$repo_dir" "$repo_dir/vm" "$script_dir" "$repo_dir/bin"
+chown root:root "$repo_dir/bin/codex-process-supervisor"
+chmod 0755 "$repo_dir/bin/codex-process-supervisor"
 sh "$script_dir/install-codex-sandbox.sh"
-for file in "$script_dir"/*.py "$script_dir"/*.service "$repo_dir/scripts/codex_process_supervisor.py" "$repo_dir/scripts/codex_open_file_limit.py" "$repo_dir/scripts/codex_records.py" "$repo_dir/scripts/codex_shared_values.py" "$repo_dir/scripts/codex_turn_limits.py"; do
+for file in "$script_dir"/*.py "$script_dir"/*.service; do
     chown root:root "$file"
     chmod 0644 "$file"
 done

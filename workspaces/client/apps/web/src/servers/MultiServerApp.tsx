@@ -169,7 +169,7 @@ function MultiServerShell({
     Record<string, ServerAccount[]>
   >({});
   const [lastSeen, setLastSeen] = useState<Record<string, number>>({});
-  useUiPreferenceSync(servers, lastSeen);
+  useUiPreferenceSync(servers);
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   type SearchRow = GetResult<"/api/search">["results"][number];

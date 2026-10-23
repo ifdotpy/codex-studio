@@ -16,10 +16,7 @@ use super::manifest::{Dependency, OperationStatus, RouteGroup, get};
 use crate::error::{ApiError, InternalErrorKind};
 use crate::router::HttpState;
 
-const SESSION_COST_DEPENDENCIES: [Dependency; 2] = [
-    Dependency::new("store-bootstrap/analytics-usage-schema"),
-    Dependency::new("costs/pricing-refresh"),
-];
+const SESSION_COST_DEPENDENCIES: [Dependency; 1] = [Dependency::new("costs/pricing-refresh")];
 
 pub(crate) fn routes() -> RouteGroup {
     RouteGroup::new(vec![
@@ -106,6 +103,13 @@ async fn session_cost(
     query: QueryParams,
 ) -> Result<Json<crate::generated::SessionCostResponse>, ApiError> {
     let agent = query.nonempty_str("agent").unwrap_or_default().to_owned();
+    session_cost_for_agent(state, agent).await
+}
+
+pub(super) async fn session_cost_for_agent(
+    state: HttpState,
+    agent: String,
+) -> Result<Json<crate::generated::SessionCostResponse>, ApiError> {
     if agent.is_empty() || !valid_agent_id(&agent) {
         return Err(ApiError::new(StatusCode::BAD_REQUEST, "Select a chat"));
     }
@@ -202,9 +206,6 @@ inventory::submit! {
     crate::routes::manifest::RouteModuleRegistration {
         name: "insights",
         routes: Some(routes),
-        dependencies: &[
-        "store-bootstrap/analytics-usage-schema",
-        "costs/pricing-refresh",
-        ],
+        dependencies: &["costs/pricing-refresh"],
     }
 }

@@ -1,0 +1,465 @@
+[
+  {
+    "initial": {
+      "version": 1,
+      "defaultAccountKey": "default",
+      "accounts": {
+        "default": {
+          "id": "default",
+          "home": "/tmp/o-os5o5bmk/codex-home",
+          "label": "Codex",
+          "source": "Codex CLI",
+          "accountId": "fixture-subscription",
+          "email": "fixture@example.invalid",
+          "plan": null,
+          "status": "ready"
+        }
+      },
+      "logins": {},
+      "deleteReceipts": {},
+      "pendingAccountsChange": true
+    },
+    "existing": false,
+    "outcome": "written",
+    "response": {
+      "type": "chatgptDeviceCode",
+      "loginId": "fixture-login",
+      "verificationUrl": "https://example.invalid/device",
+      "userCode": "fixture-code",
+      "expiresAt": 100.0
+    },
+    "result": {
+      "requestId": "4b154e4b-80bb-4f1f-b07f-dcaa15563190",
+      "accountKey": "login-4b154e4b-80bb-4f1f-b07f-dcaa15563190",
+      "status": "pending",
+      "createdAt": 10.0,
+      "emailHint": null,
+      "requestedLabel": null,
+      "loginId": "fixture-login",
+      "verificationUrl": "https://example.invalid/device",
+      "userCode": "fixture-code",
+      "expiresAt": 100.0
+    },
+    "stored": {
+      "version": 1,
+      "defaultAccountKey": "default",
+      "accounts": {
+        "default": {
+          "id": "default",
+          "home": "/tmp/o-os5o5bmk/codex-home",
+          "label": "Codex",
+          "source": "Codex CLI",
+          "accountId": "fixture-subscription",
+          "email": "fixture@example.invalid",
+          "plan": null,
+          "status": "ready"
+        },
+        "login-4b154e4b-80bb-4f1f-b07f-dcaa15563190": {
+          "id": "login-4b154e4b-80bb-4f1f-b07f-dcaa15563190",
+          "home": "/tmp/wave7-p18-registry-w2iu2wvb/False-written/accounts/login-4b154e4b-80bb-4f1f-b07f-dcaa15563190",
+          "label": "New account",
+          "source": "Codex Agents",
+          "accountId": null,
+          "email": null,
+          "plan": null,
+          "status": "pending"
+        }
+      },
+      "logins": {
+        "4b154e4b-80bb-4f1f-b07f-dcaa15563190": {
+          "requestId": "4b154e4b-80bb-4f1f-b07f-dcaa15563190",
+          "accountKey": "login-4b154e4b-80bb-4f1f-b07f-dcaa15563190",
+          "status": "pending",
+          "createdAt": 10.0,
+          "emailHint": null,
+          "requestedLabel": null,
+          "loginId": "fixture-login",
+          "verificationUrl": "https://example.invalid/device",
+          "userCode": "fixture-code",
+          "expiresAt": 100.0
+        }
+      },
+      "deleteReceipts": {},
+      "pendingAccountsChange": true
+    },
+    "home": "/tmp/wave7-p18-registry-w2iu2wvb/False-written/accounts/login-4b154e4b-80bb-4f1f-b07f-dcaa15563190"
+  },
+  {
+    "initial": {
+      "version": 1,
+      "defaultAccountKey": "default",
+      "accounts": {
+        "default": {
+          "id": "default",
+          "home": "/tmp/o-os5o5bmk/codex-home",
+          "label": "Codex",
+          "source": "Codex CLI",
+          "accountId": "fixture-subscription",
+          "email": "fixture@example.invalid",
+          "plan": null,
+          "status": "ready"
+        }
+      },
+      "logins": {},
+      "deleteReceipts": {},
+      "pendingAccountsChange": true
+    },
+    "existing": false,
+    "outcome": "not_sent",
+    "response": {
+      "type": "chatgptDeviceCode",
+      "loginId": "fixture-login",
+      "verificationUrl": "https://example.invalid/device",
+      "userCode": "fixture-code",
+      "expiresAt": 100.0
+    },
+    "result": {
+      "requestId": "4b154e4b-80bb-4f1f-b07f-dcaa15563190",
+      "accountKey": "login-4b154e4b-80bb-4f1f-b07f-dcaa15563190",
+      "status": "error",
+      "createdAt": 10.0,
+      "emailHint": null,
+      "requestedLabel": null,
+      "error": "Could not start sign-in. Try again."
+    },
+    "stored": {
+      "version": 1,
+      "defaultAccountKey": "default",
+      "accounts": {
+        "default": {
+          "id": "default",
+          "home": "/tmp/o-os5o5bmk/codex-home",
+          "label": "Codex",
+          "source": "Codex CLI",
+          "accountId": "fixture-subscription",
+          "email": "fixture@example.invalid",
+          "plan": null,
+          "status": "ready"
+        },
+        "login-4b154e4b-80bb-4f1f-b07f-dcaa15563190": {
+          "id": "login-4b154e4b-80bb-4f1f-b07f-dcaa15563190",
+          "home": "/tmp/wave7-p18-registry-w2iu2wvb/False-not_sent/accounts/login-4b154e4b-80bb-4f1f-b07f-dcaa15563190",
+          "label": "New account",
+          "source": "Codex Agents",
+          "accountId": null,
+          "email": null,
+          "plan": null,
+          "status": "error",
+          "error": "Could not start sign-in. Try again."
+        }
+      },
+      "logins": {
+        "4b154e4b-80bb-4f1f-b07f-dcaa15563190": {
+          "requestId": "4b154e4b-80bb-4f1f-b07f-dcaa15563190",
+          "accountKey": "login-4b154e4b-80bb-4f1f-b07f-dcaa15563190",
+          "status": "error",
+          "createdAt": 10.0,
+          "emailHint": null,
+          "requestedLabel": null,
+          "error": "Could not start sign-in. Try again."
+        }
+      },
+      "deleteReceipts": {},
+      "pendingAccountsChange": true
+    },
+    "home": "/tmp/wave7-p18-registry-w2iu2wvb/False-not_sent/accounts/login-4b154e4b-80bb-4f1f-b07f-dcaa15563190"
+  },
+  {
+    "initial": {
+      "version": 1,
+      "defaultAccountKey": "default",
+      "accounts": {
+        "default": {
+          "id": "default",
+          "home": "/tmp/o-os5o5bmk/codex-home",
+          "label": "Codex",
+          "source": "Codex CLI",
+          "accountId": "fixture-subscription",
+          "email": "fixture@example.invalid",
+          "plan": null,
+          "status": "ready"
+        }
+      },
+      "logins": {},
+      "deleteReceipts": {},
+      "pendingAccountsChange": true
+    },
+    "existing": false,
+    "outcome": "unknown",
+    "response": {
+      "type": "chatgptDeviceCode",
+      "loginId": "fixture-login",
+      "verificationUrl": "https://example.invalid/device",
+      "userCode": "fixture-code",
+      "expiresAt": 100.0
+    },
+    "result": {
+      "requestId": "4b154e4b-80bb-4f1f-b07f-dcaa15563190",
+      "accountKey": "login-4b154e4b-80bb-4f1f-b07f-dcaa15563190",
+      "status": "uncertain",
+      "createdAt": 10.0,
+      "emailHint": null,
+      "requestedLabel": null,
+      "error": "Sign-in response is unconfirmed. Check its status before starting again."
+    },
+    "stored": {
+      "version": 1,
+      "defaultAccountKey": "default",
+      "accounts": {
+        "default": {
+          "id": "default",
+          "home": "/tmp/o-os5o5bmk/codex-home",
+          "label": "Codex",
+          "source": "Codex CLI",
+          "accountId": "fixture-subscription",
+          "email": "fixture@example.invalid",
+          "plan": null,
+          "status": "ready"
+        },
+        "login-4b154e4b-80bb-4f1f-b07f-dcaa15563190": {
+          "id": "login-4b154e4b-80bb-4f1f-b07f-dcaa15563190",
+          "home": "/tmp/wave7-p18-registry-w2iu2wvb/False-unknown/accounts/login-4b154e4b-80bb-4f1f-b07f-dcaa15563190",
+          "label": "New account",
+          "source": "Codex Agents",
+          "accountId": null,
+          "email": null,
+          "plan": null,
+          "status": "pending"
+        }
+      },
+      "logins": {
+        "4b154e4b-80bb-4f1f-b07f-dcaa15563190": {
+          "requestId": "4b154e4b-80bb-4f1f-b07f-dcaa15563190",
+          "accountKey": "login-4b154e4b-80bb-4f1f-b07f-dcaa15563190",
+          "status": "uncertain",
+          "createdAt": 10.0,
+          "emailHint": null,
+          "requestedLabel": null,
+          "error": "Sign-in response is unconfirmed. Check its status before starting again."
+        }
+      },
+      "deleteReceipts": {},
+      "pendingAccountsChange": true
+    },
+    "home": "/tmp/wave7-p18-registry-w2iu2wvb/False-unknown/accounts/login-4b154e4b-80bb-4f1f-b07f-dcaa15563190"
+  },
+  {
+    "initial": {
+      "version": 1,
+      "defaultAccountKey": "default",
+      "accounts": {
+        "default": {
+          "id": "default",
+          "home": "/tmp/o-os5o5bmk/codex-home",
+          "label": "Codex",
+          "source": "Codex CLI",
+          "accountId": "fixture-subscription",
+          "email": "fixture@example.invalid",
+          "plan": null,
+          "status": "ready"
+        }
+      },
+      "logins": {},
+      "deleteReceipts": {},
+      "pendingAccountsChange": true
+    },
+    "existing": true,
+    "outcome": "written",
+    "response": {
+      "type": "chatgptDeviceCode",
+      "loginId": "fixture-login",
+      "verificationUrl": "https://example.invalid/device",
+      "userCode": "fixture-code",
+      "expiresAt": 100.0
+    },
+    "result": {
+      "requestId": "4b154e4b-80bb-4f1f-b07f-dcaa15563190",
+      "accountKey": "default",
+      "status": "pending",
+      "createdAt": 10.0,
+      "reauthAccountKey": "default",
+      "expectedAccountId": "fixture-subscription",
+      "email": "fixture@example.invalid",
+      "loginId": "fixture-login",
+      "verificationUrl": "https://example.invalid/device",
+      "userCode": "fixture-code",
+      "expiresAt": 100.0
+    },
+    "stored": {
+      "version": 1,
+      "defaultAccountKey": "default",
+      "accounts": {
+        "default": {
+          "id": "default",
+          "home": "/tmp/o-os5o5bmk/codex-home",
+          "label": "Codex",
+          "source": "Codex CLI",
+          "accountId": "fixture-subscription",
+          "email": "fixture@example.invalid",
+          "plan": null,
+          "status": "ready"
+        }
+      },
+      "logins": {
+        "4b154e4b-80bb-4f1f-b07f-dcaa15563190": {
+          "requestId": "4b154e4b-80bb-4f1f-b07f-dcaa15563190",
+          "accountKey": "default",
+          "status": "pending",
+          "createdAt": 10.0,
+          "reauthAccountKey": "default",
+          "expectedAccountId": "fixture-subscription",
+          "email": "fixture@example.invalid",
+          "loginId": "fixture-login",
+          "verificationUrl": "https://example.invalid/device",
+          "userCode": "fixture-code",
+          "expiresAt": 100.0
+        }
+      },
+      "deleteReceipts": {},
+      "pendingAccountsChange": true
+    },
+    "home": "/tmp/wave7-p18-registry-w2iu2wvb/True-written/accounts/login-4b154e4b-80bb-4f1f-b07f-dcaa15563190"
+  },
+  {
+    "initial": {
+      "version": 1,
+      "defaultAccountKey": "default",
+      "accounts": {
+        "default": {
+          "id": "default",
+          "home": "/tmp/o-os5o5bmk/codex-home",
+          "label": "Codex",
+          "source": "Codex CLI",
+          "accountId": "fixture-subscription",
+          "email": "fixture@example.invalid",
+          "plan": null,
+          "status": "ready"
+        }
+      },
+      "logins": {},
+      "deleteReceipts": {},
+      "pendingAccountsChange": true
+    },
+    "existing": true,
+    "outcome": "not_sent",
+    "response": {
+      "type": "chatgptDeviceCode",
+      "loginId": "fixture-login",
+      "verificationUrl": "https://example.invalid/device",
+      "userCode": "fixture-code",
+      "expiresAt": 100.0
+    },
+    "result": {
+      "requestId": "4b154e4b-80bb-4f1f-b07f-dcaa15563190",
+      "accountKey": "default",
+      "status": "error",
+      "createdAt": 10.0,
+      "reauthAccountKey": "default",
+      "expectedAccountId": "fixture-subscription",
+      "email": "fixture@example.invalid",
+      "error": "Could not start sign-in. Try again."
+    },
+    "stored": {
+      "version": 1,
+      "defaultAccountKey": "default",
+      "accounts": {
+        "default": {
+          "id": "default",
+          "home": "/tmp/o-os5o5bmk/codex-home",
+          "label": "Codex",
+          "source": "Codex CLI",
+          "accountId": "fixture-subscription",
+          "email": "fixture@example.invalid",
+          "plan": null,
+          "status": "ready"
+        }
+      },
+      "logins": {
+        "4b154e4b-80bb-4f1f-b07f-dcaa15563190": {
+          "requestId": "4b154e4b-80bb-4f1f-b07f-dcaa15563190",
+          "accountKey": "default",
+          "status": "error",
+          "createdAt": 10.0,
+          "reauthAccountKey": "default",
+          "expectedAccountId": "fixture-subscription",
+          "email": "fixture@example.invalid",
+          "error": "Could not start sign-in. Try again."
+        }
+      },
+      "deleteReceipts": {},
+      "pendingAccountsChange": true
+    },
+    "home": "/tmp/wave7-p18-registry-w2iu2wvb/True-not_sent/accounts/login-4b154e4b-80bb-4f1f-b07f-dcaa15563190"
+  },
+  {
+    "initial": {
+      "version": 1,
+      "defaultAccountKey": "default",
+      "accounts": {
+        "default": {
+          "id": "default",
+          "home": "/tmp/o-os5o5bmk/codex-home",
+          "label": "Codex",
+          "source": "Codex CLI",
+          "accountId": "fixture-subscription",
+          "email": "fixture@example.invalid",
+          "plan": null,
+          "status": "ready"
+        }
+      },
+      "logins": {},
+      "deleteReceipts": {},
+      "pendingAccountsChange": true
+    },
+    "existing": true,
+    "outcome": "unknown",
+    "response": {
+      "type": "chatgptDeviceCode",
+      "loginId": "fixture-login",
+      "verificationUrl": "https://example.invalid/device",
+      "userCode": "fixture-code",
+      "expiresAt": 100.0
+    },
+    "result": {
+      "requestId": "4b154e4b-80bb-4f1f-b07f-dcaa15563190",
+      "accountKey": "default",
+      "status": "uncertain",
+      "createdAt": 10.0,
+      "reauthAccountKey": "default",
+      "expectedAccountId": "fixture-subscription",
+      "email": "fixture@example.invalid",
+      "error": "Sign-in response is unconfirmed. Check its status before starting again."
+    },
+    "stored": {
+      "version": 1,
+      "defaultAccountKey": "default",
+      "accounts": {
+        "default": {
+          "id": "default",
+          "home": "/tmp/o-os5o5bmk/codex-home",
+          "label": "Codex",
+          "source": "Codex CLI",
+          "accountId": "fixture-subscription",
+          "email": "fixture@example.invalid",
+          "plan": null,
+          "status": "ready"
+        }
+      },
+      "logins": {
+        "4b154e4b-80bb-4f1f-b07f-dcaa15563190": {
+          "requestId": "4b154e4b-80bb-4f1f-b07f-dcaa15563190",
+          "accountKey": "default",
+          "status": "uncertain",
+          "createdAt": 10.0,
+          "reauthAccountKey": "default",
+          "expectedAccountId": "fixture-subscription",
+          "email": "fixture@example.invalid",
+          "error": "Sign-in response is unconfirmed. Check its status before starting again."
+        }
+      },
+      "deleteReceipts": {},
+      "pendingAccountsChange": true
+    },
+    "home": "/tmp/wave7-p18-registry-w2iu2wvb/True-unknown/accounts/login-4b154e4b-80bb-4f1f-b07f-dcaa15563190"
+  }
+]

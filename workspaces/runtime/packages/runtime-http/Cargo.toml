@@ -30,6 +30,7 @@ studio-runtime-store = { path = "../runtime-store" }
 subtle = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true, features = ["rt"] }
+tower-http = { workspace = true, features = ["compression-br"] }
 uuid = { workspace = true, features = ["v4"] }
 
 [build-dependencies]
@@ -37,6 +38,7 @@ openapi-to-rust = { version = "=0.22.0", default-features = false }
 serde_json = { workspace = true }
 
 [dev-dependencies]
+brotli = { workspace = true }
 studio-runtime-store = { path = "../runtime-store", features = ["test-support"] }
 tempfile = { workspace = true }
 rusqlite = { workspace = true }

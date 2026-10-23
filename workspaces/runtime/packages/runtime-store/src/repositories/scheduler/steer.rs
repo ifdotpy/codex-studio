@@ -587,9 +587,12 @@ impl SchedulerRepository {
         if changed == 0 {
             return Ok(None);
         }
+        // `+status` keeps SQLite on the primary key for the acknowledged ids. A
+        // plain `status='delivered'` lets the planner pick `runtime_event_queue`
+        // and visit every delivered event of the state inside the writer.
         let mut statement = tx.prepare_cached(
             "SELECT id,agent,kind,text,status,created,epoch,turn_id,error FROM runtime_events \
-             WHERE id IN (SELECT value FROM json_each(?1)) AND status='delivered' AND turn_id=?2 \
+             WHERE id IN (SELECT value FROM json_each(?1)) AND +status='delivered' AND turn_id=?2 \
              ORDER BY created,rowid",
         )?;
         let delivered = statement

@@ -77,7 +77,7 @@ fn organization_metadata(org: &str, account: Option<&str>) -> AuthMetadata {
         &serde_json::to_vec(&json!({"loggedIn":true,"authMethod":"claude.ai",
             "email":"fixture@example.test","subscriptionType":"max",
             "orgId":org,"accountUuid":account}))
-        .unwrap(),
+        .expect("Claude status serializes"),
         true,
     )
 }
@@ -99,14 +99,14 @@ fn fixture() -> (
     AccountDriver<NoProbe>,
     serde_json::Map<String, serde_json::Value>,
 ) {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempfile::tempdir().expect("temporary account directory creates");
     let path = dir.path().join("registry.json");
     std::fs::write(&path, json!({"version":1,"logins":{},"defaultAccountKey":"default",
-        "accounts":{"default":{"id":"default","home":"/fixture/codex","label":"Codex","source":"Local profile","status":"signedOut"}}}).to_string()).unwrap();
-    let driver = AccountDriver::open_with_reader(&path, NoProbe).unwrap();
+        "accounts":{"default":{"id":"default","home":"/fixture/codex","label":"Codex","source":"Local profile","status":"signedOut"}}}).to_string()).expect("registry fixture writes");
+    let driver = AccountDriver::open_with_reader(&path, NoProbe).expect("account driver opens");
     let options = json!({"binaryPath":"/fixture/claude","configDir":"/fixture/config"})
         .as_object()
-        .unwrap()
+        .expect("Claude options are an object")
         .clone();
     (dir, driver, options)
 }
@@ -117,12 +117,12 @@ fn changed_organization_is_refused_and_original_pin_survives() {
     let first = organization_metadata("org-a", Some("account-a"));
     let key = driver
         .register_claude_verified(options.clone(), "Fixture", dir.path(), &first)
-        .unwrap();
-    let profile = driver.claude_profile(&key).unwrap();
+        .expect("verified account registers");
+    let profile = driver.claude_profile(&key).expect("Claude profile loads");
     let changed = organization_metadata("org-b", Some("account-a"));
     let result = driver
         .refresh_claude_verified(&key, &profile, &changed, true)
-        .unwrap();
+        .expect("changed identity refresh completes");
     assert_eq!(result["status"], "changed");
     assert_eq!(
         result["_credentialIdentity"],
@@ -135,7 +135,7 @@ fn changed_organization_is_refused_and_original_pin_survives() {
     );
     let restored = driver
         .refresh_claude_verified(&key, &result, &first, true)
-        .unwrap();
+        .expect("original identity refresh completes");
     assert_eq!(restored["status"], "ready");
 }
 
@@ -149,25 +149,30 @@ fn legacy_email_identity_upgrades_once_and_persists_across_restart() {
             dir.path(),
             &metadata("fixture@example.test"),
         )
-        .unwrap();
-    let legacy = driver.claude_profile(&key).unwrap();
+        .expect("legacy account registers");
+    let legacy = driver.claude_profile(&key).expect("legacy profile loads");
     let observed = organization_metadata("org-a", None);
     let upgraded = driver
         .refresh_claude_verified(&key, &legacy, &observed, false)
-        .unwrap();
+        .expect("identity upgrade completes");
     assert_eq!(upgraded["status"], "ready");
     assert_ne!(
         upgraded["_credentialIdentity"],
         legacy["_credentialIdentity"]
     );
     drop(driver);
-    let driver =
-        AccountDriver::open_with_reader(&dir.path().join("registry.json"), NoProbe).unwrap();
-    assert_eq!(driver.claude_profile(&key).unwrap(), upgraded);
+    let driver = AccountDriver::open_with_reader(dir.path().join("registry.json"), NoProbe)
+        .expect("account driver reopens");
+    assert_eq!(
+        driver
+            .claude_profile(&key)
+            .expect("upgraded profile reloads"),
+        upgraded
+    );
     // A caller that retained the legacy record cannot replace the durable pin.
     let stale = driver
         .refresh_claude_verified(&key, &legacy, &organization_metadata("org-b", None), false)
-        .unwrap();
+        .expect("stale profile refresh completes");
     assert_eq!(stale["status"], "changed");
     assert_eq!(
         stale["_credentialIdentity"],
@@ -176,7 +181,7 @@ fn legacy_email_identity_upgrades_once_and_persists_across_restart() {
     let observed = organization_metadata("org-a", Some("account-a"));
     let complete = driver
         .refresh_claude_verified(&key, &upgraded, &observed, false)
-        .unwrap();
+        .expect("complete identity refresh completes");
     assert_eq!(complete["status"], "ready");
     assert_ne!(
         complete["_credentialIdentity"],
@@ -189,7 +194,7 @@ fn legacy_email_identity_upgrades_once_and_persists_across_restart() {
     ] {
         let result = driver
             .refresh_claude_verified(&key, &complete, &candidate, false)
-            .unwrap();
+            .expect("candidate identity refresh completes");
         assert_eq!(result["status"], "changed");
         assert_eq!(
             result["_credentialIdentity"],
@@ -204,17 +209,19 @@ fn registration_retry_upgrades_legacy_identity_without_rebinding() {
     let legacy = metadata("fixture@example.test");
     let key = driver
         .register_claude_verified(options.clone(), "Fixture", dir.path(), &legacy)
-        .unwrap();
+        .expect("legacy account registers");
     let observed = organization_metadata("org-a", Some("account-a"));
     assert_eq!(
         driver
             .register_claude_verified(options.clone(), "Fixture", dir.path(), &observed)
-            .unwrap(),
+            .expect("verified account registration reuses identity"),
         key
     );
     assert_eq!(
-        driver.claude_profile(&key).unwrap()["_credentialIdentity"],
-        observed.credential_identity.unwrap()
+        driver.claude_profile(&key).expect("verified profile loads")["_credentialIdentity"],
+        observed
+            .credential_identity
+            .expect("verified credential identity exists")
     );
     assert!(
         driver

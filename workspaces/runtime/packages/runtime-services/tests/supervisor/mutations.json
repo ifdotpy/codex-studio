@@ -1,7 +1,7 @@
 [
   {
     "id": "cursor-lower",
-    "file": "workspaces/runtime/packages/runtime-providers/src/supervisor_v1.rs",
+    "file": "workspaces/runtime/packages/runtime-providers/src/supervisor_protocol.rs",
     "edits": [
       {
         "before": "cursor < self.record.acknowledged || cursor > self.record.sequence",
@@ -11,7 +11,7 @@
   },
   {
     "id": "cursor-upper",
-    "file": "workspaces/runtime/packages/runtime-providers/src/supervisor_v1.rs",
+    "file": "workspaces/runtime/packages/runtime-providers/src/supervisor_protocol.rs",
     "edits": [
       {
         "before": "cursor < self.record.acknowledged || cursor > self.record.sequence",
@@ -21,7 +21,7 @@
   },
   {
     "id": "receipt-content",
-    "file": "workspaces/runtime/packages/runtime-providers/src/supervisor_v1.rs",
+    "file": "workspaces/runtime/packages/runtime-providers/src/supervisor_protocol.rs",
     "edits": [
       {
         "before": "if prior.record.digest != digest {",
@@ -31,7 +31,7 @@
   },
   {
     "id": "output-capacity",
-    "file": "workspaces/runtime/packages/runtime-providers/src/supervisor_v1.rs",
+    "file": "workspaces/runtime/packages/runtime-providers/src/supervisor_protocol.rs",
     "edits": [
       {
         "before": "if buffered >= HANDLE_LIMIT {",
@@ -71,7 +71,7 @@
   },
   {
     "id": "receipt-visible-before-ack",
-    "file": "workspaces/runtime/packages/runtime-providers/src/supervisor_v1.rs",
+    "file": "workspaces/runtime/packages/runtime-providers/src/supervisor_protocol.rs",
     "edits": [
       {
         "before": "if seq <= current.record.acknowledged =>",
@@ -101,27 +101,17 @@
   },
   {
     "id": "kernel-same-second-collision",
-    "file": "workspaces/runtime/packages/runtime-providers/src/supervisor_v1.rs",
+    "file": "workspaces/runtime/packages/runtime-providers/src/supervisor_protocol.rs",
     "edits": [
       {
-        "before": "if expected == actual {",
-        "after": "if expected.rsplit_once(':').map(|(boot, ticks)| (boot, ticks.parse::<u64>().unwrap_or(0) / 100)) == actual.rsplit_once(':').map(|(boot, ticks)| (boot, ticks.parse::<u64>().unwrap_or(0) / 100)) {"
-      }
-    ]
-  },
-  {
-    "id": "identity-upgrade-not-durable",
-    "file": "workspaces/runtime/packages/runtime-store/src/supervisor_journal.rs",
-    "edits": [
-      {
-        "before": "UPDATE child_identities SET start_time=? WHERE handle=?",
-        "after": "UPDATE child_identities SET start_time=start_time WHERE handle=?2 AND ?1 IS NOT NULL"
+        "before": "is_native_start(expected) && expected == actual",
+        "after": "is_native_start(expected) && expected.rsplit_once(':').map(|(boot, ticks)| (boot, ticks.parse::<u64>().unwrap_or(0) / 100)) == actual.rsplit_once(':').map(|(boot, ticks)| (boot, ticks.parse::<u64>().unwrap_or(0) / 100))"
       }
     ]
   },
   {
     "id": "open-missing-cwd",
-    "file": "workspaces/runtime/packages/runtime-providers/src/supervisor_v1.rs",
+    "file": "workspaces/runtime/packages/runtime-providers/src/supervisor_protocol.rs",
     "edits": [
       {
         "before": "#[serde(deserialize_with = \"Option::<String>::deserialize\")]",

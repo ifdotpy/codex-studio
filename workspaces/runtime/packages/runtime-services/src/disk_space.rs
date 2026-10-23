@@ -2,8 +2,8 @@
 //!
 //! State thresholds and the error pattern are owned by
 //! `studio_runtime_schema::shared_values`; generated Python values share them.
-//! Worker storage uses the fixed floor owned by `WORKER_STORAGE_MIN_FREE_BYTES`.
-//! Below
+//! Worker workspace and build volumes use the same disk-full floor as the
+//! state volume: a worker waits only when its volume is really full. Below
 //! `DISK_FULL_ENTER_FREE_BYTES` the disk is full: no new turn starts, and an
 //! agent whose turn failed for lack of space waits as a capacity retry with the
 //! cause `diskFull`. The full state ends at or above `DISK_FULL_EXIT_FREE_BYTES`.
@@ -14,6 +14,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
+use studio_runtime_schema::desktop::{DiskSpaceLevel, DiskSpaceStatus};
 use studio_runtime_schema::shared_values::{
     DISK_FULL_ENTER_FREE_BYTES, DISK_FULL_ERROR_PATTERN, DISK_FULL_EXIT_FREE_BYTES,
     DISK_FULL_RECHECK_SECONDS, DISK_SPACE_CRITICAL_FREE_BYTES, DISK_SPACE_WARNING_FREE_BYTES,
@@ -94,26 +95,26 @@ pub fn admission_message(free: Option<u64>) -> String {
 }
 
 /// The desktop level: full, critical, warning, or none.
-pub fn level(free: u64, full: bool) -> Option<&'static str> {
+fn level(free: u64, full: bool) -> Option<DiskSpaceLevel> {
     if full || free < DISK_FULL_ENTER_FREE_BYTES {
-        Some("full")
+        Some(DiskSpaceLevel::Full)
     } else if free < DISK_SPACE_CRITICAL_FREE_BYTES {
-        Some("critical")
+        Some(DiskSpaceLevel::Critical)
     } else if free < DISK_SPACE_WARNING_FREE_BYTES {
-        Some("warning")
+        Some(DiskSpaceLevel::Warning)
     } else {
         None
     }
 }
 
-fn message(free: u64, level: Option<&str>) -> Option<String> {
+fn message(free: u64, level: Option<DiskSpaceLevel>) -> Option<String> {
     let amount = format!("{:.1} GB", free as f64 / GIB as f64);
     match level? {
-        "full" => Some(admission_message(Some(free))),
-        "critical" => Some(format!(
+        DiskSpaceLevel::Full => Some(admission_message(Some(free))),
+        DiskSpaceLevel::Critical => Some(format!(
             "The Mac disk has only {amount} free. VMs, Docker and Studio can fail to write. Free disk space now."
         )),
-        _ => Some(format!(
+        DiskSpaceLevel::Warning => Some(format!(
             "The Mac disk has only {amount} free. Free disk space soon."
         )),
     }
@@ -190,24 +191,28 @@ impl DiskGate {
     }
 
     /// The `/api/desktop` `diskSpace` object.
-    pub fn status(&self) -> Value {
+    pub fn status(&self) -> DiskSpaceStatus {
         let full = self.full_free_bytes();
         let free = self.lock().free;
         status_value(free, full.is_some())
     }
 }
 
-fn status_value(free: Option<u64>, full: bool) -> Value {
+fn status_value(free: Option<u64>, full: bool) -> DiskSpaceStatus {
     let Some(free) = free else {
-        return json!({"level": null, "freeBytes": null, "message": null});
+        return DiskSpaceStatus::default();
     };
     let level = level(free, full);
-    json!({"level": level, "freeBytes": free, "message": message(free, level)})
+    DiskSpaceStatus {
+        level,
+        message: message(free, level),
+    }
 }
 
 /// Minimum available bytes before starting implementer work on a workspace or
-/// build-output filesystem. This is the sole owner of the worker storage floor.
-pub const WORKER_STORAGE_MIN_FREE_BYTES: u64 = 64 * GIB;
+/// build-output filesystem: the disk-full floor of the state volume. Studio does
+/// not reserve extra space for agent workloads; it holds work only on a full disk.
+pub const WORKER_STORAGE_MIN_FREE_BYTES: u64 = DISK_FULL_ENTER_FREE_BYTES;
 
 /// Additional build-output locations, captured once when the server starts.
 #[derive(Clone, Debug, Default)]
@@ -571,7 +576,7 @@ pub fn observe_full() {
 }
 
 /// The desktop status of `root`, through the installed gate when it serves this root.
-pub fn status(root: &Path) -> Value {
+pub fn status(root: &Path) -> DiskSpaceStatus {
     match GATE.get() {
         Some(gate) if gate.root == root => gate.status(),
         _ => status_value(free_bytes(root), false),
@@ -633,6 +638,24 @@ mod tests {
             serde_json::from_value::<StorageReport>(json!({"filesystems":[], "unknown":true}))
                 .is_err()
         );
+    }
+
+    #[test]
+    fn worker_storage_is_not_held_while_the_disk_is_not_full() {
+        // 2026-10-22: a 64 GiB reserve held every implementer at 12 GiB free.
+        let mut gate =
+            DiskGate::with_sampler(PathBuf::from("/state"), Arc::new(|_| Some(12 * GIB)));
+        gate.build_roots = WorkerStorageConfig {
+            build_roots: vec![PathBuf::from("/build/target")],
+        };
+        let report =
+            gate.report_with_filesystem(&[PathBuf::from("/workspace")], synthetic_filesystem);
+        assert!(
+            report
+                .hold_reason(crate::thread_prepare::Role::Implementer)
+                .is_none()
+        );
+        assert_eq!(WORKER_STORAGE_MIN_FREE_BYTES, DISK_FULL_ENTER_FREE_BYTES);
     }
 
     #[test]
@@ -758,7 +781,14 @@ mod tests {
                 .expect("visible reason")
                 .starts_with(STORAGE_HOLD_PREFIX)
         );
-        free.store(WORKER_STORAGE_MIN_FREE_BYTES, Ordering::SeqCst);
+        // One sampler serves the state volume too, and a full state volume keeps
+        // its sample and latch until its recheck; a new gate sees the freed disk.
+        free.store(DISK_FULL_EXIT_FREE_BYTES, Ordering::SeqCst);
+        let sample = Arc::clone(&free);
+        let gate = DiskGate::with_sampler(
+            root.path().to_path_buf(),
+            Arc::new(move |_| Some(sample.load(Ordering::SeqCst))),
+        );
         assert!(
             !hold_agent_turn_with_gate(&store, "worker", 1, Some(&gate))
                 .await
@@ -855,35 +885,49 @@ mod tests {
     }
 
     #[test]
+    fn desktop_status_ignores_healthy_free_byte_changes() {
+        let free = Arc::new(AtomicU64::new(DISK_SPACE_WARNING_FREE_BYTES));
+        let gate = gate(&free);
+        let first = serde_json::to_vec(&gate.status()).expect("desktop disk status");
+        free.store(DISK_SPACE_WARNING_FREE_BYTES + 1, Ordering::SeqCst);
+        // Expire only the injected sampler's cache; no wall-clock delay or disk writes.
+        gate.lock().sampled_at = None;
+        let second = serde_json::to_vec(&gate.status()).expect("desktop disk status");
+        assert_eq!(
+            first, second,
+            "healthy disk writes must not change served identity"
+        );
+        assert_eq!(first, br#"{"level":null,"message":null}"#);
+    }
+
+    #[test]
     fn status_and_messages_match_the_python_owner() {
         let free = Arc::new(AtomicU64::new(130 * MIB));
         assert_eq!(
             gate(&free).status(),
-            json!({
-                "level": "full",
-                "freeBytes": 130 * MIB,
-                "message": "Disk is full: 130 MiB free. Studio starts no new turns and resumes held agents when 2 GiB is free. Free disk space now."
-            })
+            DiskSpaceStatus {
+                level: Some(DiskSpaceLevel::Full),
+                message: Some("Disk is full: 130 MiB free. Studio starts no new turns and resumes held agents when 2 GiB is free. Free disk space now.".into())
+            }
         );
         assert_eq!(
             held_reason(Some(130 * MIB)),
             "Disk is full: 130 MiB free. Studio resumes this agent when free space returns."
         );
         assert_eq!(
-            status_value(Some(3 * GIB), false)["message"],
-            "The Mac disk has only 3.0 GB free. VMs, Docker and Studio can fail to write. Free disk space now."
+            status_value(Some(3 * GIB), false).message.as_deref(),
+            Some(
+                "The Mac disk has only 3.0 GB free. VMs, Docker and Studio can fail to write. Free disk space now."
+            )
         );
         assert_eq!(
             status_value(Some(100 * GIB), false),
-            json!({"level": null, "freeBytes": 100 * GIB, "message": null})
+            DiskSpaceStatus::default()
         );
-        assert_eq!(
-            status_value(None, false),
-            json!({"level": null, "freeBytes": null, "message": null})
-        );
+        assert_eq!(status_value(None, false), DiskSpaceStatus::default());
         assert_eq!(
             level(DISK_SPACE_WARNING_FREE_BYTES - 1, false),
-            Some("warning")
+            Some(DiskSpaceLevel::Warning)
         );
     }
 }

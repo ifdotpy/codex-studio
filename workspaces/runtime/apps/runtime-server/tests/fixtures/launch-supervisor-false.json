@@ -1,0 +1,13 @@
+{
+  "command": ["/fixture/codex", "app-server", "--listen", "stdio://"],
+  "env": {
+    "HOME": "/fixture/state",
+    "CODEX_HOME": "/fixture/state/codex",
+    "PATH": "/usr/bin:/bin",
+    "OPENAI_API_KEY": "fixture-openai-key",
+    "CODEX_API_KEY": "fixture-codex-key",
+    "UNCHANGED": "Unicode caf\u00e9",
+    "CODEX_AGENTS_SUPERVISOR_MODE": "1"
+  },
+  "cwd": null
+}

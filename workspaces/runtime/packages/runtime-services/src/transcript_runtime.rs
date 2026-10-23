@@ -62,14 +62,7 @@ pub async fn page_at_snapshot(
                 .open_read_only()
                 .map_err(|_| TranscriptError::Store)?;
             let value = project(transaction, &analytics, &agent, &request, now)?;
-            let revision = transaction
-                .query_row(
-                    "SELECT revision FROM runtime_transcript_revisions WHERE agent=?1",
-                    [&agent],
-                    |row| row.get::<_, i64>(0),
-                )
-                .optional()?
-                .unwrap_or(0);
+            let revision = TranscriptRepository::revision(transaction, &agent)?;
             Ok::<_, TranscriptError>((value, revision))
         })
         .await?;
@@ -641,10 +634,10 @@ fn reasoning(
     let records = statement
         .query_map(params![actor["id"].as_str(), first.created, upper,], |r| {
             Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-        })?
-        .collect::<Result<Vec<_>, _>>()?;
+        })?;
     let mut groups = BTreeMap::<(usize, String), ReasoningGroup>::new();
-    for (id, raw) in records {
+    for row in records {
+        let (id, raw) = row?;
         let record: ReasoningRecord =
             serde_json::from_str(&raw).map_err(|_| invalid("analytics_items", &id))?;
         if record.id != id
@@ -737,6 +730,106 @@ pub(crate) fn observed_at() -> Result<f64, TranscriptError> {
 #[cfg(test)]
 mod delivery_tests {
     use super::*;
+
+    #[test]
+    fn transcript_reasoning_decodes_each_row_before_fetching_the_next() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+
+        let db = Connection::open_in_memory().expect("fixture database");
+        db.execute_batch(
+            "CREATE TABLE runtime_items(id TEXT,agent TEXT,created REAL,record TEXT);
+             CREATE TABLE reasoning_source(id TEXT,agent TEXT,at REAL,type TEXT,record TEXT);
+             CREATE INDEX reasoning_order ON reasoning_source(agent,type,at,id);
+             CREATE VIEW analytics_items AS
+                 SELECT id,agent,at,type,observe_raw(record) AS record FROM reasoning_source;",
+        )
+        .expect("fixture schema");
+        let fetched = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::clone(&fetched);
+        db.create_scalar_function(
+            "observe_raw",
+            1,
+            rusqlite::functions::FunctionFlags::SQLITE_UTF8,
+            move |context| {
+                observed.fetch_add(1, Ordering::SeqCst);
+                context.get::<String>(0)
+            },
+        )
+        .expect("raw row observer");
+        let actor = json!({"id":"agent"});
+        let rows = [PageRowMetadata {
+            id: "message".to_owned(),
+            created: 0.0,
+            turn_id: Some("turn".to_owned()),
+        }];
+        // Invalid records must be checked even when their turn is absent from the page.
+        let invalid_irrelevant_turn = json!({
+            "id":"first", "agentId":"agent", "type":"reasoning", "turnId":"absent",
+            "startedAt":1.0, "finishedAt":0.0,
+        })
+        .to_string();
+        for raw in ["{", invalid_irrelevant_turn.as_str()] {
+            db.execute("DELETE FROM reasoning_source", [])
+                .expect("reset fixture");
+            db.execute(
+                "INSERT INTO reasoning_source VALUES('first','agent',1,'reasoning',?1),
+                                                    ('second','agent',2,'reasoning','{}')",
+                [raw],
+            )
+            .expect("reasoning records");
+            fetched.store(0, Ordering::SeqCst);
+            let error = reasoning(
+                &db,
+                &db,
+                &actor,
+                &rows,
+                vec![json!({"id":"message", "turnId":"turn"})],
+                10.0,
+            )
+            .expect_err("first raw record is invalid");
+            assert!(
+                matches!(error, TranscriptError::InvalidStoredObject { table: "analytics_items", id } if id == "first")
+            );
+            assert_eq!(
+                fetched.load(Ordering::SeqCst),
+                1,
+                "the next raw row must not be fetched before the current row is decoded and validated"
+            );
+        }
+
+        db.execute("DELETE FROM reasoning_source", [])
+            .expect("reset valid fixture");
+        for (id, start, end) in [("first", 1.0, 3.0), ("second", 2.0, 4.0)] {
+            let raw = json!({
+                "id":id, "agentId":"agent", "type":"reasoning", "turnId":"turn",
+                "startedAt":start, "finishedAt":end,
+            })
+            .to_string();
+            db.execute(
+                "INSERT INTO reasoning_source VALUES(?1,'agent',?2,'reasoning',?3)",
+                params![id, start, raw],
+            )
+            .expect("valid reasoning record");
+        }
+        fetched.store(0, Ordering::SeqCst);
+        let items = vec![json!({"id":"message", "turnId":"turn"})];
+        assert_eq!(
+            reasoning(&db, &db, &actor, &rows, items.clone(), 10.0)
+                .expect("all reasoning rows contribute"),
+            vec![
+                items[0].clone(),
+                json!({
+                    "id":"reasoning:first", "role":"reasoning", "text":"", "turnId":"turn",
+                    "at":1.0, "reasoningMs":3000.0, "reasoningSince":null,
+                    "reasoningObservedAt":10.0, "observedWait":false,
+                })
+            ],
+        );
+        assert_eq!(fetched.load(Ordering::SeqCst), 2);
+    }
 
     #[test]
     fn transcript_receipts_normalize_legacy_and_keep_original_timing() {

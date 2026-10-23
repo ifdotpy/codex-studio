@@ -4890,7 +4890,8 @@
               "epoch": 0,
               "generation": 1,
               "thread": "thread",
-              "ticket": "ticket"
+              "ticket": "ticket",
+              "connection": "fixture-connection"
             },
             "result": true
           }
@@ -5208,7 +5209,7 @@
     "expectRefusal": {
       "table": "runtime_agents",
       "id": "agent",
-      "message": "invalid stored object runtime_agents/agent"
+      "pointer": "/epoch"
     },
     "expectedDifferences": [],
     "tier": "full",
@@ -5253,7 +5254,8 @@
     ],
     "expectRefusal": {
       "table": "runtime_agents",
-      "id": "agent"
+      "id": "agent",
+      "pointer": "/epoch"
     },
     "expectedDifferences": [],
     "tier": "full",
@@ -5273,13 +5275,10 @@
         "value": "CORPUS_PRIVATE_PAYLOAD"
       }
     ],
-    "expectRefusal": {
-      "table": "runtime_agents",
-      "id": "agent"
-    },
     "expectedDifferences": [],
     "tier": "full",
-    "return": null
+    "return": 0,
+    "unchanged": true
   },
   {
     "id": "existing_python_claim_identity",
@@ -5765,7 +5764,8 @@
     ],
     "expectRefusal": {
       "table": "runtime_agents",
-      "id": "agent"
+      "id": "agent",
+      "pointer": "/epoch"
     },
     "expectedDifferences": [],
     "tier": "full",

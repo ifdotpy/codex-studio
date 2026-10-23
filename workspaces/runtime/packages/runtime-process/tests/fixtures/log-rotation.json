@@ -1,0 +1,15 @@
+{
+  "maxBytes": 8,
+  "backups": 2,
+  "seed": {
+    "app-server.log": "backups",
+    "app-server.log.1": "ent-and-",
+    "app-server.log.2": "eed-curr"
+  },
+  "chunks": ["-continued", "-and-rotated"],
+  "expected": {
+    "app-server.log": "tated",
+    "app-server.log.1": "d-and-ro",
+    "app-server.log.2": "continue"
+  }
+}

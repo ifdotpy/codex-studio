@@ -1,0 +1,5164 @@
+[
+  {
+    "result": true,
+    "revision": 2,
+    "rates": {
+      "records": []
+    }
+  },
+  {
+    "result": false,
+    "revision": 2,
+    "rates": {
+      "records": []
+    }
+  },
+  {
+    "result": 409,
+    "revision": 2,
+    "rates": {
+      "records": []
+    }
+  },
+  {
+    "result": true,
+    "revision": 3,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 0,
+          "outputTokens": 0
+        }
+      ]
+    }
+  },
+  {
+    "result": false,
+    "revision": 3,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 0,
+          "outputTokens": 0
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 4,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 123,
+          "outputTokens": 123
+        }
+      ]
+    }
+  },
+  {
+    "result": false,
+    "revision": 4,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 123,
+          "outputTokens": 123
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 5,
+    "rates": {
+      "records": []
+    }
+  },
+  {
+    "result": 400,
+    "revision": 5,
+    "rates": {
+      "records": []
+    }
+  },
+  {
+    "result": 400,
+    "revision": 5,
+    "rates": {
+      "records": []
+    }
+  },
+  {
+    "result": 400,
+    "revision": 5,
+    "rates": {
+      "records": []
+    }
+  },
+  {
+    "result": 400,
+    "revision": 5,
+    "rates": {
+      "records": []
+    }
+  },
+  {
+    "result": 400,
+    "revision": 5,
+    "rates": {
+      "records": []
+    }
+  },
+  {
+    "result": 400,
+    "revision": 5,
+    "rates": {
+      "records": []
+    }
+  },
+  {
+    "result": 400,
+    "revision": 5,
+    "rates": {
+      "records": []
+    }
+  },
+  {
+    "result": 400,
+    "revision": 5,
+    "rates": {
+      "records": []
+    }
+  },
+  {
+    "result": 400,
+    "revision": 5,
+    "rates": {
+      "records": []
+    }
+  },
+  {
+    "result": 400,
+    "revision": 5,
+    "rates": {
+      "records": []
+    }
+  },
+  {
+    "result": 400,
+    "revision": 5,
+    "rates": {
+      "records": []
+    }
+  },
+  {
+    "result": 400,
+    "revision": 5,
+    "rates": {
+      "records": []
+    }
+  },
+  {
+    "result": 400,
+    "revision": 5,
+    "rates": {
+      "records": []
+    }
+  },
+  {
+    "result": 400,
+    "revision": 5,
+    "rates": {
+      "records": []
+    }
+  },
+  {
+    "result": 400,
+    "revision": 5,
+    "rates": {
+      "records": []
+    }
+  },
+  {
+    "result": true,
+    "revision": 6,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": false,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": 400,
+    "revision": 6,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": false,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": 400,
+    "revision": 6,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": false,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": 400,
+    "revision": 6,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": false,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": 400,
+    "revision": 6,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": false,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": 400,
+    "revision": 6,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": false,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": 400,
+    "revision": 6,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": false,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 7,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": 400,
+    "revision": 7,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": 400,
+    "revision": 7,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": 400,
+    "revision": 7,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": 400,
+    "revision": 7,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": 400,
+    "revision": 7,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": 400,
+    "revision": 7,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": 400,
+    "revision": 7,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": 400,
+    "revision": 7,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": 400,
+    "revision": 7,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": 400,
+    "revision": 7,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": 400,
+    "revision": 7,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": 400,
+    "revision": 7,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": 400,
+    "revision": 7,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": 400,
+    "revision": 7,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": 400,
+    "revision": 7,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": 400,
+    "revision": 7,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 8,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": 400,
+    "revision": 8,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 9,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 10,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 11,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 12,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 13,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 14,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 15,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 16,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 17,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 18,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 19,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 20,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 21,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 22,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 23,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 24,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 25,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 26,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 27,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 28,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 29,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 30,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 31,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 32,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 33,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 34,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 35,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 36,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 37,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 38,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 39,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 40,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 41,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 42,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 43,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 44,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 45,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 46,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 47,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 48,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 49,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 50,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 51,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 52,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 53,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 54,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 55,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 56,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 57,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 58,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 59,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 60,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 61,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 62,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 63,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 64,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 65,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 66,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 67,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 68,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 69,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 70,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 71,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 72,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 73,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 74,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 75,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 76,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 77,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 78,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 79,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 80,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 81,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 82,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 83,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 84,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 85,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 86,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 87,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 88,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 89,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 90,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 91,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 92,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 93,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 94,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 95,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 96,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 97,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 98,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 99,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 100,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 101,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 102,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 103,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 104,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 105,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 106,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 107,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 108,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 109,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 110,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 111,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 112,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 113,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 114,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 115,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 116,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 117,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 118,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 119,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 120,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 121,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 122,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 123,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 124,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 125,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 126,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 127,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 128,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 129,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 130,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 131,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 132,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 133,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 134,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 135,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 136,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 137,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 138,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 139,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 140,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 141,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 142,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 143,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 144,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 145,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 146,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 147,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 148,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 149,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 150,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 151,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 152,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 153,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 154,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 155,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 156,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 157,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 158,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 159,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 160,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 161,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 162,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 163,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 164,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 165,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 166,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 167,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 168,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 169,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 170,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 171,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 172,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 173,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 174,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 175,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 176,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 177,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 178,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 179,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 180,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 181,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 182,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 183,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 184,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 185,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 186,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 187,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 188,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 189,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 190,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 191,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 192,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 193,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 194,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 195,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 196,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 197,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 198,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 199,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 200,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 201,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 202,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 203,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 204,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 205,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 206,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 207,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 208,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 209,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 210,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 211,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 212,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 213,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 214,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 215,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 216,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 217,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 218,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 219,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 220,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 221,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 222,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 223,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 224,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 225,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 226,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 227,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 228,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 229,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 230,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 231,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 232,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 233,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 234,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 235,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 236,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 237,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 238,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 239,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 240,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 241,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 242,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 243,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 244,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 245,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 246,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 247,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 248,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 249,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 250,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 251,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 252,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 253,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 254,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 255,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 256,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 257,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 258,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 259,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 260,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 261,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 262,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 263,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 264,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 265,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 266,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 267,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 268,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 269,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 270,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 271,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 272,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 274,
+    "rates": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    }
+  },
+  {
+    "result": true,
+    "revision": 0,
+    "rates": {
+      "records": []
+    }
+  },
+  {
+    "result": true,
+    "revision": 2,
+    "rates": {
+      "records": []
+    }
+  }
+]

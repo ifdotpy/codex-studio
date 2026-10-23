@@ -213,13 +213,6 @@ async fn manage(
     {
         return Ok(super::incoming_multi_server::failure(scope.refusal()));
     }
-    if action == "replace_server" {
-        // The Python backend owns this repair (docs/multi-server.md). Refuse before any write.
-        return Err(ApiError::new(
-            StatusCode::NOT_IMPLEMENTED,
-            "Not implemented: replace_server runs on the Python backend",
-        ));
-    }
     if action == "create_invite" {
         let request_id = body["requestId"]
             .as_str()
@@ -1122,38 +1115,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn replace_server_has_a_named_501_refusal_without_a_store() {
-        let root = tempfile::tempdir().expect("isolated state");
-        let state = HttpState::new(
-            "token".into(),
-            "workspace".into(),
-            root.path().display().to_string(),
-            12345,
-            None,
-            None,
-            None,
-        );
-        let refusal = manage(
-            State(state),
-            HeaderMap::new(),
-            ApiJson(serde_json::json!({
-                "action":"replace_server","oldServerId":"lost","newServerId":"successor","requestId":"replace"
-            })),
-        )
-        .await
-        .expect_err("the Rust backend refuses the repair");
-        let response = refusal.into_response();
-        assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
-        let body = axum::body::to_bytes(response.into_body(), 1024)
-            .await
-            .expect("small refusal body");
-        assert_eq!(
-            serde_json::from_slice::<Value>(&body).expect("error envelope"),
-            serde_json::json!({"error":"Not implemented: replace_server runs on the Python backend"})
-        );
-    }
-
-    #[tokio::test]
     async fn discover_action_calls_the_injected_host_driver() {
         let root = tempfile::tempdir().expect("isolated discovery state");
         let store = Arc::new(
@@ -1189,9 +1150,7 @@ mod tests {
         );
     }
 
-    /// State after replace_server on the Python backend (docs/multi-server.md, "Replace a lost
-    /// server identity"): the previous local identity has no Tailscale owner, and the record
-    /// keeps `replacedBy` and `replacement`.
+    /// Historical replacement records retain their fields and identity alerts.
     #[tokio::test]
     async fn snapshot_serves_replaced_identities_and_their_alerts() {
         let root = tempfile::tempdir().expect("isolated multi-server state");
@@ -1314,12 +1273,12 @@ mod tests {
                 {
                     "code":"peer_identity_changed","oldServerId":"oldpeer","newServerId":"newpeer",
                     "origin":"https://peer.example",
-                    "detail":"https://peer.example now presents server newpeer. Run replace_server with oldServerId oldpeer after the old identity is gone."
+                    "detail":"https://peer.example now presents server newpeer. References to server oldpeer remain unavailable."
                 },
                 {
                     "code":"local_identity_changed","oldServerId":"otherold","newServerId":local,
                     "origin":"https://local.example",
-                    "detail":format!("Local state still names this server otherold. Run replace_server here, and on each paired server that names otherold, with newServerId {local}.")
+                    "detail":format!("Local state still names this server otherold, but its current identity is {local}. References to the previous identity remain unavailable.")
                 },
             ])
         );

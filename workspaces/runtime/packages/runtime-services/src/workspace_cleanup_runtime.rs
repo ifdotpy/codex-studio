@@ -235,6 +235,11 @@ async fn complete_without_effect(
                 return Err(WorkspaceCleanupError::Held);
             }
             if action == CleanupAction::Archive {
+                // The planner emits no effects for an already absent owned
+                // worktree. Only settle metadata; never mutate Git or a parent.
+                if current.get("worktreeReady").and_then(Value::as_bool) == Some(true) {
+                    current["worktreeReady"] = json!(false);
+                }
                 if current.get("imageWorkspace").and_then(Value::as_bool) == Some(true)
                     && current.get("imageWorkspaceReady").and_then(Value::as_bool) != Some(true)
                     && current.get("imageWorkspacePhase").and_then(Value::as_str)
@@ -328,54 +333,68 @@ pub async fn reconcile_pending_cleanup(
         .await?;
     let mut held = Vec::new();
     for (id, raw) in rows {
-        let record: Value =
-            serde_json::from_str(&raw).map_err(|_| WorkspaceCleanupError::InvalidRecord)?;
-        let intent = record
-            .get(INTENT_FIELD)
-            .ok_or(WorkspaceCleanupError::InvalidRecord)?;
-        let phase = intent.get("phase").and_then(Value::as_str);
-        if phase == Some("pending") {
-            let request_id = intent
-                .get("requestId")
-                .and_then(Value::as_str)
-                .ok_or(WorkspaceCleanupError::InvalidRecord)?
-                .to_owned();
-            mark_effect(&store, &id, &request_id, "unknown", Value::Null).await?;
+        match reconcile_cleanup_intent(&store, &id, &raw).await {
+            Ok(cleanup) => held.push(cleanup),
+            Err(error) => eprintln!("Workspace cleanup remains pending for {id}: {error}"),
         }
-        if matches!(phase, Some("queued" | "written" | "not_sent")) {
-            let action: CleanupAction = serde_json::from_value(
-                intent
-                    .get("action")
-                    .cloned()
-                    .ok_or(WorkspaceCleanupError::InvalidRecord)?,
-            )
-            .map_err(|_| WorkspaceCleanupError::InvalidRecord)?;
-            match cleanup_agent_workspace(Arc::clone(&store), id.clone(), action).await {
-                Ok(cleanup) => held.push(cleanup),
+    }
+    Ok(held)
+}
+
+// This is a view of a persisted agent record, whose other fields belong to
+// AgentRecord. The intent's receipt/effect fields remain owned by the effect runner.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CleanupRecord {
+    workspace_cleanup_intent: CleanupIntent,
+}
+
+#[derive(Deserialize)]
+struct CleanupIntent {
+    action: CleanupAction,
+    #[serde(flatten)]
+    progress: CleanupProgress,
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "phase", rename_all = "snake_case")]
+enum CleanupProgress {
+    Queued,
+    Written,
+    NotSent,
+    Pending {
+        #[serde(rename = "requestId")]
+        request_id: String,
+    },
+    Unknown,
+}
+
+async fn reconcile_cleanup_intent(
+    store: &Arc<RuntimeStore>,
+    id: &str,
+    raw: &str,
+) -> Result<WorkspaceCleanupResult, WorkspaceCleanupError> {
+    let record: CleanupRecord =
+        serde_json::from_str(raw).map_err(|_| WorkspaceCleanupError::InvalidRecord)?;
+    let intent = record.workspace_cleanup_intent;
+    match intent.progress {
+        CleanupProgress::Queued | CleanupProgress::Written | CleanupProgress::NotSent => {
+            match cleanup_agent_workspace(Arc::clone(store), id.to_owned(), intent.action).await {
+                Ok(cleanup) => return Ok(cleanup),
                 Err(
                     WorkspaceCleanupError::Held
                     | WorkspaceCleanupError::NotSent
                     | WorkspaceCleanupError::UnsafeSubmodule(_),
-                ) => {
-                    held.push(result(&id, action, None, None, true));
-                }
+                ) => {}
                 Err(error) => return Err(error),
             }
-            continue;
         }
-        if !matches!(phase, Some("pending" | "unknown")) {
-            continue;
+        CleanupProgress::Pending { request_id } => {
+            mark_effect(store, id, &request_id, "unknown", Value::Null).await?;
         }
-        let action: CleanupAction = serde_json::from_value(
-            intent
-                .get("action")
-                .cloned()
-                .ok_or(WorkspaceCleanupError::InvalidRecord)?,
-        )
-        .map_err(|_| WorkspaceCleanupError::InvalidRecord)?;
-        held.push(result(&id, action, None, None, true));
+        CleanupProgress::Unknown => {}
     }
-    Ok(held)
+    Ok(result(id, intent.action, None, None, true))
 }
 
 fn plan(agent: &Value, action: CleanupAction) -> Result<Vec<CleanupEffect>, WorkspaceCleanupError> {
@@ -437,7 +456,9 @@ fn plan(agent: &Value, action: CleanupAction) -> Result<Vec<CleanupEffect>, Work
     } else if action == CleanupAction::Archive
         && agent.get("worktreeReady").and_then(Value::as_bool) == Some(true)
     {
-        let identity = worktree_identity(agent)?;
+        let Some(identity) = worktree_identity(agent)? else {
+            return Ok(effects);
+        };
         effects.push(CleanupEffect::SaveWorktreeRef {
             identity: identity.clone(),
         });
@@ -457,26 +478,19 @@ pub(crate) fn check_archive_worktree(agent: &Value) -> Result<(), WorkspaceClean
     }
     let workspace: Workspace =
         serde_json::from_value(agent.clone()).map_err(|_| WorkspaceCleanupError::InvalidRecord)?;
-    if workspace.worktree_ready {
-        let identity = worktree_identity(agent)?;
-        check_worktree(&identity).map_err(|_| WorkspaceCleanupError::NotSent)?;
+    if workspace.worktree_ready
+        && let Some(identity) = worktree_identity(agent)?
+    {
+        checked_cleanup_worktree(&identity).map_err(|_| WorkspaceCleanupError::NotSent)?;
     }
     Ok(())
 }
 
-fn worktree_identity(agent: &Value) -> Result<Value, WorkspaceCleanupError> {
-    let id = agent
-        .get("id")
-        .and_then(Value::as_str)
-        .ok_or(WorkspaceCleanupError::InvalidRecord)?;
-    let cwd = agent
-        .get("cwd")
-        .and_then(Value::as_str)
-        .ok_or(WorkspaceCleanupError::InvalidRecord)?;
-    let cwd = CanonicalPath::existing(std::path::Path::new(cwd))
-        .map_err(|_| WorkspaceCleanupError::InvalidRecord)?;
-    let root = cwd
-        .ancestors()
+fn owned_worktree_root<'a>(
+    cwd: &'a std::path::Path,
+    id: &str,
+) -> Result<&'a std::path::Path, WorkspaceCleanupError> {
+    cwd.ancestors()
         .find(|path| {
             path.file_name().and_then(|name| name.to_str()) == Some(id)
                 && path
@@ -491,7 +505,31 @@ fn worktree_identity(agent: &Value) -> Result<Value, WorkspaceCleanupError> {
                     .and_then(|name| name.to_str())
                     == Some(".worktrees")
         })
+        .ok_or(WorkspaceCleanupError::InvalidRecord)
+}
+
+fn worktree_identity(agent: &Value) -> Result<Option<Value>, WorkspaceCleanupError> {
+    #[derive(Deserialize)]
+    struct WorktreeOwner {
+        id: String,
+        cwd: PathBuf,
+    }
+    let owner: WorktreeOwner =
+        serde_json::from_value(agent.clone()).map_err(|_| WorkspaceCleanupError::InvalidRecord)?;
+    let lexical = studio_runtime_store::path_identity::LexicalPath::exact(&owner.cwd)
         .ok_or(WorkspaceCleanupError::InvalidRecord)?;
+    let root = owned_worktree_root(&lexical, &owner.id)?;
+    // Inspect the exact owned root, not a canonicalized parent or a missing cwd
+    // subdirectory. A dangling link is still present and must stay held.
+    match std::fs::symlink_metadata(root) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Err(WorkspaceCleanupError::InvalidRecord),
+        Ok(_) => {}
+    }
+    let id = owner.id.as_str();
+    let cwd =
+        CanonicalPath::existing(&owner.cwd).map_err(|_| WorkspaceCleanupError::InvalidRecord)?;
+    let root = owned_worktree_root(&cwd, id)?;
     let repo = root
         .parent()
         .and_then(std::path::Path::parent)
@@ -511,12 +549,12 @@ fn worktree_identity(agent: &Value) -> Result<Value, WorkspaceCleanupError> {
         return Err(WorkspaceCleanupError::InvalidRecord);
     }
     let registered_branch = registered_worktree_branch(repo, root)?;
-    Ok(
+    Ok(Some(
         json!({"id":id,"cwd":cwd,"root":root,"repository":repo,"relative":relative,"head":head,
         "branch":registered_branch,"lifecycleIdentity":[agent.get("epoch"),agent.get("cwd"),agent.get("deletedAt")],
         "epoch":agent.get("epoch"),"deletedAt":agent.get("deletedAt"),
         "archive":agent.get("agentArchive")}),
-    )
+    ))
 }
 
 fn registered_worktree_branch(
@@ -1332,6 +1370,108 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn missing_archive_worktree_settles_without_external_effects() {
+        let (directory, store) = fixture().await;
+        let cwd = directory
+            .path()
+            .join("project/.worktrees/codex-agents/cleanup-agent");
+        put_agent(&store, json!({
+            "cwd":cwd, "worktreeReady":true,
+            "agentArchive":{"cleanupPending":true},
+            "workspaceCleanupIntent":super::queued_cleanup_intent("cleanup-agent", 7, CleanupAction::Archive)
+        })).await;
+        let ports = Arc::new(FakePorts::new(vec![]));
+        let cleaned = cleanup_agent_workspace_with_ports(
+            Arc::clone(&store),
+            "cleanup-agent".into(),
+            CleanupAction::Archive,
+            ports.clone(),
+        )
+        .await
+        .expect("missing workspace already cleaned");
+        assert!(!cleaned.held);
+        assert!(ports.calls.lock().expect("calls").is_empty());
+        let saved = agent(&store);
+        assert_eq!(saved["worktreeReady"], false);
+        assert_eq!(saved["cwd"], json!(cwd));
+        assert_eq!(saved["agentArchive"]["cleanupPending"], false);
+        assert!(saved.get("workspaceCleanupIntent").is_none());
+    }
+
+    #[tokio::test]
+    async fn missing_worktree_subdirectory_does_not_settle_a_live_root() {
+        let (directory, store) = fixture().await;
+        let root = directory
+            .path()
+            .join("project/.worktrees/codex-agents/cleanup-agent");
+        std::fs::create_dir_all(&root).expect("live root");
+        let marker = root.join("owned.txt");
+        std::fs::write(&marker, "keep").expect("live marker");
+        put_agent(&store, json!({
+            "cwd":root.join("missing-subdirectory"), "worktreeReady":true,
+            "agentArchive":{"cleanupPending":true},
+            "workspaceCleanupIntent":super::queued_cleanup_intent("cleanup-agent", 7, CleanupAction::Archive)
+        })).await;
+        let ports = Arc::new(FakePorts::new(vec![]));
+        assert!(
+            cleanup_agent_workspace_with_ports(
+                Arc::clone(&store),
+                "cleanup-agent".into(),
+                CleanupAction::Archive,
+                ports.clone()
+            )
+            .await
+            .is_err()
+        );
+        assert!(ports.calls.lock().expect("calls").is_empty());
+        assert_eq!(
+            std::fs::read_to_string(marker).expect("live marker"),
+            "keep"
+        );
+        assert_eq!(agent(&store)["worktreeReady"], true);
+        assert!(agent(&store).get("workspaceCleanupIntent").is_some());
+    }
+
+    #[tokio::test]
+    async fn cleanup_failure_does_not_block_unrelated_queued_intents() {
+        let (directory, store) = fixture().await;
+        put_agent(&store, json!({
+            "cwd":directory.path(), "worktreeReady":true,
+            "agentArchive":{"cleanupPending":true},
+            "workspaceCleanupIntent":super::queued_cleanup_intent("cleanup-agent", 7, CleanupAction::Archive)
+        })).await;
+        let other = AgentRecord::from_value(json!({
+            "id":"z-unrelated", "rootId":"z-unrelated", "epoch":1, "status":"paused", "deletedAt":1,
+            "workspaceCleanupIntent":super::queued_cleanup_intent("z-unrelated", 1, CleanupAction::Delete)
+        })).expect("unrelated record");
+        store
+            .transaction(move |tx| AgentRepository::put(tx, &other))
+            .await
+            .expect("seed unrelated");
+        super::reconcile_pending_cleanup(Arc::clone(&store))
+            .await
+            .expect("isolate failure");
+        assert!(
+            agent(&store).get("workspaceCleanupIntent").is_some(),
+            "failed intent is retained"
+        );
+        let raw: String = store
+            .test_reader()
+            .expect("reader")
+            .query_row(
+                "SELECT record FROM runtime_agents WHERE id='z-unrelated'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("unrelated row");
+        let saved: Value = serde_json::from_str(&raw).expect("record");
+        assert!(
+            saved.get("workspaceCleanupIntent").is_none(),
+            "unrelated intent drains"
+        );
+    }
+
+    #[tokio::test]
     async fn archive_orders_workspace_effects_and_clears_cleanup_pending() {
         let (_directory, store) = fixture().await;
         put_agent(
@@ -2041,7 +2181,7 @@ mod tests {
                     "protocol.file.allow=always",
                     "submodule",
                     "add",
-                    nested_source.to_str().unwrap(),
+                    nested_source.to_str().expect("nested source path is UTF-8"),
                     "nested",
                 ],
             );
@@ -2068,7 +2208,7 @@ mod tests {
                 "protocol.file.allow=always",
                 "submodule",
                 "add",
-                source.to_str().unwrap(),
+                source.to_str().expect("source path is UTF-8"),
                 "module",
             ],
         );
@@ -2092,7 +2232,7 @@ mod tests {
                 "add",
                 "-qb",
                 "cleanup-agent",
-                root.to_str().unwrap(),
+                root.to_str().expect("worktree path is UTF-8"),
             ],
         );
         fixture_git(
@@ -2174,7 +2314,7 @@ mod tests {
         assert!(
             agent(&store)["workspaceCleanupIntent"]["receipt"]["reason"]
                 .as_str()
-                .unwrap()
+                .expect("cleanup refusal is text")
                 .contains("submodule")
         );
     }
@@ -2218,7 +2358,7 @@ mod tests {
         assert!(
             saved["workspaceCleanupIntent"]["receipt"]["reason"]
                 .as_str()
-                .unwrap()
+                .expect("saved refusal is text")
                 .contains(reason)
         );
     }
@@ -2265,7 +2405,8 @@ mod tests {
         let module = root.join("module");
         let recorded = fixture_git(&module, &["rev-parse", "HEAD"]);
         fixture_git(&module, &["checkout", "-qb", "worker"]);
-        std::fs::write(module.join("file.txt"), "local branch\n").unwrap();
+        std::fs::write(module.join("file.txt"), "local branch\n")
+            .expect("local branch file writes");
         fixture_git(&module, &["commit", "-qam", "local branch"]);
         fixture_git(&module, &["checkout", "--detach", &recorded]);
         assert_submodule_held(&store, &root, "local commits").await;
@@ -2282,7 +2423,8 @@ mod tests {
         let (_directory, store, _repository, root) = submodule_fixture_with_nested(true).await;
         let nested = root.join("module/nested");
         let recorded = fixture_git(&nested, &["rev-parse", "HEAD"]);
-        std::fs::write(nested.join("file.txt"), "nested worker data\n").unwrap();
+        std::fs::write(nested.join("file.txt"), "nested worker data\n")
+            .expect("nested worker file writes");
         fixture_git(&nested, &["commit", "-qam", "nested detached commit"]);
         let local = fixture_git(&nested, &["rev-parse", "HEAD"]);
         fixture_git(&nested, &["checkout", "--detach", &recorded]);
@@ -2301,46 +2443,52 @@ mod tests {
     async fn archive_keeps_submodule_recursive_modified_file() {
         let (_directory, store, _repository, root) = submodule_fixture_with_nested(true).await;
         let file = root.join("module/nested/file.txt");
-        std::fs::write(&file, "nested edit\n").unwrap();
+        std::fs::write(&file, "nested edit\n").expect("nested edit writes");
         assert_eq!(fixture_git(&root, &["status", "--porcelain"]), "");
         assert_submodule_held(&store, &root, "modified or untracked").await;
-        assert_eq!(std::fs::read_to_string(file).unwrap(), "nested edit\n");
+        assert_eq!(
+            std::fs::read_to_string(file).expect("nested edit remains readable"),
+            "nested edit\n"
+        );
     }
 
     #[tokio::test]
     async fn archive_keeps_submodule_unreadable_head() {
         let (_directory, store, _repository, root) = submodule_fixture().await;
         let gitdir = fixture_git(&root.join("module"), &["rev-parse", "--absolute-git-dir"]);
-        std::fs::write(std::path::Path::new(&gitdir).join("HEAD"), "invalid head\n").unwrap();
+        std::fs::write(std::path::Path::new(&gitdir).join("HEAD"), "invalid head\n")
+            .expect("invalid HEAD writes");
         assert_submodule_held(&store, &root, "cannot be read").await;
     }
 
     #[tokio::test]
     async fn archive_keeps_submodule_foreign_git_directory() {
         let (directory, store, _repository, root) = submodule_fixture().await;
-        let foreign =
-            std::fs::canonicalize(directory.path().join("submodule-source/.git")).unwrap();
+        let foreign = std::fs::canonicalize(directory.path().join("submodule-source/.git"))
+            .expect("foreign Git directory resolves");
         std::fs::write(
             root.join("module/.git"),
             format!("gitdir: {}\n", foreign.display()),
         )
-        .unwrap();
+        .expect("foreign Git link writes");
         assert_submodule_held(&store, &root, "foreign Git directory").await;
     }
 
     #[tokio::test]
     async fn archive_keeps_submodule_without_git_directory_and_with_files() {
         let (_directory, store, _repository, root) = submodule_fixture().await;
-        std::fs::remove_file(root.join("module/.git")).unwrap();
+        std::fs::remove_file(root.join("module/.git")).expect("submodule Git link removes");
         assert_submodule_held(&store, &root, "contains files but has no Git directory").await;
     }
 
     #[tokio::test]
     async fn archive_rechecks_submodule_after_saving_parent_ref() {
         let (_directory, store, repository, root) = submodule_fixture().await;
-        let identity = super::worktree_identity(&agent(&store)).expect("worktree identity");
+        let identity = super::worktree_identity(&agent(&store))
+            .expect("worktree identity reads")
+            .expect("owned worktree identity");
         super::save_worktree_archive_ref(&identity).expect("clean parent ref saves");
-        std::fs::write(root.join("module/file.txt"), "late edit\n").unwrap();
+        std::fs::write(root.join("module/file.txt"), "late edit\n").expect("late edit writes");
         let error =
             super::remove_worktree(&identity).expect_err("new submodule edit blocks removal");
         assert!(matches!(error, EffectFailure::UnsafeSubmodule(_)));
@@ -2350,13 +2498,14 @@ mod tests {
                 &repository,
                 &["rev-parse", "refs/codex-agents/archive/cleanup-agent"]
             ),
-            identity["head"].as_str().unwrap()
+            identity["head"].as_str().expect("archive HEAD is text")
         );
     }
 
     fn record_local_submodule_commit(root: &std::path::Path) -> String {
         let module = root.join("module");
-        std::fs::write(module.join("file.txt"), "recorded local commit\n").unwrap();
+        std::fs::write(module.join("file.txt"), "recorded local commit\n")
+            .expect("local commit file writes");
         fixture_git(&module, &["commit", "-qam", "local submodule commit"]);
         let head = fixture_git(&module, &["rev-parse", "HEAD"]);
         fixture_git(
@@ -2424,7 +2573,7 @@ mod tests {
                 "-c",
                 "protocol.file.allow=always",
                 "fetch",
-                root.join("module").to_str().unwrap(),
+                root.join("module").to_str().expect("module path is UTF-8"),
                 &local,
             ],
         );
@@ -2455,14 +2604,15 @@ mod tests {
             std::path::Path::new(&gitdir).join("objects/info/alternates"),
             format!("{foreign}/objects\n"),
         )
-        .unwrap();
+        .expect("foreign object alternate writes");
         assert_submodule_held(&store, &root, "foreign Git directory or configuration").await;
     }
 
     #[tokio::test]
     async fn archive_keeps_submodule_with_unreadable_configuration() {
         let (_directory, store, _repository, root) = submodule_fixture().await;
-        std::fs::write(root.join(".gitmodules"), "[broken\n").unwrap();
+        std::fs::write(root.join(".gitmodules"), "[broken\n")
+            .expect("invalid Git configuration writes");
         assert_submodule_held(&store, &root, "cannot be read").await;
     }
 

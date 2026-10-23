@@ -110,7 +110,11 @@ pub fn admit(
     } else {
         evidence["error"] = json!("Acceptance gate workspace was not prepared; submit again");
     }
-    task["results"].as_array_mut().unwrap().last_mut().unwrap()["gate"] = evidence;
+    task["results"]
+        .as_array_mut()
+        .expect("validated results remain an array")
+        .last_mut()
+        .expect("validated submission remains present")["gate"] = evidence;
     Ok(true)
 }
 
@@ -252,7 +256,7 @@ mod tests {
     fn acceptance_gate_command_checks_revision_source_changes_and_exit_code() {
         use crate::bounded_child::{Request, run_without_git_environment};
         use std::ffi::OsStr;
-        let root = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir().expect("temporary repository creates");
         let git = |args: &[&str]| {
             run_without_git_environment(Request {
                 program: OsStr::new("git"),
@@ -264,7 +268,7 @@ mod tests {
                 stderr_limit: 4096,
                 timeout: std::time::Duration::from_secs(5),
             })
-            .unwrap()
+            .expect("Git command executes")
         };
         git(&["init", "-q"]);
         git(&[
@@ -280,11 +284,12 @@ mod tests {
             "fixture",
         ]);
         let revision = String::from_utf8(git(&["rev-parse", "HEAD"]).stdout.bytes)
-            .unwrap()
+            .expect("Git revision is UTF-8")
             .trim()
             .to_owned();
         let run = |command: &str, revision: &str| {
-            let wrapped = revision_command(command, revision).unwrap();
+            let wrapped =
+                revision_command(command, revision).expect("full revision produces a gate command");
             let script = format!("cd '{}' && {}", root.path().display(), wrapped);
             run_without_git_environment(Request {
                 program: OsStr::new("sh"),
@@ -311,8 +316,12 @@ mod tests {
         }
     }
     async fn fixture(gate: Value, approved: bool) -> (Arc<RuntimeStore>, tempfile::TempDir) {
-        let root = tempfile::tempdir().unwrap();
-        let store = Arc::new(RuntimeStore::open(Some(root.path())).await.unwrap());
+        let root = tempfile::tempdir().expect("temporary state directory creates");
+        let store = Arc::new(
+            RuntimeStore::open(Some(root.path()))
+                .await
+                .expect("runtime store opens"),
+        );
         let cwd = root.path().to_string_lossy().into_owned();
         store.transaction(move |tx| {
             for id in ["lead", "worker", "dependent"] {
@@ -325,7 +334,7 @@ mod tests {
                     "results":[],"decisions":[],"gate":gate}))?;
             }
             Ok(())
-        }).await.unwrap();
+        }).await.expect("gate fixture writes");
         (store, root)
     }
     async fn submit(store: &Arc<RuntimeStore>, request: &str, revision: &str) -> Value {
@@ -356,7 +365,7 @@ mod tests {
                 )
             })
             .await
-            .unwrap()
+            .expect("submission writes")
             .record
     }
     async fn accept(
@@ -385,16 +394,20 @@ mod tests {
             .map(|v| v.record)
     }
     async fn finish(store: &Arc<RuntimeStore>, record: &Value, code: i64) {
-        let id = record["results"].as_array().unwrap().last().unwrap()["gate"]["monitorId"]
+        let id = record["results"]
+            .as_array()
+            .expect("results are an array")
+            .last()
+            .expect("submission exists")["gate"]["monitorId"]
             .as_str()
-            .unwrap()
+            .expect("gate monitor identity is text")
             .to_owned();
         store
             .transaction_with(move |tx| {
                 crate::monitor_runtime::finish_in_transaction(tx, &id, None, Some(code), None, 2.0)
             })
             .await
-            .unwrap();
+            .expect("gate monitor finishes");
     }
     async fn events(store: &Arc<RuntimeStore>, kind: &str) -> Vec<Value> {
         let kind = kind.to_owned();
@@ -407,18 +420,22 @@ mod tests {
                     .collect::<Result<Vec<_>, _>>()?;
                 Ok::<_, studio_runtime_store::StoreError>(
                     rows.into_iter()
-                        .map(|r| serde_json::from_str(&r).unwrap())
+                        .map(|r| serde_json::from_str(&r).expect("event JSON parses"))
                         .collect(),
                 )
             })
             .await
-            .unwrap()
+            .expect("gate events load")
     }
     const REV: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
     #[tokio::test]
     async fn acceptance_gate_passing_allows_accept_and_publishes_evidence() {
-        let (store, _root) = fixture(normalize(&json!("true")).unwrap(), true).await;
+        let (store, _root) = fixture(
+            normalize(&json!("true")).expect("gate command normalizes"),
+            true,
+        )
+        .await;
         let record = submit(&store, "submit", REV).await;
         assert!(events(&store, "work_review").await.is_empty());
         assert!(accept(&store, None).await.is_err());
@@ -429,14 +446,21 @@ mod tests {
         assert!(
             events[0]["result"]["gate"]["log"]
                 .as_str()
-                .unwrap()
+                .expect("gate log path is text")
                 .ends_with(".log")
         );
-        assert_eq!(accept(&store, None).await.unwrap()["status"], "accepted");
+        assert_eq!(
+            accept(&store, None).await.expect("passing gate accepts")["status"],
+            "accepted"
+        );
     }
     #[tokio::test]
     async fn acceptance_gate_failure_requires_override_and_releases_dependents_once() {
-        let (store, _root) = fixture(normalize(&json!("false")).unwrap(), true).await;
+        let (store, _root) = fixture(
+            normalize(&json!("false")).expect("gate command normalizes"),
+            true,
+        )
+        .await;
         let record = submit(&store, "submit", REV).await;
         finish(&store, &record, 1).await;
         assert!(accept(&store, None).await.is_err());
@@ -444,7 +468,7 @@ mod tests {
         assert!(events(&store, "work_ready").await.is_empty());
         let accepted = accept(&store, Some("Known fixture failure; reviewed manually"))
             .await
-            .unwrap();
+            .expect("failed gate override accepts");
         assert_eq!(
             accepted["decisions"][0]["gateOverrideReason"],
             "Known fixture failure; reviewed manually"
@@ -453,20 +477,28 @@ mod tests {
         assert_eq!(
             accept(&store, Some("Known fixture failure; reviewed manually"))
                 .await
-                .unwrap()["status"],
+                .expect("decision events load")["status"],
             "accepted"
         );
         assert_eq!(events(&store, "work_ready").await.len(), 1);
     }
     #[tokio::test]
     async fn acceptance_gate_restart_is_unknown_and_late_success_cannot_pass() {
-        let (store, root) = fixture(normalize(&json!("true")).unwrap(), true).await;
+        let (store, root) = fixture(
+            normalize(&json!("true")).expect("gate command normalizes"),
+            true,
+        )
+        .await;
         let record = submit(&store, "submit", REV).await;
         drop(store);
-        let store = Arc::new(RuntimeStore::open(Some(root.path())).await.unwrap());
+        let store = Arc::new(
+            RuntimeStore::open(Some(root.path()))
+                .await
+                .expect("runtime store reopens"),
+        );
         crate::monitor_runtime::recover_on_startup(&store, 3.0)
             .await
-            .unwrap();
+            .expect("gate monitor recovers");
         assert!(accept(&store, None).await.is_err());
         let reviews = events(&store, "work_review").await;
         assert_eq!(reviews.len(), 1);
@@ -474,17 +506,20 @@ mod tests {
         // A retained provider reply after restart must not certify the interrupted run.
         let id = record["results"][0]["gate"]["monitorId"]
             .as_str()
-            .unwrap()
+            .expect("gate monitor identity is text")
             .to_owned();
         store
             .transaction_with(move |tx| {
-                let mut monitor = MonitorsRepository::get(tx, &id)?.unwrap().value().clone();
+                let mut monitor = MonitorsRepository::get(tx, &id)?
+                    .expect("gate monitor exists")
+                    .value()
+                    .clone();
                 monitor["status"] = json!("completed");
                 monitor["exitCode"] = json!(0);
                 settle(tx, &monitor, 4.0)
             })
             .await
-            .unwrap();
+            .expect("gate monitor restart fixture writes");
         assert!(accept(&store, None).await.is_err());
         let resubmitted = submit(&store, "rerun", REV).await;
         assert_ne!(
@@ -492,7 +527,12 @@ mod tests {
             record["results"][0]["gate"]["monitorId"]
         );
         finish(&store, &resubmitted, 0).await;
-        assert_eq!(accept(&store, None).await.unwrap()["status"], "accepted");
+        assert_eq!(
+            accept(&store, None)
+                .await
+                .expect("recovered passing gate accepts")["status"],
+            "accepted"
+        );
     }
     #[tokio::test]
     async fn acceptance_gate_no_gate_preserves_submit_and_accept() {
@@ -500,12 +540,18 @@ mod tests {
         let record = submit(&store, "submit", "old-revision-format").await;
         assert!(record["results"][0].get("gate").is_none());
         assert_eq!(events(&store, "work_review").await.len(), 1);
-        assert_eq!(accept(&store, None).await.unwrap()["status"], "accepted");
+        assert_eq!(
+            accept(&store, None)
+                .await
+                .expect("task without gate accepts")["status"],
+            "accepted"
+        );
     }
     #[tokio::test]
     async fn acceptance_gate_monitor_retains_approval_and_submission_replay_identity() {
         let (store, _root) = fixture(
-            normalize(&json!({"command":"true","timeout_ms":1234})).unwrap(),
+            normalize(&json!({"command":"true","timeout_ms":1234}))
+                .expect("gate configuration normalizes"),
             false,
         )
         .await;
@@ -513,15 +559,15 @@ mod tests {
         assert_eq!(submit(&store, "submit", REV).await, record);
         let id = record["results"][0]["gate"]["monitorId"]
             .as_str()
-            .unwrap()
+            .expect("gate monitor identity is text")
             .to_owned();
         let monitor = store
             .read_async("gate-test/monitor", move |tx| {
                 MonitorsRepository::get(tx, &id)
             })
             .await
-            .unwrap()
-            .unwrap();
+            .expect("gate monitor query succeeds")
+            .expect("gate monitor exists");
         assert_eq!(monitor.value()["status"], "approval");
         assert_eq!(monitor.value()["agent"], "worker");
         assert_eq!(monitor.value()["timeout_ms"], 1234);
@@ -529,7 +575,11 @@ mod tests {
     }
     #[tokio::test]
     async fn acceptance_gate_unverified_revision_is_not_run() {
-        let (store, _root) = fixture(normalize(&json!("true")).unwrap(), true).await;
+        let (store, _root) = fixture(
+            normalize(&json!("true")).expect("gate command normalizes"),
+            true,
+        )
+        .await;
         let record = submit(&store, "submit", "HEAD; false").await;
         assert_eq!(record["results"][0]["gate"]["status"], "not_run");
         assert!(accept(&store, None).await.is_err());

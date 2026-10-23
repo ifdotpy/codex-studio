@@ -184,7 +184,7 @@ impl Registry {
         })?;
         #[expect(
             clippy::disallowed_methods,
-            reason = "DraftPayload is an HTTP-only inline document with an explicit draft, not a shared OpenAPI component"
+            reason = "DraftPayload is generated from client-domain DraftVersion with an explicit draft, outside OpenAPI"
         )]
         let draft_payload_validator = jsonschema::options()
             .with_draft(Draft::Draft202012)
@@ -1301,6 +1301,23 @@ mod tests {
     };
     use axum::http::{HeaderMap, HeaderValue};
     use serde_json::{Map, Value, json};
+
+    #[test]
+    fn named_schema_draft_push_matches_shared_compatibility_fixtures() {
+        let registry = Registry::compile(&[]).expect("HTTP schemas compile");
+        let cases: Vec<Value> = serde_json::from_str(include_str!(
+            "../../../../client/contracts/draft-compatibility.json"
+        ))
+        .expect("shared draft fixtures are JSON");
+        for case in cases {
+            assert_eq!(
+                registry.validate_stored("DraftPayload", &case["payload"]),
+                case["push"].as_bool().expect("fixture push acceptance"),
+                "{}",
+                case["name"]
+            );
+        }
+    }
 
     #[test]
     fn named_schema_startup_witness() {

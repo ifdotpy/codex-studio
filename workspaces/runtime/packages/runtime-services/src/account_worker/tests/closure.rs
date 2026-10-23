@@ -776,6 +776,124 @@ async fn a_stored_cwd_with_a_trailing_separator_resumes_its_thread() {
     worker.shutdown().await.unwrap();
 }
 
+/// 2026-10-21: Studio no longer uses the lead `PROGRESS.md` file. Leads
+/// prepared before that change keep a frozen role text that names the file,
+/// a prepared context with a `progressFile` version, and the file in the
+/// state folder. Their thread must still resume without a stale check, the
+/// lead must learn once that the file is retired, and the file must stay.
+#[tokio::test]
+async fn a_lead_prepared_with_the_old_progress_file_resumes_its_thread() {
+    use studio_runtime_schema::shared_values::PROGRESS_FILE_RETIRED_NOTICE;
+    let state = canonical_state().await;
+    let id = state.agent.clone();
+    let progress = state.root.join("progress").join(&id);
+    std::fs::create_dir_all(&progress).expect("old progress folder");
+    let file = progress.join("PROGRESS.md");
+    std::fs::write(&file, "# Old status\n").expect("old progress file");
+    let old_role = "[Studio role skill: codex-orchestrator]\nUpdate your `PROGRESS.md` with ordinary file tools.\n[End Studio role skill]";
+    let old_guidance = format!(
+        "Your progress file is {}. Read and edit this plain UTF-8 Markdown file with ordinary file tools.",
+        file.display()
+    );
+    let role_version = crate::turn_prepare::context_version(&json!(old_role));
+    let progress_version = crate::turn_prepare::context_version(&json!(old_guidance));
+    let record_id = id.clone();
+    state
+        .bridge
+        .run(move |store| async move {
+            store
+                .transaction_with(move |tx| {
+                    let mut row =
+                        AgentRepository::get(tx, &AgentId::from(record_id.as_str()))?.unwrap();
+                    row.extra.insert("yoloMode".into(), json!(false));
+                    row.extra
+                        .insert("nativeRoleGuidance".into(), json!(old_role));
+                    let versions =
+                        json!({"roleSkill":role_version,"progressFile":progress_version});
+                    row.extra.insert(
+                        "preparedContext".into(),
+                        json!({"epoch":["fake-thread-0",0],"versions":versions}),
+                    );
+                    AgentRepository::put(tx, &row)?;
+                    // The context of the last delivered turn, as live leads hold it.
+                    preparation::ensure_context_tables(tx)
+                        .map_err(|error| StoreError::SchemaMismatch(error.to_string()))?;
+                    tx.execute(
+                        "INSERT INTO runtime_context_manifests(agent,thread_id,compactions,sequence,event_id,record) VALUES(?1,'fake-thread-0',0,1,'old-turn',?2)",
+                        rusqlite::params![
+                            record_id,
+                            json!({"epoch":["fake-thread-0",0],"versions":versions,"sequence":1})
+                                .to_string()
+                        ],
+                    )?;
+                    Ok(())
+                })
+                .await
+        })
+        .await
+        .unwrap();
+    let mut peer = Peer::new();
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    state.wake(&worker).await;
+    let resume = peer.write("thread/resume").await;
+    let instructions = resume["params"]["developerInstructions"]
+        .as_str()
+        .expect("developer instructions");
+    assert!(
+        instructions.contains(old_role),
+        "the frozen role text is kept"
+    );
+    assert!(
+        !instructions.contains("Your progress file is"),
+        "no progress-file guidance is sent"
+    );
+    assert!(
+        resume["params"]["config"]
+            .get("sandbox_workspace_write.writable_roots")
+            .is_none(),
+        "the progress folder is no longer a writable root"
+    );
+    peer.reply(&resume, json!({"thread":{"id":"fake-thread-0"}}))
+        .await;
+    worker_barrier(&worker).await;
+    assert_eq!(
+        state.record().await["error"],
+        Value::Null,
+        "the old lead resumes its thread"
+    );
+    let retired = format!("[Studio progress file retired]\n{PROGRESS_FILE_RETIRED_NOTICE}");
+    let start = peer.write("turn/start").await;
+    let text = start["params"]["input"][0]["text"]
+        .as_str()
+        .expect("turn text");
+    assert_eq!(text.matches(&retired).count(), 1, "{text}");
+    assert_eq!(
+        start["params"]["sandboxPolicy"]["writableRoots"],
+        json!([state.root.to_str().expect("UTF-8 root")]),
+        "the turn may write only its cwd"
+    );
+    peer.accepted(&start).await;
+    assert_eq!(state.event_status("input").await, "delivered");
+    peer.completed().await;
+    state.enqueue("second").await;
+    state.wake(&worker).await;
+    let next = peer.write("turn/start").await;
+    let text = next["params"]["input"][0]["text"]
+        .as_str()
+        .expect("second turn text");
+    assert!(
+        !text.contains("[Studio progress file"),
+        "the notice is delivered once: {text}"
+    );
+    peer.accepted(&next).await;
+    assert_eq!(
+        std::fs::read_to_string(&file).expect("old progress file remains"),
+        "# Old status\n",
+        "Studio never changes or deletes the old file"
+    );
+    worker.shutdown().await.unwrap();
+}
+
 /// A cwd that moved to another folder after the resume request was written
 /// still makes the reply stale, and the stored error names that check.
 #[tokio::test]

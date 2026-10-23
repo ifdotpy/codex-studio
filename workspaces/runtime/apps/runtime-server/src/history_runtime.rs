@@ -382,7 +382,12 @@ impl HistoryRuntime {
             .unzip())
     }
 
-    async fn step(&mut self, actors: &[Value], clock: HistoryClock) -> Result<bool, HistoryError> {
+    async fn step(
+        &mut self,
+        row_ids: &[i64],
+        actors: &[Value],
+        clock: HistoryClock,
+    ) -> Result<bool, HistoryError> {
         let accounts = Arc::clone(&self.accounts);
         let profile = move |account_key: &str| {
             let snapshot = accounts
@@ -405,7 +410,12 @@ impl HistoryRuntime {
         self.collector
             .step(
                 &self.store,
-                actors,
+                |row| {
+                    row_ids
+                        .binary_search(&row)
+                        .ok()
+                        .and_then(|index| actors.get(index))
+                },
                 profile,
                 clock,
                 Arc::clone(&self.cancelled),
@@ -494,11 +504,16 @@ impl HistoryRuntime {
                     .as_ref()
                     .map_or_else(|| history_clock(&runtime), |tick| tick.clock);
                 let completion = manual_tick.map(|tick| tick.completed);
-                let actors = HistoryRuntime::read_roster(&runtime.store, &BTreeMap::new())
-                    .await
-                    .map(|(_, actors)| actors);
+                let actors = HistoryRuntime::read_roster(&runtime.store, &BTreeMap::new()).await;
                 let result = match actors {
-                    Ok(actors) => runtime.step(&actors, clock).await,
+                    Ok((row_ids, actors)) => match runtime
+                        .collector
+                        .schedule
+                        .refresh_ordered(&row_ids, &actors)
+                    {
+                        Ok(()) => runtime.step(&row_ids, &actors, clock).await,
+                        Err(error) => Err(error.into()),
+                    },
                     Err(error) => Err(error),
                 };
                 if let Some(completed) = completion {
@@ -569,7 +584,10 @@ async fn run_event_driven_with_wake(
     let (mut roster_row_ids, actors) =
         HistoryRuntime::read_roster(&runtime.store, &runtime.settled).await?;
     let mut roster = Arc::new(actors);
-    runtime.collector.schedule.refresh(&roster)?;
+    runtime
+        .collector
+        .schedule
+        .refresh_ordered(&roster_row_ids, &roster)?;
     #[cfg(test)]
     wake.initialized.notify_one();
 
@@ -705,14 +723,17 @@ async fn run_event_driven_with_wake(
         if roster_full {
             let (next_row_ids, next_actors) =
                 HistoryRuntime::read_roster(&runtime.store, &runtime.settled).await?;
-            runtime.collector.schedule.refresh(&next_actors)?;
+            runtime
+                .collector
+                .schedule
+                .refresh_ordered(&next_row_ids, &next_actors)?;
             roster_row_ids = next_row_ids;
             roster = Arc::new(next_actors);
         } else if roster_changed {
             let row_ids = roster_rows.into_iter().collect::<Vec<_>>();
             let changes = read_roster_rows(&runtime.store, row_ids, &runtime.settled).await?;
+            runtime.collector.schedule.update_rows(&changes)?;
             apply_roster_rows(Arc::make_mut(&mut roster), &mut roster_row_ids, changes);
-            runtime.collector.schedule.refresh(&roster)?;
         }
 
         if retry_at.is_some_and(|deadline| tokio::time::Instant::now() < deadline) {
@@ -729,12 +750,10 @@ async fn run_event_driven_with_wake(
 
         if runtime.collector.schedule.has_pending() {
             let clock = history_clock(&runtime);
-            let actors = Arc::clone(&roster);
             #[cfg(test)]
             wake.step_attempts
                 .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-            let result = runtime.step(&actors, clock).await;
-            drop(actors);
+            let result = runtime.step(&roster_row_ids, &roster, clock).await;
             if result.is_ok() {
                 retire_settled(
                     &mut runtime,
@@ -946,6 +965,7 @@ fn retire_settled(runtime: &mut HistoryRuntime, actors: &mut Vec<Value>, row_ids
         let actor = &actors[index];
         if !actor["deletedAt"].is_null() && runtime.collector.schedule.settled(actor) {
             let id = actor["id"].as_str().unwrap_or_default().to_owned();
+            runtime.collector.schedule.remove(&id);
             runtime.settled.insert(id, actor["deletedAt"].clone());
             actors.remove(index);
             row_ids.remove(index);

@@ -1,4 +1,3 @@
-use crate::prepared_python_support as python_test_support;
 use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
 use studio_runtime_providers::Method;
@@ -54,27 +53,10 @@ async fn restart_at_each_control_transport_boundary_never_resends_an_uncertain_m
     let cwd = root.path().join("cwd");
     std::fs::create_dir(&template).expect("template");
     std::fs::create_dir(&cwd).expect("cwd");
-    let output = std::process::Command::new(python_test_support::prepared_python(
-        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
-    ))
-    .args([
-        "-B",
-        concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/tests/claude_runtime/controls_oracle.py"
-        ),
-        "--store-template",
-    ])
-    .arg(&template)
-    .arg("--cwd")
-    .arg(&cwd)
-    .output()
-    .expect("oracle");
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    let captured =
+        std::str::from_utf8(include_bytes!("wave7_p08_controls.json")).expect("fixture UTF8");
+    let captured = captured.replace("/fixture", &cwd.to_string_lossy());
+    crate::turn_fixtures::write_state(captured.as_bytes(), &template);
     for (action, mutation) in [
         ("settings", Method::ClaudeSettings),
         ("rollback", Method::ThreadRollback),
@@ -150,7 +132,13 @@ async fn restart_at_each_control_transport_boundary_never_resends_an_uncertain_m
                     assert_eq!(call.identity.scope.epoch, 2);
                     assert_eq!(
                         call.identity.scope.request_id.as_deref(),
-                        Some("control-one")
+                        if call.identity.method == mutation {
+                            Some("control-one")
+                        } else {
+                            // Idle reads use fresh identities; only the mutation
+                            // retains the caller's durable receipt identity.
+                            None
+                        }
                     );
                 }
                 let agent = AgentRepository::get(

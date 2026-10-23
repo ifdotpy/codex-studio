@@ -1,13 +1,9 @@
-use crate::prepared_python_support as python_test_support;
 use futures_util::FutureExt;
 use serde_json::{Value, json};
 use std::{
     cell::RefCell,
-    fs,
     future::Future,
-    path::Path,
     pin::Pin,
-    process::Command,
     sync::{
         Arc, Mutex, OnceLock,
         atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -44,54 +40,20 @@ fn observation() -> RecoveryObservation {
         completed_turn: None,
     }
 }
-#[allow(clippy::disallowed_methods)]
 fn fixture() -> tempfile::TempDir {
-    static TEMPLATE: OnceLock<Vec<(std::ffi::OsString, Vec<u8>)>> = OnceLock::new();
-    let files = TEMPLATE.get_or_init(|| {
-        let root = tempfile::tempdir().expect("temporary state");
-        let output = Command::new(python())
-            .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/recovery/state.py"))
-            .arg(root.path())
-            .output()
-            .expect("seed");
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        fs::read_dir(root.path())
-            .expect("fixture files")
-            .map(|entry| {
-                let entry = entry.expect("file");
-                (entry.file_name(), fs::read(entry.path()).expect("bytes"))
-            })
-            .collect()
-    });
     let root = tempfile::tempdir().expect("temporary state");
-    for (name, bytes) in files {
-        fs::write(root.path().join(name), bytes).expect("clone fixture");
-    }
+    crate::recovery_fixtures::state(
+        root.path(),
+        include_str!("recovery/canvas.sql"),
+        include_str!("recovery/analytics.sql"),
+    );
     root
 }
-fn python() -> std::path::PathBuf {
-    python_test_support::prepared_python(
-        &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
-    )
-}
-#[allow(clippy::disallowed_methods)]
 fn corpus() -> &'static Value {
     static CORPUS: OnceLock<Value> = OnceLock::new();
     CORPUS.get_or_init(|| {
-        let output = Command::new(python())
-            .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/wave7_p07_fixtures/oracle.py"))
-            .output()
-            .expect("oracle");
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        serde_json::from_slice(&output.stdout).expect("oracle output")
+        serde_json::from_str(include_str!("wave7_p07_fixtures/expected.json"))
+            .expect("frozen recovery expectations")
     })
 }
 async fn seed(store: &RuntimeStore, agent: &Value) {

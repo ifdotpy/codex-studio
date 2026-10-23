@@ -2135,7 +2135,6 @@ html body #root:has(.terminal-dock) {
     .conversation-navigation,
     .room-footer,
     #composer,
-    .agent-panel,
     .usage-footer,
     .message-queue,
     .conversation-results

@@ -17,7 +17,7 @@ test("hidden visual rows stop timers and rate renders and resume current values"
     import TokenRate from '/src/components/TokenRate.tsx';
     import ReasoningDuration from '/src/components/conversation/transcript/ReasoningDuration.tsx';
     import ChatStatus from '/src/components/agents/ChatStatus.tsx';
-    import {receiveTokenRate,workerRateKey,configureTokenRateStream} from '/src/usage/tokenRate.ts';
+    import {receiveWorkspaceTokenRates,watchTeamTokenRates,configureTokenRateStream} from '/src/usage/tokenRate.ts';
     import '/src/visual-activity.css';
     import '/src/components/team-navigation.css';
     const e=React.createElement;
@@ -27,8 +27,9 @@ test("hidden visual rows stop timers and rate renders and resume current values"
       window.rateInterests.add(listener);
       return ()=>window.rateInterests.delete(listener);
     });
-    window.rate=(id,value)=>receiveTokenRate(id,{data:JSON.stringify({turnId:'turn',active:true,rate:value,outputTokens:100})});
-    window.workerRate=value=>window.rate(workerRateKey('team','worker'),value);
+    const records=new Map();
+    window.rate=(id,value)=>{records.set(id,{agentId:id,rootId:id==='worker'?'team':id,turnId:'turn',active:true,estimated:false,rate:value,outputTokens:100});receiveWorkspaceTokenRates({records:[...records.values()]});};
+    window.workerRate=value=>window.rate('worker',value);
     for(const id of ['near','far','closed'])window.rate(id,20);
     const card=(id,reason=true)=>e(React.Profiler,{id,onRender:()=>window.commits[id]=(window.commits[id]||0)+1},
       e('div',{id,className:'card'},

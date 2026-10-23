@@ -342,12 +342,8 @@ Server to window: the request record above. `/api/answer` returns `openUrl` for 
 
 Run them one at a time:
 
-```sh
-python3 -B -m unittest discover -s workspaces/runtime/apps/vm-guest -p test_browser_bridge.py -v
-python3 -B workspaces/runtime/apps/server/src/test-server.py --filter test_codex_browser_bridge
-pnpm --filter codex-agents-web exec vitest run --config vitest.unit.config.ts src/components/questions
-pnpm --filter codex-agents-web exec playwright test --config playwright.config.ts --project=client tests/questions/browser-open-approval-ui.spec.mjs
-```
+The former Python backend command has been removed. See [testing](testing.md)
+for current Rust checks.
 
 What each check proves:
 

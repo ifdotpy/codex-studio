@@ -387,13 +387,6 @@ export function useServerDiscovery(
         requestId: crypto.randomUUID(),
       });
     },
-    replaceServer: (oldServerId: string, newServerId: string) =>
-      run({
-        action: "replace_server",
-        oldServerId,
-        newServerId,
-        requestId: crypto.randomUUID(),
-      }),
     allowAgain: (id: string) => {
       void run({
         action: "unrevoke",

@@ -1,6 +1,5 @@
 //! Python-produced snapshots exercised through the transaction consumer interfaces.
 
-use crate::prepared_python_support;
 use rusqlite::params;
 use serde_json::{Value, json};
 use std::{fs, path::PathBuf, process::Command};
@@ -16,24 +15,20 @@ struct Fixture {
     data: Value,
 }
 impl Fixture {
-    #[allow(clippy::disallowed_methods)]
     fn new() -> Self {
         let root = tempfile::tempdir().expect("temporary oracle root");
         let template = root.path().join("template");
-        let python = prepared_python_support::prepared_python(
-            &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
+        crate::recovery_fixtures::state(
+            &template,
+            include_str!("relocation/canvas.sql"),
+            include_str!("relocation/analytics.sql"),
         );
-        let output = Command::new(python)
-            .arg(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/relocation/oracle.py"))
-            .arg(&template)
-            .output()
-            .expect("isolated oracle starts");
-        assert!(
-            output.status.success(),
-            "oracle failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        let data = serde_json::from_slice(&output.stdout).expect("complete Python oracle output");
+        let corpus = if full() {
+            include_str!("relocation/oracle-full.json")
+        } else {
+            include_str!("relocation/oracle.json")
+        };
+        let data = serde_json::from_str(corpus).expect("frozen relocation corpus");
         Self {
             root,
             template,
@@ -865,23 +860,6 @@ async fn relocation_process_stop_child() {
         .await
         .expect("commit before process loss");
     std::process::exit(0);
-}
-
-#[test]
-#[allow(clippy::disallowed_methods)]
-fn oracle_guard_rejects_content_and_metadata_before_io() {
-    let output = Command::new(prepared_python_support::prepared_python(
-        &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
-    ))
-    .arg(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/relocation/oracle.py"))
-    .arg("--guard-self-test")
-    .output()
-    .expect("guard self-test starts");
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
 }
 
 #[tokio::test]

@@ -31,7 +31,7 @@ pub trait GuestSpaceProbe: Send + Sync {
     fn free_bytes(&self, path: &Path) -> std::io::Result<u64>;
 }
 
-struct HostGuestSpaceProbe;
+pub(crate) struct HostGuestSpaceProbe;
 
 impl GuestSpaceProbe for HostGuestSpaceProbe {
     fn free_bytes(&self, path: &Path) -> std::io::Result<u64> {
@@ -209,6 +209,16 @@ fn guest_write_preflight(
     ) {
         return Ok(());
     }
+    require_agent_free_space(vm_state_dir, space_probe)
+}
+
+/// The free host disk space that a VM write or a VM start needs
+/// (`CODEX_WORKSPACE_AGENT_MIN_FREE_BYTES`, default 5 GiB).
+#[cfg(unix)]
+pub(crate) fn require_agent_free_space(
+    vm_state_dir: &Path,
+    space_probe: &dyn GuestSpaceProbe,
+) -> Result<(), GuestError> {
     let required = match std::env::var(AGENT_MIN_FREE_BYTES_ENV) {
         Ok(value) => value
             .parse::<u64>()

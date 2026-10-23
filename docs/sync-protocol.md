@@ -10,7 +10,7 @@ remain separate from the stream transport version.
 The server sends small typed messages identifying changed resources. A subscribed
 consumer reads that resource once after an initial notification, a real change,
 or reconnection. A quiet interface sends no background state requests. This
-covers panels, queue and receipts, terminals, accounts and login status, models,
+covers queue and receipts, terminals, accounts and login status, models,
 limits and costs, tasks, workspace, desktop status, worktree sizes, transcripts,
 rooms, drafts and voice records. User actions, media transport, and recovery of
 an already accepted write retain their own request identities and lifecycles.
@@ -133,21 +133,5 @@ baseline. Arbitrary external SQL writes are not supported event sources.
 Worktree size notifications report completed measurements. The scanner wakes
 on a request, rather than scanning on a timer. A cached size is not evidence
 that arbitrary external filesystem writes have been detected: repository trees
-are not recursively watched by the progress observer. The response's measurement
+are not recursively watched. The response's measurement
 time identifies the age of the returned result.
-
-### Progress files and layout measurements
-
-An explicit native filesystem observer watches only the progress file belonging
-to an actively subscribed panel. Watching its parent catches atomic replacement,
-creation and deletion, but events for other names are ignored. Reads retain the
-existing path, symlink and size checks. Content/revision changes invalidate the
-panel. The last unsubscribe removes the watch. The observer does not watch
-repositories, SQLite files, logs or `PROGRESS.layout.json`, and does not silently
-switch to filesystem polling.
-
-Layout measurements are sent when the actual measurement changes. They do not
-renew themselves on a timer; an old measurement may become unmeasured under the
-existing freshness policy. The layout response schema accepts the stored
-per-client report shape, whose revision may be absent, while the top-level
-response retains its current file revision.

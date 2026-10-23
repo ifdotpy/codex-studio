@@ -597,7 +597,9 @@ impl AdapterTask {
     /// Open a running child started with one of the launch's earlier commands
     /// with that command, so the supervisor reattaches it instead of refusing
     /// different launch settings. Health reports each active handle's launch
-    /// signature; the supervisor holds at most `MAX_CHILDREN` of them.
+    /// signature; the supervisor holds at most `MAX_CHILDREN` of them. Only
+    /// `id` and `signature` are read, so a supervisor of an earlier release
+    /// that outlives a backend install is served the same way.
     async fn adopt_reattach_command<S: AsyncRead + AsyncWrite + Unpin>(
         &mut self,
         rpc: &mut Rpc<S>,

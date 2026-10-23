@@ -1,12 +1,7 @@
-//! Scripted provider consumer: real SQLite and Python-written actors, no provider.
+//! Scripted provider consumer with real SQLite and frozen legacy actor records.
 #![allow(clippy::unwrap_used)]
-use crate::prepared_python_support as prepared_python;
 use serde_json::{Value, json};
-use std::{
-    path::PathBuf,
-    process::{Command, Stdio},
-    sync::OnceLock,
-};
+use std::sync::OnceLock;
 use studio_runtime_providers::{Frame, Method, RequestFrame, RequestId, ResponseBody};
 use studio_runtime_services::provider_callbacks::*;
 use studio_runtime_store::RuntimeStore;
@@ -15,52 +10,26 @@ type CaseFuture = std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>
 type Case = (&'static str, fn() -> CaseFuture);
 
 struct Template {
-    files: prepared_python::StateTemplate,
     value: Value,
 }
 fn template() -> &'static Template {
     static TEMPLATE: OnceLock<Template> = OnceLock::new();
-    TEMPLATE.get_or_init(|| {
-        let scratch = tempfile::tempdir().unwrap();
-        let script =
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/provider_callbacks/oracle.py");
-        let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src");
-        let environment = prepared_python::IsolatedTestEnvironment::new();
-        let mut command = Command::new(prepared_python::prepared_python(&source));
-        environment.apply(&mut command);
-        command
-            .arg(&script)
-            .arg(scratch.path())
-            .stdin(Stdio::null());
-        let output = prepared_python::output_with_timeout(
-            &mut command,
-            &script,
-            prepared_python::PYTHON_ORACLE_TIMEOUT,
-        )
-        .unwrap_or_else(|error| panic!("provider callbacks Python oracle: {error}"));
-        assert!(
-            output.status.success(),
-            "oracle: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        let value: Value = serde_json::from_slice(&output.stdout).unwrap();
-        Template {
-            files: prepared_python::StateTemplate::capture(&PathBuf::from(
-                value["template"].as_str().unwrap(),
-            )),
-            value,
-        }
+    TEMPLATE.get_or_init(|| Template {
+        value: serde_json::from_str(include_str!("provider_callbacks/expected.json"))
+            .expect("frozen callback expectations"),
     })
 }
+#[path = "provider_callbacks/fixture.rs"]
+mod frozen;
+
 async fn fixture() -> (
     tempfile::TempDir,
     std::sync::Arc<RuntimeStore>,
     CallbackContext,
 ) {
     let t = template();
-    let directory = tempfile::tempdir().unwrap();
-    t.files.write(directory.path());
-    let store = std::sync::Arc::new(RuntimeStore::open(Some(directory.path())).await.unwrap());
+    let (directory, store, _) = frozen::state().await;
+    let store = std::sync::Arc::new(store);
     let actor = &t.value["agents"][0];
     let context = CallbackContext {
         agent: actor["id"].as_str().unwrap().into(),
@@ -1096,40 +1065,34 @@ async fn provider_callbacks_python_visible_id_resolution() {
     }
 }
 
-async fn provider_callbacks_existing_python_card_uses_stored_identity() {
+#[tokio::test]
+async fn provider_callbacks_unjournaled_card_is_refused_without_writes() {
     let (_dir, store, context) = fixture().await;
     let card = &template().value["legacyCard"];
+    let id = card["id"].as_str().unwrap();
+    let read = || {
+        store
+            .test_reader()
+            .unwrap()
+            .query_row(
+                "SELECT record FROM runtime_requests WHERE id=?1",
+                [id],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap()
+    };
+    let before = read();
     let result = answer(
         &store,
         &context,
-        card["id"].as_str().unwrap(),
+        id,
         AnswerAuthority::User,
         &json!({"decision":"decline"}),
         20.0,
     )
-    .await
-    .unwrap();
-    assert_eq!(
-        result.identity.rpc_id,
-        serde_json::from_value(card["rpcId"].clone()).unwrap()
-    );
-    assert_eq!(body(&result), &json!({"decision":"decline"}));
-    delivery(&store, &result.identity, DeliveryOutcome::Submitted)
-        .await
-        .unwrap();
-    delivery(&store, &result.identity, DeliveryOutcome::Written)
-        .await
-        .unwrap();
-    let status: String = store
-        .test_reader()
-        .unwrap()
-        .query_row(
-            "SELECT json_extract(record,'$.status') FROM runtime_requests WHERE id=?1",
-            [card["id"].as_str().unwrap()],
-            |r| r.get(0),
-        )
-        .unwrap();
-    assert_eq!(status, "answered");
+    .await;
+    assert!(matches!(result, Err(CallbackError::Stale)));
+    assert_eq!(read(), before);
 }
 
 #[path = "provider_callbacks/review.rs"]
@@ -1185,9 +1148,6 @@ async fn provider_callbacks_corpus() {
         }),
         ("python_visible_id_resolution", || {
             Box::pin(provider_callbacks_python_visible_id_resolution())
-        }),
-        ("existing_python_card_uses_stored_identity", || {
-            Box::pin(provider_callbacks_existing_python_card_uses_stored_identity())
         }),
         ("review regressions", || {
             Box::pin(review_regressions::run_corpus())

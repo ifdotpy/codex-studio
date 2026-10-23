@@ -615,9 +615,7 @@ async fn workspace_tasks(
                     .into_iter()
                     .take(limit)
                     .map(|row| {
-                        let record = WorkspaceViewsRepository::task(connection, &row.id)
-                            .map_err(map_store_error)?
-                            .ok_or_else(|| invalid_stored("runtime_tasks", &row.id))?;
+                        let record = row.decode(connection).map_err(map_store_error)?;
                         let mut summary = record;
                         if let Some(record) = summary.as_object_mut() {
                             record.remove("tail");
@@ -675,6 +673,65 @@ mod tests {
     use axum::http::StatusCode;
     use axum::response::IntoResponse;
     use studio_runtime_store::StoreError;
+
+    #[tokio::test]
+    async fn task_page_http_keeps_summary_and_ignores_invalid_lookahead() {
+        use axum::body::{Body, to_bytes};
+        use axum::extract::ConnectInfo;
+        use axum::http::Request;
+        use serde_json::{Value, json};
+        use std::sync::Arc;
+        use studio_runtime_store::{RuntimeStore, StoreError};
+        use tower::ServiceExt;
+
+        let root = tempfile::tempdir().expect("temporary runtime");
+        let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
+        store.transaction_with(|tx| {
+            tx.execute("INSERT INTO runtime_agents VALUES('agent',?1)", [json!({"id":"agent","rootId":"agent","epoch":0,"status":"idle"}).to_string()])?;
+            for (id, created) in [("a", 1), ("b", 2), ("c", 3)] {
+                tx.execute("INSERT INTO runtime_tasks VALUES(?1,?2)", (id, json!({"id":if id == "a" { "wrong" } else { id },"agent":"agent","created":created,"tail":"large tail","arguments":{},"error":"detail"}).to_string()))?;
+            }
+            Ok::<_, StoreError>(())
+        }).await.expect("seed");
+        let state = crate::HttpState::new(
+            "fixture-token".into(),
+            "fixture".into(),
+            store.root().to_string_lossy().into(),
+            49171,
+            None,
+            Some(store),
+            None,
+        );
+        let app = crate::router(state).expect("router");
+        let request = Request::builder()
+            .uri("/api/workspace/tasks?agent=agent&limit=2")
+            .header("host", "127.0.0.1:49171")
+            .header("x-canvas-token", "fixture-token")
+            .header(crate::API_SCHEMA_HASH_HEADER, crate::api_schema_hash())
+            .extension(ConnectInfo(
+                "127.0.0.1:12345"
+                    .parse::<std::net::SocketAddr>()
+                    .expect("address"),
+            ))
+            .body(Body::empty())
+            .expect("request");
+        let response = app.oneshot(request).await.expect("response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let value: Value = serde_json::from_slice(&bytes).expect("JSON");
+        assert_eq!(value["tasks"][0]["id"], "c");
+        assert_eq!(value["tasks"][1]["id"], "b");
+        assert_eq!(value["hasMore"], true);
+        assert_eq!(value["nextBefore"], json!({"created":2,"id":"b"}));
+        assert_eq!(value["cursor"], json!({"updated":3.0,"id":"c"}));
+        for task in value["tasks"].as_array().expect("tasks") {
+            assert!(task.get("tail").is_none());
+            assert!(task.get("arguments").is_none());
+            assert!(task.get("error").is_none());
+        }
+    }
 
     #[test]
     fn workspace_store_mapping_keeps_database_failures_internal() {

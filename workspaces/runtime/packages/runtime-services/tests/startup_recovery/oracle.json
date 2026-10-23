@@ -1,0 +1,658 @@
+{
+  "agents": [
+    {
+      "accountKey": "default",
+      "activeTools": [],
+      "activity": {
+        "at": 2000000000.0,
+        "phase": "thinking"
+      },
+      "agentMode": "multi",
+      "agentModeRevision": 0,
+      "agentModeSupported": true,
+      "approvalPolicy": "on-request",
+      "autoWake": false,
+      "compactions": 0,
+      "compactionsObservedOnly": false,
+      "complaintsPresented": [],
+      "concurrency": 32,
+      "contextUsage": null,
+      "created": 2000000000.0,
+      "cwd": "/FROZEN_STARTUP_STATE",
+      "cyberAccessProgram": "standard",
+      "daybreakEnabled": false,
+      "disconnectRecovery": {
+        "accountKey": "default",
+        "at": 2000000000.0,
+        "autoWake": true,
+        "epoch": 0,
+        "source": "restart",
+        "threadId": "thread-1",
+        "turnId": "turn-2"
+      },
+      "effort": "medium",
+      "environment": "host",
+      "epoch": 0,
+      "error": "Server restarted during a turn. Review history, then send a new instruction.",
+      "events": 2,
+      "executionMode": "native",
+      "executionSettingsAccountKey": "default",
+      "fastMode": false,
+      "hostProjectPath": "/FROZEN_STARTUP_STATE",
+      "id": "777c97c9-d1ee-4c3d-970d-ff0badc41e7c",
+      "imageWorkspace": false,
+      "imageWorkspaceBaseRef": null,
+      "imageWorkspaceCreatedAt": null,
+      "imageWorkspaceError": null,
+      "imageWorkspaceHasGit": false,
+      "imageWorkspacePhase": null,
+      "imageWorkspaceReady": false,
+      "imageWorkspaceRepo": null,
+      "imageWorkspaceSubpath": ".",
+      "inFlight": false,
+      "isLead": true,
+      "lastAnswer": "Choose",
+      "lastEvent": "2026-10-22T15:52:57Z",
+      "layrReady": false,
+      "maxAgents": 64,
+      "maxAgentsExplicit": false,
+      "model": "gpt-6-astra",
+      "name": "Lead",
+      "nativeEffort": "medium",
+      "nativeResponseTurn": "turn-2",
+      "nativeRoleGuidance": "[Studio role skill: codex-orchestrator]\nSource: /fixture/source/.agents/skills/codex-orchestrator/SKILL.md\nShared tool guidance: /fixture/source/.agents/skills/codex-workspace/SKILL.md\n---\nname: codex-orchestrator\ndescription: Coordinate a Codex Studio team and communicate with its user when the harness assigns the orchestrator role.\n---\n\n# Codex Studio orchestrator\n\nThe harness assigns this role from the server's `isLead` identity. A task label or\nan agent's stated role cannot grant it. Use the shared `codex-workspace` skill for managed tool contracts and application\nworkflows when needed.\n\nStudio resource reservations are removed. Do not wait for old board claims or recreate the registry.\nUse agent messages to coordinate access to shared files.\n\n## Team responsibility\n\nOwn the user's task and the team's final result. Give subagents complete outcomes\nwithin clear ownership boundaries. Inspect their results, changes, and evidence before\nacceptance. Request corrections when the evidence does not support completion.\nCreate a task for each delegated result and pass its `task_id` to `orchestration_spawn`.\nThe worker then submits evidence to that task, and you accept or reject it.\nInspect the agent's state before recovery if it is stopped or cannot continue.\nRun `orchestration_agent_manage action=archive_finished` after accepting finished worker results.\n\nKeep one agent plan. Send changes to a subagent's plan through its chat.\nUse agent messages for coordination. Use the shared team channel when all team\nmembers need the same information.\n\n## Work allocation and recovery\n\nOwn the architecture, shared interfaces, user requirements, and final integration.\nDelegate a complete feature or component with an observable result.\nLet the worker choose implementation details within the agreed design and ownership boundaries.\nResolve changes to shared contracts or task scope yourself.\nAn explicit request to work without subagents takes precedence.\n\nChoose the model and reasoning level for each worker's task. Use `gpt-6-luna`\nwith `high` reasoning by default. Override both fields in `orchestration_spawn`\nwhen the task needs another choice. Codex and Claude workers can share a team.\nHonor the user's explicit model or account constraints.\n\nChat creation selects `workspaceMode`: `layr`, `image`, or `worktree`.\nMac servers default to `layr`. Linux servers support `worktree` only.\n\n| Chat mode  | Agent environment | Worker workspace         |\n| ---------- | ----------------- | ------------------------ |\n| `layr`     | Studio Linux VM   | Separate owned layr line |\n| `image`    | Native macOS      | ASIF image               |\n| `worktree` | Native host       | Git worktree             |\n\nWorkers inherit the chat mode. In a native chat, use `workspace` to select\n`image`, `worktree`, or deliberate `shared` edits. Image workspaces require macOS.\nA native reviewer uses the selected folder with read-only access.\nA layr reviewer uses a read-only line in the VM.\nUse the layr reference for VM state IDs, exact-state review, and acceptance.\nUse `server` with an absolute remote `cwd` for a native worker on a paired machine.\n\nDefine each implementation assignment with:\n\n- The required behavior and its actual caller or user flow.\n- The constraints, dependencies, and ownership boundaries.\n- The checks that can disprove completion, including relevant failure paths.\n- The authority to edit, commit, and integrate changes.\n\nInclude caller integration, relevant tests, and defect correction in the same assignment when ownership permits.\nKeep the worker responsible through review corrections and verification of the assigned result.\nIf another owner must integrate the change, name that dependency and the required acceptance evidence.\nDo not count an unused API or an isolated source change as a complete feature.\n\nChoose task size by independent responsibility and the cost of coordination.\nDo not divide work to meet a line count or worker count.\nKeep small fixes with the existing component owner, or make them yourself when that avoids a needless handoff.\nDo not create a new worker for each known edit or each review correction.\nBatch related corrections under the existing assignment and completion criteria.\nSplit work by technical layer only when separate ownership, dependencies, or verification justify the handoff.\nAvoid broad assignments that group unrelated subsystems without a common result or completion check.\nFor example, one worker can own the complete route display across model, transport, and UI.\n\nKeep independent work active while a build or external dependency is pending.\nAfter a worker result, review it and assign the next ready task when one exists.\nDetermine which tasks actually depend on the blocked build.\nUse the current registry to distinguish active, queued, completed, and failed agents.\nChoose team size from useful independent work and actual resource limits.\nHonor task-specific concurrency instructions. Give each active worker useful work\nwith clear completion criteria.\n\nUse the chat's current subagent parallelism limit from Studio context and status.\nThe lead does not consume that allowance. Zero means complete new work yourself;\ndo not create workers or resume worker turns. For a positive limit, size each\ndelegation batch to useful independent work and available slots. Keep future\nassignments on the task board instead of creating a large waiting worker pool.\nThe limit is a ceiling, not a target. When it changes, adjust subsequent\nassignments without interrupting accepted executions. If all slots are occupied,\ncontinue independent lead work or finish the turn and wait for completion events.\nDo not poll status or repeat a spawn to get around the queue. Only the user can\nchange this limit.\n\nIf workers stop unexpectedly, inspect their state, receipts, and saved results.\nResume remaining authorized work in the existing threads when possible. Report a\nharness defect if recovery cannot preserve their context. Follow the shared skill's\nrequest recovery rules before retrying any uncertain operation.\nBase reports of continued work on an active worker, command, or automatic continuation.\n\n## Coordination rules\n\n- Give each worker an explicit list of pre-authorized actions, for example a\n  merge into the integration branch or a one-time annotation.\n- Put decisions into the task (reject or update) or into `orchestration_send`,\n  not only into chat. A chat message can arrive late.\n- Give every shared branch and every shared file one owner. State who may merge\n  into an integration branch.\n- Give workers the folder that contains their task. Supported platforms copy\n  its Git root, or the folder itself outside Git, including uncommitted changes.\n  Other platforms use a Git worktree when possible, or the original folder.\n  New workers have read-only access until the image base is ready. Ask workers\n  to commit on a named branch. Integrate by reading the copy path or fetching\n  the branch, for example `git fetch <path> <branch>`.\n- Do not run two live verifications that change the same system state at the\n  same time. Schedule them, or give them independent criteria.\n\n## Decisions, quality, and progress\n\nMake routine design decisions within the user's task and project constraints.\nInspect existing code before introducing a replacement for an available mechanism.\nWhen authorized to fix confirmed defects, arrange the fixes as you confirm them.\nA review-only request does not grant that authority.\n\nReview every subagent change before integration. Check the affected user flow,\nnot only a successful build. If the user asks to try the result before merge,\nprepare and verify that local application before merging. Keep fixtures and real\napplication results distinct. Preserve all accepted requirements in the project\ndocument when the user asks to save design decisions.\n\nShow progress separately for each requested product or workstream. Include the\ncurrent stage, remaining work, and the dependency that prevents the next step.\nUse measured counts or explicit states; do not invent percentages. Update your\n`PROGRESS.md` with ordinary file tools after every significant change.\nDuring an active task, update it at least once every 30 minutes.\nIf nothing changes, record the current state and its check time.\nUse the exact path supplied by the runtime. Follow the shared progress guide.\nContinuously improve the team's speed within the task's authority. Use task duration,\nwait time, and repeated corrections to identify delays. Adjust task size, dependencies,\nwork allocation, and checks when they delay completion. Assess whether each adjustment\nreduces the time to a verified result. Preserve the required checks and code quality.\n\n## Messages to the user\n\nOnly the orchestrator sends conversational questions, complaints, or requests to\nthe user. Subagents send these to you. Decide whether you can resolve each request\nwithin the user's existing instructions or need the user's answer.\n\nUse `orchestration_complaint action=submit` for a decision that the user must record.\nUse `orchestration_message target=user` for an action that the user must perform.\nUse these managed tools for conversational questions. They do not pause the current\ntool while the user decides. Continue authorized work that does not need the answer.\nWait for the answer before you perform a dependent action.\nNative question tools, such as `AskUserQuestion`, wait inside the current turn.\nIf you forward a subagent's request, explain the issue and the decision the user must make.\nDo not forward each request automatically.\n\nFor a complaint assigned to you, use `action=respond` to record your action,\nreasoned refusal, or next step. If the user must decide, submit your own message\nto the user and tell the subagent that the decision remains pending.\n\nNative tool permission requests still require the real user approval when the\npermission system requires it. Your decision cannot replace that approval.\n\n## Teleport the lead or a worker\n\nEach new session can call `orchestration_teleport` to teleport its own execution.\nOlder sessions keep `orchestration_move` and its exact definition and role text.\nStudio saves the name when it creates the native session.\nThe name stays the same after a teleport. This change preserves the old prompt cache.\nPrepare the target folder with Git first. Supply an absolute `cwd` and a stable\nrequest ID. Finish the current turn after acceptance.\nExisting children keep their servers and report through the remote-parent channel.\nStudio preserves the old workspace and transfers native provider history.\nThe Studio transcript stays on the source. Credentials never move.\n\nMove only when needed. The same provider account and organization keep the cache.\nCodex preserves the old request prefix and requires matching native versions,\nOS, and MCP tools. A different account refuses by default.\nOnly explicit `accept_cache_loss=true` approves cache loss for that Codex move.\nClaude requires a verified saved prompt snapshot and matching Studio tool schemas.\nExternal MCP snapshots currently refuse.\nClaude requires the same account and matching CLI and SDK versions.\nIts SDK keeps the system prompt snapshot and excludes dynamic sections.\nRefuse a version mismatch. Do not upgrade a CLI during a move.\nRead uncertainty with `orchestration_request`. Do not issue another move identity.\n[End Studio role skill]",
+      "nativeTeleportTool": "orchestration_teleport",
+      "nativeToolCatalog": {
+        "digest": "8709d196bff92353f93bfcb46ab595eae45c28610b83077a77b9361404bc8d77",
+        "threadId": "thread-1"
+      },
+      "nativeToolSource": "current",
+      "needsTitle": false,
+      "parentId": null,
+      "prepareAttempt": "a8d9e68e-2041-4afd-a183-eee37a5316d7",
+      "preparedContext": {
+        "epoch": ["thread-1", 0],
+        "versions": {
+          "progressFile": "5ea10bda4b522c2ab8f4ea52",
+          "roleSkill": "7b2dc3aeeb5bbec678451fe6"
+        }
+      },
+      "profile": null,
+      "profileId": null,
+      "profileInstructions": "",
+      "prompt": "Persist a turn",
+      "provider": "codex",
+      "restartRecovery": {
+        "accountKey": "default",
+        "at": 2000000000.0,
+        "autoWake": true,
+        "epoch": 0,
+        "stage": "pending",
+        "startAttempt": {
+          "accountKey": "default",
+          "activeAtReservation": false,
+          "connectionId": "cdd0a7b5-7876-4a7f-9955-d1325a58ecdb",
+          "created": 2000000000.0,
+          "epoch": 0,
+          "events": ["777c97c9-d1ee-4c3d-970d-ff0badc41e7c:initial"],
+          "id": "0897d819-94be-44cd-930e-574c1c026bb7",
+          "nativeOperationId": "turn:777c97c9-d1ee-4c3d-970d-ff0badc41e7c:777c97c9-d1ee-4c3d-970d-ff0badc41e7c:initial:attempt:0897d819-94be-44cd-930e-574c1c026bb7",
+          "observedTurnId": "turn-2",
+          "settingsFixed": true,
+          "submitted": true,
+          "supervisorIdentity": null,
+          "threadId": "thread-1",
+          "turnId": "turn-2"
+        },
+        "threadId": "thread-1",
+        "turnId": "turn-2"
+      },
+      "reviewDefaults": {
+        "effort": null,
+        "model": null
+      },
+      "role": "orchestrator",
+      "rootId": "777c97c9-d1ee-4c3d-970d-ff0badc41e7c",
+      "sandbox": {
+        "type": "readOnly"
+      },
+      "status": "interrupted",
+      "subagentConcurrencyVersion": 2,
+      "supervisorRestore": {
+        "accountKey": "default",
+        "at": 2000000000.0,
+        "reason": "supervisor_mode_disabled",
+        "status": "not_restored"
+      },
+      "tail": "Choose",
+      "threadId": "thread-1",
+      "tokenBudget": null,
+      "tokensUsed": 0,
+      "turnEpoch": 0,
+      "turnId": "turn-2",
+      "usageResumeEnabled": true,
+      "workerBaseBehindMain": null,
+      "workerBaseCommit": null,
+      "workerBaseMainRef": null,
+      "workerBaseRef": null,
+      "workerDefaults": {
+        "daybreakEnabled": false,
+        "delegationDepth": 1,
+        "effort": "high",
+        "fastMode": false,
+        "model": "gpt-6-luna"
+      },
+      "workspaceBackend": null,
+      "workspaceInGit": false,
+      "workspaceMode": "worktree",
+      "workspaceModeExplicit": false,
+      "worktree": false,
+      "worktreeReady": false,
+      "worktreeWarning": null,
+      "yoloMode": true
+    }
+  ],
+  "events": [
+    {
+      "agent": "777c97c9-d1ee-4c3d-970d-ff0badc41e7c",
+      "created": 2000000000.0,
+      "epoch": 0,
+      "error": null,
+      "id": "777c97c9-d1ee-4c3d-970d-ff0badc41e7c:initial",
+      "kind": "user",
+      "status": "delivered",
+      "text": "Persist a turn",
+      "turn_id": "turn-2"
+    }
+  ],
+  "monitors": [
+    {
+      "activityAt": 2000000000.0,
+      "activityGeneration": 0,
+      "agent": "777c97c9-d1ee-4c3d-970d-ff0badc41e7c",
+      "bytes": 0,
+      "command": "printf running",
+      "configurationPending": false,
+      "created": 2000000000.0,
+      "cwd": "/FROZEN_STARTUP_STATE",
+      "epoch": 0,
+      "error": null,
+      "exitCode": null,
+      "id": "7476dd05-6094-5a65-9ba0-3007fab6be6b",
+      "interactive": false,
+      "livenessCommand": "",
+      "log": "/FROZEN_STARTUP_STATE/monitor-logs/7476dd05-6094-5a65-9ba0-3007fab6be6b.log",
+      "operation": {
+        "accountKey": "default",
+        "agent": "777c97c9-d1ee-4c3d-970d-ff0badc41e7c",
+        "connectionId": "cdd0a7b5-7876-4a7f-9955-d1325a58ecdb",
+        "epoch": 0,
+        "threadId": "thread-1"
+      },
+      "outputEventCount": 0,
+      "outputEventIds": [],
+      "outputEventSequence": 0,
+      "outputPatterns": [],
+      "reattachRecovery": {
+        "accountKey": "default",
+        "epoch": 0,
+        "startedAt": 2000000000.0,
+        "status": "running"
+      },
+      "requestId": "running-monitor",
+      "ruleId": null,
+      "stallTimeoutSeconds": 1800,
+      "stallWakeGeneration": -1,
+      "status": "running",
+      "successExitCodes": [0],
+      "tail": "",
+      "timeout_ms": 3600000,
+      "turnId": "turn-2",
+      "wakeOn": "exit"
+    },
+    {
+      "activityAt": 2000000000.0,
+      "activityGeneration": 0,
+      "agent": "777c97c9-d1ee-4c3d-970d-ff0badc41e7c",
+      "bytes": 0,
+      "command": "printf needs approval",
+      "created": 2000000000.0,
+      "cwd": "/FROZEN_STARTUP_STATE",
+      "epoch": 0,
+      "exitCode": null,
+      "id": "ef833e85-ebe4-5750-a66f-ccf85ea2043c",
+      "interactive": false,
+      "livenessCommand": "",
+      "log": "/FROZEN_STARTUP_STATE/monitor-logs/ef833e85-ebe4-5750-a66f-ccf85ea2043c.log",
+      "outputEventCount": 0,
+      "outputEventIds": [],
+      "outputEventSequence": 0,
+      "outputPatterns": [],
+      "requestId": "pending-monitor",
+      "ruleId": null,
+      "stallTimeoutSeconds": 1800,
+      "stallWakeGeneration": -1,
+      "status": "approval",
+      "successExitCodes": [0],
+      "tail": "",
+      "timeout_ms": 3600000,
+      "turnId": "turn-2",
+      "wakeOn": "exit"
+    },
+    {
+      "activityAt": 2000000000.0,
+      "activityGeneration": 0,
+      "agent": "777c97c9-d1ee-4c3d-970d-ff0badc41e7c",
+      "bytes": 0,
+      "command": "printf running",
+      "configurationPending": false,
+      "created": 2000000000.0,
+      "cwd": "/FROZEN_STARTUP_STATE",
+      "epoch": 0,
+      "error": null,
+      "exitCode": null,
+      "id": "rule-linked-monitor",
+      "interactive": false,
+      "livenessCommand": "",
+      "log": "/FROZEN_STARTUP_STATE/monitor-logs/7476dd05-6094-5a65-9ba0-3007fab6be6b.log",
+      "operation": {
+        "accountKey": "default",
+        "agent": "777c97c9-d1ee-4c3d-970d-ff0badc41e7c",
+        "connectionId": "cdd0a7b5-7876-4a7f-9955-d1325a58ecdb",
+        "epoch": 0,
+        "threadId": "thread-1"
+      },
+      "outputEventCount": 0,
+      "outputEventIds": [],
+      "outputEventSequence": 0,
+      "outputPatterns": [],
+      "reattachRecovery": {
+        "accountKey": "default",
+        "epoch": 0,
+        "startedAt": 2000000000.0,
+        "status": "running"
+      },
+      "requestId": "running-monitor",
+      "ruleId": "rule-1",
+      "stallTimeoutSeconds": 1800,
+      "stallWakeGeneration": -1,
+      "status": "running",
+      "successExitCodes": [0],
+      "tail": "",
+      "timeout_ms": 3600000,
+      "turnId": "turn-2",
+      "wakeOn": "exit"
+    }
+  ],
+  "requests": [
+    {
+      "agent": "777c97c9-d1ee-4c3d-970d-ff0badc41e7c",
+      "createdAt": 2000000000.0,
+      "epoch": 0,
+      "id": "777c97c9-d1ee-4c3d-970d-ff0badc41e7c:question:retained-question",
+      "method": "agent/asyncQuestion",
+      "params": {
+        "questions": [
+          {
+            "id": "0",
+            "isSecret": false,
+            "multiSelect": false,
+            "options": [
+              {
+                "label": "yes"
+              },
+              {
+                "label": "no"
+              }
+            ],
+            "question": "Keep this question"
+          }
+        ]
+      },
+      "status": "pending",
+      "turnId": "turn-2"
+    },
+    {
+      "accountKey": "default",
+      "agent": "777c97c9-d1ee-4c3d-970d-ff0badc41e7c",
+      "connectionId": null,
+      "createdAt": 2000000000.0,
+      "epoch": 0,
+      "id": "8a0fd963-9799-4fd8-9201-d7e7cd13744f",
+      "method": "item/commandExecution/requestApproval",
+      "params": {
+        "command": "printf safe",
+        "itemId": "approval-item",
+        "threadId": "thread-1",
+        "turnId": "turn-2"
+      },
+      "rpcId": "provider-approval",
+      "status": "expired",
+      "supervisor": null
+    },
+    {
+      "accountKey": "default",
+      "agent": null,
+      "connectionId": "cdd0a7b5-7876-4a7f-9955-d1325a58ecdb",
+      "createdAt": 2000000000.0,
+      "id": "beb71d90-e19c-4a9e-bad5-a017675f4492",
+      "method": "mcpServer/elicitation/request",
+      "params": {
+        "mode": "form",
+        "requestedSchema": {
+          "properties": {}
+        }
+      },
+      "rpcId": "orphan-request",
+      "status": "expired"
+    },
+    {
+      "agent": "777c97c9-d1ee-4c3d-970d-ff0badc41e7c",
+      "createdAt": 2000000000.0,
+      "id": "fa930719-b220-4226-96cd-1e175ce13b0c",
+      "method": "monitor/approve",
+      "params": {
+        "command": "printf needs approval",
+        "cwd": "/FROZEN_STARTUP_STATE",
+        "monitorId": "ef833e85-ebe4-5750-a66f-ccf85ea2043c"
+      },
+      "status": "pending"
+    }
+  ],
+  "sync_entities": [
+    {
+      "collection": "agent",
+      "deleted": 0,
+      "id": "777c97c9-d1ee-4c3d-970d-ff0badc41e7c",
+      "payload": {
+        "collection": "agent",
+        "id": "777c97c9-d1ee-4c3d-970d-ff0badc41e7c",
+        "value": {
+          "accountKey": "default",
+          "activity": {
+            "at": 2000000000.0,
+            "phase": "thinking"
+          },
+          "agentMode": "multi",
+          "agentModeRevision": 0,
+          "agentModeSupported": true,
+          "autoWake": false,
+          "canSend": true,
+          "commandProgress": [
+            {
+              "lastOutputLine": "",
+              "monitorId": "7476dd05-6094-5a65-9ba0-3007fab6be6b",
+              "stage": "printf running",
+              "startedAt": 2000000000.0
+            },
+            {
+              "lastOutputLine": "",
+              "monitorId": "rule-linked-monitor",
+              "stage": "printf running",
+              "startedAt": 2000000000.0
+            }
+          ],
+          "compactions": 0,
+          "concurrency": 32,
+          "contextUsage": null,
+          "created": 2000000000.0,
+          "cwd": "/FROZEN_STARTUP_STATE",
+          "cyberAccessProgram": "standard",
+          "daybreakEnabled": false,
+          "effort": "medium",
+          "empty": false,
+          "environment": "host",
+          "epoch": 0,
+          "error": "Server restarted during a turn. Review history, then send a new instruction.",
+          "executionMode": "native",
+          "fastMode": false,
+          "hostProjectPath": "/FROZEN_STARTUP_STATE",
+          "id": "777c97c9-d1ee-4c3d-970d-ff0badc41e7c",
+          "imageWorkspace": false,
+          "imageWorkspaceBaseRef": null,
+          "imageWorkspaceCreatedAt": null,
+          "imageWorkspaceError": null,
+          "imageWorkspaceHasGit": false,
+          "imageWorkspacePhase": null,
+          "imageWorkspaceReady": false,
+          "imageWorkspaceRepo": null,
+          "imageWorkspaceSubpath": ".",
+          "inFlight": false,
+          "isLead": true,
+          "kind": "agent",
+          "lastAnswer": "Choose",
+          "lastEvent": "2026-10-22T15:52:57Z",
+          "launcherAlive": true,
+          "layrReady": false,
+          "model": "gpt-6-astra",
+          "name": "Lead",
+          "nextTurnSettingsSupported": true,
+          "parentId": null,
+          "provider": "codex",
+          "readStateSupported": true,
+          "reviewDefaults": {
+            "effort": null,
+            "model": null
+          },
+          "role": "orchestrator",
+          "rootId": "777c97c9-d1ee-4c3d-970d-ff0badc41e7c",
+          "serverId": "b44a8684bd59488da64b35c0805633ab",
+          "source": "managed",
+          "stall": null,
+          "startWait": null,
+          "status": "interrupted",
+          "subagentConcurrencyVersion": 2,
+          "tail": "Choose",
+          "threadId": "thread-1",
+          "tokensUsed": 0,
+          "turnId": "turn-2",
+          "workerDefaults": {
+            "daybreakEnabled": false,
+            "delegationDepth": 1,
+            "effort": "high",
+            "fastMode": false,
+            "model": "gpt-6-luna"
+          },
+          "workspaceBackend": null,
+          "workspaceMode": "worktree",
+          "worktree": false,
+          "yoloMode": true
+        }
+      }
+    },
+    {
+      "collection": "event",
+      "deleted": 0,
+      "id": "777c97c9-d1ee-4c3d-970d-ff0badc41e7c:initial",
+      "payload": {
+        "collection": "event",
+        "id": "777c97c9-d1ee-4c3d-970d-ff0badc41e7c:initial",
+        "value": {
+          "agent": "777c97c9-d1ee-4c3d-970d-ff0badc41e7c",
+          "created": 2000000000.0,
+          "error": null,
+          "id": "777c97c9-d1ee-4c3d-970d-ff0badc41e7c:initial",
+          "kind": "user",
+          "status": "delivered"
+        }
+      }
+    },
+    {
+      "collection": "monitor",
+      "deleted": 0,
+      "id": "7476dd05-6094-5a65-9ba0-3007fab6be6b",
+      "payload": {
+        "collection": "monitor",
+        "id": "7476dd05-6094-5a65-9ba0-3007fab6be6b",
+        "value": {
+          "agent": "777c97c9-d1ee-4c3d-970d-ff0badc41e7c",
+          "bytes": 0,
+          "command": "printf running",
+          "created": 2000000000.0,
+          "cwd": "/FROZEN_STARTUP_STATE",
+          "error": null,
+          "exitCode": null,
+          "id": "7476dd05-6094-5a65-9ba0-3007fab6be6b",
+          "interactive": false,
+          "log": "/FROZEN_STARTUP_STATE/monitor-logs/7476dd05-6094-5a65-9ba0-3007fab6be6b.log",
+          "ruleId": null,
+          "status": "running",
+          "tail": "",
+          "timeout_ms": 3600000
+        }
+      }
+    },
+    {
+      "collection": "monitor",
+      "deleted": 0,
+      "id": "ef833e85-ebe4-5750-a66f-ccf85ea2043c",
+      "payload": {
+        "collection": "monitor",
+        "id": "ef833e85-ebe4-5750-a66f-ccf85ea2043c",
+        "value": {
+          "agent": "777c97c9-d1ee-4c3d-970d-ff0badc41e7c",
+          "bytes": 0,
+          "command": "printf needs approval",
+          "created": 2000000000.0,
+          "cwd": "/FROZEN_STARTUP_STATE",
+          "exitCode": null,
+          "id": "ef833e85-ebe4-5750-a66f-ccf85ea2043c",
+          "interactive": false,
+          "log": "/FROZEN_STARTUP_STATE/monitor-logs/ef833e85-ebe4-5750-a66f-ccf85ea2043c.log",
+          "ruleId": null,
+          "status": "approval",
+          "tail": "",
+          "timeout_ms": 3600000
+        }
+      }
+    },
+    {
+      "collection": "monitor",
+      "deleted": 0,
+      "id": "rule-linked-monitor",
+      "payload": {
+        "collection": "monitor",
+        "id": "rule-linked-monitor",
+        "value": {
+          "agent": "777c97c9-d1ee-4c3d-970d-ff0badc41e7c",
+          "bytes": 0,
+          "command": "printf running",
+          "created": 2000000000.0,
+          "cwd": "/FROZEN_STARTUP_STATE",
+          "error": null,
+          "exitCode": null,
+          "id": "rule-linked-monitor",
+          "interactive": false,
+          "log": "/FROZEN_STARTUP_STATE/monitor-logs/7476dd05-6094-5a65-9ba0-3007fab6be6b.log",
+          "ruleId": "rule-1",
+          "status": "running",
+          "tail": "",
+          "timeout_ms": 3600000
+        }
+      }
+    },
+    {
+      "collection": "project",
+      "deleted": 0,
+      "id": "/FROZEN_STARTUP_STATE",
+      "payload": {
+        "collection": "project",
+        "id": "/FROZEN_STARTUP_STATE",
+        "value": {
+          "accountKey": "default",
+          "accountRevision": 1,
+          "created": 2000000000.0,
+          "homeServerId": "b44a8684bd59488da64b35c0805633ab",
+          "id": "/FROZEN_STARTUP_STATE",
+          "locations": [
+            {
+              "path": "/FROZEN_STARTUP_STATE",
+              "projectId": "/FROZEN_STARTUP_STATE",
+              "serverId": "b44a8684bd59488da64b35c0805633ab"
+            }
+          ],
+          "locationsRevision": 0,
+          "name": "startup",
+          "path": "/FROZEN_STARTUP_STATE"
+        }
+      }
+    },
+    {
+      "collection": "request",
+      "deleted": 0,
+      "id": "777c97c9-d1ee-4c3d-970d-ff0badc41e7c:question:retained-question",
+      "payload": {
+        "collection": "request",
+        "id": "777c97c9-d1ee-4c3d-970d-ff0badc41e7c:question:retained-question",
+        "value": {
+          "agent": "777c97c9-d1ee-4c3d-970d-ff0badc41e7c",
+          "createdAt": 2000000000.0,
+          "epoch": 0,
+          "id": "777c97c9-d1ee-4c3d-970d-ff0badc41e7c:question:retained-question",
+          "method": "agent/asyncQuestion",
+          "params": {
+            "questions": [
+              {
+                "id": "0",
+                "isSecret": false,
+                "multiSelect": false,
+                "options": [
+                  {
+                    "label": "yes"
+                  },
+                  {
+                    "label": "no"
+                  }
+                ],
+                "question": "Keep this question"
+              }
+            ]
+          },
+          "status": "pending",
+          "turnId": "turn-2"
+        }
+      }
+    },
+    {
+      "collection": "request",
+      "deleted": 1,
+      "id": "8a0fd963-9799-4fd8-9201-d7e7cd13744f",
+      "payload": {
+        "collection": "request",
+        "id": "8a0fd963-9799-4fd8-9201-d7e7cd13744f",
+        "value": {}
+      }
+    },
+    {
+      "collection": "request",
+      "deleted": 1,
+      "id": "beb71d90-e19c-4a9e-bad5-a017675f4492",
+      "payload": {
+        "collection": "request",
+        "id": "beb71d90-e19c-4a9e-bad5-a017675f4492",
+        "value": {}
+      }
+    },
+    {
+      "collection": "request",
+      "deleted": 0,
+      "id": "fa930719-b220-4226-96cd-1e175ce13b0c",
+      "payload": {
+        "collection": "request",
+        "id": "fa930719-b220-4226-96cd-1e175ce13b0c",
+        "value": {
+          "agent": "777c97c9-d1ee-4c3d-970d-ff0badc41e7c",
+          "createdAt": 2000000000.0,
+          "id": "fa930719-b220-4226-96cd-1e175ce13b0c",
+          "method": "monitor/approve",
+          "params": {
+            "command": "printf needs approval",
+            "cwd": "/FROZEN_STARTUP_STATE",
+            "monitorId": "ef833e85-ebe4-5750-a66f-ccf85ea2043c"
+          },
+          "status": "pending"
+        }
+      }
+    }
+  ]
+}

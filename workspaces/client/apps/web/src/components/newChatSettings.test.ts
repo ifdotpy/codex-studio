@@ -2,6 +2,7 @@ import { expect, test } from "vitest";
 import {
   defaultWorkspaceMode,
   isNewChatSettings,
+  settingsForNewChatRequest,
   settingsForNewChatAccount,
 } from "./newChatSettings";
 import { isServerCommand } from "../servers/navigation";
@@ -84,6 +85,20 @@ test("switching the lead account resets account-relative model choices", () => {
     worker_defaults: undefined,
     review_defaults: undefined,
   });
+});
+
+test("new project chat settings leave automatic account selection to the project", () => {
+  expect(
+    settingsForNewChatRequest({}, "default", false, "gpt-6-astra"),
+  ).toEqual({
+    model: "gpt-6-astra",
+  });
+});
+
+test("new chat settings retain an explicitly chosen account", () => {
+  expect(
+    settingsForNewChatRequest({}, "alternate", true, "gpt-6-astra"),
+  ).toEqual({ account_key: "alternate", model: "gpt-6-astra" });
 });
 
 test("switching the lead account preserves explicitly account-pinned workers", () => {

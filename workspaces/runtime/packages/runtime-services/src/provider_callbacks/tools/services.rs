@@ -23,7 +23,6 @@ pub(crate) struct ProductionPorts {
     event_wake: std::sync::Arc<tokio::sync::Notify>,
     monitor_dispatch_wake: std::sync::Arc<tokio::sync::Notify>,
     runtime_ports: super::ManagedToolRuntimePorts,
-    state_root: std::path::PathBuf,
     preparation: Option<std::sync::Arc<crate::account_worker::preparation::PreparationResources>>,
 }
 
@@ -34,8 +33,6 @@ pub(crate) struct ProductionPortsConfig {
     pub(crate) event_wake: std::sync::Arc<tokio::sync::Notify>,
     pub(crate) monitor_dispatch_wake: std::sync::Arc<tokio::sync::Notify>,
     pub(crate) runtime_ports: super::ManagedToolRuntimePorts,
-    /// The store's state directory, which owns progress files.
-    pub(crate) state_root: std::path::PathBuf,
     pub(crate) preparation:
         Option<std::sync::Arc<crate::account_worker::preparation::PreparationResources>>,
 }
@@ -49,7 +46,6 @@ impl ProductionPorts {
             event_wake: config.event_wake,
             monitor_dispatch_wake: config.monitor_dispatch_wake,
             runtime_ports: config.runtime_ports,
-            state_root: config.state_root,
             preparation: config.preparation,
         }
     }
@@ -334,13 +330,7 @@ impl crate::managed_host_tools::ContextPort for ProductionPorts {
             }
             snapshot.record().clone()
         } else {
-            context::topic(
-                tx,
-                actor,
-                topic,
-                &self.state_root,
-                self.preparation.as_deref(),
-            )?
+            context::topic(tx, actor, topic, self.preparation.as_deref())?
         };
         let version = studio_runtime_store::sha256_hex(
             studio_runtime_store::python_json_compact(&content).as_bytes(),
@@ -685,7 +675,7 @@ pub(super) fn execute(
     args: &Value,
     id: &str,
     now: f64,
-    state_root: &std::path::Path,
+    payloads: Option<&tool_requests::prepared::Payloads>,
     ports: &(impl crate::managed_host_tools::Ports<Prepared = ()> + ?Sized),
 ) -> Result<crate::managed_host_tools::Staged, CallbackError> {
     let actor = snapshot.actor();
@@ -794,22 +784,20 @@ pub(super) fn execute(
         _ => {}
     }
     let value = match kind {
-        ToolKind::Request => Ok(tool_requests::execute(
-            tx,
-            &snapshot.context().agent,
-            match args["action"].as_str().unwrap_or("list") {
-                "list" => tool_requests::Action::List,
-                "get" => tool_requests::Action::Get(text(args, "request_id")?),
-                "cancel" => tool_requests::Action::Cancel(text(args, "request_id")?),
-                _ => return Err(CallbackError::Invalid("Invalid request action")),
-            },
-            now,
-        )?),
+        ToolKind::Request => Ok(payloads
+            .ok_or(CallbackError::Dependency("tool-request/prepared-payloads"))?
+            .execute(tx, &snapshot.context().agent, request_action(args)?, now)?),
         ToolKind::Task => work::execute(tx, snapshot, args, id),
         ToolKind::Message => messages::send(tx, snapshot, args, id, now),
         ToolKind::ChatRead => reads::chat(tx, snapshot, args),
         ToolKind::Peers => messages::peers(tx, snapshot, args),
-        ToolKind::Read => reads::read(tx, snapshot, args, now, state_root),
+        ToolKind::Read => reads::read(
+            tx,
+            snapshot,
+            args,
+            now,
+            payloads.ok_or(CallbackError::Dependency("tool-request/prepared-payloads"))?,
+        ),
         ToolKind::Status
         | ToolKind::Search
         | ToolKind::Context
@@ -838,7 +826,8 @@ pub(super) fn execute(
         ToolKind::SignIn => Err(CallbackError::Dependency(
             super::runtime_dispatch::SIGN_IN_DEPENDENCY,
         )),
-        ToolKind::HostExec => Err(CallbackError::Dependency("host-exec/layr-bridge")),
+        // The managed-tool dispatcher runs host_exec through its attached runtime.
+        ToolKind::HostExec => Err(CallbackError::Dependency(crate::host_exec::DEPENDENCY)),
         ToolKind::Title => {
             if actor["isLead"] != true {
                 return Err(CallbackError::Invalid(
@@ -1025,4 +1014,42 @@ fn paginate(
     Ok(
         json!({"apiVersion":2,"items":rows[offset..end],"total":rows.len(),"revision":revision,"nextCursor":cursor}),
     )
+}
+
+pub(super) fn payload_selection(
+    tx: &Transaction<'_>,
+    snapshot: &CallbackSnapshot,
+    kind: ToolKind,
+    args: &Value,
+) -> Result<Option<tool_requests::prepared::Selection>, CallbackError> {
+    use tool_requests::prepared::Selection;
+    Ok(match kind {
+        ToolKind::Request => Some(match request_action(args)? {
+            tool_requests::Action::List => Selection::List,
+            tool_requests::Action::Get(key) | tool_requests::Action::Cancel(key) => {
+                Selection::Receipt(key.into())
+            }
+        }),
+        ToolKind::Read if text(args, "output_ref")?.starts_with("studio-input:") => {
+            Some(Selection::StudioInput(
+                text(args, "output_ref")?
+                    .trim_start_matches("studio-input:")
+                    .into(),
+            ))
+        }
+        ToolKind::Read => Some(Selection::Output(reads::receipt_keys(
+            tx,
+            &snapshot.context().agent,
+            args,
+        )?)),
+        _ => None,
+    })
+}
+fn request_action(args: &Value) -> Result<tool_requests::Action<'_>, CallbackError> {
+    Ok(match args["action"].as_str().unwrap_or("list") {
+        "list" => tool_requests::Action::List,
+        "get" => tool_requests::Action::Get(text(args, "request_id")?),
+        "cancel" => tool_requests::Action::Cancel(text(args, "request_id")?),
+        _ => return Err(CallbackError::Invalid("Invalid request action")),
+    })
 }
