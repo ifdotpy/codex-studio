@@ -20,6 +20,7 @@ export function useChatPrefetch(
   data: Snapshot | null,
   opened: string | null,
   workspaceId: string,
+  enabled = true,
 ) {
   const {
     prefetchTranscript,
@@ -39,7 +40,7 @@ export function useChatPrefetch(
   } | null>(null);
 
   useEffect(() => {
-    if (!workspaceId) return;
+    if (!workspaceId || !enabled) return;
     let stopped = false;
     let active = 0;
     let preferred: string | null = null;
@@ -276,7 +277,7 @@ export function useChatPrefetch(
       window.removeEventListener("online", stopVisibility);
       window.removeEventListener("offline", stopVisibility);
     };
-  }, [workspaceId, data?.stateDir]);
+  }, [workspaceId, data?.stateDir, enabled]);
 
   useEffect(() => {
     control.current?.changed();
