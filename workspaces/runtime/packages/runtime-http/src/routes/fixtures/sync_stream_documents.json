@@ -1,7 +1,7 @@
 [
   {
     "resources": {
-      "protocol": 3,
+      "protocol": 4,
       "workspaceId": "workspace",
       "epoch": "epoch",
       "revision": 0,
@@ -25,7 +25,7 @@
       ]
     },
     "rates": {
-      "protocol": 3,
+      "protocol": 4,
       "workspaceId": "workspace",
       "epoch": "epoch",
       "revision": 0,
@@ -34,7 +34,7 @@
   },
   {
     "resources": {
-      "protocol": 3,
+      "protocol": 4,
       "workspaceId": "workspace",
       "epoch": "epoch",
       "revision": 0,
@@ -52,7 +52,7 @@
       ]
     },
     "rates": {
-      "protocol": 3,
+      "protocol": 4,
       "workspaceId": "workspace",
       "epoch": "epoch",
       "revision": 0,

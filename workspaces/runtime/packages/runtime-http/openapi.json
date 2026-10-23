@@ -43998,9 +43998,9 @@
             "type": "string"
           },
           "protocol": {
-            "const": 3,
-            "maximum": 3,
-            "minimum": 3,
+            "const": 4,
+            "maximum": 4,
+            "minimum": 4,
             "title": "Protocol",
             "type": "integer"
           },
@@ -44063,9 +44063,9 @@
             "type": "string"
           },
           "protocol": {
-            "const": 3,
-            "maximum": 3,
-            "minimum": 3,
+            "const": 4,
+            "maximum": 4,
+            "minimum": 4,
             "title": "Protocol",
             "type": "integer"
           },
@@ -44325,9 +44325,9 @@
             "type": "string"
           },
           "protocol": {
-            "const": 3,
-            "maximum": 3,
-            "minimum": 3,
+            "const": 4,
+            "maximum": 4,
+            "minimum": 4,
             "title": "Protocol",
             "type": "integer"
           },
@@ -51845,7 +51845,6 @@
         "type": "object"
       },
       "SyncEntity": {
-        "additionalProperties": false,
         "description": "One v4 entity change. The collection DTO is structured; deletes omit value.",
         "oneOf": [
           {
@@ -52221,9 +52220,6 @@
             "minimum": 0,
             "title": "Seq",
             "type": "integer"
-          },
-          "value": {
-            "$ref": "#/components/schemas/JsonValue"
           }
         },
         "required": [
@@ -52233,7 +52229,8 @@
           "seq"
         ],
         "title": "SyncEntity",
-        "type": "object"
+        "type": "object",
+        "unevaluatedProperties": false
       },
       "SyncEntityPayload": {
         "discriminator": {

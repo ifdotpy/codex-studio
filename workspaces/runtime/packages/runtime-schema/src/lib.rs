@@ -666,6 +666,7 @@ fn compile_schemas() -> SchemaResult<CompiledSchemas> {
         "ServerOperationRequest",
         "ServerOperationResponse",
         "SyncEntityPayload",
+        "SyncEntity",
         "AutoPairRequest",
         "DevicePairRequest",
         "AgentRecordResponse",

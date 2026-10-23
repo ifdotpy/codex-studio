@@ -1,3 +1,5 @@
+/** RxDB projection schema version; v1 discards the v3 string entity cache. */
+export const ENTITY_PROJECTION_CACHE_VERSION = 1;
 export const ENTITY_PROJECTION_DATABASE_PREFIX = "studio-entity-projection-";
 export const PROJECTION_DATABASE_RELOAD_MESSAGE =
   "The local workspace cache was closed by another tab. Reload Studio to continue.";
@@ -118,13 +120,13 @@ export function deleteOtherEntityProjectionDatabases(
           if (!name?.startsWith(currentWorkspacePrefix)) continue;
           const suffix = name.slice(currentWorkspacePrefix.length);
           const match =
-            /^([a-f0-9]{64})--0--(?:projections|_rxdb_internal|rx-replication-meta-[a-f0-9]{64})$/.exec(
+            /^([a-f0-9]{64})--[0-9]+--(?:projections|_rxdb_internal|rx-replication-meta-[a-f0-9]{64})$/.exec(
               suffix,
             );
           if (!match || match[1] === currentSchemaHash) continue;
           const logicalName = name.slice(
             "rxdb-dexie-".length,
-            name.indexOf("--0--"),
+            name.indexOf("--", "rxdb-dexie-".length),
           );
           const names = staleDatabases.get(logicalName) ?? [];
           names.push(name);

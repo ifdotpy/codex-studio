@@ -1201,7 +1201,7 @@ mod tests {
                     .expect("validator");
             let app = super::with_boundary(Router::new().route("/api/messages", post(move || async move {
                 store.transaction(|tx| {
-                    SyncDocumentsRepository::put_entity(tx, "agent", "agent", serde_json::json!({"id": "agent", "text": "entity content ".repeat(512)}), false)?;
+                    SyncDocumentsRepository::put_entity(tx, "agent", "agent", serde_json::json!({"id": "agent", "name":"Agent", "status":"idle", "source":"managed", "tail": "entity content ".repeat(512)}), false)?;
                     Ok(())
                 }).await.expect("entity mutation");
                 Json(serde_json::json!({"ok": true}))

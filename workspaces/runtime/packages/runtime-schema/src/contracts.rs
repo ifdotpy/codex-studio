@@ -480,6 +480,19 @@ pub fn check_schema_parity(openapi: &Value, account_transfer: &Value) -> Result<
         &format!("{protocol}/supportedVersions/items/const"),
         version,
     )?;
+    for owner in [
+        "ResourceChangeEvent",
+        "ResourceHeartbeatEvent",
+        "ResourceTokenRatesEvent",
+    ] {
+        for bound in ["const", "minimum", "maximum"] {
+            expect_number(
+                openapi,
+                &format!("/components/schemas/{owner}/properties/protocol/{bound}"),
+                version,
+            )?;
+        }
+    }
     for owner in ["TokenRateSnapshot", "ResourceTokenRatesEvent"] {
         expect_number(
             openapi,

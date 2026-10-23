@@ -19638,7 +19638,7 @@ export interface components {
        * Protocol
        * @constant
        */
-      protocol: 3;
+      protocol: 4;
       /**
        * Reason
        * @enum {string}
@@ -19664,7 +19664,7 @@ export interface components {
        * Protocol
        * @constant
        */
-      protocol: 3;
+      protocol: 4;
       /** Revision */
       revision: number;
       /** Workspaceid */
@@ -19745,7 +19745,7 @@ export interface components {
        * Protocol
        * @constant
        */
-      protocol: 3;
+      protocol: 4;
       /** Records */
       records: components["schemas"]["TokenRateRecord"][];
       /** Revision */
@@ -22778,7 +22778,6 @@ export interface components {
       op: "upsert" | "delete";
       /** Seq */
       seq: number;
-      value?: components["schemas"]["JsonValue"];
     } & (
       | {
           /** @constant */

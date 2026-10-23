@@ -1,4 +1,4 @@
-//! HTTP adapter for the protocol-3 sync event stream.
+//! HTTP adapter for the versioned sync event stream.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::convert::Infallible;
@@ -1617,6 +1617,13 @@ mod tests {
                     tx,
                     "agent",
                     "first",
+                    json!({"id":"first","name":"superseded","status":"idle","source":"managed"}),
+                    false,
+                )?;
+                SyncDocumentsRepository::put_entity(
+                    tx,
+                    "agent",
+                    "first",
                     json!({"id":"first","name":"First","status":"idle","source":"managed"}),
                     false,
                 )?;
@@ -1635,12 +1642,13 @@ mod tests {
         );
         let batch = &event["resourceVersions"][0]["entityChanges"];
         assert_eq!(batch["after"], baseline);
-        assert_eq!(batch["through"], baseline + 2);
+        assert_eq!(batch["through"], baseline + 3);
+        assert_eq!(batch["documents"][0]["value"]["name"], "First");
         assert_eq!(
             batch["documents"].as_array().expect("full records").len(),
             2
         );
-        assert_eq!(batch["documents"][1]["_deleted"], true);
+        assert_eq!(batch["documents"][1]["op"], "delete");
         assert!(event["resourceVersions"][0]["revision"] == batch["through"]);
     }
 

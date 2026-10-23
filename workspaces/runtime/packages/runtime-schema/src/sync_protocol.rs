@@ -18,4 +18,27 @@ mod tests {
             super::SYNC_PROTOCOL_VERSION_TEXT
         );
     }
+    #[test]
+    fn entity_v4_schema_requires_typed_values_and_omits_delete_values() {
+        use serde_json::json;
+        let valid = json!({"op":"upsert","collection":"workspace","id":"current","seq":1,"value":{"stateDir":"temporary"}});
+        assert!(crate::first_error("SyncEntity", &valid).unwrap().is_none());
+        let delete = json!({"op":"delete","collection":"agent","id":"a","seq":2});
+        assert!(crate::first_error("SyncEntity", &delete).unwrap().is_none());
+        for invalid in [
+            json!({"op":"upsert","collection":"workspace","id":"current","seq":1,"value":"{}"}),
+            json!({"op":"upsert","collection":"workspace","id":"current","seq":1}),
+            json!({"op":"upsert","collection":"workspace","id":"current","seq":1,"value":{"stateDir":42}}),
+            json!({"op":"delete","collection":"agent","id":"a","seq":2,"value":{}}),
+            json!({"op":"delete","collection":"unknown","id":"a","seq":2}),
+            json!({"op":"delete","collection":"agent","id":"a","seq":2,"payload":"{}"}),
+        ] {
+            assert!(
+                crate::first_error("SyncEntity", &invalid)
+                    .unwrap()
+                    .is_some(),
+                "{invalid}"
+            );
+        }
+    }
 }
