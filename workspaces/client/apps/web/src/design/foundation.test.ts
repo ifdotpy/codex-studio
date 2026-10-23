@@ -11,3 +11,13 @@ test("content width preference is the only owner of the custom transcript column
   expect(preferences).toContain("--studio-content-column");
   expect(preferences).toContain('data-studio-content-layout="original"');
 });
+
+test("touch sizing uses Mantine variables without stretching NumberInput steppers", () => {
+  const appearance = css("../appearance.css");
+  expect(/min-(?:width|height):\s*44px\s*!important/.test(appearance)).toBe(
+    false,
+  );
+  expect(appearance.includes("@media (pointer: coarse)")).toBe(true);
+  expect(appearance.includes("--input-height:")).toBe(true);
+  expect(appearance.includes("--button-height:")).toBe(true);
+});
