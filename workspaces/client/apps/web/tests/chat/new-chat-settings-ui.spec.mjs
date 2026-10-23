@@ -4,7 +4,7 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-test("new chat controls open each role, save settings and move to the footer after send", async ({
+test("new chat controls open each role, save settings and stay in the composer after send", async ({
   page,
 }) => {
   test.setTimeout(120000);
@@ -47,7 +47,7 @@ test("new chat controls open each role, save settings and move to the footer aft
       .getByRole("button", { name: "Start chat", exact: true })
       .click();
     await startChat;
-    const row = page.locator(".conversation-start-facts");
+    const row = page.locator("#composer .composer-context-row");
     await expect(row).toBeVisible();
     await expect(
       page
@@ -55,7 +55,7 @@ test("new chat controls open each role, save settings and move to the footer aft
         .getByRole("button", { name: /Release lead/ }),
     ).toBeVisible();
     await expect(row.locator(".execution-menu")).toHaveCount(2);
-    await expect(page.locator("#composer .execution-menu")).toHaveCount(0);
+    await expect(page.locator("#composer .execution-menu")).toHaveCount(2);
     await expect(page.locator(".empty-chat p")).toHaveCount(0);
     const main = row.getByRole("button", {
       name: "Main agent settings",
@@ -78,8 +78,9 @@ test("new chat controls open each role, save settings and move to the footer aft
     expect(
       Math.abs(startBounds.width - composerBounds.width),
     ).toBeLessThanOrEqual(1);
+    expect(rowBounds.y).toBeGreaterThanOrEqual(composerBounds.y);
     expect(rowBounds.y + rowBounds.height).toBeLessThanOrEqual(
-      composerBounds.y,
+      composerBounds.y + composerBounds.height,
     );
     await main.click();
     await expect(
@@ -138,16 +139,17 @@ test("new chat controls open each role, save settings and move to the footer aft
     );
     await page.locator("#send").click();
     expect((await send).ok()).toBe(true);
-    await expect(row).toHaveCount(0);
-    await expect(page.locator("#composer .execution-menu")).toHaveCount(0);
+    await expect(page.locator(".conversation-start")).toHaveCount(0);
+    await expect(row).toBeVisible();
+    await expect(page.locator("#composer .execution-menu")).toHaveCount(2);
     const footer = page.locator(".conversation-composer-footer");
     await expect(
-      footer.getByRole("button", { name: "Main agent settings", exact: true }),
+      row.getByRole("button", { name: "Main agent settings", exact: true }),
     ).toBeVisible();
     await expect(
-      footer.getByRole("button", { name: "Subagent defaults", exact: true }),
+      row.getByRole("button", { name: "Subagent defaults", exact: true }),
     ).toBeVisible();
-    await expect(footer.locator(".execution-menu")).toHaveCount(2);
+    await expect(footer.locator(".execution-menu")).toHaveCount(0);
   } finally {
     fixture.kill("SIGTERM");
   }
