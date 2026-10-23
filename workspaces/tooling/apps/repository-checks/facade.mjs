@@ -1301,6 +1301,7 @@ function fastTierCommands(root) {
               "test(callback_request_invalid_action_preserves_tool_refusal)",
               "test(account_worker::tests::callback_handoff::)",
               "test(account_worker::tests::auth_hold::held_start_wakes_nothing_until_an_account_change)",
+              "test(account_worker::tests::disconnected_unknown_start::)",
               "test(account_worker::tests::callback_head_of_line)",
               "test(account_worker::tests::native_requests::)",
               "test(stale_stamp_of_an_undelivered_steer_batch_does_not_block_the_next_turn)",
