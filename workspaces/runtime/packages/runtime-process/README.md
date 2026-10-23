@@ -96,7 +96,9 @@ each accepted request/event transaction (`sqlite-full-sync-per-request`); the
 health response publishes this durability label. The backend may reconnect
 using the same `backendId` and `stateDir`; `open` with the same handle and launch
 settings resumes a live child and returns its generation. Only the configured
-current command is eligible; a different launch signature is refused. Replacing a child
+current command, or an earlier command that the launch lists in
+`reattach_commands`, is eligible; the adapter reads the running child's
+signature from `health` to select it. A different launch signature is refused. Replacing a child
 advances its generation, so consumers can reject stale events.
 
 ## Native provider process adapter

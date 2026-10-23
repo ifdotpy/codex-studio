@@ -524,7 +524,10 @@ so provider memory follows running workers: a Claude thread's CLI exits, and the
 Codex app-server frees the thread at once, because Studio launches it with
 `thread_unload_delay_secs=0` (`CODEX_THREAD_UNLOAD_DELAY` in
 [provider_adapter.rs](../workspaces/runtime/packages/runtime-services/src/provider_adapter.rs);
-Codex's own default keeps it loaded for 30 minutes). The next turn resumes the thread. A deleted agent's thread unloads at once in the same way; deleting a
+Codex's own default keeps it loaded for 30 minutes). An app-server started
+before that override is reattached with its own command
+(`ProviderLaunchSpec::reattach_commands`) and keeps Codex's default until it
+exits. The next turn resumes the thread. A deleted agent's thread unloads at once in the same way; deleting a
 team re-evaluates its members' idle clocks as soon as the deletion commits. A
 live lead's, ordinary chat's, or waiting worker's thread
 unloads after `idleSessionUnloadMinutes` of the same idleness, because each resume costs a
@@ -589,8 +592,8 @@ Supervisor connection and reattachment follow one path:
 
 1. Runtime, operator and VM guest clients request the current supervisor protocol and require its version in the reply.
 2. The supervisor rejects retired versions before admitting a backend.
-3. Open reuses a running child only when its launch signature matches the configured current command, environment and working directory.
-4. Changed launch signatures are refused; no older command is adopted and no duplicate child starts.
+3. Open reuses a running child only when its launch signature matches the configured current command, environment and working directory, or the same values with an earlier command that the launch lists in `ProviderLaunchSpec::reattach_commands`. The child keeps that earlier command until it exits; a child started later gets the current command.
+4. Other changed launch signatures are refused; no unlisted command is adopted and no duplicate child starts. A changed provider launch command lists the command it replaces, so an upgrade does not refuse running children.
 5. Recovery signals only an exact native kernel identity; retired Python identities never authorize a signal or an identity upgrade.
 
 A supervisor event sequence is meaningful only inside one journal epoch.

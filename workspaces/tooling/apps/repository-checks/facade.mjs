@@ -1225,8 +1225,9 @@ function fastTierCommands(root) {
           "Check that a provider request is durably accepted with its journal batch, that its record owns the answer through every crash point without a repeated answer, and that an unanswered request never stops provider events or new work, that a native approval or question of a lead waits as a card and its user answer reaches the provider once, also after a worker reattach, and that a stamp left by an undelivered steer batch is replaced instead of holding the agent. Monitor output must publish exactly one monitor projection while preserving window membership and rollback. Task submissions keep limits, workspace ownership and replay at the shared manifest bound. Native-history recovery continues authorized workers once, preserves explicit Stop, and never replays uncertain input.",
       },
     },
-    // These witnesses are Linux only (#[cfg(target_os = "linux")]); on another
-    // host nextest selects zero tests, so the step runs only on Linux.
+    // The reaping witnesses are Linux only (#[cfg(target_os = "linux")]), so
+    // the step runs only on Linux. The publication gate also runs its reattach
+    // witnesses on macOS.
     ...(process.platform === "linux"
       ? [
           {
@@ -1252,7 +1253,8 @@ function fastTierCommands(root) {
                   "-E",
                   nextestAnyOf([
                     "test(/^provider_stdio::killed_provider_is_reaped_with_full_journal_and_unobserved_write$/)",
-                    "test(running_child_reattaches_only_with_the_current_command)",
+                    "test(/^wave7_p01_factory::running_child_started_with_a_previous_command_reattaches$/)",
+                    "test(/^wave7_p01_registry::running_app_server_started_with_the_frozen_command_reattaches$/)",
                     "test(/^wave7_p01_registry::direct_child_sigkill_settles_unknown_without_resend$/)",
                     "test(/^state_check::state_check_reads_fixture_rows_without_changing_or_disclosing_them$/)",
                   ]),
@@ -1262,7 +1264,7 @@ function fastTierCommands(root) {
             options: {
               selector: "full stdio lanes and direct provider SIGKILL recovery",
               reason:
-                "Check that child reaping and account session loss do not wait for blocked I/O, and that the registry starts a new generation without resending an uncertain turn.",
+                "Check that child reaping and account session loss do not wait for blocked I/O, that the registry starts a new generation without resending an uncertain turn, and that a changed launch command reattaches a running child with the earlier command it lists.",
             },
           },
         ]

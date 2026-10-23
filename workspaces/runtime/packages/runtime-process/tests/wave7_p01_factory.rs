@@ -153,7 +153,7 @@ async fn cancelled_prepare_never_returns_a_usable_generation() {
     );
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use crate::process_support as support;
 
 // Retained child environment verification is implemented only on Linux.
@@ -223,10 +223,18 @@ async fn shutdown_detaches_and_supervised_child_reattaches_at_same_generation() 
     .unwrap();
 }
 
-// Only the configured current launch command can reattach a running child.
-#[cfg(target_os = "linux")]
+// A changed launch command reattaches a running child started with an earlier
+// command it lists, and still refuses one started with any other command. The
+// running child keeps its own command; a child started later gets the new one.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[tokio::test]
-async fn running_child_reattaches_only_with_the_current_command() {
+#[allow(
+    clippy::disallowed_methods,
+    reason = "test fixture; `which` and `kill` exit at once"
+)]
+async fn running_child_started_with_a_previous_command_reattaches() {
+    use studio_runtime_process::{EventKind, HandleRequest, HealthRequest, SupervisorHandle};
+    use studio_runtime_store::supervisor_journal::launch_signature;
     let (state, mut supervisor) = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-process/tests/wave7_p01_factory",
         || {
@@ -237,30 +245,43 @@ async fn running_child_reattaches_only_with_the_current_command() {
     )
     .await
     .unwrap();
+    let state = std::sync::Arc::new(state);
     let factory = SupervisorProviderTaskFactory::new(state.identity());
     let handle = ProviderHandle::for_account("retained");
+    // A non-platform executable that waits on stdin: macOS hides the launch
+    // environment of platform binaries such as /bin/sh, so their reattach is
+    // unverifiable.
+    let node = std::process::Command::new("which")
+        .arg("node")
+        .output()
+        .unwrap();
+    assert!(node.status.success());
+    let node = String::from_utf8(node.stdout).unwrap().trim().to_owned();
     let command = |extra: &[&str]| {
-        let mut command = support::shell_command("while IFS= read -r line; do :; done");
-        command.extend(extra.iter().map(|arg| (*arg).to_owned()));
-        command
+        [node.as_str(), "-e", "process.stdin.resume()"]
+            .into_iter()
+            .chain(extra.iter().copied())
+            .map(str::to_owned)
+            .collect::<Vec<_>>()
     };
-    let launch = |command: Vec<String>| {
-        let launch = ProviderLaunchSpec::new(
+    let launch = |command: Vec<String>, reattach_commands: Vec<Vec<String>>| {
+        let mut launch = ProviderLaunchSpec::new(
             command,
             support::child_environment(&state.0),
             state.0.clone(),
         );
+        launch.reattach_commands = reattach_commands;
         OpenOptions {
             clock: SessionClock::default(),
             launch,
             expected_generation: None,
         }
     };
-    let attach = |command: Vec<String>| {
+    let attach = |command: Vec<String>, reattach_commands: Vec<Vec<String>>| {
         let factory = &factory;
         let handle = handle.clone();
-        let options = launch(command.clone());
-        let mut reopened = launch(command);
+        let options = launch(command.clone(), reattach_commands.clone());
+        let mut reopened = launch(command, reattach_commands);
         async move {
             let prepared = factory
                 .prepare(handle.clone(), options, Shutdown::default())
@@ -269,21 +290,96 @@ async fn running_child_reattaches_only_with_the_current_command() {
             prepared.open(handle, reopened, Shutdown::default()).await
         }
     };
+    // The launch signature that Health reports for the handle.
+    let running_signature = || {
+        let state = state.clone();
+        studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-process/tests/wave7_p01_factory",
+            move || {
+                let health = support::connect_client(&state)
+                    .health(HealthRequest::default())
+                    .unwrap();
+                health
+                    .handles
+                    .into_iter()
+                    .find(|handle| handle.id == "account:retained")
+                    .map(|handle| (handle.pid, handle.signature))
+            },
+        )
+    };
+    let signature = |command: &[String]| {
+        launch_signature(
+            command,
+            &support::child_environment(&state.0),
+            state.0.to_str(),
+        )
+    };
     let previous = command(&[]);
-    let mut attachment = attach(previous.clone()).await.unwrap();
-    let pid = attachment.status.borrow().info.as_ref().unwrap().pid;
-    supervisor.own_child(pid);
+    let current = command(&["current"]);
+    let mut attachment = attach(previous.clone(), Vec::new()).await.unwrap();
+    let started = attachment.status.borrow().info.clone().unwrap();
+    supervisor.own_child(started.pid);
     let _exit = attachment.shutdown().await;
 
     assert!(
-        attach(command(&["changed"])).await.is_err(),
-        "a changed command cannot adopt a running child"
+        attach(current.clone(), Vec::new()).await.is_err(),
+        "a running child started with an unlisted command is refused"
     );
-    let mut attachment = attach(previous).await.unwrap();
+    let mut attachment = attach(current.clone(), vec![previous.clone()])
+        .await
+        .unwrap();
     let info = attachment.status.borrow().info.clone().unwrap();
     assert!(info.resumed);
-    assert_eq!(info.pid, pid);
+    assert_eq!(info.pid, started.pid);
+    assert_eq!(info.generation, started.generation);
     let _exit = attachment.shutdown().await;
+    assert_eq!(
+        running_signature().await.unwrap(),
+        Some((Some(started.pid), signature(&previous))),
+        "the reattached child keeps its own command and is not restarted"
+    );
+
+    // After that child exits, the next child starts with the current command.
+    {
+        let state = state.clone();
+        studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-process/tests/wave7_p01_factory",
+            move || {
+                let killed = std::process::Command::new("kill")
+                    .args(["-KILL", &started.pid.to_string()])
+                    .status()
+                    .unwrap();
+                assert!(killed.success());
+                let mut client = support::connect_client(&state);
+                let handle = SupervisorHandle("account:retained".into());
+                support::poll_event(
+                    &mut client,
+                    &handle,
+                    studio_runtime_process::EventCursor(0),
+                    |event| event.kind == EventKind::Exit,
+                );
+                let status = client
+                    .status(HandleRequest {
+                        handle,
+                        extra: Default::default(),
+                    })
+                    .unwrap();
+                assert!(status.return_code.is_some());
+            },
+        )
+        .await
+        .unwrap();
+    }
+    let mut attachment = attach(current.clone(), vec![previous]).await.unwrap();
+    let restarted = attachment.status.borrow().info.clone().unwrap();
+    assert!(!restarted.resumed);
+    assert_ne!(restarted.pid, started.pid);
+    supervisor.own_child(restarted.pid);
+    let _exit = attachment.shutdown().await;
+    assert_eq!(
+        running_signature().await.unwrap(),
+        Some((Some(restarted.pid), signature(&current)))
+    );
     // Fixture teardown owns the supervisor and its surviving child.
     studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-process/tests/wave7_p01_factory",
