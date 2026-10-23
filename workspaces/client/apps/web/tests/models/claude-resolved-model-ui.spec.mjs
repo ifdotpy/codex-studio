@@ -173,27 +173,18 @@ for (const provider of ["claude", "codex"])
         name: "Agent role",
         exact: true,
       });
+      // Main's picker presents a single scrollable list, keeping full names.
+      await expect(
+        dialog.getByRole("listbox", { name: "Main agent model", exact: true }),
+      ).toBeVisible();
       if (provider === "claude") {
-        await expect(dialog.getByText("Opus", { exact: true })).toBeVisible();
-        await expect(dialog.locator(".model-family-label")).toHaveText([
-          "Opus",
-          "Sonnet",
-          "Haiku",
-        ]);
-        await expect(dialog.locator(".model-context-badge")).toHaveText([
-          "1M",
-          "1M",
-          "1M",
-        ]);
         await expect(
-          dialog.locator(".model-option-name").filter({ hasText: "1M" }),
-        ).toHaveCount(0);
+          dialog.getByRole("option", { name: /Opus/ }).first(),
+        ).toBeVisible();
+        await expect(
+          dialog.locator(".setup-model-name").filter({ hasText: "1M" }),
+        ).toHaveCount(3);
         await expect(dialog.getByRole("tab")).toHaveCount(2);
-      } else {
-        await expect(dialog.locator(".model-family-label")).toHaveText([
-          "Codex 6.x",
-          "Codex 5.x",
-        ]);
       }
       await expect(dialog.locator(".setup-account-status")).toHaveCount(1);
       await expect(dialog.locator(".setup-account-status")).not.toHaveAttribute(
@@ -207,23 +198,25 @@ for (const provider of ["claude", "codex"])
       for (const role of ["Lead", "Workers"]) {
         await roles.getByText(role, { exact: true }).click();
         const selected = dialog.locator(
-          `.model-options input[data-value="${selectedAlias}"]`,
+          `.setup-models [role="option"][data-value="${selectedAlias}"]`,
         );
-        await expect(selected).toBeChecked();
+        await expect(selected).toHaveAttribute("aria-selected", "true");
         await expect(selected).toBeEnabled();
         await expect(
           dialog.getByText("Unavailable on this account.", { exact: true }),
         ).toHaveCount(0);
-        await expect(dialog.locator(".model-options input")).toHaveCount(
+        await expect(dialog.locator(".setup-models [role=option]")).toHaveCount(
           role === "Lead" ? 13 : 14,
         );
       }
       await roles.getByText("Review", { exact: true }).click();
       await expect(
-        dialog.getByRole("radio", { name: "Same as caller", exact: true }),
-      ).toBeChecked();
+        dialog.getByRole("option", { name: "Same as caller", exact: true }),
+      ).toHaveAttribute("aria-selected", "true");
       if (provider === "claude")
-        await expect(dialog.locator('input[data-value="opus"]')).toHaveCount(0);
+        await expect(
+          dialog.locator('[role="option"][data-value="opus"]'),
+        ).toHaveCount(0);
       await roles.getByText("Lead", { exact: true }).click();
       for (const [width, height] of [
         [1440, 900],
@@ -266,7 +259,7 @@ for (const provider of ["claude", "codex"])
                 (el) => el.getBoundingClientRect().top,
               );
               const boxes = [
-                ...node.querySelectorAll(".model-options .model-radio"),
+                ...node.querySelectorAll(".setup-models [role=option]"),
               ]
                 .map((el) => el.getBoundingClientRect())
                 .filter((box) => box.height);
@@ -275,30 +268,10 @@ for (const provider of ["claude", "codex"])
                   node
                     .querySelector(".settings-role-switch")
                     ?.getBoundingClientRect().height || 0,
-                groupGaps: [...node.querySelectorAll(".model-family-group")]
-                  .slice(1)
-                  .map((group) => {
-                    const previous =
-                      group.previousElementSibling.getBoundingClientRect();
-                    const current = group.getBoundingClientRect();
-                    return current.height
-                      ? current.top - previous.bottom
-                      : null;
-                  })
-                  .filter((gap) => gap !== null),
-                familyGaps: [...node.querySelectorAll(".model-family-group")]
-                  .map((group) => {
-                    const label = group
-                      .querySelector(".model-family-label")
-                      ?.getBoundingClientRect();
-                    const first = group
-                      .querySelector(".model-radio")
-                      ?.getBoundingClientRect();
-                    return label?.height && first?.height
-                      ? first.top - label.bottom
-                      : null;
-                  })
-                  .filter((gap) => gap !== null),
+                listHeight:
+                  node.querySelector(".setup-models")?.clientHeight || 0,
+                listContent:
+                  node.querySelector(".setup-models")?.scrollHeight || 0,
                 dialogContent: node.scrollHeight,
                 dialogHeight: node.clientHeight,
                 bodyContent: body.scrollHeight,
@@ -324,17 +297,13 @@ for (const provider of ["claude", "codex"])
               );
             expect(geometry.tabRows).toBe(1);
             expect(geometry.pageWidth).toBeLessThanOrEqual(geometry.viewport);
-            if (tab === "Models")
-              expect(geometry.modelRows).toBeLessThanOrEqual(
-                width === 1440 ? 3 : 5,
-              );
+            if (tab === "Models") {
+              expect(geometry.modelRows).toBe(13);
+              expect(geometry.listHeight).toBeLessThan(geometry.listContent);
+            }
             expect(geometry.chipWidthRange).toBeLessThan(2);
             if (tab === "Models")
               expect(geometry.roleHeight).toBeLessThanOrEqual(44);
-            for (const gap of geometry.familyGaps)
-              expect(gap).toBeGreaterThanOrEqual(8);
-            for (const gap of geometry.groupGaps)
-              expect(gap).toBeGreaterThan(Math.max(...geometry.familyGaps));
             measurements.push({
               provider,
               width,

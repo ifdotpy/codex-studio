@@ -1,6 +1,11 @@
+import { useServerServices } from "../../servers/ServerServicesContext";
+import { useServerSettings } from "../../servers/ServerSettingsContext";
 import { Button, Checkbox, Group, Stack, Text } from "@mantine/core";
 import { useState } from "react";
-import { useWorkerModels } from "../agents/WorkerModelPicker";
+import {
+  useModelCatalogReader,
+  useWorkerModels,
+} from "../agents/WorkerModelPicker";
 import { toModelOptions } from "./modelOption";
 import {
   isModelWhitelisted,
@@ -11,8 +16,12 @@ import {
 } from "./modelWhitelist";
 
 export function ModelWhitelistSettings() {
+  const services = useServerServices();
+  const settings = useServerSettings();
+  const owner = services?.owner || settings?.server;
   const catalog = useWorkerModels("default", true, true);
   const allowed = useModelWhitelist();
+  const { scope } = useModelCatalogReader();
   const [error, setError] = useState("");
   const models = [
     ...new Map(
@@ -23,7 +32,7 @@ export function ModelWhitelistSettings() {
   ];
   const save = (value: ModelWhitelist) => {
     try {
-      writeModelWhitelist(value);
+      writeModelWhitelist(value, scope);
       setError("");
     } catch (failure) {
       setError(String(failure));
@@ -31,9 +40,10 @@ export function ModelWhitelistSettings() {
   };
   return (
     <Stack gap="md" aria-label="Models whitelist">
+      <Text fw={600}>Models on {owner?.label || "Local"}</Text>
       <Text size="sm">
-        Choose the models shown in model pickers. Existing chats keep their
-        model.
+        Choose the models shown in this server’s model pickers. Existing chats
+        keep their model.
       </Text>
       <Text size="xs" c="dimmed">
         For this session only. This experimental preference resets when Studio

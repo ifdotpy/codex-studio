@@ -1,64 +1,53 @@
-.model-radio:has(:checked) {
-  background: var(--mantine-primary-color-light);
-}
-.model-radio:has(:focus-visible) {
-  outline: auto;
-}
-.model-radio .mantine-Radio-labelWrapper,
 .model-select {
   min-width: 0;
   flex: 1;
   overflow-wrap: anywhere;
 }
-.model-radio .mantine-Radio-body {
-  align-items: center;
-}
-
 .effort-scale .mantine-SegmentedControl-control {
   flex: 1 0 auto;
 }
 .execution-profile .effort-scale .mantine-SegmentedControl-label {
   white-space: nowrap;
 }
-
-/* The same native radio grid serves setup sheets and chat settings. */
-.model-options {
-  margin-block-start: var(--mantine-spacing-xs);
+/* Main's single model list, with a bounded native scroll area. */
+.setup-models {
   display: grid;
-  grid-template-columns: repeat(
-    auto-fill,
-    minmax(min(100%, calc(var(--mantine-spacing-xl) * 3)), 1fr)
-  );
-  gap: var(--mantine-spacing-xs);
+  gap: calc(var(--mantine-spacing-xs) / 5);
+  max-height: calc(var(--studio-touch-target) * 5);
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
-.model-radio {
-  border-radius: var(--mantine-radius-sm);
-  display: flex;
-  align-items: center;
-  min-height: var(--studio-touch-target);
-  padding: calc(var(--mantine-spacing-xs) / 2);
-  border: var(--studio-border-width) solid var(--mantine-color-default-border);
+.setup-models button {
+  justify-content: flex-start;
+  width: 100%;
+  height: var(--studio-control-size);
+  padding-inline: var(--mantine-spacing-xs);
 }
-.model-radio:has(:disabled) {
-  opacity: var(--mantine-disabled-opacity);
+@media (pointer: coarse) {
+  .setup-models button {
+    height: var(--studio-touch-target);
+  }
 }
-.model-radio > .mantine-Radio-body {
+.setup-models .mantine-Button-inner,
+.setup-models .mantine-Button-label {
   width: 100%;
 }
-.model-radio .mantine-Radio-label {
-  padding-inline-start: calc(var(--mantine-spacing-xs) / 2);
-}
-.model-option-label {
+.setup-models .mantine-Button-label {
   display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  column-gap: calc(var(--mantine-spacing-xs) / 2);
-  overflow-wrap: anywhere;
-  line-height: var(--mantine-line-height-xs);
+  justify-content: space-between;
+  gap: var(--mantine-spacing-xs);
 }
-.model-option-badges {
+.setup-models small {
   color: var(--mantine-color-dimmed);
   font-size: var(--mantine-font-size-xs);
+  font-weight: 400;
+}
+.setup-models [data-selected] {
+  background: var(--mantine-primary-color-light);
+}
+.setup-model-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .execution-profile .model-description {
   margin-block-start: var(--mantine-spacing-xs);
@@ -68,32 +57,4 @@
 }
 .model-unavailable-reason {
   margin-block-start: calc(var(--mantine-spacing-xs) / 2);
-}
-.model-family-group {
-  display: grid;
-  gap: var(--mantine-spacing-xs);
-}
-.model-family-group + .model-family-group {
-  margin-block-start: var(--mantine-spacing-lg);
-}
-.model-family-label {
-  display: block;
-  margin: 0;
-}
-.model-family-label + .model-options {
-  margin-block-start: 0;
-}
-.model-option-name {
-  white-space: nowrap;
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.model-context-badge {
-  padding-inline: calc(var(--mantine-spacing-xs) / 4);
-  border-radius: var(--mantine-radius-xs);
-  background: var(--mantine-color-default-hover);
-  color: var(--mantine-color-dimmed);
-  font-size: var(--mantine-font-size-xs);
-  white-space: nowrap;
 }

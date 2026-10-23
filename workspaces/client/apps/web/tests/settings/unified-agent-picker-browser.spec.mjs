@@ -63,7 +63,7 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
         },
         load(id) {
           if (id !== entry) return;
-          return `import React,{useState} from 'react';import {createRoot} from 'react-dom/client';import {flushSync} from 'react-dom';import {MantineProvider} from '@mantine/core';import '@mantine/core/styles.css';import {theme} from '/src/theme.ts';import '/src/style.css';import {ExecutionSettings} from '/src/components/agents/ExecutionSettings.tsx';import {SettingsRow} from '/src/components/ui/primitives.tsx';import '/src/appearance.css';import {AccountTiles} from '/src/components/AccountTiles.tsx';import ProjectAccount from '/src/components/ProjectAccount.tsx';import SharedChatCreate from '/src/components/SharedChatCreate.tsx';
+          return `import React,{useState} from 'react';import {createRoot} from 'react-dom/client';import {flushSync} from 'react-dom';import {MantineProvider} from '@mantine/core';import '@mantine/core/styles.css';import {theme} from '/src/theme.ts';import '/src/style.css';import {ExecutionSettings} from '/src/components/agents/ExecutionSettings.tsx';import {SettingsRow} from '/src/components/ui/primitives.tsx';import '/src/appearance.css';import {AccountTiles} from '/src/components/AccountTiles.tsx';import ProjectAccount from '/src/components/ProjectAccount.tsx';import SharedChatCreate from '/src/components/SharedChatCreate.tsx';import {writeModelWhitelist} from '/src/components/models/modelWhitelist.ts';window.whitelist=value=>writeModelWhitelist(value,'local');
       const accounts=Array.from({length:7},(_,i)=>({id:'account-'+i,home:'/fixture/'+i,label:i<3?'Work '+(i+1):'Personal '+(i-2),email:'fixture'+i+'@example.com',source:'fixture',provider:i<4?'codex':'claude',status:i===6?'signedOut':'ready'}));
       const codex=['gpt-6-astra','gpt-6-luna'].map((model,i)=>({model,displayName:i?'Luna':'Astra',isDefault:!i,provider:'codex',defaultReasoningEffort:'medium',supportedReasoningEfforts:['low','medium','high'].map(reasoningEffort=>({reasoningEffort})),serviceTiers:i?[]:[{id:'priority'}],availableAccessPrograms:{cyber:i?['standard']:['standard','daybreakBlue']}}));
       const claudeRow=(model,displayName,extra)=>({model,displayName,provider:'claude',defaultReasoningEffort:'medium',supportedReasoningEfforts:['low','medium','high'].map(reasoningEffort=>({reasoningEffort})),serviceTiers:[],...extra});const claude=[claudeRow('default','Claude · Default (recommended)',{isDefault:true,resolvedModel:'claude-opus-5-5'}),claudeRow('opus','Claude · Opus 5.5',{resolvedModel:'claude-opus-5-5'}),claudeRow('claude-sonnet-5-5','Claude Sonnet 5.5',{})];
@@ -142,7 +142,7 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
         .getByRole("button", { name: "Main agent settings", exact: true })
         .click();
       await expect(
-        page.getByRole("radiogroup", { name: "Main agent model" }),
+        page.getByRole("listbox", { name: "Main agent model" }),
       ).toBeVisible();
       const capture = async (scene) => {
         if (process.env.PICKER_CLIP_DETECTOR) {
@@ -177,7 +177,7 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
       );
       await page.getByText("Worker", { exact: true }).click();
       await expect(
-        page.getByRole("radiogroup", { name: "Default subagent model" }),
+        page.getByRole("listbox", { name: "Default subagent model" }),
       ).toBeVisible();
       await capture("worker-codex");
       await chooseSetupValue(
@@ -202,8 +202,8 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
         0,
       );
       await expect(
-        page.getByRole("radio", {
-          name: "Opus 5.5 (default)",
+        page.getByRole("option", {
+          name: "Opus 5.5 recommended",
           exact: true,
         }),
       ).toBeVisible();
@@ -227,7 +227,7 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
         .locator("label")
         .filter({ hasText: "Codex" })
         .click();
-      const luna = page.getByRole("radio", { name: "Luna 6", exact: true });
+      const luna = page.getByRole("option", { name: "Luna 6", exact: true });
       await expect(luna).toBeVisible();
       const mark = await page.evaluate(() => window.calls.length);
       await luna.click();
@@ -255,7 +255,7 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
         ),
         0,
       );
-      await expect(luna).toBeChecked();
+      await expect(luna).toHaveAttribute("aria-selected", "true");
       await page.getByText("Review", { exact: true }).click();
       await expect(
         page.getByText("Uses the caller account.", { exact: true }),
@@ -265,7 +265,7 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
         0,
       );
       assert.equal(
-        await page.getByRole("radio", { name: /Sonnet/ }).count(),
+        await page.getByRole("option", { name: /Sonnet/ }).count(),
         0,
       );
       // Restore automatic workers, so review defaults have the Codex catalog accepted by the backend.
@@ -280,10 +280,10 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
         }),
       );
       await expect(
-        page.getByRole("radio", { name: "Astra 6 (default)", exact: true }),
+        page.getByRole("option", { name: "Astra 6 recommended", exact: true }),
       ).toBeVisible();
       await page
-        .getByRole("radio", { name: "Astra 6 (default)", exact: true })
+        .getByRole("option", { name: "Astra 6 recommended", exact: true })
         .click();
       await page.waitForFunction(() =>
         window.calls.some(
@@ -298,14 +298,14 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
       );
       // A default alias reads as the model it resolves to, listed once.
       await expect(
-        page.getByRole("radio", {
-          name: "Opus 5.5 (default)",
+        page.getByRole("option", {
+          name: "Opus 5.5 recommended",
           exact: true,
         }),
       ).toBeVisible();
-      await expect(page.getByRole("radio", { name: /^Opus 5\.5/ })).toHaveCount(
-        1,
-      );
+      await expect(
+        page.getByRole("option", { name: /^Opus 5\.5/ }),
+      ).toHaveCount(1);
       await expect(page.locator(".execution-menu").first()).toContainText(
         "Opus 5.5",
       );
@@ -425,8 +425,8 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
           await expect(
             page
               .getByLabel("Model for agent 1", { exact: true })
-              .getByRole("radio", { checked: true }),
-          ).toHaveValue("default");
+              .getByRole("option", { selected: true }),
+          ).toHaveAttribute("data-value", "default");
           await chooseSetupValue(
             page.getByLabel("Reasoning for agent 1", { exact: true }),
             "high",
@@ -453,6 +453,23 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
           );
         }
       }
+      await page.evaluate(() => {
+        window.reset();
+        window.whitelist(["codex:gpt-6-astra", "claude:claude-sonnet-5-5"]);
+      });
+      await page
+        .getByRole("button", { name: "Main agent settings", exact: true })
+        .click();
+      await page.getByText("Worker", { exact: true }).click();
+      await chooseSetupValue(
+        page.getByLabel("Subagent account", { exact: true }),
+        "account-4",
+      );
+      await expect
+        .poll(() => page.evaluate(() => window.agent.workerDefaults.model))
+        .toBe("claude-sonnet-5-5");
+      await expect(page.getByRole("option", { name: /Opus/ })).toHaveCount(0);
+      await page.evaluate(() => window.whitelist(null));
       assert.deepEqual(errors, []);
     }
     await writeFile(

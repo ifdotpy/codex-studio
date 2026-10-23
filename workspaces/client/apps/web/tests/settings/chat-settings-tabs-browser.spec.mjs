@@ -86,12 +86,12 @@ function Fixture(){const[agent,setAgent]=useState(initial),[opened,setOpened]=us
     });
     await expect(
       modal
-        .getByRole("radiogroup", { name: "Main agent model", exact: true })
-        .getByRole("radio"),
+        .getByRole("listbox", { name: "Main agent model", exact: true })
+        .getByRole("option"),
     ).toHaveCount(7);
     await roles.getByText("Workers", { exact: true }).click();
     await expect(
-      modal.getByRole("radio", { name: "Same as main agent", exact: true }),
+      modal.getByRole("option", { name: "Same as main agent", exact: true }),
     ).toBeVisible();
     const automatic = modal.getByRole("radio", {
       name: "Automatic",

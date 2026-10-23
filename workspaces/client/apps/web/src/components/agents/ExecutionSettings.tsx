@@ -1,3 +1,7 @@
+import {
+  isModelWhitelisted,
+  useModelWhitelist,
+} from "../models/modelWhitelist";
 import { useServerApi } from "../../servers/ServerServicesContext";
 import { accountCanStart } from "../../accountName";
 import {
@@ -412,6 +416,7 @@ function ScopedExecutionSettings({
     !effectiveAccount,
   );
   const catalog = teamDefaults ? accountCatalog : parentCatalog;
+  const allowedModels = useModelWhitelist();
   const connectedAccounts = accounts.filter((account) =>
     accountCanStart(account),
   );
@@ -674,6 +679,19 @@ function ScopedExecutionSettings({
     const usable = offered.filter(
       (row) =>
         !row.hidden &&
+        isModelWhitelisted(
+          {
+            ...row,
+            provider:
+              row.provider ||
+              providerOf(
+                accounts.find(
+                  (account) => account.id === (target || accountOf(agent)),
+                ),
+              ),
+          },
+          allowedModels,
+        ) &&
         !isDaybreakAlias(row.model) &&
         supportsDaybreakMode(row, false),
     );
@@ -1156,6 +1174,7 @@ function ScopedExecutionSettings({
     <>
       {presentation === "menu" && delegation}
       <AgentSetupPicker
+        retainCurrentModel={!onDraftChange}
         role={role}
         onRole={onRole}
         roles={
@@ -1402,6 +1421,8 @@ function ScopedExecutionSettings({
         ? current
         : settingsFor(agent, true);
   const summaryReview = role === "review" ? reviewCurrent : reviewStored;
+  // Native reviews inherit the invoking Codex actor, which may be a child of this lead.
+  const inheritedReview = summaryRole === "review" && !summaryReview.model;
   const summaryModel =
     summaryRole === "review"
       ? summaryReview.model || mainModel
@@ -1434,10 +1455,66 @@ function ScopedExecutionSettings({
     summaryInfo?.defaultReasoningEffort ||
     mainSettings.effort ||
     mainInfo?.defaultReasoningEffort;
+  const summaryAccountName =
+    summaryRole !== "review" &&
+    (showAccountSummary ||
+      connectedAccounts.filter(
+        (account) => (account.provider || "codex") === summaryProvider,
+      ).length > 1)
+      ? setupAccountName(
+          accounts.find((account) => account.id === summaryAccount),
+        )
+      : "";
+  const summaryContent = (
+    <>
+      {!inheritedReview && <ProviderMark provider={summaryProvider} />}
+      <span className="execution-role">
+        {summaryRole === "worker"
+          ? "Workers"
+          : summaryRole === "review"
+            ? "Review"
+            : agent.isLead
+              ? "Lead"
+              : "Agent"}
+      </span>
+      <span className="execution-model">
+        {inheritedReview
+          ? "Same as caller"
+          : displayModel(summaryCatalog, summaryModel)}
+      </span>
+      {!inheritedReview && summaryEffort && (
+        <span className="execution-effort">{title(summaryEffort)}</span>
+      )}
+      {summaryAccountName && (
+        <span className="execution-account">{summaryAccountName}</span>
+      )}
+    </>
+  );
   const trigger = (
     <Button
       className="execution-menu"
       rightSection={<ChevronDown size={14} />}
+      title={[
+        summaryRole === "worker"
+          ? "Workers"
+          : summaryRole === "review"
+            ? "Review"
+            : agent.isLead
+              ? "Lead"
+              : "Agent",
+        inheritedReview
+          ? "Same as caller"
+          : displayModel(summaryCatalog, summaryModel),
+        !inheritedReview && summaryEffort ? title(summaryEffort) : "",
+        !inheritedReview ? title(summaryProvider) : "",
+        summaryRole !== "review"
+          ? setupAccountName(
+              accounts.find((account) => account.id === summaryAccount),
+            )
+          : "",
+      ]
+        .filter(Boolean)
+        .join(" · ")}
       aria-label={
         settingsRow
           ? initialRole === "worker"
@@ -1457,7 +1534,6 @@ function ScopedExecutionSettings({
         setOpened(!opened);
       }}
     >
-      <ProviderMark provider={summaryProvider} />
       <span
         className="execution-selected"
         data-inherited={
@@ -1468,14 +1544,7 @@ function ScopedExecutionSettings({
               : undefined
         }
       >
-        {displayModel(summaryCatalog, summaryModel)}
-        {summaryEffort && ` · ${title(summaryEffort)}`}
-        {summaryRole !== "review" &&
-          (showAccountSummary ||
-            connectedAccounts.filter(
-              (account) => (account.provider || "codex") === summaryProvider,
-            ).length > 1) &&
-          ` · ${setupAccountName(accounts.find((account) => account.id === summaryAccount))}`}
+        {summaryContent}
       </span>
     </Button>
   );

@@ -76,11 +76,10 @@ test("new chat controls are inline, save settings and keep the compact composer 
     await expect(row.locator(".execution-menu")).toHaveCount(1);
     await expect(page.locator("#composer .execution-menu")).toHaveCount(1);
     await expect(page.locator(".empty-chat p")).toHaveCount(0);
-    const trigger = row.getByRole("button", {
-      name: "Main agent settings",
-      exact: true,
-    });
-    await expect(trigger.locator(".execution-selected")).toContainText("High");
+    const trigger = row.locator(".execution-summary-trigger");
+    await expect(
+      trigger.locator('[data-role="lead"] .execution-effort'),
+    ).toContainText("High");
     const composerBounds = await page.locator("#composer").boundingBox();
     const rowBounds = await row.boundingBox();
     const startBounds = await page.locator(".conversation-start").boundingBox();
@@ -94,19 +93,21 @@ test("new chat controls are inline, save settings and keep the compact composer 
     );
     await trigger.click();
     const picker = page.getByRole("dialog", {
-      name: "Main agent settings",
+      name: "Chat settings",
       exact: true,
     });
     await expect(
       picker.getByLabel("Main agent reasoning", { exact: true }),
     ).toHaveAttribute("data-value", "high");
-    await picker.getByText("Worker", { exact: true }).click();
+    await picker.getByText("Workers", { exact: true }).click();
     await expect(
       page.getByLabel("Default subagent reasoning", { exact: true }),
     ).toHaveAttribute("data-value", "medium");
     await page.keyboard.press("Escape");
     await page.reload();
-    await expect(trigger.locator(".execution-selected")).toContainText("High");
+    await expect(
+      trigger.locator('[data-role="lead"] .execution-effort'),
+    ).toContainText("High");
     await page.setViewportSize({ width: 390, height: 844 });
     await expect(trigger).toBeVisible();
     await expect(

@@ -25,6 +25,7 @@ export type AgentSetupPickerProps = {
   onModel: (model: string) => void;
   modelLabel: string;
   modelId?: string;
+  retainCurrentModel?: boolean;
   efforts: { value: string; label: string }[];
   effort: string;
   onEffort: (effort: string) => void;
@@ -84,6 +85,7 @@ export function AgentSetupPicker(p: AgentSetupPickerProps) {
         />
       )}
       <ModelField
+        retainCurrent={p.retainCurrentModel}
         id={p.modelId || (p.role === "review" ? "review-model" : "model")}
         label={p.modelLabel}
         options={p.models}
