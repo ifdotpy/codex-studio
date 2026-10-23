@@ -88,6 +88,7 @@ export function mergeOutgoing(
   local: Record<string, OutgoingMessage>,
   observed: ReadonlySet<string>,
 ) {
+  const stored = new Map(outbox.map((entry) => [entry.id, entry]));
   const visibleSends = new Map(
     outbox
       .filter(
@@ -97,9 +98,13 @@ export function mergeOutgoing(
       )
       .map((entry) => [entry.id, entry as OutgoingMessage]),
   );
-  for (const entry of Object.values(local))
-    if (entry.status === "sending" || !visibleSends.has(entry.id))
+  // The outbox owns delivery state once it stores a message. A local copy
+  // shows only before that, or as "sending" while the stored entry is queued.
+  for (const entry of Object.values(local)) {
+    const owner = stored.get(entry.id);
+    if (!owner || (entry.status === "sending" && owner.status === "queued"))
       visibleSends.set(entry.id, entry);
+  }
   return [...visibleSends.values()].filter((entry) => !observed.has(entry.id));
 }
 
