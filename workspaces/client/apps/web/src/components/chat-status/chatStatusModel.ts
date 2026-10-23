@@ -10,6 +10,15 @@ export type ChatIndicatorKind =
   | "error"
   | "paused"
   | "none";
+/** Operator urgency, most urgent first. Owns ordering for the fleet board and the team panel. */
+export const CHAT_INDICATOR_URGENCY: readonly ChatIndicatorKind[] = [
+  "answer",
+  "error",
+  "working",
+  "unread",
+  "paused",
+  "none",
+];
 export interface ChatIndicator {
   kind: ChatIndicatorKind;
   label: string;

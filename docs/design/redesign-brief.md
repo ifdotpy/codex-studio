@@ -42,7 +42,9 @@ contrast is 4.89:1 for light states and 5.90:1 for dark states. Muted text reach
 in light and Mantine auto-contrast on Signal 4 in dark. Token owners are
 `src/theme.ts` (Mantine palettes), `src/studio-theme.css` (surfaces/type aliases),
 and `src/design/state.css` (semantic state colors). The table records their
-reviewed values; consume the owners, not copied hex values.
+reviewed values; consume the owners, not copied hex values. Soft state backgrounds
+use the percentage owner `--studio-state-tint`: a quiet 5% in light and 14% in
+dark, preserving AA for state text over both page and panel backgrounds.
 
 Signal is the Mantine primary color (a 10-shade `signal` palette). The state
 names are the existing `ChatIndicatorKind` values from
@@ -128,7 +130,8 @@ for the application and Storybook. Current reviewed values:
 `src/studio-preferences.css` alone owns the custom transcript column through
 `--studio-content-width-ratio` and its computed `--studio-content-column`.
 Full uses the entire available conversation width minus its gutters. Original
-layout retains the geometry from `workspace-layout.css`. User-selected font
+layout retains the geometry from `workspace-layout.css`, which also owns
+`--studio-sidebar-width` for the desktop fleet column and closed terminal dock. User-selected font
 families and sizes still override the Inter theme defaults.
 
 ## Workstreams and file ownership

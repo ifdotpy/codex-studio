@@ -70,7 +70,7 @@
 
 :root:not([data-studio-content-layout="original"])
   #conversation
-  :is(#composer, .usage-footer, .message-queue) {
+  :is(#composer, .conversation-composer-footer, .message-queue) {
   width: var(--studio-content-column);
   max-width: none;
   margin-inline: auto;
@@ -193,12 +193,14 @@
 
   :root:not([data-studio-content-layout="original"])
     #conversation
-    :is(#composer, .usage-footer, .message-queue) {
+    :is(#composer, .conversation-composer-footer, .message-queue) {
     width: var(--studio-content-column);
   }
 }
 
-:root[data-studio-content-layout="original"] #conversation .usage-footer {
+:root[data-studio-content-layout="original"]
+  #conversation
+  .conversation-composer-footer {
   width: calc(100% - 2 * var(--chat-gutter));
   max-width: var(--chat-width);
   align-self: center;

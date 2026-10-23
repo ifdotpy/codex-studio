@@ -1,4 +1,9 @@
-import { Button, type ButtonProps, type ElementProps } from "@mantine/core";
+import {
+  Button,
+  useMantineTheme,
+  type ButtonProps,
+  type ElementProps,
+} from "@mantine/core";
 import type { ReactNode } from "react";
 import "./primitives.css";
 
@@ -12,6 +17,7 @@ export function ActionButton({
   actionRole = "quiet",
   ...props
 }: ActionButtonProps) {
+  const theme = useMantineTheme();
   const variant =
     actionRole === "quiet"
       ? "subtle"
@@ -22,7 +28,7 @@ export function ActionButton({
     actionRole === "destructive"
       ? "red"
       : actionRole === "primary"
-        ? undefined
+        ? theme.primaryColor
         : "gray";
   return <Button variant={variant} color={color} {...props} />;
 }
