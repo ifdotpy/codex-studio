@@ -1,5 +1,14 @@
 # Managed Codex teams
 
+HTTP JSON responses follow this flow:
+
+1. Produce the final JSON, including any mutation sync envelope.
+2. Hash the uncompressed representation for declared ETags and handle conditional reads.
+3. Negotiate Brotli for sufficiently large JSON using the size and quality constants in
+   [`runtime-http/src/router.rs`](../workspaces/runtime/packages/runtime-http/src/router.rs).
+4. Vary on `Accept-Encoding`; the native client negotiates and decodes Brotli.
+   Small JSON and all `text/event-stream` responses, including sync SSE, stay uncompressed.
+
 Server command output follows this flow:
 
 1. Retain the first and last bytes within the command's output limit.

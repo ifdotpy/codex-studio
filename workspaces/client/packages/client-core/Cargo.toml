@@ -20,7 +20,7 @@ serde.workspace = true
 serde_json.workspace = true
 unicode-segmentation = "=1.13.3"
 vt100 = "=0.16.2"
-reqwest = { version = "=0.12.28", default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { version = "=0.12.28", default-features = false, features = ["brotli", "json", "rustls-tls"] }
 tokio = { workspace = true, features = ["fs"] }
 base64.workspace = true
 webrtc = "=0.21.0"
@@ -57,5 +57,6 @@ objc2-core-graphics = { version = "=0.3.2", default-features = false, features =
 objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSString", "NSURL", "NSArray", "NSError", "NSProcessInfo", "NSLocale", "NSGeometry", "NSBundle", "NSNotification", "NSOperation", "block2"] }
 
 [dev-dependencies]
+brotli = { workspace = true }
 rustls.workspace = true
 rcgen = "=0.14.10"

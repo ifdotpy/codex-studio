@@ -45,6 +45,7 @@ large_futures = "warn"
 [workspace.dependencies]
 schemars = { version = "=1.2.3", features = ["derive"] }
 bytes = "=1.12.1"
+brotli = "=9.0.0"
 base64 = { version = "=0.23.1", default-features = false, features = ["alloc"] }
 data-encoding = "=2.11.1"
 file-rotate = "=0.8.0"
@@ -79,6 +80,7 @@ subtle = "=2.6.1"
 tokio = { version = "=1.53.2", features = ["fs", "io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "test-util", "time"] }
 tokio-util = { version = "=0.7.20", default-features = false }
 tower = { version = "=0.5.3", features = ["util"] }
+tower-http = { version = "=0.6.11", default-features = false }
 ring = "=0.17.14"
 rustls = { version = "=0.23.45", default-features = false, features = ["ring", "std", "tls12"] }
 rustls-pki-types = { version = "=1.15.1", features = ["std"] }
