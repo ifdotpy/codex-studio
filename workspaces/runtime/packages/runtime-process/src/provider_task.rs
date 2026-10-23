@@ -194,6 +194,7 @@ impl SupervisorProviderTaskFactory {
                 initialize_id: None,
                 cached_initialize: None,
                 open_attempted: false,
+                provider_exited: false,
             };
             let task = tokio::spawn(actor.run());
             Ok(ProviderAttachment::from_task(
@@ -381,6 +382,9 @@ struct AdapterTask {
     initialize_id: Option<RequestId>,
     cached_initialize: Option<Value>,
     open_attempted: bool,
+    /// The supervisor reported the end of the attached child (`nextBatch`
+    /// with its return code and closed output readers).
+    provider_exited: bool,
 }
 
 fn pump_channel_closed(shutdown: bool, terminal: bool) -> Option<AdapterError> {
@@ -406,6 +410,9 @@ impl AdapterTask {
             result,
             cleanup_error: None,
             recovery_needed,
+            // The supervisor owns the child: it outlives this attachment
+            // unless the attachment saw it end.
+            provider_retained: self.info.is_some() && !self.provider_exited,
         }
     }
 
@@ -697,7 +704,10 @@ impl AdapterTask {
                                 break Err(AdapterError::TaskFailed);
                             }
                         }
-                        Some(Ok(PumpMessage::Terminal)) => terminal = true,
+                        Some(Ok(PumpMessage::Terminal)) => {
+                            terminal = true;
+                            self.provider_exited = true;
+                        }
                         Some(Err(error)) => break Err(error),
                         None => {
                             pump_open = false;

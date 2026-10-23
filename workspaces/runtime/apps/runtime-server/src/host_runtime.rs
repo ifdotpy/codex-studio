@@ -2595,6 +2595,7 @@ mod voice_composition_tests {
                     result: Ok(()),
                     cleanup_error: None,
                     recovery_needed: None,
+                    provider_retained: false,
                 }
             });
             Box::pin(async move {

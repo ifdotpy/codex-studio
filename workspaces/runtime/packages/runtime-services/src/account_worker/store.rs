@@ -996,7 +996,7 @@ pub(super) async fn outcome(
     let Some(context) = pending else {
         if let SessionOutcome::GenerationClosed { generation } = outcome {
             scheduler::lifecycle_transaction(&store, move |tx| {
-                disconnect_provider_generation(tx, &account, generation)
+                disconnect_provider_generation(tx, &account, generation, false)
             })
             .await?;
         }
@@ -1365,13 +1365,25 @@ pub(super) async fn disconnect_vm_actor(
 /// Disconnect one ended provider generation and tell each interrupted child's
 /// parent. The notice id is the stop id a later connection recovery would use
 /// for the same turn or start attempt, so each parent hears of the stop once.
+///
+/// A retained provider (a supervised process that outlives this worker) keeps
+/// its turns: the next worker attaches to the same generation and continues
+/// them, and a replaced generation disconnects them then
+/// (`SchedulerRepository::reconcile_generation`). Only the VM actors end here:
+/// their sessions belong to this worker.
 pub(super) fn disconnect_provider_generation(
     tx: &studio_runtime_store::Transaction<'_>,
     account: &str,
     generation: u64,
+    provider_retained: bool,
 ) -> studio_runtime_store::StoreResult<()> {
     let at = now();
-    for agent in SchedulerRepository::disconnect_account(tx, account, generation, at, false)? {
+    let interrupted = if provider_retained {
+        SchedulerRepository::disconnect_vm_actors(tx, account, generation, at)?
+    } else {
+        SchedulerRepository::disconnect_account(tx, account, generation, at, false)?
+    };
+    for agent in interrupted {
         crate::lifecycle_effects::notify_parent_of_disconnect(tx, &agent, at)?;
     }
     Ok(())

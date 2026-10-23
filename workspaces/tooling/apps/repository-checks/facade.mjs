@@ -801,6 +801,68 @@ function fastTierCommands(root) {
       },
     },
     {
+      item: { name: "studio-runtime-services", ecosystem: "cargo" },
+      label: "retained provider disconnect witnesses",
+      commands: [
+        [
+          "cargo",
+          [
+            "nextest",
+            "run",
+            "--locked",
+            "--no-tests",
+            "fail",
+            "--message-format",
+            "libtest-json-plus",
+            "-p",
+            "studio-runtime-services",
+            "--lib",
+            "-E",
+            "test(/^account_worker::tests::(a_replaced_worker_keeps_the_live_turn_of_its_retained_provider|a_supervised_provider_exit_is_still_a_disconnect|provider_exit_while_the_server_runs_is_a_disconnect_reported_once)$/)",
+          ],
+        ],
+        [
+          "cargo",
+          [
+            "nextest",
+            "run",
+            "--locked",
+            "--no-tests",
+            "fail",
+            "--message-format",
+            "libtest-json-plus",
+            "-p",
+            "studio-runtime-store",
+            "--lib",
+            "-E",
+            "test(/::a_retained_host_provider_disconnects_only_the_vm_actors$/)",
+          ],
+        ],
+        [
+          "cargo",
+          [
+            "nextest",
+            "run",
+            "--locked",
+            "--no-tests",
+            "fail",
+            "--message-format",
+            "libtest-json-plus",
+            "-p",
+            "studio-runtime-process",
+            "-E",
+            "binary(integration) & test(/^provider_task::(a_cancelled_attachment_leaves_its_supervised_child_retained|terminal_eof_serves_already_queued_final_ack_before_completion)$/)",
+          ],
+        ],
+      ],
+      options: {
+        selector:
+          "account worker end with a supervised provider that outlives it",
+        reason:
+          "Check that a replaced worker leaves the live turn of a retained provider running and tells no parent, while a provider exit stays a disconnect.",
+      },
+    },
+    {
       item: { name: "retained Python helper boundaries", ecosystem: "pnpm" },
       label: "retained Python helper boundaries",
       commands: [

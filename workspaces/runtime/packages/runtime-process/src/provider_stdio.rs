@@ -401,6 +401,8 @@ impl StdioProviderTaskFactory {
                     result: cleanup.and(result).and(stderr_result).and(stderr_flush),
                     cleanup_error,
                     recovery_needed: None,
+                    // The attachment owns the child and ended it above.
+                    provider_retained: false,
                 }
             });
             Ok(ProviderAttachment::from_task(

@@ -522,6 +522,7 @@ impl ProviderTaskFactory for WireFactory {
                     result: Ok(()),
                     cleanup_error: None,
                     recovery_needed: None,
+                    provider_retained: false,
                 }
             });
             Ok(ProviderAttachment::from_task(

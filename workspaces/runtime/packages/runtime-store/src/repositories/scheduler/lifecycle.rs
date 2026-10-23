@@ -135,6 +135,29 @@ impl SchedulerRepository {
         Ok(interrupted)
     }
 
+    /// Disconnect the VM actors of an ended account worker whose host provider
+    /// stays retained. Returns the agents this disconnect left interrupted.
+    pub fn disconnect_vm_actors(
+        transaction: &Transaction<'_>,
+        account: &str,
+        generation: u64,
+        at: f64,
+    ) -> StoreResult<Vec<String>> {
+        let mut interrupted = Vec::new();
+        for mut agent in account_agents(transaction, account, &unresolved_sql())? {
+            if agent.extra.get("executionMode").and_then(Value::as_str) == Some("vm")
+                && stored_attempt(&agent).unwrap_or(&Value::Null)["connectionGeneration"]
+                    .as_u64()
+                    .is_none_or(|g| g == generation)
+                && disconnect_agent(transaction, &mut agent, at, false, false)?
+                && agent.status == AgentStatus::Interrupted
+            {
+                interrupted.push(agent.id.0);
+            }
+        }
+        Ok(interrupted)
+    }
+
     /// Retire one VM actor after its provider session closes, preserving that
     /// actor's recovery receipt without disconnecting sibling actors.
     pub fn disconnect_vm_actor(
