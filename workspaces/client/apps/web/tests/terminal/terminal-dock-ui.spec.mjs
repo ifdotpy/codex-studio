@@ -250,6 +250,7 @@ test("Terminal dock", async () => {
       else if (path === "/api/voice/records")
         value = { records: [], cursor: 0, delivered: [] };
       else if (path === "/api/session") value = { token: state.token };
+      else if (path === "/api/queue") value = { items: [], revision: 0 };
       else if (path === "/api/transcript") value = { items: [], agent };
       else if (path === "/api/transcript/stream")
         return route.fulfill({ status: 503, body: "fixture polling" });
@@ -484,7 +485,9 @@ test("Terminal dock", async () => {
       .locator("#composer")
       .waitFor({ timeout: 5000 })
       .catch(async (error) => {
-        console.error(await page.locator("body").innerText());
+        console.error(
+          await page.locator(".ui-error-boundary pre").allTextContents(),
+        );
         throw error;
       });
     // A smaller host changes the grid of this session, not its identity.
@@ -556,6 +559,7 @@ test("Terminal dock", async () => {
       writes.filter((write) => write.path === "/api/terminals/create").length,
       1,
     );
+    await page.screenshot({ path: join(root, "terminal-short.png") });
     await page.setViewportSize({ width: 1440, height: 980 });
     await page.waitForTimeout(200);
     await dock.locator(".xterm-helper-textarea").focus();

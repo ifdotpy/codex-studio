@@ -317,7 +317,11 @@
 /* A closed dock occupies only the bottom of the conversation sidebar. A server view in the
    combined window has no sidebar of its own (the shell shows it), so there the closed dock stays
    a full-width bar and the page keeps its height above it. */
-@media (min-width: 761px) {
+/* layout-query: navigation.inlineMin >= */
+@media (width >= 761px) {
+  .terminal-dock[data-shell-terminal]:not(.is-open) {
+    display: none;
+  }
   html body #root:has(#sidebar):has(.terminal-dock:not(.is-open)) {
     height: 100dvh;
   }
@@ -395,7 +399,8 @@
   color: var(--muted);
 }
 
-@media (min-width: 761px) {
+/* layout-query: navigation.inlineMin >= */
+@media (width >= 761px) {
   .terminal-dock:not(.is-open) .terminal-dock-bar {
     padding-inline: 16px;
     color: var(--muted);
@@ -420,7 +425,8 @@
    (servers.css "Terminal under the sidebar"). While the panel is open, this
    view spans the whole window under the shell sidebar, so the content keeps
    clear of the sidebar and the panel uses the full width. */
-@media (min-width: 761px) {
+/* layout-query: navigation.inlineMin >= */
+@media (width >= 761px) {
   html[data-server-view]:not(
       [data-server-navigation="classic"]
     )[data-shell-sidebar]
@@ -440,12 +446,5 @@
     #root:has(.terminal-dock.is-open) {
     box-sizing: border-box;
     padding-left: var(--shell-sidebar-width, 0px);
-  }
-}
-
-/* An in-process server gives its closed bar to the combined shell. */
-@media (min-width: 761px) {
-  .terminal-dock[data-shell-terminal]:not(.is-open) {
-    display: none;
   }
 }

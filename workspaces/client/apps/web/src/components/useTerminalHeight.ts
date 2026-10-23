@@ -22,6 +22,7 @@ export function useTerminalHeight(
     if (!parent) return;
     let frame = 0;
     const observer = new ResizeObserver(() => schedule());
+    let observed = new Set<Element>();
     const measure = () => {
       frame = 0;
       const workspace = parent.querySelector<HTMLElement>(".workspace");
@@ -33,10 +34,9 @@ export function useTerminalHeight(
       const bottom =
         dock.current?.getBoundingClientRect().bottom ?? window.innerHeight;
       let reserved = header?.getBoundingClientRect().height ?? 0;
-      observer.disconnect();
-      observer.observe(document.documentElement);
-      if (workspace) observer.observe(workspace);
-      if (header) observer.observe(header);
+      const targets = new Set<Element>([document.documentElement]);
+      if (workspace) targets.add(workspace);
+      if (header) targets.add(header);
       if (conversation) {
         for (const element of conversation.children) {
           if (
@@ -69,9 +69,16 @@ export function useTerminalHeight(
             height +
             (Number.parseFloat(style.marginTop) || 0) +
             (Number.parseFloat(style.marginBottom) || 0);
-          observer.observe(element);
+          targets.add(element);
         }
       }
+      for (const element of observed) {
+        if (!targets.has(element)) observer.unobserve(element);
+      }
+      for (const element of targets) {
+        if (!observed.has(element)) observer.observe(element);
+      }
+      observed = targets;
       const hostTop = Math.max(0, workspace?.getBoundingClientRect().top ?? 0);
       const next = {
         available: Math.max(0, bottom - hostTop - reserved),
