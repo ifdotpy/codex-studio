@@ -113,3 +113,25 @@ export const SIGN_IN_STATE_LABEL: Record<SignInState, string> = {
 /** The answer of a pasted result does not name the outcome; the chat event does (6.2). */
 export const RESULT_SENT_NOTE =
   "Studio sent the sign-in result to the command. The chat shows how it ended.";
+
+/**
+ * The chats that wait on this card, in words: "2 other chats wait on this sign-in: Infra and
+ * 1 more." Undefined when no other chat waits. `names` maps agent IDs to chat names.
+ */
+export function waitingChatsLabel(
+  joined: readonly string[] | undefined,
+  names: ReadonlyMap<string, string>,
+): string | undefined {
+  if (!joined?.length) return undefined;
+  const known = joined
+    .map((agent) => names.get(agent))
+    .filter((name): name is string => !!name);
+  const count = joined.length;
+  const lead =
+    count === 1
+      ? "1 other chat waits on this sign-in"
+      : `${count} other chats wait on this sign-in`;
+  if (!known.length) return `${lead}.`;
+  const rest = count - known.length;
+  return `${lead}: ${known.join(", ")}${rest ? ` and ${rest} more` : ""}.`;
+}

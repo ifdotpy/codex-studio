@@ -74,7 +74,12 @@ const BODY_LIMIT: usize = 256 * 1024;
 const HEAD_LIMIT: usize = 64 * 1024;
 const MAX_WAIT_SECONDS: f64 = 20.0;
 const SENT_HEADERS: [&str; 3] = ["user-agent", "accept", "accept-language"];
-const OPEN_STATES: [&str; 2] = ["pending", "approved"];
+/// A request of another chat that waits on the open request of the same Linux user,
+/// sign-in host and client (`joinedTo`) instead of a card of its own.
+pub const JOINED: &str = "joined";
+/// The `closeReason` of a joined request whose sign-in finished on the card it waited on.
+pub const JOINED_SIGNED_IN_REASON: &str = "joined-signed-in";
+const OPEN_STATES: [&str; 3] = ["pending", "approved", JOINED];
 /// States after which the same link of a chat can queue again (`REOPEN_STATES`).
 const REOPEN_STATES: [&str; 3] = ["stale", "expired", "replaced"];
 const IPV4_REACH: [&str; 4] = ["127.0.0.1", "0.0.0.0", "::ffff:127.0.0.1", "::"];
@@ -847,13 +852,37 @@ impl HostBridge {
         if let Some(item) = Self::existing(&queue, &agent, &original, now) {
             return Ok(item);
         }
+        // One card for one sign-in: a link of another chat with the same Linux user, sign-in
+        // host and client waits on the open request (docs/vm-browser-bridge.md, "One card for
+        // the same sign-in"). A device code page has no client and stays on its own.
+        let leader = final_link.client_id.as_deref().and_then(|client| {
+            queue
+                .items
+                .values()
+                .filter(|item| {
+                    matches!(item["state"].as_str(), Some("pending" | "approved"))
+                        && item.get("agentId").and_then(Value::as_str) != Some(agent.as_str())
+                        && item.get("uid").and_then(Value::as_u64) == Some(u64::from(uid))
+                        && item.get("host").and_then(Value::as_str)
+                            == Some(final_link.host.as_str())
+                        && item.get("clientId").and_then(Value::as_str) == Some(client)
+                        && now <= item["expiresAt"].as_f64().unwrap_or(0.0)
+                })
+                .min_by(|left, right| {
+                    left["createdAt"]
+                        .as_f64()
+                        .unwrap_or(0.0)
+                        .total_cmp(&right["createdAt"].as_f64().unwrap_or(0.0))
+                })
+                .and_then(|item| item.get("id").cloned())
+        });
         // The latest link of a chat replaces its earlier pending link.
         let replaced: Vec<String> = queue
             .items
             .iter()
             .filter(|(_, item)| {
                 item.get("agentId").and_then(Value::as_str) == Some(agent.as_str())
-                    && item.get("state").and_then(Value::as_str) == Some("pending")
+                    && matches!(item["state"].as_str(), Some("pending" | JOINED))
             })
             .map(|(key, _)| key.clone())
             .collect();
@@ -873,6 +902,11 @@ impl HostBridge {
             "scope": final_link.scope, "state": "pending", "createdAt": now,
             "expiresAt": now + TTL_SECONDS, "relays": 0, "lease": null,
         });
+        let mut item = item;
+        if let Some(leader) = leader {
+            item["state"] = json!(JOINED);
+            item["joinedTo"] = leader;
+        }
         queue.items.insert(id.clone(), item);
         self.update(&mut queue, &id, json!({}));
         self.save(&mut queue);
@@ -1153,7 +1187,7 @@ impl HostBridge {
                     let port = redirect["port"].as_u64().unwrap_or(0) as u16;
                     connect_address(uid, port, rows).is_ok()
                 });
-            if item["state"] == "pending"
+            if matches!(item["state"].as_str(), Some("pending" | JOINED))
                 && listening == Some(true)
                 && let Some(deadline) = listening_deadline(&item, now)
             {
@@ -1175,9 +1209,61 @@ impl HostBridge {
                 changed = true;
             }
         }
+        changed |= self.settle_joined(&mut queue);
         if changed {
             self.save(&mut queue);
         }
+    }
+
+    /// End the joined requests whose card ended: signed in when its sign-in finished, else the
+    /// oldest joined request becomes the card and the others wait on it. Returns whether
+    /// something changed.
+    fn settle_joined(&self, queue: &mut Queue) -> bool {
+        let mut changed = false;
+        let joined: Vec<(String, String, f64)> = queue
+            .items
+            .iter()
+            .filter(|(_, item)| item["state"] == JOINED)
+            .map(|(key, item)| {
+                (
+                    key.clone(),
+                    item["joinedTo"].as_str().unwrap_or_default().to_owned(),
+                    item["createdAt"].as_f64().unwrap_or(0.0),
+                )
+            })
+            .collect();
+        let mut leaders: BTreeMap<String, Vec<(f64, String)>> = BTreeMap::new();
+        for (key, leader, created) in joined {
+            leaders.entry(leader).or_default().push((created, key));
+        }
+        for (leader, mut waiting) in leaders {
+            let ended = queue.items.get(&leader).map(|card| {
+                let state = card["state"].as_str().unwrap_or_default();
+                (!OPEN_STATES.contains(&state), signed_in(card))
+            });
+            let (ended, signed) = ended.unwrap_or((true, false));
+            if !ended {
+                continue;
+            }
+            changed = true;
+            if signed {
+                for (_, key) in waiting {
+                    self.update(
+                        queue,
+                        &key,
+                        json!({"state": "closed", "closeReason": JOINED_SIGNED_IN_REASON}),
+                    );
+                }
+                continue;
+            }
+            waiting.sort_by(|left, right| left.0.total_cmp(&right.0));
+            let (_, card) = waiting.remove(0);
+            self.update(queue, &card, json!({"state": "pending", "joinedTo": null}));
+            for (_, key) in waiting {
+                self.update(queue, &key, json!({"joinedTo": card}));
+            }
+        }
+        changed
     }
 
     async fn launcher_client(self: Arc<Self>, stream: UnixStream) {
@@ -1246,10 +1332,13 @@ impl HostBridge {
             .await
         {
             Ok(item) => {
-                if self.local_open {
+                // A joined link waits on a card whose page is already open: no second page.
+                let joined = item["state"] == JOINED;
+                if self.local_open && !joined {
                     self.mark_local_open(&item);
                 }
-                json!({"ok": true, "id": item["id"], "host": item["host"], "open": self.local_open})
+                json!({"ok": true, "id": item["id"], "host": item["host"],
+                       "open": self.local_open && !joined, "joined": joined})
             }
             Err(error) => {
                 json!({"ok": false, "code": error.code, "message": error.message, "open": self.local_open})
@@ -1321,6 +1410,21 @@ impl HostBridge {
         drop(
             tokio::time::timeout(Duration::from_secs(READ_SECONDS), writer.write_all(&bytes)).await,
         );
+    }
+}
+
+/// Whether the sign-in of a request that ended finished: the command took a relayed result,
+/// the browser of this Mac had the page, a device page opened, or the person approved the
+/// card and its command then stopped listening.
+fn signed_in(item: &Value) -> bool {
+    match item["state"].as_str() {
+        Some("closed") => matches!(
+            item["closeReason"].as_str(),
+            Some("completed" | LOCAL_CLOSE_REASON)
+        ),
+        Some("opened") => true,
+        Some("stale") => item.get("lease").is_some_and(Value::is_object),
+        _ => false,
     }
 }
 
@@ -1646,6 +1750,14 @@ pub fn shim(
         Some(Value::String(host)) => host.clone(),
         _ => "None".into(),
     };
+    if reply.get("joined") == Some(&Value::Bool(true)) {
+        return (
+            0,
+            format!(
+                "studio-browser: Another chat already asks the person to sign in at {host}. This command waits on that card; Studio tells this chat when the sign-in ends."
+            ),
+        );
+    }
     if opened {
         return (
             0,
@@ -1669,6 +1781,10 @@ mod lifetime_tests;
 #[cfg(test)]
 #[path = "browser_host_local_open_tests.rs"]
 mod local_open_tests;
+
+#[cfg(test)]
+#[path = "browser_host_join_tests.rs"]
+mod join_tests;
 
 #[cfg(test)]
 mod tests {
