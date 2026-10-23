@@ -84,7 +84,13 @@ pub(super) fn apply(
     let dependency = match method {
         "account/login/completed" => Some(NotificationDependency::AccountLogin),
         "account/updated" => Some(NotificationDependency::AccountRefresh),
-        "account/rateLimits/updated" => Some(NotificationDependency::RateLimits),
+        // Account telemetry is consumed by the durable account journal before
+        // thread dispatch. It does not require an agent or a thread ID.
+        "account/rateLimits/updated" => {
+            return Ok(Some(DispatchOutcome::Ignored {
+                reason: "account-journal/limits-observation".into(),
+            }));
+        }
         "turn/started" | "turn/completed" => Some(NotificationDependency::TurnLifecycle),
         kind if kind.starts_with("thread/realtime/") => Some(NotificationDependency::Realtime),
         "thread/closed" => Some(NotificationDependency::ThreadUnloaded),

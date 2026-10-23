@@ -41,7 +41,7 @@ pub(super) fn task_transition(
     }
     let item_id = item_id.unwrap_or_default();
     let historical_tool = stale
-        && method == "item/completed"
+        && matches!(method, "item/started" | "item/completed")
         && previous.is_some_and(|t| {
             t["kind"] == "tool"
                 && t["agent"] == agent["id"]
@@ -90,6 +90,7 @@ pub(super) fn task_transition(
         "exitCode",
         "query",
         "server",
+        "outputFile",
     ] {
         if let Some(value) = item.get(key).filter(|v| !v.is_null()) {
             task[key] = value.clone();
@@ -132,7 +133,7 @@ pub(super) fn task_transition(
         task["tail"] = json!(suffix(&output, TOOL_OUTPUT_CHARS));
         task["outputTruncated"] = json!(output.chars().count() > TOOL_OUTPUT_CHARS);
     }
-    if method == "item/completed" {
+    if method == "item/completed" && item["status"] != "inProgress" {
         if !task["durationMs"].is_number() {
             let elapsed = (at - task["created"].as_f64().unwrap_or(at)) * 1000.0;
             task["durationMs"] = if elapsed <= 0.0 {
@@ -159,7 +160,7 @@ pub(super) fn non_text(
     let kind = item["type"]
         .as_str()
         .ok_or(NotificationDispatchError::InvalidNotification)?;
-    let started = method == "item/started";
+    let started = method == "item/started" || item["status"] == "inProgress";
     let task = task_transition(agent, method, params, previous_task, false, at)?;
     let mut decision = ItemDecision {
         task,
@@ -254,7 +255,7 @@ pub(super) fn non_text(
 }
 
 pub(super) fn tool_status(item: &Value, started: bool) -> &'static str {
-    if started {
+    if started || item["status"] == "inProgress" {
         "running"
     } else if matches!(item["status"].as_str(), Some("failed" | "declined"))
         || item["success"] == false

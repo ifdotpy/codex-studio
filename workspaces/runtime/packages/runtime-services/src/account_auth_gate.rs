@@ -62,7 +62,16 @@ fn hold_reasons() -> Vec<&'static str> {
 
 fn same_selected_account(selected: &Value, current: &Value) -> bool {
     PIN_FIELDS.iter().all(|key| {
-        selected.get(*key).unwrap_or(&Value::Null) == current.get(*key).unwrap_or(&Value::Null)
+        let old = selected.get(*key).unwrap_or(&Value::Null);
+        let new = current.get(*key).unwrap_or(&Value::Null);
+        if *key == "_credentialIdentity" && selected.get("provider") == Some(&json!("claude")) {
+            old == new
+                || old.as_str().zip(new.as_str()).is_some_and(|(old, new)| {
+                    crate::account_driver::claude_identity::accepts(old, new)
+                })
+        } else {
+            old == new
+        }
     })
 }
 
@@ -248,6 +257,26 @@ mod tests {
     use crate::account_driver::{AccountStatus, CHANGED_ERROR};
     use serde_json::json;
     use studio_runtime_providers::ProviderKind;
+
+    #[test]
+    fn claude_identity_upgrade_preserves_admission_but_changed_org_holds() {
+        let selected = json!({"provider":"claude", "_credentialIdentity":"claude:a@example.test"});
+        let mut current = selected.clone();
+        current["_credentialIdentity"] = json!(crate::account_driver::claude_identity::identity(
+            "a@example.test",
+            Some("org-a"),
+            Some("account-a")
+        ));
+        assert!(super::same_selected_account(&selected, &current));
+        let pinned = current.clone();
+        current["_credentialIdentity"] = json!(crate::account_driver::claude_identity::identity(
+            "a@example.test",
+            Some("org-b"),
+            Some("account-a")
+        ));
+        assert!(!super::same_selected_account(&pinned, &current));
+        assert!(!super::same_selected_account(&pinned, &selected));
+    }
 
     #[test]
     fn selected_account_comparison_treats_missing_and_null_alike() {

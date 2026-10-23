@@ -18939,6 +18939,13 @@
             "title": "Patch",
             "type": "string"
           },
+          "restoreUnavailableReason": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "truncated": {
             "title": "Truncated",
             "type": "boolean"
@@ -19525,7 +19532,8 @@
               "provider_pending",
               "provider_ready",
               "completed",
-              "failed"
+              "failed",
+              "recovery_required"
             ],
             "title": "Phase",
             "type": "string"
@@ -19533,6 +19541,10 @@
           "requestId": {
             "title": "Requestid",
             "type": "string"
+          },
+          "restoreFiles": {
+            "default": false,
+            "type": "boolean"
           },
           "turnId": {
             "anyOf": [
@@ -19645,6 +19657,63 @@
           "status"
         ],
         "title": "ClaudeDeliveryResponse",
+        "type": "object"
+      },
+      "ClaudeFileBackupsRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "maxLength": 1024,
+            "minLength": 1,
+            "type": "string"
+          },
+          "release": {
+            "type": "boolean"
+          },
+          "request_id": {
+            "maxLength": 1024,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "release",
+          "request_id"
+        ],
+        "type": "object"
+      },
+      "ClaudeFileBackupsResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "bytes": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "count": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "maxBytes": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "maxCount": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "released": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "count",
+          "bytes",
+          "maxCount",
+          "maxBytes",
+          "released"
+        ],
         "type": "object"
       },
       "ClaudeLoginResponse": {
@@ -20048,6 +20117,14 @@
             "default": null,
             "title": "Syncentitiesafter"
           },
+          "fileResult": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "filesRestored": {
+            "default": false,
+            "type": "boolean"
+          },
           "nativeId": {
             "title": "Nativeid",
             "type": "string"
@@ -20118,6 +20195,10 @@
             "minLength": 1,
             "title": "Request Id",
             "type": "string"
+          },
+          "restore_files": {
+            "default": false,
+            "type": "boolean"
           },
           "turn_id": {
             "title": "Turn Id",
@@ -20593,9 +20674,20 @@
       "ClaudeTurn": {
         "additionalProperties": false,
         "properties": {
+          "canRestoreFiles": {
+            "default": false,
+            "type": "boolean"
+          },
           "id": {
             "title": "Id",
             "type": "string"
+          },
+          "restoreFilesUnavailableReason": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "status": {
             "enum": [
@@ -23290,6 +23382,21 @@
             "title": "Account Key",
             "type": "string"
           },
+          "allowedTools": {
+            "anyOf": [
+              {
+                "items": {
+                  "minLength": 1,
+                  "pattern": "^[A-Za-z0-9_.:/*-]+$",
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "concurrency": {
             "default": 32,
             "maximum": 2048.0,
@@ -23313,6 +23420,21 @@
             ],
             "default": null,
             "title": "Daybreak Enabled"
+          },
+          "disallowedTools": {
+            "anyOf": [
+              {
+                "items": {
+                  "minLength": 1,
+                  "pattern": "^[A-Za-z0-9_.:/*-]+$",
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "effort": {
             "anyOf": [
@@ -23361,6 +23483,33 @@
             "minimum": 1.0,
             "title": "Maxagents",
             "type": "integer"
+          },
+          "maxTurns": {
+            "anyOf": [
+              {
+                "maximum": 4294967295,
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "mcpServers": {
+            "anyOf": [
+              {
+                "items": {
+                  "minLength": 1,
+                  "pattern": "^[A-Za-z0-9_.:/-]+$",
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "model": {
             "anyOf": [
@@ -23422,6 +23571,21 @@
           "role": {
             "$ref": "#/components/schemas/AgentRole-Input",
             "default": "orchestrator"
+          },
+          "skills": {
+            "anyOf": [
+              {
+                "items": {
+                  "minLength": 1,
+                  "pattern": "^[A-Za-z0-9_.:/-]+$",
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "tokenBudget": {
             "anyOf": [
@@ -37688,6 +37852,36 @@
             "title": "Action",
             "type": "string"
           },
+          "allowedTools": {
+            "anyOf": [
+              {
+                "items": {
+                  "minLength": 1,
+                  "pattern": "^[A-Za-z0-9_.:/*-]+$",
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "disallowedTools": {
+            "anyOf": [
+              {
+                "items": {
+                  "minLength": 1,
+                  "pattern": "^[A-Za-z0-9_.:/*-]+$",
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "effort": {
             "anyOf": [
               {
@@ -37738,6 +37932,33 @@
             "default": null,
             "title": "Isnew"
           },
+          "maxTurns": {
+            "anyOf": [
+              {
+                "maximum": 4294967295,
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "mcpServers": {
+            "anyOf": [
+              {
+                "items": {
+                  "minLength": 1,
+                  "pattern": "^[A-Za-z0-9_.:/-]+$",
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "model": {
             "anyOf": [
               {
@@ -37772,6 +37993,21 @@
             ],
             "title": "Role",
             "type": "string"
+          },
+          "skills": {
+            "anyOf": [
+              {
+                "items": {
+                  "minLength": 1,
+                  "pattern": "^[A-Za-z0-9_.:/-]+$",
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "title": "ProfileBody",
@@ -37855,6 +38091,21 @@
             "default": null,
             "title": "Syncentitiesafter"
           },
+          "allowedTools": {
+            "anyOf": [
+              {
+                "items": {
+                  "minLength": 1,
+                  "pattern": "^[A-Za-z0-9_.:/*-]+$",
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "deleted": {
             "anyOf": [
               {
@@ -37866,6 +38117,21 @@
             ],
             "default": null,
             "title": "Deleted"
+          },
+          "disallowedTools": {
+            "anyOf": [
+              {
+                "items": {
+                  "minLength": 1,
+                  "pattern": "^[A-Za-z0-9_.:/*-]+$",
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "effort": {
             "anyOf": [
@@ -37911,6 +38177,33 @@
             "default": null,
             "title": "Instructions"
           },
+          "maxTurns": {
+            "anyOf": [
+              {
+                "maximum": 4294967295,
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "mcpServers": {
+            "anyOf": [
+              {
+                "items": {
+                  "minLength": 1,
+                  "pattern": "^[A-Za-z0-9_.:/-]+$",
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "model": {
             "anyOf": [
               {
@@ -37950,6 +38243,21 @@
             ],
             "default": null,
             "title": "Role"
+          },
+          "skills": {
+            "anyOf": [
+              {
+                "items": {
+                  "minLength": 1,
+                  "pattern": "^[A-Za-z0-9_.:/-]+$",
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "title": "ProfileMutation",
@@ -37958,6 +38266,36 @@
       "ProfileRecord": {
         "additionalProperties": false,
         "properties": {
+          "allowedTools": {
+            "anyOf": [
+              {
+                "items": {
+                  "minLength": 1,
+                  "pattern": "^[A-Za-z0-9_.:/*-]+$",
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "disallowedTools": {
+            "anyOf": [
+              {
+                "items": {
+                  "minLength": 1,
+                  "pattern": "^[A-Za-z0-9_.:/*-]+$",
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "effort": {
             "anyOf": [
               {
@@ -37985,6 +38323,33 @@
             "title": "Instructions",
             "type": "string"
           },
+          "maxTurns": {
+            "anyOf": [
+              {
+                "maximum": 4294967295,
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "mcpServers": {
+            "anyOf": [
+              {
+                "items": {
+                  "minLength": 1,
+                  "pattern": "^[A-Za-z0-9_.:/-]+$",
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "model": {
             "title": "Model",
             "type": "string"
@@ -38000,6 +38365,21 @@
             ],
             "title": "Role",
             "type": "string"
+          },
+          "skills": {
+            "anyOf": [
+              {
+                "items": {
+                  "minLength": 1,
+                  "pattern": "^[A-Za-z0-9_.:/-]+$",
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -52108,6 +52488,39 @@
         "title": "TailscaleStatus",
         "type": "string"
       },
+      "TaskAcceptanceGate": {
+        "anyOf": [
+          {
+            "maxLength": 32000,
+            "minLength": 1,
+            "type": "string"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "command": {
+                "maxLength": 32000,
+                "minLength": 1,
+                "type": "string"
+              },
+              "timeout_ms": {
+                "default": 600000,
+                "maximum": 3600000,
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "command"
+            ],
+            "type": "object"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "Acceptance command. Runs in the clean submitter workspace at the full submitted Git commit. Null disables the gate. Omit on create to inherit the lead default."
+      },
       "TaskCursor": {
         "additionalProperties": false,
         "properties": {
@@ -52802,6 +53215,89 @@
           "id"
         ],
         "title": "TaskEntityDto",
+        "type": "object"
+      },
+      "TaskGateDefaultResponse": {
+        "properties": {
+          "defaultGate": {
+            "$ref": "#/components/schemas/TaskAcceptanceGate"
+          },
+          "id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "defaultGate"
+        ],
+        "type": "object"
+      },
+      "TaskGateEvidence": {
+        "additionalProperties": false,
+        "properties": {
+          "config": {
+            "$ref": "#/components/schemas/TaskAcceptanceGate"
+          },
+          "cwd": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "exitCode": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "finished": {
+            "type": "number"
+          },
+          "log": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "monitorId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "output": {
+            "maxLength": 12000,
+            "type": "string"
+          },
+          "revision": {
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "not_run",
+              "running",
+              "passed",
+              "failed",
+              "unknown"
+            ]
+          }
+        },
+        "required": [
+          "status",
+          "config",
+          "cwd",
+          "revision",
+          "monitorId",
+          "exitCode",
+          "output",
+          "log"
+        ],
         "type": "object"
       },
       "TaskHistoryCursor": {
@@ -59653,7 +60149,8 @@
               "submit",
               "cancel",
               "accept",
-              "reject"
+              "reject",
+              "set_default_gate"
             ],
             "title": "Action",
             "type": "string"
@@ -59728,6 +60225,39 @@
             "default": null,
             "title": "Files"
           },
+          "gate": {
+            "anyOf": [
+              {
+                "maxLength": 32000,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "command": {
+                    "maxLength": 32000,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "timeout_ms": {
+                    "default": 600000,
+                    "maximum": 3600000,
+                    "minimum": 1,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "command"
+                ],
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Acceptance command. Runs in the clean submitter workspace at the full submitted Git commit. Null disables the gate. Omit on create to inherit the lead default."
+          },
           "id": {
             "anyOf": [
               {
@@ -59739,6 +60269,12 @@
             ],
             "default": null,
             "title": "Id"
+          },
+          "override_reason": {
+            "description": "Lead reason to accept despite a failed, missing, or unknown gate. Saved in the decision.",
+            "maxLength": 32000,
+            "minLength": 1,
+            "type": "string"
           },
           "owner": {
             "anyOf": [
@@ -59766,17 +60302,16 @@
             "title": "Reason"
           },
           "result": {
-            "anyOf": [
-              {
-                "maxLength": 12000,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Result"
+            "$ref": "#/components/schemas/JsonValue",
+            "maxLength": 12000
+          },
+          "result_schema": {
+            "additionalProperties": true,
+            "description": "Optional draft 2020-12 result contract for create/update (maximum 32768 UTF-8 bytes). Supports types, properties, required, additionalProperties, arrays, bounds, enum/const and combinators. References, regex and unknown keywords are refused. A new task version resets the submit cap.",
+            "type": [
+              "object",
+              "boolean"
+            ]
           },
           "revision": {
             "anyOf": [
@@ -59873,6 +60408,11 @@
             "title": "Decision",
             "type": "string"
           },
+          "gateOverrideReason": {
+            "maxLength": 32000,
+            "minLength": 1,
+            "type": "string"
+          },
           "owner": {
             "anyOf": [
               {
@@ -59931,6 +60471,11 @@
               "reject"
             ],
             "title": "Decision",
+            "type": "string"
+          },
+          "gateOverrideReason": {
+            "maxLength": 32000,
+            "minLength": 1,
             "type": "string"
           },
           "owner": {
@@ -60011,6 +60556,11 @@
               "reject"
             ],
             "title": "Decision",
+            "type": "string"
+          },
+          "gateOverrideReason": {
+            "maxLength": 32000,
+            "minLength": 1,
             "type": "string"
           },
           "owner": {
@@ -60323,6 +60873,9 @@
             "default": null,
             "title": "Displaystatus"
           },
+          "gate": {
+            "$ref": "#/components/schemas/TaskAcceptanceGate"
+          },
           "id": {
             "title": "Id",
             "type": "string"
@@ -60502,9 +61055,15 @@
             "title": "Files",
             "type": "array"
           },
+          "gate": {
+            "$ref": "#/components/schemas/TaskGateEvidence"
+          },
           "id": {
             "title": "Id",
             "type": "string"
+          },
+          "result": {
+            "$ref": "#/components/schemas/JsonValue"
           },
           "resultFile": {
             "anyOf": [
@@ -60586,6 +61145,9 @@
             "title": "Files",
             "type": "array"
           },
+          "gate": {
+            "$ref": "#/components/schemas/TaskGateEvidence"
+          },
           "id": {
             "title": "Id",
             "type": "string"
@@ -60601,6 +61163,9 @@
           "layrStateId": {
             "title": "Layrstateid",
             "type": "string"
+          },
+          "result": {
+            "$ref": "#/components/schemas/JsonValue"
           },
           "resultFile": {
             "title": "Resultfile",
@@ -60696,6 +61261,9 @@
             "title": "Files",
             "type": "array"
           },
+          "gate": {
+            "$ref": "#/components/schemas/TaskGateEvidence"
+          },
           "id": {
             "title": "Id",
             "type": "string"
@@ -60714,6 +61282,9 @@
             "default": null,
             "title": "Layrstateid",
             "type": "string"
+          },
+          "result": {
+            "$ref": "#/components/schemas/JsonValue"
           },
           "resultFile": {
             "default": null,
@@ -60841,6 +61412,9 @@
               }
             ],
             "title": "Displaystatus"
+          },
+          "gate": {
+            "$ref": "#/components/schemas/TaskAcceptanceGate"
           },
           "handoff": {
             "default": null,
@@ -67083,6 +67657,131 @@
           }
         },
         "summary": "Checkpoints"
+      }
+    },
+    "/api/claude/file-backups": {
+      "post": {
+        "operationId": "claude_file_backups_api_claude_file_backups_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClaudeFileBackupsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClaudeFileBackupsResponse"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Access-Control-Allow-Origin": {
+                "$ref": "#/components/headers/AccessControlAllowOrigin"
+              },
+              "Access-Control-Expose-Headers": {
+                "$ref": "#/components/headers/AccessControlExposeHeaders"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/CacheControl"
+              },
+              "Content-Encoding": {
+                "$ref": "#/components/headers/ContentEncoding"
+              },
+              "Content-Length": {
+                "$ref": "#/components/headers/ContentLength"
+              },
+              "Content-Security-Policy": {
+                "$ref": "#/components/headers/ContentSecurityPolicy"
+              },
+              "Content-Type": {
+                "$ref": "#/components/headers/ContentType"
+              },
+              "Referrer-Policy": {
+                "$ref": "#/components/headers/ReferrerPolicy"
+              },
+              "Server-Timing": {
+                "$ref": "#/components/headers/ServerTiming"
+              },
+              "Vary": {
+                "$ref": "#/components/headers/Vary"
+              },
+              "X-Content-Type-Options": {
+                "$ref": "#/components/headers/XContentTypeOptions"
+              },
+              "X-Studio-API-Schema": {
+                "$ref": "#/components/headers/StudioApiSchema"
+              },
+              "X-Studio-Server": {
+                "$ref": "#/components/headers/StudioServer"
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ApiError400",
+            "description": "Bad Request"
+          },
+          "401": {
+            "$ref": "#/components/responses/ApiError401",
+            "description": "Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/ApiError403",
+            "description": "Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/ApiError404",
+            "description": "Not Found"
+          },
+          "408": {
+            "$ref": "#/components/responses/ApiError408",
+            "description": "Request Timeout"
+          },
+          "409": {
+            "$ref": "#/components/responses/ApiError409",
+            "description": "Conflict"
+          },
+          "410": {
+            "$ref": "#/components/responses/ApiError410",
+            "description": "Gone"
+          },
+          "413": {
+            "$ref": "#/components/responses/ApiError413",
+            "description": "Content Too Large"
+          },
+          "415": {
+            "$ref": "#/components/responses/ApiError415",
+            "description": "Unsupported Media Type"
+          },
+          "426": {
+            "$ref": "#/components/responses/ApiError426",
+            "description": "Upgrade Required"
+          },
+          "429": {
+            "$ref": "#/components/responses/ApiError429",
+            "description": "Too Many Requests"
+          },
+          "500": {
+            "$ref": "#/components/responses/ApiError500",
+            "description": "Internal Server Error"
+          },
+          "502": {
+            "$ref": "#/components/responses/ApiError502",
+            "description": "Bad Gateway"
+          },
+          "503": {
+            "$ref": "#/components/responses/ApiError503",
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Inspect or release settled Claude file backups"
       }
     },
     "/api/claude/profiles": {
@@ -81253,6 +81952,9 @@
                     },
                     {
                       "$ref": "#/components/schemas/WorkList"
+                    },
+                    {
+                      "$ref": "#/components/schemas/TaskGateDefaultResponse"
                     }
                   ],
                   "title": "Response Work Action Api Work Post"

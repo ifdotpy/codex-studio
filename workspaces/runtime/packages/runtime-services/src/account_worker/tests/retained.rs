@@ -2758,3 +2758,55 @@ async fn claude_adapter_distinguishes_not_sent_from_unknown() {
         worker.shutdown().await.unwrap();
     }
 }
+
+#[tokio::test]
+async fn capability_config_read_checks_actor_profile_and_directory() {
+    let state = State::new().await;
+    let id = state.agent.clone();
+    state
+        .bridge
+        .run(move |store| async move {
+            store
+                .transaction(move |tx| {
+                    let mut row = AgentRepository::get(tx, &AgentId::from(id.as_str()))?.unwrap();
+                    row.extra
+                        .insert("capabilityProfile".into(), json!({"mcpServers":["docs"]}));
+                    AgentRepository::put(tx, &row)
+                })
+                .await?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let cwd = state.record().await["cwd"].clone();
+    let mut peer = Peer::new();
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    let port = worker.retained_session();
+    let make = |suffix: &str, directory: Value| {
+        monitor_request(
+            &state,
+            &port,
+            format!("capability-config:{}:{suffix}", state.agent),
+            Method::ConfigRead,
+            json!({"cwd":directory,"includeLayers":false}),
+        )
+    };
+    assert_eq!(
+        port.request(make("foreign", json!("/other")))
+            .await
+            .unwrap_err(),
+        PortError::Identity
+    );
+    assert!(peer.writes.try_recv().is_err());
+    let request = make("valid", cwd);
+    let sender = port.clone();
+    let mut task = tokio::spawn(async move { sender.request(request).await });
+    let wire = monitor_write(&mut peer, &mut task, "config/read").await;
+    let config = json!({"config":{"mcp_servers":{"docs":{"command":"docs"},"project":{"command":"project"}}}});
+    peer.reply(&wire, config.clone()).await;
+    assert_eq!(
+        task.await.unwrap().unwrap().result,
+        RequestResult::Reply(config)
+    );
+    worker.shutdown().await.unwrap();
+}

@@ -55,11 +55,29 @@ fn python_written_records_and_real_rules_functions_match() {
         .unwrap_or_else(|error| panic!("{name}: decision: {error}"));
         assert_eq!(
             normalize(actual(case, &decision)),
-            normalize(case["expected"].clone()),
+            normalize(expected(case)),
             "complete decision differs for {name}"
         );
     }
     assert!(corpus.len() >= 100);
+}
+
+// The historical Python oracle automatically catches up this overdue one-shot.
+// Keep the full case, but require the new Rust policy instead of that defect.
+fn expected(case: &Value) -> Value {
+    if case["name"] != "matrix-once--1000-False-True" {
+        return case["expected"].clone();
+    }
+    let mut rule = case["rule"].clone();
+    let message =
+        "Missed scheduled run. Resume this rule to schedule a new run, or delete it to cancel.";
+    rule["status"] = json!("paused");
+    rule["error"] = json!(message);
+    rule["wakes"] = json!(rule["wakes"].as_u64().unwrap_or(0) + 1);
+    json!({"rule":rule,"launches":[],"wakes":[{
+        "id":"rule-missed:rule:7:1799999000","kind":"rule_missed",
+        "text":json!({"rule":"rule","name":rule["name"],"dueAt":1799999000.0,"delaySeconds":1000.0,"message":message}).to_string()
+    }]})
 }
 
 fn actual(case: &Value, decision: &RuleDecision) -> Value {

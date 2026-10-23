@@ -637,6 +637,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/claude/file-backups": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Inspect or release settled Claude file backups */
+    post: operations["claude_file_backups_api_claude_file_backups_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/claude/profiles": {
     parameters: {
       query?: never;
@@ -9492,6 +9509,8 @@ export interface components {
       expectedTree: string;
       /** Patch */
       patch: string;
+      /** @default null */
+      restoreUnavailableReason?: string | null;
       /** Truncated */
       truncated: boolean;
     };
@@ -9719,9 +9738,16 @@ export interface components {
        * Phase
        * @enum {string}
        */
-      phase: "provider_pending" | "provider_ready" | "completed" | "failed";
+      phase:
+        | "provider_pending"
+        | "provider_ready"
+        | "completed"
+        | "failed"
+        | "recovery_required";
       /** Requestid */
       requestId: string;
+      /** @default false */
+      restoreFiles?: boolean;
       /**
        * Turnid
        * @default null
@@ -9773,6 +9799,18 @@ export interface components {
         | "stored_only"
         | "cancelled"
         | "failed";
+    };
+    ClaudeFileBackupsRequest: {
+      id: string;
+      release: boolean;
+      request_id: string;
+    };
+    ClaudeFileBackupsResponse: {
+      bytes: number;
+      count: number;
+      maxBytes: number;
+      maxCount: number;
+      released: number;
     };
     /**
      * ClaudeLoginResponse
@@ -9966,6 +10004,11 @@ export interface components {
        * @default null
        */
       _syncEntitiesAfter?: number | null;
+      fileResult?: {
+        [key: string]: unknown;
+      };
+      /** @default false */
+      filesRestored?: boolean;
       /** Nativeid */
       nativeId: string;
       /** Removedturns */
@@ -9998,6 +10041,8 @@ export interface components {
       id: string;
       /** Request Id */
       request_id: string;
+      /** @default false */
+      restore_files?: boolean;
       /** Turn Id */
       turn_id: string;
     };
@@ -10169,8 +10214,12 @@ export interface components {
     };
     /** ClaudeTurn */
     ClaudeTurn: {
+      /** @default false */
+      canRestoreFiles?: boolean;
       /** Id */
       id: string;
+      /** @default null */
+      restoreFilesUnavailableReason?: string | null;
       /**
        * Status
        * @enum {string}
@@ -11440,6 +11489,7 @@ export interface components {
        * @default default
        */
       account_key?: string;
+      allowedTools?: string[] | null;
       /**
        * Concurrency
        * @default 32
@@ -11455,6 +11505,7 @@ export interface components {
        * @default null
        */
       daybreak_enabled?: boolean | null;
+      disallowedTools?: string[] | null;
       /**
        * Effort
        * @default null
@@ -11475,6 +11526,8 @@ export interface components {
        * @default 64
        */
       maxAgents?: number;
+      maxTurns?: number | null;
+      mcpServers?: string[] | null;
       /**
        * Model
        * @default null
@@ -11499,6 +11552,7 @@ export interface components {
       prompt: string;
       /** @default orchestrator */
       role?: components["schemas"]["AgentRole-Input"];
+      skills?: string[] | null;
       /**
        * Tokenbudget
        * @default null
@@ -17360,6 +17414,8 @@ export interface components {
        * @enum {string}
        */
       action?: "save" | "delete";
+      allowedTools?: string[] | null;
+      disallowedTools?: string[] | null;
       /**
        * Effort
        * @default null
@@ -17380,6 +17436,8 @@ export interface components {
        * @default null
        */
       isNew?: boolean | null;
+      maxTurns?: number | null;
+      mcpServers?: string[] | null;
       /**
        * Model
        * @default null
@@ -17396,6 +17454,7 @@ export interface components {
        * @enum {string}
        */
       role?: "reviewer" | "implementer";
+      skills?: string[] | null;
     };
     /** ProfileList */
     ProfileList: {
@@ -17424,11 +17483,13 @@ export interface components {
        * @default null
        */
       _syncEntitiesAfter?: number | null;
+      allowedTools?: string[] | null;
       /**
        * Deleted
        * @default null
        */
       deleted?: null | string;
+      disallowedTools?: string[] | null;
       /**
        * Effort
        * @default null
@@ -17444,6 +17505,8 @@ export interface components {
        * @default null
        */
       instructions?: null | string;
+      maxTurns?: number | null;
+      mcpServers?: string[] | null;
       /**
        * Model
        * @default null
@@ -17459,15 +17522,20 @@ export interface components {
        * @default null
        */
       role?: ("reviewer" | "implementer") | null;
+      skills?: string[] | null;
     };
     /** ProfileRecord */
     ProfileRecord: {
+      allowedTools?: string[] | null;
+      disallowedTools?: string[] | null;
       /** Effort */
       effort: ("low" | "medium" | "high" | "xhigh" | "max" | "ultra") | null;
       /** Id */
       id: string;
       /** Instructions */
       instructions: string;
+      maxTurns?: number | null;
+      mcpServers?: string[] | null;
       /** Model */
       model: string;
       /** Name */
@@ -17477,6 +17545,7 @@ export interface components {
        * @enum {string}
        */
       role: "reviewer" | "implementer";
+      skills?: string[] | null;
     };
     /**
      * Project
@@ -22931,6 +23000,15 @@ export interface components {
      * @enum {string}
      */
     TailscaleStatus: "verified" | "unavailable";
+    /** @description Acceptance command. Runs in the clean submitter workspace at the full submitted Git commit. Null disables the gate. Omit on create to inherit the lead default. */
+    TaskAcceptanceGate:
+      | string
+      | {
+          command: string;
+          /** @default 600000 */
+          timeout_ms?: number;
+        }
+      | null;
     /** TaskCursor */
     TaskCursor: {
       /** Id */
@@ -23135,6 +23213,23 @@ export interface components {
       timeout_ms?: number | null;
       /** Turnid */
       turnId?: null | string;
+    };
+    TaskGateDefaultResponse: {
+      defaultGate: components["schemas"]["TaskAcceptanceGate"];
+      id: string;
+    };
+    TaskGateEvidence: {
+      config: components["schemas"]["TaskAcceptanceGate"];
+      cwd: string | null;
+      error?: string | null;
+      exitCode: number | null;
+      finished?: number;
+      log: string | null;
+      monitorId: string | null;
+      output: string;
+      revision: string;
+      /** @enum {unknown} */
+      status: "not_run" | "running" | "passed" | "failed" | "unknown";
     };
     /** TaskHistoryCursor */
     TaskHistoryCursor: {
@@ -26060,7 +26155,8 @@ export interface components {
         | "submit"
         | "cancel"
         | "accept"
-        | "reject";
+        | "reject"
+        | "set_default_gate";
       /**
        * Agent
        * @default null
@@ -26086,11 +26182,22 @@ export interface components {
        * @default null
        */
       files?: string[] | null;
+      /** @description Acceptance command. Runs in the clean submitter workspace at the full submitted Git commit. Null disables the gate. Omit on create to inherit the lead default. */
+      gate?:
+        | string
+        | {
+            command: string;
+            /** @default 600000 */
+            timeout_ms?: number;
+          }
+        | null;
       /**
        * Id
        * @default null
        */
       id?: null | string;
+      /** @description Lead reason to accept despite a failed, missing, or unknown gate. Saved in the decision. */
+      override_reason?: string;
       /**
        * Owner
        * @default null
@@ -26101,11 +26208,13 @@ export interface components {
        * @default null
        */
       reason?: string | null;
-      /**
-       * Result
-       * @default null
-       */
-      result?: string | null;
+      result?: components["schemas"]["JsonValue"];
+      /** @description Optional draft 2020-12 result contract for create/update (maximum 32768 UTF-8 bytes). Supports types, properties, required, additionalProperties, arrays, bounds, enum/const and combinators. References, regex and unknown keywords are refused. A new task version resets the submit cap. */
+      result_schema?:
+        | {
+            [key: string]: unknown;
+          }
+        | boolean;
       /**
        * Revision
        * @default null
@@ -26143,6 +26252,7 @@ export interface components {
        * @enum {string}
        */
       decision: "cancel" | "accept" | "reject";
+      gateOverrideReason?: string;
       /**
        * Owner
        * @default null
@@ -26167,6 +26277,7 @@ export interface components {
        * @enum {string}
        */
       decision: "cancel" | "accept" | "reject";
+      gateOverrideReason?: string;
       /** Owner */
       owner?: null | string;
       /** Reason */
@@ -26197,6 +26308,7 @@ export interface components {
        * @enum {string}
        */
       decision: "cancel" | "accept" | "reject";
+      gateOverrideReason?: string;
       /**
        * Owner
        * @default null
@@ -26412,6 +26524,7 @@ export interface components {
        * @default null
        */
       displayStatus?: null | string;
+      gate?: components["schemas"]["TaskAcceptanceGate"];
       /** Id */
       id: string;
       /**
@@ -26483,8 +26596,10 @@ export interface components {
       created: number;
       /** Files */
       files: string[];
+      gate?: components["schemas"]["TaskGateEvidence"];
       /** Id */
       id: string;
+      result?: components["schemas"]["JsonValue"];
       /**
        * Resultfile
        * @default null
@@ -26512,6 +26627,7 @@ export interface components {
       created: number;
       /** Files */
       files: string[];
+      gate?: components["schemas"]["TaskGateEvidence"];
       /** Id */
       id: string;
       /** Layrline */
@@ -26520,6 +26636,7 @@ export interface components {
       layrProjectId?: string;
       /** Layrstateid */
       layrStateId?: string;
+      result?: components["schemas"]["JsonValue"];
       /** Resultfile */
       resultFile?: string;
       /** Revision */
@@ -26556,6 +26673,7 @@ export interface components {
       created: number;
       /** Files */
       files: string[];
+      gate?: components["schemas"]["TaskGateEvidence"];
       /** Id */
       id: string;
       /**
@@ -26573,6 +26691,7 @@ export interface components {
        * @default null
        */
       layrStateId?: string;
+      result?: components["schemas"]["JsonValue"];
       /**
        * Resultfile
        * @default null
@@ -27066,6 +27185,7 @@ export interface components {
             | "accepted"
             | "cancelled"
           );
+      gate?: components["schemas"]["TaskAcceptanceGate"];
       /**
        * Handoff
        * @default null
@@ -29789,6 +29909,71 @@ export interface operations {
           "application/json": components["schemas"]["ErrorResponse"];
         };
       };
+    };
+  };
+  claude_file_backups_api_claude_file_backups_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["ClaudeFileBackupsRequest"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
+          "Access-Control-Expose-Headers": components["headers"]["AccessControlExposeHeaders"];
+          "Cache-Control": components["headers"]["CacheControl"];
+          "Content-Encoding": components["headers"]["ContentEncoding"];
+          "Content-Length": components["headers"]["ContentLength"];
+          "Content-Security-Policy": components["headers"]["ContentSecurityPolicy"];
+          "Content-Type": components["headers"]["ContentType"];
+          "Referrer-Policy": components["headers"]["ReferrerPolicy"];
+          "Server-Timing": components["headers"]["ServerTiming"];
+          Vary: components["headers"]["Vary"];
+          "X-Content-Type-Options": components["headers"]["XContentTypeOptions"];
+          "X-Studio-API-Schema": components["headers"]["StudioApiSchema"];
+          "X-Studio-Server": components["headers"]["StudioServer"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ClaudeFileBackupsResponse"];
+        };
+      };
+      /** @description Bad Request */
+      400: components["responses"]["ApiError400"];
+      /** @description Unauthorized */
+      401: components["responses"]["ApiError401"];
+      /** @description Forbidden */
+      403: components["responses"]["ApiError403"];
+      /** @description Not Found */
+      404: components["responses"]["ApiError404"];
+      /** @description Request Timeout */
+      408: components["responses"]["ApiError408"];
+      /** @description Conflict */
+      409: components["responses"]["ApiError409"];
+      /** @description Gone */
+      410: components["responses"]["ApiError410"];
+      /** @description Content Too Large */
+      413: components["responses"]["ApiError413"];
+      /** @description Unsupported Media Type */
+      415: components["responses"]["ApiError415"];
+      /** @description Upgrade Required */
+      426: components["responses"]["ApiError426"];
+      /** @description Too Many Requests */
+      429: components["responses"]["ApiError429"];
+      /** @description Internal Server Error */
+      500: components["responses"]["ApiError500"];
+      /** @description Bad Gateway */
+      502: components["responses"]["ApiError502"];
+      /** @description Service Unavailable */
+      503: components["responses"]["ApiError503"];
     };
   };
   claude_profile_api_claude_profiles_post: {
@@ -37390,7 +37575,8 @@ export interface operations {
         content: {
           "application/json":
             | components["schemas"]["WorkItem"]
-            | components["schemas"]["WorkList"];
+            | components["schemas"]["WorkList"]
+            | components["schemas"]["TaskGateDefaultResponse"];
         };
       };
       /** @description Bad Request */

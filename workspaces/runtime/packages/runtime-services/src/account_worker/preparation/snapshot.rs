@@ -143,18 +143,45 @@ impl PreparationResources {
             thread_config: Map<String, Value>,
             tools: Vec<thread::ToolDefinition>,
         }
-        let data: Bundled = decode(
+        let mut data: Bundled = decode(
             serde_json::from_str(include_str!("../preparation-resources.json"))
                 .map_err(|_| invalid("preparation resources"))?,
             "preparation resources",
         )?;
-        let legacy_tools = decode(
+        let mut legacy_tools: Vec<thread::ToolDefinition> = decode(
             serde_json::from_str(include_str!(
                 "../../../../../../../.agents/skills/codex-workspace/references/native-tools.json"
             ))
             .map_err(|_| invalid("legacy tools"))?,
             "legacy tools",
         )?;
+        for tool in data.tools.iter_mut().chain(legacy_tools.iter_mut()) {
+            studio_runtime_schema::task_results::apply_tool_contract(
+                &tool.name,
+                &mut tool.input_schema,
+            );
+            studio_runtime_schema::task_gate::apply_tool_contract(
+                &tool.name,
+                &mut tool.input_schema,
+            );
+            if tool.name == "orchestration_task" {
+                tool.description.push_str(&format!(" gate on create/update runs a managed acceptance check at the submitted Git commit. set_default_gate sets the lead default for new tasks. Gate timeout defaults to {} ms. Layr and non-Git submissions report not_run and require override_reason. Failed or unknown gates refuse acceptance unless the lead supplies override_reason. Submit again to rerun a gate.", studio_runtime_schema::task_gate::DEFAULT_TIMEOUT_MS));
+            }
+            if tool.name == "orchestration_spawn" {
+                let properties = tool
+                    .input_schema
+                    .get_mut("properties")
+                    .and_then(|value| value.pointer_mut("/agents/items/properties"))
+                    .and_then(Value::as_object_mut)
+                    .ok_or_else(|| invalid("spawn properties"))?;
+                properties.extend(studio_runtime_schema::worker_capabilities::properties());
+                properties.insert("permission_mode".into(), json!({
+                    "type": "string",
+                    "enum": crate::claude_controls::PERMISSION_MODES,
+                    "description": "Claude child permission mode. Defaults to the parent's mode. Bypass requires a bypass parent. Reviewers always use plan."
+                }));
+            }
+        }
         let skills_root = root.join(".agents/skills");
         let mut role_guidance = BTreeMap::new();
         for relative in [
@@ -234,11 +261,99 @@ impl PreparationResources {
         .map_err(|_| WorkerError::TaskFailed)
     }
 
+    pub(crate) async fn for_agent(
+        &self,
+        store: &RuntimeStore,
+        agent_id: &str,
+    ) -> Result<Self, WorkerError> {
+        self.for_sql().await?.with_mcp_config(store, agent_id).await
+    }
+
+    async fn with_mcp_config(
+        mut self,
+        store: &RuntimeStore,
+        agent_id: &str,
+    ) -> Result<Self, WorkerError> {
+        use crate::account_session_runtime::{ProviderRequest, ProviderResponse};
+        let id = agent_id.to_owned();
+        let record = store
+            .read_async("runtime-services/capability-config/actor", move |tx| {
+                agent(tx, &id).map(|agent| agent.value())
+            })
+            .await?;
+        let caps =
+            crate::worker_capabilities::from_record(&record).map_err(|s| refusal(s.into()))?;
+        if caps.mcp_servers.is_none() || ProviderKind::of_record(&record) != Ok(ProviderKind::Codex)
+        {
+            return Ok(self);
+        }
+        if record["executionMode"] == "vm" {
+            return Err(refusal(
+                "Codex mcpServers profiles are not supported for VM workers".into(),
+            ));
+        }
+        let port = self.account_session.as_ref().ok_or_else(|| {
+            refusal("mcpServers requires the native config/read preflight".into())
+        })?;
+        let account = record["accountKey"].as_str().unwrap_or("default");
+        let scope = port
+            .current_scope(account)
+            .ok_or_else(|| refusal("mcpServers requires a live provider session".into()))?;
+        let operation = format!("capability-config:{agent_id}:{}", uuid::Uuid::new_v4());
+        let receipt = port
+            .provider_request(ProviderRequest {
+                account: account.into(),
+                operation: operation.clone(),
+                actor: Some(crate::account_worker::retained::RequestActor {
+                    agent: agent_id.into(),
+                    epoch: record["epoch"]
+                        .as_i64()
+                        .ok_or_else(|| invalid("agent/epoch"))?,
+                }),
+                expected_scope: Some(scope.clone()),
+                deleted_actor_session: None,
+                method: Method::ConfigRead,
+                params: json!({"cwd":record["cwd"],"includeLayers":false}),
+                deadline: std::time::Instant::now() + crate::recovery_history::READ_DEADLINE,
+            })
+            .await
+            .map_err(|_| refusal("mcpServers native config/read preflight failed".into()))?;
+        if receipt.scope != scope || receipt.operation != operation {
+            return Err(refusal(
+                "mcpServers config/read receipt identity changed".into(),
+            ));
+        }
+        let Some(ProviderResponse::Reply(body)) = receipt.result else {
+            return Err(refusal(
+                "mcpServers native config/read preflight failed".into(),
+            ));
+        };
+        let config = body["config"]
+            .as_object()
+            .ok_or_else(|| refusal("mcpServers config/read returned no config".into()))?;
+        let names = match config.get("mcp_servers") {
+            None => Vec::new(),
+            Some(Value::Object(servers)) => servers.keys().cloned().collect(),
+            _ => {
+                return Err(refusal(
+                    "mcpServers config/read returned invalid servers".into(),
+                ));
+            }
+        };
+        let inputs = self
+            .filesystem_inputs
+            .as_mut()
+            .ok_or_else(|| invalid("thread guidance filesystem inputs"))?;
+        Arc::make_mut(inputs).mcp_servers = names;
+        Ok(self)
+    }
+
     pub(crate) async fn for_receipt(
         &self,
         store: &RuntimeStore,
         agent_id: &str,
         prepared_cwd: Option<&str>,
+        prepared_mcp_servers: Option<Vec<String>>,
     ) -> Result<Self, WorkerError> {
         let receipt_cwd = if let Some(prepared_cwd) = prepared_cwd {
             let agent_id = agent_id.to_owned();
@@ -264,7 +379,21 @@ impl PreparationResources {
         let resources = self.clone();
         studio_runtime_process::blocking_pool::spawn_blocking(
             "runtime-services/thread-receipt/filesystem",
-            move || resources.capture_filesystem(receipt_cwd),
+            move || {
+                let mut resources = resources.capture_filesystem(receipt_cwd);
+                // Receipt reduction runs on the serialized account worker. Reuse
+                // the submitted config inventory; do not request this worker again.
+                if let Some(names) = prepared_mcp_servers {
+                    Arc::make_mut(
+                        resources
+                            .filesystem_inputs
+                            .as_mut()
+                            .expect("captured inputs"),
+                    )
+                    .mcp_servers = names;
+                }
+                resources
+            },
         )
         .await
         .map_err(|_| WorkerError::TaskFailed)
@@ -604,6 +733,11 @@ pub(super) fn guidance(
     record: &Value,
     state_root: &Path,
 ) -> Result<thread::GuidanceBundle, WorkerError> {
+    let capabilities =
+        crate::worker_capabilities::from_record(record).map_err(|s| refusal(s.into()))?;
+    let provider = ProviderKind::of_record(record).map_err(|_| invalid("agent/provider"))?;
+    crate::worker_capabilities::for_provider(&capabilities, provider.key())
+        .map_err(|s| refusal(s.into()))?;
     let role = role_guidance(resources, record)?;
     let mut thread_config = resources.thread_config.clone();
     // A managed worker (a child agent) runs without the user's MCP servers, so
@@ -626,7 +760,59 @@ pub(super) fn guidance(
     if !resources.account_home.is_empty() && resources.filesystem_inputs.is_none() {
         return Err(invalid("thread guidance filesystem inputs"));
     }
-    let browser = browser_guidance(resources, record, &mut thread_config);
+    if provider == ProviderKind::Codex && capabilities.mcp_servers.is_some() {
+        // Keep browser overrides in this table so their order cannot remove
+        // the required-server flag.
+        thread_config
+            .entry("mcp_servers")
+            .or_insert_with(|| json!({}));
+    }
+    let browser = if capabilities
+        .mcp_servers
+        .as_ref()
+        .is_none_or(|names| names.iter().any(|name| name == "node_repl"))
+    {
+        browser_guidance(resources, record, &mut thread_config)
+    } else {
+        None
+    };
+    if provider == ProviderKind::Codex
+        && let Some(required) = &capabilities.mcp_servers
+    {
+        // Native plugin/app discovery bypasses the named config table. Explicit
+        // profiles admit only servers returned by config/read.
+        thread_config.insert("features.plugins".into(), json!(false));
+        thread_config.insert("features.apps".into(), json!(false));
+        thread_config.insert("features.skill_mcp_dependency_install".into(), json!(false));
+        let configured = resources
+            .filesystem_inputs
+            .as_ref()
+            .map(|inputs| inputs.mcp_servers.as_slice())
+            .unwrap_or_default();
+        for name in required {
+            if !configured.contains(name) {
+                return Err(refusal(format!(
+                    "Required mcpServers server is missing: {name}"
+                )));
+            }
+        }
+        let servers = thread_config
+            .entry("mcp_servers".to_owned())
+            .or_insert_with(|| json!({}));
+        let servers = servers
+            .as_object_mut()
+            .ok_or_else(|| invalid("mcp_servers"))?;
+        for config in servers.values_mut() {
+            config["enabled"] = json!(false);
+            config["required"] = json!(false);
+        }
+        for name in configured {
+            let enabled = required.contains(name);
+            let config = servers.entry(name.clone()).or_insert_with(|| json!({}));
+            config["enabled"] = json!(enabled);
+            config["required"] = json!(enabled);
+        }
+    }
     // Python `codex_browser_host.thread_environment`, at the same call site as
     // `configure_browser`: host Codex threads send their sign-in links to Studio.
     if ProviderKind::of_record(record) == Ok(ProviderKind::Codex)
@@ -927,6 +1113,51 @@ fn preserve_complaint(
     Ok(false)
 }
 
+/// Use ready workspace facts, not the lead's inherited workspace preference.
+fn host_worktree(
+    record: &Value,
+    root: &Value,
+    role: thread::Role,
+    lead: bool,
+) -> Result<Option<thread::HostWorktree>, WorkerError> {
+    if record["provider"] != "claude"
+        || lead
+        || role != thread::Role::Implementer
+        || record["parentId"].as_str().is_none()
+        || record["executionMode"] == "vm"
+        || !((record["worktree"] == true && record["worktreeReady"] == true)
+            || (record["imageWorkspace"] == true && record["imageWorkspaceReady"] == true))
+    {
+        return Ok(None);
+    }
+    let tree = text(record, "cwd")?.ok_or_else(|| invalid("agent/cwd"))?;
+    if !Path::new(&tree).is_absolute() {
+        return Err(invalid("agent/cwd"));
+    }
+    // hostProjectPath survives worktree provisioning. Image copies also retain
+    // imageWorkspaceRepo. The root paths protect the lead for nested workers.
+    let mut fence = Vec::new();
+    for value in [
+        &record["imageWorkspaceRepo"],
+        &record["hostProjectPath"],
+        &root["cwd"],
+        &root["hostProjectPath"],
+    ] {
+        if let Some(path) = value.as_str().filter(|path| !path.is_empty()) {
+            if !Path::new(path).is_absolute() {
+                return Err(invalid("agent/workspace-fence"));
+            }
+            if path != tree && !fence.iter().any(|entry| entry == path) {
+                fence.push(path.to_owned());
+            }
+        }
+    }
+    if fence.is_empty() {
+        return Err(invalid("agent/workspace-fence"));
+    }
+    Ok(Some(thread::HostWorktree { tree, fence }))
+}
+
 /// Python `frozenNativeParams` of a moved agent. Python reads the three saved
 /// fields and the tools by key, so a missing one is an invalid stored agent.
 fn frozen_params(record: &Value) -> Result<Option<thread::FrozenParams>, WorkerError> {
@@ -1043,6 +1274,8 @@ pub(super) fn thread_snapshot(
             fast_mode: flag(record, "fastMode")?,
             yolo_mode: optional(record, "yoloMode")?,
             profile_instructions: text(record, "profileInstructions")?.unwrap_or_default(),
+            capability_profile: crate::worker_capabilities::from_record(record)
+                .map_err(|s| refusal(s.into()))?,
             role,
             is_lead: lead,
             needs_title: flag(record, "needsTitle")?,
@@ -1064,6 +1297,7 @@ pub(super) fn thread_snapshot(
                 .map(str::to_owned),
         },
         workspace: thread::WorkspaceReadiness::Ready,
+        host_worktree: host_worktree(record, &root, role, lead)?,
         unsupported,
         admission,
         pending: None,
@@ -1105,6 +1339,11 @@ pub(super) fn submission_snapshot(
     let root_id = record["rootId"]
         .as_str()
         .ok_or_else(|| invalid("agent/rootId"))?;
+    if crate::worker_capabilities::exhausted(record) {
+        return Err(refusal(
+            crate::worker_capabilities::TURN_LIMIT_MESSAGE.into(),
+        ));
+    }
     let root = agent(tx, root_id)?.value();
     let role = role_guidance(resources, record)?;
     let plan=record_by_id(tx, "runtime_plans", root_id)?.map(|s|serde_json::from_str::<Value>(&s).map_err(|_|invalid("plan"))).transpose()?.filter(|v|v["native"].is_object()).map(|v|decode(json!({"id":v["id"],"rootId":v["rootId"],"steps":v["native"].get("plan").cloned().unwrap_or_else(||json!([])),"explanation":v["native"].get("explanation").filter(|v|!v.is_null()).cloned().unwrap_or(json!(""))}),"plan")).transpose()?;
@@ -1149,6 +1388,30 @@ pub(super) fn submission_snapshot(
             created: decode(v["created"].clone(), "complaint/created")?,
         });
     }
+    ensure_context_tables(tx)?;
+    let mut stmt = tx.prepare(
+        "SELECT record FROM runtime_context_manifests WHERE agent=?1 ORDER BY sequence DESC",
+    )?;
+    let delivered_manifests: Vec<turn::ContextManifest> = stmt
+        .query_map([&intent.agent_id], |r| r.get::<_, String>(0))?
+        .map(|r| {
+            let r = r?;
+            decode(
+                serde_json::from_str(&r).map_err(|_| invalid("manifest"))?,
+                "manifest",
+            )
+        })
+        .collect::<Result<Vec<_>, WorkerError>>()?;
+    let epoch = turn::Epoch(
+        text(record, "threadId")?,
+        optional(record, "compactions")?.unwrap_or(0),
+    );
+    let restore = turn::needs_team_restore(&epoch, &delivered_manifests);
+    let team_state = if restore {
+        super::team_restore::snapshot(tx, record)?
+    } else {
+        None
+    };
     let mut workers = Vec::new();
     // Only a lead's turn context (finished-worktree reminder) or a batch carrying
     // child events (team progress line) reads the team.
@@ -1221,20 +1484,6 @@ pub(super) fn submission_snapshot(
             view: v.as_object().ok_or_else(|| invalid("asset"))?.clone(),
         });
     }
-    ensure_context_tables(tx)?;
-    let mut stmt = tx.prepare(
-        "SELECT record FROM runtime_context_manifests WHERE agent=?1 ORDER BY sequence DESC",
-    )?;
-    let delivered_manifests = stmt
-        .query_map([&intent.agent_id], |r| r.get::<_, String>(0))?
-        .map(|r| {
-            let r = r?;
-            decode(
-                serde_json::from_str(&r).map_err(|_| invalid("manifest"))?,
-                "manifest",
-            )
-        })
-        .collect::<Result<Vec<_>, WorkerError>>()?;
     let mut stmt = tx.prepare("SELECT version FROM runtime_context_reminders WHERE agent=?1")?;
     let delivered_reminders = stmt
         .query_map([&intent.agent_id], |r| r.get(0))?
@@ -1265,6 +1514,7 @@ pub(super) fn submission_snapshot(
     let concurrency = root_concurrency(&root)?;
     Ok((
         turn::PreparationSnapshot {
+            provider: Some(intent.provider),
             actor: turn::Actor {
                 id: intent.agent_id.clone(),
                 root_id: root_id.into(),
@@ -1285,6 +1535,7 @@ pub(super) fn submission_snapshot(
             plan,
             complaints,
             workers,
+            team_state,
             delivered_reminders,
             assets,
             guidance: turn::GuidanceBundle { role },
@@ -1633,6 +1884,82 @@ mod resource_tests {
     }
 
     #[test]
+    fn capability_codex_mcp_selection_requires_named_servers_and_refuses_missing() {
+        let home = tempfile::tempdir().expect("temporary home creates");
+        std::fs::write(
+            home.path().join("config.toml"),
+            "[mcp_servers.docs]\ncommand='docs'\n[mcp_servers.other]\ncommand='other'\n",
+        )
+        .expect("MCP configuration writes");
+        let resources = PreparationResources::bundled(
+            home.path().to_string_lossy().into_owned(),
+            ModelCatalogService::new(),
+        )
+        .expect("bundled resources load");
+        let mut worker = json!({"id":"worker","parentId":"lead","provider":"codex","capabilityProfile":{"mcpServers":["docs"]}});
+        let selected =
+            guidance(&resources, &worker, home.path()).expect("named MCP server resolves");
+        assert_eq!(
+            selected.thread_config["mcp_servers"]["docs"],
+            json!({"enabled":true,"required":true})
+        );
+        assert_eq!(
+            selected.thread_config["mcp_servers"]["other"],
+            json!({"enabled":false,"required":false})
+        );
+        worker["capabilityProfile"]["mcpServers"] = json!(["missing"]);
+        assert!(
+            guidance(&resources, &worker, home.path())
+                .expect_err("missing MCP server must fail")
+                .to_string()
+                .contains("missing")
+        );
+        worker["capabilityProfile"] = json!({"mcpServers":[]});
+        let none =
+            guidance(&resources, &worker, home.path()).expect("empty MCP selection resolves");
+        assert!(none.browser.is_none());
+        assert_eq!(none.thread_config["mcp_servers"]["docs"]["enabled"], false);
+        for field in ["allowedTools", "disallowedTools", "skills"] {
+            worker["capabilityProfile"] = json!({field:[]});
+            assert!(
+                guidance(&resources, &worker, home.path())
+                    .expect_err("unsupported capability field must fail")
+                    .to_string()
+                    .contains(field)
+            );
+        }
+        let homes = crate::browser::browser_homes();
+        let mut browser_resources = PreparationResources::bundled(
+            homes.shared.to_string_lossy().into_owned(),
+            ModelCatalogService::new(),
+        )
+        .expect("browser resources load");
+        browser_resources.shared_home = homes.shared.to_string_lossy().into_owned();
+        for parent in [Value::Null, json!("lead")] {
+            let browser = guidance(
+                &browser_resources,
+                &json!({
+                    "id":"browser", "provider":"codex", "parentId":parent,
+                    "capabilityProfile":{"mcpServers":["node_repl"]}
+                }),
+                homes.root.path(),
+            )
+            .expect("browser guidance resolves");
+            assert!(browser.browser.is_some());
+            assert!(!browser.thread_config.contains_key("mcp_servers.node_repl"));
+            assert_eq!(
+                browser.thread_config["mcp_servers"]["node_repl"]["required"],
+                true
+            );
+            assert_eq!(
+                browser.thread_config["mcp_servers"]["node_repl"]["enabled"],
+                true
+            );
+            assert!(browser.thread_config["mcp_servers"]["node_repl"]["command"].is_string());
+        }
+    }
+
+    #[test]
     fn only_a_codex_worker_switches_off_the_homes_mcp_servers() {
         let directory = tempfile::tempdir().expect("owned test directory");
         let home = directory.path().to_path_buf();
@@ -1714,5 +2041,186 @@ mod resource_tests {
             Err(WorkerError::PreparationRefused(reason))
                 if reason == "thread-preparation/missing-guidance"
         ));
+    }
+}
+
+#[cfg(test)]
+mod workspace_fence_tests {
+    use super::*;
+
+    #[test]
+    fn task_result_schema_native_and_legacy_catalogs_use_the_owner() {
+        let resources = PreparationResources::bundled(String::new(), ModelCatalogService::new())
+            .expect("resources");
+        for tools in [&resources.tools, &resources.legacy_tools] {
+            let task = tools
+                .iter()
+                .find(|tool| tool.name == "orchestration_task")
+                .expect("task");
+            assert_eq!(
+                task.input_schema["properties"]["result_schema"],
+                studio_runtime_schema::task_results::schema_input()
+            );
+            assert!(
+                task.input_schema["properties"]["result"]
+                    .get("type")
+                    .is_none()
+            );
+            let spawn = tools
+                .iter()
+                .find(|tool| tool.name == "orchestration_spawn")
+                .expect("spawn");
+            assert!(spawn.input_schema["properties"]["agents"]["items"]["properties"]["task_id"]["description"].as_str().expect("description").contains("result_schema"));
+        }
+    }
+
+    #[test]
+    fn claude_child_spawn_catalog_exposes_valid_permission_modes() {
+        let resources = PreparationResources::bundled(String::new(), ModelCatalogService::new())
+            .expect("resources");
+        for tools in [&resources.tools, &resources.legacy_tools] {
+            let spawn = tools
+                .iter()
+                .find(|tool| tool.name == "orchestration_spawn")
+                .expect("spawn");
+            let field = &spawn.input_schema["properties"]["agents"]["items"]["properties"]["permission_mode"];
+            assert_eq!(
+                field["enum"],
+                json!(crate::claude_controls::PERMISSION_MODES)
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn claude_child_saved_mode_reaches_start_and_resume() {
+        let directory = tempfile::tempdir().expect("temporary state");
+        let store = RuntimeStore::open(Some(directory.path()))
+            .await
+            .expect("store");
+        let resources = PreparationResources::bundled(String::new(), ModelCatalogService::new())
+            .expect("resources");
+        store.transaction_with(move |tx| {
+            AgentRepository::put(tx, &AgentRecord::from_value(json!({"id":"lead","rootId":"lead","epoch":1,
+                "status":"running","isLead":true,"cwd":"/project"})).expect("lead"))?;
+            for mode in crate::claude_controls::PERMISSION_MODES {
+                for resumed in [false, true] {
+                    let mut record = json!({"id":"worker","rootId":"lead","parentId":"lead","epoch":1,
+                        "status":"queued","isLead":false,"role":"implementer","provider":"claude","cwd":"/project",
+                        "workspaceMode":"shared","yoloMode":*mode == "bypassPermissions","claudeOptions":{"permissionMode": mode}});
+                    if resumed {
+                        record["threadId"] = json!("existing-thread");
+                        record["nativeToolSource"] = json!("current");
+                    }
+                    let snapshot = thread_snapshot(tx, &resources, &record, "connection", Path::new("/state"),
+                        None)?;
+                    let attempt = match thread::plan(&snapshot, "attempt", "ticket") {
+                        thread::Outcome::Start(attempt) | thread::Outcome::Resume(attempt) => attempt,
+                        other => panic!("expected thread launch, got {other:?}"),
+                    };
+                    assert_eq!(attempt.params["claude"]["permissionMode"], *mode);
+                }
+            }
+            Ok::<_, WorkerError>(())
+        }).await.expect("thread plans");
+    }
+
+    #[tokio::test]
+    async fn claude_workspace_fence_reaches_thread_launch_options() {
+        let directory = tempfile::tempdir().expect("temporary state");
+        let store = RuntimeStore::open(Some(directory.path()))
+            .await
+            .expect("store");
+        let resources = PreparationResources::bundled(String::new(), ModelCatalogService::new())
+            .expect("resources");
+        store.transaction_with(move |tx| {
+            let root = json!({"id":"lead","rootId":"lead","epoch":1,"status":"running",
+                "isLead":true,"cwd":"/source checkout","hostProjectPath":"/source checkout"});
+            AgentRepository::put(tx, &AgentRecord::from_value(root).expect("lead"))?;
+            for (mode, provider, role, ready, fenced) in [
+                ("worktree", "claude", "implementer", true, true),
+                ("image", "claude", "implementer", true, true),
+                ("shared", "claude", "implementer", true, false),
+                ("worktree", "claude", "reviewer", true, false),
+                ("image", "claude", "reviewer", true, false),
+                ("worktree", "claude", "implementer", false, false),
+                ("image", "claude", "implementer", false, false),
+                ("worktree", "codex", "implementer", true, false),
+            ] {
+                let record = json!({"id":"worker","rootId":"lead","parentId":"lead",
+                    "epoch":1,"status":"queued","isLead":false,"role":role,"provider":provider,
+                    "cwd":"/worker copy:quoted\"path","hostProjectPath":"/parent copy",
+                    "imageWorkspaceRepo":if mode == "image" { json!("/image source") } else { Value::Null },
+                    "workspaceMode":mode,"worktree":mode == "worktree","worktreeReady":ready,
+                    "imageWorkspace":mode == "image","imageWorkspaceReady":ready,
+                    "yoloMode":true,"claudeOptions":{"permissionMode":"bypassPermissions"}});
+                for resumed in [false, true] {
+                    let mut record = record.clone();
+                    if resumed {
+                        // A current thread retains the catalog selected at start.
+                        record["threadId"] = json!("existing-thread");
+                        record["nativeToolSource"] = json!("current");
+                    }
+                    let snapshot = thread_snapshot(tx, &resources, &record, "connection", Path::new("/state"),
+                        None)?;
+                    let attempt = match thread::plan(&snapshot, "attempt", "ticket") {
+                        thread::Outcome::Start(attempt) | thread::Outcome::Resume(attempt) => attempt,
+                        other => panic!("expected thread launch, got {other:?}"),
+                    };
+                    let options = attempt.params.get("claude").unwrap_or(&Value::Null);
+                    if provider == "claude" && role == "reviewer" {
+                        assert_eq!(options["permissionMode"], "plan");
+                        assert_eq!(attempt.params["sandbox"], "read-only");
+                        assert_eq!(attempt.params["approvalPolicy"], "on-request");
+                    }
+                    if fenced {
+                        assert_eq!(options["permissionMode"], "bypassPermissions");
+                        assert_eq!(options["env"]["CLAUDE_CODE_HOST_WORKTREE"], record["cwd"]);
+                        let fence: Vec<String> = serde_json::from_str(
+                            options["env"]["CLAUDE_CODE_HOST_WORKTREE_FENCE"].as_str().expect("JSON fence"))
+                            .expect("fence array");
+                        let expected = if mode == "image" {
+                            vec!["/image source", "/parent copy", "/source checkout"]
+                        } else { vec!["/parent copy", "/source checkout"] };
+                        assert_eq!(fence, expected);
+                        let mut current = snapshot.clone();
+                        current.actor.prepare_attempt = Some(attempt.attempt_id.clone());
+                        let receipt = thread::ProviderReceipt {
+                            identity: attempt.receipt_identity(),
+                            thread_id: Some("existing-thread".into()),
+                            fields: Map::new(),
+                            reattached: false,
+                        };
+                        assert!(matches!(thread::reduce_receipt(&attempt, &current, Some(&receipt), None, json!(1)),
+                            thread::ReceiptOutcome::Accepted { .. }));
+                        current.host_worktree.as_mut().expect("worker fence").fence.push("/changed-source".into());
+                        assert_eq!(thread::reduce_receipt(&attempt, &current, Some(&receipt), None, json!(1)),
+                            thread::ReceiptOutcome::Stale(thread::StaleReason::Settings));
+                    } else {
+                        assert!(options.get("env").is_none(), "{mode}/{provider}/{role}/{ready}: {options}");
+                    }
+                    assert_eq!(attempt.params["sandbox"], if provider == "claude" && role == "reviewer" {
+                        "read-only"
+                    } else {
+                        "danger-full-access"
+                    });
+                }
+            }
+            Ok::<_, WorkerError>(())
+        }).await.expect("production snapshot and provider params");
+    }
+
+    #[test]
+    fn claude_workspace_fence_rejects_missing_or_relative_source() {
+        let mut record = json!({"provider":"claude","role":"implementer","parentId":"lead",
+            "worktree":true,"worktreeReady":true,"cwd":"/worker","hostProjectPath":"relative"});
+        assert!(host_worktree(&record, &json!({}), thread::Role::Implementer, false).is_err());
+        record["hostProjectPath"] = Value::Null;
+        assert!(host_worktree(&record, &json!({}), thread::Role::Implementer, false).is_err());
+        // A lead's workspace preference must not turn it into a fenced worker.
+        assert!(
+            host_worktree(&record, &json!({}), thread::Role::Implementer, true)
+                .expect("lead")
+                .is_none()
+        );
     }
 }

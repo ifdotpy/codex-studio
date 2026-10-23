@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use studio_runtime_store::path_identity::CanonicalPath;
+use studio_runtime_store::workspace_ready::overlaps;
 
 use crate::bounded_child::{self, ChildError};
 use crate::event_write::truthy;
@@ -14,6 +15,30 @@ use studio_runtime_store::{
     WorkspaceSnapshot,
 };
 use thiserror::Error;
+
+// Process execution exclusion complements the durable workspace reservation.
+// The state directory and agent identify one owner across HTTP service instances.
+pub struct RestoreExecution(String);
+static RESTORE_EXECUTIONS: std::sync::Mutex<std::collections::BTreeSet<String>> =
+    std::sync::Mutex::new(std::collections::BTreeSet::new());
+impl RestoreExecution {
+    pub fn acquire(key: String) -> Result<Self, CheckpointsError> {
+        let mut active = RESTORE_EXECUTIONS
+            .lock()
+            .map_err(|_| CheckpointsError::Worker)?;
+        if !active.insert(key.clone()) {
+            return Err(CheckpointsError::AgentBusy);
+        }
+        Ok(Self(key))
+    }
+}
+impl Drop for RestoreExecution {
+    fn drop(&mut self) {
+        if let Ok(mut active) = RESTORE_EXECUTIONS.lock() {
+            active.remove(&self.0);
+        }
+    }
+}
 
 const GIT_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_PATCH_CHARS: usize = 300_000;
@@ -52,6 +77,8 @@ pub enum CheckpointsError {
     },
     #[error("Workspace recovery is required before using this workspace")]
     RecoveryRequired,
+    #[error("Restore is available only in an isolated worker worktree")]
+    RestoreWorkspaceRequired,
     #[error("An agent is using this workspace")]
     AgentBusy,
     #[error("A monitor is using this workspace")]
@@ -77,6 +104,7 @@ pub struct PreviewContext {
     pub agent: StoredCheckpointObject,
     pub checkpoint: StoredCheckpointObject,
     pub recovery_expected_tree: Option<String>,
+    pub workspace: WorkspaceSnapshot,
 }
 
 pub async fn capture_context(
@@ -123,8 +151,11 @@ fn preview_context_in(
     }
     let recovery_expected_tree =
         CheckpointsRepository::restore_expected_tree(connection, agent_id, checkpoint_id)?;
+    let workspace = CheckpointsRepository::workspace_snapshot(connection, agent_id)?
+        .ok_or(CheckpointsError::UnknownAgent)?;
     Ok(PreviewContext {
         agent,
+        workspace,
         checkpoint,
         recovery_expected_tree,
     })
@@ -635,7 +666,42 @@ pub fn preview(store: &RuntimeStore, context: PreviewContext) -> Result<Value, C
     let raw_patch = String::from_utf8_lossy(&bytes).into_owned();
     let truncated = output_truncated || raw_patch.chars().count() > MAX_PATCH_CHARS;
     let patch = raw_patch.chars().take(MAX_PATCH_CHARS).collect::<String>();
-    let can_restore = false;
+    let reservation = context
+        .workspace
+        .operations
+        .iter()
+        .find(|operation| {
+            operation.record["kind"] == "restore"
+                && operation.record["checkpoint"] == context.checkpoint.id
+                && context.agent.record["workspaceReservationId"] == operation.id
+        })
+        .map(|operation| operation.id.as_str());
+    let unavailable = ensure_restore_available(&context.workspace, reservation).err();
+    let reason = unavailable
+        .map(|error| error.to_string())
+        .or_else(|| {
+            context
+                .workspace
+                .operations
+                .iter()
+                .find(|operation| Some(operation.id.as_str()) == reservation)
+                .filter(|operation| {
+                    operation.record["source"]
+                        != CheckpointsRepository::workspace_source(&context.agent.record)
+                })
+                .map(|_| {
+                    "Restore source changed. Inspect workspace recovery before retrying.".to_owned()
+                })
+        })
+        .or_else(|| {
+            (context.recovery_expected_tree.is_some()
+                && current_tree != expected_tree
+                && current_tree != tree)
+                .then(|| {
+                    "Files changed during restore. Inspect workspace recovery before retrying."
+                        .to_owned()
+                })
+        });
     let mut summary = checkpoint.clone();
     remove_summary_payload(&mut summary);
     Ok(json!({
@@ -644,8 +710,36 @@ pub fn preview(store: &RuntimeStore, context: PreviewContext) -> Result<Value, C
         "diff": patch,
         "patch": patch,
         "truncated": truncated,
-        "canRestore": can_restore,
+        "canRestore": reason.is_none(),
+        "restoreUnavailableReason": reason,
     }))
+}
+
+/// Shared eligibility for preview and the restore caller. The caller reserves
+/// the same snapshot transactionally before it starts provider or Git effects.
+pub fn ensure_restore_available(
+    snapshot: &WorkspaceSnapshot,
+    reservation: Option<&str>,
+) -> Result<(), CheckpointsError> {
+    ensure_agent_available(&snapshot.agent)?;
+    if snapshot
+        .agent
+        .record
+        .get("worktreeReady")
+        .and_then(Value::as_bool)
+        != Some(true)
+    {
+        return Err(CheckpointsError::RestoreWorkspaceRequired);
+    }
+    if truthy(snapshot.agent.record.get("inFlight"))
+        || matches!(
+            snapshot.agent.record["status"].as_str(),
+            Some("running" | "starting" | "approval")
+        )
+    {
+        return Err(CheckpointsError::AgentBusy);
+    }
+    ensure_workspace_idle(snapshot, reservation)
 }
 
 pub fn ensure_agent_available(agent: &StoredCheckpointObject) -> Result<(), CheckpointsError> {
@@ -712,7 +806,7 @@ pub fn ensure_workspace_idle(
             continue;
         };
         if let Some(record) = by_id.get(operation_agent)
-            && canonical_cwd(record).is_ok_and(|path| path == target)
+            && canonical_cwd(record).is_ok_and(|path| overlaps(&path, &target))
         {
             return Err(CheckpointsError::RecoveryRequired);
         }
@@ -724,11 +818,11 @@ pub fn ensure_workspace_idle(
                 && record.get("workspaceReservationId").and_then(Value::as_str) == Some(reservation)
                 && matches!(
                     record.get("workspaceOperation").and_then(Value::as_str),
-                    Some("capture" | "checkpoint" | "restore")
+                    Some("capture" | "checkpoint" | "restore" | "restore_recovery")
                 )
         });
         if active
-            && canonical_cwd(record).is_ok_and(|path| path == target)
+            && canonical_cwd(record).is_ok_and(|path| overlaps(&path, &target))
             && (truthy(record.get("inFlight")) || !own_reservation)
         {
             return Err(CheckpointsError::AgentBusy);
@@ -748,7 +842,7 @@ pub fn ensure_workspace_idle(
                     object: "monitors",
                     id: monitor.id.clone(),
                 })?;
-            if CanonicalPath::existing(Path::new(path)).is_ok_and(|path| path == target) {
+            if CanonicalPath::existing(Path::new(path)).is_ok_and(|path| overlaps(&path, &target)) {
                 return Err(CheckpointsError::MonitorBusy);
             }
         }
@@ -761,7 +855,9 @@ pub fn ensure_workspace_idle(
                 .get("agent")
                 .and_then(Value::as_str)
                 .and_then(|id| by_id.get(id))
-                .is_some_and(|record| canonical_cwd(record).is_ok_and(|path| path == target))
+                .is_some_and(|record| {
+                    canonical_cwd(record).is_ok_and(|path| overlaps(&path, &target))
+                })
         {
             return Err(CheckpointsError::TaskBusy);
         }

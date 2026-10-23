@@ -1,6 +1,7 @@
 //! Callback payload capability: SQL identities, verified bytes, durable hashes.
 //! Construction performs I/O; using the capability never touches the filesystem.
 use super::*;
+use rusqlite::OptionalExtension;
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone, Debug, PartialEq)]
@@ -8,6 +9,7 @@ pub(crate) enum Selection {
     List,
     Receipt(String),
     Output(Vec<String>),
+    StudioInput(String),
 }
 
 #[derive(Debug, PartialEq)]
@@ -15,6 +17,7 @@ pub(crate) struct Rows {
     selection: Selection,
     requests: Vec<Option<Value>>,
     results: BTreeMap<String, Option<Value>>,
+    studio_input: Option<Value>,
 }
 impl Rows {
     pub(crate) fn read(
@@ -23,6 +26,7 @@ impl Rows {
         selection: Selection,
     ) -> Result<Self, ToolRequestError> {
         let requests = match &selection {
+            Selection::StudioInput(_) => Vec::new(),
             Selection::List => list_records(tx, actor)?.into_iter().map(Some).collect(),
             Selection::Receipt(key) => vec![resolve(tx, actor, key)?],
             Selection::Output(keys) => keys
@@ -42,7 +46,16 @@ impl Rows {
             let id = text(request, "id");
             results.insert(id.to_owned(), records::get(tx, "runtime_tool_results", id)?);
         }
+        let studio_input = if let Selection::StudioInput(hash) = &selection {
+            tx.query_row(
+                "SELECT m.record FROM runtime_events e JOIN runtime_event_meta m ON e.id=m.id WHERE e.agent=?1 AND json_extract(m.record,'$.studioInput.sha256')=?2 ORDER BY e.created,e.id LIMIT 1",
+                rusqlite::params![actor, hash], |r| r.get::<_,String>(0),
+            ).optional()?.map(|raw| serde_json::from_str::<Value>(&raw).map(|v| v["studioInput"].clone())).transpose().map_err(StoreError::from)?
+        } else {
+            None
+        };
         Ok(Self {
+            studio_input,
             selection,
             requests,
             results,
@@ -87,7 +100,16 @@ impl Rows {
                 published.extend(decision.writes.into_iter().map(|write| write.sha256));
             }
         }
+        let studio_input = self
+            .studio_input
+            .as_ref()
+            .map(|reference| {
+                String::from_utf8(crate::payload_blobs::load_blob(root, reference)?)
+                    .map_err(|_| ToolRequestError::InvalidRequest("Studio input is not UTF-8"))
+            })
+            .transpose()?;
         Ok(Payloads {
+            studio_input,
             rows: self,
             resolved,
             published,
@@ -96,11 +118,24 @@ impl Rows {
 }
 
 pub(crate) struct Payloads {
+    studio_input: Option<String>,
     rows: Rows,
     resolved: Vec<(Value, Value)>,
     published: BTreeSet<String>,
 }
 impl Payloads {
+    pub(crate) fn studio_input(&self, reference: &Value) -> Result<&str, ToolRequestError> {
+        if self.rows.studio_input.as_ref() != Some(reference) {
+            return Err(ToolRequestError::InvalidRequest(
+                "Studio input changed before read",
+            ));
+        }
+        self.studio_input
+            .as_deref()
+            .ok_or(ToolRequestError::InvalidRequest(
+                "Studio input is unavailable",
+            ))
+    }
     pub(crate) fn revalidate(
         &self,
         tx: &Transaction<'_>,

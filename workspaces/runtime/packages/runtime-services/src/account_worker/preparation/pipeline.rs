@@ -98,6 +98,21 @@ async fn compile_with_artifacts(
         }
         Err(e) => return Err(refusal(e.to_string())),
     };
+    if let Some(body) = &compiled.studio_input {
+        let state_root = store.root().to_path_buf();
+        let write = crate::payload_blobs::BlobWrite {
+            sha256: studio_runtime_store::sha256_hex(body.as_bytes()),
+            bytes: body.as_bytes().to_vec(),
+            preview: Value::Null,
+        };
+        studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-services/account_worker_studio_input_spill",
+            move || crate::payload_blobs::write_blobs(&state_root, &[write]),
+        )
+        .await
+        .map_err(|_| WorkerError::TaskFailed)?
+        .map_err(|_| refusal("Studio input spill failed".into()))?;
+    }
     Ok((turn_snapshot, events, compiled))
 }
 
@@ -1288,7 +1303,7 @@ pub(crate) async fn prepare_monitor_command(
         None
     };
     let agent_id = agent_id.to_owned();
-    let resources_for_snapshot = resources.for_sql().await?;
+    let resources_for_snapshot = resources.for_agent(&store, &agent_id).await?;
     let state_root = store.root().to_path_buf();
     scheduler::lifecycle_transaction_with(&store, move |tx| {
         let current = agent(tx, &agent_id)?.value();
@@ -1582,7 +1597,7 @@ async fn prepare_native_snapshot(
     let (identity, _) = catalog(resources, &intent)?;
     let state_root = store.root().to_path_buf();
     let intent = intent.clone();
-    let resources_for_snapshot = resources.for_sql().await?;
+    let resources_for_snapshot = resources.for_agent(&store, agent_id).await?;
     let generation = generation.to_string();
     let transfer_owner = account_transfer_owner.map(str::to_owned);
     scheduler::lifecycle_transaction_with(&store, move |tx| {
@@ -1650,7 +1665,7 @@ pub(crate) async fn prepare_safety_retry(
         .unwrap_or("safety-retry-preparation")
         .to_owned();
     let snapshot_request = request.clone();
-    let resources_for_snapshot = resources.for_sql().await?;
+    let resources_for_snapshot = resources.for_agent(&store, &request.agent_id).await?;
     let state_root = store.root().to_path_buf();
     let mut snapshot = scheduler::lifecycle_transaction_with(&store, move |tx| {
         let current = agent(tx, &snapshot_request.agent_id)?.value();
@@ -1784,7 +1799,7 @@ pub(crate) async fn prepare_ready(
     let token_for_snapshot = token.clone();
     let generation = generation.to_string();
     let state_root = store.root().to_path_buf();
-    let resources = resources.for_sql().await?;
+    let resources = resources.for_agent(&store, &intent.agent_id).await?;
     let resources_for_snapshot = resources.clone();
     let (
         mut snapshot,
@@ -2300,6 +2315,7 @@ mod daybreak_tests {
                 fast_mode: false,
                 yolo_mode: Some(true),
                 profile_instructions: String::new(),
+                capability_profile: Default::default(),
                 role: thread::Role::Implementer,
                 is_lead: false,
                 needs_title: false,
@@ -2320,6 +2336,7 @@ mod daybreak_tests {
                 saved_digest: None,
             },
             workspace: thread::WorkspaceReadiness::Ready,
+            host_worktree: None,
             unsupported: None,
             admission: None,
             pending: None,
@@ -2725,10 +2742,16 @@ mod team_progress_delivery_tests {
                     .map_err(|error| StoreError::SchemaMismatch(format!("{error:?}")))?;
                 let prepared = turn::compile(&snapshot, &events)
                     .map_err(|error| StoreError::SchemaMismatch(format!("{error:?}")))?;
-                match &prepared.provider_inputs[0] {
-                    turn::ProviderInput::Text { text } => Ok::<String, StoreError>(text.clone()),
-                    turn::ProviderInput::LocalImage { .. } => panic!("text input expected"),
-                }
+                Ok::<String, StoreError>(
+                    prepared
+                        .provider_inputs
+                        .iter()
+                        .filter_map(|input| match input {
+                            turn::ProviderInput::Text { text, .. } => Some(text.as_str()),
+                            _ => None,
+                        })
+                        .collect(),
+                )
             })
             .await
             .expect("batch compiles")
@@ -2748,3 +2771,7 @@ mod team_progress_delivery_tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "compaction_tests.rs"]
+mod compaction_tests;

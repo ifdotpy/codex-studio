@@ -121,7 +121,16 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
                 .iter()
                 .any(|(field, expected)| {
                     existing.get(*field).is_some_and(|v| {
-                        truthy_value(v) && v.as_str() != expected.map(String::as_str)
+                        truthy_value(v)
+                            && !v.as_str().zip(expected.map(String::as_str)).is_some_and(
+                                |(old, new)| {
+                                    if *field == "_credentialIdentity" {
+                                        claude_identity::accepts(old, new)
+                                    } else {
+                                        old == new
+                                    }
+                                },
+                            )
                     })
                 })
             {
@@ -130,10 +139,11 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
             if existing.get("claudeOptions") != Some(&Value::Object(options)) {
                 return Err(ClaudeAccountError::SettingsChanged);
             }
-            registry_account_mut(&mut updated, &key)?
+            let row = registry_account_mut(&mut updated, &key)?
                 .as_object_mut()
-                .ok_or(AccountDriverError::InvalidRegistry)?
-                .remove("deleted");
+                .ok_or(AccountDriverError::InvalidRegistry)?;
+            apply_metadata(row, metadata);
+            row.remove("deleted");
             if updated != state.value {
                 self.persist(&mut state, updated)?;
             }
@@ -152,7 +162,20 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
             let same_login = local
                 .get("accountId")
                 .is_none_or(|v| !truthy_value(v) || v.as_str() == metadata.account_id.as_deref());
-            if local.get("provider") == Some(&json!("claude")) && same_paths && same_login {
+            let same_credential = local
+                .get("_credentialIdentity")
+                .and_then(Value::as_str)
+                .is_none_or(|old| {
+                    metadata
+                        .credential_identity
+                        .as_deref()
+                        .is_some_and(|new| claude_identity::accepts(old, new))
+                });
+            if local.get("provider") == Some(&json!("claude"))
+                && same_paths
+                && same_login
+                && same_credential
+            {
                 if local_options.is_some_and(|o| !o.is_empty() && o != &options) {
                     return Err(ClaudeAccountError::SettingsChanged);
                 }

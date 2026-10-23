@@ -1,0 +1,219 @@
+import assert from "node:assert/strict";
+import { test } from "vitest";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { createSessionStore } from "./session-store.mjs";
+import { startBridge } from "./testing/bridge-harness.mjs";
+
+const id = "11111111-1111-4111-8111-111111111111";
+const userId = "22222222-2222-4222-8222-222222222222";
+const answerId = "33333333-3333-4333-8333-333333333333";
+async function fixture(run) {
+  const root = await fs.realpath(
+    await fs.mkdtemp(path.join(os.tmpdir(), "claude-journal-repair-")),
+  );
+  const configDir = path.join(root, "native");
+  const session = {
+    id,
+    cwd: root,
+    turns: [
+      {
+        id: userId,
+        status: "completed",
+        items: [
+          {
+            id: userId,
+            nativeId: userId,
+            type: "userMessage",
+            content: [{ type: "text", text: "Hello" }],
+          },
+          {
+            id: "msg-answer",
+            nativeId: answerId,
+            type: "agentMessage",
+            text: "Hello back",
+            phase: "final_answer",
+          },
+        ],
+      },
+    ],
+  };
+  const native = path.join(
+    configDir,
+    "projects",
+    root.replace(/[^a-zA-Z0-9]/g, "-"),
+    id + ".jsonl",
+  );
+  const rows = [
+    {
+      type: "user",
+      uuid: userId,
+      parentUuid: null,
+      message: { role: "user", content: "Hello" },
+    },
+    {
+      type: "assistant",
+      uuid: answerId,
+      parentUuid: userId,
+      message: {
+        id: "msg-answer",
+        role: "assistant",
+        stop_reason: "end_turn",
+        content: [{ type: "text", text: "Hello back" }],
+      },
+    },
+  ].map((row) => ({ ...row, sessionId: id, cwd: root, isSidechain: false }));
+  const store = createSessionStore(root);
+  await store.persist(session);
+  session.name = "Saved name";
+  await store.persist(session);
+  const journal = path.join(root, "sessions", id + ".jsonl");
+  const valid = await fs.readFile(journal, "utf8");
+  await fs.writeFile(journal, "{broken complete row}\n" + valid);
+  await fs.mkdir(path.dirname(native), { recursive: true });
+  await fs.writeFile(
+    native,
+    rows.map((row) => JSON.stringify(row) + "\n").join(""),
+  );
+  try {
+    await run({
+      root,
+      native,
+      journal,
+      session,
+      options: { nativeHistory: { configDir } },
+      valid,
+    });
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+}
+
+test("malformed complete journal row repairs only with exact native history and reports skipped count", async () =>
+  fixture(async (f) => {
+    const restored = await createSessionStore(f.root, f.options).get(id);
+    assert.deepEqual(restored.turns, f.session.turns);
+    assert.equal(restored.name, "Saved name");
+    assert.equal(restored.journalRepair.status, "repaired");
+    assert.equal(restored.journalRepair.skippedRows, 1);
+    assert.match(
+      await fs.readFile(f.journal + ".corrupt", "utf8"),
+      /broken complete row/,
+    );
+    assert.deepEqual(
+      await createSessionStore(f.root, f.options).get(id),
+      restored,
+    );
+  }));
+
+for (const kind of [
+  "missing",
+  "mismatch",
+  "torn",
+  "sequence gap",
+  "complete corrupt tail",
+  "unsafe patch",
+]) {
+  test(`journal corruption needs repair when native proof is ${kind}`, async () =>
+    fixture(async (f) => {
+      if (kind === "missing") await fs.rm(f.native);
+      if (kind === "mismatch")
+        await fs.writeFile(
+          f.native,
+          (await fs.readFile(f.native, "utf8")).replace(
+            "Hello back",
+            "Different answer",
+          ),
+        );
+      if (kind === "torn") await fs.appendFile(f.native, '{"type":');
+      if (kind === "sequence gap")
+        await fs.writeFile(
+          f.journal,
+          "{broken}\n" + f.valid.replace('"sequence":1', '"sequence":2'),
+        );
+      if (kind === "complete corrupt tail")
+        await fs.writeFile(f.journal, f.valid + "{broken}\n");
+      if (kind === "unsafe patch")
+        await fs.appendFile(
+          f.journal,
+          JSON.stringify({
+            sequence: 2,
+            changes: [
+              { op: "set", path: ["__proto__", "polluted"], value: true },
+            ],
+          }) + "\n",
+        );
+      const before = await fs.readFile(f.journal, "utf8");
+      await assert.rejects(
+        createSessionStore(f.root, f.options).get(id),
+        (error) => {
+          assert.equal(error.code, "CLAUDE_SESSION_REPAIR_REQUIRED");
+          assert.match(error.message, /needs repair/);
+          assert.ok(error.data.skippedRows >= 1);
+          return true;
+        },
+      );
+      assert.equal(await fs.readFile(f.journal, "utf8"), before);
+      assert.equal({}.polluted, undefined);
+      const marker = JSON.parse(
+        await fs.readFile(
+          path.join(f.root, "sessions", id + ".repair.json"),
+          "utf8",
+        ),
+      );
+      assert.equal(marker.status, "needs_repair");
+    }));
+}
+
+const READ_ONLY_SDK = `
+export const query=()=>{throw new Error('History must not start a query')};
+export const tool=()=>{};
+export const createSdkMcpServer=()=>{};
+export const getSessionMessages=async()=>[];
+export const forkSession=async()=>{};
+`;
+for (const confirmed of [true, false]) {
+  test(`bridge history and resume ${confirmed ? "report confirmed repair" : "reject unconfirmed repair without crashing"}`, async () =>
+    fixture(async (f) => {
+      const bridge = await startBridge(READ_ONLY_SDK);
+      try {
+        for (const suffix of [".json", ".jsonl", ".meta.json"])
+          await fs.copyFile(
+            path.join(f.root, "sessions", id + suffix),
+            path.join(bridge.root, "state/sessions", id + suffix),
+          );
+        if (confirmed) {
+          const target = path.join(
+            bridge.root,
+            "native-config/projects",
+            f.root.replace(/[^a-zA-Z0-9]/g, "-"),
+            id + ".jsonl",
+          );
+          await fs.mkdir(path.dirname(target), { recursive: true });
+          await fs.copyFile(f.native, target);
+        }
+        for (const method of ["thread/read", "thread/resume"]) {
+          const call = bridge.call(method, {
+            threadId: id,
+            includeTurns: true,
+          });
+          if (confirmed) {
+            const result = await call;
+            assert.equal(result.thread.journalRepair.skippedRows, 1);
+            assert.deepEqual(result.thread.turns, f.session.turns);
+          } else
+            await assert.rejects(
+              call,
+              /needs repair: 1 malformed journal rows/,
+            );
+        }
+        assert.deepEqual(await bridge.call("thread/loaded/list", {}), {
+          data: [],
+          nextCursor: null,
+        });
+      } finally {
+        await bridge.close();
+      }
+    }));
+}

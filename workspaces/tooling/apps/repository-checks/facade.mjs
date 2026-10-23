@@ -1673,6 +1673,39 @@ function fastTierCommands(root) {
       },
     },
     {
+      item: { name: "studio-runtime-services", ecosystem: "cargo" },
+      label: "task authority, worker limits, and Claude input witnesses",
+      commands: [
+        [
+          "cargo",
+          [
+            "nextest",
+            "run",
+            "--locked",
+            "--no-tests",
+            "fail",
+            "--message-format",
+            "libtest-json-plus",
+            "-p",
+            "studio-runtime-services",
+            "-p",
+            "studio-runtime-store",
+            "-p",
+            "studio-runtime-schema",
+            "--lib",
+            "-E",
+            "test(authenticated_task_caller_) | test(acceptance_gate_) | test(task_result_schema) | test(capability_) | test(claude_child_) | test(workspace_fence) | test(input_origin) | test(stop_receipt_) | test(live_limits_) | test(archive_keeps_submodule) | test(turn_prepare::budget_tests::)",
+          ],
+        ],
+      ],
+      options: {
+        selector:
+          "task authority, acceptance gates, worker capability limits, and Claude input provenance",
+        reason:
+          "Check that workers cannot act as the lead, gates and limits hold, and Claude input keeps its origin and queue receipts.",
+      },
+    },
+    {
       item: web,
       label: "web focused type check",
       options: { script: "typecheck:fast", allowZeroTests: true },

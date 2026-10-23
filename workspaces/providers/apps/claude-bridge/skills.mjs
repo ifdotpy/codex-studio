@@ -1,6 +1,9 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+const exec = promisify(execFile);
 
 // Claude Code reads skills from the project, the user config directory and
 // installed plugins. Studio lists the same roots for the composer.
@@ -39,7 +42,7 @@ export function frontmatter(source) {
   return fields;
 }
 
-async function skillsIn(root, prefix, errors) {
+async function skillsIn(root, prefix, errors, enabled = true) {
   let entries;
   try {
     entries = await fs.readdir(root, { withFileTypes: true });
@@ -66,47 +69,125 @@ async function skillsIn(root, prefix, errors) {
       name: prefix ? `${prefix}:${name}` : name,
       description: fields.description || "",
       path: file,
-      enabled: true,
+      enabled,
     });
   }
   return result.sort((a, b) => a.name.localeCompare(b.name));
 }
 
-async function pluginRoots(errors) {
-  const file = path.join(configDir(), "plugins", "installed_plugins.json");
-  let installed;
+async function readSettings(file, errors) {
   try {
-    installed = JSON.parse(await fs.readFile(file, "utf8"));
+    const value = JSON.parse(await fs.readFile(file, "utf8"));
+    if (!value || typeof value !== "object" || Array.isArray(value))
+      throw new Error("Settings must contain an object");
+    if (
+      value.enabledPlugins != null &&
+      (typeof value.enabledPlugins !== "object" ||
+        Array.isArray(value.enabledPlugins))
+    )
+      throw new Error("enabledPlugins must contain an object");
+    return value;
   } catch (error) {
     if (error.code !== "ENOENT")
       errors.push({ message: `${file}: ${error.message}` });
-    return [];
+    return {};
   }
-  let enabled = null;
+}
+
+async function projectIdentity(cwd) {
   try {
-    const settings = JSON.parse(
-      await fs.readFile(path.join(configDir(), "settings.json"), "utf8"),
+    const { stdout } = await exec(
+      "git",
+      [
+        "-C",
+        cwd,
+        "rev-parse",
+        "--path-format=absolute",
+        "--show-toplevel",
+        "--git-common-dir",
+      ],
+      { timeout: 5000 },
     );
-    if (settings.enabledPlugins && typeof settings.enabledPlugins === "object")
-      enabled = settings.enabledPlugins;
+    const [root, common] = stdout.trim().split("\n");
+    return { root, common: await fs.realpath(common) };
   } catch {
-    enabled = null;
+    return { root: path.resolve(cwd), common: null };
+  }
+}
+
+function managedDirectory() {
+  if (process.platform === "darwin")
+    return "/Library/Application Support/ClaudeCode";
+  if (process.platform === "win32")
+    return path.join(
+      process.env.ProgramFiles || "C:\\Program Files",
+      "ClaudeCode",
+    );
+  return "/etc/claude-code";
+}
+
+async function pluginRoots(cwd, errors) {
+  const installed = await readSettings(
+    path.join(configDir(), "plugins", "installed_plugins.json"),
+    errors,
+  );
+  const project = await projectIdentity(cwd);
+  const files = [path.join(configDir(), "settings.json")];
+  for (const name of ["settings.json", "settings.local.json"])
+    for (const dir of new Set([project.root, path.resolve(cwd)]))
+      files.push(path.join(dir, ".claude", name));
+  const managed = managedDirectory();
+  files.push(path.join(managed, "managed-settings.json"));
+  try {
+    const names = await fs.readdir(path.join(managed, "managed-settings.d"));
+    files.push(
+      ...names
+        .filter((name) => name.endsWith(".json") && !name.startsWith("."))
+        .sort()
+        .map((name) => path.join(managed, "managed-settings.d", name)),
+    );
+  } catch (error) {
+    if (error.code !== "ENOENT")
+      errors.push({ message: `${managed}: ${error.message}` });
+  }
+  const enabled = {};
+  let validSettings = errors.length === 0;
+  for (const file of files) {
+    const before = errors.length;
+    const settings = await readSettings(file, errors);
+    validSettings &&= before === errors.length;
+    Object.assign(enabled, settings.enabledPlugins || {});
   }
   const roots = [];
   for (const [key, installs] of Object.entries(installed.plugins || {})) {
-    if (enabled && enabled[key] === false) continue;
-    const install = Array.isArray(installs) ? installs[0] : installs;
-    if (!install?.installPath) continue;
-    roots.push({
-      root: path.join(install.installPath, "skills"),
-      prefix: key.split("@")[0],
-    });
+    // Legacy registries contain one user installation without an explicit scope.
+    const candidates = Array.isArray(installs) ? installs : [installs];
+    for (const install of candidates) {
+      if (!install?.installPath) continue;
+      let matches =
+        install.scope === "user" ||
+        install.scope === "managed" ||
+        (!install.scope && !install.projectPath);
+      if (!matches && typeof install.projectPath === "string") {
+        matches = path.resolve(install.projectPath) === path.resolve(cwd);
+        if (!matches && project.common) {
+          const other = await projectIdentity(install.projectPath);
+          matches = other.common === project.common;
+        }
+      }
+      if (!matches) continue;
+      roots.push({
+        root: path.join(install.installPath, "skills"),
+        prefix: key.split("@")[0],
+        enabled: validSettings && enabled[key] === true,
+      });
+      break;
+    }
   }
   return roots;
 }
 
 export async function listSkills(cwds) {
-  const plugins = await pluginRoots([]);
   const data = [];
   for (const cwd of cwds || []) {
     const errors = [];
@@ -121,11 +202,11 @@ export async function listSkills(cwds) {
       dir = parent;
     }
     roots.push({ root: path.join(configDir(), "skills"), prefix: "" });
-    roots.push(...plugins);
+    roots.push(...(await pluginRoots(cwd, errors)));
     const skills = [];
     const seen = new Set();
-    for (const { root, prefix } of roots)
-      for (const skill of await skillsIn(root, prefix, errors)) {
+    for (const { root, prefix, enabled } of roots)
+      for (const skill of await skillsIn(root, prefix, errors, enabled)) {
         if (seen.has(skill.name)) continue;
         seen.add(skill.name);
         skills.push(skill);
