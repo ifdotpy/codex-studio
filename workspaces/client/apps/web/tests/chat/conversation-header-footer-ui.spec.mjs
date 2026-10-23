@@ -81,6 +81,8 @@ test("conversation header stays compact and usage facts remain visible", async (
           await expect(page.locator("#conversation-title")).toHaveText(
             "Release lead",
           );
+          await expect(page.locator("#conversation-title")).toBeVisible();
+          await expect(page.locator(".conversation-server")).toBeVisible();
           await expect(page.locator("#conversation-status")).toHaveCount(0);
           await expect(page.locator("#messages")).toContainText(
             "Review the release",
@@ -226,7 +228,21 @@ function assertGeometry(r) {
   expect(r.header.height, JSON.stringify(r)).toBeLessThanOrEqual(45);
   expect(r.teamStrip).toBe(false);
   expect(r.server.width).toBeGreaterThan(0);
-  expect(r.server.left).toBeGreaterThanOrEqual(r.title.right);
+  if (r.width < 760) {
+    expect(r.title.width).toBeGreaterThan(0);
+    expect(r.title.height).toBeGreaterThan(0);
+    expect(r.server.height).toBeGreaterThan(0);
+    expect(r.server.top).toBeGreaterThanOrEqual(r.title.bottom);
+    expect(r.server.left).toBeCloseTo(r.title.left, 0);
+    for (const rect of [r.title, r.server]) {
+      expect(rect.left).toBeGreaterThanOrEqual(r.header.left);
+      expect(rect.right).toBeLessThanOrEqual(r.header.right);
+      expect(rect.top).toBeGreaterThanOrEqual(r.header.top);
+      expect(rect.bottom).toBeLessThanOrEqual(r.header.bottom);
+    }
+  } else {
+    expect(r.server.left).toBeGreaterThanOrEqual(r.title.right);
+  }
   expect(r.limits.width).toBeGreaterThan(0);
   expect(r.dots.width).toBeGreaterThan(0);
   expect(r.dots.height).toBeGreaterThan(0);
