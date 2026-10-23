@@ -179,6 +179,7 @@ pub mod sync_views;
 pub mod system_reads;
 pub mod tar_gzip;
 pub mod task_gate;
+pub mod task_output;
 pub mod task_recovery;
 pub mod task_recovery_store;
 pub mod task_settlement;

@@ -1,3 +1,4 @@
+import { McpInventory } from "./McpInventory";
 import Tasks from "./Tasks";
 import ClaudeCheckpointRestore from "../ClaudeCheckpointRestore";
 import { useServerApi } from "../../servers/ServerServicesContext";
@@ -895,6 +896,7 @@ type CheckpointPreview = Omit<
 > & { checkpoint: string; label: string };
 
 function Tools(c: Context) {
+  const { get, post } = useServerApi();
   const state = useResource("/api/capabilities", c.revision, {
       query: c.selected ? { agent: c.selected.id } : {},
     }),
@@ -989,7 +991,22 @@ function Tools(c: Context) {
           <h3 className="workspace-section-title">Skills</h3>
           <Inventory value={state.data.skills} query={query} />
           <h3 className="workspace-section-title">Connected tools (MCP)</h3>
-          <Inventory value={state.data.mcp} query={query} />
+          <McpInventory
+            key={c.selected?.id}
+            agent={c.selected?.id ?? ""}
+            initial={state.data}
+            query={query}
+            loadPage={(cursor) =>
+              get("/api/capabilities", {
+                query: {
+                  agent: c.selected?.id ?? "",
+                  fresh: true,
+                  ...(cursor ? { serversCursor: cursor } : {}),
+                },
+              })
+            }
+            reconnect={(body) => post("/api/mcp/reconnect", body)}
+          />
         </>
       )}
     </>

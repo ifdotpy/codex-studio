@@ -242,8 +242,22 @@ pub fn project_persisted_record(collection: &str, record: &Value) -> Option<Valu
         .filter(|id| !id.is_empty())?;
     let document = openapi_document();
     let schema = document.pointer(&format!("/components/schemas/{schema_name}"))?;
+    // Cleanup receipts contain private operation identities. Publish only the
+    // retained folder and the reason the cleanup owner recorded.
+    let mut public_record = std::borrow::Cow::Borrowed(record);
+    if collection == "agent"
+        && let Some(intent) = record
+            .get("workspaceCleanupIntent")
+            .filter(|v| v.is_object())
+    {
+        public_record.to_mut()["workspaceCleanupIntent"] = json!({
+            "phase": intent.get("phase").and_then(Value::as_str).unwrap_or("unknown"),
+            "reason": intent.pointer("/receipt/reason").or_else(|| intent.get("reason")).filter(|value| value.is_string()).map(|value| bound_sync_value(value, "error", false)),
+            "path": intent.pointer("/effect/identity/cwd").or_else(|| intent.get("path")).or_else(|| record.get("cwd")).and_then(Value::as_str),
+        });
+    }
     Some(project_schema_value(
-        record,
+        &public_record,
         schema,
         "",
         document,

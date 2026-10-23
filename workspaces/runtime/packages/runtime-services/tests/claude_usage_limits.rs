@@ -6,15 +6,17 @@ use studio_runtime_services::{
 };
 
 fn snapshot(model: &str) -> Snapshot {
+    Snapshot::from_records(snapshot_records(model)).expect("snapshot")
+}
+fn snapshot_records(model: &str) -> Value {
     let record = json!({"id":"resume","accountKey":"default","threadId":"thread","epoch":1,
         "turnId":"turn","cause":"rate_limit","status":"scheduled","failedAt":900.0,
         "dueAt":990.0,"taskClaims":[]});
-    Snapshot::from_records(json!({"agent":{
+    json!({"agent":{
         "id":"a","rootId":"a","epoch":1,"status":"failed","accountKey":"default",
         "threadId":"thread","lastCompletedTurn":"turn","autoWake":true,"nativeFailureHold":true,
         "cwd":"/fixture","isLead":true,"provider":"claude","model":model,"usageResume":record
-    },"record":record}))
-    .expect("snapshot")
+    },"record":record})
 }
 fn data(main_used: f64) -> Value {
     json!({"rateLimits":{"limitId":"claude","primary":{"usedPercent":main_used,"resetsAt":1300.0}},
@@ -254,4 +256,60 @@ fn missing_observation_reschedules_without_followup() {
         1000.0 + studio_runtime_services::continuation::POLL_SECONDS
     );
     assert!(decision.effects.is_empty());
+}
+
+#[test]
+fn ui_eligibility_matches_resume_decisions_on_shared_fixtures() {
+    let fixtures: Value = serde_json::from_str(include_str!("claude_usage_ui_cases.json"))
+        .expect("usage fixtures parse");
+    for case in fixtures.as_array().expect("usage fixtures are an array") {
+        let records = snapshot_records(case["model"].as_str().expect("fixture model is text"));
+        let state = Snapshot::from_records(records.clone()).expect("resume snapshot is valid");
+        let agent = &records["agent"];
+        let raw = &case["observation"];
+        let limits =
+            LimitsObservation::from_record(raw.clone(), None).expect("limits observation is valid");
+        let view = usage_resume::eligibility(raw, agent, 1000.0);
+        let decision =
+            usage_resume::tick(&state, &limits, 1000.0).expect("resume decision succeeds");
+        assert_eq!(
+            view["canRun"],
+            decision.record.expect("resume decision retains its record")["status"] == "started",
+            "{}",
+            case["name"]
+        );
+        assert_eq!(view["allowed"], limits.allowed(agent, 1000.0));
+        assert_eq!(view["resetAt"], json!(limits.reset_at(agent)));
+        assert_eq!(view["canRun"], case["canRun"], "{}", case["name"]);
+        assert_eq!(view["overage"], case["overage"], "{}", case["name"]);
+        assert_eq!(
+            view["buckets"]
+                .as_array()
+                .expect("applicable buckets are an array")
+                .iter()
+                .map(|b| b["id"].clone())
+                .collect::<Vec<_>>(),
+            case["buckets"]
+                .as_array()
+                .expect("expected buckets are an array")
+                .clone(),
+            "{}",
+            case["name"]
+        );
+    }
+}
+
+#[test]
+fn ui_decision_expires_at_the_first_applicable_window_reset() {
+    let records = snapshot_records("sonnet");
+    let agent = &records["agent"];
+    let mut raw = json!({"accountKey":"default","at":1000.0,"data":data(20.0)});
+    raw["data"]["rateLimits"]["primary"]["resetsAt"] = json!(1002.0);
+    let view = usage_resume::eligibility(&raw, agent, 1000.0);
+    assert_eq!(view["canRun"], true);
+    assert_eq!(view["validUntil"], 1002.0);
+    assert_eq!(
+        usage_resume::eligibility(&raw, agent, 1002.0)["canRun"],
+        false
+    );
 }

@@ -2360,6 +2360,7 @@ fn claude_profile_is_not_refreshed_through_codex_account_home_admission() {
                 account_id: Some("would-have-refreshed".into()),
                 email: None,
                 plan: None,
+                organization_name: None,
                 credential_identity: Some("would-have-refreshed".into()),
                 error: None,
                 error_kind: None,

@@ -1409,7 +1409,7 @@ function fastTierCommands(root) {
       : []),
     {
       item: { name: "project preparation", ecosystem: "cargo" },
-      label: "project preparation conflict witnesses",
+      label: "project preparation and agent limit witnesses",
       commands: [
         [
           "cargo",
@@ -1428,15 +1428,15 @@ function fastTierCommands(root) {
             "--test",
             "integration",
             "-E",
-            "test(/^project_preparation::/) | test(committed_delete_route_succeeds_with_unrelated_failing_cleanup) | test(real_rxdb_single_writer_draft_ack_echo_ordering)",
+            "test(/^project_preparation::/) | test(/^agent_limits::/) | test(committed_delete_route_succeeds_with_unrelated_failing_cleanup) | test(real_rxdb_single_writer_draft_ack_echo_ordering)",
           ],
         ],
       ],
       options: {
         selector:
-          "project preparation structural conflicts and idle async answer",
+          "project preparation conflicts, worker continuation authority, and budget projections",
         reason:
-          "Check project writes across agent execution changes and real structural conflicts.",
+          "Check project writes, user-only worker resets, and bounded budget and cleanup views.",
       },
     },
     {
