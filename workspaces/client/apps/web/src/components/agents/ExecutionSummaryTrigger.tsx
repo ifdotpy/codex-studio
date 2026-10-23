@@ -111,22 +111,27 @@ export function ExecutionSummaryTrigger({
             data-role={role}
             key={role}
           >
-            <Icon className="execution-role-icon" />
-            <span className="execution-role">{label}</span>
-            {value ? (
-              <>
+            <span className="execution-symbols">
+              <Icon className="execution-role-icon" />
+              {value ? (
                 <span
                   className="execution-provider"
                   data-provider={value.provider}
                 >
                   <ProviderMark provider={value.provider} />
                 </span>
+              ) : (
+                <Equal className="execution-inherited-icon" />
+              )}
+            </span>
+            <span className="execution-role">{label}</span>
+            {value ? (
+              <>
                 <span className="execution-model">{value.name}</span>
                 <span className="execution-effort">{value.effort}</span>
               </>
             ) : (
               <>
-                <Equal className="execution-inherited-icon" />
                 <span className="execution-inherited-label">
                   Same as caller
                 </span>
