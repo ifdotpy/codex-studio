@@ -238,7 +238,7 @@ async fn a_phone_signs_in_a_kubelogin_style_command_with_a_pasted_redirect() {
     let start = format!("http://localhost:{}/", tool.port);
     let (code, message) = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-services/browser_host",
-        move || browser_host::shim(&[start], &socket, Some(agent)),
+        move || browser_host::shim(&[start], &socket, Some(agent), &|_: &str| false),
     )
     .await
     .expect("test step");
@@ -392,7 +392,7 @@ async fn an_aws_style_device_code_card_shows_the_code_and_needs_no_forward() {
     // The native session hint may be the chat's native thread ID.
     let (code, message) = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-services/browser_host",
-        move || browser_host::shim(&[link], &socket, Some("thread-1")),
+        move || browser_host::shim(&[link], &socket, Some("thread-1"), &|_: &str| false),
     )
     .await
     .expect("test step");
@@ -401,7 +401,7 @@ async fn an_aws_style_device_code_card_shows_the_code_and_needs_no_forward() {
     let link = device.clone();
     let (code, message) = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-services/browser_host",
-        move || browser_host::shim(&[link], &socket, Some(agent)),
+        move || browser_host::shim(&[link], &socket, Some(agent), &|_: &str| false),
     )
     .await
     .expect("test step");

@@ -454,11 +454,24 @@ there opens on the Mac where the person works.
   Python. A Claude bridge reads `<bridge state>/studio-browser.json` and gives each session
   `BROWSER`, `STUDIO_BROWSER_SOCKET` and `STUDIO_BROWSER_SESSION` (its native thread ID). The
   bridge process keeps its own environment, so its launch identity does not change.
-- The chat is the agent whose ID or `threadId` is the session hint. It must not be a VM chat.
-  Native agents of one user can act for each other, so the hint is not a security boundary;
-  the approval card is the consent. Cards carry `source: "host"`.
+- The chat is the agent whose ID or `threadId` is the session hint. A VM chat reaches this
+  bridge only through a `host_exec` command, which runs on the Mac as the Studio user: the
+  `host_exec` service gives each command `BROWSER` (the launcher), `STUDIO_BROWSER_SOCKET` and
+  `STUDIO_BROWSER_SESSION` (the calling agent) when the launcher exists. Its guest commands
+  use the guest bridge. Agents of one user can act for each other, so the hint is not a
+  security boundary; the approval card is the consent. Cards carry `source: "host"`.
 - A window on the same server opens the link without a forward: the tool listens on that Mac.
 - Codex native chats get `BROWSER` through per-thread overrides (section 6.4).
+- Mac fast path: on a macOS host the bridge answers the launcher with `open: true`
+  (`HostBridgeOptions::for_this_host`). The launcher then also opens the link in the browser
+  of this Mac with `/usr/bin/open`, as the tool would without Studio. A sign-in whose
+  provider session is still active in that browser ends without a click. The card stays, so
+  the person can still answer from another window or a phone. When the command stops
+  listening after this open, the bridge closes the request with `closeReason: "local"`, and
+  the server marks the card `answered` by `browser`; the chat gets no `browser_unanswered`
+  event. Studio does not see whether the sign-in succeeded in that browser: the command's own
+  output tells it. A link that Studio refuses still opens there. A Linux host opens nothing:
+  nobody sits at its browser, and its `xdg-open` is the launcher itself.
 
 ### A window on another Mac
 

@@ -184,7 +184,13 @@ fn read_token(path: &Path) -> Result<String, String> {
 /// Make sure a healthy service of `build` serves the VM state folder `state`, and
 /// return the channel token. `program` is the `studio-runtime-server` executable.
 /// An error proves that no guest request was sent.
-pub fn ensure_service(state: &Path, program: &Path, build: &str) -> Result<String, String> {
+/// `browser_host` is the Studio server's host bridge folder for the commands' sign-in links.
+pub fn ensure_service(
+    state: &Path,
+    program: &Path,
+    build: &str,
+    browser_host: Option<&Path>,
+) -> Result<String, String> {
     let failed = |error: std::io::Error| format!("The host_exec service did not start: {error}");
     super::private_dirs(state).map_err(failed)?;
     let state = studio_runtime_store::path_identity::CanonicalPath::existing_directory(state)
@@ -222,11 +228,16 @@ pub fn ensure_service(state: &Path, program: &Path, build: &str) -> Result<Strin
         .append(true)
         .open(state.join(LOG_FILE))
         .map_err(failed)?;
-    let mut child = std::process::Command::new(program)
+    let mut command = std::process::Command::new(program);
+    command
         .arg(SUBCOMMAND)
         .arg(&state)
         .arg("--build")
-        .arg(build)
+        .arg(build);
+    if let Some(folder) = browser_host {
+        command.arg(super::BROWSER_HOST_ARGUMENT).arg(folder);
+    }
+    let mut child = command
         .stdin(std::process::Stdio::null())
         .stdout(log.try_clone().map_err(failed)?)
         .stderr(log)

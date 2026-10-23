@@ -372,9 +372,11 @@ pub trait ChatLookup: Send + Sync {
     ) -> futures_util::future::BoxFuture<'a, Option<ChatContext>>;
 }
 
-/// The chat lookup of a runtime store: a native, not deleted chat whose ID or native
-/// `threadId` is the hint. Native agents of one user can act for each other, so the hint is
-/// not a security boundary; the approval card is the consent.
+/// The chat lookup of a runtime store: a not deleted chat whose ID or native `threadId` is the
+/// hint. A VM chat reaches this bridge only through a `host_exec` command, which runs on this
+/// Mac as this user (`host_exec_service`); its own guest commands use the guest bridge. Agents
+/// of one user can act for each other, so the hint is not a security boundary; the approval
+/// card is the consent.
 pub struct StoreChats {
     pub store: Arc<studio_runtime_store::RuntimeStore>,
 }
@@ -420,9 +422,7 @@ impl StoreChats {
             return None;
         };
         let agent: Value = serde_json::from_str(raw).ok()?;
-        if truthy(agent.get("deletedAt"))
-            || agent.get("executionMode").and_then(Value::as_str) == Some("vm")
-        {
+        if truthy(agent.get("deletedAt")) {
             return None;
         }
         Some(ChatContext {
@@ -522,13 +522,24 @@ pub struct HostBridge {
     http_providers: BTreeSet<String>,
     clock: Clock,
     connections: Mutex<BTreeMap<u32, usize>>,
+    local_open: bool,
 }
 
-/// Options for tests: listener tables, test provider origins and a clock.
+/// The `closeReason` of a request whose command stopped listening after the launcher opened
+/// its page in the browser of this Mac (`HostBridgeOptions::local_open`). The card then
+/// closes as answered by that browser (`browser_cards::apply`).
+pub const LOCAL_CLOSE_REASON: &str = "local";
+
+/// Options of the bridge: listener tables, test provider origins, a clock, and the Mac fast
+/// path. `Default` is for tests and opens nothing; the server uses [`Self::for_this_host`].
 pub struct HostBridgeOptions {
     pub listeners: Listeners,
     pub http_providers: BTreeSet<String>,
     pub clock: Clock,
+    /// The launcher also opens each link in the browser of this Mac at once, as the tool would
+    /// without Studio, and the card stays for another window or a phone
+    /// (docs/vm-browser-bridge.md, "Native chats").
+    pub local_open: bool,
 }
 
 impl Default for HostBridgeOptions {
@@ -537,6 +548,18 @@ impl Default for HostBridgeOptions {
             listeners: Arc::new(host_listeners),
             http_providers: BTreeSet::new(),
             clock: Arc::new(now_seconds),
+            local_open: false,
+        }
+    }
+}
+
+impl HostBridgeOptions {
+    /// The server's options: a macOS host opens links in its own browser at once. A Linux
+    /// host has no person at a browser, and its `xdg-open` is this launcher.
+    pub fn for_this_host() -> Self {
+        Self {
+            local_open: cfg!(target_os = "macos"),
+            ..Self::default()
         }
     }
 }
@@ -599,6 +622,7 @@ impl HostBridge {
             http_providers: options.http_providers,
             clock: options.clock,
             connections: Mutex::new(BTreeMap::new()),
+            local_open: options.local_open,
         }))
     }
 
@@ -1141,7 +1165,13 @@ impl HostBridge {
                 self.update(&mut queue, &key, json!({"state": "expired"}));
                 changed = true;
             } else if listening == Some(false) {
-                self.update(&mut queue, &key, json!({"state": "stale"}));
+                // The browser of this Mac had the page: the command ended its sign-in there.
+                let fields = if item["state"] == "pending" && truthy(item.get("localOpen")) {
+                    json!({"state": "closed", "closeReason": LOCAL_CLOSE_REASON})
+                } else {
+                    json!({"state": "stale"})
+                };
+                self.update(&mut queue, &key, fields);
                 changed = true;
             }
         }
@@ -1206,6 +1236,7 @@ impl HostBridge {
         if !value.is_object() || value.get("v") != Some(&json!(1)) {
             return json!({"ok": false, "code": "invalid_request", "message": "Use protocol version 1"});
         }
+        // `open`: the launcher also opens the link in the browser of this Mac (`local_open`).
         match self
             .open_link(
                 uid,
@@ -1214,8 +1245,32 @@ impl HostBridge {
             )
             .await
         {
-            Ok(item) => json!({"ok": true, "id": item["id"], "host": item["host"]}),
-            Err(error) => json!({"ok": false, "code": error.code, "message": error.message}),
+            Ok(item) => {
+                if self.local_open {
+                    self.mark_local_open(&item);
+                }
+                json!({"ok": true, "id": item["id"], "host": item["host"], "open": self.local_open})
+            }
+            Err(error) => {
+                json!({"ok": false, "code": error.code, "message": error.message, "open": self.local_open})
+            }
+        }
+    }
+
+    /// Note that the launcher opens this request's page in the browser of this Mac, so its
+    /// card closes as answered when the command stops listening (`check`).
+    fn mark_local_open(&self, item: &Value) {
+        let Some(id) = item.get("id").and_then(Value::as_str) else {
+            return;
+        };
+        let mut queue = self.lock();
+        let open = queue
+            .items
+            .get(id)
+            .is_some_and(|item| item["state"] == "pending" && !truthy(item.get("localOpen")));
+        if open {
+            self.update(&mut queue, id, json!({"localOpen": true}));
+            self.save(&mut queue);
         }
     }
 
@@ -1497,13 +1552,39 @@ pub fn shim_main(arguments: impl IntoIterator<Item = OsString>) -> Option<i32> {
         &links,
         socket.as_deref().unwrap_or(GUEST_SOCKET),
         session.as_deref(),
+        &open_on_this_mac,
     );
     eprintln!("{message}");
     Some(code)
 }
 
-/// The launcher's exchange, without process state, for tests.
-pub fn shim(links: &[String], socket: &str, session: Option<&str>) -> (i32, String) {
+/// Open one link in the default browser of this Mac with the system `open`, as a tool does
+/// without Studio. Only a bridge with `local_open` asks for it. Returns whether `open` ran
+/// and exited 0.
+fn open_on_this_mac(link: &str) -> bool {
+    const OPEN_TIMEOUT: Duration = Duration::from_secs(10);
+    const OPEN_OUTPUT_LIMIT_BYTES: usize = 64 * 1024;
+    crate::bounded_child::run(crate::bounded_child::Request {
+        program: std::ffi::OsStr::new("/usr/bin/open"),
+        git_directory: None,
+        args: &[link],
+        environment: &[],
+        input: None,
+        stdout_limit: OPEN_OUTPUT_LIMIT_BYTES,
+        stderr_limit: OPEN_OUTPUT_LIMIT_BYTES,
+        timeout: OPEN_TIMEOUT,
+    })
+    .is_ok()
+}
+
+/// The launcher's exchange, without process state, for tests. `open` opens a link in the
+/// browser of this Mac when the bridge asks for it.
+pub fn shim(
+    links: &[String],
+    socket: &str,
+    session: Option<&str>,
+    open: &dyn Fn(&str) -> bool,
+) -> (i32, String) {
     use std::io::{Read, Write};
     let [link] = links else {
         return (2, "studio-browser: give exactly one URL".into());
@@ -1544,18 +1625,35 @@ pub fn shim(links: &[String], socket: &str, session: Option<&str>) -> (i32, Stri
             );
         }
     };
+    let opened = reply.get("open") == Some(&Value::Bool(true)) && open(link);
     if reply.get("ok") != Some(&Value::Bool(true)) {
         let message = reply
             .get("message")
             .and_then(Value::as_str)
             .filter(|message| !message.is_empty())
             .unwrap_or("Studio refused the link");
+        if opened {
+            return (
+                0,
+                format!(
+                    "studio-browser: Opened the page in the browser of this Mac. Studio shows no sign-in card: {message}"
+                ),
+            );
+        }
         return (1, format!("studio-browser: {message}"));
     }
     let host = match reply.get("host") {
         Some(Value::String(host)) => host.clone(),
         _ => "None".into(),
     };
+    if opened {
+        return (
+            0,
+            format!(
+                "studio-browser: Opened the page in the browser of this Mac. Studio also shows the person a sign-in card for {host}, so the person can answer from another window or a phone."
+            ),
+        );
+    }
     (
         0,
         format!(
@@ -1567,6 +1665,10 @@ pub fn shim(links: &[String], socket: &str, session: Option<&str>) -> (i32, Stri
 #[cfg(test)]
 #[path = "browser_host_lifetime_tests.rs"]
 mod lifetime_tests;
+
+#[cfg(test)]
+#[path = "browser_host_local_open_tests.rs"]
+mod local_open_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1643,12 +1745,14 @@ mod tests {
 
     #[test]
     fn launcher_refuses_a_wrong_argument_count() {
-        assert_eq!(shim(&[], "/nonexistent", None).0, 2);
+        let never = |_: &str| -> bool { panic!("nothing opens without a bridge") };
+        assert_eq!(shim(&[], "/nonexistent", None, &never).0, 2);
         assert_eq!(
             shim(
                 &["https://a.example/".into()],
                 "/nonexistent/open.sock",
-                None
+                None,
+                &never
             )
             .0,
             1
@@ -1700,6 +1804,7 @@ mod tests {
                 clock: Arc::new(move || {
                     f64::from_bits(clock.load(std::sync::atomic::Ordering::SeqCst))
                 }),
+                local_open: false,
             },
         )
         .expect("bridge")

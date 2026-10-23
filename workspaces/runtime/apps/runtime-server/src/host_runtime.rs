@@ -265,22 +265,27 @@ impl HostRuntime {
         // VM agents run Mac commands through the guest channel and the Mac
         // service, which this executable starts in its own session
         // (docs/host-exec.md).
-        let host_exec = match &program {
-            Ok(program) => Some(studio_runtime_services::host_exec::HostExecRuntime::new(
-                Arc::clone(&vm_guest),
-                Arc::new(
-                    studio_runtime_services::host_exec::RustHostExecService::new(
-                        program.clone(),
-                        vm_state_dir.clone(),
-                        studio_runtime_http::backend_build_identity,
+        let host_exec =
+            match &program {
+                Ok(program) => Some(studio_runtime_services::host_exec::HostExecRuntime::new(
+                    Arc::clone(&vm_guest),
+                    Arc::new(
+                        studio_runtime_services::host_exec::RustHostExecService::new(
+                            program.clone(),
+                            vm_state_dir.clone(),
+                            studio_runtime_http::backend_build_identity,
+                        )
+                        // Sign-in links of VM chats' Mac commands reach the host bridge.
+                        .with_browser_host(store.root().join(
+                            studio_runtime_services::browser_environment::BROWSER_HOST_FOLDER,
+                        )),
                     ),
-                ),
-            )),
-            Err(error) => {
-                eprintln!("host_exec is unavailable: the executable path is unknown: {error}");
-                None
-            }
-        };
+                )),
+                Err(error) => {
+                    eprintln!("host_exec is unavailable: the executable path is unknown: {error}");
+                    None
+                }
+            };
         // A created VM starts again when the Mac restarted under it, at startup
         // and for the first VM chat (docs/linux-vm-workspaces.md, "VM start").
         #[cfg(unix)]
