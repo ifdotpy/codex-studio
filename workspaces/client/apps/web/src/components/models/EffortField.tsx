@@ -1,4 +1,6 @@
-import { NativeSelect } from "@mantine/core";
+import { Input, SegmentedControl } from "@mantine/core";
+
+import { useId } from "react";
 
 type Props = {
   label: string;
@@ -8,7 +10,7 @@ type Props = {
   disabled?: boolean;
 };
 
-/** Native select keeps even the longest provider effort set usable at phone width. */
+/** An ordinal native radio scale, with no width-dependent JavaScript. */
 export function EffortField({
   label,
   options,
@@ -16,16 +18,24 @@ export function EffortField({
   onChange,
   disabled,
 }: Props) {
+  const id = useId();
   return options.length ? (
-    <NativeSelect
-      label={label}
-      aria-label={label}
-      size="sm"
-      value={value}
-      data-value={value}
-      disabled={disabled}
-      data={options}
-      onChange={(event) => onChange(event.currentTarget.value)}
-    />
+    <Input.Wrapper id={id} label={label} labelElement="div" size="sm">
+      <SegmentedControl
+        className="effort-scale"
+        fullWidth
+        size="xs"
+        value={value}
+        data-value={value}
+        aria-labelledby={`${id}-label`}
+        disabled={disabled}
+        aria-disabled={disabled}
+        onChange={onChange}
+        data={options.map((option) => ({
+          ...option,
+          label: option.label.charAt(0).toUpperCase() + option.label.slice(1),
+        }))}
+      />
+    </Input.Wrapper>
   ) : null;
 }

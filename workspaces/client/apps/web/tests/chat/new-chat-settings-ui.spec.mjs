@@ -28,7 +28,6 @@ test("new chat chips open each role, save settings and disappear after send", as
     });
     await page.setViewportSize({ width: 1440, height: 900 });
     await page.goto(`http://127.0.0.1:${port}`);
-    await page.locator("#message").waitFor();
     await page
       .locator("[data-chat]")
       .filter({ hasText: "Release lead" })

@@ -1467,14 +1467,21 @@ function ScopedExecutionSettings({
               : undefined
         }
       >
-        {displayModel(summaryCatalog, summaryModel)}
-        {summaryEffort && ` · ${title(summaryEffort)}`}
-        {summaryRole !== "review" &&
+        {[
+          displayModel(summaryCatalog, summaryModel),
+          summaryEffort && title(summaryEffort),
+          summaryRole !== "review" &&
           (showAccountSummary ||
             connectedAccounts.filter(
               (account) => (account.provider || "codex") === summaryProvider,
-            ).length > 1) &&
-          ` · ${setupAccountName(accounts.find((account) => account.id === summaryAccount))}`}
+            ).length > 1)
+            ? setupAccountName(
+                accounts.find((account) => account.id === summaryAccount),
+              )
+            : "",
+        ]
+          .filter(Boolean)
+          .join(" · ")}
       </span>
     </Button>
   );

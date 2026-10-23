@@ -245,13 +245,15 @@ test("Mobile client ui", async ({
       name: "Main agent settings",
       exact: true,
     });
-    const rolePicker = mainSettings.getByRole("group", { name: "Agent role" });
+    const rolePicker = mainSettings.getByRole("radiogroup", {
+      name: "Agent role",
+    });
     await rolePicker.getByText("Worker", { exact: true }).click();
     const subagentSettings = page.getByRole("dialog", {
       name: "Subagent defaults",
       exact: true,
     });
-    const workerModel = subagentSettings.getByRole("listbox", {
+    const workerModel = subagentSettings.getByRole("radiogroup", {
       name: "Default subagent model",
       exact: true,
     });

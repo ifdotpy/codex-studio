@@ -1,31 +1,19 @@
-.model-fieldset {
-  min-inline-size: 0;
-  margin: 0;
-  padding: 0;
-  border: 0;
-}
-.model-fieldset > legend {
-  padding: 0;
-  margin-bottom: var(--mantine-spacing-xs);
-  font-size: var(--mantine-font-size-sm);
-  font-weight: 500;
-}
 .model-options {
-  max-block-size: 40dvh;
-  overflow-y: auto;
-  overscroll-behavior: contain;
+  margin-block-start: var(--mantine-spacing-xs);
 }
 .model-radio {
-  padding: var(--mantine-spacing-xs);
-  border: 1px solid var(--mantine-color-default-border);
+  padding: calc(var(--mantine-spacing-xs) / 2) var(--mantine-spacing-xs);
   border-radius: var(--mantine-radius-sm);
 }
 .model-radio:has(:checked) {
-  border-color: var(--mantine-primary-color-filled);
   background: var(--mantine-primary-color-light);
 }
 .model-radio:has(:focus-visible) {
   outline: auto;
+}
+.model-radio:not(:has(:checked)):not(:has([data-unavailable]))
+  .mantine-Radio-description {
+  display: none;
 }
 .model-radio .mantine-Radio-labelWrapper,
 .model-select {
@@ -35,4 +23,11 @@
 }
 .model-radio .mantine-Radio-body {
   align-items: center;
+}
+
+.effort-scale .mantine-SegmentedControl-control {
+  flex: 1 0 auto;
+}
+.execution-profile .effort-scale .mantine-SegmentedControl-label {
+  white-space: nowrap;
 }

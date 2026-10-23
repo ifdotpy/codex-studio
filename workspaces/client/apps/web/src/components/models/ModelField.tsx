@@ -59,31 +59,30 @@ export function ModelField({
     );
   }
   return (
-    <fieldset
+    <Radio.Group
       id={id}
-      className="model-fieldset"
-      disabled={disabled}
-      aria-label={label}
+      label={label}
+      value={value}
+      onChange={onChange}
+      size="sm"
       data-value={value}
-      aria-disabled={disabled}
+      disabled={disabled || undefined}
     >
-      <legend>{label}</legend>
-      <Radio.Group value={value} onChange={onChange} size="sm">
-        <Stack gap="xs" className="model-options">
-          {options.map((option) => (
-            <Radio
-              key={option.value}
-              value={option.value}
-              data-value={option.value}
-              data-inherited={option.value === INHERITED_MODEL || undefined}
-              label={modelOptionLabel(option)}
-              description={option.disabledReason || option.description}
-              disabled={disabled || !!option.disabledReason}
-              className="model-radio"
-            />
-          ))}
-        </Stack>
-      </Radio.Group>
-    </fieldset>
+      <Stack gap={0} className="model-options">
+        {options.map((option) => (
+          <Radio
+            key={option.value}
+            value={option.value}
+            data-value={option.value}
+            data-unavailable={!!option.disabledReason || undefined}
+            data-inherited={option.value === INHERITED_MODEL || undefined}
+            label={modelOptionLabel(option)}
+            description={option.disabledReason || option.description}
+            disabled={disabled || !!option.disabledReason}
+            className="model-radio"
+          />
+        ))}
+      </Stack>
+    </Radio.Group>
   );
 }

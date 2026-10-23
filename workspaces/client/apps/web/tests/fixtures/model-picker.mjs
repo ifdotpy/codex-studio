@@ -1,5 +1,10 @@
 // The setup fieldset and compact native select both retain data-value.
-export const modelValue = (picker) => picker.getAttribute("data-value");
+export const modelValue = (picker) =>
+  picker.evaluate(
+    (node) =>
+      node.getAttribute("data-value") ??
+      node.parentElement?.getAttribute("data-value"),
+  );
 const isSelect = (picker) =>
   picker.evaluate((node) => node.tagName === "SELECT");
 const listFor = async (picker) =>

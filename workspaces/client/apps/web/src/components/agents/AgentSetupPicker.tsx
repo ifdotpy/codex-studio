@@ -62,7 +62,7 @@ export function AgentSetupPicker(p: AgentSetupPickerProps) {
       )}
       {p.role === "review" ? (
         <Text size="xs" c="dimmed">
-          Codex · Uses the caller account
+          Uses the caller account.
         </Text>
       ) : (
         <AccountTiles

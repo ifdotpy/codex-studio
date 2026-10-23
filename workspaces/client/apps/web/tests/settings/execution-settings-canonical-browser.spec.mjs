@@ -142,8 +142,12 @@ test("execution settings canonical browser", async ({ page }) => {
             ? "Default subagent reasoning"
             : "Main agent reasoning";
           return (
-            document
-              .querySelector(`[aria-label="${label}"]`)
+            [...document.querySelectorAll('[role="radiogroup"]')]
+              .find(
+                (node) =>
+                  document.getElementById(node.getAttribute("aria-labelledby"))
+                    ?.textContent === label,
+              )
               ?.getAttribute("data-value") === expected
           );
         },
@@ -260,7 +264,7 @@ test("execution settings canonical browser", async ({ page }) => {
         await page.evaluate(() => window.release());
         await page.waitForFunction(() => !!window.refreshRelease);
         if (field === "model")
-          await expect(model).toHaveAttribute("data-value", target);
+          await expect.poll(() => modelValue(model)).toBe(target);
         else await expect(toggle).toBeChecked();
         await expect(model).not.toHaveAttribute("aria-disabled", "true");
         assert.equal(await effort().isDisabled(), false);
@@ -288,7 +292,7 @@ test("execution settings canonical browser", async ({ page }) => {
       assert.equal(await modelValue(reviewModel), "__model_default__");
       await page.evaluate(() => window.release());
       await page.waitForFunction(() => !!window.refreshRelease);
-      await expect(reviewModel).toHaveAttribute("data-value", "gpt-5.6-sol");
+      await expect.poll(() => modelValue(reviewModel)).toBe("gpt-5.6-sol");
       await expect(reviewModel).not.toHaveAttribute("aria-disabled", "true");
       await page.evaluate(() => window.refreshRelease());
       await reset();

@@ -181,12 +181,9 @@ test("execution settings ui", async ({ browser: _browser }) => {
       if ((await trigger.getAttribute("aria-expanded")) !== "true")
         await trigger.click();
       const role = name === "Subagent defaults" ? "Worker" : "Orchestrator";
-      assert.equal(
-        await page
-          .getByRole("button", { name: role, exact: true })
-          .getAttribute("aria-pressed"),
-        "true",
-      );
+      await expect(
+        page.getByRole("radio", { name: role, exact: true }),
+      ).toBeChecked();
     };
     await page
       .locator("[data-chat]")
@@ -339,7 +336,7 @@ test("execution settings ui", async ({ browser: _browser }) => {
     });
     await expect(reviewDialog).toBeVisible();
     await expect(
-      reviewDialog.getByRole("group", {
+      reviewDialog.getByRole("radiogroup", {
         name: "Default review model",
         exact: true,
       }),

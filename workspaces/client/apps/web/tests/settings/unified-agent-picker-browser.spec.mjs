@@ -140,7 +140,7 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
         .getByRole("button", { name: "Main agent settings", exact: true })
         .click();
       await expect(
-        page.getByRole("group", { name: "Main agent model" }),
+        page.getByRole("radiogroup", { name: "Main agent model" }),
       ).toBeVisible();
       const capture = async (scene) => {
         if (process.env.PICKER_CLIP_DETECTOR) {
@@ -175,7 +175,7 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
       );
       await page.getByText("Worker", { exact: true }).click();
       await expect(
-        page.getByRole("group", { name: "Default subagent model" }),
+        page.getByRole("radiogroup", { name: "Default subagent model" }),
       ).toBeVisible();
       await capture("worker-codex");
       await chooseSetupValue(
@@ -256,7 +256,7 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
       await expect(luna).toBeChecked();
       await page.getByText("Review", { exact: true }).click();
       await expect(
-        page.getByText("Codex · Uses the caller account", { exact: true }),
+        page.getByText("Uses the caller account.", { exact: true }),
       ).toBeVisible();
       assert.equal(
         await page.getByLabel("Subagent account", { exact: true }).count(),
@@ -408,8 +408,10 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
         } else if (scene === "shared") {
           await group.locator('[data-account-key="account-5"]').click();
           await expect(
-            page.getByLabel("Model for agent 1", { exact: true }),
-          ).toHaveAttribute("data-value", "default");
+            page
+              .getByLabel("Model for agent 1", { exact: true })
+              .getByRole("radio", { checked: true }),
+          ).toHaveValue("default");
           await chooseSetupValue(
             page.getByLabel("Reasoning for agent 1", { exact: true }),
             "high",
