@@ -144,7 +144,10 @@ async fn retained_mcp_reconnect_binds_actor_thread_scope_and_replays_once() {
     );
     let mut invalid = call.clone();
     invalid.expected_scope.as_mut().unwrap().generation += 1;
-    assert_eq!(port.request(invalid).await.unwrap_err(), PortError::Invalid);
+    assert_eq!(
+        port.request(invalid).await.unwrap_err(),
+        PortError::ScopeMismatch
+    );
     assert!(peer.writes.try_recv().is_err());
 
     let sender = port.clone();
