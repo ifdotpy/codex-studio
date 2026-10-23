@@ -1292,6 +1292,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/monitor/restart": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Confirm a monitor restart with narrower output patterns */
+    post: operations["restart_monitor_api_monitor_restart_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/multi-server": {
     parameters: {
       query?: never;
@@ -2015,6 +2032,23 @@ export interface paths {
     };
     /** Task Detail */
     get: operations["task_detail_api_task_get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/task/output": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Read bounded task output within its owner workspace */
+    get: operations["task_output_api_task_output_get"];
     put?: never;
     post?: never;
     delete?: never;
@@ -14423,11 +14457,16 @@ export interface components {
        * @default null
        */
       output?: null | string;
+      outputFile?: string | null;
+      outputPatterns?: string[];
       /**
        * Outputtruncated
        * @default false
        */
       outputTruncated?: boolean;
+      outputWakeBudget?:
+        | components["schemas"]["MonitorOutputWakeBudget"]
+        | null;
       /**
        * Source
        * @enum {string}
@@ -14729,11 +14768,15 @@ export interface components {
        * @default null
        */
       name?: null | string;
+      outputPatterns?: string[];
       /**
        * Outputtruncated
        * @default null
        */
       outputTruncated?: boolean | null;
+      outputWakeBudget?:
+        | components["schemas"]["MonitorOutputWakeBudget"]
+        | null;
       /**
        * Processid
        * @default null
@@ -14828,6 +14871,12 @@ export interface components {
        * @default
        */
       text?: string;
+    };
+    /** @description Public output wake budget. The monitor matcher owns the stored budget. Tokens count available output wake batches. */
+    MonitorOutputWakeBudget: {
+      paused: boolean;
+      tokens: number;
+      totalSuppressedMatches: number;
     };
     /** MonitorRecordResponse */
     MonitorRecordResponse: {
@@ -15012,6 +15061,14 @@ export interface components {
       wakeOn?: string;
     } & {
       [key: string]: components["schemas"]["JsonValue"];
+    };
+    MonitorRestartRequest: {
+      accountKey: string;
+      agent: string;
+      epoch: number;
+      id: string;
+      outputPatterns: string[];
+      requestId: string;
     };
     /**
      * MonitorState
@@ -23247,6 +23304,7 @@ export interface components {
        * @default null
        */
       name?: null | string;
+      outputFile?: string | null;
       /**
        * Outputtruncated
        * @default null
@@ -23338,6 +23396,7 @@ export interface components {
       log?: null | string;
       /** Name */
       name?: null | string;
+      outputFile?: string | null;
       /** Outputtruncated */
       outputTruncated?: boolean | null;
       /** Processid */
@@ -23385,6 +23444,12 @@ export interface components {
      * @enum {string}
      */
     TaskKind: "monitor" | "command" | "tool";
+    TaskOutputResponse: {
+      id: string;
+      outputFile: string;
+      text: string;
+      truncated: boolean;
+    };
     /** TaskResource */
     TaskResource: {
       /**
@@ -32621,6 +32686,69 @@ export interface operations {
       503: components["responses"]["ApiError503"];
     };
   };
+  restart_monitor_api_monitor_restart_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["MonitorRestartRequest"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
+          "Access-Control-Expose-Headers": components["headers"]["AccessControlExposeHeaders"];
+          "Cache-Control": components["headers"]["CacheControl"];
+          "Content-Encoding": components["headers"]["ContentEncoding"];
+          "Content-Length": components["headers"]["ContentLength"];
+          "Content-Security-Policy": components["headers"]["ContentSecurityPolicy"];
+          "Content-Type": components["headers"]["ContentType"];
+          "Referrer-Policy": components["headers"]["ReferrerPolicy"];
+          "Server-Timing": components["headers"]["ServerTiming"];
+          Vary: components["headers"]["Vary"];
+          "X-Content-Type-Options": components["headers"]["XContentTypeOptions"];
+          "X-Studio-API-Schema": components["headers"]["StudioApiSchema"];
+          "X-Studio-Server": components["headers"]["StudioServer"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["MonitorActionResult"];
+        };
+      };
+      /** @description Bad Request */
+      400: components["responses"]["ApiError400"];
+      /** @description Unauthorized */
+      401: components["responses"]["ApiError401"];
+      /** @description Forbidden */
+      403: components["responses"]["ApiError403"];
+      /** @description Request Timeout */
+      408: components["responses"]["ApiError408"];
+      /** @description Conflict */
+      409: components["responses"]["ApiError409"];
+      /** @description Gone */
+      410: components["responses"]["ApiError410"];
+      /** @description Content Too Large */
+      413: components["responses"]["ApiError413"];
+      /** @description Unsupported Media Type */
+      415: components["responses"]["ApiError415"];
+      /** @description Upgrade Required */
+      426: components["responses"]["ApiError426"];
+      /** @description Too Many Requests */
+      429: components["responses"]["ApiError429"];
+      /** @description Internal Server Error */
+      500: components["responses"]["ApiError500"];
+      /** @description Bad Gateway */
+      502: components["responses"]["ApiError502"];
+      /** @description Service Unavailable */
+      503: components["responses"]["ApiError503"];
+    };
+  };
   snapshot_api_multi_server_get: {
     parameters: {
       query?: never;
@@ -36039,6 +36167,54 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["TaskDetailResponse"];
+        };
+      };
+      /** @description Bad Request */
+      400: components["responses"]["ApiError400"];
+      /** @description Unauthorized */
+      401: components["responses"]["ApiError401"];
+      /** @description Forbidden */
+      403: components["responses"]["ApiError403"];
+      /** @description Too Many Requests */
+      429: components["responses"]["ApiError429"];
+      /** @description Internal Server Error */
+      500: components["responses"]["ApiError500"];
+      /** @description Service Unavailable */
+      503: components["responses"]["ApiError503"];
+    };
+  };
+  task_output_api_task_output_get: {
+    parameters: {
+      query: {
+        agent: string;
+        id?: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
+          "Access-Control-Expose-Headers": components["headers"]["AccessControlExposeHeaders"];
+          "Cache-Control": components["headers"]["CacheControl"];
+          "Content-Encoding": components["headers"]["ContentEncoding"];
+          "Content-Length": components["headers"]["ContentLength"];
+          "Content-Security-Policy": components["headers"]["ContentSecurityPolicy"];
+          "Content-Type": components["headers"]["ContentType"];
+          "Referrer-Policy": components["headers"]["ReferrerPolicy"];
+          "Server-Timing": components["headers"]["ServerTiming"];
+          Vary: components["headers"]["Vary"];
+          "X-Content-Type-Options": components["headers"]["XContentTypeOptions"];
+          "X-Studio-API-Schema": components["headers"]["StudioApiSchema"];
+          "X-Studio-Server": components["headers"]["StudioServer"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["TaskOutputResponse"];
         };
       };
       /** @description Bad Request */

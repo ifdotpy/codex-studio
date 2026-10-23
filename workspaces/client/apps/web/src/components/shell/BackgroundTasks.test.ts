@@ -90,3 +90,27 @@ describe("monitorTask", () => {
     ).toBeNull();
   });
 });
+
+describe("monitor wake budget", () => {
+  it("preserves paused output wakes without changing running state", () => {
+    const task = monitorTask({
+      id: "budget",
+      agent: "owner",
+      created: 1,
+      status: "running",
+      outputPatterns: ["ready"],
+      outputWakeBudget: {
+        totalSuppressedMatches: 1250,
+        paused: true,
+        tokens: 0.5,
+      },
+    });
+    expect(task?.status).toBe("running");
+    expect(task?.outputWakeBudget).toEqual({
+      totalSuppressedMatches: 1250,
+      paused: true,
+      tokens: 0.5,
+    });
+    expect(task?.outputPatterns).toEqual(["ready"]);
+  });
+});

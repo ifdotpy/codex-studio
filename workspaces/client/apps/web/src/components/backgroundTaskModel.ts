@@ -18,6 +18,9 @@ type RendererTaskFields = {
     resize: boolean;
     stop: boolean;
   };
+  outputFile?: string | null;
+  outputWakeBudget?: Monitor["outputWakeBudget"];
+  outputPatterns?: string[];
   tail?: string | null;
   error?: string | null;
   stdinError?: string | null;
