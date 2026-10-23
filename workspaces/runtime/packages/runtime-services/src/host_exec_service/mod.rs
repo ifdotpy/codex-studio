@@ -105,6 +105,9 @@ pub(crate) type Op = Map<String, Value>;
 pub(crate) struct ChildHandle {
     pub(crate) pid: i32,
     pub(crate) exited: tokio::sync::watch::Receiver<bool>,
+    /// True once the leader is reaped. After that the group ID may name another
+    /// group, so every group signal holds this lock and sends nothing then.
+    pub(crate) reaped: Arc<std::sync::Mutex<bool>>,
 }
 
 #[derive(Default)]

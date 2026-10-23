@@ -1,4 +1,47 @@
-//! Verification after reaping an owned child. This never sends a signal.
+//! Owned process groups: exit without reaping, and verification after reaping.
+//! This never sends a signal.
+//!
+//! A group is signalled by its ID, which is the leader's PID. Once the leader
+//! is reaped and the group is empty, the system can reuse that ID for another
+//! group. While an exited leader is not reaped, its PID stays allocated, so
+//! the ID cannot name another group. Callers therefore wait for the leader's
+//! exit with [`exited_unreaped`], signal the group, and only then reap.
+
+/// Whether the owned child `pid` has exited, without reaping it (`waitid` with
+/// `WNOWAIT`). `Err` when `pid` is not an unreaped child of this process: then
+/// its group ID may already name another group, and the caller must not signal it.
+#[cfg(unix)]
+pub fn exited_unreaped_now(pid: u32) -> std::io::Result<bool> {
+    use rustix::process::{Pid, WaitId, WaitIdOptions, waitid};
+    let pid = i32::try_from(pid)
+        .ok()
+        .and_then(Pid::from_raw)
+        .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
+    loop {
+        match waitid(
+            WaitId::Pid(pid),
+            WaitIdOptions::EXITED | WaitIdOptions::NOHANG | WaitIdOptions::NOWAIT,
+        ) {
+            Ok(status) => return Ok(status.is_some()),
+            Err(rustix::io::Errno::INTR) => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+}
+
+/// Wait until the owned child `pid` exits, without reaping it. Each SIGCHLD
+/// wakes one check; the signal stream exists before the first check, so no
+/// exit is missed.
+#[cfg(unix)]
+pub async fn exited_unreaped(pid: u32) -> std::io::Result<()> {
+    let mut child_signals = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::child())?;
+    while !exited_unreaped_now(pid)? {
+        if child_signals.recv().await.is_none() {
+            return Err(std::io::Error::other("the child signal stream ended"));
+        }
+    }
+    Ok(())
+}
 
 pub(crate) fn vanished_after_reap(pid: Option<u32>, error: &std::io::Error) -> bool {
     #[cfg(target_os = "macos")]

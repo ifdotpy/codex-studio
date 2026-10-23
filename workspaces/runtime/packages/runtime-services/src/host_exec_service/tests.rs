@@ -685,6 +685,56 @@ async fn cancel_and_timeout_stop_the_command_and_keep_its_changes() {
     assert_eq!(status["reason"], "timeout");
 }
 
+/// A group signal after the leader is reaped could reach another group that
+/// reuses the ID. Every signal to a command's group comes before its leader is
+/// reaped, for a command that exits by itself and for one that is cancelled.
+#[tokio::test]
+async fn command_group_signals_come_before_the_leader_is_reaped() {
+    let fixture = Fixture::new();
+    fixture
+        .start("plain", &["/bin/sh", "-c", "exit 0"], 30.0)
+        .await;
+    let (status, _) = fixture.finish("plain").await;
+    assert_eq!(status["reason"], "exited");
+    fixture
+        .start(
+            "stopped",
+            &["/bin/sh", "-c", "touch started; exec sleep 30"],
+            60.0,
+        )
+        .await;
+    let slot = PathBuf::from(fixture.op_status("stopped")["slotPath"].as_str().unwrap());
+    for _ in 0..400 {
+        if slot.join("started").exists() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    fixture
+        .call(
+            "cancel-stopped",
+            "cancel",
+            json!({"operationId": "stopped", "agentId": "agent"}),
+        )
+        .await
+        .unwrap();
+    let (status, _) = fixture.finish("stopped").await;
+    assert_eq!(status["reason"], "cancelled");
+    let signals = super::command::LEADER_UNREAPED_AT_SIGNAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    for operation in ["plain", "stopped"] {
+        let pid = i32::try_from(fixture.op_status(operation)["pid"].as_i64().unwrap()).unwrap();
+        let seen = signals.get(&pid).cloned().unwrap_or_default();
+        assert!(!seen.is_empty(), "{operation}: the group is signalled");
+        assert!(
+            seen.iter().all(|unreaped| *unreaped),
+            "{operation}: a group signal went out after the leader was reaped: {seen:?}"
+        );
+    }
+}
+
 #[tokio::test]
 async fn a_lost_owner_is_unknown_and_keeps_the_lease() {
     let fixture = Fixture::new();
