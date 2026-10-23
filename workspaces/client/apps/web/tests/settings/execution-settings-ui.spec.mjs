@@ -12,7 +12,7 @@ import {
 } from "../fixtures/setup-controls.mjs";
 // Production client with an isolated runtime. No model service or user state.
 import assert from "node:assert/strict";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -179,6 +179,84 @@ test("execution settings ui", async ({ browser: _browser }) => {
       .click();
     const lead = (await state()).find((a) => a.name === "Release lead");
     await openSettings("Main agent settings");
+    const chatSettingsDialog = page.getByRole("dialog", {
+      name: "Chat settings",
+      exact: true,
+    });
+    const parallelInput = chatSettingsDialog.getByRole("textbox", {
+      name: "Subagent parallelism",
+      exact: true,
+    });
+    const applyLimit = chatSettingsDialog.locator(".agent-mode-apply");
+    await applyLimit.scrollIntoViewIfNeeded();
+    const inputBox = await parallelInput.boundingBox();
+    const applyBox = await applyLimit.boundingBox();
+    expect(applyBox.x).toBeGreaterThan(inputBox.x + inputBox.width);
+    expect(
+      Math.abs(applyBox.y + applyBox.height - inputBox.y - inputBox.height),
+    ).toBeLessThan(1);
+    for (const summary of await chatSettingsDialog
+      .locator(".execution-disclosure > summary, .execution-accounts > summary")
+      .all()) {
+      expect(
+        await summary.evaluate((node) => getComputedStyle(node).listStyleType),
+      ).toBe("none");
+      await expect(
+        summary.locator(".execution-disclosure-chevron"),
+      ).toHaveCount(1);
+    }
+    if (process.env.EXECUTION_POLISH_SCREENSHOTS) {
+      await mkdir(process.env.EXECUTION_POLISH_SCREENSHOTS, {
+        recursive: true,
+      });
+      for (const width of [1440, 390])
+        for (const scheme of ["light", "dark"]) {
+          await page.setViewportSize({ width, height: 960 });
+          await page.emulateMedia({ colorScheme: scheme });
+          await expect(page.locator("html")).toHaveAttribute(
+            "data-mantine-color-scheme",
+            scheme,
+          );
+          for (const opened of await chatSettingsDialog
+            .locator("details[open]")
+            .all())
+            await opened.locator(":scope > summary").click();
+          for (const scene of ["overview", "worker", "accounts"]) {
+            if (scene === "worker")
+              await chatSettingsDialog
+                .locator('details[data-role="worker"] > summary')
+                .click();
+            if (scene === "accounts") {
+              await chatSettingsDialog
+                .locator('details[data-role="worker"] > summary')
+                .click();
+              await chatSettingsDialog
+                .locator(".execution-accounts > summary")
+                .click();
+              await chatSettingsDialog
+                .locator(".execution-accounts")
+                .scrollIntoViewIfNeeded();
+            } else
+              await chatSettingsDialog.evaluate((node) => {
+                for (let el = node; el; el = el.parentElement) el.scrollTop = 0;
+              });
+            expect(
+              await chatSettingsDialog.evaluate(
+                (node) => node.scrollWidth <= node.clientWidth,
+              ),
+            ).toBe(true);
+            await page.screenshot({
+              path: join(
+                process.env.EXECUTION_POLISH_SCREENSHOTS,
+                `polish-chat-settings-${scene}-${width}-${scheme}.png`,
+              ),
+            });
+          }
+        }
+      await page.setViewportSize({ width: 1440, height: 960 });
+      await page.emulateMedia({ colorScheme: "light" });
+      await openSettings("Main agent settings");
+    }
     // Model rows use short names, one recommendation tag, and a selected state.
     const leadModel = page.getByLabel("Main agent model", { exact: true });
     assert.equal(await modelValue(leadModel), lead.model);

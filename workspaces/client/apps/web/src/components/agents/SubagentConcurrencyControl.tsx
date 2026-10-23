@@ -379,30 +379,47 @@ function ScopedConcurrencyControl({
           }}
         />
       )}
-      <NumberInput
-        className="agent-mode-field"
-        label="Subagent parallelism"
-        description={supported ? CONCURRENCY_HELP : UNSUPPORTED_HELP}
-        min={MIN_CONCURRENCY}
-        max={MAX_CONCURRENCY}
-        step={1}
-        allowDecimal={false}
-        value={supported ? draft : ""}
-        disabled={
-          !supported || !workspaceId || saving || !!pending || !!initial.error
-        }
-        onBlur={(event) => {
-          const nextMode = (event.relatedTarget as HTMLInputElement | null)
-            ?.value;
-          if (compact && nextMode !== (mode === "single" ? "on" : "off"))
-            void submit();
-        }}
-        onChange={(value) => {
-          dirty.current = true;
-          setDraft(value);
-          setError("");
-        }}
-      />
+      <div className="agent-mode-fields">
+        <NumberInput
+          className="agent-mode-field"
+          label="Subagent parallelism"
+          description={supported ? CONCURRENCY_HELP : UNSUPPORTED_HELP}
+          min={MIN_CONCURRENCY}
+          max={MAX_CONCURRENCY}
+          step={1}
+          allowDecimal={false}
+          value={supported ? draft : ""}
+          disabled={
+            !supported || !workspaceId || saving || !!pending || !!initial.error
+          }
+          onBlur={(event) => {
+            const nextMode = (event.relatedTarget as HTMLInputElement | null)
+              ?.value;
+            if (compact && nextMode !== (mode === "single" ? "on" : "off"))
+              void submit();
+          }}
+          onChange={(value) => {
+            dirty.current = true;
+            setDraft(value);
+            setError("");
+          }}
+        />
+        {!compact && (
+          <Button
+            type="submit"
+            className="agent-mode-apply"
+            disabled={
+              !supported ||
+              !workspaceId ||
+              saving ||
+              !!pending ||
+              !!initial.error
+            }
+          >
+            Apply
+          </Button>
+        )}
+      </div>
       <span id={`subagent-concurrency-help-${lead.id}`} className="sr-only">
         {CONCURRENCY_HELP}
       </span>
@@ -415,17 +432,6 @@ function ScopedConcurrencyControl({
           ? ""
           : "Numeric subagent parallelism is unavailable because this backend does not provide the concurrency setting. Update the backend to enable it."}
       </span>
-      {!compact && (
-        <Button
-          type="submit"
-          className="agent-mode-apply"
-          disabled={
-            !supported || !workspaceId || saving || !!pending || !!initial.error
-          }
-        >
-          Apply
-        </Button>
-      )}
       {saving ? (
         <span role="status" className="agent-mode-note">
           Applying…

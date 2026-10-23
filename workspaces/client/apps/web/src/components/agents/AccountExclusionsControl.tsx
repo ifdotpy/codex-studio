@@ -1,5 +1,5 @@
 import { useServerApi } from "../../servers/ServerServicesContext";
-import { Checkbox, Group, Stack, Text } from "@mantine/core";
+import { AccordionChevron, Checkbox, Group, Stack, Text } from "@mantine/core";
 import { useState } from "react";
 import { accountDisplayName } from "../../accountName";
 import { errorText } from "../../api";
@@ -31,6 +31,11 @@ export function AccountExclusionsControl({
         <Text component="span" size="xs" c="dimmed">
           {enabled.length} of {accounts.accounts.length} enabled
         </Text>
+        <AccordionChevron
+          className="execution-disclosure-chevron"
+          size="var(--mantine-font-size-sm)"
+          aria-hidden="true"
+        />
       </summary>
       <Checkbox.Group
         label="Accounts enabled for this chat"

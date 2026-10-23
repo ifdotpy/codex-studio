@@ -19,3 +19,14 @@
   color: var(--mantine-color-red-6);
   overflow-wrap: anywhere;
 }
+
+.agent-mode-fields {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--mantine-spacing-xs);
+  width: 100%;
+  min-width: 0;
+}
+.agent-mode-apply {
+  flex: none;
+}
