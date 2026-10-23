@@ -97,10 +97,10 @@ test("Mobile client ui", async ({
       await dialog.getByRole("button", { name: "Close", exact: true }).click();
       await expect(dialog).not.toBeVisible();
     };
-    const closeMainAgentSettings = async () => {
+    const showProjectActions = async () => {
       await page
         .getByRole("dialog", { name: "Chat settings", exact: true })
-        .getByRole("tab", { name: /^Access/ })
+        .getByRole("tab", { name: /^Team/ })
         .click();
     };
     const startProjectChat = async (name) => {
@@ -274,7 +274,7 @@ test("Mobile client ui", async ({
       mobileComposerFontSize >= 16,
       `Mobile composer font size should stay at least 16px (got ${mobileComposerFontSize}px)`,
     );
-    await closeMainAgentSettings();
+    await showProjectActions();
     let originalBody, created;
     let confirmServerCreation;
     const serverCreated = new Promise((resolve) => {
@@ -385,7 +385,7 @@ test("Mobile client ui", async ({
       "data-account-key",
       alternate.id,
     );
-    await closeMainAgentSettings();
+    await showProjectActions();
     const nextResponse = page.waitForResponse(
       (response) =>
         response.url() === url + "/api/leads" &&
