@@ -695,6 +695,7 @@
                   "subagentConcurrencyVersion": 2,
                   "tail": "",
                   "threadId": "thread-0",
+                  "tokenBudget": null,
                   "tokensUsed": 0,
                   "turnId": "turn-0",
                   "workerDefaults": {
@@ -1532,6 +1533,7 @@
                   "subagentConcurrencyVersion": 2,
                   "tail": "",
                   "threadId": "thread-0",
+                  "tokenBudget": null,
                   "tokensUsed": 0,
                   "turnId": "turn-0",
                   "workerDefaults": {
@@ -2369,6 +2371,7 @@
                   "subagentConcurrencyVersion": 2,
                   "tail": "",
                   "threadId": "thread-0",
+                  "tokenBudget": null,
                   "tokensUsed": 0,
                   "turnId": "turn-0",
                   "workerDefaults": {
@@ -3206,6 +3209,7 @@
                   "subagentConcurrencyVersion": 2,
                   "tail": "",
                   "threadId": "thread-0",
+                  "tokenBudget": null,
                   "tokensUsed": 0,
                   "turnId": "turn-0",
                   "workerDefaults": {
@@ -4043,6 +4047,7 @@
                   "subagentConcurrencyVersion": 2,
                   "tail": "",
                   "threadId": "thread-0",
+                  "tokenBudget": null,
                   "tokensUsed": 0,
                   "turnId": "turn-0",
                   "workerDefaults": {
@@ -4880,6 +4885,7 @@
                   "subagentConcurrencyVersion": 2,
                   "tail": "",
                   "threadId": "thread-0",
+                  "tokenBudget": null,
                   "tokensUsed": 0,
                   "turnId": "turn-0",
                   "workerDefaults": {
@@ -5717,6 +5723,7 @@
                   "subagentConcurrencyVersion": 2,
                   "tail": "",
                   "threadId": "thread-0",
+                  "tokenBudget": null,
                   "tokensUsed": 0,
                   "turnId": "turn-0",
                   "workerDefaults": {
@@ -6554,6 +6561,7 @@
                   "subagentConcurrencyVersion": 2,
                   "tail": "",
                   "threadId": "thread-0",
+                  "tokenBudget": null,
                   "tokensUsed": 0,
                   "turnId": "turn-0",
                   "workerDefaults": {
@@ -7391,6 +7399,7 @@
                   "subagentConcurrencyVersion": 2,
                   "tail": "",
                   "threadId": "thread-0",
+                  "tokenBudget": null,
                   "tokensUsed": 0,
                   "turnId": "turn-0",
                   "workerDefaults": {
@@ -8228,6 +8237,7 @@
                   "subagentConcurrencyVersion": 2,
                   "tail": "",
                   "threadId": "thread-0",
+                  "tokenBudget": null,
                   "tokensUsed": 0,
                   "turnId": "turn-0",
                   "workerDefaults": {
@@ -9065,6 +9075,7 @@
                   "subagentConcurrencyVersion": 2,
                   "tail": "",
                   "threadId": "thread-0",
+                  "tokenBudget": null,
                   "tokensUsed": 0,
                   "turnId": "turn-0",
                   "workerDefaults": {
@@ -9902,6 +9913,7 @@
                   "subagentConcurrencyVersion": 2,
                   "tail": "",
                   "threadId": "thread-0",
+                  "tokenBudget": null,
                   "tokensUsed": 0,
                   "turnId": "turn-0",
                   "workerDefaults": {
@@ -10739,6 +10751,7 @@
                   "subagentConcurrencyVersion": 2,
                   "tail": "",
                   "threadId": "thread-0",
+                  "tokenBudget": null,
                   "tokensUsed": 0,
                   "turnId": "turn-0",
                   "workerDefaults": {
@@ -11580,6 +11593,7 @@
                   "subagentConcurrencyVersion": 2,
                   "tail": "",
                   "threadId": "thread-0",
+                  "tokenBudget": null,
                   "tokensUsed": 0,
                   "turnId": "turn-0",
                   "workerDefaults": {
@@ -12421,6 +12435,7 @@
                   "subagentConcurrencyVersion": 2,
                   "tail": "",
                   "threadId": "thread-0",
+                  "tokenBudget": null,
                   "tokensUsed": 0,
                   "turnId": "turn-0",
                   "workerDefaults": {
@@ -13262,6 +13277,7 @@
                   "subagentConcurrencyVersion": 2,
                   "tail": "",
                   "threadId": "thread-0",
+                  "tokenBudget": null,
                   "tokensUsed": 0,
                   "turnId": "turn-0",
                   "workerDefaults": {
@@ -14103,6 +14119,7 @@
                   "subagentConcurrencyVersion": 2,
                   "tail": "",
                   "threadId": "thread-0",
+                  "tokenBudget": null,
                   "tokensUsed": 0,
                   "turnId": "turn-0",
                   "workerDefaults": {
@@ -14944,6 +14961,7 @@
                   "subagentConcurrencyVersion": 2,
                   "tail": "",
                   "threadId": "thread-0",
+                  "tokenBudget": null,
                   "tokensUsed": 0,
                   "turnId": "turn-0",
                   "workerDefaults": {
@@ -15785,6 +15803,7 @@
                   "subagentConcurrencyVersion": 2,
                   "tail": "",
                   "threadId": "thread-0",
+                  "tokenBudget": null,
                   "tokensUsed": 0,
                   "turnId": "turn-0",
                   "workerDefaults": {
@@ -16625,6 +16644,7 @@
                   "subagentConcurrencyVersion": 2,
                   "tail": "",
                   "threadId": "thread-0",
+                  "tokenBudget": null,
                   "tokensUsed": 0,
                   "turnId": "turn-0",
                   "workerDefaults": {
@@ -17465,6 +17485,7 @@
                   "subagentConcurrencyVersion": 2,
                   "tail": "",
                   "threadId": "thread-0",
+                  "tokenBudget": null,
                   "tokensUsed": 0,
                   "turnId": "turn-0",
                   "workerDefaults": {
@@ -18303,6 +18324,7 @@
                   "subagentConcurrencyVersion": 2,
                   "tail": "",
                   "threadId": "thread-0",
+                  "tokenBudget": null,
                   "tokensUsed": 0,
                   "turnId": "turn-0",
                   "workerDefaults": {
@@ -19141,6 +19163,7 @@
                   "subagentConcurrencyVersion": 2,
                   "tail": "",
                   "threadId": "thread-0",
+                  "tokenBudget": null,
                   "tokensUsed": 0,
                   "turnId": "turn-0",
                   "workerDefaults": {
@@ -19979,6 +20002,7 @@
                   "subagentConcurrencyVersion": 2,
                   "tail": "",
                   "threadId": "thread-0",
+                  "tokenBudget": null,
                   "tokensUsed": 0,
                   "turnId": "turn-0",
                   "workerDefaults": {
@@ -20817,6 +20841,7 @@
                   "subagentConcurrencyVersion": 2,
                   "tail": "",
                   "threadId": "thread-0",
+                  "tokenBudget": null,
                   "tokensUsed": 0,
                   "turnId": "turn-0",
                   "workerDefaults": {
@@ -21657,6 +21682,7 @@
                   "subagentConcurrencyVersion": 2,
                   "tail": "",
                   "threadId": "thread-0",
+                  "tokenBudget": null,
                   "tokensUsed": 0,
                   "turnId": "turn-0",
                   "workerDefaults": {
@@ -22497,6 +22523,7 @@
                   "subagentConcurrencyVersion": 2,
                   "tail": "",
                   "threadId": "thread-0",
+                  "tokenBudget": null,
                   "tokensUsed": 0,
                   "turnId": "turn-0",
                   "workerDefaults": {
@@ -23335,6 +23362,7 @@
                   "subagentConcurrencyVersion": 2,
                   "tail": "",
                   "threadId": "thread-0",
+                  "tokenBudget": null,
                   "tokensUsed": 0,
                   "turnId": "turn-0",
                   "workerDefaults": {
@@ -24173,6 +24201,7 @@
                   "subagentConcurrencyVersion": 2,
                   "tail": "",
                   "threadId": "thread-0",
+                  "tokenBudget": null,
                   "tokensUsed": 0,
                   "turnId": "turn-0",
                   "workerDefaults": {
@@ -25011,6 +25040,7 @@
                   "subagentConcurrencyVersion": 2,
                   "tail": "",
                   "threadId": "thread-0",
+                  "tokenBudget": null,
                   "tokensUsed": 0,
                   "turnId": "turn-0",
                   "workerDefaults": {
@@ -27901,6 +27931,7 @@
                   "subagentConcurrencyVersion": 2,
                   "tail": "",
                   "threadId": "thread-0",
+                  "tokenBudget": null,
                   "tokensUsed": 0,
                   "turnId": "turn-0",
                   "workerDefaults": {
@@ -30374,6 +30405,7 @@
                   "subagentConcurrencyVersion": 2,
                   "tail": "",
                   "threadId": "thread-0",
+                  "tokenBudget": null,
                   "tokensUsed": 0,
                   "turnId": "turn-0",
                   "workerDefaults": {
@@ -32860,6 +32892,7 @@
                   "subagentConcurrencyVersion": 2,
                   "tail": "",
                   "threadId": "thread-0",
+                  "tokenBudget": null,
                   "tokensUsed": 0,
                   "turnId": "turn-0",
                   "workerDefaults": {
@@ -33550,6 +33583,7 @@
                   "subagentConcurrencyVersion": 2,
                   "tail": "",
                   "threadId": "thread-0",
+                  "tokenBudget": null,
                   "tokensUsed": 0,
                   "turnId": "turn-0",
                   "workerDefaults": {
@@ -34230,6 +34264,7 @@
                   "subagentConcurrencyVersion": 2,
                   "tail": "",
                   "threadId": "thread-0",
+                  "tokenBudget": null,
                   "tokensUsed": 0,
                   "turnId": "turn-0",
                   "workerDefaults": {
@@ -34910,6 +34945,7 @@
                   "subagentConcurrencyVersion": 2,
                   "tail": "",
                   "threadId": "thread-0",
+                  "tokenBudget": null,
                   "tokensUsed": 0,
                   "turnId": "turn-0",
                   "workerDefaults": {
@@ -40791,6 +40827,7 @@
                   "subagentConcurrencyVersion": 2,
                   "tail": "",
                   "threadId": "thread-0",
+                  "tokenBudget": null,
                   "tokensUsed": 0,
                   "turnId": "turn-0",
                   "workerDefaults": {
@@ -42402,6 +42439,7 @@
                   "subagentConcurrencyVersion": 2,
                   "tail": "",
                   "threadId": "thread-0",
+                  "tokenBudget": null,
                   "tokensUsed": 0,
                   "turnId": "turn-0",
                   "workerDefaults": {

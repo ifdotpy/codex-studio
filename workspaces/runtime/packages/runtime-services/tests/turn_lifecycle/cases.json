@@ -7,6 +7,14 @@
     "findings": ["A10"],
     "expectedDifferences": [
       {
+        "path": "/sync_entities/0/payload/value/tokenBudget",
+        "python": null,
+        "pythonPresent": false,
+        "rust": null,
+        "rustPresent": true,
+        "deviation": "agent_dto_projection"
+      },
+      {
         "path": "/runtime_execution_attempts/0/record/receipts",
         "python": null,
         "pythonPresent": false,
@@ -40,6 +48,14 @@
     "message": "turn/start response timed out; outcome unknown",
     "expectedDifferences": [
       {
+        "path": "/sync_entities/0/payload/value/tokenBudget",
+        "python": null,
+        "pythonPresent": false,
+        "rust": null,
+        "rustPresent": true,
+        "deviation": "agent_dto_projection"
+      },
+      {
         "path": "/runtime_execution_attempts/0/record/receipts",
         "python": null,
         "pythonPresent": false,
@@ -71,6 +87,14 @@
     "state": "queued_pending",
     "findings": ["A11"],
     "expectedDifferences": [
+      {
+        "path": "/sync_entities/0/payload/value/tokenBudget",
+        "python": null,
+        "pythonPresent": false,
+        "rust": null,
+        "rustPresent": true,
+        "deviation": "agent_dto_projection"
+      },
       {
         "path": "/runtime_execution_attempts/0/record/receipts",
         "python": null,
@@ -110,6 +134,14 @@
     "message": "Provider did not send turn/start",
     "expectedDifferences": [
       {
+        "path": "/sync_entities/0/payload/value/tokenBudget",
+        "python": null,
+        "pythonPresent": false,
+        "rust": null,
+        "rustPresent": true,
+        "deviation": "agent_dto_projection"
+      },
+      {
         "path": "/runtime_execution_attempts/0/record/receipts",
         "python": null,
         "pythonPresent": false,
@@ -141,6 +173,14 @@
     "state": "running",
     "findings": ["B1"],
     "expectedDifferences": [
+      {
+        "path": "/sync_entities/0/payload/value/tokenBudget",
+        "python": null,
+        "pythonPresent": false,
+        "rust": null,
+        "rustPresent": true,
+        "deviation": "agent_dto_projection"
+      },
       {
         "path": "/runtime_execution_attempts/0/record/receipts",
         "python": null,
@@ -189,6 +229,14 @@
     "findings": ["B2"],
     "expectedDifferences": [
       {
+        "path": "/sync_entities/0/payload/value/tokenBudget",
+        "python": null,
+        "pythonPresent": false,
+        "rust": null,
+        "rustPresent": true,
+        "deviation": "agent_dto_projection"
+      },
+      {
         "path": "/runtime_execution_attempts/0/record/receipts",
         "python": null,
         "pythonPresent": false,
@@ -235,6 +283,14 @@
     "state": "running",
     "findings": ["B1"],
     "expectedDifferences": [
+      {
+        "path": "/sync_entities/0/payload/value/tokenBudget",
+        "python": null,
+        "pythonPresent": false,
+        "rust": null,
+        "rustPresent": true,
+        "deviation": "agent_dto_projection"
+      },
       {
         "path": "/runtime_execution_attempts/0/record/receipts",
         "python": null,
@@ -290,6 +346,14 @@
     },
     "findings": ["A8"],
     "expectedDifferences": [
+      {
+        "path": "/sync_entities/0/payload/value/tokenBudget",
+        "python": null,
+        "pythonPresent": false,
+        "rust": null,
+        "rustPresent": true,
+        "deviation": "agent_dto_projection"
+      },
       {
         "path": "/runtime_execution_attempts/0/record/receipts",
         "python": null,
@@ -353,6 +417,14 @@
     },
     "findings": ["A8"],
     "expectedDifferences": [
+      {
+        "path": "/sync_entities/0/payload/value/tokenBudget",
+        "python": null,
+        "pythonPresent": false,
+        "rust": null,
+        "rustPresent": true,
+        "deviation": "agent_dto_projection"
+      },
       {
         "path": "/runtime_execution_attempts/0/record/receipts",
         "python": null,
@@ -419,6 +491,14 @@
     "findings": ["A8"],
     "expectedDifferences": [
       {
+        "path": "/sync_entities/0/payload/value/tokenBudget",
+        "python": null,
+        "pythonPresent": false,
+        "rust": null,
+        "rustPresent": true,
+        "deviation": "agent_dto_projection"
+      },
+      {
         "path": "/runtime_execution_attempts/0/record/receipts",
         "python": null,
         "pythonPresent": false,
@@ -473,6 +553,14 @@
     },
     "findings": ["A9"],
     "expectedDifferences": [
+      {
+        "path": "/sync_entities/0/payload/value/tokenBudget",
+        "python": null,
+        "pythonPresent": false,
+        "rust": null,
+        "rustPresent": true,
+        "deviation": "agent_dto_projection"
+      },
       {
         "path": "/runtime_execution_attempts/0/record/receipts",
         "python": null,
@@ -553,7 +641,16 @@
     "phase": "submitted",
     "state": "python_unknown",
     "findings": ["A5", "B3"],
-    "expectedDifferences": [],
+    "expectedDifferences": [
+      {
+        "path": "/sync_entities/0/payload/value/tokenBudget",
+        "python": null,
+        "pythonPresent": false,
+        "rust": null,
+        "rustPresent": true,
+        "deviation": "agent_dto_projection"
+      }
+    ],
     "tier": "fast",
     "return": 1
   },
@@ -570,6 +667,14 @@
     },
     "findings": ["A5", "B3"],
     "expectedDifferences": [
+      {
+        "path": "/sync_entities/0/payload/value/tokenBudget",
+        "python": null,
+        "pythonPresent": false,
+        "rust": null,
+        "rustPresent": true,
+        "deviation": "agent_dto_projection"
+      },
       {
         "path": "/runtime_agents/0/record/disconnectRecovery",
         "python": null,
@@ -721,6 +826,14 @@
     "findings": ["A5"],
     "expectedDifferences": [
       {
+        "path": "/sync_entities/0/payload/value/tokenBudget",
+        "python": null,
+        "pythonPresent": false,
+        "rust": null,
+        "rustPresent": true,
+        "deviation": "agent_dto_projection"
+      },
+      {
         "path": "/runtime_agents/0/record/disconnectRecovery/connectionId",
         "python": null,
         "pythonPresent": false,
@@ -831,7 +944,16 @@
     "phase": "submitted",
     "state": "queued_pending",
     "findings": ["B3"],
-    "expectedDifferences": [],
+    "expectedDifferences": [
+      {
+        "path": "/sync_entities/0/payload/value/tokenBudget",
+        "python": null,
+        "pythonPresent": false,
+        "rust": null,
+        "rustPresent": true,
+        "deviation": "agent_dto_projection"
+      }
+    ],
     "tier": "fast",
     "return": null
   },
@@ -842,6 +964,14 @@
     "state": "queued_pending",
     "findings": ["B3"],
     "expectedDifferences": [
+      {
+        "path": "/sync_entities/0/payload/value/tokenBudget",
+        "python": null,
+        "pythonPresent": false,
+        "rust": null,
+        "rustPresent": true,
+        "deviation": "agent_dto_projection"
+      },
       {
         "path": "/runtime_agents/0/record/disconnectRecovery/source",
         "python": null,
@@ -1002,6 +1132,14 @@
     },
     "findings": ["A10"],
     "expectedDifferences": [
+      {
+        "path": "/sync_entities/0/payload/value/tokenBudget",
+        "python": null,
+        "pythonPresent": false,
+        "rust": null,
+        "rustPresent": true,
+        "deviation": "agent_dto_projection"
+      },
       {
         "path": "/runtime_execution_attempts/0/record/receipts",
         "python": null,
@@ -1219,6 +1357,14 @@
     "findings": ["A1"],
     "expectedDifferences": [
       {
+        "path": "/sync_entities/0/payload/value/tokenBudget",
+        "python": null,
+        "pythonPresent": false,
+        "rust": null,
+        "rustPresent": true,
+        "deviation": "agent_dto_projection"
+      },
+      {
         "path": "/runtime_agents/0/record/startAttempt/connectionGeneration",
         "python": null,
         "pythonPresent": false,
@@ -1308,7 +1454,16 @@
     "phase": "submitted",
     "state": "running",
     "findings": ["A10", "B6"],
-    "expectedDifferences": [],
+    "expectedDifferences": [
+      {
+        "path": "/sync_entities/0/payload/value/tokenBudget",
+        "python": null,
+        "pythonPresent": false,
+        "rust": null,
+        "rustPresent": true,
+        "deviation": "agent_dto_projection"
+      }
+    ],
     "tier": "fast",
     "return": false
   },
@@ -1320,6 +1475,14 @@
     "findings": ["A3"],
     "replay": true,
     "expectedDifferences": [
+      {
+        "path": "/sync_entities/0/payload/value/tokenBudget",
+        "python": null,
+        "pythonPresent": false,
+        "rust": null,
+        "rustPresent": true,
+        "deviation": "agent_dto_projection"
+      },
       {
         "path": "/runtime_execution_attempts/0/record/receipts",
         "python": null,
@@ -1914,7 +2077,16 @@
     "phase": "accepted",
     "state": "running",
     "findings": ["B6"],
-    "expectedDifferences": [],
+    "expectedDifferences": [
+      {
+        "path": "/sync_entities/0/payload/value/tokenBudget",
+        "python": null,
+        "pythonPresent": false,
+        "rust": null,
+        "rustPresent": true,
+        "deviation": "agent_dto_projection"
+      }
+    ],
     "tier": "fast",
     "return": true
   },
@@ -2692,7 +2864,16 @@
     "phase": "submitted",
     "state": "last_answer",
     "findings": ["B6"],
-    "expectedDifferences": [],
+    "expectedDifferences": [
+      {
+        "path": "/sync_entities/0/payload/value/tokenBudget",
+        "python": null,
+        "pythonPresent": false,
+        "rust": null,
+        "rustPresent": true,
+        "deviation": "agent_dto_projection"
+      }
+    ],
     "agent": {
       "lastAnswer": "Existing Python answer"
     },
@@ -3634,6 +3815,14 @@
     "findings": ["A9", "B6"],
     "expectedDifferences": [
       {
+        "path": "/sync_entities/0/payload/value/tokenBudget",
+        "python": null,
+        "pythonPresent": false,
+        "rust": null,
+        "rustPresent": true,
+        "deviation": "agent_dto_projection"
+      },
+      {
         "path": "/runtime_execution_attempts/0/record/receipts",
         "python": null,
         "pythonPresent": false,
@@ -4268,6 +4457,14 @@
     "findings": ["A13"],
     "expectedDifferences": [
       {
+        "path": "/sync_entities/0/payload/value/tokenBudget",
+        "python": null,
+        "pythonPresent": false,
+        "rust": null,
+        "rustPresent": true,
+        "deviation": "agent_dto_projection"
+      },
+      {
         "path": "/runtime_execution_attempts/0/record/receipts",
         "python": null,
         "pythonPresent": false,
@@ -4321,6 +4518,14 @@
     "state": "queued_pending",
     "findings": ["A1", "A3"],
     "expectedDifferences": [
+      {
+        "path": "/sync_entities/0/payload/value/tokenBudget",
+        "python": null,
+        "pythonPresent": false,
+        "rust": null,
+        "rustPresent": true,
+        "deviation": "agent_dto_projection"
+      },
       {
         "path": "/runtime_execution_attempts/0/record/claimResult",
         "python": null,
@@ -4491,6 +4696,14 @@
     "findings": ["A1", "A3"],
     "expectedDifferences": [
       {
+        "path": "/sync_entities/0/payload/value/tokenBudget",
+        "python": null,
+        "pythonPresent": false,
+        "rust": null,
+        "rustPresent": true,
+        "deviation": "agent_dto_projection"
+      },
+      {
         "path": "/runtime_agents/0/record/startAttempt/connectionGeneration",
         "python": null,
         "pythonPresent": false,
@@ -4588,6 +4801,14 @@
     "findings": ["A3"],
     "expectedDifferences": [
       {
+        "path": "/sync_entities/0/payload/value/tokenBudget",
+        "python": null,
+        "pythonPresent": false,
+        "rust": null,
+        "rustPresent": true,
+        "deviation": "agent_dto_projection"
+      },
+      {
         "path": "/runtime_agents/0/record/startAttempt/interrupt",
         "python": null,
         "rust": {
@@ -4635,6 +4856,14 @@
     },
     "findings": ["A3"],
     "expectedDifferences": [
+      {
+        "path": "/sync_entities/0/payload/value/tokenBudget",
+        "python": null,
+        "pythonPresent": false,
+        "rust": null,
+        "rustPresent": true,
+        "deviation": "agent_dto_projection"
+      },
       {
         "path": "/runtime_agents/0/record/startAttempt/interrupt",
         "python": null,
@@ -4685,6 +4914,14 @@
     },
     "findings": ["A3"],
     "expectedDifferences": [
+      {
+        "path": "/sync_entities/0/payload/value/tokenBudget",
+        "python": null,
+        "pythonPresent": false,
+        "rust": null,
+        "rustPresent": true,
+        "deviation": "agent_dto_projection"
+      },
       {
         "path": "/runtime_agents/0/record/startAttempt/interrupt",
         "python": null,
@@ -4948,6 +5185,14 @@
     "state": "queued_pending",
     "findings": ["A1"],
     "expectedDifferences": [
+      {
+        "path": "/sync_entities/0/payload/value/tokenBudget",
+        "python": null,
+        "pythonPresent": false,
+        "rust": null,
+        "rustPresent": true,
+        "deviation": "agent_dto_projection"
+      },
       {
         "path": "/runtime_execution_attempts/0/record/claimResult",
         "python": null,
@@ -5409,7 +5654,16 @@
       "inFlight": false
     },
     "findings": ["B6"],
-    "expectedDifferences": [],
+    "expectedDifferences": [
+      {
+        "path": "/sync_entities/0/payload/value/tokenBudget",
+        "python": null,
+        "pythonPresent": false,
+        "rust": null,
+        "rustPresent": true,
+        "deviation": "agent_dto_projection"
+      }
+    ],
     "tier": "fast",
     "return": true
   },
@@ -6172,6 +6426,14 @@
     "message": "Provider did not send turn/start",
     "expectedDifferences": [
       {
+        "path": "/sync_entities/0/payload/value/tokenBudget",
+        "python": null,
+        "pythonPresent": false,
+        "rust": null,
+        "rustPresent": true,
+        "deviation": "agent_dto_projection"
+      },
+      {
         "path": "/runtime_execution_attempts/0/record/receipts",
         "python": null,
         "pythonPresent": false,
@@ -6221,7 +6483,16 @@
     "findings": ["A6", "B6"],
     "tier": "fast",
     "return": null,
-    "expectedDifferences": []
+    "expectedDifferences": [
+      {
+        "path": "/sync_entities/0/payload/value/tokenBudget",
+        "python": null,
+        "pythonPresent": false,
+        "rust": null,
+        "rustPresent": true,
+        "deviation": "agent_dto_projection"
+      }
+    ]
   },
   {
     "id": "rejected_busy",
@@ -6230,6 +6501,14 @@
     "state": "running",
     "findings": ["A11"],
     "expectedDifferences": [
+      {
+        "path": "/sync_entities/0/payload/value/tokenBudget",
+        "python": null,
+        "pythonPresent": false,
+        "rust": null,
+        "rustPresent": true,
+        "deviation": "agent_dto_projection"
+      },
       {
         "path": "/runtime_execution_attempts/0/record/receipts",
         "python": null,
@@ -6361,7 +6640,16 @@
     "phase": "submitted",
     "state": "running",
     "findings": ["A10", "B6"],
-    "expectedDifferences": [],
+    "expectedDifferences": [
+      {
+        "path": "/sync_entities/0/payload/value/tokenBudget",
+        "python": null,
+        "pythonPresent": false,
+        "rust": null,
+        "rustPresent": true,
+        "deviation": "agent_dto_projection"
+      }
+    ],
     "tier": "fast",
     "return": false,
     "agent": {
@@ -6381,7 +6669,16 @@
     "removeAfterRecovery": ["startAttempt"],
     "tier": "fast",
     "return": null,
-    "expectedDifferences": [],
+    "expectedDifferences": [
+      {
+        "path": "/sync_entities/0/payload/value/tokenBudget",
+        "python": null,
+        "pythonPresent": false,
+        "rust": null,
+        "rustPresent": true,
+        "deviation": "agent_dto_projection"
+      }
+    ],
     "state": "recovered_unknown"
   },
   {
@@ -6410,7 +6707,16 @@
     ],
     "return": true,
     "tier": "fast",
-    "expectedDifferences": []
+    "expectedDifferences": [
+      {
+        "path": "/sync_entities/0/payload/value/tokenBudget",
+        "python": null,
+        "pythonPresent": false,
+        "rust": null,
+        "rustPresent": true,
+        "deviation": "agent_dto_projection"
+      }
+    ]
   },
   {
     "id": "reconcile_resolved_active",
@@ -6438,7 +6744,16 @@
     ],
     "return": true,
     "tier": "fast",
-    "expectedDifferences": []
+    "expectedDifferences": [
+      {
+        "path": "/sync_entities/0/payload/value/tokenBudget",
+        "python": null,
+        "pythonPresent": false,
+        "rust": null,
+        "rustPresent": true,
+        "deviation": "agent_dto_projection"
+      }
+    ]
   },
   {
     "id": "reconcile_preserves_selected_progress",
@@ -6493,7 +6808,16 @@
     ],
     "return": false,
     "tier": "fast",
-    "expectedDifferences": []
+    "expectedDifferences": [
+      {
+        "path": "/sync_entities/0/payload/value/tokenBudget",
+        "python": null,
+        "pythonPresent": false,
+        "rust": null,
+        "rustPresent": true,
+        "deviation": "agent_dto_projection"
+      }
+    ]
   },
   {
     "id": "misalignment_notice",
@@ -6508,6 +6832,14 @@
     },
     "findings": ["A8"],
     "expectedDifferences": [
+      {
+        "path": "/sync_entities/0/payload/value/tokenBudget",
+        "python": null,
+        "pythonPresent": false,
+        "rust": null,
+        "rustPresent": true,
+        "deviation": "agent_dto_projection"
+      },
       {
         "path": "/runtime_execution_attempts/0/record/receipts",
         "python": null,
@@ -6572,6 +6904,14 @@
     "findings": ["A8"],
     "expectedDifferences": [
       {
+        "path": "/sync_entities/0/payload/value/tokenBudget",
+        "python": null,
+        "pythonPresent": false,
+        "rust": null,
+        "rustPresent": true,
+        "deviation": "agent_dto_projection"
+      },
+      {
         "path": "/runtime_execution_attempts/0/record/receipts",
         "python": null,
         "pythonPresent": false,
@@ -6628,6 +6968,14 @@
     "state": "python_attempt",
     "findings": ["A1"],
     "expectedDifferences": [
+      {
+        "path": "/sync_entities/0/payload/value/tokenBudget",
+        "python": null,
+        "pythonPresent": false,
+        "rust": null,
+        "rustPresent": true,
+        "deviation": "agent_dto_projection"
+      },
       {
         "path": "/runtime_agents/0/record/startAttempt/connectionGeneration",
         "python": null,
@@ -6725,6 +7073,14 @@
     "findings": ["A1"],
     "expectedDifferences": [
       {
+        "path": "/sync_entities/0/payload/value/tokenBudget",
+        "python": null,
+        "pythonPresent": false,
+        "rust": null,
+        "rustPresent": true,
+        "deviation": "agent_dto_projection"
+      },
+      {
         "path": "/runtime_agents/0/record/startAttempt/connectionGeneration",
         "python": null,
         "pythonPresent": false,
@@ -6820,6 +7176,14 @@
     "state": "python_attempt",
     "findings": ["A1"],
     "expectedDifferences": [
+      {
+        "path": "/sync_entities/0/payload/value/tokenBudget",
+        "python": null,
+        "pythonPresent": false,
+        "rust": null,
+        "rustPresent": true,
+        "deviation": "agent_dto_projection"
+      },
       {
         "path": "/runtime_agents/0/record/startAttempt/connectionGeneration",
         "python": null,

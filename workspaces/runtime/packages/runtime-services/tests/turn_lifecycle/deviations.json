@@ -1,4 +1,10 @@
 {
+  "agent_dto_projection": {
+    "approvedClass": "c",
+    "reason": "The current AgentEntityDto projects the stored nullable tokenBudget; captured Python projections predate this field. New Rust projections must include its exact null value.",
+    "entrypoints": [],
+    "fields": ["/sync_entities/*/payload/value/tokenBudget"]
+  },
   "rust_receipts": {
     "approvedClass": "c",
     "reason": "Rust immutable transport and lifecycle result receipts, absent in Python.",
