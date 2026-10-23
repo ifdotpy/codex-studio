@@ -417,6 +417,7 @@ test("Rust startup consumes the desktop identity and restart environment contrac
   } = require("./backend.cjs");
   const {
     restartKeys,
+    retiredRestartKeys,
     restartEnvironmentVersion,
   } = require("./restart-environment.cjs");
   const rust = readFileSync(
@@ -440,4 +441,10 @@ test("Rust startup consumes the desktop identity and restart environment contrac
       .matchAll(/"([^"]+)"/g),
   ].map((match) => match[1]);
   assert.deepEqual(keys, restartKeys);
+  const retired = [
+    ...rust
+      .match(/const RETIRED_RESTART_KEYS:[\s\S]*?= &\[([\s\S]*?)\];/)[1]
+      .matchAll(/"([^"]+)"/g),
+  ].map((match) => match[1]);
+  assert.deepEqual(retired, retiredRestartKeys);
 });
