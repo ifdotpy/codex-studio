@@ -60,24 +60,16 @@ fn shared_values_ts() -> String {
                 values::SYNC_TRANSCRIPT_STREAM_MAX_ITEMS.to_string(),
             ),
             (
-                "SYNC_TRANSCRIPT_STREAM_MAX_BYTES",
-                values::SYNC_TRANSCRIPT_STREAM_MAX_BYTES.to_string(),
+                "SYNC_STREAM_EVENT_MAX_BYTES",
+                values::SYNC_STREAM_EVENT_MAX_BYTES.to_string(),
             ),
             (
                 "SYNC_ENTITY_STREAM_MAX_DOCUMENTS",
                 values::SYNC_ENTITY_STREAM_MAX_DOCUMENTS.to_string(),
             ),
             (
-                "SYNC_ENTITY_STREAM_MAX_BYTES",
-                values::SYNC_ENTITY_STREAM_MAX_BYTES.to_string(),
-            ),
-            (
                 "SYNC_DRAFT_STREAM_MAX_DOCUMENTS",
                 values::SYNC_DRAFT_STREAM_MAX_DOCUMENTS.to_string(),
-            ),
-            (
-                "SYNC_DRAFT_STREAM_MAX_BYTES",
-                values::SYNC_DRAFT_STREAM_MAX_BYTES.to_string(),
             ),
             (
                 "MAX_USER_ATTACHMENT_BYTES",

@@ -9,6 +9,7 @@ publish.workspace = true
 [dependencies]
 base64 = { workspace = true }
 axum = { workspace = true }
+brotli = { workspace = true }
 inventory = { workspace = true }
 form_urlencoded = { workspace = true }
 jsonschema = { workspace = true }
@@ -38,7 +39,6 @@ openapi-to-rust = { version = "=0.22.0", default-features = false }
 serde_json = { workspace = true }
 
 [dev-dependencies]
-brotli = { workspace = true }
 studio-runtime-store = { path = "../runtime-store", features = ["test-support"] }
 tempfile = { workspace = true }
 rusqlite = { workspace = true }

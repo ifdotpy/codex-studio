@@ -979,7 +979,7 @@ function fastTierCommands(root) {
     },
     {
       item: { name: "HTTP Brotli responses", ecosystem: "cargo" },
-      label: "JSON compression and native decoding witnesses",
+      label: "JSON and stream compression with native decoding witnesses",
       commands: [
         [
           "cargo",
@@ -1002,9 +1002,10 @@ function fastTierCommands(root) {
         ],
       ],
       options: {
-        selector: "Brotli JSON bytes, ETags, SSE exclusion and native decoding",
+        selector:
+          "Brotli JSON bytes, ETags, stream bounds/flushes and native decoding",
         reason:
-          "Preserve uncompressed representation hashes and SSE while reducing large JSON transfer bytes.",
+          "Preserve representation hashes and per-event delivery while reducing JSON and sync stream transfer bytes.",
       },
     },
     {

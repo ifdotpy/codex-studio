@@ -2,6 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::convert::Infallible;
+use std::io::{self, Write};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -11,19 +12,19 @@ use crate::generated::{
     TranscriptSyncPage,
 };
 use axum::Json;
+use axum::body::{Body, Bytes};
 use axum::extract::State;
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
-use axum::response::sse::{Event, Sse};
+use axum::response::sse::{Event, EventDataWriter, Sse};
 use axum::response::{IntoResponse, Response};
-use futures_util::Stream;
 use futures_util::stream;
+use futures_util::{Stream, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use studio_runtime_schema::shared_values::{
-    MAX_SYNC_RESOURCE_COUNT, MAX_SYNC_RESOURCE_QUERY_BYTES, SYNC_DRAFT_STREAM_MAX_BYTES,
-    SYNC_DRAFT_STREAM_MAX_DOCUMENTS, SYNC_ENTITY_STREAM_MAX_BYTES,
-    SYNC_ENTITY_STREAM_MAX_DOCUMENTS, SYNC_RESOURCE_HEARTBEAT_SECONDS,
-    SYNC_TRANSCRIPT_STREAM_MAX_BYTES, SYNC_TRANSCRIPT_STREAM_MAX_ITEMS,
+    MAX_SYNC_RESOURCE_COUNT, MAX_SYNC_RESOURCE_QUERY_BYTES, SYNC_DRAFT_STREAM_MAX_DOCUMENTS,
+    SYNC_ENTITY_STREAM_MAX_DOCUMENTS, SYNC_RESOURCE_HEARTBEAT_SECONDS, SYNC_STREAM_EVENT_MAX_BYTES,
+    SYNC_TRANSCRIPT_STREAM_MAX_ITEMS,
 };
 use studio_runtime_schema::{SYNC_PROTOCOL_VERSION, SYNC_PROTOCOL_VERSION_TEXT};
 use studio_runtime_services::change_notifications::{
@@ -112,11 +113,14 @@ async fn sync_stream(
                 .and_then(Value::as_str)
         });
     if renderer_hash.is_some_and(|value| value != server_hash) {
-        return event_response(stream::iter([Ok(sse_event(
-            "api-schema",
-            None,
-            json!({"hash": server_hash, (crate::schema::API_SCHEMA_MISMATCH_FIELD): true}),
-        ))]));
+        return encoded_event_response(
+            stream::iter([Ok(sse_event(
+                "api-schema",
+                None,
+                json!({"hash": server_hash, (crate::schema::API_SCHEMA_MISMATCH_FIELD): true}),
+            ))]),
+            &request_headers,
+        );
     }
 
     let resources = match parse_resources(&query, &state) {
@@ -181,9 +185,8 @@ async fn sync_stream(
     if renderer_hash.is_some() {
         initial.push_back(sse_event("api-schema", None, json!({"hash": server_hash})));
     }
-    initial.push_back(sse_event(
-        "resources",
-        Some(subscription_snapshot.revision),
+    initial.push_back(resource_sse_event(
+        subscription_snapshot.revision,
         initial_event,
     ));
     // OpenAPI owns the omitted-selector compatibility default; the HTTP witness
@@ -224,7 +227,7 @@ async fn sync_stream(
             Duration::from_secs(SYNC_RESOURCE_HEARTBEAT_SECONDS),
         ),
     };
-    event_response(stream::unfold(stream_state, next_frame))
+    encoded_event_response(stream::unfold(stream_state, next_frame), &request_headers)
 }
 
 /// Read the same projections as the resource endpoints. Unsupported resources
@@ -438,7 +441,7 @@ async fn read_entity_changes(
         .await
 }
 
-/// Keep conversion and size checks outside the asynchronous SQLite read closure.
+/// Convert the complete record interval; final SSE serialization owns the byte limit.
 fn entity_change_batch(
     connection: &Connection,
     after: Option<i64>,
@@ -470,10 +473,6 @@ fn entity_change_batch(
         through,
         documents,
     };
-    let bytes = serde_json::to_vec(&batch).ok()?;
-    if bytes.len() > SYNC_ENTITY_STREAM_MAX_BYTES {
-        return None;
-    }
     Some(batch)
 }
 
@@ -577,9 +576,6 @@ fn transcript_change_batch(
         through,
         delta,
     };
-    if serde_json::to_vec(&batch).ok()?.len() > SYNC_TRANSCRIPT_STREAM_MAX_BYTES {
-        return None;
-    }
     Some(batch)
 }
 
@@ -647,9 +643,6 @@ fn draft_change_batch(
         through,
         documents,
     };
-    if serde_json::to_vec(&batch).ok()?.len() > SYNC_DRAFT_STREAM_MAX_BYTES {
-        return None;
-    }
     Some(batch)
 }
 
@@ -806,10 +799,7 @@ async fn next_frame(
                 continue;
             }
             state.next_resources_frame_at = Some(Instant::now() + SYNC_FRAME_MIN_INTERVAL);
-            return Some((
-                Ok(sse_event("resources", Some(view.cursor.revision), event)),
-                state,
-            ));
+            return Some((Ok(resource_sse_event(view.cursor.revision, event)), state));
         }
         if heartbeat {
             let event = json!({
@@ -979,6 +969,140 @@ fn sse_event(name: &str, revision: Option<i64>, payload: impl Serialize) -> Even
     }
 }
 
+/// Write JSON once into Axum's event buffer, counting the complete UTF-8 envelope.
+/// Only an oversized interval is serialized again, after dropping its inline data.
+fn resource_sse_event(revision: i64, mut payload: ResourceChangeEvent) -> Event {
+    let id = revision.to_string();
+    // Axum adds a space after each colon and a final blank line. The byte-boundary
+    // witness compares this accounting with the actual HTTP body at T-1/T/T+1.
+    let envelope_bytes = b"event: resources\nid: \ndata: \n\n".len() + id.len();
+    let mut writer = Event::default()
+        .event("resources")
+        .id(&id)
+        .into_data_writer();
+    let mut bounded = BoundedEventWriter {
+        writer: &mut writer,
+        remaining: SYNC_STREAM_EVENT_MAX_BYTES - envelope_bytes,
+        exceeded: false,
+    };
+    let result = serde_json::to_writer(&mut bounded, &payload);
+    if !bounded.exceeded {
+        // The generated DTO has only JSON-compatible fields and string map keys.
+        result.expect("resource stream DTO serializes");
+        return writer.into_event();
+    }
+    for entry in &mut payload.resource_versions {
+        entry.entity_changes = None;
+        entry.transcript_changes = None;
+        entry.draft_changes = None;
+    }
+    sse_event("resources", Some(revision), payload)
+}
+
+struct BoundedEventWriter<'a> {
+    writer: &'a mut EventDataWriter,
+    remaining: usize,
+    exceeded: bool,
+}
+
+impl Write for BoundedEventWriter<'_> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        if bytes.len() > self.remaining {
+            self.exceeded = true;
+            return Err(io::Error::other("resource event exceeds stream byte limit"));
+        }
+        // serde_json emits complete UTF-8 string fragments (and ASCII syntax).
+        let text = std::str::from_utf8(bytes).map_err(io::Error::other)?;
+        std::fmt::Write::write_str(self.writer, text).map_err(io::Error::other)?;
+        self.remaining -= bytes.len();
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Compression has its own CPU/window contract, independent of the HTTP JSON
+/// threshold. One encoder retains its dictionary until the response is dropped.
+const STREAM_BROTLI_QUALITY: u32 = 3;
+/// Base-2 logarithm of the Brotli history window size in bytes.
+const STREAM_BROTLI_LGWIN: u32 = 20;
+/// Scratch buffer size, in bytes, used by the Brotli streaming writer.
+const STREAM_BROTLI_BUFFER_BYTES: usize = 4096;
+
+fn accepts_brotli(headers: &HeaderMap) -> bool {
+    headers
+        .get_all(header::ACCEPT_ENCODING)
+        .iter()
+        .any(|header| {
+            header.to_str().is_ok_and(|header| {
+                header.split(',').any(|coding| {
+                    let mut parts = coding.trim().split(';');
+                    if !parts
+                        .next()
+                        .is_some_and(|name| name.trim().eq_ignore_ascii_case("br"))
+                    {
+                        return false;
+                    }
+                    parts.all(|parameter| {
+                        let Some((key, value)) = parameter.trim().split_once('=') else {
+                            return false;
+                        };
+                        key.trim().eq_ignore_ascii_case("q")
+                            && value
+                                .trim()
+                                .parse::<f32>()
+                                .is_ok_and(|q| q > 0.0 && q <= 1.0)
+                    })
+                })
+            })
+        })
+}
+
+fn encoded_event_response<S>(stream: S, headers: &HeaderMap) -> Response
+where
+    S: Stream<Item = Result<Event, Infallible>> + Send + 'static,
+{
+    let mut response = event_response(stream);
+    response
+        .headers_mut()
+        .append(header::VARY, HeaderValue::from_static("Accept-Encoding"));
+    if !accepts_brotli(headers) {
+        return response;
+    }
+    let (mut parts, body) = response.into_parts();
+    parts
+        .headers
+        .insert(header::CONTENT_ENCODING, HeaderValue::from_static("br"));
+    let encoder = brotli::CompressorWriter::new(
+        Vec::new(),
+        STREAM_BROTLI_BUFFER_BYTES,
+        STREAM_BROTLI_QUALITY,
+        STREAM_BROTLI_LGWIN,
+    );
+    let compressed = stream::try_unfold(
+        (body.into_data_stream(), Some(encoder)),
+        |(mut input, encoder)| async move {
+            let Some(mut encoder) = encoder else {
+                return Ok::<_, io::Error>(None);
+            };
+            let bytes = match input.next().await {
+                Some(chunk) => {
+                    encoder.write_all(&chunk.map_err(io::Error::other)?)?;
+                    // Sse emits one body chunk per event, including heartbeats.
+                    // FLUSH emits all pending bytes without ending the dictionary.
+                    encoder.flush()?;
+                    Bytes::from(std::mem::take(encoder.get_mut()))
+                }
+                None => return Ok(Some((Bytes::from(encoder.into_inner()), (input, None)))),
+            };
+            Ok(Some((bytes, (input, Some(encoder)))))
+        },
+    );
+    Response::from_parts(parts, Body::from_stream(compressed))
+}
+
 fn event_response<S>(stream: S) -> Response
 where
     S: Stream<Item = Result<Event, Infallible>> + Send + 'static,
@@ -998,6 +1122,266 @@ where
 mod tests {
     use super::*;
     use studio_runtime_services::change_notifications::ChangeNotificationHub;
+
+    async fn frame_bytes(event: Event) -> axum::body::Bytes {
+        axum::body::to_bytes(
+            Sse::new(stream::iter([Ok::<_, Infallible>(event)]))
+                .into_response()
+                .into_body(),
+            usize::MAX,
+        )
+        .await
+        .expect("SSE bytes")
+    }
+
+    fn combined_transcript_event() -> ResourceChangeEvent {
+        let mut value = resource_event(
+            "workspace",
+            "epoch",
+            99999,
+            "change",
+            &[
+                json!({"kind":"transcript","agentId":"a"}),
+                json!({"kind":"transcript","agentId":"b"}),
+            ],
+            0,
+            false,
+        );
+        for entry in value["resourceVersions"].as_array_mut().expect("versions") {
+            entry["transcriptChanges"] = json!({"after":1,"through":99999,"delta":{
+                "delta":true,"items":[{"id":"answer","role":"assistant","text":""}],
+                "removed":[],"itemRevisions":{},"truncated":false
+            }});
+        }
+        serde_json::from_value(value).expect("combined fixture")
+    }
+
+    #[tokio::test]
+    async fn brotli_resource_event_limit_counts_utf8_envelope_and_combined_resources() {
+        let limit = SYNC_STREAM_EVENT_MAX_BYTES;
+        let empty = combined_transcript_event();
+        let overhead = frame_bytes(sse_event("resources", Some(99999), &empty))
+            .await
+            .len();
+        for target in [limit - 1, limit, limit + 1] {
+            let mut value = serde_json::to_value(&empty).expect("fixture");
+            let added = target - overhead;
+            for (index, entry) in value["resourceVersions"]
+                .as_array_mut()
+                .expect("versions")
+                .iter_mut()
+                .enumerate()
+            {
+                let count = if index == 0 {
+                    added / 2
+                } else {
+                    added - added / 2
+                };
+                entry["transcriptChanges"]["delta"]["items"][0]["text"] = json!(format!(
+                    "{}{}",
+                    "é".repeat(count / 2),
+                    "x".repeat(count % 2)
+                ));
+            }
+            let payload: ResourceChangeEvent = serde_json::from_value(value).expect("typed event");
+            assert_eq!(
+                frame_bytes(sse_event("resources", Some(99999), &payload))
+                    .await
+                    .len(),
+                target
+            );
+            let bytes = frame_bytes(resource_sse_event(99999, payload)).await;
+            assert!(
+                bytes.len() <= limit,
+                "complete SSE event is {} bytes; limit {limit}",
+                bytes.len()
+            );
+            let wire = String::from_utf8(bytes.to_vec()).expect("UTF8");
+            let body: Value = serde_json::from_str(
+                wire.lines()
+                    .find_map(|line| line.strip_prefix("data: "))
+                    .expect("data"),
+            )
+            .expect("JSON");
+            assert_eq!(body["revision"], 99999);
+            assert_eq!(
+                body["resourceVersions"].as_array().expect("versions").len(),
+                2
+            );
+            for entry in body["resourceVersions"].as_array().expect("versions") {
+                assert_eq!(entry["revision"], 99999);
+                assert_eq!(entry.get("transcriptChanges").is_some(), target <= limit);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn brotli_resource_event_fallback_drops_all_inline_batches_and_preserves_revisions() {
+        let mut event = combined_transcript_event();
+        let entry = &mut event.resource_versions[0];
+        entry.entity_changes = Some(Some(EntityChangeBatch {
+            after: 1,
+            through: 99999,
+            documents: Vec::new(),
+        }));
+        entry.draft_changes = Some(Some(DraftChangeBatch {
+            after: 1,
+            through: 99999,
+            documents: Vec::new(),
+        }));
+        entry.entity_sequence_reset = Some(Some(true));
+        let mut value = serde_json::to_value(event).expect("event");
+        value["resourceVersions"][0]["transcriptChanges"]["delta"]["items"][0]["text"] =
+            json!("x".repeat(SYNC_STREAM_EVENT_MAX_BYTES));
+        let event = serde_json::from_value(value).expect("event");
+        let document = event_document(Ok(resource_sse_event(99999, event))).await;
+        let entry = &document["resourceVersions"][0];
+        assert_eq!(entry["revision"], 99999);
+        assert_eq!(entry["entitySequenceReset"], true);
+        for field in ["entityChanges", "transcriptChanges", "draftChanges"] {
+            assert!(entry.get(field).is_none(), "{field} must use pull recovery");
+        }
+    }
+
+    #[tokio::test]
+    async fn brotli_stream_route_negotiates_encoding_and_flushes_the_initial_event() {
+        use axum::extract::ConnectInfo;
+        use axum::http::Request;
+        use tower::ServiceExt;
+        let root = tempfile::tempdir().expect("isolated state");
+        let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
+        let state = HttpState::new(
+            "token".into(),
+            "workspace".into(),
+            root.path().display().to_string(),
+            4321,
+            None,
+            Some(store),
+            None,
+        );
+        let app = crate::router(state).expect("router");
+        for (accept, compressed) in [
+            ("br", true),
+            ("gzip, BR;q=0.5", true),
+            ("gzip", false),
+            ("br;q=0", false),
+        ] {
+            let response = app.clone().oneshot(Request::builder()
+                .uri(format!("/api/sync/stream?protocol={SYNC_PROTOCOL_VERSION_TEXT}&resources=%5B%7B%22kind%22%3A%22drafts%22%7D%5D&tokenRates=false"))
+                .header("host", "127.0.0.1:4321").header("x-canvas-token", "token")
+                .header(header::ACCEPT_ENCODING, accept)
+                .extension(ConnectInfo(std::net::SocketAddr::from(([127,0,0,1],12345))))
+                .body(Body::empty()).expect("request")).await.expect("response");
+            assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(
+                response.headers().contains_key(header::CONTENT_ENCODING),
+                compressed,
+                "{accept}"
+            );
+            assert!(
+                response
+                    .headers()
+                    .get_all(header::VARY)
+                    .iter()
+                    .any(|value| value
+                        .to_str()
+                        .is_ok_and(|value| value.contains("Accept-Encoding")))
+            );
+            let mut body = response.into_body().into_data_stream();
+            let chunk = tokio::time::timeout(Duration::from_secs(2), body.next())
+                .await
+                .expect("initial flush")
+                .expect("chunk")
+                .expect("body");
+            let bytes = if compressed {
+                let mut decoder = brotli::DecompressorWriter::new(Vec::new(), 4096);
+                decoder
+                    .write_all(&chunk)
+                    .expect("decode initial event without EOF");
+                decoder.get_ref().clone()
+            } else {
+                chunk.to_vec()
+            };
+            let text = std::str::from_utf8(&bytes).expect("UTF8");
+            assert!(text.starts_with("event: resources\n"), "{text}");
+            assert!(text.ends_with("\n\n"));
+        }
+    }
+
+    #[tokio::test]
+    async fn brotli_stream_flushes_each_event_and_heartbeat_and_cancels_on_drop() {
+        use futures_util::StreamExt;
+        use std::io::Write;
+        let (send, recv) = tokio::sync::mpsc::channel::<Event>(1);
+        let source = stream::unfold(recv, |mut recv| async move {
+            recv.recv().await.map(|event| (Ok(event), recv))
+        });
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::ACCEPT_ENCODING,
+            HeaderValue::from_static("gzip, br"),
+        );
+        let response = encoded_event_response(source, &headers);
+        assert_eq!(
+            response
+                .headers()
+                .get(header::CONTENT_ENCODING)
+                .and_then(|value| value.to_str().ok()),
+            Some("br")
+        );
+        let mut body = response.into_body().into_data_stream();
+        let mut decoder = brotli::DecompressorWriter::new(Vec::new(), 4096);
+        for (name, revision) in [("resources", 1), ("heartbeat", 2), ("resources", 3)] {
+            let event = sse_event(name, Some(revision), json!({"revision":revision}));
+            let expected = frame_bytes(event.clone()).await;
+            send.send(event).await.expect("produce only this event");
+            let start = decoder.get_ref().len();
+            tokio::time::timeout(Duration::from_secs(2), async {
+                while decoder.get_ref().len() - start < expected.len() {
+                    let chunk = body.next().await.expect("compressed chunk").expect("body");
+                    decoder.write_all(&chunk).expect("incremental decode");
+                }
+            })
+            .await
+            .expect("event must arrive before next event is produced");
+            assert_eq!(&decoder.get_ref()[start..], expected.as_ref());
+        }
+        drop(body);
+        tokio::time::timeout(Duration::from_secs(2), send.closed())
+            .await
+            .expect("disconnect drops upstream");
+    }
+
+    #[tokio::test]
+    async fn brotli_stream_stays_plain_without_negotiation() {
+        for accept in [
+            None,
+            Some("gzip"),
+            Some("br;q=0"),
+            Some("br;q=0, gzip"),
+            Some("xbr"),
+            Some("br;q=invalid"),
+        ] {
+            let mut headers = HeaderMap::new();
+            if let Some(accept) = accept {
+                headers.insert(
+                    header::ACCEPT_ENCODING,
+                    HeaderValue::from_str(accept).expect("header"),
+                );
+            }
+            let event = sse_event("heartbeat", Some(1), json!({"revision":1}));
+            let expected = frame_bytes(event.clone()).await;
+            let response = encoded_event_response(stream::iter([Ok(event)]), &headers);
+            assert!(
+                response.headers().get(header::CONTENT_ENCODING).is_none(),
+                "{accept:?}"
+            );
+            let actual = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("plain body");
+            assert_eq!(actual, expected);
+        }
+    }
 
     #[tokio::test(start_paused = true)]
     async fn state_stream_token_interest_suppresses_tokens_but_preserves_resources_and_heartbeats()
@@ -1380,7 +1764,7 @@ mod tests {
         let delta = json!({"delta":true,"items":[{"id":"answer","role":"assistant","text":"after"}],
             "removed":[],"itemRevisions":{"answer":studio_runtime_store::sha256_hex(b"after")},"truncated":false});
         for scenario in [
-            "complete", "items", "bytes", "snapshot", "deleted", "cursor", "unknown",
+            "complete", "items", "snapshot", "deleted", "cursor", "unknown",
         ] {
             let mut payload = delta.clone();
             match scenario {
@@ -1390,10 +1774,6 @@ mod tests {
                         .map(|index| json!({"id":index.to_string(),"role":"assistant","text":"x"}))
                         .collect::<Vec<_>>()
                 )
-                }
-                "bytes" => {
-                    payload["items"][0]["text"] =
-                        json!("é".repeat(SYNC_TRANSCRIPT_STREAM_MAX_BYTES))
                 }
                 "snapshot" => {
                     payload.as_object_mut().expect("object").remove("delta");
@@ -1418,7 +1798,7 @@ mod tests {
 
     #[tokio::test]
     async fn state_stream_draft_batches_keep_limits_and_recovery() {
-        for scenario in ["maximum", "documents", "bytes", "payload"] {
+        for scenario in ["maximum", "documents", "payload"] {
             let root = tempfile::tempdir().expect("isolated state");
             let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
             store.transaction(move |tx| {
@@ -1430,7 +1810,7 @@ mod tests {
                 for index in 0..count {
                     let session = format!("chat-{index}");
                     let payload = if scenario == "payload" { "broken".to_owned() } else {
-                        json!({"device":"phone", "session":session, "text": if scenario == "bytes" { "é".repeat(SYNC_DRAFT_STREAM_MAX_BYTES) } else { "draft".into() }, "updated":1}).to_string()
+                        json!({"device":"phone", "session":session, "text": "draft", "updated":1}).to_string()
                     };
                     SyncDocumentsRepository::put_draft(tx, &format!("phone:{session}"), &payload, false)?;
                 }

@@ -212,6 +212,24 @@ They retain full-document comparisons, including initial and reconnect frames,
 interleaved publications, and live provider filtering. Token-rate `rate` and
 `outputTokens` fields compare by numeric value; every other field remains exact.
 
+The sync stream bounds the complete uncompressed `resources` SSE event with
+[`SYNC_STREAM_EVENT_MAX_BYTES`](../runtime-schema/src/shared_values.rs), including
+its event, id, data lines and final blank line. Oversized events retain revisions
+and reset markers but omit every inline entity, transcript and draft batch, so
+clients pull the interval. Control and token-rate frames are exempt. The HTTP
+JSON compression threshold is independent of this stream limit.
+
+`/api/sync/stream` negotiates Brotli when `Accept-Encoding` includes an enabled
+`br` coding. One encoder retains its history for the stream and flushes each
+event, including heartbeats. Dropping the response drops the upstream stream.
+The encoding parameters are owned by `src/routes/sync_stream.rs`; the
+`brotli_` tests cover boundaries, negotiation, incremental decoding and cleanup.
+Replay a complete recorded identity SSE body with
+`cargo run --release -j 4 -p studio-runtime-http --example sync-brotli-replay -- <file> <quality> <lgwin>`.
+The example reports bytes, encoder allocations and peak heap, wall time, and
+Linux main-thread CPU time. Its allocation count excludes transport output
+buffers. It performs one bounded replay without generating competing load.
+
 Run the crate tests with `cargo test -p studio-runtime-http`.
 The Python corpus generator and differential print probe have been removed;
 there is no committed generated OpenAPI request corpus. Request validation
