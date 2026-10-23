@@ -514,9 +514,10 @@
 .context-use {
   display: grid;
   order: -1;
-  gap: var(--mantine-spacing-xs);
+  gap: var(--studio-meter-size);
   min-width: 0;
-  padding: var(--mantine-spacing-xs) 0;
+  padding: 0;
+  min-height: var(--studio-control-size);
   border: 0;
   background: transparent;
   color: var(--muted);
@@ -542,13 +543,13 @@
 }
 .account-limits-summary {
   display: grid;
-  gap: var(--mantine-spacing-xs);
+  gap: var(--studio-meter-size);
   min-width: 0;
 }
 .account-limits-toggle {
   height: auto;
   min-height: var(--studio-control-size);
-  padding: var(--mantine-spacing-xs);
+  padding: 0 var(--mantine-spacing-xs);
   color: var(--text);
   font-size: var(--studio-text-meta);
 }
