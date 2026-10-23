@@ -680,6 +680,9 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     }
     if (fromPeer && (owner || independent)) return;
     if (!fromPeer) refreshHeartbeatTimeout();
+    // A late follower can hear a delta before the owner answers its replay request.
+    if (!event.snapshot && (lastTokenEpoch !== event.epoch || !lastTokenEvent))
+      return;
     if (
       lastTokenEpoch === event.epoch &&
       lastTokenRevision !== undefined &&
@@ -1616,6 +1619,10 @@ export function createResourceEvents(options: ResourceEventsOptions) {
         subscribers.delete(key);
         resourceRefs.delete(key);
         baselineReconciliations.delete(key);
+        if (!owner && !independent) {
+          subscriptionGeneration++;
+          entityDelivery.invalidate();
+        }
       }
       announceSubscriptions();
       if (!subscribers.size && !tokenRateListeners.size) {

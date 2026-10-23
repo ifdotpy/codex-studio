@@ -232,3 +232,49 @@ it("rejects malformed delta metadata and aggregate overflow without partially ap
   expect(cache.getTokenRate("agent-0")).toBeNull();
   expect(cache.getTokenRate("agent")).toEqual(record);
 });
+
+it("requires a token baseline for each epoch before applying deltas", () => {
+  const cache = createTokenRateCache();
+  const record = {
+    agentId: "quiet",
+    rootId: "root",
+    turnId: "turn",
+    active: false,
+    estimated: false,
+    rate: 0,
+    outputTokens: 10,
+  };
+  const frame = {
+    protocol: SYNC_PROTOCOL_VERSION,
+    workspaceId: "workspace",
+    epoch: "one",
+    revision: 7,
+    snapshot: false,
+    records: [record],
+    removed: [],
+  };
+  expect(cache.receiveResourceTokenRates(frame)).toBe(false);
+  expect(cache.getTokenRate("quiet")).toBeNull();
+  expect(cache.receiveResourceTokenRates({ ...frame, snapshot: true })).toBe(
+    true,
+  );
+  expect(cache.receiveResourceTokenRates({ ...frame, epoch: "two" })).toBe(
+    false,
+  );
+  expect(cache.getTokenRate("quiet")).toEqual(record);
+  expect(
+    cache.receiveResourceTokenRates({ ...frame, epoch: "two", snapshot: true }),
+  ).toBe(true);
+  expect(
+    cache.receiveResourceTokenRates({
+      ...frame,
+      epoch: "two",
+      records: [],
+      removed: ["quiet"],
+    }),
+  ).toBe(true);
+  cache.clearWorkspaceTokenRates();
+  expect(cache.receiveResourceTokenRates({ ...frame, epoch: "two" })).toBe(
+    false,
+  );
+});

@@ -644,7 +644,8 @@ async fn read_transcript_changes(
     sequences: &mut BTreeMap<String, i64>,
     complete: bool,
 ) -> BTreeMap<String, TranscriptStreamUpdate> {
-    let mut updates = BTreeMap::new();
+    let mut updates: BTreeMap<String, TranscriptStreamUpdate> = BTreeMap::new();
+    let mut inline_bytes = Some(SYNC_STREAM_EVENT_MAX_BYTES);
     let Some(store) = store else {
         return updates;
     };
@@ -685,7 +686,27 @@ async fn read_transcript_changes(
         }
         let batch = after
             .filter(|after| complete && *after < through)
-            .and_then(|after| transcript_change_batch(response, &scope, after))
+            .and_then(|after| {
+                // The pull payload is already serialized. Its byte length bounds
+                // retained inline data without serializing each batch again. The
+                // final SSE writer accounts for the exact envelope and metadata.
+                let remaining = inline_bytes?;
+                let bytes = response
+                    .documents
+                    .iter()
+                    .map(|document| document.payload.len())
+                    .sum();
+                inline_bytes = remaining.checked_sub(bytes);
+                if inline_bytes.is_none() {
+                    for update in updates.values_mut() {
+                        if let TranscriptStreamUpdate::Changed { batch, .. } = update {
+                            *batch = None;
+                        }
+                    }
+                    return None;
+                }
+                transcript_change_batch(response, &scope, after)
+            })
             .map(Box::new);
         sequences.insert(agent.clone(), through);
         updates.insert(
@@ -1587,7 +1608,7 @@ mod tests {
                 chunk.to_vec()
             };
             let text = std::str::from_utf8(&bytes).expect("UTF8");
-            assert!(text.starts_with("event: resources\n"), "{text}");
+            assert!(text.starts_with("event: session\n"), "{text}");
             assert!(text.ends_with("\n\n"));
         }
     }
@@ -1970,6 +1991,206 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn state_stream_subscription_post_token_interest_reenable_starts_full() {
+        fn document_bytes(bytes: &[u8]) -> Value {
+            let text = std::str::from_utf8(bytes).expect("UTF8");
+            serde_json::from_str(
+                text.lines()
+                    .find_map(|line| line.strip_prefix("data: "))
+                    .expect("data"),
+            )
+            .expect("JSON")
+        }
+        use axum::extract::ConnectInfo;
+        use axum::http::Request;
+        use tower::ServiceExt;
+        let root = tempfile::tempdir().expect("isolated state");
+        let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
+        let http = HttpState::new(
+            "token".into(),
+            "workspace".into(),
+            root.path().display().to_string(),
+            4321,
+            None,
+            Some(store),
+            None,
+        );
+        let quiet = json!({"agentId":"quiet","rootId":"root","turnId":"turn","active":false,"estimated":false,"rate":0.0,"outputTokens":50.0});
+        let mut rates = floating_test_rates(1);
+        rates["records"]
+            .as_array_mut()
+            .expect("records")
+            .push(quiet.clone());
+        http.token_rates
+            .publish(rates.clone())
+            .expect("initial rates");
+        let app = crate::router(http.clone()).expect("router");
+        let request = |method: &str, uri: &str, body: Body| {
+            Request::builder()
+                .method(method)
+                .uri(uri)
+                .header("host", "127.0.0.1:4321")
+                .header("x-canvas-token", "token")
+                .header("content-type", "application/json")
+                .extension(ConnectInfo(std::net::SocketAddr::from((
+                    [127, 0, 0, 1],
+                    12345,
+                ))))
+                .body(body)
+                .expect("request")
+        };
+        let response = app.clone().oneshot(request("GET", &format!("/api/sync/stream?protocol={SYNC_PROTOCOL_VERSION_TEXT}&resources=%5B%5D&tokenRates=true"), Body::empty())).await.expect("stream");
+        assert_eq!(response.status(), StatusCode::OK);
+        let mut body = response.into_body().into_data_stream();
+        let session = document_bytes(&body.next().await.expect("session").expect("bytes"));
+        body.next().await.expect("resources").expect("bytes");
+        let initial = document_bytes(&body.next().await.expect("tokens").expect("bytes"));
+        assert_eq!(initial["snapshot"], true);
+        assert_eq!(initial["records"], rates["records"]);
+        for (generation, interest) in [(1, false), (2, true)] {
+            let update = json!({"sessionId":session["sessionId"],"gen":generation,"add":[],"remove":[],"tokenRates":interest});
+            let response = app
+                .clone()
+                .oneshot(request(
+                    "POST",
+                    "/api/sync/subscriptions",
+                    Body::from(update.to_string()),
+                ))
+                .await
+                .expect("subscription POST");
+            assert_eq!(response.status(), StatusCode::OK);
+            let ack = body.next().await.expect("ack").expect("bytes");
+            assert!(String::from_utf8_lossy(&ack).starts_with("event: subscriptions\n"));
+            assert_eq!(document_bytes(&ack)["gen"], generation);
+            if !interest {
+                rates = floating_test_rates(2);
+                rates["records"]
+                    .as_array_mut()
+                    .expect("records")
+                    .push(quiet.clone());
+                http.token_rates
+                    .publish(rates.clone())
+                    .expect("rates change while disabled");
+            }
+        }
+        let restored = tokio::time::timeout(Duration::from_secs(2), body.next())
+            .await
+            .expect("reenabled token frame")
+            .expect("tokens")
+            .expect("bytes");
+        let restored = document_bytes(&restored);
+        assert_eq!(restored["snapshot"], true);
+        assert_eq!(restored["removed"], json!([]));
+        assert_eq!(
+            restored["records"], rates["records"],
+            "full replay includes quiet agents"
+        );
+    }
+
+    #[tokio::test]
+    async fn state_stream_subscription_added_oversized_initial_data_stays_revisions_only() {
+        fn document_bytes(bytes: &[u8]) -> Value {
+            let text = std::str::from_utf8(bytes).expect("UTF8");
+            serde_json::from_str(
+                text.lines()
+                    .find_map(|line| line.strip_prefix("data: "))
+                    .expect("data"),
+            )
+            .expect("JSON")
+        }
+        use axum::extract::ConnectInfo;
+        use axum::http::Request;
+        use tower::ServiceExt;
+        let root = tempfile::tempdir().expect("isolated state");
+        let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
+        store.transaction(|tx| {
+            tx.execute("INSERT INTO runtime_agents(id,record) VALUES('large',?1)", [json!({"id":"large","rootId":"large","epoch":0,"status":"running","threadId":"large","accountKey":"default","turnId":"turn","inFlight":true,"activeTools":[],"events":0}).to_string()])?;
+            for (id, text) in [("large:large", "x".repeat(SYNC_STREAM_EVENT_MAX_BYTES + 1)), ("large:small", "before".to_owned())] {
+                tx.execute("INSERT INTO runtime_items(id,agent,record,created) VALUES(?1,'large',?2,1)", rusqlite::params![id, json!({"id":id,"role":"assistant","text":text}).to_string()])?;
+            }
+            Ok(())
+        }).await.expect("large conversation");
+        let http = HttpState::new(
+            "token".into(),
+            "workspace".into(),
+            root.path().display().to_string(),
+            4321,
+            None,
+            Some(store.clone()),
+            None,
+        );
+        let app = crate::router(http).expect("router");
+        let request = |method: &str, uri: &str, body: Body| {
+            Request::builder()
+                .method(method)
+                .uri(uri)
+                .header("host", "127.0.0.1:4321")
+                .header("x-canvas-token", "token")
+                .header("content-type", "application/json")
+                .extension(ConnectInfo(std::net::SocketAddr::from((
+                    [127, 0, 0, 1],
+                    12345,
+                ))))
+                .body(body)
+                .expect("request")
+        };
+        let response = app.clone().oneshot(request("GET", &format!("/api/sync/stream?protocol={SYNC_PROTOCOL_VERSION_TEXT}&resources=%5B%7B%22kind%22%3A%22transcript%22%2C%22agentId%22%3A%22large%22%7D%5D&tokenRates=false"), Body::empty())).await.expect("stream");
+        assert_eq!(response.status(), StatusCode::OK);
+        let mut body = response.into_body().into_data_stream();
+        let session = document_bytes(&body.next().await.expect("session").expect("bytes"));
+        body.next().await.expect("initial").expect("bytes");
+        let full = studio_runtime_services::transcript::pull_scope(
+            store.clone(),
+            "transcript:large",
+            "large",
+            0,
+        )
+        .await
+        .expect("source data");
+        assert!(
+            serde_json::to_vec(&full).expect("source JSON").len() > SYNC_STREAM_EVENT_MAX_BYTES
+        );
+        let before = full["checkpoint"]["seq"].as_i64().expect("baseline cursor");
+        store.transaction(|tx| {
+            tx.execute("UPDATE runtime_items SET record=json_set(record,'$.text','after') WHERE id='large:small'", [])?;
+            Ok(())
+        }).await.expect("small change inside large transcript");
+        // Removing and adding in one POST requires a new baseline even when the
+        // final resource set retains the selector and its previous stream cursor.
+        let resource = json!({"kind":"transcript","agentId":"large"});
+        let update =
+            json!({"sessionId":session["sessionId"],"gen":1,"add":[resource],"remove":[resource]});
+        let response = app
+            .oneshot(request(
+                "POST",
+                "/api/sync/subscriptions",
+                Body::from(update.to_string()),
+            ))
+            .await
+            .expect("subscription POST");
+        assert_eq!(response.status(), StatusCode::OK);
+        let ack = body.next().await.expect("ack").expect("bytes");
+        assert!(String::from_utf8_lossy(&ack).starts_with("event: subscriptions\n"));
+        let frame = body
+            .next()
+            .await
+            .expect("added resource initial")
+            .expect("bytes");
+        assert!(frame.len() <= SYNC_STREAM_EVENT_MAX_BYTES);
+        let event = document_bytes(&frame);
+        assert_eq!(event["reason"], "initial");
+        assert_eq!(event["resources"], json!([resource]));
+        let entry = &event["resourceVersions"][0];
+        assert!(entry["revision"].as_i64().expect("revision") > before);
+        for field in ["transcriptChanges", "entityChanges", "draftChanges"] {
+            assert!(
+                entry.get(field).is_none(),
+                "initial data must use pull recovery: {field}"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn state_stream_transcript_delta_uses_the_existing_pull_cursor() {
         let root = tempfile::tempdir().expect("isolated state");
         let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
@@ -2066,6 +2287,51 @@ mod tests {
                 [0]["text"],
             "flushed after hint"
         );
+    }
+
+    #[tokio::test]
+    async fn state_stream_transcript_accumulation_drops_inline_data_at_shared_budget() {
+        let root = tempfile::tempdir().expect("isolated state");
+        let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
+        store.transaction(|tx| {
+            for agent in ["first", "second", "last"] {
+                tx.execute("INSERT INTO runtime_agents(id,record) VALUES(?1,?2)", rusqlite::params![agent, json!({"id":agent,"rootId":agent,"epoch":0,"status":"running","threadId":agent,"accountKey":"default","turnId":"turn","inFlight":true,"activeTools":[],"events":0}).to_string()])?;
+                tx.execute("INSERT INTO runtime_items(id,agent,record,created) VALUES(?1,?2,?3,1)", rusqlite::params![format!("{agent}:answer"), agent, json!({"id":format!("{agent}:answer"),"role":"assistant","text":"before"}).to_string()])?;
+            }
+            Ok(())
+        }).await.expect("conversations");
+        let resources: Vec<_> = ["first", "second", "last"]
+            .into_iter()
+            .map(|agent| json!({"kind":"transcript","agentId":agent}))
+            .collect();
+        let mut sequences = BTreeMap::new();
+        read_transcript_changes(Some(store.clone()), &resources, &mut sequences, false).await;
+        let before = sequences.clone();
+        store.transaction(|tx| {
+            for agent in ["first", "second", "last"] {
+                let text = if agent == "last" { "small".to_owned() } else { "x".repeat(SYNC_STREAM_EVENT_MAX_BYTES / 2 + 1) };
+                tx.execute("UPDATE runtime_items SET record=json_set(record,'$.text',?1) WHERE agent=?2", rusqlite::params![text, agent])?;
+            }
+            Ok(())
+        }).await.expect("changed transcripts");
+        // Prove the first candidate fits by itself; crossing the aggregate budget
+        // must discard it and prevent the later small candidate from being retained.
+        let mut single = before.clone();
+        let first =
+            read_transcript_changes(Some(store.clone()), &resources[..1], &mut single, true).await;
+        assert!(matches!(
+            first["first"],
+            TranscriptStreamUpdate::Changed { batch: Some(_), .. }
+        ));
+        let updates = read_transcript_changes(Some(store), &resources, &mut sequences, true).await;
+        assert_eq!(updates.len(), 3);
+        for agent in ["first", "second", "last"] {
+            assert!(sequences[agent] > before[agent]);
+            assert!(
+                matches!(updates[agent], TranscriptStreamUpdate::Changed { revision, batch: None } if revision == sequences[agent]),
+                "{agent}: only revisions may remain after the budget is crossed"
+            );
+        }
     }
 
     #[tokio::test]
@@ -3635,7 +3901,10 @@ mod tests {
         let response = app.clone().oneshot(request()).await.expect("response");
         assert_eq!(response.status(), StatusCode::OK);
         let mut body = response.into_body().into_data_stream();
-        body.next().await.expect("resources").expect("bytes");
+        let session = document(&body.next().await.expect("session").expect("bytes"));
+        assert!(session["sessionId"].is_string());
+        let resources = document(&body.next().await.expect("resources").expect("bytes"));
+        assert_eq!(resources["reason"], "initial");
         let initial = document(&body.next().await.expect("initial rates").expect("bytes"));
         assert_eq!(initial["snapshot"], true);
         assert_eq!(initial["records"], floating_test_rates(1)["records"]);
@@ -3649,7 +3918,10 @@ mod tests {
         drop(body);
         let response = app.oneshot(request()).await.expect("reconnect");
         let mut body = response.into_body().into_data_stream();
-        body.next().await.expect("resources").expect("bytes");
+        let session = document(&body.next().await.expect("session").expect("bytes"));
+        assert!(session["sessionId"].is_string());
+        let resources = document(&body.next().await.expect("resources").expect("bytes"));
+        assert_eq!(resources["reason"], "initial");
         let reconnect = document(&body.next().await.expect("reconnect rates").expect("bytes"));
         assert_eq!(reconnect["snapshot"], true);
         assert_eq!(reconnect["records"], floating_test_rates(2)["records"]);
