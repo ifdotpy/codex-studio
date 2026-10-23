@@ -754,8 +754,45 @@ pub fn project_entity_view(
 
 #[cfg(test)]
 mod projection_plan_tests {
-    use super::{invalid_agent_view, openapi_document, schema_projection_properties};
+    use super::{
+        invalid_agent_view, openapi_document, project_persisted_record,
+        schema_projection_properties,
+    };
     use serde_json::json;
+
+    /// The older view never published a null budget or an empty pattern list,
+    /// and the client reads a missing one as its default. Set values are
+    /// published.
+    #[test]
+    fn sync_views_publish_only_set_budgets_and_output_patterns() {
+        let unset = project_persisted_record(
+            "agent",
+            &json!({"id":"lead","rootId":"lead","isLead":true,"tokenBudget":null}),
+        )
+        .expect("agent view");
+        assert!(unset.get("tokenBudget").is_none(), "{unset}");
+
+        let set = project_persisted_record(
+            "agent",
+            &json!({"id":"lead","rootId":"lead","isLead":true,"tokenBudget":100}),
+        )
+        .expect("agent view");
+        assert_eq!(set["tokenBudget"], 100, "{set}");
+
+        let monitor = |patterns| {
+            project_persisted_record(
+                "monitor",
+                &json!({"id":"monitor","agent":"lead","status":"running","outputPatterns":patterns}),
+            )
+            .expect("monitor view")
+        };
+        let unset = monitor(json!([]));
+        assert!(unset.get("outputPatterns").is_none(), "{unset}");
+        assert_eq!(
+            monitor(json!(["ready"]))["outputPatterns"],
+            json!(["ready"])
+        );
+    }
 
     #[test]
     fn invalid_agent_view_preserves_valid_root_and_lead_identity() {
