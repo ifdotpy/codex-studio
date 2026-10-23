@@ -484,3 +484,115 @@ async fn a_card_comes_back_after_a_backend_restart_while_its_request_is_open() {
         "the chat learns that nobody answered the ended request"
     );
 }
+
+async fn seed_agent(store: &studio_runtime_store::RuntimeStore, id: &str) {
+    let id = id.to_owned();
+    store
+        .transaction_with(move |tx| {
+            tx.execute(
+                "INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",
+                [
+                    id.as_str(),
+                    &json!({"id":id,"rootId":id,"epoch":1,"status":"running","autoWake":true,
+                             "executionMode":"vm","layrProjectId":"p1"})
+                    .to_string(),
+                ],
+            )
+            .map_err(studio_runtime_store::StoreError::from)?;
+            Ok::<_, studio_runtime_store::StoreError>(())
+        })
+        .await
+        .expect("agent is seeded");
+}
+
+/// One card for one sign-in: a joined request of another chat gets no card of its own. The
+/// card names the waiting chats, and each joined chat learns when the sign-in ended on the
+/// card. A joined request that becomes the card gets its own card.
+#[tokio::test]
+async fn joined_requests_wait_on_one_card_and_hear_how_it_ended() {
+    let (_dir, store) = store().await;
+    seed_agent(&store, "second-agent").await;
+    seed_agent(&store, "third-agent").await;
+    let leader = "8".repeat(32);
+    let joined = "9".repeat(32);
+    let promoted = "a".repeat(32);
+    let redirect = json!({"host":"localhost","port":8000,"path":"/"});
+    let mut second = item(&joined, "second-agent", KUBE, redirect.clone(), "joined", 2);
+    second["joinedTo"] = json!(leader);
+    let mut third = item(
+        &promoted,
+        "third-agent",
+        KUBE,
+        redirect.clone(),
+        "joined",
+        3,
+    );
+    third["joinedTo"] = json!(leader);
+    let mut signed_in = second.clone();
+    signed_in["state"] = json!("closed");
+    signed_in["closeReason"] = json!(crate::browser_host::JOINED_SIGNED_IN_REASON);
+    signed_in["seq"] = json!(5);
+    let mut card = third.clone();
+    card["state"] = json!("pending");
+    card["joinedTo"] = Value::Null;
+    card["seq"] = json!(6);
+    let guest = Arc::new(WaitGuest {
+        batches: Mutex::new(VecDeque::from([
+            json!({"items":[
+                item(&leader, VM_AGENT, KUBE, redirect.clone(), "pending", 1), second, third,
+            ], "next": 3}),
+            json!({"items":[
+                item(&leader, VM_AGENT, KUBE, redirect.clone(), "expired", 4), signed_in, card,
+            ], "next": 6}),
+        ])),
+        calls: Mutex::new(Vec::new()),
+    });
+    let source = CardSource {
+        source: "host",
+        guest: guest.clone(),
+        forwarder: None,
+        http_providers: Default::default(),
+    };
+    poll_once(&store, &source, 0, 0, None)
+        .await
+        .expect("test step");
+    assert!(
+        request(&store, &joined).is_none(),
+        "a joined request has no card"
+    );
+    assert!(request(&store, &promoted).is_none());
+    assert_eq!(
+        request(&store, &leader).expect("card")["params"]["joined"],
+        json!(["second-agent", "third-agent"]),
+        "the card names the chats that wait on it"
+    );
+    poll_once(&store, &source, 3, 0, None)
+        .await
+        .expect("test step");
+    let own = request(&store, &promoted).expect("the oldest joined request becomes the card");
+    assert_eq!(
+        (own["status"].clone(), own["agent"].clone()),
+        (json!("pending"), json!("third-agent"))
+    );
+    let joined_events: Vec<(String, String, String)> = events(&store)
+        .into_iter()
+        .filter(|(id, _, _)| id.starts_with("browser-joined:"))
+        .collect();
+    assert_eq!(
+        joined_events,
+        vec![(
+            format!("browser-joined:{joined}"),
+            "browser_joined".to_owned(),
+            "The person signed in at id.example.com on the sign-in card of another chat. Your own sign-in command did not get that result. Stop it if it still waits, then run it again: the sign-in session is now active.".to_owned()
+        )]
+    );
+    assert!(
+        guest
+            .calls
+            .lock()
+            .expect("test step")
+            .iter()
+            .all(|call| call.0 != "browser.close"),
+        "joined requests are not refused"
+    );
+}

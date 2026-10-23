@@ -1671,6 +1671,10 @@ mod lifetime_tests;
 mod local_open_tests;
 
 #[cfg(test)]
+#[path = "browser_host_join_tests.rs"]
+mod join_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
