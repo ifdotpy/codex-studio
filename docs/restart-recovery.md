@@ -66,8 +66,9 @@ menu can disable that service without stopping the server or its active work.
 - Each chat refresh reads only its saved projection. It does not scan other
   cached chats or create bidirectional replication metadata. Storage revisions and
   server sequence numbers protect concurrent writes and removed-chat records.
-- The RxDB 17.5.0 event cache uses weak keys so completed updates can leave memory.
-  The install, build, and development commands apply the checked dependency patch.
+- The RxDB event cache uses weak keys so completed updates can leave memory.
+  Installation applies the checked dependency patch declared in
+  [`pnpm-workspace.yaml`](../pnpm-workspace.yaml).
   The patch also preserves projection conflicts for the server sequence check.
   A different dependency version requires review of that patch.
 

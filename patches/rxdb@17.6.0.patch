@@ -1,0 +1,40 @@
+diff --git a/dist/cjs/rx-change-event.js b/dist/cjs/rx-change-event.js
+--- a/dist/cjs/rx-change-event.js
++++ b/dist/cjs/rx-change-event.js
+@@ -88,5 +88,5 @@
+   return nonDuplicate;
+ }
+-var EVENT_BULK_CACHE = new Map();
++var EVENT_BULK_CACHE = new WeakMap();
+ function rxChangeEventBulkToRxChangeEvents(eventBulk) {
+   return (0, _index.getFromMapOrCreate)(EVENT_BULK_CACHE, eventBulk, () => {
+diff --git a/dist/cjs/rx-storage-helper.js b/dist/cjs/rx-storage-helper.js
+--- a/dist/cjs/rx-storage-helper.js
++++ b/dist/cjs/rx-storage-helper.js
+@@ -625,5 +625,5 @@
+       // the fast path above already returns early when there are no errors.
+       var reInsertErrors = writeResult.error.filter(error => {
+-        if (error.status === 409 && !error.writeRow.previous && !error.writeRow.document._deleted && (0, _index4.ensureNotFalsy)(error.documentInDb)._deleted) {
++        if (context !== "studio-projection-pull" && error.status === 409 && !error.writeRow.previous && !error.writeRow.document._deleted && (0, _index4.ensureNotFalsy)(error.documentInDb)._deleted) {
+           return true;
+         }
+diff --git a/dist/esm/rx-change-event.js b/dist/esm/rx-change-event.js
+--- a/dist/esm/rx-change-event.js
++++ b/dist/esm/rx-change-event.js
+@@ -79,5 +79,5 @@
+   return nonDuplicate;
+ }
+-var EVENT_BULK_CACHE = new Map();
++var EVENT_BULK_CACHE = new WeakMap();
+ export function rxChangeEventBulkToRxChangeEvents(eventBulk) {
+   return getFromMapOrCreate(EVENT_BULK_CACHE, eventBulk, () => {
+diff --git a/dist/esm/rx-storage-helper.js b/dist/esm/rx-storage-helper.js
+--- a/dist/esm/rx-storage-helper.js
++++ b/dist/esm/rx-storage-helper.js
+@@ -601,5 +601,5 @@
+       // the fast path above already returns early when there are no errors.
+       var reInsertErrors = writeResult.error.filter(error => {
+-        if (error.status === 409 && !error.writeRow.previous && !error.writeRow.document._deleted && ensureNotFalsy(error.documentInDb)._deleted) {
++        if (context !== "studio-projection-pull" && error.status === 409 && !error.writeRow.previous && !error.writeRow.document._deleted && ensureNotFalsy(error.documentInDb)._deleted) {
+           return true;
+         }

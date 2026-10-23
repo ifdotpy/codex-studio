@@ -183,7 +183,7 @@ try {
       ["package.json", "package.json"],
       ["pnpm-workspace.yaml", "pnpm-workspace.yaml"],
       ["pnpm-lock.yaml", "pnpm-lock.yaml"],
-      ["patches/rxdb@17.5.0.patch", "patches/rxdb@17.5.0.patch"],
+      ["patches/rxdb@17.6.0.patch", "patches/rxdb@17.6.0.patch"],
     ]) {
       const target = path.join(resources, destination);
       await mkdir(path.dirname(target), { recursive: true });

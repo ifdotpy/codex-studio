@@ -79,7 +79,13 @@ test("versions use the configured CLI without a model or authentication request"
     );
     const versions = await moveVersions(cli);
     assert.equal(versions.cli, "2.1.291");
-    assert.equal(versions.sdk, "0.3.285");
+    const manifest = JSON.parse(
+      await fs.readFile(new URL("./package.json", import.meta.url), "utf8"),
+    );
+    assert.equal(
+      versions.sdk,
+      manifest.dependencies["@anthropic-ai/claude-agent-sdk"],
+    );
   } finally {
     await fs.rm(root, { recursive: true, force: true });
   }
