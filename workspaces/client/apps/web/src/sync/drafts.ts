@@ -35,15 +35,8 @@ import {
 } from "./draftStorage";
 
 type Drafts = Record<string, string>;
-export type DraftVersion = {
-  id: string;
-  session: string;
-  text: string;
-  device: string;
-  updated: number;
-  alternatives?: string[];
-  seen?: Record<string, number>;
-};
+import type { DraftVersion } from "../generated/rustOwned";
+export type { DraftVersion } from "../generated/rustOwned";
 
 export function createBrowserDrafts(options: {
   api: Pick<

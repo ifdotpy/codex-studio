@@ -19,7 +19,6 @@ const MIN_JUST = [1, 58, 0];
 const COST = {
   pnpm: "focused; package test only",
   cargo: "focused; package compile and test",
-  server: "focused; isolated Python suite runner",
 };
 const NOT_STARTED = "backend, browser, Electron, provider";
 const LOG_RETENTION_MS = 14 * 24 * 60 * 60 * 1000;
@@ -41,12 +40,12 @@ const UNSAFE_RUST_ALLOWLIST = [
     "Read-only macOS libproc and sysctl process identity queries.",
   ],
   [
-    "workspaces/runtime/packages/operations-python/src/lib.rs",
-    "PyO3 extension.",
-  ],
-  [
     "workspaces/runtime/packages/runtime-services/src/image_workspace_macos/fsevents_ffi.rs",
     "FSEvents (lead's W9 decision).",
+  ],
+  [
+    "workspaces/runtime/packages/runtime-services/src/host_exec_service/clone_ffi.rs",
+    "APFS clonefile(2) for host_exec slot clones.",
   ],
   [
     "workspaces/runtime/packages/runtime-services/src/diagnostics/allocator.rs",
@@ -116,9 +115,9 @@ const BOUNDARY_ALLOWLIST = [
   {
     importer: "codex-agents-desktop",
     file: "bridge.d.ts",
-    specifier: "../web/src/servers/desktopCredentials",
+    specifier: "../web/src/desktop",
     reason:
-      "The desktop bridge declaration shares the renderer's credential wire types until they have a public package owner.",
+      "The desktop bridge declaration re-exports the renderer's single bridge owner until it has a public package owner.",
   },
   {
     importer: "codex-agents-desktop",
@@ -156,25 +155,11 @@ const BOUNDARY_ALLOWLIST = [
       "The fast tier checks the release-binaries commit and SHA-256 manifest contract of the desktop packagers and the native package flow, which have no fast-tier test runner of their own.",
   },
   {
-    importer: "codex-agents-web",
-    file: "tests/**",
-    specifier: "../../../../../runtime/apps/server/tests/**",
+    importer: "codex-studio-tooling",
+    file: "workspaces/tooling/apps/repository-checks/tests/signing-check.test.mjs",
+    specifier: "../../../../client/apps/desktop/**",
     reason:
-      "Renderer browser tests reuse local setup fixtures maintained with the server test runner.",
-  },
-  {
-    importer: "server",
-    file: "tests/claude-*-contract.mjs",
-    specifier: "../../../../providers/apps/claude-bridge/**",
-    reason:
-      "Server bridge contract tests import the actual bridge implementation under test.",
-  },
-  {
-    importer: "server",
-    file: "tests/fixtures/ux-*.tsx",
-    specifier: "../../../../../client/apps/web/**",
-    reason:
-      "Server-owned visual fixtures reuse renderer components and styles for isolated UX validation.",
+      "The fast tier checks the signing check and the unlock error contract of the desktop packager with a fake security tool, because the desktop package has no fast-tier test runner of its own.",
   },
   {
     importer: "codex-agents-desktop",
@@ -299,7 +284,6 @@ export function discover(root = rootFrom()) {
       });
     }
   }
-  packages.set("server", serverPackage());
   return [...packages.values()].sort((a, b) => a.name.localeCompare(b.name));
 }
 
@@ -338,17 +322,7 @@ function assertPinnedCargoToolchain(root) {
     );
 }
 
-function serverPackage() {
-  return {
-    name: "server",
-    ecosystem: "server",
-    dir: "workspaces/runtime/apps/server",
-    manifest: null,
-  };
-}
-
 function target(root, pkg) {
-  if (pkg === "server") return packageTarget([serverPackage()], pkg);
   return packageTarget(discover(root), pkg);
 }
 
@@ -493,29 +467,6 @@ export function commandFor(root, item, action, caseName = "", options = {}) {
         : []),
     ];
   }
-  if (item.name === "server") {
-    const python = path.join(
-      root,
-      "workspaces/runtime/apps/server/src/codex_python.py",
-    );
-    if (action === "test")
-      return [
-        [
-          "python3",
-          [
-            python,
-            "--exec",
-            path.join(
-              root,
-              "workspaces/runtime/apps/server/src/test-server.py",
-            ),
-            ...(caseName ? ["--filter", caseName] : []),
-            ...(options.serverArgs ?? []),
-          ],
-        ],
-      ];
-    return [["python3", [python, "--mypy"]]];
-  }
   fail(`Unsupported package ecosystem: ${item.ecosystem}`);
 }
 
@@ -587,7 +538,7 @@ function plan(root, item, action, caseName, commands, options = {}) {
       ? "Pinned pnpm and workspace dependencies installed"
       : item.ecosystem === "cargo"
         ? `Pinned Rust toolchain and required crates available; target output uses ${cargoTarget(root)}`
-        : "Managed Python runtime and server development dependencies prepared";
+        : "Required package tools available";
   return {
     package: item.name,
     case: caseName || null,
@@ -598,7 +549,7 @@ function plan(root, item, action, caseName, commands, options = {}) {
           ? "package test script (Vitest for codex-agents-web)"
           : item.ecosystem === "cargo"
             ? `Cargo package ${item.name}`
-            : "Python server runner suite filter",
+            : "package tests",
     workingDirectory,
     invocationDirectory: root,
     command: reproduction(root, commands),
@@ -613,7 +564,7 @@ function plan(root, item, action, caseName, commands, options = {}) {
         ? "Run only the selected package's manifest-owned test or check command."
         : item.ecosystem === "cargo"
           ? "Compile and run only the selected Cargo package and its declared dependencies."
-          : "Pass the selected suite filter to the server runner, which owns discovery and isolation.",
+          : "Run the selected package tests.",
     notStarted: NOT_STARTED,
     costCategory: options.costCategory
       ? options.costCategory
@@ -622,7 +573,7 @@ function plan(root, item, action, caseName, commands, options = {}) {
           ? "package-local type and unit checks"
           : item.ecosystem === "cargo"
             ? "package-local fmt, clippy, and unit checks"
-            : "server runtime type check"
+            : "package checks"
         : COST[item.ecosystem],
     executesNothing: true,
   };
@@ -632,8 +583,6 @@ function selectorDescription(item, caseName, options) {
   if (options.selector) return options.selector;
   if (item.ecosystem === "cargo")
     return `Cargo test-name substring${options.cargoTargets?.length ? `; Cargo target selection: ${options.cargoTargets.join(" ")}` : ""}${options.passthrough?.length ? `; test harness args after --: ${options.passthrough.join(" ")}` : ""}`;
-  if (item.ecosystem === "server")
-    return "server runner --filter suite substring";
   const manifest = manifestFor(item);
   const script = manifest.scripts?.[manifest.codexStudioChecks?.test] ?? "";
   if (/\bvitest\b/.test(script))
@@ -684,100 +633,6 @@ function browserSmokeTestOptions() {
   };
 }
 
-function serverCategoryOptions(category, suite = "") {
-  const serverArgs = ["--only", category];
-  if (category === "expensive") {
-    if (!suite)
-      fail(
-        "Select one load-class suite with its exact path; zero tests executed",
-      );
-    if (
-      !suite.includes("/") ||
-      ["*", "?", "["].some((char) => suite.includes(char))
-    )
-      fail(
-        "Load-class selection requires one exact suite path; zero tests executed",
-      );
-    serverArgs.push("--filter", suite);
-  } else if (suite) {
-    fail("A suite path is accepted only for the expensive load-class category");
-  }
-  return {
-    serverArgs,
-    selector:
-      category === "expensive"
-        ? `one exact load-class suite path: ${suite}`
-        : category === "fast"
-          ? "server runner FAST_SUITES selection"
-          : `server runner category: ${category}`,
-    reason:
-      category === "expensive"
-        ? "Run one explicitly selected load-class suite as a separately announced manual run."
-        : category === "fast"
-          ? "Run the server runner's deterministic fast witnesses without discovering the full server inventory."
-          : "Select the server runner's registered opt-in category without duplicating its suite list.",
-    costCategory:
-      category === "expensive"
-        ? "load-class; manual single-suite run"
-        : `server opt-in category: ${category}`,
-  };
-}
-
-function serverShardOptions(indexText, countText) {
-  const index = Number(indexText);
-  const count = Number(countText);
-  if (
-    !Number.isSafeInteger(index) ||
-    !Number.isSafeInteger(count) ||
-    count < 1 ||
-    index < 0 ||
-    index >= count
-  )
-    fail("Usage: test-server-shard <zero-based-index> <shard-count>");
-  return {
-    serverArgs: [
-      "--shard-index",
-      String(index),
-      "--shard-count",
-      String(count),
-    ],
-    selector: `default server suites in shard ${index + 1}/${count}`,
-    reason:
-      "Select a stable disjoint shard from the server runner's default suite inventory.",
-    costCategory: `fast server shard ${index + 1}/${count}`,
-    label: `server shard ${index + 1}/${count}`,
-  };
-}
-
-function serverShardPlan(root, index, count) {
-  const item = serverPackage();
-  const options = serverShardOptions(index, count);
-  return plan(
-    root,
-    item,
-    "test",
-    "",
-    commandFor(root, item, "test", "", options),
-    options,
-  );
-}
-
-export function serverShardRunOptions(indexText, countText) {
-  return serverShardOptions(indexText, countText);
-}
-
-function serverCategoryPlan(root, category, suite = "") {
-  const item = serverPackage();
-  const options = serverCategoryOptions(category, suite);
-  const commands = commandFor(root, item, "test", "", options);
-  const value = plan(root, item, "test", "", commands, options);
-  value.target =
-    category === "expensive"
-      ? `one load-class server suite (${suite})`
-      : `server opt-in category ${category}`;
-  return value;
-}
-
 function browserPlan(root, smoke = false) {
   const item = packageTarget(discover(root), "codex-agents-web");
   const options = smoke ? browserSmokeTestOptions() : browserTestOptions();
@@ -791,12 +646,6 @@ function browserPlan(root, smoke = false) {
   );
   value.notStarted = "backend, Electron, provider";
   return value;
-}
-
-function loadClassConditions() {
-  process.stdout.write(
-    "Load-class run conditions: run this as its own announced run; state the duration and resource budget to the team before starting; run no other checks or load jobs alongside it; stop every load generator when the run ends or fails.\n",
-  );
 }
 
 function webWasmPreparation(root) {
@@ -818,17 +667,6 @@ function webWasmPreparation(root) {
   };
 }
 
-function operationsModulePreparation() {
-  return {
-    item: { name: "native operations preparation", ecosystem: "cargo" },
-    label: "native operations preparation",
-    commands: [
-      ["cargo", ["build", "--locked", "-p", "studio-operations-python"]],
-    ],
-    options: { allowZeroTests: true, buildOnly: true },
-  };
-}
-
 // A fast-tier nextest filter with one witness per line, so independent changes
 // add separate lines instead of rewriting one shared filter string.
 function nextestAnyOf(terms) {
@@ -837,7 +675,6 @@ function nextestAnyOf(terms) {
 
 function fastTierCommands(root) {
   const packages = discover(root);
-  const server = serverPackage();
   const web = packageTarget(packages, "codex-agents-web");
   const tooling = packageTarget(packages, "codex-studio-tooling");
   const facade = path.join(
@@ -845,8 +682,181 @@ function fastTierCommands(root) {
     "workspaces/tooling/apps/repository-checks/facade.mjs",
   );
   return [
-    operationsModulePreparation(),
     webWasmPreparation(root),
+    {
+      item: { name: "studio-runtime-server", ecosystem: "cargo" },
+      label: "Rust operator CLI witnesses",
+      commands: [
+        [
+          "cargo",
+          [
+            "nextest",
+            "run",
+            "--locked",
+            "--no-tests",
+            "fail",
+            "--message-format",
+            "libtest-json-plus",
+            "-p",
+            "studio-runtime-server",
+            "-E",
+            "test(operator_cli::)",
+          ],
+        ],
+      ],
+      options: {
+        selector: "Rust service and command installation without Python",
+        reason:
+          "Check isolated user service managers, delivery layout, safe link migration, and idempotent retries without touching host services.",
+      },
+    },
+    {
+      item: { name: "studio-runtime-services", ecosystem: "cargo" },
+      label: "host_exec tool and Mac service witnesses",
+      commands: [
+        [
+          "cargo",
+          [
+            "nextest",
+            "run",
+            "--locked",
+            "--no-tests",
+            "fail",
+            "--message-format",
+            "libtest-json-plus",
+            "-p",
+            "studio-runtime-services",
+            "--lib",
+            "-E",
+            "test(/^host_exec(_service)?::/)",
+          ],
+        ],
+        [
+          "cargo",
+          [
+            "nextest",
+            "run",
+            "--locked",
+            "--no-tests",
+            "fail",
+            "--message-format",
+            "libtest-json-plus",
+            "-p",
+            "studio-runtime-server",
+            "-E",
+            "test(/^host_exec_service::/)",
+          ],
+        ],
+      ],
+      options: {
+        selector:
+          "host_exec identities, refusals, Mac service receipts, start rules, and the guest broker",
+        reason:
+          "Check that a lost answer never repeats a Mac command, that only VM writers run commands, and that the unchanged guest broker works with the service process.",
+      },
+    },
+    {
+      item: { name: "studio-runtime-services", ecosystem: "cargo" },
+      label: "Linux VM start witnesses",
+      commands: [
+        [
+          "cargo",
+          [
+            "nextest",
+            "run",
+            "--locked",
+            "--no-tests",
+            "fail",
+            "--message-format",
+            "libtest-json-plus",
+            "-p",
+            "studio-runtime-services",
+            "--lib",
+            "-E",
+            "test(/^linux_vm_runtime::/)",
+          ],
+        ],
+        [
+          "cargo",
+          [
+            "nextest",
+            "run",
+            "--locked",
+            "--no-tests",
+            "fail",
+            "--message-format",
+            "libtest-json-plus",
+            "-p",
+            "studio-runtime-server",
+            "-E",
+            "test(/^linux_vm_start::/)",
+          ],
+        ],
+      ],
+      options: {
+        selector:
+          "VM start after a Mac restart, stops on purpose, restart limits and the helper session",
+        reason:
+          "Check that only a VM that the Mac restart stopped starts by itself, with a fake helper and guest, and that the helper runs in its own session.",
+      },
+    },
+    {
+      item: { name: "retained Python helper boundaries", ecosystem: "pnpm" },
+      label: "retained Python helper boundaries",
+      commands: [
+        [
+          "node",
+          [
+            "--test",
+            path.join(
+              root,
+              "workspaces/client/apps/desktop/retained-helper-witness.test.cjs",
+            ),
+          ],
+        ],
+      ],
+      options: {
+        selector: "retained helper import and launch boundaries",
+        reason:
+          "Keep retained desktop and guest Python independent of the removed backend.",
+      },
+    },
+    {
+      item: { name: "Mac sync chunk reads", ecosystem: "pnpm" },
+      label: "Mac sync chunk read witness",
+      commands: [
+        [
+          "node",
+          [
+            "--test",
+            path.join(
+              root,
+              "workspaces/runtime/apps/vm-guest/mac-sync-witness.test.mjs",
+            ),
+          ],
+        ],
+      ],
+      options: {
+        selector: "bounded guest Mac sync reads",
+        reason:
+          "Read at most one chunk under the project lock and preserve file and link responses.",
+      },
+    },
+    {
+      item: { name: "native WebView fixture", ecosystem: "pnpm" },
+      label: "native WebView fixture",
+      commands: [
+        [
+          "node",
+          ["--test", "workspaces/client/apps/native/check-native.test.mjs"],
+        ],
+      ],
+      options: {
+        selector: "native HTTP fixture contracts",
+        reason:
+          "Check the hidden native WebView harness without opening a window.",
+      },
+    },
     {
       item: { name: "schema and dependency guards", ecosystem: "pnpm" },
       label: "schema and dependency guards",
@@ -861,9 +871,196 @@ function fastTierCommands(root) {
       },
     },
     {
-      item: server,
-      label: "server safety witnesses",
-      options: serverCategoryOptions("fast"),
+      item: { name: "desktop recovery helpers", ecosystem: "pnpm" },
+      label: "Rust desktop recovery witnesses",
+      commands: [
+        [
+          "node",
+          [
+            "--test",
+            "workspaces/client/apps/desktop/recovery-helper-witness.test.cjs",
+          ],
+        ],
+      ],
+      options: {
+        selector:
+          "Rust recovery lease, identity and supervisor socket boundaries",
+        reason:
+          "Check desktop recovery without Python backend imports or supervisor scripts.",
+      },
+    },
+    ...(process.platform === "linux"
+      ? [
+          {
+            item: {
+              name: "supervisor protocol boundaries",
+              ecosystem: "cargo",
+            },
+            label: "supervisor protocol and identity witnesses",
+            commands: [
+              [
+                "cargo",
+                [
+                  "nextest",
+                  "run",
+                  "--locked",
+                  "--no-tests",
+                  "fail",
+                  "--message-format",
+                  "libtest-json-plus",
+                  "-p",
+                  "studio-process-supervisor",
+                  "--test",
+                  "clients",
+                  "-E",
+                  "test(supervisor_rejects_retired_protocol_before_admission)",
+                ],
+              ],
+              [
+                "cargo",
+                [
+                  "nextest",
+                  "run",
+                  "--locked",
+                  "--no-tests",
+                  "fail",
+                  "--message-format",
+                  "libtest-json-plus",
+                  "-p",
+                  "studio-runtime-providers",
+                  "--lib",
+                  "-E",
+                  "test(supervisor_rejects_python_identity_adoption)",
+                ],
+              ],
+            ],
+            options: {
+              selector: "current supervisor protocol and kernel identity",
+              reason:
+                "Reject retired protocol and Python identity adoption before ownership changes.",
+            },
+          },
+        ]
+      : []),
+    {
+      item: { name: "Rust-owned drafts", ecosystem: "cargo" },
+      label: "draft wire and legacy compatibility witnesses",
+      commands: [
+        [
+          "cargo",
+          [
+            "nextest",
+            "run",
+            "--locked",
+            "--no-tests",
+            "fail",
+            "--message-format",
+            "libtest-json-plus",
+            "-p",
+            "studio-client-core",
+            "-p",
+            "studio-runtime-http",
+            "--lib",
+            "-E",
+            nextestAnyOf([
+              "test(draft_receive_normalizes_shared_legacy_fixtures_without_rewriting_storage)",
+              "test(named_schema_draft_push_matches_shared_compatibility_fixtures)",
+              "test(stored_legacy_drafts_remain_readable_and_replaceable)",
+            ]),
+          ],
+        ],
+      ],
+      options: {
+        selector: "shared strict push and legacy receive fixtures",
+        reason:
+          "Keep new draft payloads compatible with native receive without rewriting stored legacy drafts.",
+      },
+    },
+    {
+      item: { name: "HTTP Brotli responses", ecosystem: "cargo" },
+      label: "JSON compression and native decoding witnesses",
+      commands: [
+        [
+          "cargo",
+          [
+            "nextest",
+            "run",
+            "--locked",
+            "--no-tests",
+            "fail",
+            "--message-format",
+            "libtest-json-plus",
+            "-p",
+            "studio-runtime-http",
+            "-p",
+            "studio-client-core",
+            "--lib",
+            "-E",
+            "test(brotli_)",
+          ],
+        ],
+      ],
+      options: {
+        selector: "Brotli JSON bytes, ETags, SSE exclusion and native decoding",
+        reason:
+          "Preserve uncompressed representation hashes and SSE while reducing large JSON transfer bytes.",
+      },
+    },
+    {
+      item: { name: "studio-client-core", ecosystem: "cargo" },
+      label: "keyed draft synchronization witness",
+      commands: [
+        [
+          "cargo",
+          [
+            "nextest",
+            "run",
+            "--locked",
+            "--no-tests",
+            "fail",
+            "--message-format",
+            "libtest-json-plus",
+            "-p",
+            "studio-client-core",
+            "--lib",
+            "-E",
+            "test(draft_store::tests::synchronization_decodes_only_the_keyed_draft_per_incoming_document)",
+          ],
+        ],
+      ],
+      options: {
+        selector: "draft synchronization keyed decode count",
+        reason:
+          "Check one stored draft decode per incoming document, workspace isolation, and a single final response view scan.",
+      },
+    },
+    {
+      item: { name: "studio-runtime-providers", ecosystem: "cargo" },
+      label: "provider request body ownership witnesses",
+      commands: [
+        [
+          "cargo",
+          [
+            "nextest",
+            "run",
+            "--locked",
+            "--no-tests",
+            "fail",
+            "--message-format",
+            "libtest-json-plus",
+            "-p",
+            "studio-runtime-providers",
+            "--lib",
+            "-E",
+            "test(/^connection::request_body_tests::/)",
+          ],
+        ],
+      ],
+      options: {
+        selector: "connection request body allocation transfer and retention",
+        reason:
+          "Check that emitted requests retain only metadata, queued bodies move on first emission, and uncertainty, late replies and unsent cancellation preserve correlation.",
+      },
     },
     {
       item: { name: "studio-runtime-services", ecosystem: "cargo" },
@@ -895,6 +1092,67 @@ function fastTierCommands(root) {
       },
     },
     {
+      item: { name: "studio-runtime-services", ecosystem: "cargo" },
+      label: "agent decode ownership witness",
+      commands: [
+        [
+          "cargo",
+          [
+            "nextest",
+            "run",
+            "--locked",
+            "--no-tests",
+            "fail",
+            "--message-format",
+            "libtest-json-plus",
+            "-p",
+            "studio-runtime-services",
+            "--lib",
+            "-E",
+            nextestAnyOf([
+              "test(account_worker::tests::journal_publication::changed_agents_decode_once_through_final_publication)",
+            ]),
+          ],
+        ],
+      ],
+      options: {
+        selector: "journal final publication decode ownership",
+        reason:
+          "Check one decode and volatile merge per changed agent, no intermediate text round trip, no unrelated reads, and no replay work.",
+      },
+    },
+    {
+      item: { name: "studio-runtime-services", ecosystem: "cargo" },
+      label: "transaction diagnostics ownership witnesses",
+      commands: [
+        [
+          "cargo",
+          [
+            "nextest",
+            "run",
+            "--locked",
+            "--no-tests",
+            "fail",
+            "--message-format",
+            "libtest-json-plus",
+            "-p",
+            "studio-runtime-services",
+            "--lib",
+            "-E",
+            nextestAnyOf([
+              "test(writer_transaction_acquires_one_diagnostics_lock)",
+              "test(writer_transaction_views_preserve_)",
+            ]),
+          ],
+        ],
+      ],
+      options: {
+        selector: "writer transaction diagnostics lock count and output parity",
+        reason:
+          "Check one collector lock per writer transaction while preserving all waits, caller sites, thresholds and sample windows.",
+      },
+    },
+    {
       item: { name: "studio-runtime-store", ecosystem: "cargo" },
       label: "Rust state migration and SQL callback witnesses",
       commands: [
@@ -916,9 +1174,16 @@ function fastTierCommands(root) {
             "-E",
             nextestAnyOf([
               "test(agent_columns::tests::migration_2026_10_20_columns_round_trips_an_old_state_once)",
+              "test(schema_compat::migration_2026_10_22_drops_python_cost_projection_once)",
+              "test(schema_compat::cost_projection_migration_rolls_back_if_rust_backfill_fails)",
               "test(agent_columns::tests::migration_2026_10_21_removes_capacity_column_and_replaces_wake_index_once)",
               "test(/^sql_callback_guard::/)",
+              "test(fresh_state::rust_fresh_state_catalog_is_deterministic_and_survives_reopen)",
+              "test(cross_runtime::fixture_records_are_readable_and_writable_in_rust)",
               "test(sql_guard_tests::)",
+              "test(account_limits_ignore_python_single_account_fallback)",
+              "test(python_payload_marker_layout_is_refused_without_upgrade)",
+              "test(repositories::workspace_views::bulk_read_tests::)",
             ]),
           ],
         ],
@@ -949,9 +1214,14 @@ function fastTierCommands(root) {
             "--lib",
             "-E",
             nextestAnyOf([
+              "test(peer_updates::tests::desktop_installer_contract_matches_rust_owner)",
               "test(server_exec::tests::snapshots_)",
               "test(server_exec::tests::snapshot_write_failure_)",
               "test(server_exec::tests::existing_start_fence_)",
+              "test(server_exec::tests::synchronous_start_)",
+              "test(server_exec::tests::output_tail_append_does_not_move_retained_bytes)",
+              "test(payload_blobs::tests::payload_preview_projects_only_retained_string_bytes)",
+              "test(notification_dispatch::stream::tests::analytics_delta_size_)",
             ]),
           ],
         ],
@@ -983,17 +1253,36 @@ function fastTierCommands(root) {
             "--lib",
             "-E",
             nextestAnyOf([
+              "test(callback_blob_read_allows_an_unrelated_writer)",
+              "test(callback_blob_actor_epoch_change_refuses_settlement)",
+              "test(callback_blob_changed_result_refuses_settlement)",
+              "test(callback_blob_late_result_refuses_stale_recovery)",
+              "test(callback_blob_abandoned_response_does_not_replay)",
+              "test(callback_blob_recovery_write_precedes_referencing_commit)",
+              "test(callback_blob_missing_file_does_not_settle_recovery)",
+              "test(callback_blob_corrupt_file_does_not_settle_recovery)",
+              "test(callback_blob_symlink_does_not_settle_recovery)",
+              "test(callback_panel_uses_one_file_snapshot_per_callback)",
+              "test(callback_request_expires_a_terminal_inline_result)",
+              "test(callback_request_invalid_action_preserves_tool_refusal)",
               "test(account_worker::tests::callback_handoff::)",
+              "test(account_worker::tests::auth_hold::held_start_wakes_nothing_until_an_account_change)",
               "test(account_worker::tests::callback_head_of_line)",
+              "test(account_worker::tests::native_requests::)",
               "test(stale_stamp_of_an_undelivered_steer_batch_does_not_block_the_next_turn)",
               "test(stamp_tests::)",
+              "test(start_submission_replaces_an_earlier_unsent_attempt)",
+              "test(transcript_reasoning_decodes_each_row_before_fetching_the_next)",
               "test(sync_policy::tests::monitor_)",
               "test(work_write::actor_tests::submission_manifest_boundaries_use_shared_limits)",
               "test(work_write::actor_tests::nonempty_file_submission_rechecks_cwd_and_replays_without_filesystem_work)",
               "test(ancestry_reads_only_the_checked_parent_chain)",
               "test(send_to_descendant_is_followup_input_while_parent_and_broadcast_are_chat)",
+              "test(provider_session_task::tests::payload_readiness_and_retained_delivery_do_not_clone_before_eligibility)",
+              "test(account_worker::retained::runtime::tests::payload_delivery_)",
               "test(account_worker::tests::retained::automatic_recovery_)",
               "test(account_worker::tests::retained::startup_first_pass_reconciles_exact_history_without_replaying_unknown_input)",
+              "test(account_worker::tests::retained::retained_actor_request_answer_after_same_generation_restart_is_recorded_once)",
             ]),
           ],
         ],
@@ -1014,52 +1303,67 @@ function fastTierCommands(root) {
             "-E",
             nextestAnyOf([
               "test(/^provider_session_task::active_barrier_holds_new_requests_but_not_callback_answers_or_interrupts$/)",
+              "test(provider_callbacks_unjournaled_card_is_refused_without_writes)",
               "test(/^provider_session_task::expiry_batch_preserves_all_queued_request_outcomes_in_order$/)",
+              "test(/^turn_lifecycle_corpus::fast_witnesses_cover_transitions_states_and_review_findings$/)",
+              "test(wave7_p10_lifecycle::committed_delete_)",
+              "test(wave7_p10_lifecycle::lost_wake_preserves_committed_stop_for_restart)",
+              "test(/^wave9_safety_buffering_executor::comparison_normalizes_only_generated_identity_and_role_source_roots$/)",
             ]),
           ],
         ],
       ],
       options: {
         selector:
-          "account_worker::tests::callback_handoff, callback_head_of_line, stale batch stamp recovery, automatic turn recovery, the session callback lane, monitor publication work and work_write submission boundaries",
+          "account_worker::tests::callback_handoff, callback_head_of_line, native_requests, stale batch stamp recovery, automatic turn recovery, the session callback lane, monitor publication work and work_write submission boundaries",
         reason:
-          "Check that a provider request is durably accepted with its journal batch, that its record owns the answer through every crash point without a repeated answer, and that an unanswered request never stops provider events or new work, and that a stamp left by an undelivered steer batch is replaced instead of holding the agent. Monitor output must publish exactly one monitor projection while preserving window membership and rollback. Task submissions keep limits, workspace ownership and replay at the shared manifest bound. Native-history recovery continues authorized workers once, preserves explicit Stop, and never replays uncertain input.",
+          "Check that a provider request is durably accepted with its journal batch, that its record owns the answer through every crash point without a repeated answer, and that an unanswered request never stops provider events or new work, that a native approval or question of a lead waits as a card and its user answer reaches the provider once, also after a worker reattach, and that a stamp left by an undelivered steer batch is replaced instead of holding the agent. Monitor output must publish exactly one monitor projection while preserving window membership and rollback. Task submissions keep limits, workspace ownership and replay at the shared manifest bound. Native-history recovery continues authorized workers once, preserves explicit Stop, and never replays uncertain input.",
       },
     },
-    {
-      item: { name: "provider process exit", ecosystem: "cargo" },
-      label: "independent provider reaping witnesses",
-      commands: [
-        [
-          "cargo",
-          [
-            "nextest",
-            "run",
-            "--locked",
-            "--no-tests",
-            "fail",
-            "--message-format",
-            "libtest-json-plus",
-            "-p",
-            "studio-runtime-process",
-            "-p",
-            "studio-runtime-server",
-            "--test",
-            "integration",
-            "-E",
-            nextestAnyOf([
-              "test(/^provider_stdio::killed_provider_is_reaped_with_full_journal_and_unobserved_write$/)",
-              "test(/^wave7_p01_registry::direct_child_sigkill_settles_unknown_without_resend$/)",
-            ]),
-          ],
-        ],
-      ],
-      options: {
-        selector: "full stdio lanes and direct provider SIGKILL recovery",
-        reason:
-          "Check that child reaping and account session loss do not wait for blocked I/O, and that the registry starts a new generation without resending an uncertain turn.",
-      },
-    },
+    // The reaping witnesses are Linux only (#[cfg(target_os = "linux")]), so
+    // the step runs only on Linux. The publication gate also runs its reattach
+    // witnesses on macOS.
+    ...(process.platform === "linux"
+      ? [
+          {
+            item: { name: "provider process exit", ecosystem: "cargo" },
+            label: "independent provider reaping witnesses",
+            commands: [
+              [
+                "cargo",
+                [
+                  "nextest",
+                  "run",
+                  "--locked",
+                  "--no-tests",
+                  "fail",
+                  "--message-format",
+                  "libtest-json-plus",
+                  "-p",
+                  "studio-runtime-process",
+                  "-p",
+                  "studio-runtime-server",
+                  "--test",
+                  "integration",
+                  "-E",
+                  nextestAnyOf([
+                    "test(/^provider_stdio::killed_provider_is_reaped_with_full_journal_and_unobserved_write$/)",
+                    "test(/^wave7_p01_factory::running_child_started_with_a_previous_command_reattaches$/)",
+                    "test(/^wave7_p01_registry::running_app_server_started_with_the_frozen_command_reattaches$/)",
+                    "test(/^wave7_p01_registry::direct_child_sigkill_settles_unknown_without_resend$/)",
+                    "test(/^state_check::state_check_reads_fixture_rows_without_changing_or_disclosing_them$/)",
+                  ]),
+                ],
+              ],
+            ],
+            options: {
+              selector: "full stdio lanes and direct provider SIGKILL recovery",
+              reason:
+                "Check that child reaping and account session loss do not wait for blocked I/O, that the registry starts a new generation without resending an uncertain turn, and that a changed launch command reattaches a running child with the earlier command it lists.",
+            },
+          },
+        ]
+      : []),
     {
       item: { name: "project preparation", ecosystem: "cargo" },
       label: "project preparation and agent limit witnesses",
@@ -1081,10 +1385,7 @@ function fastTierCommands(root) {
             "--test",
             "integration",
             "-E",
-            nextestAnyOf([
-              "test(/^project_preparation::/)",
-              "test(/^agent_limits::/)",
-            ]),
+            "test(/^project_preparation::/) | test(/^agent_limits::/) | test(committed_delete_route_succeeds_with_unrelated_failing_cleanup) | test(real_rxdb_single_writer_draft_ack_echo_ordering)",
           ],
         ],
       ],
@@ -1093,6 +1394,85 @@ function fastTierCommands(root) {
           "project preparation conflicts, worker continuation authority, and budget projections",
         reason:
           "Check project writes, user-only worker resets, and bounded budget and cleanup views.",
+      },
+    },
+    {
+      item: { name: "studio-runtime-store", ecosystem: "cargo" },
+      label: "entity commit invalidation witnesses",
+      commands: [
+        [
+          "cargo",
+          [
+            "nextest",
+            "run",
+            "--locked",
+            "--no-tests",
+            "fail",
+            "--message-format",
+            "libtest-json-plus",
+            "-p",
+            "studio-runtime-http",
+            "-p",
+            "studio-runtime-store",
+            "--lib",
+            "-E",
+            nextestAnyOf([
+              "test(entity_only_commits_preserve_volatile_resources_and_refresh_entity_refs)",
+              "test(resource_change_classifier_tests::)",
+              "test(entity_resource_hints_cover_tombstones_deletes_and_unknown_commits)",
+              "test(tracked_observer_tables_must_keep_rowid_storage)",
+            ]),
+          ],
+        ],
+      ],
+      options: {
+        selector:
+          "typed entity-only commit hints and conservative broad refresh",
+        reason:
+          "Entity-only writes must wake entity-backed refs without advancing volatile resource versions; unknown and mixed writes retain broad invalidation.",
+      },
+    },
+    {
+      item: { name: "studio-runtime-http", ecosystem: "cargo" },
+      label: "resource content invalidation witnesses",
+      commands: [
+        [
+          "cargo",
+          [
+            "nextest",
+            "run",
+            "--locked",
+            "--no-tests",
+            "fail",
+            "--message-format",
+            "libtest-json-plus",
+            "-p",
+            "studio-runtime-http",
+            "-p",
+            "studio-runtime-services",
+            "--lib",
+            "-E",
+            nextestAnyOf([
+              "test(unrelated_commits_do_not_reread_five_unchanged_resources)",
+              "test(cost_content_ignores_account_listing_order)",
+              "test(subscribed_content_is_computed_once_per_coalesced_revision)",
+              "test(equal_racing_content_keeps_version_and_checks_the_pending_change)",
+              "test(limits_content_reads_only_cached_account_snapshots)",
+              "test(unavailable_and_racing_content_keep_the_safe_refresh)",
+              "test(provider_versions::tests::preference_read_error_fails_closed_without_an_upstream_request)",
+              "test(token_publications_do_not_repeat_or_invalidate_content_projections)",
+              "test(drained_notification_effects_use_committed_state_without_resetting_entities)",
+              "test(analytics_receipts_preserve_entity_delivery_but_recovery_still_resets)",
+              "test(publication_bound_keeps_state_invalidation_and_token_rate_usage)",
+            ]),
+          ],
+        ],
+      ],
+      options: {
+        selector:
+          "subscribed resource content and shared coalesced projections",
+        reason:
+          "Unrelated commits must not trigger resource re-reads or duplicate server projections; unknown and racing reads retain safe refreshes.",
       },
     },
     {
@@ -1125,6 +1505,62 @@ function fastTierCommands(root) {
       },
     },
     {
+      item: { name: "studio-runtime-http", ecosystem: "cargo" },
+      label: "branch turn metadata lookup witnesses",
+      commands: [
+        [
+          "cargo",
+          [
+            "nextest",
+            "run",
+            "--locked",
+            "--no-tests",
+            "fail",
+            "--message-format",
+            "libtest-json-plus",
+            "-p",
+            "studio-runtime-http",
+            "--lib",
+            "-E",
+            "test(routes::branches::tests::branch_)",
+          ],
+        ],
+      ],
+      options: {
+        selector: "branch predecessor metadata and bounded history reads",
+        reason:
+          "Avoid decoding turn bodies and reading past the predecessor while preserving branch cutoffs and unknown fork outcomes.",
+      },
+    },
+    {
+      item: { name: "studio-runtime-http", ecosystem: "cargo" },
+      label: "task page HTTP projection witness",
+      commands: [
+        [
+          "cargo",
+          [
+            "nextest",
+            "run",
+            "--locked",
+            "--no-tests",
+            "fail",
+            "--message-format",
+            "libtest-json-plus",
+            "-p",
+            "studio-runtime-http",
+            "--lib",
+            "-E",
+            "test(task_page_http_keeps_summary_and_ignores_invalid_lookahead)",
+          ],
+        ],
+      ],
+      options: {
+        selector: "task page summary and lookahead validation",
+        reason:
+          "Keep task summaries and pagination unchanged while selecting records once per page.",
+      },
+    },
+    {
       item: { name: "studio-runtime-services", ecosystem: "cargo" },
       label:
         "monitor ownership, history lock boundaries, and recovery witnesses",
@@ -1151,10 +1587,16 @@ function fastTierCommands(root) {
             "-E",
             nextestAnyOf([
               "test(exit_logging_tests::continuation_)",
+              "test(child_result_release_consumes_)",
               "test(/^history_runtime::tests::slow_filesystem_metadata_does_not_block_a_store_observer$/)",
               "test(/^analytics_history_checkpoint::terminal_error_repair_is_idempotent_for_exact_and_ambiguous_notices$/)",
+              "test(/^analytics_history_schedule::tests::/)",
               "test(/^monitor_start_preparation::/)",
+              "test(monitor_port::tests::startup_resources_refuse_replacement)",
+              "test(model_catalog::tests::)",
               "test(/^monitor_wake_guarantees::/)",
+              "test(/^monitor_runtime_wiring::tests::monitor_scan_checks_each_unchanged_monitor_once_per_cycle$/)",
+              "test(/^monitor_runtime_wiring::tests::monitor_scan_restarts_after_persistent_probe_failure$/)",
               "(not binary(integration) & (test(monitor_completion_) | test(reattached_exit_)))",
             ]),
           ],
@@ -1193,12 +1635,20 @@ function fastTierCommands(root) {
               "test(unrelated_reservation_started_after_path_capture_does_not_refuse_ready_token)",
               "test(room_membership_uses_symlink_paths_resolved_by_the_creation_owner)",
               "test(agent_progress::tests::)",
+              "test(token_rate::tests::)",
               "test(completed_child_turn_reports_unsubmitted_assignment_once_with_final_text)",
               "test(account_worker::tests::continuation_start::capacity_retry_restart_unknown_reports_once_without_resending)",
               "test(agent_progress_schema_matches_strict_serde_contract)",
+              "test(contracts::tests::generated_contracts_do_not_recreate_the_removed_backend)",
+              "test(contracts::tests::markdown_output_matches_rust_owned_schema)",
               "test(disk_space::tests::)",
               "test(archive_finished_)",
+              "test(archive_finished_reason_survives_dispatch_and_receipt_replay)",
+              "test(committed_archive_)",
               "test(lead_archive_and_restore_run_through_the_lifecycle_owner)",
+              "test(workspace_cleanup_runtime::tests::missing_archive_worktree_settles_without_external_effects)",
+              "test(workspace_cleanup_runtime::tests::missing_worktree_subdirectory_does_not_settle_a_live_root)",
+              "test(workspace_cleanup_runtime::tests::cleanup_failure_does_not_block_unrelated_queued_intents)",
               "test(status_snapshot_tracks_capacity_finished_pages_and_revision_replay)",
               "test(workspace_pending_reuses_reserved_attempt)",
               "test(long_answers_use_canonical_bounded_agent_sync_projection)",
@@ -1258,8 +1708,368 @@ function fastTierCommands(root) {
     },
     {
       item: web,
+      label: "Single token record footer and team witnesses",
+      commands: [
+        [
+          "pnpm",
+          [
+            "--filter",
+            "codex-agents-web",
+            "exec",
+            "vitest",
+            "run",
+            "--config",
+            "vitest.unit.config.ts",
+            "src/usage/tokenRate.records.test.ts",
+            "src/usage/tokenRate.test.mjs",
+          ],
+        ],
+      ],
+      options: {
+        selector: "one record, root moves, removals, strict bounds and replay",
+        reason:
+          "Token snapshots carry each agent once and derive team membership without entity projections.",
+      },
+    },
+    {
+      item: web,
       label: "web unit safety witnesses",
       options: { script: "test:unit:fast" },
+    },
+    {
+      item: { name: "desktop disk status", ecosystem: "cargo" },
+      label: "Desktop content identity and native attach witnesses",
+      commands: [
+        [
+          "cargo",
+          [
+            "nextest",
+            "run",
+            "--locked",
+            "--no-tests",
+            "fail",
+            "--message-format",
+            "libtest-json-plus",
+            "-p",
+            "studio-runtime-http",
+            "-p",
+            "studio-client-core",
+            "--lib",
+            "-E",
+            nextestAnyOf([
+              "test(desktop_content_ignores_healthy_disk_writes_but_delivers_visible_changes)",
+              "test(desktop_http_)",
+              "test(existing_backend_must_supply_a_valid_build_identity)",
+            ]),
+          ],
+        ],
+      ],
+      options: {
+        selector: "desktop disk projection, content filtering and Rust attach",
+        reason:
+          "Healthy disk writes must not cause renderer reads; visible changes and native identity checks remain live.",
+      },
+    },
+    {
+      item: web,
+      label: "Desktop notice reader witnesses",
+      commands: [
+        [
+          "pnpm",
+          [
+            "--filter",
+            "codex-agents-web",
+            "exec",
+            "vitest",
+            "run",
+            "--config",
+            "vitest.unit.config.ts",
+            "src/components/SupervisorRecoveryNotice.test.ts",
+            "src/components/desktopNotices.test.ts",
+            "src/components/watchResourceReads.test.ts",
+          ],
+        ],
+      ],
+      options: {
+        selector: "mounted desktop reader and retained disk notices",
+        reason:
+          "Read a stable baseline once and retain the full-disk notice across failed reads.",
+      },
+    },
+    {
+      item: { name: "studio-runtime-http", ecosystem: "cargo" },
+      label: "Primary state stream and conversation revision witnesses",
+      commands: [
+        [
+          "cargo",
+          [
+            "nextest",
+            "run",
+            "--locked",
+            "--no-tests",
+            "fail",
+            "--message-format",
+            "libtest-json-plus",
+            "-p",
+            "studio-runtime-http",
+            "--lib",
+            "-E",
+            "test(routes::sync_stream::tests::state_stream_) | test(unchanged_open_chat_ignores_unrelated_agent_commits)",
+          ],
+        ],
+      ],
+      options: {
+        selector:
+          "typed complete stream intervals, bounded flush and per-chat content revision",
+        reason:
+          "Deliver state without extra pulls while retaining gap recovery and unchanged-chat suppression.",
+      },
+    },
+    {
+      item: { name: "studio-runtime-http", ecosystem: "cargo" },
+      label: "Draft stream content witness",
+      commands: [
+        [
+          "cargo",
+          [
+            "nextest",
+            "run",
+            "--locked",
+            "--no-tests",
+            "fail",
+            "--message-format",
+            "libtest-json-plus",
+            "-p",
+            "studio-runtime-http",
+            "--lib",
+            "-E",
+            "test(unchanged_drafts_ignore_unrelated_commits_and_publications)",
+          ],
+        ],
+      ],
+      options: {
+        selector: "unchanged draft revisions and retained tombstones",
+        reason:
+          "Unrelated commits must not request draft pulls; draft changes still notify.",
+      },
+    },
+    {
+      item: web,
+      label: "Draft stream acceptance and durable recovery witnesses",
+      commands: [
+        [
+          "pnpm",
+          [
+            "--filter",
+            "codex-agents-web",
+            "exec",
+            "vitest",
+            "run",
+            "--config",
+            "vitest.unit.config.ts",
+            "src/sync/client.draftStream.test.ts",
+          ],
+        ],
+      ],
+      options: {
+        selector:
+          "draft stream acceptance, tombstones, gaps, reconnects and failed persistence",
+        reason:
+          "Normal draft changes use RxDB's master stream; recovery reads its durable checkpoint.",
+      },
+    },
+    {
+      item: web,
+      label: "Draft stream transport ordering witness",
+      commands: [
+        [
+          "pnpm",
+          [
+            "--filter",
+            "codex-agents-web",
+            "exec",
+            "vitest",
+            "run",
+            "--config",
+            "vitest.unit.config.ts",
+            "src/sync/resourceEvents.test.ts",
+            "-t",
+            "consecutive draft batches",
+          ],
+        ],
+      ],
+      options: {
+        selector:
+          "lossless draft intervals and equal-version reconnect recovery",
+        reason:
+          "Coalescing hints must not discard draft data or mask a recovery baseline.",
+      },
+    },
+    {
+      item: web,
+      label: "State stream persistence and recovery witnesses",
+      commands: [
+        [
+          "pnpm",
+          [
+            "--filter",
+            "codex-agents-web",
+            "exec",
+            "vitest",
+            "run",
+            "--config",
+            "vitest.unit.config.ts",
+            "src/sync/client.dispatchGate.test.ts",
+            "src/sync/client.entityReset.test.ts",
+            "src/sync/resourceEntityDelivery.test.ts",
+            "src/sync/resourceEvents.test.ts",
+            "src/servers/eventSource.test.ts",
+          ],
+        ],
+      ],
+      options: {
+        selector:
+          "persist stream data before dispatch and retain pull recovery",
+        reason:
+          "A complete state batch advances the durable projection with no new pull; storage failures, gaps, reconnects and epochs still reconcile.",
+      },
+    },
+    {
+      item: web,
+      label: "UI preference projection ownership witnesses",
+      commands: [
+        [
+          "pnpm",
+          [
+            "--filter",
+            "codex-agents-web",
+            "exec",
+            "vitest",
+            "run",
+            "--config",
+            "vitest.unit.config.ts",
+            "src/servers/useUiPreferenceSync.test.ts",
+            "src/sync/uiPreferenceBridge.test.ts",
+          ],
+        ],
+      ],
+      options: {
+        selector: "UI preferences reuse each mounted server projection",
+        reason:
+          "Prevent duplicate entity pulls and preserve server storage and API ownership.",
+      },
+    },
+    {
+      item: web,
+      label: "Native draft notification witnesses",
+      commands: [
+        [
+          "pnpm",
+          [
+            "--filter",
+            "codex-agents-web",
+            "exec",
+            "vitest",
+            "run",
+            "--config",
+            "vitest.unit.config.ts",
+            "src/native/useNativeDrafts.test.ts",
+          ],
+        ],
+      ],
+      options: {
+        selector: "Native drafts idle and refresh work counts",
+        reason:
+          "Prevent idle polling and lost draft notifications during a refresh.",
+      },
+    },
+    {
+      item: web,
+      label: "Delete readback generation witnesses",
+      commands: [
+        [
+          "pnpm",
+          [
+            "--filter",
+            "codex-agents-web",
+            "exec",
+            "vitest",
+            "run",
+            "--config",
+            "vitest.unit.config.ts",
+            "src/hooks/snapshotDeleteReadback.test.ts",
+            "src/chatDeleteScope.test.ts",
+          ],
+        ],
+      ],
+      options: {
+        selector:
+          "Delete readback across superseded session and projection requests",
+        reason:
+          "An authoritative delete readback must settle even when another refresh owns the current render generation.",
+      },
+    },
+    {
+      item: { name: "codex-agents-desktop", ecosystem: "pnpm" },
+      label: "Rust-only desktop startup witnesses",
+      commands: [
+        [
+          "pnpm",
+          [
+            "--filter",
+            "codex-agents-desktop",
+            "exec",
+            "vitest",
+            "run",
+            "--config",
+            "vitest.config.mjs",
+            "backend.test.mjs",
+            "backend-selection.test.mjs",
+          ],
+        ],
+      ],
+      options: {
+        selector: "Rust runtime startup and identity",
+        reason:
+          "Check startup without Python, binary build identity, existing-owner attachment, and uncertain connection refusals.",
+      },
+    },
+    {
+      item: packageTarget(packages, "studio-claude-bridge"),
+      label: "Claude watchdog deadline witnesses",
+      commands: [
+        [
+          "pnpm",
+          [
+            "--filter",
+            "studio-claude-bridge",
+            "exec",
+            "vitest",
+            "run",
+            "--config",
+            "vitest.config.mjs",
+            "stall-watch.test.mjs",
+          ],
+        ],
+      ],
+      options: {
+        selector: "idle watchdog and nearest tool deadline",
+        reason:
+          "Check zero idle timers, exact deadline recovery, and rearming on progress, results and Studio waits.",
+      },
+    },
+    {
+      item: tooling,
+      label: "retired server action witness",
+      commands: [
+        [
+          "node",
+          [
+            "--test",
+            "workspaces/tooling/apps/repository-checks/tests/retired-server-action.test.mjs",
+          ],
+        ],
+      ],
     },
     { item: tooling, label: "tooling tests" },
   ];
@@ -1267,12 +2077,10 @@ function fastTierCommands(root) {
 
 function comprehensiveTierCommands(root) {
   const packages = discover(root);
-  const server = serverPackage();
   const web = packageTarget(packages, "codex-agents-web");
   const bridge = packageTarget(packages, "studio-claude-bridge");
   const tooling = packageTarget(packages, "codex-studio-tooling");
   return [
-    operationsModulePreparation(),
     webWasmPreparation(root),
     {
       item: { name: "Rust HTTP fixture preparation", ecosystem: "cargo" },
@@ -1285,8 +2093,7 @@ function comprehensiveTierCommands(root) {
       ],
       options: { allowZeroTests: true, buildOnly: true },
     },
-    { item: server, label: "server" },
-    { item: bridge, label: "server bridge" },
+    { item: bridge, label: "provider bridge" },
     {
       // The native client crate embeds web/dist at compile time.
       item: { name: "renderer build", ecosystem: "pnpm" },
@@ -1368,13 +2175,7 @@ function fastTierRestNonRustCommands(root) {
 }
 
 function heavyTierCommands(root) {
-  const server = serverPackage();
   return [
-    {
-      label: "heavy server suites",
-      item: server,
-      options: serverCategoryOptions("heavy"),
-    },
     {
       label: "full browser project",
       item: packageTarget(discover(root), "codex-agents-web"),
@@ -1412,32 +2213,32 @@ export function recipePlan(root, name) {
         : name === "test-comprehensive"
           ? "repository comprehensive regression tier"
           : name === "test-fast-rest"
-            ? "comprehensive remainder excluding default server suites and browser smoke"
-            : "comprehensive non-Rust remainder excluding default server suites and browser smoke"
-      : "server heavy suites followed by full browser project",
+            ? "comprehensive remainder excluding browser smoke"
+            : "comprehensive non-Rust remainder excluding browser smoke"
+      : "full browser project",
     workingDirectory: root,
     invocationDirectory: root,
     command: reproduction(root, commandLists.flat()),
     selector: fast
       ? name === "test-fast"
-        ? "fixture-backed server retry and recovery witnesses, Rust/Python state schema parity, web API safety witnesses, tooling and shared contract guards"
+        ? "Rust retry and recovery witnesses, state schema contracts, web API safety witnesses, tooling and shared contract guards"
         : name === "test-comprehensive"
-          ? "the previous broad default server, server bridge, Rust workspace, web type and unit checks, tooling tests, browser smoke subset"
+          ? "provider bridge, Rust workspace, web type and unit checks, tooling tests, browser smoke subset"
           : name === "test-fast-rest"
-            ? "server bridge, Rust workspace nextest, web type checks and unit tests, tooling tests"
-            : "server bridge, web type checks and unit tests, tooling tests"
-      : "server --only heavy, then codex-agents-web test:browser",
+            ? "provider bridge, Rust workspace nextest, web type checks and unit tests, tooling tests"
+            : "provider bridge, web type checks and unit tests, tooling tests"
+      : "codex-agents-web test:browser",
     requiredSetup:
       name === "test-fast"
-        ? "Frozen pnpm dependencies; managed Python runtime and development dependencies, Rust toolchain, pinned wasm-bindgen CLI and cargo-nextest; web WASM is generated by the gate; no browser or model provider"
-        : "Frozen pnpm dependencies, managed Python runtime and development dependencies, Rust toolchain and cargo-nextest, browser binaries",
+        ? "Frozen pnpm dependencies; Rust toolchain, pinned wasm-bindgen CLI and cargo-nextest; web WASM is generated by the gate; no browser or model provider"
+        : "Frozen pnpm dependencies, Rust toolchain and cargo-nextest, browser binaries",
     reason: fast
       ? name === "test-fast"
         ? "Run selected deterministic safety witnesses and read-only contract guards in one sequential command."
         : name === "test-comprehensive"
           ? "Run the previous broad local regression recipe in one sequential command."
-          : "Run the non-server checks from the comprehensive tier in one sequential command."
-      : "Run the complete heavy tier sequentially; load-class server suites are excluded.",
+          : "Run the remaining checks from the comprehensive tier in one sequential command."
+      : "Run the full browser project as an announced manual check.",
     notStarted: "Electron, provider-dependent opt-in suites, load-class suites",
     costCategory: fast
       ? name === "test-fast"
@@ -1487,50 +2288,6 @@ export async function executeRecipe(root, name, steps) {
   };
 }
 
-export function serverRunDiagnostics(output) {
-  const diagnosticLines = output
-    .split("\n")
-    .filter((line) => line.startsWith("Server runner diagnostics: "));
-  const latest = diagnosticLines
-    .at(-1)
-    ?.slice("Server runner diagnostics: ".length);
-  if (latest) {
-    try {
-      const parsed = JSON.parse(latest);
-      const durations = Object.entries(parsed.suiteDurations ?? {})
-        .map(([suite, seconds]) => ({ suite, seconds: Number(seconds) }))
-        .filter(({ seconds }) => Number.isFinite(seconds))
-        .sort((left, right) => right.seconds - left.seconds)
-        .slice(0, 10);
-      return {
-        planLine: `Selected worker plan: ${JSON.stringify(parsed.workerPlan)}`,
-        durations,
-      };
-    } catch {
-      // Fall through to the human-readable records for older runner output.
-    }
-  }
-  const planLine = output
-    .split("\n")
-    .find((line) =>
-      /^(?:Selected (?:automatic )?worker plan|Focused worker plan): /.test(
-        line,
-      ),
-    );
-  const durations = [...output.matchAll(/^Finished (.+): .*?, ([\d.]+)s$/gm)]
-    .map((match) => ({ suite: match[1], seconds: Number(match[2]) }))
-    .filter(({ seconds }) => Number.isFinite(seconds))
-    .sort((left, right) => right.seconds - left.seconds)
-    .slice(0, 10);
-  return { planLine, durations };
-}
-
-async function executeServerCategory(root, category, suite = "") {
-  const options = serverCategoryOptions(category, suite);
-  const result = await execute(root, serverPackage(), "", false, options);
-  return result.exitCode;
-}
-
 export function parseCounts(item, output) {
   // ANSI CSI sequences contain control characters by design.
   // oxlint-disable-next-line no-control-regex
@@ -1555,34 +2312,6 @@ export function parseCounts(item, output) {
       },
       { passed: 0, failed: 0, skipped: 0, executed: 0, summaryFound: false },
     );
-  }
-  if (item.ecosystem === "server") {
-    const suite = normalizedOutput.match(
-      /Server suites: (\d+) passed, (\d+) failed, (\d+) skipped \(opt-in\), (\d+) skipped \(environment\)/,
-    );
-    const testOutcomes = normalizedOutput.match(/Test outcomes: (\{[^\n]*\})/);
-    const outcomes = testOutcomes ? JSON.parse(testOutcomes[1]) : {};
-    const passed = (outcomes.passed ?? 0) + (suite ? +suite[1] : 0);
-    const structuredFailedSuites =
-      normalizedOutput.match(/^FAIL .*failing IDs:/gm)?.length ?? 0;
-    const unstructuredFailedSuites = Math.max(
-      0,
-      (suite ? +suite[2] : 0) - structuredFailedSuites,
-    );
-    const failed =
-      (outcomes.failed ?? 0) +
-      (outcomes.error ?? 0) +
-      (outcomes.unexpected_success ?? 0) +
-      unstructuredFailedSuites;
-    const skipped =
-      (outcomes.skipped ?? 0) + (suite ? +suite[3] + +suite[4] : 0);
-    return {
-      passed,
-      failed,
-      skipped,
-      executed: passed + failed,
-      summaryFound: Boolean(suite),
-    };
   }
   const testLines = normalizedOutput
     .split("\n")
@@ -1801,15 +2530,6 @@ export function nextestSelectionError(exitCode) {
     : null;
 }
 
-function preparedPython(root) {
-  return runSync(
-    "python3",
-    [path.join(root, "workspaces/runtime/apps/server/src/codex_python.py")],
-    root,
-    "Prepared Python resolution",
-  ).trim();
-}
-
 export async function execute(
   root,
   item,
@@ -1856,10 +2576,7 @@ export async function execute(
                       ? "codex-process-supervisor.exe"
                       : "codex-process-supervisor",
                   ),
-                  // Rust Python-oracle tests must not resolve Node through a
-                  // developer PATH that may traverse protected agent homes.
                   CODEX_NODE: process.execPath,
-                  CODEX_AGENTS_PYTHON: preparedPython(root),
                 }
               : {}),
           }
@@ -1947,38 +2664,20 @@ export async function execute(
     ...(signal ? { signal } : {}),
     ...(errors.length ? { errors } : {}),
   };
-  const serverFailures =
-    item.ecosystem === "server" && exitCode !== 0
-      ? output.split("\n").filter((line) => line.startsWith("FAIL "))
-      : [];
   const playwrightFailureOutput = playwrightFailures.length
     ? `Failing Playwright tests:\n${playwrightFailures.map(({ title, error }) => `- ${title}: ${error}`).join("\n")}\n`
     : "";
   if (asJson) process.stdout.write(`${JSON.stringify(result)}\n`);
   else
     process.stdout.write(
-      `${options.label ?? item.name}${caseName ? ` / ${caseName}` : ""}: ${result.status}${counts.passed === null ? "" : ` — ${counts.passed} passed, ${counts.failed} failed${counts.flaky === null || counts.flaky === undefined ? "" : `, ${counts.flaky} flaky`}, ${counts.skipped} skipped`}${counts.executed === 0 && !options.allowZeroTests ? " — zero tests executed" : ""}; ${durationSeconds}s\nCommand: ${run.command}\nFull log: ${logPath}${playwrightReportPath ? `\nPlaywright JSON report: ${playwrightReportPath}` : ""}\n${item.ecosystem === "server" ? formatServerRunDiagnostics(output) : ""}${serverFailures.length ? `Failing server suites:\n${serverFailures.join("\n")}\n` : ""}${playwrightFailureOutput}`,
+      `${options.label ?? item.name}${caseName ? ` / ${caseName}` : ""}: ${result.status}${counts.passed === null ? "" : ` — ${counts.passed} passed, ${counts.failed} failed${counts.flaky === null || counts.flaky === undefined ? "" : `, ${counts.flaky} flaky`}, ${counts.skipped} skipped`}${counts.executed === 0 && !options.allowZeroTests ? " — zero tests executed" : ""}; ${durationSeconds}s\nCommand: ${run.command}\nFull log: ${logPath}${playwrightReportPath ? `\nPlaywright JSON report: ${playwrightReportPath}` : ""}\n${playwrightFailureOutput}`,
     );
   return result;
 }
 
-function formatServerRunDiagnostics(output) {
-  const { planLine, durations } = serverRunDiagnostics(output);
-  return [
-    planLine ?? "Selected worker plan: unavailable in runner output",
-    "Ten slowest server suites:",
-    ...(durations.length
-      ? durations.map(
-          ({ suite, seconds }) => `  ${seconds.toFixed(2)}s ${suite}`,
-        )
-      : ["  unavailable in runner output"]),
-    "",
-  ].join("\n");
-}
-
 function usage() {
   process.stdout.write(
-    "Usage: facade.mjs packages | test <package> [file-or-case] [--name <pattern>] [-- <cargo args>] [--json] | test-plan <package> [file-or-case] [--name <pattern>] [-- <cargo args>] [--json] | test-fast | test-comprehensive | test-fast-rest | test-fast-rest-non-rust | test-server-shard <index> <count> | test-heavy | test-browser | test-browser-smoke | test-server-category <category> | test-server-load <suite-path> | check <package> [--dry-run] [--json] | contracts-check | boundaries-check | check-affected <base> [--dry-run]\n",
+    "Usage: facade.mjs packages | test <package> [file-or-case] [--name <pattern>] [-- <cargo args>] [--json] | test-plan <package> [file-or-case] [--name <pattern>] [-- <cargo args>] [--json] | test-fast | test-comprehensive | test-fast-rest | test-fast-rest-non-rust | test-heavy | test-browser | test-browser-smoke | check <package> [--dry-run] [--json] | contracts-check | boundaries-check | check-affected <base> [--dry-run]\n",
   );
 }
 
@@ -2602,10 +3301,6 @@ export async function main(argv = process.argv.slice(2)) {
     );
     return result.exitCode;
   }
-  if (action === "test-server-shard") {
-    const options = serverShardOptions(packageName || "", requestedCase || "");
-    return (await execute(root, serverPackage(), "", json, options)).exitCode;
-  }
   if (action === "test-heavy") {
     const result = await executeRecipe(
       root,
@@ -2622,16 +3317,6 @@ export async function main(argv = process.argv.slice(2)) {
     const item = packageTarget(discover(root), "codex-agents-web");
     return (await execute(root, item, "", json, browserSmokeTestOptions()))
       .exitCode;
-  }
-  if (action === "test-server-category")
-    return executeServerCategory(root, packageName || "", requestedCase || "");
-  if (action === "test-server-load") {
-    if (!packageName)
-      fail(
-        "Select one load-class suite with its exact path; zero tests executed",
-      );
-    loadClassConditions();
-    return executeServerCategory(root, "expensive", packageName);
   }
   if (!["test", "test-plan", "check"].includes(action)) {
     usage();
@@ -2653,34 +3338,12 @@ export async function main(argv = process.argv.slice(2)) {
       reportPlan(recipePlan(root, packageName), json);
       return 0;
     }
-    if (packageName === "test-server-shard") {
-      reportPlan(
-        serverShardPlan(root, requestedCase || "", rest[0] || ""),
-        json,
-      );
-      return 0;
-    }
     if (packageName === "test-browser") {
       reportPlan(browserPlan(root), json);
       return 0;
     }
     if (packageName === "test-browser-smoke") {
       reportPlan(browserPlan(root, true), json);
-      return 0;
-    }
-    if (packageName === "test-server-heavy") {
-      reportPlan(serverCategoryPlan(root, "heavy"), json);
-      return 0;
-    }
-    if (packageName === "test-server-opt-in") {
-      reportPlan(serverCategoryPlan(root, requestedCase || "automated"), json);
-      return 0;
-    }
-    if (packageName === "test-server-load") {
-      reportPlan(
-        serverCategoryPlan(root, "expensive", requestedCase || ""),
-        json,
-      );
       return 0;
     }
   }
@@ -2719,7 +3382,6 @@ export async function main(argv = process.argv.slice(2)) {
                 ? {
                     NEXTEST_EXPERIMENTAL_LIBTEST_JSON: "1",
                     CODEX_NODE: process.execPath,
-                    CODEX_AGENTS_PYTHON: preparedPython(root),
                   }
                 : {}),
             }

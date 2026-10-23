@@ -533,6 +533,48 @@ pub(crate) mod tests {
         io::{AsyncReadExt, AsyncWriteExt},
         net::TcpListener,
     };
+    #[tokio::test]
+    async fn native_backend_negotiates_and_decodes_brotli_json() {
+        use std::io::Write;
+        let expected = serde_json::json!({"agents": ["agent content ".repeat(512)]});
+        let mut compressed = Vec::new();
+        {
+            let mut encoder = brotli::CompressorWriter::new(&mut compressed, 4096, 4, 22);
+            encoder
+                .write_all(&serde_json::to_vec(&expected).unwrap())
+                .unwrap();
+        }
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let (headers, _) = read_http(&mut stream).await;
+            assert!(
+                headers
+                    .lines()
+                    .any(|line| line.eq_ignore_ascii_case("accept-encoding: br")),
+                "{headers}"
+            );
+            let header = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Encoding: br\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                compressed.len()
+            );
+            stream.write_all(header.as_bytes()).await.unwrap();
+            stream.write_all(&compressed).await.unwrap();
+        });
+        let response = Backend::new(&origin)
+            .unwrap()
+            .dispatch(Request {
+                id: "brotli".into(),
+                method: "api.request".into(),
+                params: serde_json::json!({"path": "/api/state"}),
+            })
+            .await;
+        server.await.unwrap();
+        assert!(response.error.is_none(), "{:?}", response.error);
+        assert_eq!(response.result.unwrap(), expected);
+    }
+
     #[test]
     fn ui_cannot_choose_an_external_host_or_leave_the_api() {
         assert!(Backend::new("https://example.com").is_err());

@@ -586,8 +586,6 @@ runtime callee beyond the boundary, or no test witness, as applicable.
 | `POST /api/messages`                     | work         | messages         |    3 | `studio_api/work/router.py:337` post_message               | C039, C038, C085, C093, C022, C082, C017                                     | H        | `T/http-boundary-contract.py::BoundaryContractTests.test_message_receipt_replay_conflict_and_single_effect`                              |
 | `GET /api/messages/receipts`             | work         | messages         |    3 | `studio_api/work/router.py:244` message_receipts           | C094                                                                         | H        | `T/sync-http-contract.py::SyncHTTPContract.test_voice_submit_replays_its_stable_message_id_once`                                         |
 | `POST /api/organization`                 | work         | work-items       |    3 | `studio_api/work/router.py:322` organization               | C156                                                                         | I        | `S/studio_api/work/test_router.py:415`                                                                                                   |
-| `GET /api/panel`                         | work         | panels           |    3 | `studio_api/work/router.py:269` panel                      | C067                                                                         | I        | `T/progress-runtime-contract.py::ProgressRuntimeContract.test_invalid_progress_storage_does_not_block_turns_or_grant_invalid_roots`      |
-| `POST /api/panel/layout`                 | work         | panels           |    3 | `studio_api/work/router.py:327` save_panel_layout          | C070                                                                         | I        | `S/studio_api/work/test_router.py:249`                                                                                                   |
 | `GET /api/plan`                          | work         | work-items       |    3 | `studio_api/work/router.py:259` plan                       | C157                                                                         | I        | `S/studio_api/work/test_router.py:605`                                                                                                   |
 | `POST /api/plan`                         | work         | work-items       |    3 | `studio_api/work/router.py:264` save_plan                  | C157                                                                         | I        | `S/studio_api/work/test_router.py:139`                                                                                                   |
 | `GET /api/profiles`                      | work         | panels           |    3 | `studio_api/work/router.py:274` profiles                   | C172                                                                         | I        | `T/worker-defaults-contract.py::WorkerDefaults.test_profile_explicit_values_override_defaults_null_does_not`                             |
@@ -681,10 +679,8 @@ counts each function once per group; shared helpers have one entry here.
 - C064: `codex_native_voice.py:51` `start`
 - C065: `codex_native_voice.py:341` `end`
 - C066: `codex_native_voice.py:422` `speech`
-- C067: `codex_panel.py:24` `get_panel`
 - C068: `codex_peer_teams.py:175` `manage`
 - C069: `codex_process_supervisor.py:1745` `status`
-- C070: `codex_progress_layout.py:157` `record_layout`
 - C071: `codex_project_locations.py:389` `query`
 - C072: `codex_project_secrets.py:43` `list_names`
 - C073: `codex_project_secrets.py:48` `set_secret`

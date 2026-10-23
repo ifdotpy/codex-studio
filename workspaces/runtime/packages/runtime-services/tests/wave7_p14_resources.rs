@@ -1,7 +1,4 @@
 use serde_json::{Value, json};
-use std::io::Write;
-use std::path::Path;
-use std::process::{Command, Stdio};
 use std::sync::Arc;
 use studio_runtime_schema::TOKEN_RATE_MAX_ENTRIES;
 use studio_runtime_services::change_notifications::ChangeNotificationHub;
@@ -9,8 +6,6 @@ use studio_runtime_services::resource_notify::{
     MAX_NOTIFY_RECEIPTS, MAX_PUBLICATION_BYTES, ResourceNotifications, ResourceNotifyError,
 };
 use studio_runtime_services::token_rate::TokenRateHub;
-
-use crate::prepared_python_support as python;
 
 #[path = "support/token_rate_difference.rs"]
 mod token_rate_difference;
@@ -20,15 +15,14 @@ fn request(id: &str, resources: Value) -> Value {
 }
 
 fn rates(index: usize) -> Value {
-    let rate = json!({"turnId": "turn", "active": true, "estimated": false, "rate": index, "outputTokens": index});
-    json!({"rates": {"agent": rate}, "teams": {"lead": {"agent": rate}}})
+    let rate = json!({"agentId":"agent","rootId":"lead","turnId": "turn", "active": true, "estimated": false, "rate": index, "outputTokens": index});
+    json!({"records":[rate]})
 }
 
 fn floating_rates(rate: f64) -> Value {
     let mut value = rates(0);
-    value["rates"]["agent"]["rate"] = json!(rate);
-    value["rates"]["agent"]["outputTokens"] = json!(rate);
-    value["teams"]["lead"]["agent"] = value["rates"]["agent"].clone();
+    value["records"][0]["rate"] = json!(rate);
+    value["records"][0]["outputTokens"] = json!(rate);
     value
 }
 
@@ -46,11 +40,11 @@ fn python_corpus_matches_complete_notify_and_token_publication_results() {
         json!({"op": "rates", "body": rates(0)}),
         json!({"op": "rates", "body": rates(123)}),
         json!({"op": "rates", "body": floating_rates(123.0)}),
-        json!({"op": "rates", "body": {"rates": {}, "teams": {}}}),
+        json!({"op": "rates", "body": {"records": []}}),
         json!({"op": "notify", "body": request("", json!([{"kind":"accounts"}]))}),
         json!({"op": "notify", "body": request("empty", json!([]))}),
         json!({"op": "notify", "body": request("unknown", json!([{"kind":"unknown"}]))}),
-        json!({"op": "rates", "body": {"rates": null, "teams": {}}}),
+        json!({"op": "rates", "body": {"records": null}}),
     ];
     // Full corpus adds schema field variations; the default already covers eviction.
     if std::env::var_os("STUDIO_RUNTIME_CORPUS_FULL").is_some() {
@@ -64,11 +58,11 @@ fn python_corpus_matches_complete_notify_and_token_publication_results() {
                 json!(-1),
             ] {
                 let mut value = rates(1);
-                value["rates"]["agent"][field] = invalid;
+                value["records"][0][field] = invalid;
                 cases.push(json!({"op":"rates", "body":value}));
             }
             let mut value = rates(1);
-            value["rates"]["agent"]
+            value["records"][0]
                 .as_object_mut()
                 .expect("agent rate")
                 .remove(field);
@@ -79,7 +73,6 @@ fn python_corpus_matches_complete_notify_and_token_publication_results() {
         }
     }
     for kind in [
-        "panel",
         "queue",
         "receipts",
         "workspace",
@@ -97,27 +90,12 @@ fn python_corpus_matches_complete_notify_and_token_publication_results() {
     cases.push(cases[0].clone()); // The initial receipt was evicted.
     cases.push(json!({"op":"restart"}));
     cases.push(cases[0].clone()); // Process-local identity scope resets.
-    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src");
-    let mut child = Command::new(python::prepared_python(&source))
-        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/wave7_p14_oracle.py"))
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("oracle starts");
-    child
-        .stdin
-        .take()
-        .expect("stdin")
-        .write_all(&serde_json::to_vec(&cases).expect("cases serialize"))
-        .expect("write cases");
-    let output = child.wait_with_output().expect("oracle finishes");
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let expected: Vec<Value> = serde_json::from_slice(&output.stdout).expect("oracle JSON");
+    let data = if std::env::var_os("STUDIO_RUNTIME_CORPUS_FULL").is_some() {
+        include_str!("wave7_p14_resources/expected-full.json")
+    } else {
+        include_str!("wave7_p14_resources/expected.json")
+    };
+    let expected: Vec<Value> = serde_json::from_str(data).expect("frozen publication results");
     assert_eq!(expected.len(), cases.len(), "oracle must return every case");
     let mut hub = Arc::new(ChangeNotificationHub::new());
     let mut publisher = ResourceNotifications::new(hub.clone());
@@ -204,7 +182,7 @@ fn closed_publisher_and_invalid_input_never_advance_cursor() {
     let publisher = ResourceNotifications::new(hub.clone());
     let large = request(
         "large",
-        json!([{"kind":"panel", "agentId":"x".repeat(MAX_PUBLICATION_BYTES)}]),
+        json!([{"kind":"queue", "agentId":"x".repeat(MAX_PUBLICATION_BYTES)}]),
     );
     assert_eq!(
         publisher.publish_once(&large),
@@ -244,16 +222,22 @@ fn external_state_reset_and_receipt_share_the_publication_boundary() {
 fn token_snapshot_entry_bound_is_checked_before_replacing_the_last_value() {
     let changes = Arc::new(ChangeNotificationHub::new());
     let publisher = token_hub(&changes);
-    let value = floating_rates(1.0)["rates"]["agent"].clone();
+    let value = floating_rates(1.0)["records"][0].clone();
     let count = TOKEN_RATE_MAX_ENTRIES;
-    let map = (0..count)
-        .map(|index| (format!("a{index:04}"), value.clone()))
-        .collect::<serde_json::Map<_, _>>();
-    let at_bound = json!({"rates":map,"teams":{}});
+    let records = (0..count)
+        .map(|index| {
+            let mut record = value.clone();
+            record["agentId"] = json!(format!("a{index:04}"));
+            record
+        })
+        .collect::<Vec<_>>();
+    let at_bound = json!({"records":records});
     assert!(publisher.publish(at_bound.clone()).expect("entry bound"));
     let mut above_bound = at_bound.clone();
-    let entries = above_bound["rates"].as_object_mut().expect("rates");
-    entries.insert("extra".to_owned(), value);
+    above_bound["records"]
+        .as_array_mut()
+        .expect("records")
+        .push(value);
     assert!(publisher.publish(above_bound).is_err());
     assert_eq!(publisher.snapshot().to_value(), at_bound);
     assert_eq!(changes.snapshot().revision, 1);

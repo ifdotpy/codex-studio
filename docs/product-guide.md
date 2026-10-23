@@ -81,7 +81,8 @@ See [VM chats](linux-vm-workspaces.md) and [ASIF images](workspace-images.md).
 
 ## Setup
 
-Requirements: Python 3.11 or later, Node.js 22.15 or later, and the signed-in Codex CLI.
+Requirements for a source install: the pinned Rust toolchain, Node.js 22.15 or later,
+Git, pnpm, and the signed-in provider CLI.
 The desktop package currently targets macOS on Apple silicon.
 
 Install dependencies once from the repository root. The root and app manifests
@@ -92,7 +93,7 @@ own their commands: see the [root manifest](../package.json), [web manifest](../
 ```sh
 pnpm install --frozen-lockfile
 git config --local core.hooksPath .githooks
-python3 workspaces/runtime/apps/server/src/install-cli.py
+just install
 pnpm --filter codex-agents-web run build
 pnpm --filter codex-agents-desktop run start
 ```
@@ -103,14 +104,12 @@ dependencies; install them before committing.
 For full-repository audits, run `pnpm run lint:all` and
 `pnpm run format:check:all`. Append paths after `--` to check selected files.
 
-`python3 workspaces/runtime/apps/server/src/install-cli.py` prepares the pinned Python API environment in
-the user cache and installs command links. It also installs the Rust `codex-diagnostics` binary: if no packaged binary is available, the installer needs Cargo and the pinned Rust 1.99.0 toolchain to build it. Without Cargo or a prebuilt binary, installation fails with an explicit error. Pass `--dev` to prepare a separate
-development environment with mypy. Set `CODEX_AGENTS_PYTHON` to choose a
-Python 3.11+ interpreter with the API dependencies installed; the launcher
-validates it before use. Otherwise Studio uses its prepared environment, then
-a dependency-equipped system Python. Backend launch does not install packages
-or access the network. Run `python3 workspaces/runtime/apps/server/src/codex_python.py --mypy` for the
-backend type check.
+`just install` builds the Rust server, process supervisor, and diagnostics CLI
+and installs their command links in `~/.local/bin`. Add that directory and the
+provider CLI directory to `PATH`. Use `just install --bin-dir DIRECTORY` for
+another command directory. The installer refuses unrelated executables and
+reports obsolete Python command links that it removes from this checkout.
+The Rust backend requires no Python environment or extension installation.
 
 Claude Code is also supported through the installed CLI and its Claude subscription.
 Run `claude auth login`, then select **Claude Code** in the account menu for a new
@@ -241,7 +240,7 @@ replays a browser action. A failed probe or unknown reconnect response stops
 automatic retries; exact request IDs remain in the session recovery record.
 
 For browser access, run `codex-canvas` and open <http://127.0.0.1:4620>.
-Use `codex-control list` to inspect the same runtime from a terminal.
+Use the managed `orchestration_status` tool to inspect the same runtime.
 The desktop package command is owned by its [manifest](../workspaces/client/apps/desktop/package.json).
 
 For a shareable process snapshot, run `codex-diagnostics` while Studio runs.
@@ -290,7 +289,9 @@ See [live updates](live-updates.md) for publication and verification.
 The packaged macOS application restores its backend after login or a process
 failure. Saved input and verified interrupted work recover automatically.
 See [restart recovery](restart-recovery.md) for the exact behavior and limits.
-Use `codex-supervisor enable` to install supervisor mode without the desktop UI.
+Use `studio-runtime-server service install` to enable terminal-only backend
+startup without starting or restarting a service. On Linux, `just deliver-server`
+selects and restarts the server release. Preserve the existing state directory.
 For systemd user services and Windows Subsystem for Linux, see
 [Linux and WSL server setup](linux-server-setup.md).
 
@@ -300,18 +301,9 @@ The mobile layout shows orchestrator chats, team agents, existing projects, acco
 and chat settings. Add the page to the iPhone home screen for a standalone window.
 The Mac remains the server. SQLite remains the authoritative store.
 
-After the source update, restart Studio when active tasks and monitors finish.
-Do not stop active work for this update. Then run:
+The former mobile setup command was removed with the Python backend and has no
+Rust replacement in this change. Preserve existing Tailscale Serve configuration.
 
-```sh
-python3 workspaces/runtime/apps/server/src/codex-mobile.py
-```
-
-The command checks the server version and enables private HTTPS through
-[Tailscale Serve](https://tailscale.com/docs/features/tailscale-serve).
-It prints the address for Safari. Connect Tailscale on both devices first.
-If Tailscale requests HTTPS setup, complete that setup and run the command again.
-Existing unrelated Serve configurations require manual setup.
 The server accepts the exact origin in `remote-access.json` in its state directory.
 Set `enabled` to `false` there to revoke remote access without a restart.
 Tailscale access rules control who can open Studio. The phone uses the existing
@@ -471,7 +463,7 @@ for the current conversation and manage its project, model, and permissions.
 
 Prompt history is in the chat header; open **Conversation tools** when space is
 limited. Context usage, session cost, and account limits sit below the composer.
-Agent progress stays visible above it. An orange **Warnings** icon appears in the
+An orange **Warnings** icon appears in the
 header when the current account or chat has notices. It opens their full details
 in a dialog; errors that block work remain visible in the conversation.
 On narrow screens, **Chat actions** also opens Chat settings and Team. The agent
@@ -535,7 +527,7 @@ the destination lead. The destination's plan and worker defaults stay in use.
 The destination's concurrency, agent limit, and token limit apply to the moved tree.
 The converted chat pauses. Its watches pause and require an explicit resume.
 Worker watches and saved command and monitor records keep their agent identities.
-Progress files keep their paths and contents. The next turn receives the new role.
+The next turn receives the new role.
 
 The source leaves its peer team. A team with fewer than two members dissolves.
 Saved peer rooms remain available to the user. Former peers lose agent access.
@@ -544,4 +536,4 @@ messages. New broadcasts use the destination's broadcast room.
 The action saves one receipt with the exact request body. A retry with the same
 request ID returns that receipt. A different body with that ID is refused.
 
-Runtime typing is checked with `pnpm run typecheck:runtime` (equivalent to `python3 workspaces/runtime/apps/server/src/codex_python.py --mypy`). The strict mypy ratchet is not part of the pre-commit hook.
+Runtime checks use `just check studio-runtime-services`; see [testing](testing.md).

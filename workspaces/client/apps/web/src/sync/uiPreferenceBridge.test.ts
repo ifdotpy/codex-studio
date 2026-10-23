@@ -1,22 +1,21 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { PreferenceFields } from "./uiPreferenceMerge";
+import type { syncPost } from "../api";
 
 const mocks = vi.hoisted(() => ({
   acknowledge: vi.fn(),
+  resume: vi.fn((_listener: () => void) => () => {}),
   initialize: vi.fn(),
   isSchemaMismatch: vi.fn(() => false),
   read: vi.fn((_scope?: string) => ({})),
   sessionRead: vi.fn(),
   receive: vi.fn(),
   transportWrite: vi.fn(),
-  syncPost: vi.fn(
-    async (
-      _path: string,
-      body: { fields: object },
-      _options?: { requestId?: string },
-    ) => {
+  syncPost: vi.fn<typeof syncPost<"/api/sync/preferences">>(
+    async (_path, body) => {
       if (mocks.isSchemaMismatch()) throw new Error("Schema mismatch");
       mocks.transportWrite(body);
-      return { fields: body.fields };
+      return { fields: body.fields ?? {} };
     },
   ),
   watch: vi.fn((_listener: () => void) => () => {}),
@@ -26,6 +25,7 @@ vi.mock("../api", () => ({
   refreshSession: mocks.sessionRead,
   syncPost: mocks.syncPost,
 }));
+vi.mock("./resume", () => ({ onResume: mocks.resume }));
 vi.mock("./uiPreferenceStore", () => ({
   acknowledgePreferenceFields: mocks.acknowledge,
   initializePreferenceMigration: mocks.initialize,
@@ -49,14 +49,14 @@ afterEach(() => {
   mocks.syncPost.mockImplementation(async (_path, body) => {
     if (mocks.isSchemaMismatch()) throw new Error("Schema mismatch");
     mocks.transportWrite(body);
-    return { fields: body.fields };
+    return { fields: body.fields ?? {} };
   });
   vi.unstubAllGlobals();
 });
 
 describe("UI preference projection bridge", () => {
   it("applies each projected remote row once", () => {
-    const bridge = createUiPreferenceBridge(storage);
+    const bridge = createUiPreferenceBridge(storage, mocks.syncPost);
     const stop = bridge.start();
     const projection = {
       user: {
@@ -94,7 +94,7 @@ describe("UI preference projection bridge", () => {
     vi.stubGlobal("crypto", {
       subtle: { digest: vi.fn(async () => new Uint8Array(32).buffer) },
     });
-    const bridge = createUiPreferenceBridge(storage);
+    const bridge = createUiPreferenceBridge(storage, mocks.syncPost);
     const stop = bridge.start();
     bridge.receiveProjection({});
     mocks.syncPost.mockClear();
@@ -140,7 +140,7 @@ describe("UI preference projection bridge", () => {
     vi.stubGlobal("crypto", {
       subtle: { digest: vi.fn(async () => new Uint8Array(32).buffer) },
     });
-    const bridge = createUiPreferenceBridge(storage);
+    const bridge = createUiPreferenceBridge(storage, mocks.syncPost);
     const stop = bridge.start();
     bridge.receiveProjection({});
     changed();
@@ -150,6 +150,71 @@ describe("UI preference projection bridge", () => {
     expect(mocks.syncPost).toHaveBeenCalledOnce();
     stop();
   });
+
+  it("uses the projected server API and storage for preference writes", async () => {
+    const pairedStorage = {} as Storage;
+    const pairedPost = vi.fn(
+      async (_path: string, body: { fields?: PreferenceFields }) => ({
+        fields: body.fields ?? {},
+      }),
+    );
+    mocks.read.mockImplementation((scope) =>
+      scope === "server"
+        ? { local: { value: "paired edit", timestamp: 2, writer: "w" } }
+        : {},
+    );
+    vi.stubGlobal("crypto", {
+      subtle: { digest: vi.fn(async () => new Uint8Array(32).buffer) },
+    });
+    const bridge = createUiPreferenceBridge(pairedStorage, pairedPost);
+    const stop = bridge.start();
+    bridge.receiveProjection({});
+    await vi.waitFor(() => expect(pairedPost).toHaveBeenCalledOnce());
+    expect(mocks.syncPost).not.toHaveBeenCalled();
+    expect(mocks.read).toHaveBeenCalledWith("server", pairedStorage);
+    stop();
+  });
+
+  it.each(["resume", "connection"] as const)(
+    "retries offline edits through the same API after %s recovery",
+    async (recovery) => {
+      let resume = () => {};
+      const stopResume = vi.fn();
+      mocks.resume.mockImplementation((listener) => {
+        resume = listener;
+        return stopResume;
+      });
+      mocks.read.mockImplementation((scope) =>
+        scope === "server"
+          ? { local: { value: "offline edit", timestamp: 2, writer: "w" } }
+          : {},
+      );
+      mocks.syncPost.mockRejectedValueOnce(new TypeError("offline"));
+      vi.stubGlobal("crypto", {
+        subtle: { digest: vi.fn(async () => new Uint8Array(32).buffer) },
+      });
+      const bridge = createUiPreferenceBridge(storage, mocks.syncPost);
+      const stop = bridge.start();
+      bridge.receiveProjection({});
+      await vi.advanceTimersByTimeAsync(0);
+      expect(mocks.syncPost).toHaveBeenCalledOnce();
+      expect(mocks.acknowledge).not.toHaveBeenCalled();
+      if (recovery === "resume") resume();
+      else bridge.retryPendingWrites();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(mocks.syncPost).toHaveBeenCalledTimes(2);
+      expect(mocks.syncPost.mock.calls[1]).toEqual(
+        mocks.syncPost.mock.calls[0],
+      );
+      expect(mocks.acknowledge).toHaveBeenCalledOnce();
+      stop();
+      expect(stopResume).toHaveBeenCalledOnce();
+      resume();
+      bridge.retryPendingWrites();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(mocks.syncPost).toHaveBeenCalledTimes(2);
+    },
+  );
 
   it("sends nothing while the API schema gate is raised", async () => {
     let changed = () => {};
@@ -166,7 +231,7 @@ describe("UI preference projection bridge", () => {
     vi.stubGlobal("crypto", {
       subtle: { digest: vi.fn(async () => new Uint8Array(32).buffer) },
     });
-    const bridge = createUiPreferenceBridge(storage);
+    const bridge = createUiPreferenceBridge(storage, mocks.syncPost);
     bridge.start();
     bridge.receiveProjection({});
     changed();

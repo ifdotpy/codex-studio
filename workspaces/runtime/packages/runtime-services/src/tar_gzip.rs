@@ -95,28 +95,8 @@ mod tests {
 
     use super::TarGzipWriter;
     use flate2::read::GzDecoder;
-    use std::{
-        io::{Cursor, Read},
-        process::Command,
-    };
+    use std::io::{Cursor, Read};
     use tar::Archive;
-
-    fn python_tar_entries(archive_path: &std::path::Path) -> serde_json::Value {
-        let output = Command::new("python3")
-            .args([
-                "-c",
-                "import json,sys,tarfile; a=tarfile.open(sys.argv[1], 'r:gz'); print(json.dumps([[m.name,m.mode,m.issym(),m.linkname] for m in a.getmembers()]))",
-            ])
-            .arg(archive_path)
-            .output()
-            .expect("Python stdlib tarfile is available for guest compatibility checks");
-        assert!(
-            output.status.success(),
-            "Python tarfile rejected archive: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        serde_json::from_slice(&output.stdout).expect("Python emitted archive metadata")
-    }
 
     #[test]
     fn long_unicode_paths_and_symlink_targets_round_trip_with_modes() {
@@ -136,6 +116,7 @@ mod tests {
         let mut entries = archive.entries().expect("entries");
         let symlink = entries.next().expect("symlink entry").expect("valid entry");
         assert!(symlink.header().entry_type().is_symlink());
+        assert_eq!(symlink.header().mode().unwrap(), 0o777);
         assert_eq!(
             symlink.path().unwrap().to_string_lossy(),
             format!("{path}.link")
@@ -154,15 +135,6 @@ mod tests {
         let mut content = String::new();
         file.take(16).read_to_string(&mut content).unwrap();
         assert_eq!(content, "data");
-        let directory = tempfile::tempdir().expect("fixture operation succeeds");
-        let archive_path = directory.path().join("guest.tar.gz");
-        std::fs::write(&archive_path, output).expect("write guest archive fixture");
-        let entries = python_tar_entries(&archive_path);
-        assert_eq!(entries[0][0], format!("{path}.link"));
-        assert!(entries[0][2].as_bool().expect("symlink metadata"));
-        assert_eq!(entries[0][3], link);
-        assert_eq!(entries[1][0], path);
-        assert_eq!(entries[1][1], 0o751);
     }
 
     #[test]

@@ -21,8 +21,8 @@
       "full": 3
     },
     "guidance": {
-      "fast": 12,
-      "full": 12
+      "fast": 10,
+      "full": 10
     },
     "inspection": {
       "fast": 10,
@@ -75,7 +75,7 @@
   },
   "effectsOutsidePlanner": [
     "validated settings and delegation admission",
-    "workspace/progress provisioning",
+    "workspace provisioning",
     "immutable catalog and guidance reads",
     "role snapshot materialization",
     "durable preparation journal before submission",

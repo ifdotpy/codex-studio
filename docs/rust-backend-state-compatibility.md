@@ -1,5 +1,9 @@
 # Rust desktop backend and state compatibility
 
+> Historical implementation record: Python backend paths and commands below
+> refer to the removed implementation. Use [testing](testing.md) and the
+> [CLI guide](cli.md) for current Rust commands.
+
 ## Scope and evidence
 
 This is a source-only compatibility matrix for the Python runtime at the assigned Rust base. It uses the Python schema owners, [`runtime-state-formats.md`](runtime-state-formats.md), [`runtime-state-schema.json`](../workspaces/runtime/packages/runtime-store/src/runtime-state-schema.json), and Rust store/repository implementations under [`runtime-store`](../workspaces/runtime/packages/runtime-store/src/) plus [`runtime-server`](../workspaces/runtime/apps/runtime-server/src/). No live state directory or live database was opened. Schema fixture names describe source-owned schema, not user data.

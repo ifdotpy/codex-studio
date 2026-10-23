@@ -1,0 +1,6 @@
+{
+  "label": "Studio server",
+  "privateKey": "-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEIPi6xn+eUuBuDMCUDa1yG3Mv6LYm/rjYlMPg/MxcqYth\n-----END PRIVATE KEY-----\n",
+  "publicKey": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAWI5jIn723Bg6Sd13gUZi/RZpyjajrKpkq8lkuUhAV1E=\n-----END PUBLIC KEY-----\n",
+  "serverId": "80c38292d8aa42e0bd3ffc99f8f15b1f"
+}

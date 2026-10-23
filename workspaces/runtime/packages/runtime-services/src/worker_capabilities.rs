@@ -205,9 +205,9 @@ mod tests {
 
     #[test]
     fn capability_overrides_only_narrow_all_fields() {
-        let base = from_value(&json!({"allowedTools":["Read*"],"disallowedTools":["Bash"],"mcpServers":["docs"],"skills":["research"],"maxTurns":3})).unwrap();
-        let child = from_value(&json!({"allowedTools":["Read"],"disallowedTools":[],"mcpServers":[],"skills":[],"maxTurns":1})).unwrap();
-        let effective = narrow(&base, &child).unwrap();
+        let base = from_value(&json!({"allowedTools":["Read*"],"disallowedTools":["Bash"],"mcpServers":["docs"],"skills":["research"],"maxTurns":3})).expect("base capabilities parse");
+        let child = from_value(&json!({"allowedTools":["Read"],"disallowedTools":[],"mcpServers":[],"skills":[],"maxTurns":1})).expect("child capabilities parse");
+        let effective = narrow(&base, &child).expect("narrower capabilities apply");
         assert_eq!(effective.disallowed_tools, Some(vec!["Bash".into()]));
         assert_eq!(effective.max_turns, Some(1));
         for (field, value) in [
@@ -216,23 +216,36 @@ mod tests {
             ("skills", json!(["other"])),
             ("maxTurns", json!(4)),
         ] {
-            let widened = from_value(&json!({field:value})).unwrap();
-            assert!(narrow(&base, &widened).unwrap_err().contains(field));
+            let widened =
+                from_value(&json!({field:value})).expect("widened capability fixture parses");
+            assert!(
+                narrow(&base, &widened)
+                    .expect_err("capability widening must fail")
+                    .contains(field)
+            );
         }
-        assert_eq!(narrow(&base, &WorkerCapabilities::default()).unwrap(), base);
+        assert_eq!(
+            narrow(&base, &WorkerCapabilities::default()).expect("default override preserves base"),
+            base
+        );
     }
 
     #[test]
     fn capability_provider_refuses_unsupported_codex_fields() {
         for field in ["allowedTools", "disallowedTools", "skills"] {
-            let caps = from_value(&json!({field:[]})).unwrap();
-            assert!(for_provider(&caps, "codex").unwrap_err().contains(field));
-            for_provider(&caps, "claude").unwrap();
+            let caps = from_value(&json!({field:[]})).expect("empty capability list parses");
+            assert!(
+                for_provider(&caps, "codex")
+                    .expect_err("unsupported Codex field must fail")
+                    .contains(field)
+            );
+            for_provider(&caps, "claude").expect("Claude accepts capability field");
         }
         for_provider(
-            &from_value(&json!({"mcpServers":["docs"],"maxTurns":1})).unwrap(),
+            &from_value(&json!({"mcpServers":["docs"],"maxTurns":1}))
+                .expect("Codex capability fixture parses"),
             "codex",
         )
-        .unwrap();
+        .expect("Codex accepts supported capabilities");
     }
 }

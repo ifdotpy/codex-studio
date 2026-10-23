@@ -1,8 +1,6 @@
-use crate::prepared_python_support;
 use serde_json::{Value, json};
 use std::fs;
-use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 use studio_runtime_services::event_write::{AnnotationWrite, annotate};
@@ -12,95 +10,59 @@ use studio_runtime_services::scheduler::{
 };
 use studio_runtime_store::{AgentId, AgentRepository, AgentStatus, RuntimeStore};
 
-const CREATE_PYTHON_EVENTS: &str = r#"
-import json, pathlib, sys
-sys.path.insert(0, sys.argv[2])
-from codex_canvas import Canvas
-from codex_terminals import TerminalManager
-from codex_runtime import Runtime
-from codex_wakeups import pending_batch
-class QuietRuntime(Runtime):
-    def schedule(self):
-        return
-root = pathlib.Path(sys.argv[1])
-Canvas(root)
-TerminalManager(root)
-runtime = QuietRuntime(root, lambda *_args, **_kwargs: None)
-agent = runtime.create({"name":"scheduler fixture", "cwd":str(root), "prompt":"temporary"}, defer=True)
-agent["autoWake"] = True
-agent["status"] = "queued"
-agent.update(accountKey="default", threadId="fixture-thread", model="fixture-model")
-with runtime.lock, runtime.db() as db:
-    runtime.put(db, "agents", agent)
-    for event_id, created in (("python-later", 2.0), ("python-first", 1.0), ("python-tie", 1.0)):
-        db.execute("INSERT INTO runtime_events VALUES(?,?,?,?,?,?,?,?,?)",
-                   (event_id, agent["id"], "user", event_id, "pending", created, agent["epoch"], None, None))
-    selected = pending_batch(runtime, db, agent)
-    print(json.dumps({"agent":agent["id"], "epoch":agent["epoch"], "events":[item["id"] for item in selected]}))
-runtime.close()
-"#;
-
-async fn fixture() -> (TemporaryState, RuntimeStore, String, i64, Value) {
-    let state = TemporaryState::new();
-    let fixture: Value = serde_json::from_str(&run_python(&state.0, CREATE_PYTHON_EVENTS, &[]))
-        .expect("Python fixture JSON");
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Seed<T> {
+    expected: T,
+    statements: Vec<String>,
+}
+async fn seeded<T: serde::de::DeserializeOwned>(
+    state: &TemporaryState,
+    fixture: &str,
+) -> (RuntimeStore, T) {
+    let seed: Seed<T> = serde_json::from_str(fixture).expect("frozen scheduler seed");
     let store = RuntimeStore::open(Some(&state.0))
         .await
-        .expect("Python-written store");
-    let agent = fixture["agent"].as_str().expect("agent ID").to_owned();
-    let epoch = fixture["epoch"].as_i64().expect("epoch");
-    (state, store, agent, epoch, fixture)
+        .expect("scheduler store");
+    let statements = seed
+        .statements
+        .join("\n")
+        .replace("${ROOT}", &state.0.to_string_lossy().replace('\'', "''"));
+    store
+        .transaction(move |tx| {
+            tx.execute_batch(&statements)?;
+            Ok(())
+        })
+        .await
+        .expect("seed scheduler state");
+    (store, seed.expected)
 }
-const CREATE_POLICY_REFUSAL_STATE: &str = r#"
-import json, pathlib, sys
-sys.path.insert(0, sys.argv[2])
-from codex_runtime import Runtime
-from codex_wakeups import pending_batch
-class QuietRuntime(Runtime):
-    def schedule(self):
-        return
-root = pathlib.Path(sys.argv[1])
-runtime = QuietRuntime(root, lambda *_args, **_kwargs: None)
-agents = {}
-for name in ('team', 'radio'):
-    agent = runtime.create({'name':name, 'cwd':str(root), 'prompt':'temporary'}, defer=True)
-    agent.update(autoWake=True, status='queued', provider='codex')
-    agents[name] = agent
-with runtime.lock, runtime.db() as db:
-    for name, agent in agents.items():
-        runtime.put(db, 'agents', agent)
-        if name == 'team':
-            specs = [('team:message', 'agent_message', '{"importance":"note"}', 1.0)]
-        else:
-            specs = [(f'radio:user:{i}', 'user', f'input-{i}', float(i)) for i in range(32)]
-            specs.append(('radio:turn', 'radio_turn', '{}', 99.0))
-        for event_id, kind, text, created in specs:
-            db.execute('INSERT INTO runtime_events VALUES(?,?,?,?,?,?,?,?,?)',
-                       (event_id, agent['id'], kind, text, 'pending', created, agent['epoch'], None, None))
-        pending_batch(runtime, db, agent)
-    def snapshot(db, agent, name):
-        events = [list(row) for row in db.execute(
-            'SELECT id,kind,text,status,created,epoch,turn_id,error FROM runtime_events WHERE agent=? ORDER BY created,rowid',
-            (agent['id'],))]
-        ids = [row[0] for row in events]
-        metadata = [list(row) for row in db.execute(
-            'SELECT id,record FROM runtime_event_meta WHERE id IN (' + ','.join('?' for _ in ids) + ') ORDER BY id', ids)] if ids else []
-        sync = [list(row) for row in db.execute(
-            'SELECT collection,id,seq,hash,payload,deleted FROM sync_entities WHERE id=? OR id IN (' + ','.join('?' for _ in ids) + ') ORDER BY collection,id',
-            [agent['id'], *ids])]
-        completed = [row[0] for row in db.execute('SELECT id FROM runtime_completed_turns ORDER BY id')]
-        sync_documents = [row[0] for row in db.execute('SELECT seq FROM sync_documents ORDER BY seq')]
-        sync_versions = [row[0] for row in db.execute('SELECT seq FROM sync_versions ORDER BY seq')]
-        raw_agent = db.execute('SELECT record FROM runtime_agents WHERE id=?', (agent['id'],)).fetchone()[0]
-        # Compared as JSON: Rust stores volatile agent fields apart (format 2026-10-20).
-        return {'agent':json.loads(raw_agent), 'events':events, 'metadata':metadata, 'sync':sync,
-                'completed':completed, 'syncDocuments':sync_documents, 'syncVersions':sync_versions}
-    result = {}
-    for name, agent in agents.items():
-        result[name] = {'agentId':agent['id'], 'epoch':agent['epoch'], 'snapshot':snapshot(db, agent, name)}
-    print(json.dumps(result))
-runtime.close()
-"#;
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Events {
+    agent: String,
+    epoch: i64,
+    events: Vec<String>,
+}
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct PolicyAgent {
+    agent_id: String,
+    epoch: i64,
+}
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Policy {
+    team: PolicyAgent,
+    radio: PolicyAgent,
+}
+
+async fn fixture() -> (TemporaryState, RuntimeStore, String, i64, Vec<String>) {
+    let state = TemporaryState::new();
+    let (store, fixture): (_, Events) =
+        seeded(&state, include_str!("fixtures/scheduler-events.json")).await;
+    (state, store, fixture.agent, fixture.epoch, fixture.events)
+}
 
 #[tokio::test]
 async fn pending_selection_matches_python_and_claims_rust_event_write_events() {
@@ -111,7 +73,7 @@ async fn pending_selection_matches_python_and_claims_rust_event_write_events() {
         .expect("input");
     assert_eq!(
         json!(intent.events.iter().map(|e| &e.id).collect::<Vec<_>>()),
-        fixture["events"]
+        json!(fixture)
     );
     let reader = store.test_reader().expect("read");
     let reserved: i64 = reader
@@ -182,23 +144,12 @@ async fn pending_selection_matches_python_and_claims_rust_event_write_events() {
 #[tokio::test]
 async fn named_team_and_radio_refusals_match_python_preparation_and_preserve_whole_state() {
     let state = TemporaryState::new();
-    let fixture = run_python(&state.0, CREATE_POLICY_REFUSAL_STATE, &[]);
-    let expected: Value =
-        serde_json::from_str(&fixture).expect("Python policy fixture returns state");
-    let store = RuntimeStore::open(Some(&state.0))
-        .await
-        .expect("Rust opens Python-written policy state");
-    for name in ["team", "radio"] {
-        let case = &expected[name];
-        let agent = case["agentId"]
-            .as_str()
-            .expect("Python agent ID is present");
-        let epoch = case["epoch"].as_i64().expect("Python epoch is present");
+    let (store, expected): (_, Policy) =
+        seeded(&state, include_str!("fixtures/scheduler-policy.json")).await;
+    for (name, case) in [("team", &expected.team), ("radio", &expected.radio)] {
+        let agent = &case.agent_id;
+        let epoch = case.epoch;
         let before = rust_policy_snapshot(&store, agent);
-        assert_eq!(
-            before, case["snapshot"],
-            "Python and Rust pre-admission state differ for {name}"
-        );
         let result = claim_intent(&store, agent, epoch, &format!("attempt-{name}"), 100.0).await;
         assert!(
             matches!(result, Err(SchedulerError::PolicyRefused(_))),
@@ -468,38 +419,6 @@ async fn late_acceptance_preserves_a_stopped_agent_and_delivers_exact_input() {
     assert_eq!(record.epoch, epoch + 1);
     let delivered:i64=reader.query_row("SELECT COUNT(*) FROM runtime_events WHERE agent=?1 AND status='delivered' AND turn_id='late'",[&agent],|r|r.get(0)).expect("delivered");
     assert_eq!(delivered, 3);
-}
-
-#[allow(clippy::disallowed_methods)]
-fn run_python(root: &Path, code: &str, args: &[&str]) -> String {
-    let output = Command::new(python_executable())
-        .arg("-c")
-        .arg(code)
-        .arg(root)
-        .arg(server_source())
-        .args(args)
-        .env("PYTHONDONTWRITEBYTECODE", "1")
-        .output()
-        .expect("prepared Python runtime starts");
-    assert!(
-        output.status.success(),
-        "Python scheduler fixture failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    String::from_utf8(output.stdout)
-        .expect("Python output is UTF-8")
-        .lines()
-        .last()
-        .unwrap_or_default()
-        .to_owned()
-}
-
-fn python_executable() -> PathBuf {
-    prepared_python_support::prepared_python(&server_source())
-}
-
-fn server_source() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src")
 }
 
 struct TemporaryState(PathBuf);

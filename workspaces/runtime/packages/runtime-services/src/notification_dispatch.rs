@@ -143,6 +143,11 @@ impl From<StoreError> for NotificationDispatchError {
 #[derive(Clone, Copy)]
 enum SubmissionAuthorization {
     Current,
+    /// A turn start commits only input it reserved for this attempt; delivered or
+    /// uncertain input is never claimed again, so an earlier record under the same
+    /// first event belongs to an attempt that returned its input unsent, and the
+    /// new submission replaces it.
+    Start,
     /// The exact batch was authorized and frozen before the provider write.
     AcknowledgedSteer,
 }
@@ -158,6 +163,21 @@ pub fn record_user_submission(
         agent_id,
         submission,
         SubmissionAuthorization::Current,
+    )
+}
+
+/// Persist the batch a turn start submits, replacing the record of an earlier
+/// attempt that returned the same first event unsent.
+pub fn record_start_submission(
+    transaction: &Transaction<'_>,
+    agent_id: &str,
+    submission: &PreparedSubmission,
+) -> Result<DispatchOutcome, NotificationDispatchError> {
+    record_submission(
+        transaction,
+        agent_id,
+        submission,
+        SubmissionAuthorization::Start,
     )
 }
 
@@ -215,13 +235,16 @@ fn record_submission(
             "{SUBMISSION_RECEIPT_PREFIX}{}",
             sha256_hex(format!("{agent_id}:{}", submission.first_event_id).as_bytes())
         );
+        let replaces_earlier = matches!(authorization, SubmissionAuthorization::Start);
         if let Some(receipt) =
             NotificationDispatchRepository::notification_receipt(transaction, &receipt_id)?
         {
-            if receipt.signature != signature {
+            if receipt.signature == signature {
+                return decode_outcome(&receipt.result, &receipt_id);
+            }
+            if !replaces_earlier {
                 return Err(NotificationDispatchError::ConflictingInput);
             }
-            return decode_outcome(&receipt.result, &receipt_id);
         }
         validate_submission(transaction, agent_id, submission, authorization)?;
         if let Some((existing, created)) =
@@ -232,14 +255,17 @@ fn record_submission(
                 || existing_text != submission.text
                 || created != submission.created_at
             {
-                return Err(NotificationDispatchError::ConflictingInput);
+                if !replaces_earlier {
+                    return Err(NotificationDispatchError::ConflictingInput);
+                }
+            } else {
+                return save_submission_outcome(
+                    transaction,
+                    &receipt_id,
+                    &signature,
+                    replaces_earlier,
+                );
             }
-            return save_outcome(
-                transaction,
-                &receipt_id,
-                &signature,
-                DispatchOutcome::Written,
-            );
         }
 
         NotificationDispatchRepository::put_transcript_item(
@@ -259,13 +285,28 @@ fn record_submission(
                 &id,
             )?;
         }
-        save_outcome(
-            transaction,
-            &receipt_id,
-            &signature,
-            DispatchOutcome::Written,
-        )
+        save_submission_outcome(transaction, &receipt_id, &signature, replaces_earlier)
     })
+}
+
+/// Save the written outcome; a turn start replaces the receipt of an earlier attempt.
+fn save_submission_outcome(
+    transaction: &Transaction<'_>,
+    receipt_id: &str,
+    signature: &str,
+    replace: bool,
+) -> Result<DispatchOutcome, NotificationDispatchError> {
+    if !replace {
+        return save_outcome(transaction, receipt_id, signature, DispatchOutcome::Written);
+    }
+    let outcome = checked_outcome(DispatchOutcome::Written)?;
+    NotificationDispatchRepository::replace_notification_receipt(
+        transaction,
+        receipt_id,
+        signature,
+        &serde_json::to_string(&outcome)?,
+    )?;
+    Ok(outcome)
 }
 
 /// Transaction-aware read/respond service for model-authored complaints.
@@ -2125,7 +2166,7 @@ mod tests {
     use super::{
         DispatchOutcome, NotificationStreamBuffer, PreparedSubmission, ProviderDeliveryIdentity,
         PublicationContext, SubmittedInput, notification_content_signature, notification_payload,
-        record_user_submission, sha256_json,
+        record_start_submission, record_user_submission, sha256_json,
     };
     use studio_runtime_providers::{Frame, LineDecoder};
     use studio_runtime_store::{
@@ -2207,9 +2248,10 @@ mod tests {
                  CREATE TABLE sync_versions(seq INTEGER,scope TEXT,hash TEXT,deleted INTEGER,updated REAL);
                  CREATE TABLE runtime_work(id TEXT PRIMARY KEY,record TEXT NOT NULL);
                  CREATE TABLE sync_entity_meta(key TEXT PRIMARY KEY,value TEXT);
-                 CREATE VIRTUAL TABLE runtime_search USING fts5(id UNINDEXED,agent UNINDEXED,kind UNINDEXED,body,tokenize='unicode61');
-                 CREATE TABLE runtime_search_rows(id TEXT PRIMARY KEY,search_rowid INTEGER NOT NULL UNIQUE);
-                 CREATE TABLE runtime_search_indexed(id TEXT PRIMARY KEY);
+                 CREATE VIRTUAL TABLE runtime_search_next USING fts5(body,content='',contentless_delete=1,tokenize='unicode61');
+                 CREATE TABLE runtime_search_next_meta(id TEXT PRIMARY KEY,agent TEXT NOT NULL,kind TEXT NOT NULL,search_rowid INTEGER NOT NULL UNIQUE);
+                 CREATE TABLE runtime_search_rollout(id INTEGER PRIMARY KEY,phase TEXT,cursor INTEGER,updated REAL);
+                 INSERT INTO runtime_search_rollout VALUES(1,'complete',0,0);
                  INSERT INTO runtime_agents VALUES('agent','{\"id\":\"agent\",\"rootId\":\"agent\",\"epoch\":1,\"status\":\"running\",\"threadId\":\"thread\",\"accountKey\":\"default\",\"turnId\":\"turn\",\"inFlight\":true,\"events\":0,\"activeTools\":[],\"autoWake\":false}');
                  INSERT INTO sync_entities VALUES('agent','agent',1,'old','{\"collection\":\"agent\",\"id\":\"agent\",\"value\":{\"id\":\"agent\",\"status\":\"running\",\"threadId\":\"thread\",\"accountKey\":\"default\",\"turnId\":\"turn\",\"inFlight\":true,\"events\":0}}',0);"),
             )
@@ -2479,6 +2521,11 @@ mod tests {
             for stale in [false, true] {
                 let root = tempfile::tempdir().unwrap();
                 let store = RuntimeStore::open(Some(root.path())).await.unwrap();
+                let output_file = root
+                    .path()
+                    .join("native-1.output")
+                    .to_string_lossy()
+                    .into_owned();
                 store.transaction_with(move |tx| {
                     tx.execute("INSERT INTO runtime_agents(id,record) VALUES('agent',?1)", [json!({
                         "id":"agent","rootId":"agent","epoch":1,"status":"running","threadId":"thread",
@@ -2513,18 +2560,18 @@ mod tests {
                     assert_eq!(read_task()["arguments"], "{\"description\": \"Still running\"}");
                     let mut terminal = params;
                     terminal["item"]["status"] = json!("failed");
-                    terminal["item"]["outputFile"] = json!("/tmp/native-1.output");
+                    terminal["item"]["outputFile"] = json!(output_file);
                     terminal["item"]["result"] = json!({"content":[{"type":"text","text":"Build failed"}]});
                     dispatch(tx, &mut streams, 3, &json!({"method":"item/completed","params":terminal}), 102.0)?;
                     let failed = read_task();
                     assert_eq!(failed["status"], "failed");
-                    assert_eq!(failed["outputFile"], "/tmp/native-1.output");
+                    assert_eq!(failed["outputFile"], output_file);
                     assert_eq!(failed["finished"], 102.0);
                     assert_eq!(failed["durationMs"], 2000.0);
                     assert!(failed["tail"].as_str().unwrap().contains("Build failed"));
                     assert_eq!(read_item()["toolStatus"], "failed");
                     let stored: Value = serde_json::from_str(read_item()["text"].as_str().unwrap()).unwrap();
-                    assert_eq!(stored["outputFile"], "/tmp/native-1.output");
+                    assert_eq!(stored["outputFile"], output_file);
                     Ok::<_, super::NotificationDispatchError>(())
                 }).await.unwrap();
             }
@@ -3184,6 +3231,64 @@ mod tests {
     }
 
     #[test]
+    fn start_submission_replaces_an_earlier_unsent_attempt() {
+        let mut connection = database();
+        connection
+            .execute_batch(
+                "INSERT INTO runtime_events VALUES('e1','agent','user','hello','dispatching',1,1,'turn',NULL);
+                 INSERT INTO runtime_events VALUES('e2','agent','user','more','dispatching',2,1,'turn',NULL);",
+            )
+            .expect("queued events create");
+        let input = |id: &str, at: f64, text: &str| SubmittedInput {
+            id: id.to_owned(),
+            at,
+            kind: "user".to_owned(),
+            text: text.to_owned(),
+            assets: json!([]),
+        };
+        let first = PreparedSubmission {
+            first_event_id: "e1".to_owned(),
+            submitted_at: 1.0,
+            created_at: 1.0,
+            text: "hello".to_owned(),
+            inputs: vec![input("e1", 1.0, "hello")],
+            assets: json!([]),
+            radio_authorized: false,
+        };
+        let retry = PreparedSubmission {
+            submitted_at: 2.0,
+            text: "hello\n\nmore".to_owned(),
+            inputs: vec![input("e1", 1.0, "hello"), input("e2", 2.0, "more")],
+            ..first.clone()
+        };
+        let write = |connection: &mut Connection, submission: &PreparedSubmission, start: bool| {
+            let transaction = connection.transaction().expect("transaction begins");
+            let result = if start {
+                record_start_submission(&transaction, "agent", submission)
+            } else {
+                record_user_submission(&transaction, "agent", submission)
+            };
+            transaction.commit().expect("transaction commits");
+            result
+        };
+        write(&mut connection, &first, true).expect("first start writes");
+        write(&mut connection, &retry, true).expect("retry replaces the unsent record");
+        let item = TranscriptRepository::item(&connection, "agent", "agent:e1")
+            .expect("item reads")
+            .expect("item exists");
+        assert_eq!(item.record["text"], retry.text);
+        assert_eq!(item.record["inputs"][1]["text"], "more");
+        assert_eq!(
+            write(&mut connection, &retry, true).expect("identical replay"),
+            DispatchOutcome::Written
+        );
+        assert!(matches!(
+            write(&mut connection, &first, false),
+            Err(super::NotificationDispatchError::ConflictingInput)
+        ));
+    }
+
+    #[test]
     fn prepared_submission_preserves_batch_text_metadata_assets_and_replay() {
         let mut connection = database();
         connection.execute_batch(
@@ -3568,7 +3673,7 @@ mod tests {
             .expect("base rows")
         };
         let search = |tx: &rusqlite::Transaction<'_>, id: &str| -> Option<String> {
-            tx.query_row("SELECT body FROM runtime_search WHERE id=?1", [id], |r| {
+            tx.query_row("SELECT coalesce(f.body,json_extract(i.record,'$.text')) FROM runtime_search_next_meta m JOIN runtime_items i ON i.id=m.id LEFT JOIN runtime_item_fulltext f ON f.id=m.id JOIN runtime_search_next s ON s.rowid=m.search_rowid WHERE m.id=?1", [id], |r| {
                 r.get(0)
             })
             .optional()

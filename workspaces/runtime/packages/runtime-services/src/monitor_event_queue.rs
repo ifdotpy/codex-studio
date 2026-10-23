@@ -5,9 +5,7 @@
 //! output/result, so replay after restart is exact and never starts a command.
 
 use base64::Engine;
-use rusqlite::OptionalExtension;
 use serde_json::{Value, json};
-use studio_runtime_store::CachedSql;
 use studio_runtime_store::{
     MonitorRecord, MonitorsRepository, RuntimeStore, StoreError, Table, Transaction,
 };
@@ -166,14 +164,7 @@ fn stream_queue(record: &mut Value) -> Result<&mut Vec<Value>, MonitorError> {
 pub async fn next(store: &RuntimeStore) -> Result<Option<Delivery>, MonitorError> {
     let row = store
         .read_async("runtime-services/monitor_event_queue", |connection| {
-            connection
-                .query_row_cached(
-                    "SELECT id,record FROM runtime_monitors WHERE json_array_length(record,'$.streamQueue')>0 ORDER BY id LIMIT 1",
-                    [],
-                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
-                )
-                .optional()
-                .map_err(StoreError::from)
+            MonitorsRepository::first_queued_stream(connection)
         })
         .await?;
     let Some((id, encoded)) = row else {
@@ -439,4 +430,114 @@ pub async fn acknowledge(store: &RuntimeStore, delivery: &Delivery) -> Result<()
             Ok(())
         })
         .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    fn operation() -> Value {
+        json!({"agent":"worker","epoch":1,"accountKey":"default","connectionId":"connection"})
+    }
+
+    /// Store `count` finished monitors without a pending event, starting at
+    /// `from`. Half carry an empty queue, as acknowledged monitors do.
+    async fn finished_history(store: &RuntimeStore, from: usize, count: usize) {
+        store
+            .transaction_with(move |tx| {
+                let mut insert =
+                    tx.prepare("INSERT INTO runtime_monitors(id,record) VALUES(?1,?2)")?;
+                for index in from..from + count {
+                    let id = format!("history-{index:06}");
+                    let mut record = json!({"id":id,"agent":format!("other-{index}"),"status":"completed","created":1,"operation":operation()});
+                    if index % 2 == 0 {
+                        record["streamQueue"] = json!([]);
+                    }
+                    insert.execute(rusqlite::params![id, record.to_string()])?;
+                }
+                Ok::<_, StoreError>(())
+            })
+            .await
+            .expect("finished monitor history");
+    }
+
+    /// SQLite work of the queue head read that `next` runs, in virtual machine
+    /// steps. The count is deterministic for a given database state.
+    fn queue_head_work(store: &RuntimeStore) -> (u64, Option<String>) {
+        let connection = store.test_reader().expect("reader");
+        let steps = Arc::new(AtomicU64::new(0));
+        let counter = Arc::clone(&steps);
+        connection
+            .progress_handler(
+                1,
+                Some(move || {
+                    counter.fetch_add(1, Ordering::Relaxed);
+                    false
+                }),
+            )
+            .expect("progress counter");
+        let head = MonitorsRepository::first_queued_stream(&connection).expect("queue head");
+        connection
+            .progress_handler(1, None::<fn() -> bool>)
+            .expect("progress counter");
+        (steps.load(Ordering::Relaxed), head.map(|(id, _)| id))
+    }
+
+    /// The monitor tick reads the queue head once per pass and once per
+    /// delivered event. On 22 October 2026 that read parsed every monitor
+    /// (93,650 rows, 209 MB, about 0.55 s) and kept the backend near 80% CPU.
+    /// Its work must not grow with finished monitor history, and a finished
+    /// monitor with an undelivered exit must still be the delivered head.
+    #[tokio::test]
+    async fn queue_head_work_is_independent_of_finished_monitor_history() {
+        const HISTORY: usize = 2_000;
+        let root = tempfile::tempdir().expect("state directory");
+        let store = RuntimeStore::open(Some(root.path()))
+            .await
+            .expect("store opens");
+        store
+            .transaction_with(|tx| {
+                tx.execute(
+                    "INSERT INTO runtime_monitors(id,record) VALUES('live',?1)",
+                    [json!({"id":"live","agent":"worker","status":"running","created":2,"operation":operation(),"streamQueue":[]}).to_string()],
+                )?;
+                tx.execute(
+                    "INSERT INTO runtime_monitors(id,record) VALUES('zz-finished',?1)",
+                    [json!({"id":"zz-finished","agent":"worker","status":"completed","created":3,"operation":operation(),
+                        "streamQueue":[{"kind":"exit","cursor":"result:zz-finished","code":0,"error":null,"finished":9.0,"byteLength":0,"operation":operation()}]}).to_string()],
+                )?;
+                Ok::<_, StoreError>(())
+            })
+            .await
+            .expect("monitors");
+        finished_history(&store, 0, HISTORY).await;
+        let (small, head) = queue_head_work(&store);
+        assert_eq!(head.as_deref(), Some("zz-finished"));
+        finished_history(&store, HISTORY, HISTORY).await;
+        let (large, head) = queue_head_work(&store);
+        assert_eq!(head.as_deref(), Some("zz-finished"));
+        assert!(
+            large <= small + small / 20,
+            "queue head work grew with history: {small} steps, then {large} with {HISTORY} more finished monitors"
+        );
+
+        let delivery = next(&store)
+            .await
+            .expect("queue head")
+            .expect("finished monitor exit is delivered");
+        assert_eq!(delivery.id, "zz-finished");
+        assert_eq!(delivery.cursor, "result:zz-finished");
+        assert!(matches!(
+            delivery.event,
+            MonitorEvent::Exit {
+                code: Some(0),
+                error: None,
+                ..
+            }
+        ));
+        acknowledge(&store, &delivery).await.expect("ack exit");
+        assert!(next(&store).await.expect("drained queue").is_none());
+    }
 }

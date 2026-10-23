@@ -1,31 +1,11 @@
-use crate::prepared_python_support;
-use std::path::PathBuf;
-use std::process::Command;
-
 use serde_json::{Value, json};
 use studio_runtime_services::rules_engine::{
     CheckResult, RuleDecision, RuleSnapshot, TickObservation, active_workers,
 };
 
-fn python() -> PathBuf {
-    prepared_python_support::prepared_python(
-        &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
-    )
-}
-#[allow(clippy::disallowed_methods)]
 fn oracle() -> Vec<Value> {
-    let mut command = Command::new(python());
-    command.arg(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/rules_engine/oracle.py"));
-    if std::env::var_os("STUDIO_RUNTIME_CORPUS_FULL").is_some() {
-        command.arg("--full");
-    }
-    let output = command.output().expect("Python rules oracle starts");
-    assert!(
-        output.status.success(),
-        "Python rules oracle failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    serde_json::from_slice(&output.stdout).expect("Python corpus is JSON")
+    serde_json::from_str(include_str!("rules_engine/expected.json"))
+        .expect("frozen rules decisions")
 }
 
 #[test]

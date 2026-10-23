@@ -2,12 +2,14 @@
 //! copies of the constants in this crate, and the web API types of the
 //! committed `openapi.json`. `studio-contracts --check` (`pnpm run
 //! contracts:check`) rejects drift; `--write` (`pnpm run contracts:generate`)
-//! refreshes the files. The OpenAPI document and the persisted-state schemas are
-//! committed source; `check_schema_parity` holds them to the Rust owners.
+//! refreshes the files. OpenAPI owns HTTP contracts; Rust-owned progress
+//! components are refreshed before rendering. Persisted-state schemas remain
+//! committed source; `check_schema_parity` holds them to their Rust owners.
 
 use std::fmt::Write as _;
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use serde_json::Value;
 
@@ -56,6 +58,30 @@ fn shared_values_ts() -> String {
             (
                 "WORKER_TURN_LIMIT_REASON",
                 json_string(crate::worker_capabilities::TURN_LIMIT_REASON),
+            ),
+            (
+                "SYNC_TRANSCRIPT_STREAM_MAX_ITEMS",
+                values::SYNC_TRANSCRIPT_STREAM_MAX_ITEMS.to_string(),
+            ),
+            (
+                "SYNC_TRANSCRIPT_STREAM_MAX_BYTES",
+                values::SYNC_TRANSCRIPT_STREAM_MAX_BYTES.to_string(),
+            ),
+            (
+                "SYNC_ENTITY_STREAM_MAX_DOCUMENTS",
+                values::SYNC_ENTITY_STREAM_MAX_DOCUMENTS.to_string(),
+            ),
+            (
+                "SYNC_ENTITY_STREAM_MAX_BYTES",
+                values::SYNC_ENTITY_STREAM_MAX_BYTES.to_string(),
+            ),
+            (
+                "SYNC_DRAFT_STREAM_MAX_DOCUMENTS",
+                values::SYNC_DRAFT_STREAM_MAX_DOCUMENTS.to_string(),
+            ),
+            (
+                "SYNC_DRAFT_STREAM_MAX_BYTES",
+                values::SYNC_DRAFT_STREAM_MAX_BYTES.to_string(),
             ),
             (
                 "MAX_USER_ATTACHMENT_BYTES",
@@ -201,56 +227,6 @@ fn multi_server_protocol_ts() -> String {
     )
 }
 
-/// Project the Rust-owned primitive progress schemas into strict Python DTOs.
-fn agent_progress_py() -> Result<String, String> {
-    #[derive(serde::Deserialize)]
-    struct ModelFields {
-        properties: std::collections::BTreeMap<String, ModelField>,
-    }
-    #[derive(serde::Deserialize)]
-    #[serde(deny_unknown_fields)]
-    struct ModelField {
-        #[serde(rename = "type")]
-        kind: FieldKind,
-        #[serde(rename = "title")]
-        _title: String,
-    }
-    #[derive(serde::Deserialize)]
-    #[serde(rename_all = "lowercase")]
-    enum FieldKind {
-        String,
-        Number,
-    }
-    let mut text = format!("# {HEADER}\nfrom studio_api.models import ContractModel\n");
-    for (name, schema) in crate::agent_progress::schemas() {
-        let fields: ModelFields =
-            serde_json::from_value(schema).map_err(|error| error.to_string())?;
-        // Formatting into this owned String is infallible.
-        writeln!(text, "\n\nclass {name}(ContractModel):").expect("writing to a String");
-        for (name, field) in fields.properties {
-            let kind = match field.kind {
-                FieldKind::String => "str",
-                FieldKind::Number => "float",
-            };
-            // Formatting into this owned String is infallible.
-            writeln!(text, "    {name}: {kind}").expect("writing to a String");
-        }
-    }
-    Ok(text)
-}
-
-/// The record model imports this leaf module without entering the sync package.
-fn start_wait_py() -> Result<String, String> {
-    let reasons = crate::agent_progress::StartWaitReason::ALL
-        .iter()
-        .map(|reason| serde_json::to_string(reason).map_err(|error| error.to_string()))
-        .collect::<Result<Vec<_>, _>>()?
-        .join(", ");
-    Ok(format!(
-        "# {HEADER}\nfrom typing import Literal\n\nStartWaitReason = Literal[{reasons}]\n"
-    ))
-}
-
 fn delivery_moment_ts() -> String {
     let mut text = format!("// {HEADER}\nexport const DeliveryMoment = {{\n");
     for moment in DeliveryMoment::ALL {
@@ -271,42 +247,6 @@ fn delivery_moment_ts() -> String {
         .expect("write string");
     }
     text.push_str("    default:\n      throw new Error(\"Invalid delivery moment\");\n  }\n}\n");
-    text
-}
-
-fn delivery_moment_py() -> String {
-    let mut text = format!(
-        "# {HEADER}\nfrom enum import StrEnum\nfrom typing import Literal\n\n\nclass DeliveryMoment(StrEnum):\n"
-    );
-    for moment in DeliveryMoment::ALL {
-        writeln!(
-            text,
-            "    {} = {}",
-            moment.as_str().to_uppercase(),
-            json_string(moment.as_str())
-        )
-        .expect("write string");
-    }
-    text.push_str("\n\nLEGACY_DELIVERY_MOMENTS: dict[str, DeliveryMoment] = {\n");
-    for (legacy, moment) in delivery::LEGACY_DELIVERY_MOMENTS {
-        writeln!(
-            text,
-            "    {}: DeliveryMoment.{},",
-            json_string(legacy),
-            moment.as_str().to_uppercase()
-        )
-        .expect("write string");
-    }
-    text.push_str("}\n");
-    text.push_str("\n\nDeliveryMomentInput = Literal[\n");
-    for name in DeliveryMoment::ALL
-        .map(DeliveryMoment::as_str)
-        .into_iter()
-        .chain(delivery::LEGACY_DELIVERY_MOMENTS.map(|(name, _)| name))
-    {
-        writeln!(text, "    {},", json_string(name)).expect("write string");
-    }
-    text.push_str("]\n");
     text
 }
 
@@ -360,11 +300,10 @@ fn api_schema_ts(schema_hash: &str) -> String {
 /// The Rust-owned constants appended to the generated API declarations.
 fn api_types_tail() -> String {
     format!(
-        "\nexport const SYNC_PROTOCOL_VERSION = {} as const;\nexport const SYNC_ENTITY_SCOPE = {} as const;\nexport const TOKEN_RATE_MAX_ENTRIES = {} as const;\nexport const TOKEN_RATE_MAX_TOTAL_ENTRIES = {} as const;\nexport const TOKEN_RATE_IDENTIFIER_MAX_CODEPOINTS = {} as const;\n",
+        "\nexport const SYNC_PROTOCOL_VERSION = {} as const;\nexport const SYNC_ENTITY_SCOPE = {} as const;\nexport const TOKEN_RATE_MAX_ENTRIES = {} as const;\nexport const TOKEN_RATE_IDENTIFIER_MAX_CODEPOINTS = {} as const;\n",
         crate::SYNC_PROTOCOL_VERSION,
         json_string(crate::SYNC_ENTITY_SCOPE),
         crate::TOKEN_RATE_MAX_ENTRIES,
-        crate::TOKEN_RATE_MAX_TOTAL_ENTRIES,
         crate::TOKEN_RATE_IDENTIFIER_MAX_CODEPOINTS,
     )
 }
@@ -442,6 +381,28 @@ fn check_account_group_parity(openapi: &Value) -> Result<(), String> {
 
 /// Hold the committed OpenAPI document and persisted-state schemas to the Rust owners.
 pub fn check_schema_parity(openapi: &Value, account_transfer: &Value) -> Result<(), String> {
+    expect_number(
+        openapi,
+        "/components/schemas/DraftChangeBatch/properties/documents/maxItems",
+        values::SYNC_DRAFT_STREAM_MAX_DOCUMENTS,
+    )?;
+    expect_number(
+        openapi,
+        "/components/schemas/EntityChangeBatch/properties/documents/maxItems",
+        values::SYNC_ENTITY_STREAM_MAX_DOCUMENTS,
+    )?;
+    for field in ["items", "removed", "order"] {
+        expect_number(
+            openapi,
+            &format!("/components/schemas/TranscriptStreamDelta/properties/{field}/maxItems"),
+            values::SYNC_TRANSCRIPT_STREAM_MAX_ITEMS as i64,
+        )?;
+    }
+    expect_number(
+        openapi,
+        "/components/schemas/TranscriptStreamDelta/properties/itemRevisions/maxProperties",
+        values::SYNC_TRANSCRIPT_STREAM_MAX_ITEMS as i64,
+    )?;
     check_delivery_parity(openapi)?;
     crate::task_results::check_schema_parity(openapi)?;
     check_account_group_parity(openapi)?;
@@ -505,25 +466,22 @@ pub fn check_schema_parity(openapi: &Value, account_transfer: &Value) -> Result<
         &format!("{protocol}/supportedVersions/items/const"),
         version,
     )?;
-    let snapshot = "/components/schemas/TokenRateSnapshot/properties";
-    let entries = crate::TOKEN_RATE_MAX_ENTRIES as i64;
-    let identifier = crate::TOKEN_RATE_IDENTIFIER_MAX_CODEPOINTS as i64;
-    for map in ["/rates", "/teams", "/teams/additionalProperties"] {
-        expect_number(openapi, &format!("{snapshot}{map}/maxProperties"), entries)?;
+    for owner in ["TokenRateSnapshot", "ResourceTokenRatesEvent"] {
         expect_number(
             openapi,
-            &format!("{snapshot}{map}/propertyNames/minLength"),
-            1,
-        )?;
-        expect_number(
-            openapi,
-            &format!("{snapshot}{map}/propertyNames/maxLength"),
-            identifier,
+            &format!("/components/schemas/{owner}/properties/records/maxItems"),
+            crate::TOKEN_RATE_MAX_ENTRIES as i64,
         )?;
     }
-    let turn_id = "/components/schemas/TokenRateValue/properties/turnId";
-    expect_number(openapi, &format!("{turn_id}/minLength"), 1)?;
-    expect_number(openapi, &format!("{turn_id}/maxLength"), identifier)?;
+    for field in ["agentId", "rootId", "turnId"] {
+        let path = format!("/components/schemas/TokenRateRecord/properties/{field}");
+        expect_number(openapi, &format!("{path}/minLength"), 1)?;
+        expect_number(
+            openapi,
+            &format!("{path}/maxLength"),
+            crate::TOKEN_RATE_IDENTIFIER_MAX_CODEPOINTS as i64,
+        )?;
+    }
     expect_number(
         account_transfer,
         "/properties/members/maxProperties",
@@ -598,14 +556,26 @@ fn check_delivery_parity(openapi: &Value) -> Result<(), String> {
     clippy::disallowed_methods,
     reason = "contract generator runs on the synchronous studio-contracts CLI thread, outside Tokio"
 )]
-fn api_types(root: &Path) -> Result<String, String> {
+fn api_types(root: &Path, document: &Value, argument: &str) -> Result<String, String> {
     let node = std::env::var(NODE_ENVIRONMENT).unwrap_or_else(|_| "node".into());
-    let output = Command::new(&node)
+    let mut child = Command::new(&node)
         .arg(root.join(API_TYPES_SCRIPT))
-        .arg(root.join(OPENAPI_PATH))
+        .arg(argument)
         .current_dir(root)
-        .output()
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .map_err(|error| format!("cannot start {node}: {error}"))?;
+    child
+        .stdin
+        .take()
+        .ok_or("missing schema input")?
+        .write_all(document.to_string().as_bytes())
+        .map_err(|error| error.to_string())?;
+    let output = child
+        .wait_with_output()
+        .map_err(|error| error.to_string())?;
     if !output.status.success() {
         return Err(format!(
             "{API_TYPES_SCRIPT} failed: {}",
@@ -614,12 +584,20 @@ fn api_types(root: &Path) -> Result<String, String> {
     }
     let body = String::from_utf8(output.stdout)
         .map_err(|error| format!("{API_TYPES_SCRIPT} printed invalid UTF-8: {error}"))?;
-    Ok(body + &api_types_tail())
+    Ok(body)
 }
 
-/// Render every contract file. `with_api_types` also runs Node for `api.ts`.
+/// Render every contract file. `with_api_types` also runs Node for web types.
 pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String> {
-    let openapi = read_json(root, OPENAPI_PATH)?;
+    let mut openapi = read_json(root, OPENAPI_PATH)?;
+    for (name, schema) in crate::agent_progress::schemas()
+        .into_iter()
+        .chain(crate::desktop::schemas())
+    {
+        *openapi
+            .pointer_mut(&format!("/components/schemas/{name}"))
+            .ok_or_else(|| format!("OpenAPI is missing Rust-owned {name}"))? = schema;
+    }
     check_schema_parity(&openapi, &read_json(root, ACCOUNT_TRANSFER_SCHEMA_PATH)?)?;
     for (name, fields) in [
         (
@@ -654,36 +632,12 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
             ),
         },
         Rendered {
-            path: "workspaces/runtime/apps/server/src/codex_start_wait.py".into(),
-            text: start_wait_py()?,
-        },
-        Rendered {
-            path: "workspaces/runtime/apps/server/src/studio_api/sync/agent_progress_generated.py"
-                .into(),
-            text: agent_progress_py()?,
+            path: OPENAPI_PATH.into(),
+            text: serde_json::to_string_pretty(&openapi).map_err(|error| error.to_string())? + "\n",
         },
         Rendered {
             path: web("deliveryMoment.ts"),
             text: delivery_moment_ts(),
-        },
-        Rendered {
-            path: "workspaces/runtime/apps/server/src/codex_delivery_moment.py".into(),
-            text: delivery_moment_py(),
-        },
-        Rendered {
-            path: "workspaces/runtime/apps/server/src/codex_turn_limits.py".into(),
-            text: format!(
-                "# {HEADER}\nMAX_TURN_ATTACHMENTS = {}\n",
-                values::MAX_TURN_ATTACHMENTS
-            ),
-        },
-        Rendered {
-            path: "workspaces/runtime/apps/server/src/codex_work_limits.py".into(),
-            text: format!(
-                "# {HEADER}\nTASK_SUBMISSION_MAX_FILES = {}\nTASK_SUBMISSION_PATH_MAX_CODEPOINTS = {}\n",
-                values::TASK_SUBMISSION_MAX_FILES,
-                values::TASK_SUBMISSION_PATH_MAX_CODEPOINTS,
-            ),
         },
         Rendered {
             path: web("sharedValues.ts"),
@@ -707,10 +661,30 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
             text: linux_vm_swift(),
         },
     ];
+    let draft_schema = studio_client_domain::drafts::schema().to_value();
+    rendered.push(Rendered {
+        path: "workspaces/runtime/packages/runtime-http/draft-payload.schema.json".into(),
+        text: serde_json::to_string_pretty(&draft_schema).map_err(|error| error.to_string())?
+            + "\n",
+    });
     if with_api_types {
+        let mut generator = schemars::generate::SchemaSettings::draft2020_12()
+            .for_serialize()
+            .with(|settings| settings.definitions_path = "/components/schemas".into())
+            .into_generator();
+        generator.subschema_for::<studio_client_domain::drafts::DraftVersion>();
+        generator.subschema_for::<studio_client_domain::markdown::MarkdownBlock>();
+        let document = serde_json::json!({
+            "openapi":"3.1.0", "info":{"title":"Rust-owned contracts","version":"1"},
+            "paths":{}, "components":{"schemas":generator.take_definitions(true)}
+        });
+        rendered.push(Rendered {
+            path: web("rustOwned.ts"),
+            text: api_types(root, &document, "--rust-owned")?,
+        });
         rendered.push(Rendered {
             path: web("api.ts"),
-            text: api_types(root)?,
+            text: api_types(root, &openapi, "-")? + &api_types_tail(),
         });
     }
     Ok(rendered)
@@ -738,6 +712,50 @@ pub fn repository_root() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn markdown_output_matches_rust_owned_schema() {
+        use studio_client_domain::{markdown::MarkdownBlock, protocol::Request};
+        let schema = schemars::generate::SchemaSettings::draft2020_12()
+            .for_serialize()
+            .into_generator()
+            .into_root_schema_for::<Vec<MarkdownBlock>>();
+        let validator =
+            jsonschema::validator_for(schema.as_value()).expect("Markdown schema compiles");
+        for text in [
+            "# Hello 🦀. Next **sentence**.",
+            "```html\n<b>inert</b>\n```",
+            "```mermaid\ngraph TD; A-->B\n```",
+        ] {
+            let response = studio_client_domain::markdown::dispatch(&Request {
+                id: "markdown-contract".into(),
+                method: "markdown.parse".into(),
+                params: serde_json::json!({"text":text,"streaming":false}),
+            });
+            assert!(response.error.is_none());
+            assert!(validator.is_valid(&response.result.expect("serialized native output")));
+        }
+        assert!(!validator.is_valid(&serde_json::json!([{"kind":"script","source":"run()"}])));
+        assert!(!validator.is_valid(
+            &serde_json::json!([{"nodes":[{"sentences":[{"text":"x","index":"bad"}]}],"length":1}])
+        ));
+    }
+
+    #[test]
+    fn generated_contracts_do_not_recreate_the_removed_backend() {
+        let rendered = render(&repository_root(), false).expect("contracts render");
+        assert!(
+            rendered
+                .iter()
+                .all(|file| !file.path.starts_with("workspaces/runtime/apps/server/"))
+        );
+        assert!(
+            rendered
+                .iter()
+                .any(|file| file.path
+                    == "workspaces/runtime/apps/vm-guest/shared_values_generated.py")
+        );
+    }
 
     #[test]
     fn committed_contract_copies_match_the_rust_owners() {

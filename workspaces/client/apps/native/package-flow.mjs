@@ -1,9 +1,13 @@
 // The native package cycle in one command: `just package-native <out> [flags]`.
 //
+//   0. signing check: fail in seconds, before the build
 //   1. dev-profile native host check (skip: --hosted-ci-passed)
 //   2. Rust release binaries for HEAD, reused when the manifest verifies
 //   3. package.mjs (signs with the configured identity)
-//   4. check-package.mjs and check-package-start.py
+//   4. check-package.mjs and check-package-start.mjs
+//
+// Step 0 runs the same check as `just signing-check`. See the "Signing setup"
+// section of README.md.
 //
 // --hosted-ci-passed states that hosted CI already passed on the exact HEAD commit,
 // so the dev-profile build of the native host (cargo build --features native-check)
@@ -48,6 +52,11 @@ export function planFlow({ out, hostedCiPassed, directory, commit }) {
     [releaseTargetEnvironment]: directory,
   };
   return [
+    {
+      label: "signing check",
+      command: "node",
+      args: [path.join(root, "../desktop/signing-check.mjs")],
+    },
     hostedCiPassed
       ? {
           label: "native host check skipped",
@@ -57,7 +66,7 @@ export function planFlow({ out, hostedCiPassed, directory, commit }) {
           label: "native host check",
           command: "just",
           args: ["test-native-webview"],
-          // check-native.py reads target/debug; keep the dev build out of the
+          // The native check reads target/debug; keep the dev build out of the
           // shared release directory.
           withoutEnvironment: ["CARGO_TARGET_DIR", releaseTargetEnvironment],
         },
@@ -75,8 +84,8 @@ export function planFlow({ out, hostedCiPassed, directory, commit }) {
     },
     {
       label: "check package start",
-      command: "python3",
-      args: [path.join(root, "check-package-start.py"), application],
+      command: "node",
+      args: [path.join(root, "check-package-start.mjs"), application],
     },
   ];
 }

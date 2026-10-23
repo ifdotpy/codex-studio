@@ -74,7 +74,9 @@ pub mod federation_effects;
 pub mod federation_limits;
 pub mod federation_messaging;
 pub mod file_derived;
-pub mod historical_input_receipts;
+pub mod host_exec;
+#[cfg(unix)]
+pub mod host_exec_service;
 pub mod host_project_runtime;
 pub mod host_worker_create;
 pub mod image_workspace;
@@ -83,6 +85,8 @@ pub mod lifecycle_effects;
 pub mod limit_reset;
 pub mod linux_vm_guest;
 pub mod linux_vm_provider;
+#[cfg(unix)]
+pub mod linux_vm_runtime;
 pub mod linux_vm_settings;
 pub mod mac_sync;
 pub mod maintenance;
@@ -125,11 +129,10 @@ pub mod panels;
 pub mod payload_blobs;
 pub mod payload_store;
 pub mod peer_conversion;
+pub mod peer_updates;
 pub mod portable_history;
 pub mod pricing;
 pub mod process_controls;
-pub mod progress_panel;
-pub mod progress_watch;
 pub mod project_locations;
 pub mod project_secrets;
 pub mod projects;
@@ -306,4 +309,3 @@ mod registration_tests {
         assert_eq!(declared_modules(include_str!("lib.rs")), source_modules);
     }
 }
-

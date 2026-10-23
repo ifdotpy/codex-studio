@@ -693,25 +693,32 @@ async fn native_login_pins_uuid_and_reauth_refuses_another_organization() {
     use studio_runtime_services::claude_login::ports::LoginEvent;
     let f = Fixture::new();
     let s = f.open().await;
-    s.start(ID.into(), None, None, None).await.unwrap();
+    s.start(ID.into(), None, None, None)
+        .await
+        .expect("Claude login starts");
     let child = f.launcher.next().await;
     let config = std::path::PathBuf::from(
         child
             .command
             .environment
             .get(std::ffi::OsStr::new("CLAUDE_CONFIG_DIR"))
-            .unwrap(),
+            .expect("Claude configuration directory is set"),
     );
     let write_profile = |org: &str| {
         std::fs::write(config.join(".claude.json"), json!({"oauthAccount":{
         "emailAddress":"fixture@example.test","organizationUuid":org,"accountUuid":"account-a"
-    }}).to_string()).unwrap()
+    }}).to_string()).expect("native Claude profile writes")
     };
     write_profile("org-a");
     link(&f, &s, &child).await;
     let ready = complete(&f, &s, &child).await;
-    let key = ready["accountKey"].as_str().unwrap();
-    let original = f.accounts.claude_profile(key).unwrap();
+    let key = ready["accountKey"]
+        .as_str()
+        .expect("ready account identity is text");
+    let original = f
+        .accounts
+        .claude_profile(key)
+        .expect("original Claude profile loads");
     assert_eq!(
         original["_credentialIdentity"],
         "claude:v2:[\"fixture@example.test\",\"org-a\",\"account-a\"]"
@@ -719,20 +726,31 @@ async fn native_login_pins_uuid_and_reauth_refuses_another_organization() {
     const SECOND: &str = "e0166868-592a-4dca-8994-04d34a730af6";
     s.start(SECOND.into(), Some(key.into()), None, None)
         .await
-        .unwrap();
+        .expect("second Claude login starts");
     let login = f.launcher.next().await;
     write_profile("org-b");
-    login.output.send(LoginEvent::Exited(true)).await.unwrap();
+    login
+        .output
+        .send(LoginEvent::Exited(true))
+        .await
+        .expect("login exit event sends");
     let probe = f.launcher.next().await;
-    probe.output.send(LoginEvent::Output(br#"{"loggedIn":true,"authMethod":"claude.ai","email":"fixture@example.test","orgId":"org-b","subscriptionType":"max"}"#.to_vec())).await.unwrap();
-    probe.output.send(LoginEvent::Exited(true)).await.unwrap();
+    probe.output.send(LoginEvent::Output(br#"{"loggedIn":true,"authMethod":"claude.ai","email":"fixture@example.test","orgId":"org-b","subscriptionType":"max"}"#.to_vec())).await.expect("status probe output sends");
+    probe
+        .output
+        .send(LoginEvent::Exited(true))
+        .await
+        .expect("status probe exit sends");
     f.status(&s, SECOND, "error").await;
-    let refused = f.accounts.claude_profile(key).unwrap();
+    let refused = f
+        .accounts
+        .claude_profile(key)
+        .expect("refused profile loads");
     assert_eq!(refused["status"], "changed");
     assert_eq!(
         refused["_credentialIdentity"],
         original["_credentialIdentity"]
     );
     assert_eq!(f.chats.0.load(Ordering::SeqCst), 0);
-    s.shutdown().await.unwrap();
+    s.shutdown().await.expect("login actor shuts down");
 }

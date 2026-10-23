@@ -3,6 +3,7 @@
 import assert from "node:assert/strict";
 import { runScaleVerifier } from "./scaleVerifierTeardown.mjs";
 import { spawnSync } from "node:child_process";
+import { DatabaseSync } from "node:sqlite";
 import { randomUUID } from "node:crypto";
 import {
   mkdir,
@@ -2372,87 +2373,33 @@ function observedSqliteLockErrors(value) {
   return Number.isSafeInteger(count) && count >= 0 ? count : null;
 }
 
-const EVENT_EVIDENCE_QUERY = String.raw`
-import json, pathlib, sqlite3, sys
-database = pathlib.Path(sys.argv[1]).resolve()
-expected_workspace = sys.argv[2]
-requested = json.loads(sys.argv[3])
-agent_ids = json.loads(sys.argv[4])
-retained_statuses = json.loads(sys.argv[5])
-uri = database.as_uri() + "?mode=ro"
-connection = sqlite3.connect(uri, uri=True, timeout=5)
-try:
-    connection.execute("PRAGMA query_only=ON")
-    connection.execute("BEGIN")
-    workspace = connection.execute("SELECT id FROM sync_identity").fetchone()
-    if not workspace or workspace[0] != expected_workspace:
-        raise RuntimeError("SQLite workspace identity does not match the authoritative sync baseline")
-    rows = []
-    for item in requested:
-        row = connection.execute(
-        "SELECT e.id,e.agent,e.kind,e.status,e.error,m.record "
-            "FROM runtime_events e LEFT JOIN runtime_event_meta m ON m.id=e.id "
-            "WHERE e.id=? AND e.agent=?",
-            (item["id"], item["agentId"]),
-        ).fetchone()
-        if not row:
-            rows.append({"id": item["id"], "agentId": item["agentId"], "exchange": item.get("exchange"), "missing": True})
-            continue
-        metadata = json.loads(row[5]) if row[5] else {}
-        timing = metadata.get("timing") if isinstance(metadata, dict) else None
-        attempts = connection.execute(
-            "SELECT a.id,json_extract(a.record,'$.requestTicket'), "
-            "json_extract(a.record,'$.connectionGeneration'), "
-            "json_extract(a.record,'$.accountKey'),json_extract(a.record,'$.events'),r.account "
-            "FROM runtime_execution_inputs i "
-            "JOIN runtime_execution_runs r ON r.id=i.run "
-            "JOIN runtime_execution_attempts a ON a.run=i.run "
-            "WHERE i.event=? AND r.agent=? ORDER BY a.id",
-            (item["id"], item["agentId"]),
-        ).fetchall()
-        rows.append({
-            "id": row[0], "agentId": row[1], "kind": row[2], "status": row[3],
-            "exchange": item.get("exchange"),
-            "error": (row[4] or "")[:500],
-            "timing": {"enqueuedAt": timing["enqueuedAt"]} if isinstance(timing, dict) and "enqueuedAt" in timing else {},
-            "attempts": [{"id": attempt[0], "requestTicket": attempt[1], "connectionGeneration": attempt[2], "accountKey": attempt[3], "events": json.loads(attempt[4]) if attempt[4] else [], "runAccountKey": attempt[5]} for attempt in attempts],
-        })
-    retained = connection.execute(
-        "SELECT id,agent,kind,status FROM runtime_events WHERE status IN (" + ",".join("?" for _ in retained_statuses) + ") ORDER BY id",
-        retained_statuses,
-    ).fetchall()
-    counts = {}
-    for agent_id in agent_ids:
-        prefix = agent_id + ":"
-        counts[agent_id] = connection.execute(
-            "SELECT count(*) FROM runtime_completed_turns WHERE id>=? AND id<?",
-            (prefix, agent_id + ";"),
-        ).fetchone()[0]
-    print(json.dumps({"workspaceId": workspace[0], "database": str(database), "events": rows, "nativeTurnCounts": counts, "retainedInputs": [{"id": row[0], "agent": row[1], "kind": row[2], "status": row[3]} for row in retained]}))
-finally:
-    connection.close()
-`;
-
-// Reads the bridge's per-response model from the existing usage ledger, in one
-// read-only query for the whole agent set. It is not polled.
-const SERVED_MODEL_QUERY = String.raw`
-import json,pathlib,sqlite3,sys
-database=pathlib.Path(sys.argv[1]).resolve()
-workspace_id=sys.argv[2]
-agent_ids=json.loads(sys.argv[3])
-usage_source=sys.argv[4]
-connection=sqlite3.connect(database.as_uri()+"?mode=ro",uri=True,timeout=5)
-try:
- connection.execute("PRAGMA query_only=ON")
- connection.execute("BEGIN")
- identity=connection.execute("SELECT id FROM sync_identity").fetchone()
- if not identity or identity[0]!=workspace_id: raise RuntimeError("workspace identity changed")
- connection.execute("ATTACH DATABASE ? AS analytics",((database.parent/'analytics.sqlite3').as_uri()+"?mode=ro",))
- placeholders=','.join('?' for _ in agent_ids)
- rows=connection.execute(f"SELECT agent,turn,json_extract(record,'$.model'),json_extract(record,'$.responseId') FROM analytics.analytics_usage WHERE agent IN ({placeholders}) AND COALESCE(json_extract(record,'$.usageSource'),'')"+("=" if usage_source else "!=")+"? ORDER BY seq",agent_ids+[usage_source or 'claudeResponse']).fetchall()
- print(json.dumps([{"agentId":row[0],"turnId":row[1],"model":row[2],"responseId":row[3]} for row in rows]))
-finally: connection.close()
-`;
+// Every evidence reader shares one read-only transaction and workspace fence.
+function withEvidenceDatabase(stateDir, workspaceId, deadlineAt, read) {
+  const remainingMs = Math.floor(
+    Math.min(REQUEST_DEADLINE_MS, deadlineAt - performance.now()),
+  );
+  assert.ok(remainingMs > 0, "SQLite evidence deadline expired");
+  const database = new DatabaseSync(join(stateDir, "canvas.sqlite3"), {
+    readOnly: true,
+    timeout: remainingMs,
+  });
+  try {
+    database.exec("PRAGMA query_only=ON; BEGIN");
+    assert.equal(
+      database.prepare("SELECT id FROM sync_identity").get()?.id,
+      workspaceId,
+      "SQLite workspace identity changed",
+    );
+    const result = read(database);
+    assert.ok(
+      performance.now() < deadlineAt,
+      "SQLite evidence deadline expired",
+    );
+    return result;
+  } finally {
+    database.close();
+  }
+}
 
 export function readServedModelRecords(
   stateDir,
@@ -2461,42 +2408,31 @@ export function readServedModelRecords(
   deadlineAt,
   usageSource = "claudeResponse",
 ) {
-  const result = spawnSync(
-    "python3",
-    [
-      "-c",
-      SERVED_MODEL_QUERY,
-      join(stateDir, "canvas.sqlite3"),
-      workspaceId,
-      JSON.stringify(agentIds),
-      usageSource ?? "",
-    ],
-    {
-      encoding: "utf8",
-      timeout: Math.max(
-        1,
-        Math.floor(
-          Math.min(REQUEST_DEADLINE_MS, deadlineAt - performance.now()),
-        ),
-      ),
-      maxBuffer: 8 * 1024 * 1024,
-    },
-  );
-  if (result.error || result.status !== 0)
-    throw new Error(
-      `Could not read served-model usage evidence: ${String(result.error?.message || result.stderr || result.status).slice(0, 800)}`,
-    );
-  const records = new Map();
-  for (const row of JSON.parse(result.stdout)) {
-    const list = records.get(row.agentId) || [];
-    list.push({
-      turnId: row.turnId,
-      model: row.model,
-      responseId: row.responseId,
-    });
-    records.set(row.agentId, list);
-  }
-  return records;
+  return withEvidenceDatabase(stateDir, workspaceId, deadlineAt, (database) => {
+    database
+      .prepare("ATTACH DATABASE ? AS analytics")
+      .run(
+        pathToFileURL(join(resolve(stateDir), "analytics.sqlite3")).href +
+          "?mode=ro",
+      );
+    const placeholders = agentIds.map(() => "?").join(",");
+    const rows = database
+      .prepare(
+        "SELECT agent AS agentId,turn AS turnId,json_extract(record,'$.model') AS model,json_extract(record,'$.responseId') AS responseId FROM analytics.analytics_usage WHERE agent IN (" +
+          placeholders +
+          ") AND COALESCE(json_extract(record,'$.usageSource'),'')" +
+          (usageSource ? "=" : "!=") +
+          "? ORDER BY seq",
+      )
+      .all(...agentIds, usageSource || "claudeResponse");
+    const records = new Map();
+    for (const { agentId, ...row } of rows) {
+      const list = records.get(agentId) || [];
+      list.push(row);
+      records.set(agentId, list);
+    }
+    return records;
+  });
 }
 
 // Fails closed unless every agent has at least one served Haiku response per
@@ -2547,39 +2483,71 @@ export function runEventEvidenceQuery(
   agentIds,
   deadlineAt,
 ) {
-  const result = spawnSync(
-    "python3",
-    [
-      "-c",
-      EVENT_EVIDENCE_QUERY,
-      join(stateDir, "canvas.sqlite3"),
-      workspaceId,
-      JSON.stringify(eventIds),
-      JSON.stringify(agentIds),
-      JSON.stringify(RETAINED_INPUT_STATUSES),
-    ],
-    {
-      encoding: "utf8",
-      timeout: Math.max(
-        1,
-        Math.floor(
-          Math.min(REQUEST_DEADLINE_MS, deadlineAt - performance.now()),
-        ),
-      ),
-      maxBuffer: 8 * 1024 * 1024,
-    },
-  );
-  if (result.error || result.status !== 0)
-    throw new Error(
-      `Read-only exact-event evidence query failed: ${String(result.error?.message || result.stderr || result.status).slice(0, 1000)}`,
+  return withEvidenceDatabase(stateDir, workspaceId, deadlineAt, (database) => {
+    const events = eventIds.map((item) => {
+      const row = database
+        .prepare(
+          "SELECT e.id,e.agent AS agentId,e.kind,e.status,e.error,m.record FROM runtime_events e LEFT JOIN runtime_event_meta m ON m.id=e.id WHERE e.id=? AND e.agent=?",
+        )
+        .get(item.id, item.agentId);
+      if (!row)
+        return {
+          id: item.id,
+          agentId: item.agentId,
+          exchange: item.exchange,
+          missing: true,
+        };
+      const metadata = row.record ? JSON.parse(row.record) : {};
+      const timing = metadata?.timing;
+      const attempts = database
+        .prepare(
+          "SELECT a.id,json_extract(a.record,'$.requestTicket') AS requestTicket,json_extract(a.record,'$.connectionGeneration') AS connectionGeneration,json_extract(a.record,'$.accountKey') AS accountKey,json_extract(a.record,'$.events') AS events,r.account AS runAccountKey FROM runtime_execution_inputs i JOIN runtime_execution_runs r ON r.id=i.run JOIN runtime_execution_attempts a ON a.run=i.run WHERE i.event=? AND r.agent=? ORDER BY a.id",
+        )
+        .all(item.id, item.agentId)
+        .map((attempt) => ({
+          ...attempt,
+          events: attempt.events ? JSON.parse(attempt.events) : [],
+        }));
+      return {
+        id: row.id,
+        agentId: row.agentId,
+        kind: row.kind,
+        status: row.status,
+        exchange: item.exchange,
+        error: (row.error || "").slice(0, 500),
+        timing:
+          timing && Object.hasOwn(timing, "enqueuedAt")
+            ? { enqueuedAt: timing.enqueuedAt }
+            : {},
+        attempts,
+      };
+    });
+    const retainedInputs = database
+      .prepare(
+        "SELECT id,agent,kind,status FROM runtime_events WHERE status IN (" +
+          RETAINED_INPUT_STATUSES.map(() => "?").join(",") +
+          ") ORDER BY id",
+      )
+      .all(...RETAINED_INPUT_STATUSES)
+      .map((row) => ({ ...row }));
+    const nativeTurnCounts = Object.fromEntries(
+      agentIds.map((agentId) => [
+        agentId,
+        database
+          .prepare(
+            "SELECT count(*) AS count FROM runtime_completed_turns WHERE id>=? AND id<?",
+          )
+          .get(agentId + ":", agentId + ";").count,
+      ]),
     );
-  const evidence = JSON.parse(result.stdout);
-  assert.equal(
-    evidence.workspaceId,
-    workspaceId,
-    "Read-only SQLite workspace identity changed during the query.",
-  );
-  return evidence;
+    return {
+      workspaceId,
+      database: resolve(stateDir, "canvas.sqlite3"),
+      events,
+      nativeTurnCounts,
+      retainedInputs,
+    };
+  });
 }
 
 // Retained inputs of every agent, with no exact event requested. The baseline
@@ -2701,63 +2669,53 @@ export async function readCurrentTeamChildren(
   deadlineAt,
   agentIds = [],
 ) {
-  const source = String.raw`
-import json,pathlib,sqlite3,sys
-database=pathlib.Path(sys.argv[1]).resolve()
-workspace_id,lead_id=sys.argv[2],sys.argv[3]
-agent_ids=json.loads(sys.argv[4])
-connection=sqlite3.connect(database.as_uri()+"?mode=ro",uri=True,timeout=5)
-try:
- connection.execute("PRAGMA query_only=ON")
- connection.execute("BEGIN")
- identity=connection.execute("SELECT id FROM sync_identity").fetchone()
- if not identity or identity[0]!=workspace_id: raise RuntimeError("workspace identity changed")
- if agent_ids:
-  placeholders=','.join('?' for _ in agent_ids)
-  rows=connection.execute(f"SELECT id,record FROM runtime_agents WHERE id IN ({placeholders}) ORDER BY id",agent_ids).fetchall()
- else:
-  rows=connection.execute("SELECT id,record FROM runtime_agents WHERE id=? OR json_extract(record,'$.rootId')=? ORDER BY id",(lead_id,lead_id)).fetchall()
- result=[]
- for agent_id,raw in rows:
-  record=json.loads(raw)
-  item={key:record.get(key) for key in ("deletedAt","cwd","branch","workspaceMode","worktreeReady","workspaceCleanupIntent","cleanedWorktree","rootId","parentId")}
-  item["id"]=agent_id
-  attempt=record.get("startAttempt") or {}
-  initial=agent_id+":initial"
-  item["initialInputNotSent"]=False
-  if attempt.get("submitted") is False and attempt.get("executionOutcome")=="unsent" and attempt.get("events")==[initial]:
-   event_counts=connection.execute("SELECT count(*),coalesce(sum(id=? AND status='cancelled'),0) FROM runtime_events WHERE agent=?",(initial,agent_id)).fetchone()
-   item["initialInputNotSent"]=event_counts==(1,1)
-  result.append(item)
- print(json.dumps(result))
-finally: connection.close()
-`;
-  const result = spawnSync(
-    "python3",
-    [
-      "-c",
-      source,
-      join(stateDir, "canvas.sqlite3"),
-      workspaceId,
-      leadId,
-      JSON.stringify(agentIds),
-    ],
-    {
-      encoding: "utf8",
-      timeout: Math.max(
-        1,
-        Math.floor(
-          Math.min(REQUEST_DEADLINE_MS, deadlineAt - performance.now()),
-        ),
-      ),
-      maxBuffer: 2 * 1024 * 1024,
-    },
-  );
-  if (result.error || result.status !== 0)
-    throw new Error(
-      `Could not audit the authoritative managed-child set: ${String(result.error?.message || result.stderr || result.status).slice(0, 800)}`,
-    );
-  return JSON.parse(result.stdout);
+  return withEvidenceDatabase(stateDir, workspaceId, deadlineAt, (database) => {
+    const rows = agentIds.length
+      ? database
+          .prepare(
+            "SELECT id,record FROM runtime_agents WHERE id IN (" +
+              agentIds.map(() => "?").join(",") +
+              ") ORDER BY id",
+          )
+          .all(...agentIds)
+      : database
+          .prepare(
+            "SELECT id,record FROM runtime_agents WHERE id=? OR json_extract(record,'$.rootId')=? ORDER BY id",
+          )
+          .all(leadId, leadId);
+    return rows.map(({ id, record: raw }) => {
+      const record = JSON.parse(raw);
+      const item = Object.fromEntries(
+        [
+          "deletedAt",
+          "cwd",
+          "branch",
+          "workspaceMode",
+          "worktreeReady",
+          "workspaceCleanupIntent",
+          "cleanedWorktree",
+          "rootId",
+          "parentId",
+        ].map((key) => [key, record[key] ?? null]),
+      );
+      const attempt = record.startAttempt || {};
+      const initial = id + ":initial";
+      let initialInputNotSent = false;
+      if (
+        attempt.submitted === false &&
+        attempt.executionOutcome === "unsent" &&
+        JSON.stringify(attempt.events) === JSON.stringify([initial])
+      ) {
+        const counts = database
+          .prepare(
+            "SELECT count(*) AS total,coalesce(sum(id=? AND status='cancelled'),0) AS cancelled FROM runtime_events WHERE agent=?",
+          )
+          .get(initial, id);
+        initialInputNotSent = counts.total === 1 && counts.cancelled === 1;
+      }
+      return { ...item, id, initialInputNotSent };
+    });
+  });
 }
 
 // Evidence only, not a pass gate: reply latency of thread/start and

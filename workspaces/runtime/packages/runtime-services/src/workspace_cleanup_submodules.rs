@@ -2,6 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path, PathBuf};
+use studio_runtime_store::path_identity::CanonicalPath;
 
 use super::git_output;
 
@@ -128,9 +129,10 @@ fn own_gitdir(parent: &Path, module: &Path) -> Result<PathBuf, String> {
         .strip_prefix("gitdir: ")
         .filter(|value| !value.is_empty())
         .ok_or_else(foreign)?;
-    let gitdir = std::fs::canonicalize(module.join(destination)).map_err(|_| unreadable(module))?;
+    let gitdir =
+        CanonicalPath::existing(module.join(destination)).map_err(|_| unreadable(module))?;
     let parent_gitdir = PathBuf::from(git(parent, &["rev-parse", "--absolute-git-dir"])?.trim());
-    let parent_gitdir = std::fs::canonicalize(parent_gitdir).map_err(|_| unreadable(parent))?;
+    let parent_gitdir = CanonicalPath::existing(parent_gitdir).map_err(|_| unreadable(parent))?;
     if !gitdir.starts_with(parent_gitdir.join("modules"))
         || metadata(&gitdir.join("commondir"))?.is_some()
     {
@@ -156,12 +158,12 @@ fn own_gitdir(parent: &Path, module: &Path) -> Result<PathBuf, String> {
     }
     let actual = PathBuf::from(git(module, &["rev-parse", "--absolute-git-dir"])?.trim());
     let top = PathBuf::from(git(module, &["rev-parse", "--show-toplevel"])?.trim());
-    if std::fs::canonicalize(actual).map_err(|_| unreadable(module))? != gitdir
-        || std::fs::canonicalize(top).map_err(|_| unreadable(module))? != module
+    if CanonicalPath::existing(actual).map_err(|_| unreadable(module))? != gitdir
+        || CanonicalPath::existing(top).map_err(|_| unreadable(module))? != module
     {
         return Err(foreign());
     }
-    Ok(gitdir)
+    Ok(gitdir.into_path_buf())
 }
 
 // The parent archive stores a Git link, not the submodule commit's objects.

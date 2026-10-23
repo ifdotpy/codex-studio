@@ -77,6 +77,17 @@ pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
 #[derive(Clone, Debug, PartialEq)]
 pub struct WorkspaceTaskRow {
     pub id: String,
+    record: String,
+}
+
+impl WorkspaceTaskRow {
+    /// Decode a served row without another lookup; the lookahead row stays unchecked.
+    pub fn decode(self, connection: &Connection) -> StoreResult<Value> {
+        Ok(Table::<TaskRecord>::new(connection)
+            .decode_stored(&self.id, &self.record)?
+            .value()
+            .clone())
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -123,7 +134,27 @@ impl WorkspaceViewsRepository {
     }
 
     pub fn agents(connection: &Connection) -> StoreResult<Vec<StoredRecord>> {
-        read_records(connection, "runtime_agents")
+        let fields = crate::agent_volatile::columns("v.");
+        let mut statement = connection.prepare_cached(&format!(
+            "SELECT {fields},a.id,a.record FROM runtime_agents a \
+             LEFT JOIN runtime_agent_volatile v ON v.id=a.id ORDER BY a.rowid"
+        ))?;
+        let mut rows = statement.query([])?;
+        let mut records = Vec::new();
+        while let Some(row) = rows.next()? {
+            let id: String = row.get(crate::agent_volatile::AGENT_VOLATILE_FIELDS.len())?;
+            let raw: String = row.get(crate::agent_volatile::AGENT_VOLATILE_FIELDS.len() + 1)?;
+            let mut value = crate::records::parse_agent_value(&id, &raw)?;
+            if let Some(fields) = value.as_object_mut() {
+                crate::agent_volatile::merge_row(row, &id, fields)?;
+            }
+            let value = crate::records::validate_agent_value(&id, value)?;
+            records.push(StoredRecord {
+                id,
+                record: Some(serde_json::to_string(&value)?),
+            });
+        }
+        Ok(records)
     }
 
     pub fn snapshot_tasks(
@@ -251,7 +282,7 @@ impl WorkspaceViewsRepository {
         };
         let agents_predicate = format!("json_extract(record,'$.agent') IN ({marks})");
         let sql = format!(
-            "SELECT id \
+            "SELECT id,record \
              FROM runtime_tasks WHERE {agents_predicate} AND {condition} \
              ORDER BY {sort_value} {order}, id {order} LIMIT ?"
         );
@@ -266,8 +297,12 @@ impl WorkspaceViewsRepository {
         ));
         let mut statement = connection.prepare_cached(&sql)?;
         statement
-            .query_map(params_from_iter(args.iter()), |row| row.get::<_, String>(0))?
-            .map(|row| row.map(|id| WorkspaceTaskRow { id }))
+            .query_map(params_from_iter(args.iter()), |row| {
+                Ok(WorkspaceTaskRow {
+                    id: row.get(0)?,
+                    record: row.get(1)?,
+                })
+            })?
             .collect::<Result<Vec<_>, _>>()
             .map_err(Into::into)
     }
@@ -349,5 +384,151 @@ inventory::submit! {
     crate::repositories::SchemaRegistration {
         repository: "workspace_views",
         requirements: &REQUIREMENTS,
+    }
+}
+
+#[cfg(test)]
+mod bulk_read_tests {
+    use super::*;
+    use rusqlite::trace::{TraceEvent, TraceEventCodes};
+    use serde_json::json;
+    use std::cell::Cell;
+
+    thread_local! {
+        static STATEMENTS: Cell<usize> = const { Cell::new(0) };
+    }
+
+    fn count_statement(event: TraceEvent<'_>) {
+        if matches!(event, TraceEvent::Stmt(_, _)) {
+            STATEMENTS.with(|count| count.set(count.get() + 1));
+        }
+    }
+
+    fn database() -> Connection {
+        let connection = Connection::open_in_memory().expect("database");
+        connection.execute_batch("CREATE TABLE runtime_tasks(id TEXT PRIMARY KEY,record TEXT NOT NULL); CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL);").expect("tables");
+        connection
+            .execute_batch(crate::agent_volatile::agent_volatile_table_sql())
+            .expect("volatile table");
+        connection
+    }
+
+    #[test]
+    fn task_page_and_served_records_use_one_statement() {
+        let connection = database();
+        for (id, created) in [("a", 1), ("b", 2), ("c", 3)] {
+            connection
+                .execute(
+                    "INSERT INTO runtime_tasks VALUES(?1,?2)",
+                    (
+                        id,
+                        json!({"id":id,"agent":"agent","created":created,"status":"completed"})
+                            .to_string(),
+                    ),
+                )
+                .expect("task");
+        }
+        connection.trace_v2(TraceEventCodes::SQLITE_TRACE_STMT, Some(count_statement));
+        STATEMENTS.set(0);
+        let page =
+            WorkspaceViewsRepository::task_page(&connection, &["agent".to_owned()], None, None, 2)
+                .expect("page");
+        assert_eq!(page.len(), 3);
+        let tasks = page
+            .into_iter()
+            .take(2)
+            .map(|row| row.decode(&connection).expect("task"))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            tasks
+                .iter()
+                .map(|task| task["id"].as_str().expect("id"))
+                .collect::<Vec<_>>(),
+            ["c", "b"]
+        );
+        assert_eq!(
+            STATEMENTS.get(),
+            1,
+            "one page SELECT, no per-record SELECTs"
+        );
+    }
+
+    #[test]
+    fn task_page_keeps_cursor_order_and_only_decodes_served_rows() {
+        let connection = database();
+        for (id, created, finished) in [("a", 1, 1), ("b", 2, 5), ("c", 2, 4), ("foreign", 9, 9)] {
+            let agent = if id == "foreign" { "other" } else { "agent" };
+            let payload_id = if id == "a" { "wrong" } else { id };
+            connection.execute("INSERT INTO runtime_tasks VALUES(?1,?2)", (id, json!({"id":payload_id,"agent":agent,"created":created,"finished":finished}).to_string())).expect("task");
+        }
+        let agents = ["agent".to_owned()];
+        let page =
+            WorkspaceViewsRepository::task_page(&connection, &agents, None, None, 2).expect("page");
+        assert_eq!(
+            page.iter().map(|row| row.id.as_str()).collect::<Vec<_>>(),
+            ["c", "b", "a"]
+        );
+        for row in page.into_iter().take(2) {
+            row.decode(&connection).expect("only served rows are valid");
+        }
+        let older =
+            WorkspaceViewsRepository::task_page(&connection, &agents, None, Some((2.0, "c")), 2)
+                .expect("older");
+        assert_eq!(
+            older.iter().map(|row| row.id.as_str()).collect::<Vec<_>>(),
+            ["b", "a"]
+        );
+        let current =
+            WorkspaceViewsRepository::task_page(&connection, &agents, Some((4.0, "c")), None, 2)
+                .expect("current");
+        assert_eq!(
+            current
+                .iter()
+                .map(|row| row.id.as_str())
+                .collect::<Vec<_>>(),
+            ["b"]
+        );
+        assert!(
+            older
+                .into_iter()
+                .last()
+                .expect("bad row")
+                .decode(&connection)
+                .is_err()
+        );
+        assert!(
+            WorkspaceViewsRepository::task_page(&connection, &[], None, None, 2)
+                .expect("empty scope")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn agents_with_volatile_fields_use_one_statement() {
+        let connection = database();
+        for id in ["a", "b", "c"] {
+            connection
+                .execute(
+                    "INSERT INTO runtime_agents VALUES(?1,?2)",
+                    (
+                        id,
+                        json!({"id":id,"rootId":"a","epoch":0,"status":"idle","tail":"legacy"})
+                            .to_string(),
+                    ),
+                )
+                .expect("agent");
+        }
+        connection.execute(r#"INSERT INTO runtime_agent_volatile(id,tail) VALUES('a','null'),('c','"current"')"#, []).expect("volatile values");
+        connection.trace_v2(TraceEventCodes::SQLITE_TRACE_STMT, Some(count_statement));
+        STATEMENTS.set(0);
+        let agents = WorkspaceViewsRepository::agents(&connection).expect("agents");
+        let records = agents
+            .into_iter()
+            .map(|row| serde_json::from_str::<Value>(&row.record.expect("record")).expect("JSON"))
+            .collect::<Vec<_>>();
+        assert_eq!(records[0]["tail"], Value::Null);
+        assert_eq!(records[1]["tail"], "legacy");
+        assert_eq!(records[2]["tail"], "current");
+        assert_eq!(STATEMENTS.get(), 1, "one joined SELECT for all agents");
     }
 }

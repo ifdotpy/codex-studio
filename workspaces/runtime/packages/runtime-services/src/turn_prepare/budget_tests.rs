@@ -61,7 +61,6 @@ fn aggregate_budget_covers_complaints_plan_decision_and_user_text() {
         explanation: "plan".repeat(20_000),
     });
     s.guidance.role = "role".repeat(10_000);
-    s.guidance.progress = "progress".repeat(10_000);
     let user = "USER EXACT ".repeat(6_000);
     let decision = event("decision", "work_decision", "rejection".repeat(4_000));
     let rows = [event("user", "user", user.clone()), decision];
@@ -195,10 +194,10 @@ fn attachment_descriptions_and_receipt_clocks_share_the_aggregate_limit() {
     let mut row = event(&"event".repeat(10_000), "followup", "user text".into());
     row.metadata.assets.push("file".into());
     row.metadata.accepted_at = Some(1.0);
-    let p = compile(&s, &[row]).unwrap();
+    let p = compile(&s, &[row]).expect("turn compiles");
     assert!(text(&p).len() - "user text".len() <= STUDIO_INPUT_BYTES);
     assert!(text(&p).contains("user text"));
-    let full = p.studio_input.as_ref().unwrap();
+    let full = p.studio_input.as_ref().expect("large input is retained");
     assert!(full.contains("[Time awareness, message receipt time]"));
     assert!(full.contains("Attached file:"));
     assert!(full.contains(&s.assets[0].path));
@@ -208,14 +207,18 @@ fn attachment_descriptions_and_receipt_clocks_share_the_aggregate_limit() {
 fn a_thread_replacement_alone_does_not_repeat_the_compaction_roster() {
     let mut s = snapshot();
     s.actor.epoch = Epoch(Some("old-thread".into()), 3);
-    let p = compile(&s, &[event("wake", "user", "continue".into())]).unwrap();
+    let p = compile(&s, &[event("wake", "user", "continue".into())])
+        .expect("turn after compaction compiles");
     s.delivered_manifests.push(p.manifest);
     s.actor.epoch.0 = Some("new-thread".into());
     s.team_state = Some(json!({"children":[],"monitors":[],"tasks":[]}));
     assert!(!needs_team_restore(&s.actor.epoch, &s.delivered_manifests));
     assert!(
-        !text(&compile(&s, &[event("next", "user", "continue".into())]).unwrap())
-            .contains("[Studio team state after compaction]")
+        !text(
+            &compile(&s, &[event("next", "user", "continue".into())])
+                .expect("turn after restore compiles")
+        )
+        .contains("[Studio team state after compaction]")
     );
     s.actor.epoch.1 += 1;
     assert!(needs_team_restore(&s.actor.epoch, &s.delivered_manifests));
@@ -238,7 +241,7 @@ fn bounded_assignments_keep_input_origin_and_reports_remain_data() {
         followup,
         event("report", "monitor_exit", "report".repeat(32_000)),
     ];
-    let p = compile(&s, &rows).unwrap();
+    let p = compile(&s, &rows).expect("budgeted turn compiles");
     assert!(text(&p).len() - task_text.len() <= STUDIO_INPUT_BYTES);
     assert!(p.provider_inputs.iter().any(|input| matches!(input,
         ProviderInput::Text { text, origin: Some(ProviderInputOrigin::Human) } if text.contains(&task_text))));
@@ -249,7 +252,7 @@ fn bounded_assignments_keep_input_origin_and_reports_remain_data() {
         ] => left != right,
         _ => true,
     }));
-    let full = p.studio_input.as_ref().unwrap();
+    let full = p.studio_input.as_ref().expect("full input is retained");
     assert!(full.contains("event:decision"));
     assert!(full.contains("event:ready"));
     for (kind, expected) in [
@@ -287,7 +290,7 @@ fn system_followups_without_a_sender_remain_bounded() {
         if let Some(sender) = sender {
             row.metadata.extra.insert("senderId".into(), json!(sender));
         }
-        let p = compile(&s, &[row]).unwrap();
+        let p = compile(&s, &[row]).expect("turn with sender compiles");
         assert!(text(&p).len() <= STUDIO_INPUT_BYTES);
         assert!(text(&p).contains("event:system-followup"));
         assert!(p.provider_inputs.iter().all(|input| matches!(

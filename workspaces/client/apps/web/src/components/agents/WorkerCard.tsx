@@ -202,7 +202,7 @@ const WorkerCardView = memo(function WorkerCardView({
     agent.terminalReason === WORKER_TURN_LIMIT_REASON
       ? "Stopped: turn limit reached"
       : agent.stall
-        ? "Stalled: assigned task not submitted"
+        ? "Waiting for lead: task not submitted"
         : ["waiting_on_monitor"].includes(agent.status ?? "")
           ? commandWaitLabel(agent)
           : (startWaitLabel(agent) ??

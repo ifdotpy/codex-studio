@@ -1,0 +1,36 @@
+{
+  "type": "function",
+  "name": "host_exec",
+  "description": "Run a macOS command from your VM line. Sources return through layr. Slots keep stable paths and caches. Use HOST_EXEC_DERIVED_DATA, HOST_EXEC_PACKAGE_CACHE and HOST_EXEC_ARTIFACTS for build output. HOST_EXEC_STATE names the layr state in the slot and HOST_EXEC_TREE its git tree ID. The line's layr cache folders go to the Mac, but Mac changes inside them never return. Supply the same request_id for exact retries. Lost results never repeat the command. Use status to read saved output and cancel to stop the command. Artifacts return as files. Use list to find your operations, also after a lost result, and release to free the slot of an exited command whose result you will not collect; its saved output stays readable.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "action": {
+        "type": "string",
+        "enum": ["execute", "status", "cancel", "list", "release"]
+      },
+      "command": {
+        "type": "string"
+      },
+      "cwd": {
+        "type": "string"
+      },
+      "timeout_seconds": {
+        "type": "number",
+        "minimum": 0.01,
+        "maximum": 3600
+      },
+      "request_id": {
+        "type": "string"
+      },
+      "operation_id": {
+        "type": "string"
+      },
+      "after_seq": {
+        "type": "integer",
+        "minimum": 0
+      }
+    },
+    "required": ["action"]
+  }
+}

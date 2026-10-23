@@ -2376,7 +2376,7 @@ async fn dispatcher_service_bundle_calls_spawn_and_review_entry_points() {
             .unwrap(),
     )
     .unwrap();
-    let review_target = project_path.join("workspaces/runtime/apps/server");
+    let review_target = project_path.join("workspaces/runtime/apps/runtime-server");
     let home = std::path::PathBuf::from(std::env::var_os("HOME").expect("test HOME"));
     std::fs::create_dir_all(&home).unwrap();
     let tilde_target = home.join("review-target");
@@ -2531,7 +2531,7 @@ async fn dispatcher_service_bundle_calls_spawn_and_review_entry_points() {
         &store,
         &actor,
         &json!({"agents":[{"name":"Alternate","prompt":"Work in the server folder",
-            "model":"gpt-6-luna","workspace":"shared","cwd":"workspaces/runtime/apps/server"}]}),
+            "model":"gpt-6-luna","workspace":"shared","cwd":"workspaces/runtime/apps/runtime-server"}]}),
         "dispatcher-spawn-alternate",
         20.75,
         &CreationEnvironment,
@@ -2554,7 +2554,7 @@ async fn dispatcher_service_bundle_calls_spawn_and_review_entry_points() {
         &actor,
         &json!({"agents":[{"name":"Alternate worktree",
             "prompt":"Work in a worktree of the server folder","model":"gpt-6-luna",
-            "workspace":"worktree","base_ref":"HEAD","cwd":"workspaces/runtime/apps/server"}]}),
+            "workspace":"worktree","base_ref":"HEAD","cwd":"workspaces/runtime/apps/runtime-server"}]}),
         "dispatcher-spawn-alternate-worktree",
         20.76,
         &CreationEnvironment,
@@ -2849,7 +2849,7 @@ async fn dispatcher_service_bundle_calls_spawn_and_review_entry_points() {
     assert!(crate::managed_child_create::request_review(
         &store,
         &latest_actor,
-        &json!({"target":{"type":"uncommittedChanges"},"cwd":format!("{review_cwd}/workspaces/runtime/apps/server")}),
+        &json!({"target":{"type":"uncommittedChanges"},"cwd":format!("{review_cwd}/workspaces/runtime/apps/runtime-server")}),
         "dispatcher-capacity-refusal",
         22.0,
         &CreationEnvironment,
@@ -3358,6 +3358,144 @@ async fn lead_archive_and_restore_run_through_the_lifecycle_owner() {
         "lost tool reply replays the original batch result"
     );
     assert!(worker_record(&store, &worker)["deletedAt"].is_number());
+}
+
+#[tokio::test]
+async fn archive_finished_runs_for_codex_and_claude_leads_through_tool_dispatch() {
+    // A lead on an older live build got "requires agent-management/archive-finished"
+    // although the turn reminder told it to run this action. The tool dispatch is
+    // the same for both providers; this keeps each provider's lead on that path.
+    for (provider, model) in [("codex", "gpt-6-astra"), ("claude", "claude-opus-5-5")] {
+        let (_root, store, context) = fixture_arc().await;
+        store
+            .transaction_with::<_, StoreError>(move |tx| {
+                tx.execute(
+                    "UPDATE runtime_agents SET record=json_set(record,'$.provider',?1,'$.model',?2) \
+                     WHERE id IN (?3,?4)",
+                    params![provider, model, LEAD, WORKER],
+                )?;
+                tx.execute(
+                    "UPDATE runtime_agents SET record=json_set(record,'$.status','completed','$.turnId',NULL,\
+                     '$.inFlight',json('false'),'$.lastCompletedTurn','turn-1','$.lastCompletedTurnStatus','completed') \
+                     WHERE id=?1",
+                    [WORKER],
+                )?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        let frame = call(
+            &context,
+            "archive-finished-provider",
+            "orchestration_agent_manage",
+            json!({"action":"archive_finished","request_id":format!("finished-{provider}")}),
+        );
+        let ports = shared_ports(
+            crate::provider_callbacks::managed_tool_ports(
+                &store,
+                &context,
+                &frame,
+                Arc::new(tokio::sync::Notify::new()),
+            )
+            .await
+            .unwrap(),
+        );
+        let (success, value) = tool_reply(
+            dispatch_with_managed_tools(Arc::clone(&store), &context, &frame, 30.0, ports)
+                .await
+                .unwrap(),
+        );
+        assert!(success, "{provider} lead: {value}");
+        let report: crate::agent_management_store::ArchiveFinishedResult =
+            serde_json::from_value(value.clone()).expect("typed archive summary");
+        assert_eq!(report.archived, 1, "{provider} lead: {value}");
+        let worker = studio_runtime_store::AgentRepository::get(
+            &store.test_reader().unwrap(),
+            &studio_runtime_store::AgentId::from(WORKER),
+        )
+        .unwrap()
+        .unwrap()
+        .value();
+        assert_eq!(worker["provider"], provider);
+        assert!(worker["deletedAt"].is_number(), "{provider} lead: {worker}");
+    }
+}
+
+#[tokio::test]
+async fn archive_finished_reason_survives_dispatch_and_receipt_replay() {
+    const SUPPLIED_REASON: &str = "Reviewed and integrated";
+    for (args, expected_reason) in [
+        (json!({"reason": SUPPLIED_REASON}), Some(SUPPLIED_REASON)),
+        (json!({}), Some("Finished worker cleanup")),
+        (json!({"reason": ""}), None),
+        (json!({"reason": null}), None),
+        (json!({"reason": true}), None),
+        (json!({"reason": SUPPLIED_REASON, "unexpected": true}), None),
+    ] {
+        let (_root, store, context) = fixture_arc().await;
+        store.transaction_with::<_, StoreError>(|tx| {
+            tx.execute(
+                "UPDATE runtime_agents SET record=json_set(record,'$.status','completed','$.turnId',NULL,\
+                 '$.inFlight',json('false'),'$.lastCompletedTurn','turn-1','$.lastCompletedTurnStatus','completed') \
+                 WHERE id=?1",
+                [WORKER],
+            )?;
+            Ok(())
+        }).await.expect("finished worker");
+        let mut args = args;
+        args["action"] = json!("archive_finished");
+        args["request_id"] = json!("archive-with-reason");
+        let frame = call(
+            &context,
+            "archive-with-reason",
+            "orchestration_agent_manage",
+            args,
+        );
+        let ports = shared_ports(
+            crate::provider_callbacks::managed_tool_ports(
+                &store,
+                &context,
+                &frame,
+                Arc::new(tokio::sync::Notify::new()),
+            )
+            .await
+            .expect("managed ports"),
+        );
+        let reply =
+            dispatch_with_managed_tools(Arc::clone(&store), &context, &frame, 30.0, ports.clone())
+                .await
+                .expect("dispatch");
+        let (success, value) = tool_reply(reply);
+        assert_eq!(success, expected_reason.is_some(), "{value}");
+        let worker_record = || {
+            studio_runtime_store::AgentRepository::get(
+                &store.test_reader().expect("reader"),
+                &studio_runtime_store::AgentId::from(WORKER),
+            )
+            .expect("worker lookup")
+            .expect("worker")
+            .value()
+        };
+        let before_replay = worker_record();
+        if let Some(reason) = expected_reason {
+            let report: crate::agent_management_store::ArchiveFinishedResult =
+                serde_json::from_value(value.clone()).expect("archive summary");
+            assert_eq!(report.archived, 1);
+            assert_eq!(before_replay["agentArchive"]["reason"], reason);
+            let replay =
+                dispatch_with_managed_tools(Arc::clone(&store), &context, &frame, 31.0, ports)
+                    .await
+                    .expect("replay");
+            assert_eq!(tool_reply(replay), (success, value));
+            assert_eq!(worker_record(), before_replay);
+        } else {
+            assert!(
+                before_replay.get("agentArchive").is_none(),
+                "{before_replay}"
+            );
+            assert!(before_replay.get("deletedAt").is_none(), "{before_replay}");
+        }
+    }
 }
 
 // Count ancestry SQL separately from fixture setup and unrelated routing work.

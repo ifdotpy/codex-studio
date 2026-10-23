@@ -142,15 +142,13 @@ pub struct AgentAdmission {
 
 pub(crate) const DEFAULT_LEAD_MODEL: &str = "gpt-6-astra";
 /// The workspace mode of a new macOS lead chat whose request has no `workspaceMode`.
-/// Owner: `MACOS_LEAD_WORKSPACE_MODE` in `apps/server/src/codex_vm_agents.py`.
 const MACOS_LEAD_WORKSPACE_MODE: &str = "layr";
 /// The workspace mode of every other new top-level chat without `workspaceMode`: a task
 /// agent (`POST /api/agents`) and every chat on another system.
-/// Owner: `DEFAULT_WORKSPACE_MODE` in `apps/server/src/codex_vm_agents.py`.
 const DEFAULT_WORKSPACE_MODE: &str = "worktree";
 
 /// The workspace mode of a new top-level chat whose request omits it (`lead` is a
-/// `POST /api/leads` chat), as `codex_vm_agents.workspace_mode` selects it.
+/// `POST /api/leads` chat).
 fn default_workspace_mode(lead: bool) -> &'static str {
     if lead && cfg!(target_os = "macos") {
         MACOS_LEAD_WORKSPACE_MODE
@@ -3215,17 +3213,7 @@ mod tests {
     use crate::host_worker_create::CreationCatalog as _;
 
     #[test]
-    fn default_workspace_mode_matches_python_owner() {
-        let python = include_str!("../../../../apps/server/src/codex_vm_agents.py");
-        for expected in [
-            format!("MACOS_LEAD_WORKSPACE_MODE = \"{MACOS_LEAD_WORKSPACE_MODE}\""),
-            format!("DEFAULT_WORKSPACE_MODE = \"{DEFAULT_WORKSPACE_MODE}\""),
-        ] {
-            assert!(
-                python.lines().any(|line| line.trim() == expected),
-                "Python owner codex_vm_agents.py must declare {expected}"
-            );
-        }
+    fn default_workspace_mode_follows_platform_defaults() {
         assert_eq!(default_workspace_mode(false), DEFAULT_WORKSPACE_MODE);
         let lead = if cfg!(target_os = "macos") {
             MACOS_LEAD_WORKSPACE_MODE

@@ -2,7 +2,7 @@ use std::io::BufReader;
 use std::path::{Path, PathBuf};
 
 use crate::provider_shared::{
-    SupervisorRequest, handshake_request, request_frame, response_value, validate_handshake,
+    SupervisorRequest, handshake_request_v2, request_frame, response_value, validate_handshake_v2,
 };
 use serde::{Deserialize, Serialize};
 
@@ -18,7 +18,7 @@ pub struct SupervisorClient<T: SupervisorTransport> {
 }
 
 impl<T: SupervisorTransport> SupervisorClient<T> {
-    /// Perform the protocol-v1 identity handshake over an already-connected
+    /// Perform the protocol-v2 identity handshake over an already-connected
     /// transport. The transport is closed by dropping the client.
     pub fn from_transport(
         transport: T,
@@ -32,11 +32,15 @@ impl<T: SupervisorTransport> SupervisorClient<T> {
         identity: BackendIdentity,
         operator: bool,
     ) -> Result<Self, SupervisorError> {
-        let handshake = handshake_request(&identity, operator);
+        let mut handshake = handshake_request_v2(&identity);
+        handshake.operator = operator;
+        if operator {
+            handshake.backend_id = None;
+        }
         write_frame(&mut transport, &handshake)?;
         let mut stream = BufReader::new(transport);
         let response = read_frame(&mut stream)?.ok_or(SupervisorError::ConnectionLost)?;
-        validate_handshake(&response)?;
+        validate_handshake_v2(&response)?;
         Ok(Self {
             stream,
             next_request_id: 0,

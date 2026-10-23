@@ -99,28 +99,6 @@
     "witness": "changed event or agent capture"
   },
   {
-    "id": "CR10",
-    "file": "workspaces/runtime/packages/runtime-services/src/historical_input_receipts.rs",
-    "edits": [
-      {
-        "before": "row[\"digest\"] == self.digest",
-        "after": "true"
-      }
-    ],
-    "witness": "changed supervisor digest"
-  },
-  {
-    "id": "CR11",
-    "file": "workspaces/runtime/packages/runtime-services/src/historical_input_receipts.rs",
-    "edits": [
-      {
-        "before": "content(&item[\"content\"])\n                                        == Some(self.params[\"input\"].clone())",
-        "after": "true"
-      }
-    ],
-    "witness": "changed native input content"
-  },
-  {
     "id": "CR12",
     "file": "workspaces/runtime/packages/runtime-services/src/context_repair.rs",
     "edits": [

@@ -10,7 +10,6 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use std::path::PathBuf;
 use std::sync::Arc;
-use studio_runtime_schema::shared_values::SYNC_STREAM_BYTE_LIMIT;
 use studio_runtime_schema::{SYNC_ENTITY_SCOPE, SYNC_PROTOCOL_VERSION};
 use studio_runtime_services::sync_documents::{self, DraftWrite};
 use studio_runtime_services::sync_entity_context::{RoomDirectory, RoomSources};
@@ -79,8 +78,8 @@ pub(crate) async fn protocol(
         "streamEndpoint": "/api/sync/stream",
         "maxEntityPage": sync_policy::ENTITY_PAGE_LIMIT,
         "maxOtherPage": sync_policy::OTHER_PAGE_LIMIT,
-        "maxStreamDocuments": sync_policy::OTHER_PAGE_LIMIT,
-        "maxStreamBytes": SYNC_STREAM_BYTE_LIMIT,
+        "maxStreamDocuments": studio_runtime_schema::shared_values::SYNC_ENTITY_STREAM_MAX_DOCUMENTS,
+        "maxStreamBytes": studio_runtime_schema::shared_values::SYNC_ENTITY_STREAM_MAX_BYTES,
     });
     Ok(Json(super::generated_json::<
         crate::generated::SyncProtocolResponse,
@@ -171,15 +170,6 @@ pub(crate) async fn pull(
                         .map_err(|_| ApiError::internal())?;
                     let documents = SyncDocumentsRepository::pull_drafts(connection, after, limit)
                         .map_err(|_| ApiError::internal())?;
-                    for document in &documents {
-                        if sync_policy::contains_unrepresentable_integer(&document.payload) {
-                            return Err(invalid_stored_draft(&document.id));
-                        }
-                        let payload: Value = serde_json::from_str(&document.payload)
-                            .map_err(|_| invalid_stored_draft(&document.id))?;
-                        validate_draft_value(&validators, &document.id, &payload)
-                            .map_err(|_| invalid_stored_draft(&document.id))?;
-                    }
                     let checkpoint = documents.last().map_or(after, |document| document.sequence);
                     let response = crate::generated::SyncPullResponse {
                         sync_entities: None,
@@ -187,13 +177,8 @@ pub(crate) async fn pull(
                         checkpoint: crate::generated::SyncCheckpoint { seq: checkpoint },
                         documents: documents
                             .into_iter()
-                            .map(|document| crate::generated::SyncDocument {
-                                id: document.id,
-                                payload: document.payload,
-                                seq: document.sequence,
-                                deleted: document.deleted,
-                            })
-                            .collect(),
+                            .map(draft_document)
+                            .collect::<Result<Vec<_>, _>>()?,
                         floor: None,
                         generation,
                         initial_high: None,
@@ -583,7 +568,7 @@ pub(crate) async fn push_drafts(
         if !validators.validate_stored("DraftPayload", &payload) {
             return Err(draft_validation_error(index, "newDocumentState", "payload"));
         }
-        sync_policy::validate_draft(&row.new_document_state.id, &payload)
+        validate_draft_value(&row.new_document_state.id, &payload)
             .map_err(|_| draft_validation_error(index, "newDocumentState", "id"))?;
         let assumed = row
             .assumed_master_state
@@ -598,15 +583,13 @@ pub(crate) async fn push_drafts(
                 }
                 let payload: Value = serde_json::from_str(&assumed.payload)
                     .map_err(|_| draft_validation_error(index, "assumedMasterState", "payload"))?;
-                if !validators.validate_stored("DraftPayload", &payload) {
+                if validate_draft_value(&row.new_document_state.id, &payload).is_err() {
                     return Err(draft_validation_error(
                         index,
                         "assumedMasterState",
                         "payload",
                     ));
                 }
-                sync_policy::validate_draft(&row.new_document_state.id, &payload)
-                    .map_err(|_| draft_validation_error(index, "assumedMasterState", "payload"))?;
                 Ok::<_, ApiError>((payload, assumed.deleted.unwrap_or(false)))
             })
             .transpose()?;
@@ -620,18 +603,12 @@ pub(crate) async fn push_drafts(
     }
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
     let wake = state.event_wake.clone();
-    let validators = validators.clone();
-    let result = sync_documents::push_drafts(
-        &store,
-        writes,
-        move |payload| validators.validate_stored("DraftPayload", payload),
-        move || wake.notify_one(),
-    )
-    .await
-    .map_err(|error| match error {
-        sync_documents::DraftPushError::InvalidStored { id } => invalid_stored_draft(&id),
-        sync_documents::DraftPushError::Store(_) => ApiError::internal(),
-    })?;
+    let result = sync_documents::push_drafts(&store, writes, move || wake.notify_one())
+        .await
+        .map_err(|error| match error {
+            sync_documents::DraftPushError::InvalidStored { id } => invalid_stored_draft(&id),
+            sync_documents::DraftPushError::Store(_) => ApiError::internal(),
+        })?;
     Ok(Json(super::generated_json::<
         Vec<crate::generated::SyncDocument>,
     >(Value::Array(
@@ -775,31 +752,14 @@ fn pull_entities(
             if !seen_sequences.insert(row.sequence) {
                 continue;
             }
-            let Some(raw) = row.payload.as_deref() else {
-                continue;
-            };
-            let Ok(mut payload) = serde_json::from_str::<Value>(raw) else {
-                continue;
-            };
-            if !matches!(
-                studio_runtime_schema::normalize_sync_entity_payload(
-                    &row.collection,
-                    &row.id,
-                    row.deleted,
-                    &mut payload,
-                ),
-                Ok(None)
-            ) {
-                continue;
-            }
-            let Ok(payload) = serde_json::to_string(&payload) else {
+            let Some(document) = entity_document(row) else {
                 continue;
             };
             documents.push(crate::generated::SyncDocument {
-                id: format!("entity:{}:{}", row.collection, row.id),
-                payload,
-                seq: row.sequence,
-                deleted: row.deleted,
+                id: document.id,
+                payload: document.payload,
+                seq: document.seq,
+                deleted: document.deleted,
             });
             if documents.len() == page_limit {
                 reached_limit = true;
@@ -852,6 +812,31 @@ fn pull_entities(
     Ok(SyncPullResponseBody::Page(response))
 }
 
+/// Shared conversion for pull and stream: normalize historical stored payloads once
+/// through the schema owner, then carry the existing typed sync envelope.
+pub(super) fn entity_document(
+    row: &studio_runtime_store::EntityRow,
+) -> Option<crate::generated::SyncEntity> {
+    let mut payload: Value = serde_json::from_str(row.payload.as_deref()?).ok()?;
+    if !matches!(
+        studio_runtime_schema::normalize_sync_entity_payload(
+            &row.collection,
+            &row.id,
+            row.deleted,
+            &mut payload
+        ),
+        Ok(None)
+    ) {
+        return None;
+    }
+    Some(crate::generated::SyncEntity {
+        id: format!("entity:{}:{}", row.collection, row.id),
+        seq: row.sequence,
+        payload: serde_json::to_string(&payload).ok()?,
+        deleted: row.deleted,
+    })
+}
+
 /// The typed response is built from the generated DTOs, which already carry the schema's
 /// shape. The full JSON Schema walk (a second copy of a page of up to ~1 MB as a `Value`,
 /// then the walk) runs in debug builds and tests only, not on every pull of a release server.
@@ -894,20 +879,32 @@ fn invalid_entity(collection: &str, id: &str) -> StoreError {
     }
 }
 
+/// Both pull and stream preserve the stored bytes used for conflict comparisons.
+pub(super) fn draft_document(
+    document: studio_runtime_store::SyncDocument,
+) -> Result<crate::generated::SyncDocument, ApiError> {
+    if sync_policy::contains_unrepresentable_integer(&document.payload) {
+        return Err(invalid_stored_draft(&document.id));
+    }
+    let payload =
+        serde_json::from_str(&document.payload).map_err(|_| invalid_stored_draft(&document.id))?;
+    validate_draft_value(&document.id, &payload).map_err(|_| invalid_stored_draft(&document.id))?;
+    Ok(crate::generated::SyncDocument {
+        id: document.id,
+        payload: document.payload,
+        seq: document.sequence,
+        deleted: document.deleted,
+    })
+}
+
 fn invalid_stored_draft(id: &str) -> ApiError {
     ApiError::invalid_stored("drafts", id)
 }
 
-fn validate_draft_value(
-    validators: &crate::validation::Registry,
-    id: &str,
-    payload: &Value,
-) -> Result<(), ()> {
-    validators
-        .validate_stored("DraftPayload", payload)
-        .then_some(())
-        .ok_or(())?;
-    sync_policy::validate_draft(id, payload).map_err(|_| ())
+fn validate_draft_value(id: &str, payload: &Value) -> Result<(), ()> {
+    studio_runtime_schema::drafts::DraftVersion::from_stored_value(id, payload.clone())
+        .map(|_| ())
+        .map_err(|_| ())
 }
 
 fn query_integer(query: &QueryParams, name: &str, default: i64) -> Result<i64, ApiError> {
@@ -939,6 +936,139 @@ mod vault_maintenance_tests {
 
     fn response_value(response: &SyncPullResponseBody) -> Value {
         serde_json::to_value(response).expect("generated sync response serializes")
+    }
+
+    #[tokio::test]
+    async fn stored_legacy_drafts_remain_readable_and_replaceable() {
+        use axum::{
+            body::{Body, to_bytes},
+            extract::ConnectInfo,
+            http::{Request, StatusCode},
+        };
+        use tower::ServiceExt;
+        let directory = tempfile::tempdir().unwrap();
+        let store = Arc::new(RuntimeStore::open(Some(directory.path())).await.unwrap());
+        let legacy = json!({"device":"phone","session":"chat","text":"x","updated":1.5,"legacyExtra":{"keep":true}});
+        let raw = legacy.to_string();
+        let original = raw.clone();
+        store
+            .transaction(move |tx| {
+                SyncDocumentsRepository::put_draft(tx, "phone:chat", &raw, false).map(|_| ())
+            })
+            .await
+            .unwrap();
+        let app = crate::router::router(crate::router::HttpState::new(
+            "token".into(),
+            "workspace".into(),
+            directory.path().display().to_string(),
+            4321,
+            None,
+            Some(store.clone()),
+            None,
+        ))
+        .unwrap();
+        let request = |method: &str, uri: &str, body: Value| {
+            let mut request = Request::builder()
+                .method(method)
+                .uri(uri)
+                .header("host", "127.0.0.1:4321")
+                .header("origin", "http://127.0.0.1:4321")
+                .header("x-canvas-token", "token")
+                .header("x-canvas-workspace", "workspace")
+                .header("content-type", "application/json")
+                .body(if method == "GET" {
+                    Body::empty()
+                } else {
+                    Body::from(body.to_string())
+                })
+                .unwrap();
+            request.extensions_mut().insert(ConnectInfo(
+                "127.0.0.1:4321".parse::<std::net::SocketAddr>().unwrap(),
+            ));
+            request
+        };
+        let response = app
+            .clone()
+            .oneshot(request("GET", "/api/sync/pull?scope=drafts", Value::Null))
+            .await
+            .unwrap();
+        let status = response.status();
+        let body: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+                .unwrap();
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["documents"][0]["payload"], original);
+        let canonical =
+            json!({"id":"phone:chat","device":"phone","session":"chat","text":"next","updated":2});
+        let rows = json!({"rows":[{"newDocumentState":{"id":"phone:chat","payload":canonical.to_string(),"seq":0,"deleted":false},
+            "assumedMasterState":{"id":"phone:chat","payload":original,"seq":1,"deleted":false}}]});
+        let response = app
+            .clone()
+            .oneshot(request("POST", "/api/sync/drafts", rows))
+            .await
+            .unwrap();
+        let status = response.status();
+        let body: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+                .unwrap();
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body, json!([]));
+        let stored = store
+            .transaction(|tx| SyncDocumentsRepository::draft(tx, "phone:chat"))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(&stored.payload).unwrap(),
+            canonical
+        );
+        #[derive(serde::Deserialize)]
+        struct DraftFixture {
+            name: String,
+            payload: Value,
+        }
+        let fixtures: Vec<DraftFixture> = serde_json::from_str(include_str!(
+            "../../../../../client/contracts/draft-compatibility.json"
+        ))
+        .unwrap();
+        let native = fixtures
+            .into_iter()
+            .find(|fixture| fixture.name == "extension")
+            .expect("shared native legacy extension fixture");
+        let rows = json!({"rows":[{
+            "newDocumentState":{"id":"phone:chat","payload":native.payload.to_string(),"seq":0,"deleted":false},
+            "assumedMasterState":{"id":"phone:chat","payload":stored.payload,"seq":stored.sequence,"deleted":false}
+        }]});
+        let mut committed_sequence = None;
+        for attempt in ["initial native legacy push", "same-value retry"] {
+            let response = app
+                .clone()
+                .oneshot(request("POST", "/api/sync/drafts", rows.clone()))
+                .await
+                .unwrap();
+            let status = response.status();
+            let body: Value =
+                serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+                    .unwrap();
+            assert_eq!(status, StatusCode::OK, "{attempt}: {body}");
+            assert_eq!(body, json!([]), "{attempt}");
+            let current = store
+                .transaction(|tx| SyncDocumentsRepository::draft(tx, "phone:chat"))
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                serde_json::from_str::<Value>(&current.payload).unwrap(),
+                native.payload,
+                "{attempt}: preserve all historical fields"
+            );
+            if let Some(sequence) = committed_sequence {
+                assert_eq!(current.sequence, sequence, "retry must not write twice");
+            } else {
+                assert!(current.sequence > stored.sequence);
+                committed_sequence = Some(current.sequence);
+            }
+        }
     }
 
     #[test]

@@ -2,38 +2,31 @@
 #![allow(clippy::unwrap_used)]
 #[path = "../../../packages/runtime-process/tests/support/mod.rs"]
 mod support;
-use std::{collections::BTreeMap, path::Path, process::Command};
+use std::{collections::BTreeMap, process::Command};
 use studio_runtime_process::{
     AdminCloseHandleRequest, HealthRequest, SupervisorClient, SupervisorHandle,
 };
+use studio_runtime_store::supervisor_journal::SupervisorJournal;
 use support::*;
 
 #[test]
 #[allow(clippy::disallowed_methods)]
 fn unknown_ownership_survives_restart_until_exact_operator_close() {
     let state = DisposableState::new();
-    let python = python_executable();
-    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../server/src");
-    let created = Command::new(&python).args(["-B", "-c", "import sys; sys.path.insert(0,sys.argv[1]); from codex_process_supervisor import Journal; j=Journal(sys.argv[2]);\nwith j.db() as db: db.execute(\"INSERT INTO handles(id,signature,pid,created) VALUES ('unknown','saved',0,1)\")\nj.close()"])
-        .arg(source).arg(&state.0).envs(child_environment(&state.0)).status().unwrap();
-    assert!(created.success());
+    // The reservation is the crash boundary before a process identity exists.
+    SupervisorJournal::open(&state.0)
+        .unwrap()
+        .reserve("unknown", "saved", 1.0)
+        .unwrap();
     for restart in 0..2 {
-        let supervisor = SupervisorProcess::start(&state, &python);
+        let supervisor = SupervisorProcess::start(&state);
         let mut client = connect_client(&state);
         let health = client.health(HealthRequest::default()).unwrap();
         assert!(health.recovery.blocked.is_some());
         assert_eq!(health.handles[0].id, "unknown");
         assert!(
             client
-                .open(open_request(
-                    "unknown",
-                    vec![
-                        python.clone(),
-                        "-c".into(),
-                        "raise AssertionError('must not spawn')".into()
-                    ],
-                    &state.0
-                ))
+                .open(open_request("unknown", shell_command("exit 1"), &state.0))
                 .is_err()
         );
         if restart == 1 {
@@ -63,7 +56,7 @@ fn unknown_ownership_survives_restart_until_exact_operator_close() {
         drop(supervisor);
         std::fs::remove_file(state.socket()).unwrap();
     }
-    let _supervisor = SupervisorProcess::start(&state, &python);
+    let _supervisor = SupervisorProcess::start(&state);
     let mut client = connect_client(&state);
     let health = client.health(HealthRequest::default()).unwrap();
     assert!(health.recovery.blocked.is_none());
@@ -80,17 +73,86 @@ impl Drop for Probe {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum RecoveryCase {
+    Collision,
+    Legacy,
+    Native,
+}
+
+struct StartIdentity {
+    native: String,
+    legacy: String,
+    collision: String,
+}
+
+#[cfg(target_os = "linux")]
+#[allow(clippy::disallowed_methods)]
+fn start_identity(pid: u32) -> StartIdentity {
+    // Linux proc(5): starttime is field 22, or field 19 after the comm tail.
+    const START_TICKS_AFTER_COMM: usize = 19;
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap();
+    let ticks: u64 = stat
+        .rsplit_once(')')
+        .unwrap()
+        .1
+        .split_whitespace()
+        .nth(START_TICKS_AFTER_COMM)
+        .unwrap()
+        .parse()
+        .unwrap();
+    let boot = std::fs::read_to_string("/proc/sys/kernel/random/boot_id").unwrap();
+    let hz = rustix::param::clock_ticks_per_second();
+    let stale = if ticks % hz < hz - 1 {
+        ticks + 1
+    } else {
+        ticks - 1
+    };
+    assert_ne!(stale, ticks);
+    assert_eq!(stale / hz, ticks / hz, "same-second PID collision");
+    let output = Command::new("/bin/ps")
+        .args(["-p", &pid.to_string(), "-o", "lstart="])
+        .env("LC_ALL", "C")
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    StartIdentity {
+        native: format!("linux:{}:{ticks}", boot.trim()),
+        collision: format!("linux:{}:{stale}", boot.trim()),
+        legacy: String::from_utf8(output.stdout).unwrap().trim().into(),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn start_identity(pid: u32) -> StartIdentity {
+    let info = studio_runtime_proc_sys::bsd_info(pid, false)
+        .unwrap()
+        .unwrap();
+    let boot = studio_runtime_proc_sys::boot_session_uuid().unwrap();
+    let seconds = info.start_seconds;
+    let micros = info.start_microseconds;
+    let stale = micros ^ 1;
+    StartIdentity {
+        native: format!("macos:{boot}:{seconds}.{micros:06}"),
+        collision: format!("macos:{boot}:{seconds}.{stale:06}"),
+        legacy: format!("{seconds}.{micros:06}"),
+    }
+}
+
 #[test]
 #[allow(clippy::disallowed_methods)]
-fn kernel_collision_refuses_signal_and_legacy_upgrade_commits_before_signal() {
+fn recovery_signals_only_exact_native_identity() {
     use std::os::unix::process::CommandExt;
     use std::process::Stdio;
-    for mode in ["collision", "legacy", "upgrade-fails"] {
+    for case in [
+        RecoveryCase::Collision,
+        RecoveryCase::Legacy,
+        RecoveryCase::Native,
+    ] {
         let state = DisposableState::new();
-        let python = python_executable();
         let mut probe = Probe(
-            Command::new(&python)
-                .args(["-c", "import sys; sys.stdin.read()"])
+            Command::new("/bin/sh")
+                .args(["-c", "while IFS= read -r line; do :; done"])
                 .process_group(0)
                 .stdin(Stdio::piped())
                 .stdout(Stdio::null())
@@ -100,92 +162,56 @@ fn kernel_collision_refuses_signal_and_legacy_upgrade_commits_before_signal() {
                 .spawn()
                 .unwrap(),
         );
-        let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../server/src");
-        let output = Command::new(&python).args(["-B", "-c", r#"
-import sys, os, json
-from pathlib import Path
-sys.path.insert(0,sys.argv[1])
-from codex_process_supervisor import Journal, process_start_time
-root, pid, mode = sys.argv[2], int(sys.argv[3]), sys.argv[4]
-if sys.platform == 'darwin':
-    import subprocess
-    boot = subprocess.check_output(['/usr/sbin/sysctl', '-n', 'kern.bootsessionuuid'], text=True).strip()
-    seconds, micros = process_start_time(pid).split('.')
-    actual = f'macos:{boot}:{seconds}.{micros}'
-else:
-    ticks = int(Path(f'/proc/{pid}/stat').read_text().rsplit(')',1)[1].split()[19])
-    boot = Path('/proc/sys/kernel/random/boot_id').read_text().strip()
-    actual = f'linux:{boot}:{ticks}'
-if mode == 'collision' and sys.platform == 'darwin':
-    # Same PID, boot and second; another microsecond: a reused PID.
-    stale = (int(micros) + 1) % 1_000_000
-    saved = f'macos:{boot}:{seconds}.{stale:06d}'
-    assert saved != actual
-elif mode == 'collision':
-    hz = os.sysconf('SC_CLK_TCK')
-    stale = ticks + 1 if ticks % hz < hz - 1 else ticks - 1
-    assert stale != ticks and stale // hz == ticks // hz
-    saved = f'linux:{boot}:{stale}'
-else:
-    saved = process_start_time(pid)
-j = Journal(root)
-with j.db() as db:
-    db.execute("INSERT INTO handles(id,signature,pid,created,generation) VALUES ('fixture','saved',?,1,1)", (pid,))
-    db.execute("INSERT INTO child_identities(handle,pid,pgid,start_time) VALUES ('fixture',?,?,?)", (pid,pid,saved))
-    if mode == 'upgrade-fails':
-        db.execute("CREATE TRIGGER block_upgrade BEFORE UPDATE OF start_time ON child_identities BEGIN SELECT RAISE(ABORT,'injected'); END")
-j.close()
-print(json.dumps({'actual':actual,'saved':saved}))
-"#]).arg(&source).arg(&state.0).arg(probe.0.id().to_string()).arg(mode)
-            .envs(child_environment(&state.0)).output().unwrap();
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        let identity: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-        let _supervisor = SupervisorProcess::start(&state, &python);
+        let identity = start_identity(probe.0.id());
+        let saved = if case == RecoveryCase::Collision {
+            &identity.collision
+        } else if case == RecoveryCase::Native {
+            &identity.native
+        } else {
+            &identity.legacy
+        };
+        let journal = SupervisorJournal::open(&state.0).unwrap();
+        journal.reserve("fixture", "saved", 1.0).unwrap();
+        journal
+            .opened("fixture", "saved", probe.0.id(), saved)
+            .unwrap();
+        drop(journal);
+        let _supervisor = SupervisorProcess::start(&state);
         let mut client = connect_client(&state);
         let health = client.health(HealthRequest::default()).unwrap();
-        if mode == "legacy" {
+        if case == RecoveryCase::Native {
             assert!(health.recovery.blocked.is_none());
             assert!(health.handles.is_empty());
-            wait_until("verified adopted child termination", || {
+            wait_until("verified native child termination", || {
                 probe.0.try_wait().unwrap().is_some()
             });
         } else {
             assert!(
                 probe.0.try_wait().unwrap().is_none(),
-                "{mode}: must not signal probe"
+                "{case:?}: must not signal probe"
             );
-            assert_eq!(health.recovery.blocked.is_some(), mode == "upgrade-fails");
+            assert!(health.recovery.blocked.is_none());
         }
-        let check = Command::new(&python).args(["-B", "-c", r#"
-import sys, sqlite3, json
-with sqlite3.connect(sys.argv[1]+'/supervisor.sqlite3') as db:
-    start = db.execute("SELECT start_time FROM child_identities WHERE handle='fixture'").fetchone()[0]
-    outcome = db.execute("SELECT outcome,start_time FROM recovery_events WHERE handle='fixture' ORDER BY id DESC LIMIT 1").fetchone()
-print(json.dumps({'start':start,'outcome':outcome}))
-"#]).arg(&state.0).envs(child_environment(&state.0)).output().unwrap();
-        assert!(check.status.success());
-        let stored: serde_json::Value = serde_json::from_slice(&check.stdout).unwrap();
-        if mode == "legacy" {
-            assert_eq!(stored["start"], identity["actual"]);
-            assert_eq!(stored["outcome"][1], identity["actual"]);
-            assert!(matches!(
-                stored["outcome"][0].as_str(),
-                Some("terminated" | "killed")
-            ));
+        let db = rusqlite::Connection::open_with_flags(
+            state.0.join("supervisor.sqlite3"),
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .unwrap();
+        let start: String = db
+            .query_row(
+                "SELECT start_time FROM child_identities WHERE handle='fixture'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let (outcome, outcome_start): (String, String) = db.query_row("SELECT outcome,start_time FROM recovery_events WHERE handle='fixture' ORDER BY id DESC LIMIT 1", [], |row| Ok((row.get(0)?, row.get(1)?))).unwrap();
+        if case == RecoveryCase::Native {
+            assert_eq!(start, identity.native);
+            assert_eq!(outcome_start, identity.native);
+            assert!(matches!(outcome.as_str(), "terminated" | "killed"));
         } else {
-            assert_eq!(stored["start"], identity["saved"]);
-            assert_eq!(
-                stored["outcome"][0],
-                if mode == "collision" {
-                    "identity-mismatch"
-                } else {
-                    "termination-failed"
-                }
-            );
+            assert_eq!(&start, saved);
+            assert_eq!(outcome, "identity-mismatch");
         }
     }
 }

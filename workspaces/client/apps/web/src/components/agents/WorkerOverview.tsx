@@ -62,7 +62,7 @@ export function workerState(
 export const TEAM_STATES = [
   ["answer", "Need you"],
   ["attention", "Failed"],
-  ["stalled", "Stalled"],
+  ["stalled", "Waiting for lead"],
   ["working", "Working"],
   ["waiting", "Waiting"],
   ["stopped", "Stopped"],

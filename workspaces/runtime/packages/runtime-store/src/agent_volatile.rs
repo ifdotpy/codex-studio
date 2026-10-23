@@ -50,7 +50,7 @@ pub fn is_volatile_field(key: &str) -> bool {
     AGENT_VOLATILE_FIELDS.contains(&key)
 }
 
-fn columns(prefix: &str) -> String {
+pub(crate) fn columns(prefix: &str) -> String {
     AGENT_VOLATILE_FIELDS
         .iter()
         .map(|field| format!("{prefix}\"{field}\""))
@@ -324,6 +324,8 @@ pub const AGENT_TABLE: &str = "runtime_agents";
 
 /// Add agent `id`'s stored volatile fields to its decoded record object.
 pub fn merge(connection: &Connection, id: &str, record: &mut Value) -> StoreResult<()> {
+    #[cfg(any(test, feature = "test-support"))]
+    publication_work::record(id, publication_work::Operation::VolatileLoad);
     let Some(fields) = record.as_object_mut() else {
         return Ok(());
     };
@@ -397,15 +399,21 @@ pub fn merge_if_agent(
 /// merged, for readers that pass record text on. Without a volatile row, or
 /// for text that is not a JSON object, `raw` is returned unchanged.
 pub fn merged_text(connection: &Connection, id: &str, raw: String) -> StoreResult<String> {
+    #[cfg(any(test, feature = "test-support"))]
+    publication_work::record(id, publication_work::Operation::VolatileLoad);
     let mut statement = connection.prepare_cached(&SELECT_SQL)?;
     let mut rows = statement.query([id])?;
     let Some(row) = rows.next()? else {
         return Ok(raw);
     };
+    #[cfg(any(test, feature = "test-support"))]
+    publication_work::record(id, publication_work::Operation::Decode);
     let Ok(Value::Object(mut fields)) = serde_json::from_str::<Value>(&raw) else {
         return Ok(raw);
     };
     merge_row(row, id, &mut fields)?;
+    #[cfg(any(test, feature = "test-support"))]
+    publication_work::record(id, publication_work::Operation::TextRoundTrip);
     Ok(serde_json::to_string(&fields)?)
 }
 
@@ -422,7 +430,7 @@ pub fn merged_rows(
         .collect()
 }
 
-fn merge_row(
+pub(crate) fn merge_row(
     row: &rusqlite::Row<'_>,
     id: &str,
     fields: &mut Map<String, Value>,
@@ -733,5 +741,61 @@ mod tests {
             Value::Object(fields) => fields,
             _ => panic!("record is an object"),
         }
+    }
+}
+
+/// Writer-local witnesses for full-agent publication work. Active only within
+/// the final publication scope, excluding source mutations and fixture reads.
+#[cfg(any(test, feature = "test-support"))]
+pub mod publication_work {
+    use std::{cell::RefCell, collections::BTreeMap};
+
+    #[derive(Clone, Copy)]
+    pub enum Operation {
+        Decode,
+        VolatileLoad,
+        TextRoundTrip,
+    }
+
+    #[derive(Debug, Default, PartialEq, Eq)]
+    pub struct Calls {
+        pub decodes: usize,
+        pub volatile_loads: usize,
+        pub text_round_trips: usize,
+    }
+
+    #[derive(Default)]
+    struct State {
+        active: bool,
+        calls: BTreeMap<String, Calls>,
+    }
+    thread_local! {
+        static STATE: RefCell<State> = RefCell::new(State::default());
+    }
+    pub struct Scope;
+    pub fn scope() -> Scope {
+        STATE.with_borrow_mut(|state| state.active = true);
+        Scope
+    }
+    impl Drop for Scope {
+        fn drop(&mut self) {
+            STATE.with_borrow_mut(|state| state.active = false);
+        }
+    }
+    pub fn take() -> BTreeMap<String, Calls> {
+        STATE.with_borrow_mut(|state| std::mem::take(&mut state.calls))
+    }
+    pub fn record(id: &str, operation: Operation) {
+        STATE.with_borrow_mut(|state| {
+            if !state.active {
+                return;
+            }
+            let calls = state.calls.entry(id.to_owned()).or_default();
+            match operation {
+                Operation::Decode => calls.decodes += 1,
+                Operation::VolatileLoad => calls.volatile_loads += 1,
+                Operation::TextRoundTrip => calls.text_round_trips += 1,
+            }
+        });
     }
 }

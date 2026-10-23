@@ -11,7 +11,7 @@
 //! a restart a command without a final snapshot is stopped through its
 //! private marker and its outcome stays unknown; it is never run again.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -28,6 +28,8 @@ const READ_OUTPUT: usize = 64 * 1024;
 /// Seconds of a command that `exec` waits for before it returns a handle
 /// (Python `SYNC_SECONDS`).
 const SYNC_SECONDS: u64 = 5;
+/// Maximum synchronous completion wait, including process startup and pipe drain.
+const SYNC_WAIT_TIMEOUT: Duration = Duration::from_secs(8);
 /// Commands in progress on one server (Python `start`).
 const MAX_ACTIVE: usize = 32;
 /// Input requests of one command (Python `control`).
@@ -108,7 +110,7 @@ async fn atomic_json(
 pub struct Buffer {
     limit: usize,
     head: Vec<u8>,
-    tail: Vec<u8>,
+    tail: VecDeque<u8>,
     total: usize,
 }
 
@@ -125,19 +127,27 @@ impl Buffer {
         let head_size = self.limit.div_ceil(2);
         let take = data.len().min(head_size.saturating_sub(self.head.len()));
         self.head.extend_from_slice(&data[..take]);
-        self.tail.extend_from_slice(&data[take..]);
         let tail_size = self.limit - head_size;
-        if self.tail.len() > tail_size {
-            let excess = self.tail.len() - tail_size;
+        let incoming = &data[take..];
+        if incoming.len() >= tail_size {
+            self.tail.clear();
+            self.tail.extend(&incoming[incoming.len() - tail_size..]);
+        } else {
+            let excess = (self.tail.len() + incoming.len()).saturating_sub(tail_size);
             self.tail.drain(..excess);
+            self.tail.extend(incoming);
         }
     }
 
     fn snapshot(&self) -> Value {
+        let (first, second) = self.tail.as_slices();
+        let mut tail = String::with_capacity(data_encoding::HEXLOWER.encode_len(self.tail.len()));
+        data_encoding::HEXLOWER.encode_append(first, &mut tail);
+        data_encoding::HEXLOWER.encode_append(second, &mut tail);
         json!({
             "limit": self.limit,
             "head": data_encoding::HEXLOWER.encode(&self.head),
-            "tail": data_encoding::HEXLOWER.encode(&self.tail),
+            "tail": tail,
             "total": self.total,
         })
     }
@@ -157,7 +167,7 @@ impl Buffer {
         Self {
             limit: field("limit").and_then(Value::as_u64).unwrap_or(1) as usize,
             head: bytes("head"),
-            tail: bytes("tail"),
+            tail: bytes("tail").into(),
             total: field("total").and_then(Value::as_u64).unwrap_or(0) as usize,
         }
     }
@@ -166,9 +176,15 @@ impl Buffer {
     /// start inside a character that was discarded; that gap is reported.
     pub fn read(&self, offset: usize, limit: usize, last: bool) -> Value {
         let (mut start, mut data, mut gap): (usize, Vec<u8>, usize) = if self.total <= self.limit {
-            let all = [self.head.as_slice(), self.tail.as_slice()].concat();
-            let end = all.len().min(offset.saturating_add(limit));
-            (offset, all.get(offset..end).unwrap_or_default().to_vec(), 0)
+            let data = self
+                .head
+                .iter()
+                .chain(self.tail.iter())
+                .skip(offset)
+                .take(limit)
+                .copied()
+                .collect();
+            (offset, data, 0)
         } else if offset < self.head.len() {
             let end = self.head.len().min(offset + limit);
             (offset, self.head[offset..end].to_vec(), 0)
@@ -176,8 +192,8 @@ impl Buffer {
             let tail_start = self.total - self.tail.len();
             let start = offset.max(tail_start);
             let from = start - tail_start;
-            let end = self.tail.len().min(from + limit);
-            (start, self.tail[from..end].to_vec(), start - offset)
+            let data = self.tail.iter().skip(from).take(limit).copied().collect();
+            (start, data, start - offset)
         };
         if gap > 0 {
             while data.first().is_some_and(|byte| byte & 0xc0 == 0x80) {
@@ -312,6 +328,8 @@ pub struct ServerExec {
     restored: tokio::sync::OnceCell<()>,
     /// The last prune of expired commands (Python prunes hourly).
     pruned: Mutex<Option<Instant>>,
+    #[cfg(test)]
+    snapshot_reads: std::sync::atomic::AtomicUsize,
 }
 
 impl ServerExec {
@@ -342,6 +360,8 @@ impl ServerExec {
             active: Mutex::new(HashMap::new()),
             restored: tokio::sync::OnceCell::new(),
             pruned: Mutex::new(None),
+            #[cfg(test)]
+            snapshot_reads: std::sync::atomic::AtomicUsize::new(0),
         });
         let runner = {
             let mut runners = runners
@@ -354,6 +374,9 @@ impl ServerExec {
     }
 
     fn snapshot(&self, key: &str) -> Option<Value> {
+        #[cfg(test)]
+        self.snapshot_reads
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let raw = std::fs::read(job_path(&self.folder, key, ".output.json")).ok()?;
         serde_json::from_slice(&raw).ok()
     }
@@ -693,23 +716,19 @@ impl ServerExec {
             snapshot_dirty: true,
             last_publish: tokio::time::Instant::now(),
         };
-        tokio::spawn(job.run(receiver));
-        if timeout <= SYNC_SECONDS {
-            let deadline = Instant::now() + Duration::from_secs(SYNC_SECONDS + 3);
-            while Instant::now() < deadline {
-                let value = self
-                    .read(principal, &json!({"actor": actor, "handle": key}))
-                    .await?;
-                if !matches!(value["status"].as_str(), Some("starting" | "running")) {
-                    let snapshot = self.snapshot(key);
-                    let final_record = snapshot
-                        .and_then(|snapshot| snapshot.get("record").cloned())
-                        .unwrap_or_else(|| record.clone());
-                    self.save(principal, &actor, key, &final_record).await?;
-                    return Ok(value);
-                }
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            }
+        let completion = tokio::spawn(job.run(receiver));
+        // A timed-out wait or dropped caller detaches the Job; its command timeout
+        // and exec_cancel still stop the process.
+        // Job::finish publishes and saves the final record before this wakes.
+        if timeout <= SYNC_SECONDS
+            && matches!(
+                tokio::time::timeout(SYNC_WAIT_TIMEOUT, completion).await,
+                Ok(Ok(()))
+            )
+        {
+            return self
+                .read(principal, &json!({"actor": actor, "handle": key}))
+                .await;
         }
         Ok(record)
     }

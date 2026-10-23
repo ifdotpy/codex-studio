@@ -1,0 +1,283 @@
+{
+  "actions": [
+    {
+      "action": "create",
+      "result": {
+        "agent": "agent",
+        "created": 1700000001.25,
+        "cwd": "$ROOT",
+        "exitCode": null,
+        "id": "f48d7c00-0000-4000-8000-000000000001",
+        "status": "running",
+        "title": "Terminal",
+        "updated": 1700000001.25
+      },
+      "tables": {
+        "user_terminal_decoder_state": [],
+        "user_terminal_event_cursor": [],
+        "user_terminal_output": [],
+        "user_terminal_receipts": [
+          [
+            "action-create",
+            "3ac10b99e37d4ab0d2f761222f3d58b2f5d93573914adb735b37e3440ab413d6",
+            "{\"id\": \"f48d7c00-0000-4000-8000-000000000001\", \"agent\": \"agent\", \"title\": \"Terminal\", \"cwd\": \"$ROOT\", \"status\": \"running\", \"created\": 1700000001.25, \"updated\": 1700000001.25, \"exitCode\": null}"
+          ]
+        ],
+        "user_terminals": [
+          [
+            "f48d7c00-0000-4000-8000-000000000001",
+            "{\"id\": \"f48d7c00-0000-4000-8000-000000000001\", \"agent\": \"agent\", \"title\": \"Terminal\", \"cwd\": \"$ROOT\", \"status\": \"running\", \"created\": 1700000001.25, \"updated\": 1700000001.25, \"exitCode\": null}",
+            "",
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "action": "rename",
+      "result": {
+        "agent": "agent",
+        "created": 1700000001.25,
+        "cwd": "$ROOT",
+        "exitCode": null,
+        "id": "f48d7c00-0000-4000-8000-000000000001",
+        "status": "running",
+        "title": "Shell",
+        "updated": 1700000002.25
+      },
+      "tables": {
+        "user_terminal_decoder_state": [],
+        "user_terminal_event_cursor": [],
+        "user_terminal_output": [],
+        "user_terminal_receipts": [
+          [
+            "action-create",
+            "3ac10b99e37d4ab0d2f761222f3d58b2f5d93573914adb735b37e3440ab413d6",
+            "{\"id\": \"f48d7c00-0000-4000-8000-000000000001\", \"agent\": \"agent\", \"title\": \"Terminal\", \"cwd\": \"$ROOT\", \"status\": \"running\", \"created\": 1700000001.25, \"updated\": 1700000001.25, \"exitCode\": null}"
+          ]
+        ],
+        "user_terminals": [
+          [
+            "f48d7c00-0000-4000-8000-000000000001",
+            "{\"id\": \"f48d7c00-0000-4000-8000-000000000001\", \"agent\": \"agent\", \"title\": \"Shell\", \"cwd\": \"$ROOT\", \"status\": \"running\", \"created\": 1700000001.25, \"updated\": 1700000002.25, \"exitCode\": null}",
+            "",
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "action": "input",
+      "result": { "delivery": "sent", "ok": true },
+      "tables": {
+        "user_terminal_decoder_state": [],
+        "user_terminal_event_cursor": [],
+        "user_terminal_output": [],
+        "user_terminal_receipts": [
+          [
+            "action-create",
+            "3ac10b99e37d4ab0d2f761222f3d58b2f5d93573914adb735b37e3440ab413d6",
+            "{\"id\": \"f48d7c00-0000-4000-8000-000000000001\", \"agent\": \"agent\", \"title\": \"Terminal\", \"cwd\": \"$ROOT\", \"status\": \"running\", \"created\": 1700000001.25, \"updated\": 1700000001.25, \"exitCode\": null}"
+          ],
+          [
+            "actions-input",
+            "60babff4f73271f0cfa637b2df1dc652178bec6e8084d5d0689093fa72ac4131",
+            "{\"ok\": true, \"delivery\": \"sent\"}"
+          ]
+        ],
+        "user_terminals": [
+          [
+            "f48d7c00-0000-4000-8000-000000000001",
+            "{\"id\": \"f48d7c00-0000-4000-8000-000000000001\", \"agent\": \"agent\", \"title\": \"Shell\", \"cwd\": \"$ROOT\", \"status\": \"running\", \"created\": 1700000001.25, \"updated\": 1700000002.25, \"exitCode\": null}",
+            "",
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "action": "input-replay",
+      "result": { "delivery": "sent", "ok": true },
+      "tables": {
+        "user_terminal_decoder_state": [],
+        "user_terminal_event_cursor": [],
+        "user_terminal_output": [],
+        "user_terminal_receipts": [
+          [
+            "action-create",
+            "3ac10b99e37d4ab0d2f761222f3d58b2f5d93573914adb735b37e3440ab413d6",
+            "{\"id\": \"f48d7c00-0000-4000-8000-000000000001\", \"agent\": \"agent\", \"title\": \"Terminal\", \"cwd\": \"$ROOT\", \"status\": \"running\", \"created\": 1700000001.25, \"updated\": 1700000001.25, \"exitCode\": null}"
+          ],
+          [
+            "actions-input",
+            "60babff4f73271f0cfa637b2df1dc652178bec6e8084d5d0689093fa72ac4131",
+            "{\"ok\": true, \"delivery\": \"sent\"}"
+          ]
+        ],
+        "user_terminals": [
+          [
+            "f48d7c00-0000-4000-8000-000000000001",
+            "{\"id\": \"f48d7c00-0000-4000-8000-000000000001\", \"agent\": \"agent\", \"title\": \"Shell\", \"cwd\": \"$ROOT\", \"status\": \"running\", \"created\": 1700000001.25, \"updated\": 1700000002.25, \"exitCode\": null}",
+            "",
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "action": "resize",
+      "result": {
+        "agent": "agent",
+        "created": 1700000001.25,
+        "cwd": "$ROOT",
+        "exitCode": null,
+        "id": "f48d7c00-0000-4000-8000-000000000001",
+        "status": "running",
+        "title": "Shell",
+        "updated": 1700000002.25
+      },
+      "tables": {
+        "user_terminal_decoder_state": [],
+        "user_terminal_event_cursor": [],
+        "user_terminal_output": [],
+        "user_terminal_receipts": [
+          [
+            "action-create",
+            "3ac10b99e37d4ab0d2f761222f3d58b2f5d93573914adb735b37e3440ab413d6",
+            "{\"id\": \"f48d7c00-0000-4000-8000-000000000001\", \"agent\": \"agent\", \"title\": \"Terminal\", \"cwd\": \"$ROOT\", \"status\": \"running\", \"created\": 1700000001.25, \"updated\": 1700000001.25, \"exitCode\": null}"
+          ],
+          [
+            "actions-input",
+            "60babff4f73271f0cfa637b2df1dc652178bec6e8084d5d0689093fa72ac4131",
+            "{\"ok\": true, \"delivery\": \"sent\"}"
+          ]
+        ],
+        "user_terminals": [
+          [
+            "f48d7c00-0000-4000-8000-000000000001",
+            "{\"id\": \"f48d7c00-0000-4000-8000-000000000001\", \"agent\": \"agent\", \"title\": \"Shell\", \"cwd\": \"$ROOT\", \"status\": \"running\", \"created\": 1700000001.25, \"updated\": 1700000002.25, \"exitCode\": null}",
+            "",
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "action": "close",
+      "result": {
+        "agent": "agent",
+        "created": 1700000001.25,
+        "cwd": "$ROOT",
+        "exitCode": null,
+        "id": "f48d7c00-0000-4000-8000-000000000001",
+        "status": "closed",
+        "title": "Shell",
+        "updated": 1700000003.25
+      },
+      "tables": {
+        "user_terminal_decoder_state": [],
+        "user_terminal_event_cursor": [],
+        "user_terminal_output": [],
+        "user_terminal_receipts": [
+          [
+            "action-create",
+            "3ac10b99e37d4ab0d2f761222f3d58b2f5d93573914adb735b37e3440ab413d6",
+            "{\"id\": \"f48d7c00-0000-4000-8000-000000000001\", \"agent\": \"agent\", \"title\": \"Terminal\", \"cwd\": \"$ROOT\", \"status\": \"running\", \"created\": 1700000001.25, \"updated\": 1700000001.25, \"exitCode\": null}"
+          ],
+          [
+            "actions-input",
+            "60babff4f73271f0cfa637b2df1dc652178bec6e8084d5d0689093fa72ac4131",
+            "{\"ok\": true, \"delivery\": \"sent\"}"
+          ]
+        ],
+        "user_terminals": [
+          [
+            "f48d7c00-0000-4000-8000-000000000001",
+            "{\"id\": \"f48d7c00-0000-4000-8000-000000000001\", \"agent\": \"agent\", \"title\": \"Shell\", \"cwd\": \"$ROOT\", \"status\": \"closed\", \"created\": 1700000001.25, \"updated\": 1700000003.25, \"exitCode\": null}",
+            "",
+            0
+          ]
+        ]
+      }
+    },
+    {
+      "action": "input-reject",
+      "error": "receipt_conflict",
+      "result": null,
+      "tables": {
+        "user_terminal_decoder_state": [],
+        "user_terminal_event_cursor": [],
+        "user_terminal_output": [],
+        "user_terminal_receipts": [
+          [
+            "action-create",
+            "3ac10b99e37d4ab0d2f761222f3d58b2f5d93573914adb735b37e3440ab413d6",
+            "{\"id\": \"f48d7c00-0000-4000-8000-000000000001\", \"agent\": \"agent\", \"title\": \"Terminal\", \"cwd\": \"$ROOT\", \"status\": \"running\", \"created\": 1700000001.25, \"updated\": 1700000001.25, \"exitCode\": null}"
+          ],
+          [
+            "actions-input",
+            "60babff4f73271f0cfa637b2df1dc652178bec6e8084d5d0689093fa72ac4131",
+            "{\"ok\": true, \"delivery\": \"sent\"}"
+          ]
+        ],
+        "user_terminals": [
+          [
+            "f48d7c00-0000-4000-8000-000000000001",
+            "{\"id\": \"f48d7c00-0000-4000-8000-000000000001\", \"agent\": \"agent\", \"title\": \"Shell\", \"cwd\": \"$ROOT\", \"status\": \"closed\", \"created\": 1700000001.25, \"updated\": 1700000003.25, \"exitCode\": null}",
+            "",
+            0
+          ]
+        ]
+      }
+    }
+  ],
+  "wire": [
+    {
+      "method": "process/spawn",
+      "operationId": "terminal-spawn:f48d7c00-0000-4000-8000-000000000001",
+      "params": {
+        "command": [
+          "/home/alex/.cache/codex-studio-rust-ui/agent-scale-throughput-env/xdg/codex-agents/python/8a29a1451ad1aaa88d6cac967202983a40a98f861e7730f5fa30da67cc577a64/bin/python",
+          "-B",
+          "/home/alex/src/codex-studio/.worktrees/codex-agents/a44af64b-3193-559a-b19a-06a0d247f0f4/workspaces/runtime/packages/runtime-services/../../apps/server/src/codex_terminal_child.py",
+          "$ROOT/terminal-server/f48d7c00-0000-4000-8000-000000000001.pid",
+          "/bin/bash"
+        ],
+        "cwd": "$ROOT",
+        "env": {
+          "CODEX_API_KEY": null,
+          "CODEX_HOME": "/home/alex/.codex",
+          "COLORTERM": "truecolor",
+          "OPENAI_API_KEY": null,
+          "TERM": "xterm-256color"
+        },
+        "outputBytesCap": null,
+        "processHandle": "f48d7c00-0000-4000-8000-000000000001",
+        "size": { "cols": 91, "rows": 33 },
+        "timeoutMs": null,
+        "tty": true
+      }
+    },
+    {
+      "method": "process/writeStdin",
+      "operationId": "terminal-input:actions-input",
+      "params": {
+        "deltaBase64": "aGnwn5mC",
+        "processHandle": "f48d7c00-0000-4000-8000-000000000001"
+      }
+    },
+    {
+      "method": "process/resizePty",
+      "params": {
+        "processHandle": "f48d7c00-0000-4000-8000-000000000001",
+        "size": { "cols": 91, "rows": 33 }
+      },
+      "timeout": 3
+    },
+    {
+      "method": "process/kill",
+      "params": { "processHandle": "f48d7c00-0000-4000-8000-000000000001" },
+      "timeout": 3
+    }
+  ]
+}

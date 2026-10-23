@@ -101,19 +101,6 @@ export default function ServerManager({
               role="alert"
             >
               <Text size="sm">{alert.detail}</Text>
-              <ActionButton
-                actionRole="secondary"
-                size="xs"
-                disabled={busy || discovery.busy}
-                onClick={() =>
-                  void discovery.replaceServer(
-                    alert.oldServerId,
-                    alert.newServerId,
-                  )
-                }
-              >
-                Replace {alert.oldServerId.slice(0, 8)}
-              </ActionButton>
             </Group>
           ))}
         </SettingsSection>

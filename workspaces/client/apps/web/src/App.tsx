@@ -29,7 +29,11 @@ import { useServerFrame } from "./servers/frameBridge";
 import { serverParentOrigin } from "./servers/environment";
 import type { ServerCommand } from "./servers/navigation";
 import ServerAccountsPanel from "./servers/ServerAccountsPanel";
-import { localServer, viewServer } from "./servers/registry";
+import {
+  localServer,
+  viewServer,
+  SERVER_REGISTRY_EVENT,
+} from "./servers/registry";
 import { serverLocalStorage as localStorage } from "./servers/storage";
 import { ACCOUNT_LIMITS_WINDOW_FRESH_SECONDS } from "./generated/sharedValues";
 import SearchOverlay from "./components/shell/SearchOverlay";
@@ -265,7 +269,8 @@ export default function App({ active = true }: { active?: boolean }) {
     dismissChatCreation,
   } = useServerChatCreations();
   const { canRevealPath, revealPath } = useServerFileDialogs();
-  const { watchResourceChanges } = useServerResources();
+  const { watchResourceChanges, watchResourceConnection } =
+    useServerResources();
   const watchResourceReads = useServerResourceReads();
   const sidebarServices = useServerSidebarServices();
   const {
@@ -452,20 +457,24 @@ export default function App({ active = true }: { active?: boolean }) {
     }
   }, []);
   const preferenceBridge = useMemo(
-    () =>
-      isServerView && !screen
-        ? createUiPreferenceBridge(localStorage)
-        : undefined,
-    [],
+    () => createUiPreferenceBridge(projectStorage, projectApi.syncPost),
+    [projectStorage, projectApi.syncPost],
   );
   const receiveUiPreferences = useCallback(
     (preferences: UiPreferenceProjection) =>
-      preferenceBridge?.receiveProjection(preferences),
+      preferenceBridge.receiveProjection(preferences),
     [preferenceBridge],
   );
   useEffect(() => {
-    return preferenceBridge?.start();
-  }, [preferenceBridge]);
+    const stopBridge = preferenceBridge.start();
+    const stopConnection = watchResourceConnection((status) => {
+      if (status === "live") preferenceBridge.retryPendingWrites();
+    });
+    return () => {
+      stopConnection();
+      stopBridge();
+    };
+  }, [preferenceBridge, watchResourceConnection]);
   const [studioPreferences, setStudioPreferences] = useState<StudioPreferences>(
     preferenceLoad.value,
   );
@@ -615,7 +624,7 @@ export default function App({ active = true }: { active?: boolean }) {
       rememberCreated,
       forgetCreated,
       creationScope,
-    } = useSnapshot(preferenceBridge ? receiveUiPreferences : undefined),
+    } = useSnapshot(receiveUiPreferences),
     [opened, setOpened] = useState<string | null>(() =>
       window.matchMedia("(max-width: 760px)").matches
         ? saved("codex-mobile-opened", null)
@@ -640,6 +649,13 @@ export default function App({ active = true }: { active?: boolean }) {
     [modal, setModal] = useState<{ title: string; body: ReactNode } | null>(
       null,
     );
+  useEffect(() => {
+    if (!workspaceId) return;
+    const key = `studio-server-workspace-id:${serverViewId || "local"}`;
+    if (globalThis.localStorage.getItem(key) === workspaceId) return;
+    globalThis.localStorage.setItem(key, workspaceId);
+    window.dispatchEvent(new Event(SERVER_REGISTRY_EVENT));
+  }, [workspaceId, serverViewId]);
   const dataRef = useRef(data);
   dataRef.current = data;
   const [pendingConversationDelete, setPendingConversationDelete] =
@@ -3638,8 +3654,8 @@ export default function App({ active = true }: { active?: boolean }) {
                             }
                           />
                           <small>
-                            Applies to messages, progress, and composer. Narrow
-                            screens use the full available width.
+                            Applies to messages and composer. Narrow screens use
+                            the full available width.
                           </small>
                         </div>
                       </SettingsRow>

@@ -641,20 +641,20 @@ async fn real_write(
 async fn real_supervisor_incomplete_initialization_recovers_same_child_and_replays_after_ack() {
     // Wait for the real startup handshake before arming the scenario hang guard.
     let state = DisposableState::new();
-    let python = python_executable();
-    let mut supervisor = SupervisorProcess::start_v2(&state);
+    let mut supervisor = SupervisorProcess::start(&state);
     real_watchdog(async {
     let script = r#"
-import json,sys
-for line in sys.stdin:
- m=json.loads(line)
- if m.get('method')=='initialize': print(json.dumps({'id':m['id'],'result':{'ready':True}}),flush=True)
- elif m.get('method')=='initialized':
-  print('not-json',flush=True)
-  print(json.dumps({'method':'test/initialized'}),flush=True)
+while IFS= read -r line; do
+ case "$line" in
+  *'"method":"initialize"'*)
+   id=$(rpc_id "$line")
+   printf '{"id":%s,"result":{"ready":true}}\n' "$id";;
+  *'"method":"initialized"'*) printf 'not-json\n{"method":"test/initialized"}\n';;
+ esac
+done
 "#;
     let launch = ProviderLaunchSpec::new(
-        vec![python, "-u".into(), "-c".into(), script.into()],
+        retained_shell_command(&state.0, script),
         support::child_environment(&state.0),
         state.0.clone(),
     );
@@ -802,30 +802,36 @@ for line in sys.stdin:
 #[tokio::test]
 async fn real_supervisor_reattach_waits_for_a_launch_record_in_transition() {
     let state = DisposableState::new();
-    let python = python_executable();
-    let mut supervisor = SupervisorProcess::start_v2(&state);
+    let mut supervisor = SupervisorProcess::start(&state);
     real_watchdog(async {
-        let script = r#"
-import os,sys,time
-source = sys.orig_argv[sys.orig_argv.index('-c') + 1]
-stage = sys.argv[1] if len(sys.argv) > 1 else 'launch'
-# Keep the accepted launch: drop what Python startup adds to os.environ.
-env = {key: value for key, value in os.environ.items() if key != 'LC_CTYPE'}
-if stage == 'launch':
- home = env.pop('HOME')
- os.execve(sys.executable, [sys.executable, '-u', '-c', source, 'transition', home], env)
-if stage == 'transition':
- open('transition', 'w').close()
- while not os.path.exists('release'):
-  time.sleep(0.01)
- env['HOME'] = sys.argv[2]
- os.execve(sys.executable, [sys.executable, '-u', '-c', source, 'ready'], env)
-for line in sys.stdin:
- pass
-"#;
+        let script_path = state.0.join("transition.sh");
+        let shell = retained_shell(&state.0);
+        let script = format!(
+            r#"
+case "$1" in
+ launch) accepted_home=$HOME; unset HOME; exec '{shell}' "$0" transition "$accepted_home";;
+ transition)
+  : > transition
+  release_poll_seconds=0.01
+  while [ ! -e release ]; do sleep "$release_poll_seconds"; done
+  HOME=$2; export HOME
+  exec '{shell}' "$0" ready;;
+esac
+while IFS= read -r line; do :; done
+"#
+        );
+        std::fs::write(&script_path, script).unwrap();
+        let mut env = support::child_environment(&state.0);
+        // The shell exports its cwd across exec; include it in the accepted launch.
+        env.insert("PWD".into(), state.0.to_string_lossy().into_owned());
+        env.insert("SHLVL".into(), "0".into());
         let launch = ProviderLaunchSpec::new(
-            vec![python, "-u".into(), "-c".into(), script.into()],
-            support::child_environment(&state.0),
+            vec![
+                shell,
+                script_path.to_string_lossy().into_owned(),
+                "launch".into(),
+            ],
+            env,
             state.0.clone(),
         );
         let factory = SupervisorProviderTaskFactory::new(state.identity());
@@ -871,28 +877,24 @@ for line in sys.stdin:
 #[tokio::test]
 async fn real_supervisor_keeps_claude_string_ids_and_writes_a_reply_once() {
     let state = DisposableState::new();
-    let python = python_executable();
-    let mut supervisor = SupervisorProcess::start_v2(&state);
+    let mut supervisor = SupervisorProcess::start(&state);
     real_watchdog(async {
     let bridge = "claude:803e6306-e6a7-4116-bcd3-bb677560a582";
     let script = r#"
-import json,sys
-for line in sys.stdin:
- m=json.loads(line)
- if m.get('method')=='initialize': print(json.dumps({'id':m['id'],'result':{}}),flush=True)
- elif m.get('method')=='initialized':
-  print(json.dumps({'id':sys.argv[1],'method':'item/tool/call','params':{'threadId':'t','turnId':'u','callId':'c','tool':'echo','arguments':{}}}),flush=True)
- elif m.get('method')=='thread/read': print(json.dumps({'id':m['id'],'result':{'echo':m['id']}}),flush=True)
- elif 'method' not in m: print(json.dumps({'method':'test/reply','params':{'id':m['id'],'result':m['result']}}),flush=True)
+while IFS= read -r line; do
+ id=$(rpc_id "$line")
+ case "$line" in
+  *'"method":"initialize"'*) printf '{"id":%s,"result":{}}\n' "$id";;
+  *'"method":"initialized"'*) printf '{"id":"%s","method":"item/tool/call","params":{"threadId":"t","turnId":"u","callId":"c","tool":"echo","arguments":{}}}\n' "$1";;
+  *'"method":"thread/read"'*) printf '{"id":%s,"result":{"echo":%s}}\n' "$id" "$id";;
+  *) printf '{"method":"test/reply","params":%s}\n' "$line";;
+ esac
+done
 "#;
+    let mut command = shell_command(script);
+    command.extend(["claude-fixture".into(), bridge.into()]);
     let launch = ProviderLaunchSpec::new(
-        vec![
-            python,
-            "-u".into(),
-            "-c".into(),
-            script.into(),
-            bridge.into(),
-        ],
+        command,
         support::child_environment(&state.0),
         state.0.clone(),
     );
@@ -1062,25 +1064,14 @@ async fn shutdown_after_initialize_reply_before_initialized_receipt_reports_reco
 #[tokio::test]
 async fn full_unix_connect_backlog_fails_closed_without_reconnect_or_stranded_task() {
     watchdog(async {
-    use std::io::BufRead;
-    use std::process::{Command, Stdio};
-    struct ListenerChild(std::process::Child);
-    impl Drop for ListenerChild {
-        fn drop(&mut self) {
-            let _ignored = self.0.kill();
-            let _ignored = self.0.wait();
-        }
-    }
+    use rustix::net::{AddressFamily, SocketAddrUnix, SocketType, bind, listen, socket};
+    // listen(0) gives one admission slot on Linux. Binding in this thread is
+    // the readiness barrier; the retained connection fills that exact slot.
+    const SATURATED_BACKLOG: i32 = 0;
     let state = DisposableState::new();
-    // listen(0) gives one admission slot on Linux. The stdout line is a bind
-    // barrier, not a sleep/window, and the retained socket fills that exact slot.
-    let mut child = ListenerChild(Command::new(python_executable()).args(["-u", "-c", "import socket,sys; s=socket.socket(socket.AF_UNIX); s.bind(sys.argv[1]); s.listen(0); print('bound',flush=True); sys.stdin.read()"])
-        .arg(state.socket()).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap());
-    let mut line = String::new();
-    std::io::BufReader::new(child.0.stdout.take().unwrap())
-        .read_line(&mut line)
-        .unwrap();
-    assert_eq!(line.trim(), "bound");
+    let listener = socket(AddressFamily::UNIX, SocketType::STREAM, None).unwrap();
+    bind(&listener, &SocketAddrUnix::new(state.socket()).unwrap()).unwrap();
+    listen(&listener, SATURATED_BACKLOG).unwrap();
     let _occupant = UnixStream::connect(state.socket()).await.unwrap();
     let factory = SupervisorProviderTaskFactory::new(state.identity());
     let mut attachment = factory
@@ -1137,14 +1128,14 @@ async fn non_linux_reattach_refuses_even_an_exited_child_before_open() {
 }
 
 #[tokio::test]
-async fn python_v1_handshake_is_rejected_without_provider_command_fallback() {
+async fn v1_handshake_is_rejected_without_provider_command_fallback() {
     watchdog(async {
         let state = DisposableState::new();
         let listener = UnixListener::bind(state.socket()).unwrap();
         let factory = SupervisorProviderTaskFactory::new(state.identity());
         let mut attachment = factory
             .open(
-                ProviderHandle::for_account("python-v1"),
+                ProviderHandle::for_account("legacy-v1"),
                 options(&state),
                 Shutdown::default(),
             )
@@ -1155,7 +1146,7 @@ async fn python_v1_handshake_is_rejected_without_provider_command_fallback() {
         let mut peer = Peer::command(socket);
         let handshake = peer.read().await.unwrap();
         assert_eq!(handshake["protocol"], 2);
-        // Python's current v1 supervisor replies without a protocol echo.
+        // A legacy v1 supervisor replies without a protocol echo.
         peer.send(json!({"ok":true})).await;
 
         assert!(matches!(
@@ -1190,8 +1181,7 @@ async fn python_v1_handshake_is_rejected_without_provider_command_fallback() {
 #[tokio::test]
 async fn rust_v2_lost_committed_write_reply_is_unknown_and_never_retried() {
     let state = DisposableState::new();
-    let python = python_executable();
-    let mut supervisor = SupervisorProcess::start_v2(&state);
+    let mut supervisor = SupervisorProcess::start(&state);
     real_watchdog(async {
         let actual = state.0.join("actual.sock");
         std::fs::rename(state.socket(), &actual).unwrap();
@@ -1215,8 +1205,8 @@ async fn rust_v2_lost_committed_write_reply_is_unknown_and_never_retried() {
                 let Some(request) = client.read().await else {
                     break;
                 };
-                let lose_reply = request["action"] == "write"
-                    && request["message"]["method"] == "model/list";
+                let lose_reply =
+                    request["action"] == "write" && request["message"]["method"] == "model/list";
                 backend.send(request.clone()).await;
                 let response = backend.read().await.unwrap();
                 if lose_reply {
@@ -1236,9 +1226,17 @@ async fn rust_v2_lost_committed_write_reply_is_unknown_and_never_retried() {
             proxy_listener
         });
 
-        let script = "import sys,json\nfor line in sys.stdin:\n m=json.loads(line)\n if 'id' in m: print(json.dumps({'id':m['id'],'result':{}}),flush=True)";
+        let script = r#"
+while IFS= read -r line; do
+ case "$line" in
+  *'"id":'*)
+   id=$(rpc_id "$line")
+   printf '{"id":%s,"result":{}}\n' "$id";;
+ esac
+done
+"#;
         let launch = ProviderLaunchSpec::new(
-            vec![python, "-u".into(), "-c".into(), script.into()],
+            shell_command(script),
             support::child_environment(&state.0),
             state.0.clone(),
         );
@@ -1302,46 +1300,123 @@ async fn rust_v2_lost_committed_write_reply_is_unknown_and_never_retried() {
 async fn initialized_identity_is_scoped_to_real_child_generation() {
     // Wait for the real startup handshake before arming the scenario hang guard.
     let state = DisposableState::new();
-    let python = python_executable();
-    let mut supervisor = SupervisorProcess::start_v2(&state);
+    let mut supervisor = SupervisorProcess::start(&state);
     real_watchdog(async {
-        let script = "import sys,json\nfor line in sys.stdin:\n m=json.loads(line)\n if m.get('method')=='initialize': print(json.dumps({'id':m['id'],'result':{}}),flush=True)\n elif m.get('method')=='initialized': print(json.dumps({'method':'observed/initialized'}),flush=True)\n elif m.get('method')=='quit': sys.exit(0)";
-        let launch = ProviderLaunchSpec::new(vec![python,"-u".into(),"-c".into(),script.into()],support::child_environment(&state.0),state.0.clone());
+        let script = r#"
+while IFS= read -r line; do
+ case "$line" in
+  *'"method":"initialize"'*)
+   id=$(rpc_id "$line")
+   printf '{"id":%s,"result":{}}\n' "$id";;
+  *'"method":"initialized"'*) printf '{"method":"observed/initialized"}\n';;
+  *'"method":"quit"'*) exit 0;;
+ esac
+done
+"#;
+        let launch = ProviderLaunchSpec::new(
+            shell_command(script),
+            support::child_environment(&state.0),
+            state.0.clone(),
+        );
         let factory = SupervisorProviderTaskFactory::new(state.identity());
         let handle = ProviderHandle::for_account("generation");
-        let opts = || OpenOptions { clock: SessionClock::default(), launch: launch.clone(), expected_generation: None };
-        let mut first = factory.open(handle.clone(),opts(),Shutdown::default()).await.unwrap();
+        let opts = || OpenOptions {
+            clock: SessionClock::default(),
+            launch: launch.clone(),
+            expected_generation: None,
+        };
+        let mut first = factory
+            .open(handle.clone(), opts(), Shutdown::default())
+            .await
+            .unwrap();
         let first_info = real_info(&mut first).await;
         supervisor.own_child(first_info.pid);
-        assert!(matches!(real_write(&first,"init-gen-1",json!({"id":1,"method":"initialize"})).await,CommandReceipt::Written{..}));
+        assert!(matches!(
+            real_write(&first, "init-gen-1", json!({"id":1,"method":"initialize"})).await,
+            CommandReceipt::Written { .. }
+        ));
         first.journal.recv().await.unwrap();
         let identity = initialized_operation(&handle, first_info.generation).0;
-        assert!(matches!(real_write(&first,&identity,json!({"method":"initialized"})).await,CommandReceipt::Written{duplicate:false,..}));
+        assert!(matches!(
+            real_write(&first, &identity, json!({"method":"initialized"})).await,
+            CommandReceipt::Written {
+                duplicate: false,
+                ..
+            }
+        ));
         first.journal.recv().await.unwrap();
-        assert!(matches!(real_write(&first,"quit-gen-1",json!({"method":"quit"})).await,CommandReceipt::Written{..}));
-        loop { if matches!(first.journal.recv().await.unwrap().payload, JournalPayload::Exit(_)) { break; } }
+        assert!(matches!(
+            real_write(&first, "quit-gen-1", json!({"method":"quit"})).await,
+            CommandReceipt::Written { .. }
+        ));
+        loop {
+            if matches!(
+                first.journal.recv().await.unwrap().payload,
+                JournalPayload::Exit(_)
+            ) {
+                break;
+            }
+        }
         first.shutdown().await;
-        let mut second = factory.open(handle.clone(),opts(),Shutdown::default()).await.unwrap();
+        let mut second = factory
+            .open(handle.clone(), opts(), Shutdown::default())
+            .await
+            .unwrap();
         let second_info = real_info(&mut second).await;
         supervisor.own_child(second_info.pid);
-        assert_eq!(second_info.generation.0,first_info.generation.0+1);
-        assert!(matches!(real_write(&second,"init-gen-2",json!({"id":1,"method":"initialize"})).await,CommandReceipt::Written{..}));
+        assert_eq!(second_info.generation.0, first_info.generation.0 + 1);
+        assert!(matches!(
+            real_write(&second, "init-gen-2", json!({"id":1,"method":"initialize"})).await,
+            CommandReceipt::Written { .. }
+        ));
         loop {
-            let entry=second.journal.recv().await.unwrap();
-            if entry.generation == second_info.generation { break; }
+            let entry = second.journal.recv().await.unwrap();
+            if entry.generation == second_info.generation {
+                break;
+            }
         }
-        assert_eq!(second.status.borrow().initialization,InitializationStatus::InitializedWritePending);
-        let correct=format!("initialized:{}:{}",handle.as_str(),second_info.generation.0);
-        assert_eq!(correct, initialized_operation(&handle, second_info.generation).0);
-        assert!(matches!(real_write(&second,&identity,json!({"method":"initialized"})).await,CommandReceipt::NotSent));
-        assert!(matches!(real_write(&second,&correct,json!({"method":"initialized"})).await,CommandReceipt::Written{duplicate:false,..}));
+        assert_eq!(
+            second.status.borrow().initialization,
+            InitializationStatus::InitializedWritePending
+        );
+        let correct = format!(
+            "initialized:{}:{}",
+            handle.as_str(),
+            second_info.generation.0
+        );
+        assert_eq!(
+            correct,
+            initialized_operation(&handle, second_info.generation).0
+        );
+        assert!(matches!(
+            real_write(&second, &identity, json!({"method":"initialized"})).await,
+            CommandReceipt::NotSent
+        ));
+        assert!(matches!(
+            real_write(&second, &correct, json!({"method":"initialized"})).await,
+            CommandReceipt::Written {
+                duplicate: false,
+                ..
+            }
+        ));
         loop {
             let observed = second.journal.recv().await.unwrap();
-            if observed.generation == second_info.generation && matches!(observed.payload, JournalPayload::Frame(Frame::UnknownMethod(_))) { break; }
+            if observed.generation == second_info.generation
+                && matches!(
+                    observed.payload,
+                    JournalPayload::Frame(Frame::UnknownMethod(_))
+                )
+            {
+                break;
+            }
         }
-        assert_eq!(second.status.borrow().initialization,InitializationStatus::Ready);
+        assert_eq!(
+            second.status.borrow().initialization,
+            InitializationStatus::Ready
+        );
         assert!(second.shutdown().await.recovery_needed.is_none());
-    }).await;
+    })
+    .await;
 }
 
 #[tokio::test]

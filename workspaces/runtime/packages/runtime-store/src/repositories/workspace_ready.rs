@@ -286,6 +286,11 @@ fn conflicts(
     )
 }
 
+/// Release reason stored on a provisioning journal that ended because its
+/// failed worker was archived.
+pub const ARCHIVED_PROVISION_RELEASE: &str =
+    "Worker archived; files at the provisioning destination were kept";
+
 pub struct WorkspaceReadyRepository;
 impl WorkspaceReadyRepository {
     pub fn journal(connection: &rusqlite::Connection, id: &str) -> StoreResult<Option<Value>> {
@@ -368,6 +373,40 @@ impl WorkspaceReadyRepository {
                 params![plan.id, operation.to_string()],
             )?;
         }
+        Ok(())
+    }
+
+    /// End the `recovery_required` provisioning `id` of `agent` when the
+    /// failed worker is archived. Its Git effect has returned, so no workspace
+    /// change is in flight. The journal stays as history with its error and
+    /// destination; files there are not touched. A journal in any other state
+    /// fails the transaction.
+    pub fn release_archived(
+        tx: &Transaction<'_>,
+        id: &str,
+        agent: &str,
+        now: f64,
+    ) -> StoreResult<()> {
+        let Some(mut operation) = Self::journal(tx, id)? else {
+            return Err(StoreError::RecordContract(
+                "Archived provisioning journal is missing",
+            ));
+        };
+        if operation["kind"] != "provision"
+            || operation["agent"] != agent
+            || operation["phase"] != "recovery_required"
+        {
+            return Err(StoreError::RecordContract(
+                "Archived provisioning changed before it was released",
+            ));
+        }
+        operation["phase"] = json!("failed");
+        operation["updated"] = json!(now);
+        operation["release"] = json!({"reason":ARCHIVED_PROVISION_RELEASE,"at":now});
+        tx.execute(
+            "UPDATE runtime_workspace_operations SET record=?2 WHERE id=?1",
+            params![id, operation.to_string()],
+        )?;
         Ok(())
     }
 

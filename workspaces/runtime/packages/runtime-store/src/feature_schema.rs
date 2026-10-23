@@ -3,7 +3,7 @@ use rusqlite::Transaction;
 use crate::StoreResult;
 
 // These tables are installed by Runtime and feature constructors, or on first
-// feature use, in canvas.sqlite3. Keep their DDL in step with Python creators.
+// feature use, in canvas.sqlite3. The Rust feature schema owns their current DDL.
 const FEATURE_SCHEMA: &str = r#"
             CREATE TABLE IF NOT EXISTS runtime_work (id TEXT PRIMARY KEY, record TEXT NOT NULL);
             CREATE INDEX IF NOT EXISTS runtime_work_root_status
@@ -279,50 +279,8 @@ const FEATURE_SCHEMA: &str = r#"
             ON runtime_server_exec_input(handle);
 "#;
 
-/// Task-retention marker table (`payload-v1:tasks` and older Python markers).
-/// `FEATURE_SCHEMA` creates its current shape: the base columns, then the
-/// added columns, as `payload_marker_columns_match_python_owner` checks.
-const PAYLOAD_MIGRATIONS_TABLE: &str = "runtime_payload_migrations";
-/// Columns of the original Python marker table. Older states have only these.
-#[cfg(test)]
-const PAYLOAD_MIGRATIONS_BASE_COLUMNS: &str =
-    "name TEXT PRIMARY KEY,cursor INTEGER NOT NULL DEFAULT 0,complete INTEGER NOT NULL DEFAULT 0";
-/// Columns that Python `codex_payload_migrate._connect` adds to an older
-/// marker table, as (name, declaration), in table order.
-const PAYLOAD_MIGRATIONS_ADDED_COLUMNS: [(&str, &str); 3] = [
-    ("status", "TEXT NOT NULL DEFAULT 'pending'"),
-    ("updated", "REAL"),
-    ("error", "TEXT"),
-];
-
 pub(crate) fn prepare(transaction: &Transaction<'_>) -> StoreResult<()> {
     transaction.execute_batch(FEATURE_SCHEMA)?;
-    prepare_payload_migrations(transaction)
-}
-
-/// Add the columns that an older Python marker table lacks, like
-/// `codex_payload_migrate._connect`. An added column gives a completed marker
-/// the default `pending` status; that marker is set to `complete` so that it
-/// stays coherent for the schema verifier.
-fn prepare_payload_migrations(transaction: &Transaction<'_>) -> StoreResult<()> {
-    let columns = transaction
-        .prepare(&format!("PRAGMA table_info({PAYLOAD_MIGRATIONS_TABLE})"))?
-        .query_map([], |row| row.get::<_, String>(1))?
-        .collect::<Result<std::collections::HashSet<_>, _>>()?;
-    for (name, declaration) in PAYLOAD_MIGRATIONS_ADDED_COLUMNS {
-        if !columns.contains(name) {
-            transaction.execute_batch(&format!(
-                "ALTER TABLE {PAYLOAD_MIGRATIONS_TABLE} ADD COLUMN {name} {declaration};"
-            ))?;
-        }
-    }
-    transaction.execute(
-        &format!(
-            "UPDATE {PAYLOAD_MIGRATIONS_TABLE} SET status='complete' \
-             WHERE complete=1 AND status='pending'"
-        ),
-        [],
-    )?;
     Ok(())
 }
 
@@ -461,92 +419,5 @@ mod tests {
                 "{name} DDL differs"
             );
         }
-    }
-
-    #[test]
-    fn payload_marker_columns_match_python_owner() {
-        let python = include_str!("../../../apps/server/src/codex_payload_migrate.py");
-        let python = compact(python);
-        assert!(
-            python.contains(super::PAYLOAD_MIGRATIONS_BASE_COLUMNS),
-            "codex_payload_migrate.py base marker columns differ"
-        );
-        for (name, declaration) in super::PAYLOAD_MIGRATIONS_ADDED_COLUMNS {
-            assert!(
-                python.contains(&format!("(\"{name}\", \"{declaration}\")")),
-                "codex_payload_migrate.py does not add {name} {declaration}"
-            );
-        }
-        let added = super::PAYLOAD_MIGRATIONS_ADDED_COLUMNS
-            .iter()
-            .map(|(name, declaration)| format!("{name} {declaration}"))
-            .collect::<Vec<_>>()
-            .join(",");
-        assert!(
-            FEATURE_SCHEMA.contains(&format!(
-                "CREATE TABLE IF NOT EXISTS {} ({},{added});",
-                super::PAYLOAD_MIGRATIONS_TABLE,
-                super::PAYLOAD_MIGRATIONS_BASE_COLUMNS
-            )),
-            "FEATURE_SCHEMA marker table differs from the base and added columns"
-        );
-    }
-
-    #[test]
-    fn older_payload_marker_table_gains_python_columns() {
-        let mut connection = Connection::open_in_memory().expect("in-memory database opens");
-        let transaction = connection.transaction().expect("transaction opens");
-        transaction
-            .execute_batch(
-                "CREATE TABLE runtime_payload_migrations (name TEXT PRIMARY KEY,cursor INTEGER NOT NULL DEFAULT 0,complete INTEGER NOT NULL DEFAULT 0);
-                 INSERT INTO runtime_payload_migrations VALUES('payload-v1:tasks',7,1),('payload-v1:other',3,0);",
-            )
-            .expect("older marker table");
-        super::prepare_payload_migrations(&transaction).expect("marker table upgrades");
-        super::prepare_payload_migrations(&transaction).expect("upgrade is repeatable");
-
-        let columns = transaction
-            .prepare("PRAGMA table_info(runtime_payload_migrations)")
-            .expect("table info prepares")
-            .query_map([], |row| {
-                Ok((
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, bool>(3)?,
-                    row.get::<_, Option<String>>(4)?,
-                ))
-            })
-            .expect("table info runs")
-            .collect::<Result<Vec<_>, _>>()
-            .expect("table info reads");
-        assert_eq!(
-            columns[3..],
-            [
-                (
-                    "status".into(),
-                    "TEXT".into(),
-                    true,
-                    Some("'pending'".into())
-                ),
-                ("updated".into(), "REAL".into(), false, None),
-                ("error".into(), "TEXT".into(), false, None),
-            ]
-        );
-        let markers = transaction
-            .prepare("SELECT name,status FROM runtime_payload_migrations ORDER BY name")
-            .expect("markers prepare")
-            .query_map([], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-            })
-            .expect("markers run")
-            .collect::<Result<Vec<_>, _>>()
-            .expect("markers read");
-        assert_eq!(
-            markers,
-            [
-                ("payload-v1:other".into(), "pending".into()),
-                ("payload-v1:tasks".into(), "complete".into()),
-            ]
-        );
     }
 }

@@ -1,167 +1,25 @@
-//! Profile operations and progress-panel endpoints.
+//! Profile operations.
 
 use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
 use serde_json::{Value, json};
 use studio_runtime_services::panels::{self, ProfileField};
-use studio_runtime_services::progress_panel::{self, ProgressPanelError};
-use studio_runtime_store::{
-    AgentId, AgentRepository, ProfileRepository, ProfileRole, ReasoningEffort, RuntimeStore,
-    StoreError,
-};
+use studio_runtime_store::{ProfileRepository, ProfileRole, ReasoningEffort, StoreError};
 
-use super::extractors::{ApiJson, QueryParams};
-#[cfg(windows)]
-use super::manifest::{Dependency, dependency_unavailable};
+use super::extractors::ApiJson;
 use super::manifest::{OperationStatus, RouteGroup, get, post};
 use crate::error::ApiError;
 use crate::router::HttpState;
 
-#[cfg(windows)]
-const WINDOWS_FILE_IDENTITY: &[Dependency] =
-    &[Dependency::new("resource-policy/windows-file-identity")];
-
-#[cfg(windows)]
-fn panel_status() -> OperationStatus {
-    OperationStatus::partial(WINDOWS_FILE_IDENTITY)
-}
-
-#[cfg(not(windows))]
-fn panel_status() -> OperationStatus {
-    OperationStatus::Implemented
-}
-
 pub(crate) fn routes() -> RouteGroup {
     RouteGroup::new(vec![
-        get("/api/panel", panel_status(), panel),
-        post("/api/panel/layout", panel_status(), save_panel_layout),
         get("/api/profiles", OperationStatus::Implemented, profiles),
         post(
             "/api/profiles",
             OperationStatus::Implemented,
             update_profiles,
         ),
-    ])
-}
-
-async fn panel(
-    State(state): State<HttpState>,
-    query: QueryParams,
-) -> Result<Json<crate::generated::ProgressPanel>, ApiError> {
-    #[cfg(windows)]
-    {
-        let _ = (state, query);
-        return Err(
-            dependency_unavailable("GET", "/api/panel", WINDOWS_FILE_IDENTITY)
-                .unwrap_or_else(|_| ApiError::internal()),
-        );
-    }
-    #[cfg(not(windows))]
-    {
-        let agent = query
-            .typed_value("agent")
-            .and_then(Value::as_str)
-            .ok_or_else(|| validation_error("agent"))?
-            .to_owned();
-        let store = state.store.ok_or_else(ApiError::internal)?;
-        checked_agent(&store, &agent).await?;
-        let root = store.root().to_owned();
-        let result = studio_runtime_process::blocking_pool::spawn_blocking(
-            "runtime-http/routes/panels",
-            move || progress_panel::read_progress(&root, &agent).map_err(panel_read_error),
-        )
-        .await
-        .map_err(|_| ApiError::internal())??;
-        Ok(Json(super::generated_json::<
-            crate::generated::ProgressPanel,
-        >(result)?))
-    }
-}
-
-async fn save_panel_layout(
-    State(state): State<HttpState>,
-    ApiJson(body): ApiJson<Value>,
-) -> Result<Json<crate::generated::PanelLayoutResult>, ApiError> {
-    #[cfg(windows)]
-    {
-        let _ = (state, body);
-        return Err(
-            dependency_unavailable("POST", "/api/panel/layout", WINDOWS_FILE_IDENTITY)
-                .unwrap_or_else(|_| ApiError::internal()),
-        );
-    }
-    #[cfg(not(windows))]
-    {
-        let agent = body
-            .get("agent")
-            .and_then(Value::as_str)
-            .ok_or_else(|| validation_error("agent"))?
-            .to_owned();
-        let store = state.store.ok_or_else(ApiError::internal)?;
-        checked_agent(&store, &agent).await?;
-        let root = store.root().to_owned();
-        let result = studio_runtime_process::blocking_pool::spawn_blocking(
-            "runtime-http/routes/panels",
-            move || progress_panel::record_layout(&root, &body).map_err(layout_error),
-        )
-        .await
-        .map_err(|_| ApiError::internal())??;
-        Ok(Json(super::generated_json::<
-            crate::generated::PanelLayoutResult,
-        >(result)?))
-    }
-}
-
-async fn checked_agent(store: &RuntimeStore, id: &str) -> Result<(), ApiError> {
-    let id = AgentId::from(id);
-    let agent = store
-        .read_async("runtime-http/routes/panels", move |connection| {
-            AgentRepository::get(connection, &id).map_err(|_| ApiError::internal())
-        })
-        .await?
-        .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Unknown managed agent"))?;
-    if agent
-        .extra
-        .get("deletedAt")
-        .is_some_and(|value| studio_runtime_store::truthy(Some(value)))
-    {
-        return Err(ApiError::new(
-            StatusCode::BAD_REQUEST,
-            "This agent was deleted",
-        ));
-    }
-    Ok(())
-}
-
-fn panel_read_error(error: ProgressPanelError) -> ApiError {
-    match error {
-        ProgressPanelError::InvalidAgent => field_validation("query", "agent"),
-        _ => ApiError::internal(),
-    }
-}
-
-fn layout_error(error: ProgressPanelError) -> ApiError {
-    let message = error.to_string();
-    match error {
-        ProgressPanelError::InvalidAgent => field_validation("body", "agent"),
-        ProgressPanelError::InvalidLayout("fields") => {
-            ApiError::validation(vec![Value::String("body".to_owned())])
-        }
-        ProgressPanelError::InvalidLayout(field) => field_validation("body", field),
-        ProgressPanelError::StaleRevision
-        | ProgressPanelError::NewerMeasurement
-        | ProgressPanelError::TooManyClients
-        | ProgressPanelError::Busy
-        | ProgressPanelError::ChangedWhileSaving => ApiError::new(StatusCode::CONFLICT, message),
-        _ => ApiError::internal(),
-    }
-}
-
-fn field_validation(section: &str, field: &str) -> ApiError {
-    ApiError::validation(vec![
-        Value::String(section.to_owned()),
-        Value::String(field.to_owned()),
     ])
 }
 
@@ -242,7 +100,7 @@ async fn update_profiles(
             max_turns: body
                 .max_turns
                 .flatten()
-                .map(|n| u32::try_from(n))
+                .map(u32::try_from)
                 .transpose()
                 .map_err(|_| validation_error("maxTurns"))?,
         };
@@ -304,6 +162,6 @@ inventory::submit! {
     crate::routes::manifest::RouteModuleRegistration {
         name: "panels",
         routes: Some(routes),
-        dependencies: &["resource-policy/read-progress-panel", "resource-policy/windows-file-identity", "resource-policy/write-progress-layout"],
+        dependencies: &[],
     }
 }

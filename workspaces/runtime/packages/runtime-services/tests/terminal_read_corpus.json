@@ -1,0 +1,166 @@
+{
+  "events": [{ "kind": "terminal", "terminalId": "terminal-corpus" }],
+  "history": [
+    {
+      "limit": 7,
+      "offset": 0,
+      "value": {
+        "availableOffset": 14,
+        "error": null,
+        "exitCode": 7,
+        "hasMore": true,
+        "historyStart": 0,
+        "offset": 7,
+        "status": "exited",
+        "text": "alpha-Ж",
+        "truncated": false
+      }
+    },
+    {
+      "limit": 4,
+      "offset": 6,
+      "value": {
+        "availableOffset": 14,
+        "error": null,
+        "exitCode": 7,
+        "hasMore": true,
+        "historyStart": 0,
+        "offset": 10,
+        "status": "exited",
+        "text": "Ж🙂-o",
+        "truncated": false
+      }
+    },
+    {
+      "limit": 3,
+      "offset": 100,
+      "value": {
+        "availableOffset": 14,
+        "error": null,
+        "exitCode": 7,
+        "hasMore": false,
+        "historyStart": 0,
+        "offset": 14,
+        "status": "exited",
+        "text": "",
+        "truncated": false
+      }
+    }
+  ],
+  "large": [],
+  "listing": {
+    "items": [
+      {
+        "agent": "python-agent",
+        "created": 4.0,
+        "cwd": "$ROOT",
+        "error": "The server restarted. This shell cannot be resumed.",
+        "exitCode": null,
+        "id": "terminal-restart",
+        "status": "exited",
+        "title": "Python written terminal",
+        "updated": 9.0
+      },
+      {
+        "agent": "python-agent",
+        "created": 1.0,
+        "cwd": "$ROOT",
+        "exitCode": 7,
+        "id": "terminal-corpus",
+        "status": "exited",
+        "title": "Python written terminal",
+        "updated": 2.0
+      }
+    ]
+  },
+  "output": [
+    {
+      "offset": 0,
+      "value": {
+        "error": null,
+        "exitCode": 7,
+        "offset": 14,
+        "status": "exited",
+        "text": "alpha-Ж🙂-omega",
+        "truncated": false
+      }
+    },
+    {
+      "offset": 6,
+      "value": {
+        "error": null,
+        "exitCode": 7,
+        "offset": 14,
+        "status": "exited",
+        "text": "Ж🙂-omega",
+        "truncated": false
+      }
+    },
+    {
+      "offset": 15,
+      "value": {
+        "error": null,
+        "exitCode": 7,
+        "offset": 14,
+        "status": "exited",
+        "text": "",
+        "truncated": false
+      }
+    },
+    {
+      "offset": 100,
+      "value": {
+        "error": null,
+        "exitCode": 7,
+        "offset": 14,
+        "status": "exited",
+        "text": "",
+        "truncated": false
+      }
+    }
+  ],
+  "restart": {
+    "error": "The server restarted. This shell cannot be resumed.",
+    "exitCode": null,
+    "offset": 7,
+    "status": "exited",
+    "text": "pending",
+    "truncated": false
+  },
+  "sizes": [
+    { "name": "defaults", "value": { "cols": 100, "rows": 28 } },
+    { "name": "minimum", "value": { "cols": 2, "rows": 1 } },
+    { "name": "maximum", "value": { "cols": 1000, "rows": 500 } },
+    { "error": "Invalid terminal size", "name": "bool" },
+    { "error": "Invalid terminal size", "name": "columns-low" },
+    { "error": "Invalid terminal size", "name": "columns-high" },
+    { "error": "Invalid terminal size", "name": "rows-low" },
+    { "error": "Invalid terminal size", "name": "rows-high" }
+  ],
+  "tables": {
+    "user_terminal_decoder_state": [],
+    "user_terminal_event_cursor": [],
+    "user_terminal_output": [["terminal-corpus", 0, 14, "alpha-Ж🙂-omega"]],
+    "user_terminal_receipts": [],
+    "user_terminals": [
+      [
+        "terminal-corpus",
+        "{\"id\": \"terminal-corpus\", \"agent\": \"python-agent\", \"title\": \"Python written terminal\", \"cwd\": \"$ROOT\", \"status\": \"exited\", \"created\": 1.0, \"updated\": 2.0, \"exitCode\": 7}",
+        "alpha-Ж🙂-omega",
+        0
+      ],
+      [
+        "terminal-closed",
+        "{\"id\": \"terminal-closed\", \"agent\": \"python-agent\", \"title\": \"Python written terminal\", \"cwd\": \"$ROOT\", \"status\": \"closed\", \"created\": 3.0, \"updated\": 2.0, \"exitCode\": 7}",
+        "",
+        0
+      ],
+      [
+        "terminal-restart",
+        "{\"id\": \"terminal-restart\", \"agent\": \"python-agent\", \"title\": \"Python written terminal\", \"cwd\": \"$ROOT\", \"status\": \"exited\", \"created\": 4.0, \"updated\": 9.0, \"exitCode\": null, \"error\": \"The server restarted. This shell cannot be resumed.\"}",
+        "pending",
+        0
+      ]
+    ]
+  }
+}

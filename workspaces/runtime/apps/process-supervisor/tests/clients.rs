@@ -5,5 +5,5 @@
 #[path = "../../../packages/runtime-process/tests/support/mod.rs"]
 mod process_support;
 
-#[path = "../../../packages/runtime-process/tests/supervisor_v1.rs"]
-mod protocol_v1;
+#[path = "../../../packages/runtime-process/tests/supervisor_v2.rs"]
+mod protocol_v2;
