@@ -235,7 +235,6 @@ const queryBusy = (id, active) =>
     active.tasks.size ||
     active.pendingSteers.size ||
     active.unknownSteers.size ||
-    active.continuationTimer ||
     active.reservingInput ||
     active.input.values.length ||
     operations.get(id),
@@ -1027,21 +1026,22 @@ function clearUnknownSteer(active, id) {
   clearTimeout(active.unknownSteers.get(id));
   active.unknownSteers.delete(id);
 }
-function clearContinuation(active) {
-  clearTimeout(active.continuationTimer);
-  active.continuationTimer = null;
-}
-function expectContinuation(active) {
-  if (active.continuationTimer) return;
-  active.continuationTimer = setTimeout(() => {
-    active.continuationTimer = null;
-    catalogCache.activityChanged();
-  }, limits.continuationWaitMs);
-  active.continuationTimer.unref();
+function startContinuation(s, active) {
+  active.turn = {
+    id: randomUUID(),
+    status: "inProgress",
+    items: [],
+    synthetic: true,
+  };
+  active.reportedTurnOutput = 0;
+  s.turns.push(active.turn);
+  emit("turn/started", {
+    threadId: s.id,
+    turn: { id: active.turn.id, status: "inProgress" },
+  });
 }
 function clearTurnTimers(active) {
   clearDeferredResult(active);
-  clearContinuation(active);
   clearTimeout(active.stopTimer);
   active.stopTimer = null;
   for (const id of active.unknownSteers.keys()) clearUnknownSteer(active, id);
@@ -1598,13 +1598,13 @@ async function startSession(s, active, p) {
     admit();
     active.readyResolve();
     for await (const m of q) {
-      // A grace timer can finish a turn beside the SDK reader. Process a late
-      // echo/continuation only after that turn's completion has been recorded.
+      const room = stdoutRoom();
+      if (room) await room;
+      // A grace timer can finish a turn during the backpressure wait. Process
+      // this message only after that turn's completion has been recorded.
       if (active.turn && finishingTurns.has(active.turn))
         await finishingTurns.get(active.turn);
       if (active.persistFailure) throw active.persistFailure;
-      const room = stdoutRoom();
-      if (room) await room;
       active.lastEventAt = Date.now();
       armStallWatch();
       if (m.type === "system" && m.subtype === "init") {
@@ -1651,15 +1651,15 @@ async function startSession(s, active, p) {
             ? { turn: active.turn, item }
             : submittedSteer(s, m.uuid);
         if (steer?.item.deliveryStatus === "submitted") {
-          // The CLI accepted this input and can pause before its first output.
-          // Keep the query until that continuation starts or its wait expires.
-          if (!active.turn) expectContinuation(active);
           clearUnknownSteer(active, steer.item.id);
           steer.item.deliveryStatus = "delivered";
           turnEvent(s, steer.turn, "item/completed", {
             ...steer.item,
             clientId: steer.item.id,
           });
+          // A late echo starts native work before its first assistant output.
+          // Bind it now so another turn/start steers this continuation.
+          if (!active.turn) startContinuation(s, active);
           persistLater(s, active);
         }
         continue;
@@ -1669,19 +1669,7 @@ async function startSession(s, active, p) {
         ["assistant", "stream_event"].includes(m.type) &&
         !m.parent_tool_use_id
       ) {
-        active.turn = {
-          id: randomUUID(),
-          status: "inProgress",
-          items: [],
-          synthetic: true,
-        };
-        clearContinuation(active);
-        active.reportedTurnOutput = 0;
-        s.turns.push(active.turn);
-        emit("turn/started", {
-          threadId: s.id,
-          turn: { id: active.turn.id, status: "inProgress" },
-        });
+        startContinuation(s, active);
       }
       const turn =
         active.turn || (m.parent_tool_use_id ? s.turns.at(-1) : null);
@@ -2574,7 +2562,6 @@ async function handle(method, p) {
             !query.tasks.size &&
             !query.pendingSteers.size &&
             !query.unknownSteers.size &&
-            !query.continuationTimer &&
             !query.reservingInput &&
             !query.input.values.length)
         );
@@ -2592,7 +2579,7 @@ async function handle(method, p) {
         !active?.turn &&
         !active?.tasks.size &&
         !active?.unknownSteers.size &&
-        !active?.continuationTimer
+        !active?.input.values.length
       ) {
         if (active) clearTurnTimers(active);
         active?.input.close();
@@ -2854,7 +2841,6 @@ async function handle(method, p) {
         );
       active.turn = turn;
       active.idleRequestStartedAt = Date.now();
-      clearContinuation(active);
       active.reportedTurnOutput = 0;
       active.reservingInput = true;
     }

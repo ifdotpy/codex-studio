@@ -913,3 +913,111 @@ fsp.appendFile = async(file, data, ...args) => {
     /did not end the turn after Stop/,
   );
 });
+
+test("turn/start after a late echo steers the continuation and delivers input once", async () => {
+  const sdk = FAKE_SDK.replace(
+    "yield {type:'user',isReplay:true,uuid:late.value.uuid};yield {type:'stream_event'",
+    "yield {type:'user',isReplay:true,uuid:late.value.uuid};await until(cwd+'/.generation',abort.signal);if(abort.signal.aborted)return;yield {type:'stream_event'",
+  ).replace(
+    "await until(cwd+'/.continued',abort.signal);",
+    "const followup=await read();yield {type:'user',isReplay:true,uuid:followup.value.uuid};await until(cwd+'/.continued',abort.signal);",
+  );
+  const bridge = await startBridge({}, sdk);
+  const old = await running(bridge, "success-late");
+  await steer(bridge, old, "echo-start-gap");
+  await read(bridge, "steer text");
+  await end(bridge);
+  await completed(bridge, old);
+  await release(bridge, ".echo");
+  await bridge.note((n) => ack(bridge, "echo-start-gap") === n);
+  const next = await bridge.call("turn/start", {
+    threadId: bridge.thread,
+    clientUserMessageId: "next-gap-input",
+    input: text("new user input"),
+  });
+  assert.equal(next.steered, true);
+  assert.notEqual(next.turn.id, old);
+  assert.equal(
+    (await bridge.call("thread/resume", { threadId: bridge.thread }))
+      .reattached,
+    true,
+  );
+  await release(bridge, ".generation");
+  await read(bridge, "new user input");
+  const delivered = await bridge.note(
+    (n) => ack(bridge, "next-gap-input") === n,
+  );
+  assert.equal(delivered.params.turnId, next.turn.id);
+  await release(bridge, ".continued");
+  await completed(bridge, next.turn.id);
+  assert.deepEqual(await inputs(bridge), [
+    "success-late",
+    "steer text",
+    "new user input",
+  ]);
+  assert.equal(
+    bridge.notes.filter(
+      (n) =>
+        n.method === "item/completed" &&
+        n.params.item.clientId === "next-gap-input",
+    ).length,
+    1,
+  );
+});
+
+test("an echo paused by stdout waits for grace finalization to persist", async () => {
+  const sdk = FAKE_SDK.replace(
+    "import fs from 'node:fs';",
+    String.raw`
+import fs from 'node:fs';
+import fsp from 'node:fs/promises';
+const append = fsp.appendFile;
+fsp.appendFile = async(file, data, ...args) => {
+ const value = await append(file, data, ...args), cwd = process.cwd();
+ if(fs.existsSync(cwd+'/.hold-final-save') && String(data).includes('completed') && !fs.existsSync(cwd+'/.final-save-held')) {
+  fs.writeFileSync(cwd+'/.final-save-held','');
+  while(!fs.existsSync(cwd+'/.release-final-save'))await new Promise(r=>setTimeout(r,5));
+ }
+ return value;
+};
+Object.defineProperty(process.stdout, 'writableLength', {configurable:true, get() {
+ const cwd=process.cwd();
+ if(fs.existsSync(cwd+'/.block-reader')) {fs.writeFileSync(cwd+'/.reader-blocked','');return 9*1024*1024;}
+ return 0;
+}});`,
+  ).replace(
+    "yield {type:'user',isReplay:true,uuid:late.value.uuid};yield {type:'stream_event'",
+    "yield {type:'user',isReplay:true,uuid:late.value.uuid};await until(cwd+'/.generation',abort.signal);if(abort.signal.aborted)return;yield {type:'stream_event'",
+  );
+  const bridge = await startBridge({}, sdk);
+  const old = await running(bridge, "success-late");
+  await steer(bridge, old, "reader-gap");
+  await read(bridge, "steer text");
+  await release(bridge, ".hold-final-save");
+  await end(bridge);
+  await marker(bridge, ".result-sent");
+  await release(bridge, ".block-reader");
+  await release(bridge, ".echo");
+  await marker(bridge, ".reader-blocked");
+  await marker(bridge, ".final-save-held");
+  await fs.rm(path.join(bridge.root, ".block-reader"));
+  await bridge.call("thread/loaded/list", {});
+  await bridge.call("thread/loaded/list", {});
+  const prematureAck = ack(bridge, "reader-gap");
+  // Release the disk gate even when the regression assertion below fails.
+  await release(bridge, ".release-final-save");
+  const done = await completed(bridge, old);
+  const delivered = await bridge.note((n) => ack(bridge, "reader-gap") === n);
+  assert.equal(prematureAck, undefined);
+  assert.ok(bridge.notes.indexOf(done) < bridge.notes.indexOf(delivered));
+  const continuation = await bridge.note(
+    (n) => n.method === "turn/started" && n.params.turn.id !== old,
+  );
+  await assert.rejects(
+    bridge.call("thread/unsubscribe", { threadId: bridge.thread }),
+    /Pause the Claude turn/,
+  );
+  await release(bridge, ".generation");
+  await release(bridge, ".continued");
+  await completed(bridge, continuation.params.turn.id);
+});
