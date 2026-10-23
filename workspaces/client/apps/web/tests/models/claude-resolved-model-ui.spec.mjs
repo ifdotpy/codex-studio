@@ -272,6 +272,19 @@ for (const provider of ["claude", "codex"])
                 .map((el) => el.getBoundingClientRect())
                 .filter((box) => box.height);
               return {
+                familyGaps: [...node.querySelectorAll(".model-family-group")]
+                  .map((group) => {
+                    const label = group
+                      .querySelector(".model-family-label")
+                      ?.getBoundingClientRect();
+                    const first = group
+                      .querySelector(".model-radio")
+                      ?.getBoundingClientRect();
+                    return label?.height && first?.height
+                      ? first.top - label.bottom
+                      : null;
+                  })
+                  .filter((gap) => gap !== null),
                 dialogContent: node.scrollHeight,
                 dialogHeight: node.clientHeight,
                 bodyContent: body.scrollHeight,
@@ -302,6 +315,8 @@ for (const provider of ["claude", "codex"])
                 width === 1440 ? 3 : 5,
               );
             expect(geometry.chipWidthRange).toBeLessThan(2);
+            for (const gap of geometry.familyGaps)
+              expect(gap).toBeGreaterThanOrEqual(8);
             measurements.push({
               provider,
               width,
