@@ -495,7 +495,7 @@
 .usage-footer {
   display: flex;
   align-items: center;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   flex: 1 1 auto;
   min-width: 0;
   gap: var(--mantine-spacing-xs) var(--mantine-spacing-sm);
@@ -558,4 +558,35 @@
   display: flex;
   flex-wrap: wrap;
   gap: var(--mantine-spacing-xs);
+}
+
+.limits-session-estimate {
+  margin: 0 0 var(--mantine-spacing-xs);
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.usage-context-icon {
+  align-self: center;
+  flex: none;
+}
+@container workspace (max-width: 47.5em) {
+  .usage-footer {
+    gap: var(--mantine-spacing-xs);
+  }
+  .usage-footer .session-cost-summary,
+  .usage-footer .token-rate,
+  .usage-context-label,
+  .usage-footer .usage-meter,
+  .account-limits-label,
+  .account-limits-dots {
+    display: none;
+  }
+  .context-use,
+  .account-limits-toggle {
+    min-height: var(--mantine-spacing-lg);
+  }
+  .usage-metric-label {
+    align-items: center;
+    gap: calc(var(--mantine-spacing-xs) / 2);
+  }
 }

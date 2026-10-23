@@ -38,6 +38,7 @@ import {
   Trash2,
   Square,
   ListEnd,
+  Ellipsis,
 } from "lucide-react";
 import {
   useCallback,
@@ -723,12 +724,6 @@ export default function Conversation(p: {
     setLimitsOpen(false);
   }, [p.id]);
   const managed = agent?.source === "managed";
-  const showProjectStart =
-    loaded &&
-    !items.length &&
-    !notice &&
-    !p.room &&
-    !["running", "starting"].includes(agent?.status || "");
   const executionSettings =
     p.agent?.source === "managed"
       ? (["orchestrator", "worker"] as const).map((role) => ({
@@ -1683,7 +1678,6 @@ export default function Conversation(p: {
                 location={p.agent?.cwd || "Project location unavailable"}
                 recentChats={p.recentChats}
                 onSelect={p.onSelect}
-                execution={executionSettings}
               />
             ))}
           {transcript}
@@ -1865,6 +1859,43 @@ export default function Conversation(p: {
               const draftTooLong = draft.length > 12000;
               const modelCommand = /^\/model(?:\s|$)/i.test(draft.trim());
               const exactModelCommand = /^\/model$/i.test(draft.trim());
+              const secondaryTools = (
+                <>
+                  {managed && (
+                    <ComposerAttachments
+                      notify={p.notify}
+                      assets={assets}
+                      uploading={uploading}
+                      disabled={!canSend || p.sending}
+                      add={addFiles}
+                      remove={(id) => {
+                        const agentId = p.id || "";
+                        void uploadRecovery
+                          .remove(id, () => {
+                            setAttachments((current) => ({
+                              ...current,
+                              [agentId]: (current[agentId] || []).filter(
+                                (asset) => asset.id !== id,
+                              ),
+                            }));
+                          })
+                          .catch((error) => p.notify(errorText(error)));
+                      }}
+                    />
+                  )}
+                  {managed &&
+                    agent?.isLead &&
+                    agent?.provider !== "claude" &&
+                    p.id &&
+                    !threadBlock && (
+                      <RealtimeVoice
+                        key={`voice:${p.id}`}
+                        agentId={p.id}
+                        notify={p.notify}
+                      />
+                    )}
+                </>
+              );
               return (
                 <>
                   <PromptInput
@@ -1957,6 +1988,29 @@ export default function Conversation(p: {
                       dismiss={(version) => p.dismissDraft?.(version)}
                     />
                     <div className="composer-tools">
+                      <div className="composer-tools-inline">
+                        {secondaryTools}
+                      </div>
+                      {managed && (
+                        <details className="composer-tools-disclosure">
+                          <summary
+                            aria-label="Composer tools"
+                            title="Attachments and voice conversation"
+                          >
+                            <Ellipsis size={18} />
+                            {!!assets.length && (
+                              <span className="composer-attachment-count">
+                                {assets.length}
+                              </span>
+                            )}
+                          </summary>
+                          <div className="composer-tools-popover">
+                            {secondaryTools}
+                          </div>
+                        </details>
+                      )}
+                      {executionControls}
+
                       {managed && (
                         <>
                           {!!pendingFiles.length && (
@@ -2003,26 +2057,6 @@ export default function Conversation(p: {
                               </button>
                             </p>
                           )}
-                          <ComposerAttachments
-                            notify={p.notify}
-                            assets={assets}
-                            uploading={uploading}
-                            disabled={!canSend || p.sending}
-                            add={addFiles}
-                            remove={(id) => {
-                              const agentId = p.id || "";
-                              void uploadRecovery
-                                .remove(id, () => {
-                                  setAttachments((current) => ({
-                                    ...current,
-                                    [agentId]: (current[agentId] || []).filter(
-                                      (asset) => asset.id !== id,
-                                    ),
-                                  }));
-                                })
-                                .catch((error) => p.notify(errorText(error)));
-                            }}
-                          />
                         </>
                       )}
                       {managed && p.id && (
@@ -2039,17 +2073,6 @@ export default function Conversation(p: {
                           }}
                         />
                       )}
-                      {managed &&
-                        agent?.isLead &&
-                        agent?.provider !== "claude" &&
-                        p.id &&
-                        !threadBlock && (
-                          <RealtimeVoice
-                            key={`voice:${p.id}`}
-                            agentId={p.id}
-                            notify={p.notify}
-                          />
-                        )}
                     </div>
                     <span id="send-state" role="status" aria-live="polite">
                       {p.sending ? "Sending…" : ""}
@@ -2160,7 +2183,6 @@ export default function Conversation(p: {
             }}
           </PromptComposer>
           <div className="conversation-composer-footer">
-            {!showProjectStart && executionControls}
             {agent?.source === "managed" && (
               <Usage
                 key={p.agent?.accountKey || "default"}

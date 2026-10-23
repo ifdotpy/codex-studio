@@ -1591,11 +1591,6 @@ html body #root:has(.terminal-dock) {
   html body select {
     font-size: 16px;
   }
-
-  #composer .composer-bar {
-    flex-wrap: wrap;
-    gap: 4px;
-  }
 }
 .sync-status {
   flex-shrink: 0;

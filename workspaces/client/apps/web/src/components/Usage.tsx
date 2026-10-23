@@ -4,7 +4,13 @@ import { accountLimits } from "../usage/accountUsage";
 import { weeklyRunway } from "../usage/weeklyRunway";
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { Button, Popover, Progress, Tabs, Tooltip } from "@mantine/core";
-import { ChevronUp, ExternalLink, Gauge, RefreshCw } from "lucide-react";
+import {
+  ChevronUp,
+  ExternalLink,
+  Gauge,
+  RefreshCw,
+  CircleGauge,
+} from "lucide-react";
 import type { Agent, Json, JsonValue } from "../types";
 import { errorText, type GetResult } from "../api";
 import { useServerSessionCosts } from "../servers/ServerServicesContext";
@@ -567,7 +573,12 @@ export default function Usage({
             onClick={() => setContextOpen(!contextOpen)}
           >
             <span className="usage-metric-label">
-              Context{" "}
+              <CircleGauge
+                className="usage-context-icon"
+                size={13}
+                aria-hidden="true"
+              />
+              <span className="usage-context-label">Context</span>
               <strong>{percent === null ? "Unknown" : `${percent}%`}</strong>
             </span>
             {percent !== null && (
@@ -716,7 +727,9 @@ export default function Usage({
               title={
                 lowAccount
                   ? `Low allowance: ${lowAccount.email || lowAccount.label}`
-                  : undefined
+                  : sessionCost
+                    ? `Session estimate: ${dollars(sessionCost.totalUSD)}`
+                    : undefined
               }
               onClick={() => changeOpened(!limitsOpened)}
               leftSection={<Gauge size={13} />}
@@ -751,6 +764,11 @@ export default function Usage({
               className="account-limits-panel"
               aria-label="Account limits details"
             >
+              <p className="limits-session-estimate">
+                {sessionCost
+                  ? `Session estimate: ${dollars(sessionCost.totalUSD)}`
+                  : "Session estimate unavailable"}
+              </p>
               <header className="account-limits-heading">
                 <div>
                   <h3>Account limits</h3>
