@@ -347,3 +347,158 @@ it
   },
   20000,
 );
+
+async function prepareClient() {
+  vi.stubGlobal("window", {
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+  });
+  vi.stubGlobal("navigator", { onLine: true });
+  mocks.syncGet.mockImplementation(
+    (path: string, options?: { query?: Record<string, string> }) =>
+      request(
+        `${path}${options?.query ? `?${new URLSearchParams(options.query)}` : ""}`,
+      ),
+  );
+  return import("./client");
+}
+
+it.skipIf(!origin).each([false, true])(
+  "applies a later accepted lower-timestamp master (unseen alternatives: %s)",
+  async (withAlternatives) => {
+    const client = await prepareClient();
+    const { encodeDraftPayload } = await import("./draftPayload");
+    const session = `lower-clock-${withAlternatives}`;
+    const id = `phone:writer:${session}`;
+    const accepted = {
+      id,
+      seq: 0,
+      deleted: false,
+      payload: encodeDraftPayload({
+        id,
+        device: "phone",
+        session,
+        text: "accepted local",
+        updated: 2001,
+        seen: { [id]: 2000 },
+      }),
+    };
+    expect(
+      await request("/api/sync/drafts", {
+        rows: [{ newDocumentState: accepted }],
+      }),
+    ).toEqual([]);
+    mocks.syncPost.mockImplementation((_path, body) =>
+      request("/api/sync/drafts", body),
+    );
+    stop = await client.startDraftReplication(() => {});
+    mocks.invalidate?.({ epoch: "witness", reason: "initial", revision: 0 });
+    await mocks.replications[0].awaitInitialReplication();
+    const { db } = await client.syncDatabase();
+    const before = (
+      await request("/api/sync/pull?scope=drafts")
+    ).documents.find((doc: SyncDocument) => doc.id === id);
+    expect((await db.drafts.findOne(id).exec())?.payload).toBe(before.payload);
+    const payload = encodeDraftPayload({
+      id,
+      device: "phone",
+      session,
+      text: "later accepted remote",
+      updated: 1999,
+      seen: {},
+      ...(withAlternatives ? { alternatives: ["unseen text"] } : {}),
+    });
+    expect(
+      await request("/api/sync/drafts", {
+        rows: [
+          {
+            newDocumentState: { ...accepted, payload },
+            assumedMasterState: {
+              id: before.id,
+              payload: before.payload,
+              seq: before.seq,
+              deleted: before._deleted,
+            },
+          },
+        ],
+      }),
+    ).toEqual([]);
+    const page = await request("/api/sync/pull?scope=drafts");
+    const master = page.documents.find((doc: SyncDocument) => doc.id === id);
+    expect(master.seq).toBeGreaterThan(before.seq);
+    mocks.invalidate?.({
+      epoch: "witness",
+      reason: "change",
+      revision: master.seq,
+      draftChanges: {
+        after: before.seq,
+        through: master.seq,
+        documents: [master],
+      },
+    });
+    await mocks.replications[0].awaitInSync();
+    await vi.waitFor(async () => {
+      const local = await db.drafts.findOne(id).exec();
+      expect(local?.payload).toBe(master.payload);
+      expect(local?.seq).toBe(master.seq);
+    });
+  },
+);
+
+it.skipIf(!origin).each(["legacy-conflict", "legacy-lost-response"] as const)(
+  "acknowledges persisted pending payload through %s",
+  async (session) => {
+    const client = await prepareClient();
+    const { encodeDraftPayload } = await import("./draftPayload");
+    const id = `phone:writer:${session}`;
+    const master = (
+      await request("/api/sync/pull?scope=drafts")
+    ).documents.find((doc: SyncDocument) => doc.id === id);
+    const { db } = await client.syncDatabase();
+    await db.drafts.insert({
+      id,
+      seq: 0,
+      _deleted: false,
+      payload:
+        session === "legacy-lost-response"
+          ? master.payload
+          : encodeDraftPayload({
+              id,
+              device: "phone",
+              session,
+              text: "pending local",
+              updated: 4,
+            }),
+    });
+    const posts: { body: PushRequest; conflicts: SyncDocument[] }[] = [];
+    mocks.syncPost.mockImplementation(async (_path, body) => {
+      const conflicts = await request("/api/sync/drafts", body);
+      posts.push({ body: structuredClone(body), conflicts });
+      return conflicts;
+    });
+    stop = await client.startDraftReplication(() => {});
+    await vi.waitFor(() =>
+      expect(posts).toHaveLength(session === "legacy-conflict" ? 2 : 1),
+    );
+    await mocks.replications[0].awaitInSync();
+    const latest = (
+      await request("/api/sync/pull?scope=drafts")
+    ).documents.find((doc: SyncDocument) => doc.id === id);
+    const payload = JSON.parse(latest.payload);
+    expect(payload.metadata).toEqual({ kept: true });
+    if (session === "legacy-conflict") {
+      expect(posts[0].conflicts).toHaveLength(1);
+      expect(posts[1].conflicts).toEqual([]);
+      expect(posts[1].body.rows[0].assumedMasterState?.payload).toBe(
+        master.payload,
+      );
+      expect(payload.alternatives).toContain("pending local");
+    } else {
+      expect(latest.seq).toBe(master.seq);
+      expect(posts[0].body.rows[0].newDocumentState.payload).toBe(
+        master.payload,
+      );
+    }
+    expect((await db.drafts.findOne(id).exec())?.payload).toBe(latest.payload);
+  },
+);
