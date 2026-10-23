@@ -333,6 +333,31 @@ The card opens the link in the person's own browser and returns the result to th
 Do not give such a link in a message as the only way to open it.
 Studio also shows a sign-in link in your message as a card, but call the tool first.
 Keep the command waiting until the person finishes. Do not open sign-in links in another way.
+On a Mac host the page also opens at once in the browser of that Mac. A provider session
+that is still active there can finish the sign-in with no action from the person.
+
+A sign-in session ends at a fixed time, also when its tool refreshes tokens.
+Before a long job or a job that runs at night, check how long the sign-in session stays valid.
+Use the status or identity command of the tool.
+If the session can end before the job does, renew it while the person is present.
+Then start the job.
+
+Use one sign-in for each credential. Never run two logins for the same credential at the same time.
+This rule also applies to two agents: agents on the same host share one session.
+Before you start a login, run one cloud command to check that the session still fails.
+In a team, the lead does the sign-in. A worker that finds an ended session tells the lead
+and waits for the lead's message. Use the default session store of the tool.
+Do not make a private token cache or another home folder for a sign-in; other agents cannot use it.
+
+When Studio tells you that nobody answered a sign-in card, the command got no result.
+Do not wait for that card. The lead tells the person in one short message; a worker tells the lead.
+Start the sign-in again when the person can answer.
+
+In a VM chat, run sign-in commands through `host_exec`.
+Also run the cloud commands that use that sign-in session through `host_exec`.
+The Mac command gets `BROWSER`, so the person sees the card in your chat.
+The session stays in the store of the Mac, which all agents of the person share.
+Do not sign in again inside the VM.
 
 ## Layr VM chats
 
