@@ -1687,6 +1687,58 @@ function fastTierCommands(root) {
     },
     {
       item: web,
+      label: "Draft stream acceptance and durable recovery witnesses",
+      commands: [
+        [
+          "pnpm",
+          [
+            "--filter",
+            "codex-agents-web",
+            "exec",
+            "vitest",
+            "run",
+            "--config",
+            "vitest.unit.config.ts",
+            "src/sync/client.draftStream.test.ts",
+          ],
+        ],
+      ],
+      options: {
+        selector:
+          "draft stream acceptance, tombstones, gaps, reconnects and failed persistence",
+        reason:
+          "Normal draft changes use RxDB's master stream; recovery reads its durable checkpoint.",
+      },
+    },
+    {
+      item: web,
+      label: "Draft stream transport ordering witness",
+      commands: [
+        [
+          "pnpm",
+          [
+            "--filter",
+            "codex-agents-web",
+            "exec",
+            "vitest",
+            "run",
+            "--config",
+            "vitest.unit.config.ts",
+            "src/sync/resourceEvents.test.ts",
+            "-t",
+            "consecutive draft batches",
+          ],
+        ],
+      ],
+      options: {
+        selector:
+          "lossless draft intervals and equal-version reconnect recovery",
+        reason:
+          "Coalescing hints must not discard draft data or mask a recovery baseline.",
+      },
+    },
+    {
+      item: web,
       label: "State stream persistence and recovery witnesses",
       commands: [
         [

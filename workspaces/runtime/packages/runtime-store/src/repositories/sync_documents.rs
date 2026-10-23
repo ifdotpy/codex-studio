@@ -438,21 +438,27 @@ impl SyncDocumentsRepository {
         after: i64,
         limit: i64,
     ) -> StoreResult<Vec<SyncDocument>> {
+        Self::drafts_after(connection, after, limit.clamp(1, SYNC_BATCH_LIMIT))
+    }
+
+    /// Read a caller-bounded draft interval, shared by pull pages and stream batches.
+    pub fn drafts_after(
+        connection: &Connection,
+        after: i64,
+        limit: i64,
+    ) -> StoreResult<Vec<SyncDocument>> {
         let mut statement = connection.prepare_cached(
             "SELECT seq,id,payload,deleted FROM sync_documents \
              WHERE scope='drafts' AND seq>?1 ORDER BY seq LIMIT ?2",
         )?;
-        let rows = statement.query_map(
-            params![after.max(0), limit.clamp(1, SYNC_BATCH_LIMIT)],
-            |row| {
-                Ok(SyncDocument {
-                    sequence: row.get(0)?,
-                    id: row.get(1)?,
-                    payload: row.get(2)?,
-                    deleted: row.get::<_, i64>(3)? != 0,
-                })
-            },
-        )?;
+        let rows = statement.query_map(params![after.max(0), limit], |row| {
+            Ok(SyncDocument {
+                sequence: row.get(0)?,
+                id: row.get(1)?,
+                payload: row.get(2)?,
+                deleted: row.get::<_, i64>(3)? != 0,
+            })
+        })?;
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(StoreError::from)
     }

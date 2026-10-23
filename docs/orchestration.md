@@ -24,7 +24,9 @@ Browser draft notifications follow this flow:
 
 1. Read the [draft sequence owner](../workspaces/runtime/packages/runtime-store/src/repositories/sync_documents.rs) when a subscribed draft resource is invalidated.
 2. The shared content filter suppresses hints when that sequence is unchanged.
-3. Draft edits and retained tombstones advance the sequence and notify the existing draft replication owner.
+3. Read changed drafts and retained tombstones as one bounded typed interval; validate each payload through the draft owner and preserve its stored bytes.
+4. Admit contiguous intervals directly to RxDB's master stream, without another pull. The stream watermark means accepted-contiguous; RxDB owns durability and conflicts.
+5. Pull from RxDB's durable checkpoint for initial load, gaps, reconnects, epoch changes, oversized intervals, or apply/persistence errors.
 
 Server command output follows this flow:
 

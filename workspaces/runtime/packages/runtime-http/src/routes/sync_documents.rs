@@ -170,15 +170,6 @@ pub(crate) async fn pull(
                         .map_err(|_| ApiError::internal())?;
                     let documents = SyncDocumentsRepository::pull_drafts(connection, after, limit)
                         .map_err(|_| ApiError::internal())?;
-                    for document in &documents {
-                        if sync_policy::contains_unrepresentable_integer(&document.payload) {
-                            return Err(invalid_stored_draft(&document.id));
-                        }
-                        let payload: Value = serde_json::from_str(&document.payload)
-                            .map_err(|_| invalid_stored_draft(&document.id))?;
-                        validate_draft_value(&document.id, &payload)
-                            .map_err(|_| invalid_stored_draft(&document.id))?;
-                    }
                     let checkpoint = documents.last().map_or(after, |document| document.sequence);
                     let response = crate::generated::SyncPullResponse {
                         sync_entities: None,
@@ -186,13 +177,8 @@ pub(crate) async fn pull(
                         checkpoint: crate::generated::SyncCheckpoint { seq: checkpoint },
                         documents: documents
                             .into_iter()
-                            .map(|document| crate::generated::SyncDocument {
-                                id: document.id,
-                                payload: document.payload,
-                                seq: document.sequence,
-                                deleted: document.deleted,
-                            })
-                            .collect(),
+                            .map(draft_document)
+                            .collect::<Result<Vec<_>, _>>()?,
                         floor: None,
                         generation,
                         initial_high: None,
@@ -891,6 +877,24 @@ fn invalid_entity(collection: &str, id: &str) -> StoreError {
         scope: collection.to_owned(),
         id: id.to_owned(),
     }
+}
+
+/// Both pull and stream preserve the stored bytes used for conflict comparisons.
+pub(super) fn draft_document(
+    document: studio_runtime_store::SyncDocument,
+) -> Result<crate::generated::SyncDocument, ApiError> {
+    if sync_policy::contains_unrepresentable_integer(&document.payload) {
+        return Err(invalid_stored_draft(&document.id));
+    }
+    let payload =
+        serde_json::from_str(&document.payload).map_err(|_| invalid_stored_draft(&document.id))?;
+    validate_draft_value(&document.id, &payload).map_err(|_| invalid_stored_draft(&document.id))?;
+    Ok(crate::generated::SyncDocument {
+        id: document.id,
+        payload: document.payload,
+        seq: document.sequence,
+        deleted: document.deleted,
+    })
 }
 
 fn invalid_stored_draft(id: &str) -> ApiError {
