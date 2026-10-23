@@ -55,6 +55,7 @@ mod transcript;
 mod usage;
 pub(crate) mod vm_native_provider;
 pub(crate) mod voice;
+mod web_push;
 mod work_items;
 mod work_write;
 mod workspace_files;

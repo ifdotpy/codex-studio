@@ -6,6 +6,7 @@ export const studioSettingsTabs = [
   ["federation", "Federation"],
   ["servers", "Servers"],
   ["linux-vm", "Linux VM"],
+  ["phone-alerts", "Phone alerts"],
   ["hotkeys", "Hotkeys"],
 ] as const;
 export type StudioSettingsTab = (typeof studioSettingsTabs)[number][0];

@@ -112,6 +112,14 @@ fn shared_values_ts() -> String {
                 values::ACCOUNT_LIMITS_WINDOW_FRESH_SECONDS.to_string(),
             ),
             (
+                "SIGN_IN_ALERT_GRACE_SECONDS",
+                values::SIGN_IN_ALERT_GRACE_SECONDS.to_string(),
+            ),
+            (
+                "SIGN_IN_REMINDER_SECONDS",
+                values::SIGN_IN_REMINDER_SECONDS.to_string(),
+            ),
+            (
                 "CHILD_RESULT_COALESCE_DEFAULT_SECONDS",
                 values::CHILD_RESULT_COALESCE_DEFAULT_SECONDS.to_string(),
             ),

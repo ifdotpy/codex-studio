@@ -292,6 +292,14 @@ pub const SIGN_IN_JOINED_STATE: &str = "joined";
 /// The `closeReason` of a joined sign-in request whose sign-in finished on the card that it
 /// waited on. The card poll tells the joined chat to run its command again.
 pub const SIGN_IN_JOINED_SIGNED_IN_REASON: &str = "joined-signed-in";
+/// A pending sign-in card alerts the owner only after it stayed open this long, in seconds:
+/// on a Mac host the browser can finish the sign-in at once without the person. The desktop
+/// alerts (`web/src/desktop/desktopAlerts.ts`) and the phone pushes (`runtime-services`
+/// `web_push`) use it.
+pub const SIGN_IN_ALERT_GRACE_SECONDS: u64 = 10;
+/// The one reminder of an open sign-in card comes this long before the card closes, in
+/// seconds. The desktop alerts and the phone pushes use it.
+pub const SIGN_IN_REMINDER_SECONDS: u64 = 300;
 
 #[cfg(test)]
 mod tests {

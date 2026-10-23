@@ -1,3 +1,7 @@
+import {
+  SIGN_IN_ALERT_GRACE_SECONDS,
+  SIGN_IN_REMINDER_SECONDS,
+} from "../generated/sharedValues";
 import type { Snapshot } from "../types";
 
 export type DesktopAlert = {
@@ -11,14 +15,12 @@ export type DesktopAlert = {
   sound?: boolean;
 };
 
-/**
- * A sign-in card alerts only after it stayed open this long, in seconds: on a Mac host the
- * launcher opens the page in the browser at once, and a provider session that is still active
- * there ends the sign-in in a few seconds without the person.
- */
-export const SIGN_IN_ALERT_GRACE_SECONDS = 10;
-/** The one reminder of an open sign-in card comes this long before it closes, in seconds. */
-export const SIGN_IN_REMINDER_SECONDS = 300;
+// The grace and the reminder lead have one owner, runtime-schema shared_values.rs: the phone
+// pushes of the server use the same times.
+export {
+  SIGN_IN_ALERT_GRACE_SECONDS,
+  SIGN_IN_REMINDER_SECONDS,
+} from "../generated/sharedValues";
 const SIGN_IN_METHOD = "browser/open";
 
 type SignInTimes = { host: string; alertAt: number; reminderAt: number | null };

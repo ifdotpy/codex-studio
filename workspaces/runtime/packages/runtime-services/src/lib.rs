@@ -204,6 +204,7 @@ pub mod vm_preparation;
 pub mod voice;
 pub mod voice_runtime;
 pub mod wakeups;
+pub mod web_push;
 pub mod work_assignment_runtime;
 pub mod work_policy;
 pub mod work_write;
