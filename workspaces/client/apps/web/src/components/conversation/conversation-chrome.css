@@ -273,7 +273,7 @@
     gap: var(--mantine-spacing-sm);
   }
 }
-@container workspace (max-width: 22.5em) {
+@container workspace (max-width: 22.5rem) {
   .simple-workspace-header #sidebar-toggle {
     width: var(--studio-touch-target);
     padding: 0;
