@@ -32,6 +32,8 @@ import {
   type ChatIndicator,
 } from "./chat-status/chatStatusModel";
 import ChatStatus from "./agents/ChatStatus";
+import { AgentProgress } from "./agents/AgentProgress";
+import { ProviderMark } from "./AccountTiles";
 import { relativeChatTime } from "./sidebar/fleet";
 import { DEFAULT_LOCAL_SERVER_ALIAS } from "../servers/serverAliases";
 import {
@@ -180,9 +182,13 @@ const SidebarRowView = memo(function SidebarRowView({
     ? offlineServerDescription(serverAlias)
     : undefined;
   const timestamp = row.updated || row.created;
-  const activity = row.stall
-    ? `Waiting for lead: task ${row.stall.taskId} not submitted`
-    : row.commandProgress?.[0]?.stage;
+  const commands = row.commandProgress || [];
+  const moreCommands = Math.max(0, commands.length - 1);
+  const activityDetails = commands
+    .map((command) =>
+      [command.stage, command.lastOutputLine].filter(Boolean).join("\n"),
+    )
+    .join("\n\n");
   const showServer = serverAlias !== defaultServerAlias || serverOffline;
   const chatRow = (
     <UnstyledButton
@@ -197,7 +203,6 @@ const SidebarRowView = memo(function SidebarRowView({
         .filter(Boolean)
         .join(" ")}
       className="chat-row"
-      data-studio-state={indicator?.kind || "none"}
       data-chat={row.id}
       onPointerEnter={() => actions.prepare()}
       onFocus={() => actions.prepare()}
@@ -207,11 +212,14 @@ const SidebarRowView = memo(function SidebarRowView({
     >
       <span className="row-copy">
         <span className="fleet-chat-heading">
-          {projectLabel && (
-            <span className="fleet-chat-project" title={projectLabel}>
-              {projectLabel}
-            </span>
-          )}
+          <span
+            className="fleet-chat-provider"
+            role="img"
+            aria-label={a.provider === "claude" ? "Claude" : "Codex"}
+            title={a.provider === "claude" ? "Claude" : "Codex"}
+          >
+            <ProviderMark provider={a.provider || "codex"} />
+          </span>
           <strong>
             {a?.pinned && <Pin size={11} className="chat-pin" />}
             {row.name ?? ""}
@@ -224,12 +232,35 @@ const SidebarRowView = memo(function SidebarRowView({
             />
           )}
         </span>
-        {activity && (
-          <span
-            className="fleet-chat-activity"
-            title={row.commandProgress?.[0]?.lastOutputLine || activity}
-          >
-            {activity}
+        {(projectLabel || row.stall || commands.length > 0) && (
+          <span className="fleet-chat-meta">
+            {projectLabel && (
+              <span className="fleet-chat-project" title={projectLabel}>
+                {projectLabel}
+              </span>
+            )}
+            {(row.stall || commands.length > 0) && (
+              <span
+                className="fleet-chat-activity"
+                title={activityDetails || undefined}
+              >
+                <AgentProgress
+                  agent={{
+                    stall: row.stall,
+                    commandProgress: commands.slice(0, 1),
+                  }}
+                />
+                {moreCommands > 0 && (
+                  <span
+                    className="fleet-command-count"
+                    aria-label={`${moreCommands} more managed command${moreCommands === 1 ? "" : "s"}`}
+                    title={activityDetails}
+                  >
+                    +{moreCommands}
+                  </span>
+                )}
+              </span>
+            )}
           </span>
         )}
       </span>
@@ -255,6 +286,7 @@ const SidebarRowView = memo(function SidebarRowView({
     <div
       className={`sidebar-row fleet-strip lead-row ${selected ? "selected" : ""}`}
       data-sidebar-item={row.id}
+      data-studio-state={indicator?.kind || "none"}
     >
       {chatRow}
       {!renaming && (

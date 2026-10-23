@@ -1,0 +1,121 @@
+.studio-settings-body {
+  overflow: hidden;
+}
+
+.studio-settings-panel {
+  min-width: 0;
+}
+
+.studio-settings-tabs {
+  display: grid;
+  grid-template-columns: var(--studio-settings-nav-size) minmax(0, 1fr);
+  gap: var(--mantine-spacing-lg);
+  max-height: calc(100dvh - var(--mantine-spacing-xl) * 5);
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.studio-settings-navigation {
+  min-width: 0;
+  overflow-y: auto;
+}
+
+.studio-settings-navigation .mantine-Tabs-list {
+  border: 0;
+  gap: var(--mantine-spacing-xs);
+}
+.studio-settings-navigation .mantine-Tabs-tabLabel {
+  text-align: start;
+}
+
+.studio-settings-navigation .mantine-Tabs-tab {
+  justify-content: flex-start;
+  min-height: var(--studio-action-size);
+  padding: var(--mantine-spacing-sm);
+  border: 0;
+  border-radius: 0;
+  color: var(--muted);
+  font-size: var(--studio-text-body);
+}
+
+.studio-settings-navigation .mantine-Tabs-tab[data-active] {
+  color: var(--text);
+  background: var(--mantine-color-default-hover);
+  box-shadow: inset var(--studio-rail-size) 0 0 var(--studio-state-working);
+}
+
+.studio-settings-content {
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+  padding-inline-end: var(--mantine-spacing-xs);
+}
+
+.studio-settings-content > .mantine-Tabs-panel {
+  min-width: 0;
+  max-width: var(--studio-form-max);
+  padding-block-start: 0;
+}
+
+.studio-settings-detail-heading {
+  display: none;
+}
+
+.studio-settings-panel .settings-group {
+  gap: var(--mantine-spacing-sm);
+}
+
+.studio-settings-panel .settings-field > .mantine-NativeSelect-root {
+  width: 100%;
+}
+
+.studio-settings-panel .ui-row-control {
+  width: 52%;
+}
+
+.studio-settings-panel .ui-row-control small {
+  display: block;
+  margin-top: var(--mantine-spacing-xs);
+  color: var(--muted);
+  font-size: var(--studio-text-meta);
+}
+
+/* Below tablet width, the section list and detail occupy the same screen. */
+@media (max-width: 47.5rem) {
+  .studio-settings-tabs {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0;
+  }
+  .studio-settings-navigation .mantine-Tabs-list {
+    display: flex;
+    flex-direction: column;
+  }
+  .studio-settings-navigation .mantine-Tabs-tab {
+    min-height: var(--mantine-spacing-xl);
+    padding: var(--mantine-spacing-md);
+  }
+  .studio-settings-tabs:not([data-detail]) .studio-settings-content,
+  .studio-settings-tabs[data-detail] .studio-settings-navigation {
+    display: none;
+  }
+  .studio-settings-detail-heading {
+    display: flex;
+    align-items: center;
+    gap: var(--mantine-spacing-sm);
+    margin-block-end: var(--mantine-spacing-md);
+  }
+  .studio-settings-detail-heading h2 {
+    margin: 0;
+    font-size: var(--mantine-font-size-lg);
+    font-weight: 600;
+  }
+  .studio-settings-detail-heading svg {
+    width: var(--mantine-font-size-lg);
+    height: var(--mantine-font-size-lg);
+  }
+  .studio-settings-panel .ui-row-control {
+    width: 100%;
+  }
+}

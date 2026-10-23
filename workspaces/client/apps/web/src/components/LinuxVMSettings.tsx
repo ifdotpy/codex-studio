@@ -1,12 +1,14 @@
 import { useServerApi } from "../servers/ServerServicesContext";
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { Button, NumberInput } from "@mantine/core";
 import { errorText, type GetResult } from "../api";
+import { SettingsRow } from "./ui/primitives";
 
 type Configuration = GetResult<"/api/linux-vm/settings">;
 const GiB = 1024 ** 3;
 
 export function LinuxVMSettings({ active }: { active: boolean }) {
+  const fieldPrefix = useId();
   const { get, post } = useServerApi();
 
   const [configuration, setConfiguration] = useState<Configuration | null>(
@@ -71,25 +73,29 @@ export function LinuxVMSettings({ active }: { active: boolean }) {
             <p role="alert">Reason: {configuration.error}</p>
           )}
           {fields.map(({ key, label, divisor, min, max }) => (
-            <NumberInput
+            <SettingsRow
               key={key}
-              label={label}
-              min={min}
-              max={max}
-              allowDecimal={false}
-              value={configuration.settings[key] / divisor}
-              disabled={busy || configuration.state !== "stopped"}
-              onChange={(value) => {
-                if (typeof value === "number")
-                  setConfiguration({
-                    ...configuration,
-                    settings: {
-                      ...configuration.settings,
-                      [key]: value * divisor,
-                    },
-                  });
-              }}
-            />
+              label={<label htmlFor={`${fieldPrefix}-${key}`}>{label}</label>}
+            >
+              <NumberInput
+                id={`${fieldPrefix}-${key}`}
+                min={min}
+                max={max}
+                allowDecimal={false}
+                value={configuration.settings[key] / divisor}
+                disabled={busy || configuration.state !== "stopped"}
+                onChange={(value) => {
+                  if (typeof value === "number")
+                    setConfiguration({
+                      ...configuration,
+                      settings: {
+                        ...configuration.settings,
+                        [key]: value * divisor,
+                      },
+                    });
+                }}
+              />
+            </SettingsRow>
           ))}
           <Button
             mt="md"
