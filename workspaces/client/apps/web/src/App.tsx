@@ -1,3 +1,4 @@
+import { ModelWhitelistSettings } from "./components/models/ModelWhitelistSettings";
 import Disclosure from "./components/ui/Disclosure";
 import { ChatSettingsDialog } from "./components/agents/ChatSettingsDialog";
 import { DeliveryMoment } from "./generated/deliveryMoment";
@@ -3296,6 +3297,9 @@ export default function App({ active = true }: { active?: boolean }) {
               {serverSettings?.panel || (
                 <ServerAccessSettings active={studioSettingsOpen} />
               )}
+            </Tabs.Panel>
+            <Tabs.Panel value="models" pt="md" keepMounted={false}>
+              <ModelWhitelistSettings />
             </Tabs.Panel>
             <Tabs.Panel value="appearance" pt="md">
               <div className="studio-appearance-groups">

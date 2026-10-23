@@ -6,6 +6,7 @@ import {
   type ModelOption,
 } from "./modelOption";
 import "./model-field.css";
+import { useModelWhitelist, whitelistedModelOptions } from "./modelWhitelist";
 
 type Props = {
   label: string;
@@ -40,13 +41,15 @@ const versionFor = (option: ModelOption) =>
 
 export function ModelField({
   label,
-  options,
+  options: allOptions,
   value,
   onChange,
   presentation = "list",
   id,
   disabled,
 }: Props) {
+  const allowed = useModelWhitelist();
+  const options = whitelistedModelOptions(allOptions, value, allowed);
   const selected = modelForValue(options, value);
   const selectedValue = selected?.value ?? value;
   const providers = [...new Set(options.map((option) => option.provider))];

@@ -5,6 +5,7 @@ import "./studio-settings.css";
 export const studioSettingsTabs = [
   ["accounts", "Accounts"],
   ["appearance", "Appearance"],
+  ["models", "Models"],
   ["agents", "Agents"],
   ["federation", "Federation"],
   ["servers", "Servers"],

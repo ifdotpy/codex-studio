@@ -1,3 +1,5 @@
+import { isModelWhitelisted, useModelWhitelist } from "./models/modelWhitelist";
+import { modelForValue } from "./models/modelOption";
 import { useServerServices } from "../servers/ServerServicesContext";
 import { createServerServices } from "../servers/serverServices";
 import { watchResourceReads } from "./watchResourceReads";
@@ -147,7 +149,12 @@ function ModelDraft({ server, projectId, path, onChange }: Props) {
   const provider = accounts?.accounts.find(
     (row) => row.id === accountKey,
   )?.provider;
-  const model = settings.model || defaultChatModel(provider, catalog.models);
+  const allowed = useModelWhitelist();
+  const availableModels = catalog.models.filter((row) =>
+    isModelWhitelisted({ ...row, provider: row.provider || provider }, allowed),
+  );
+  const model = settings.model || defaultChatModel(provider, availableModels);
+  const modelInfo = modelForValue(catalog.models, model);
   // A Claude orchestrator that keeps the default model starts at the default effort.
   const defaultEffort =
     !settings.model &&
@@ -156,7 +163,7 @@ function ModelDraft({ server, projectId, path, onChange }: Props) {
       ? DEFAULT_CLAUDE_LEAD_EFFORT
       : undefined;
   const worker = settings.worker_defaults;
-  const workerModel = catalog.models.some((row) => row.model === "gpt-6-luna")
+  const workerModel = availableModels.some((row) => row.model === "gpt-6-luna")
     ? "gpt-6-luna"
     : (model ?? null);
   const agent: Agent = {
@@ -183,8 +190,14 @@ function ModelDraft({ server, projectId, path, onChange }: Props) {
   const modelError =
     catalog.error ||
     (accounts && !catalog.loading && !model
-      ? "No models are available for this account."
-      : "");
+      ? "No enabled models are available for this account. Select models in Studio settings → Models."
+      : modelInfo &&
+          !isModelWhitelisted(
+            { ...modelInfo, provider: modelInfo.provider || provider },
+            allowed,
+          )
+        ? "Choose a model enabled in Studio settings → Models."
+        : "");
   const ready =
     !!accounts && !catalog.loading && !modelError && !!model && !error;
   useEffect(() => {
@@ -195,10 +208,28 @@ function ModelDraft({ server, projectId, path, onChange }: Props) {
             ...(defaultEffort ? { effort: defaultEffort } : {}),
             account_key: accountKey,
             model,
+            ...(allowed !== null && !settings.worker_defaults
+              ? {
+                  worker_defaults: {
+                    model: workerModel,
+                    effort: "high",
+                    fast_mode: false,
+                  },
+                }
+              : {}),
           }
         : null,
     );
-  }, [ready, settings, defaultEffort, accountKey, model, onChange]);
+  }, [
+    ready,
+    settings,
+    defaultEffort,
+    accountKey,
+    model,
+    workerModel,
+    allowed,
+    onChange,
+  ]);
   const patch = useCallback(
     (value: Partial<import("../api").PostBody<"/api/conversation">>) => {
       const { id: _id, expected_account_key: _expected, ...values } = value;
