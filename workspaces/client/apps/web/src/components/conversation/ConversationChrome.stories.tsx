@@ -1,7 +1,14 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, fn, userEvent, within } from "storybook/test";
 import { ActionIcon, Button, Textarea } from "@mantine/core";
-import { ArrowUp, ListEnd, Mail, Settings2, PanelLeft } from "lucide-react";
+import {
+  ArrowUp,
+  ListEnd,
+  Mail,
+  Settings2,
+  PanelLeft,
+  Users,
+} from "lucide-react";
 import ConversationTitle from "../shell/ConversationTitle";
 import ConversationStart from "./ConversationStart";
 import { ExecutionSettings } from "../agents/ExecutionSettings";
@@ -76,6 +83,35 @@ const limits: Json = {
     },
   },
 };
+const observedAt = Date.now() / 1000;
+const usageAccounts = [10, 15, 40].map((usedPercent, index) => {
+  const key = index === 0 ? "default" : `account-${index}`;
+  return {
+    key,
+    label: ["Engineering", "Research", "Review"][index],
+    provider: index === 2 ? "claude" : "codex",
+    loading: false,
+    reload: fn(),
+    limits: {
+      accountKey: key,
+      at: observedAt,
+      data: {
+        rateLimits: {
+          primary: {
+            usedPercent: 43,
+            windowDurationMins: 300,
+            resetsAt: observedAt + 3600,
+          },
+          secondary: {
+            usedPercent,
+            windowDurationMins: 10080,
+            resetsAt: observedAt + 6 * 86400,
+          },
+        },
+      },
+    },
+  };
+});
 const sessionCost = {
   rootId: lead.id,
   pricingState: "ready",
@@ -119,22 +155,16 @@ const meta = {
             agent={lead}
             indicator={indicators[0]}
             statusText="Complete"
-            team={[
-              {
-                id: lead.id,
-                name: "Lead",
-                lead: true,
-                indicator: indicators[2],
-              },
-              ...indicators.map((indicator, index) => ({
-                id: `worker-${index}`,
-                name: titles[index],
-                lead: false,
-                indicator,
-              })),
-            ]}
-            onTeam={args.onTeam}
+            serverAlias="MAC"
           />
+          <Button
+            aria-label="Team"
+            title="Team: 1 working of 6"
+            leftSection={<Users size={16} />}
+            onClick={args.onTeam}
+          >
+            Team
+          </Button>
           <Button
             variant="subtle"
             leftSection={<Mail size={16} />}
@@ -198,6 +228,7 @@ const meta = {
               agent={lead}
               stateDir="story-dispatch"
               limits={limits}
+              accounts={usageAccounts}
               accountLabel="Engineering"
               reload={fn()}
             />
@@ -224,7 +255,14 @@ export const ProjectStart: Story = {
     await expect(
       canvas.getByRole("progressbar", { name: "Allowance remaining" }),
     ).toHaveAttribute("aria-valuenow", "57");
-    await userEvent.click(canvas.getByRole("button", { name: /Open team/ }));
+    for (const color of ["green", "yellow", "red"]) {
+      await expect(
+        canvasElement.querySelector(
+          `.account-limits-dot[data-color="${color}"]`,
+        ),
+      ).toBeVisible();
+    }
+    await userEvent.click(canvas.getByRole("button", { name: "Team" }));
     await expect(args.onTeam).toHaveBeenCalledOnce();
     await userEvent.click(
       within(

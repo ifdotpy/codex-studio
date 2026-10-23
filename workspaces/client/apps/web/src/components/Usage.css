@@ -573,12 +573,10 @@
   .usage-footer {
     gap: var(--mantine-spacing-xs);
   }
-  .usage-footer .session-cost-summary,
   .usage-footer .token-rate,
   .usage-context-label,
   .usage-footer .usage-meter,
-  .account-limits-label,
-  .account-limits-dots {
+  .account-limits-label {
     display: none;
   }
   .context-use,
@@ -588,5 +586,34 @@
   .usage-metric-label {
     align-items: center;
     gap: calc(var(--mantine-spacing-xs) / 2);
+  }
+  .account-limits-dots,
+  .account-limits-dot-target {
+    height: var(--mantine-spacing-lg);
+    min-height: var(--mantine-spacing-lg);
+  }
+}
+.session-cost-summary {
+  white-space: nowrap;
+}
+.session-cost-compact-label {
+  display: none;
+}
+@container conversation-footer (max-width: 28em) {
+  .session-cost-label {
+    position: absolute;
+    inline-size: var(--studio-border-width);
+    block-size: var(--studio-border-width);
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+  .session-cost-compact-label {
+    display: inline;
+  }
+}
+@container conversation-footer (max-width: 24em) {
+  .session-cost-summary {
+    display: none;
   }
 }

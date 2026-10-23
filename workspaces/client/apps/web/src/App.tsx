@@ -29,7 +29,11 @@ import { useServerFrame } from "./servers/frameBridge";
 import { serverParentOrigin } from "./servers/environment";
 import type { ServerCommand } from "./servers/navigation";
 import ServerAccountsPanel from "./servers/ServerAccountsPanel";
-import { localServer, viewServer } from "./servers/registry";
+import { localServer, viewServer, readServerAliases } from "./servers/registry";
+import {
+  useServerAliases,
+  DEFAULT_LOCAL_SERVER_ALIAS,
+} from "./servers/serverAliases";
 import { serverLocalStorage as localStorage } from "./servers/storage";
 import { ACCOUNT_LIMITS_WINDOW_FRESH_SECONDS } from "./generated/sharedValues";
 import SearchOverlay from "./components/shell/SearchOverlay";
@@ -249,6 +253,7 @@ export default function App({ active = true }: { active?: boolean }) {
   const { watchResourceChanges } = useServerResources();
   const watchResourceReads = useServerResourceReads();
   const sidebarServices = useServerSidebarServices();
+  const serverAliases = useServerAliases(readServerAliases);
   const {
     configureLimitsCache,
     cachedLimitsByAccount,
@@ -2545,6 +2550,28 @@ export default function App({ active = true }: { active?: boolean }) {
             <ConversationTitle
               title={title}
               agent={agent}
+              serverAlias={
+                agent
+                  ? sidebarServices.alias?.({ kind: "chat", id: agent.id }) ||
+                    serverAliases[
+                      (agent as Agent & { serverId?: string }).serverId ||
+                        serverViewId ||
+                        "local"
+                    ] ||
+                    serverAliases[sidebarServices.serverForChat(agent.id)] ||
+                    DEFAULT_LOCAL_SERVER_ALIAS
+                  : undefined
+              }
+              serverOffline={
+                agent
+                  ? !(
+                      sidebarServices.available?.({
+                        kind: "chat",
+                        id: agent.id,
+                      }) ?? true
+                    )
+                  : false
+              }
               indicator={agent ? indicators.get(agent.id) : undefined}
               projectPrefix={
                 mobileClient && agent?.cwd ? `${projectName} · ` : ""
@@ -2555,17 +2582,6 @@ export default function App({ active = true }: { active?: boolean }) {
                   ? () => open(lead.id)
                   : undefined
               }
-              team={
-                lead
-                  ? [lead, ...workers].map((member) => ({
-                      id: member.id,
-                      name: member.name || "Agent",
-                      lead: member.id === lead.id,
-                      indicator: indicators.get(member.id),
-                    }))
-                  : undefined
-              }
-              onTeam={workers.length ? toggleTeam : undefined}
               statusText={
                 agent
                   ? indicators.get(agent.id)?.kind === "answer" ||
@@ -2609,6 +2625,7 @@ export default function App({ active = true }: { active?: boolean }) {
                 leftSection={<Users size={16} />}
                 id="team-toggle"
                 aria-label="Team"
+                title={`Team: ${workers.filter((worker) => busy.has(worker.status ?? "")).length} working of ${workers.length}`}
                 aria-expanded={narrowTeam ? teamOpen : wideTeamOpen}
                 onClick={toggleTeam}
               >

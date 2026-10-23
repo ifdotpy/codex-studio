@@ -4,6 +4,7 @@ import { Badge } from "@mantine/core";
 import type { Agent } from "../../types";
 import type { ChatIndicator } from "../chat-status/chatStatusModel";
 import WorkspaceBadge from "./WorkspaceBadge";
+import { ChatServerLine } from "../../servers/ProjectChatRows";
 import "../conversation/conversation-chrome.css";
 
 export type ConversationTitleProps = {
@@ -12,14 +13,9 @@ export type ConversationTitleProps = {
   indicator?: ChatIndicator;
   statusText: string;
   projectPrefix?: string;
+  serverAlias?: string;
+  serverOffline?: boolean;
   onBack?: () => void;
-  team?: {
-    id: string;
-    name: string;
-    lead: boolean;
-    indicator?: ChatIndicator;
-  }[];
-  onTeam?: () => void;
 };
 
 export default function ConversationTitle({
@@ -28,17 +24,11 @@ export default function ConversationTitle({
   indicator,
   statusText,
   projectPrefix = "",
+  serverAlias,
+  serverOffline = false,
   onBack,
-  team = [],
-  onTeam,
 }: ConversationTitleProps) {
   const status = indicator?.label || statusText;
-  const summary = team
-    .map(
-      (member) =>
-        `${member.lead ? "Lead" : "Worker"} ${member.name}: ${member.indicator?.label || "Ready"}`,
-    )
-    .join("; ");
   return (
     <div className="conversation-heading">
       {onBack && (
@@ -64,49 +54,26 @@ export default function ConversationTitle({
             variant="light"
             radius="sm"
             title={`${projectPrefix}${status}`}
+            aria-label={status}
           >
-            {status}
+            <span className="conversation-status-label">{status}</span>
+            <span className="conversation-status-dot" aria-hidden="true" />
           </Badge>
         )}
-        <WorkspaceBadge agent={agent} />
-        {!!team.length && onTeam && (
-          <button
-            type="button"
-            className="conversation-team-strip"
-            onClick={onTeam}
-            aria-label={`Open team. ${summary}`}
-            title={summary}
+        {serverAlias && (
+          <span
+            className="conversation-server"
+            data-offline={serverOffline}
+            aria-label={serverOffline ? `${serverAlias} offline` : undefined}
           >
-            <span>Lead</span>
-            {team
-              .filter((member) => member.lead)
-              .map((member) => (
-                <span
-                  key={member.id}
-                  className="studio-state-dot"
-                  data-studio-state={member.indicator?.kind || "none"}
-                  aria-hidden="true"
-                />
-              ))}
-            <span>
-              Workers{" "}
-              <span className="conversation-team-count">
-                {team.filter((member) => !member.lead).length}
-              </span>
-            </span>
-            <span className="conversation-worker-dots" aria-hidden="true">
-              {team
-                .filter((member) => !member.lead)
-                .map((member) => (
-                  <span
-                    key={member.id}
-                    className="studio-state-dot"
-                    data-studio-state={member.indicator?.kind || "none"}
-                  />
-                ))}
-            </span>
-          </button>
+            <ChatServerLine
+              provider={agent?.provider ?? undefined}
+              alias={serverAlias}
+              offline={serverOffline}
+            />
+          </span>
         )}
+        <WorkspaceBadge agent={agent} />
       </div>
     </div>
   );
