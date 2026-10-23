@@ -1,0 +1,252 @@
+/* Conversation chrome owns header hierarchy, project start and footer layout. */
+.workspace-header.simple-workspace-header {
+  display: flex;
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: var(--mantine-spacing-xs);
+  min-height: var(--studio-touch-target);
+  height: auto;
+  padding: var(--mantine-spacing-xs) var(--chat-gutter);
+}
+.conversation-heading {
+  display: grid;
+  gap: var(--mantine-spacing-xs);
+  flex: 1;
+  min-width: 0;
+}
+#conversation-title {
+  min-width: 0;
+  margin: 0;
+  font-size: var(--studio-text-title);
+  font-weight: 600;
+  line-height: 1.4;
+}
+.conversation-title-text {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#back-lead {
+  justify-self: start;
+  padding: 0;
+  min-height: 0;
+}
+.conversation-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--mantine-spacing-xs);
+  min-width: 0;
+}
+#conversation-status {
+  max-width: 100%;
+  height: auto;
+  min-height: var(--mantine-spacing-lg);
+  padding-block: 0;
+  padding-inline: var(--mantine-spacing-sm);
+  color: var(--text);
+  background: var(--hover);
+  font-size: var(--studio-text-meta);
+  font-weight: 500;
+  text-transform: none;
+  letter-spacing: normal;
+}
+#conversation-status[data-studio-state="working"] {
+  color: var(--studio-state-working);
+  background: var(--studio-state-working-soft);
+}
+#conversation-status[data-studio-state="answer"] {
+  color: var(--studio-state-answer);
+  background: var(--studio-state-answer-soft);
+}
+#conversation-status[data-studio-state="error"] {
+  color: var(--studio-state-error);
+  background: var(--studio-state-error-soft);
+}
+#conversation-status[data-studio-state="unread"] {
+  color: var(--studio-state-unread);
+  background: var(--studio-state-unread-soft);
+}
+.conversation-team-strip {
+  display: inline-flex;
+  align-items: center;
+  gap: calc(var(--studio-dot-size) / 2);
+  min-width: 0;
+  min-height: var(--studio-control-size);
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: var(--studio-text-meta);
+}
+.conversation-team-strip > span {
+  white-space: nowrap;
+}
+.conversation-team-strip:hover {
+  color: var(--text);
+}
+.conversation-team-count {
+  font-variant-numeric: tabular-nums;
+}
+.conversation-worker-dots {
+  display: flex;
+  max-inline-size: 100%;
+  gap: calc(var(--studio-dot-size) / 2);
+  overflow: hidden;
+}
+.conversation-team-strip .studio-state-dot[data-studio-state="none"] {
+  background: var(--studio-state-paused);
+}
+.simple-workspace-header > button {
+  flex-shrink: 0;
+}
+.simple-workspace-header #sidebar-toggle,
+.simple-workspace-header #team-toggle {
+  display: inline-flex;
+}
+.empty-chat,
+.conversation-start {
+  display: grid;
+  align-content: start;
+  gap: var(--mantine-spacing-lg);
+  min-width: 0;
+  padding-block: var(--mantine-spacing-lg);
+  text-align: left;
+}
+.empty-chat h2,
+.conversation-start h2 {
+  margin: 0;
+  font-size: var(--studio-text-section);
+  font-weight: 600;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+.empty-chat p,
+.conversation-start p {
+  margin: var(--mantine-spacing-xs) 0 0;
+  color: var(--muted);
+  font-size: var(--studio-text-body);
+}
+.conversation-start-location {
+  display: grid;
+  gap: var(--mantine-spacing-xs);
+  margin: 0;
+  font-size: var(--studio-text-meta);
+}
+.conversation-start-location dt {
+  color: var(--muted);
+}
+.conversation-start-location dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.conversation-recent {
+  min-width: 0;
+}
+.conversation-recent h3 {
+  margin: 0 0 var(--mantine-spacing-xs);
+  font-size: var(--studio-text-meta);
+  font-weight: 500;
+  color: var(--muted);
+}
+.conversation-recent-strip {
+  display: flex;
+  align-items: center;
+  gap: var(--mantine-spacing-sm);
+  width: 100%;
+  min-width: 0;
+  min-height: var(--studio-touch-target);
+  padding: var(--mantine-spacing-xs) var(--mantine-spacing-sm);
+  border: 0;
+  border-bottom: var(--studio-border-width) solid var(--line);
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  font-size: var(--studio-text-body);
+}
+.conversation-recent-strip:hover {
+  background: var(--hover);
+}
+.conversation-recent-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.conversation-recent-status {
+  flex: none;
+  max-inline-size: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: var(--studio-text-meta);
+}
+.conversation-composer-footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  align-self: center;
+  gap: var(--mantine-spacing-xs) var(--mantine-spacing-md);
+  width: calc(100% - 2 * var(--chat-gutter));
+  max-width: var(--chat-width);
+  flex-shrink: 0;
+  min-width: 0;
+  margin-block: var(--mantine-spacing-xs);
+}
+.composer-tools {
+  display: flex;
+  align-items: center;
+  flex: 1 1 0;
+  min-width: 0;
+  flex-wrap: wrap;
+  gap: var(--mantine-spacing-xs);
+}
+.composer-tools .attachment-list {
+  flex-basis: 100%;
+}
+.composer-timing {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--mantine-spacing-xs);
+  color: var(--muted);
+  font-size: var(--studio-text-meta);
+}
+@media (max-width: 47.5em) {
+  .workspace-header.simple-workspace-header {
+    padding-inline: var(--mantine-spacing-xs);
+    gap: 0;
+  }
+  .conversation-heading {
+    gap: 0;
+  }
+  .conversation-meta {
+    gap: var(--mantine-spacing-xs);
+  }
+  .conversation-team-strip {
+    flex-basis: 100%;
+    min-height: var(--studio-control-size);
+  }
+  .simple-workspace-header .messages-toggle-label {
+    display: none;
+  }
+  .simple-workspace-header #messages-toggle {
+    width: var(--studio-touch-target);
+    padding: 0;
+  }
+  .simple-workspace-header #messages-toggle .mantine-Button-section {
+    margin: 0;
+  }
+  .conversation-worker-dots {
+    max-inline-size: 100%;
+  }
+  .conversation-composer-footer {
+    gap: var(--mantine-spacing-xs);
+  }
+  .conversation-start {
+    padding-block: var(--mantine-spacing-sm);
+    gap: var(--mantine-spacing-md);
+  }
+}

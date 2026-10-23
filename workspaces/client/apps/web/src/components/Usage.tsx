@@ -476,6 +476,12 @@ export default function Usage({
     ? Math.round((contextTokens / contextWindow) * 100)
     : null;
   const buckets = readBuckets(limits, now);
+  const remainingWindows = buckets
+    .flatMap((bucket) => bucket.windows)
+    .filter((window) => !window.expired && window.remaining !== null);
+  const remainingPercent = remainingWindows.length
+    ? Math.min(...remainingWindows.map((window) => window.remaining!))
+    : null;
   const recovered = useRecoveredLimit(accountAgent, limits, now);
   const recovery = recovered ? null : limitRecovery(accountAgent, limits, now);
   useEffect(() => {
@@ -559,7 +565,18 @@ export default function Usage({
             aria-expanded={contextOpen}
             onClick={() => setContextOpen(!contextOpen)}
           >
-            {percent === null ? "Context" : `Context ${percent}%`}
+            <span className="usage-metric-label">
+              Context <strong>{percent === null ? "—" : `${percent}%`}</strong>
+            </span>
+            <Progress
+              className="usage-meter"
+              value={percent === null ? 0 : Math.min(100, Math.max(0, percent))}
+              color="gray"
+              aria-label="Context used"
+              aria-valuetext={
+                percent === null ? "No context data yet" : `${percent}% used`
+              }
+            />
           </button>
         </Popover.Target>
         <Popover.Dropdown>
@@ -704,7 +721,25 @@ export default function Usage({
               rightSection={<ChevronUp size={12} />}
             >
               <span className="account-limits-summary">
-                <span className="account-limits-label">Limits</span>
+                <span className="usage-metric-label">
+                  <span className="account-limits-label">Limits</span>
+                  <strong>
+                    {remainingPercent === null
+                      ? "—"
+                      : `${formatPercent(remainingPercent)} left`}
+                  </strong>
+                </span>
+                <Progress
+                  className="usage-meter"
+                  value={remainingPercent ?? 0}
+                  color={lowAccount ? "yellow" : "gray"}
+                  aria-label="Allowance remaining"
+                  aria-valuetext={
+                    remainingPercent === null
+                      ? "No allowance data yet"
+                      : `${formatPercent(remainingPercent)} remaining`
+                  }
+                />
                 {lowAccount && (
                   <span className="account-limits-warning">Low allowance</span>
                 )}
@@ -1149,8 +1184,14 @@ export default function Usage({
                   : number(limits?.at)
                     ? "Updated"
                     : ""}
-                {number(limits?.at) &&
-                  ` · ${localTime(new Date(limits!.at * 1000), { hour: "2-digit", minute: "2-digit" })}`}
+                {number(limits?.at) && (
+                  <span>
+                    {localTime(new Date(limits!.at * 1000), {
+                      hour: "2-digit",
+                      minute: "2-digit",
+                    })}
+                  </span>
+                )}
               </footer>
             </section>
           </Popover.Dropdown>

@@ -37,7 +37,6 @@ import {
   ListTree,
   Trash2,
   Square,
-  Terminal,
   ListEnd,
 } from "lucide-react";
 import {
@@ -125,6 +124,9 @@ import ComposerAttachments, {
   MessageAttachments,
   type Attachment,
 } from "./ComposerAttachments";
+import ConversationStart, {
+  type RecentProjectChat,
+} from "./conversation/ConversationStart";
 import "./chat-controls.css";
 import "./conversation/empty-chat-settings.css";
 import { copyText } from "../clipboard/clipboard";
@@ -259,6 +261,8 @@ function PhaseReport(p: {
 
 export default function Conversation(p: {
   id: string | null;
+  projectName?: string;
+  recentChats?: RecentProjectChat[];
   syncWorkspaceId?: string;
   agent?: Agent;
   room?: Room;
@@ -719,8 +723,40 @@ export default function Conversation(p: {
     setLimitsOpen(false);
   }, [p.id]);
   const managed = agent?.source === "managed";
-  const emptyMainChat =
-    loaded && !items.length && !before && !after && !p.room && p.agent?.isLead;
+  const showProjectStart =
+    loaded &&
+    !items.length &&
+    !notice &&
+    !p.room &&
+    !["running", "starting"].includes(agent?.status || "");
+  const executionControls =
+    p.agent?.source === "managed" ? (
+      <div
+        className="empty-chat-settings composer-context-row"
+        aria-label="Agent settings"
+      >
+        {(["orchestrator", "worker"] as const).map((role) => (
+          <div className="empty-chat-setting" key={role}>
+            <span>{role === "orchestrator" ? "Model" : "Workers"}</span>
+            <UnifiedAgentSettings
+              state={p.accountsState}
+              notify={p.notify}
+              team={p.data.runtime?.agents || []}
+              agent={p.agent!}
+              catalog={modelCatalog}
+              refresh={p.refresh}
+              settingsRow
+              showAccountSummary
+              initialRole={role}
+              openRequest={role === "orchestrator" ? modelCommandRequest : 0}
+              onOpenChange={
+                role === "orchestrator" ? setModelCommandOpen : undefined
+              }
+            />
+          </div>
+        ))}
+      </div>
+    ) : null;
   const queueScope = `${p.data.stateDir}:${p.syncWorkspaceId || ""}:${p.id}`;
   const messageQueue = useMessageQueue({
     id: p.id,
@@ -1623,17 +1659,25 @@ export default function Conversation(p: {
           {loaded &&
             !items.length &&
             !notice &&
-            !["running", "starting"].includes(agent?.status || "") && (
+            !["running", "starting"].includes(agent?.status || "") &&
+            (p.room ? (
               <div className="empty-chat">
-                {!p.room && (
-                  <span className="empty-mark">
-                    <Terminal size={28} />
-                  </span>
-                )}
-                <h2>{p.room ? "No messages yet" : "New chat"}</h2>
-                {p.room && <p>Agent messages will appear here.</p>}
+                <h2>No messages yet</h2>
+                <p>Agent messages will appear here.</p>
               </div>
-            )}
+            ) : (
+              <ConversationStart
+                projectName={
+                  p.projectName ||
+                  p.agent?.cwd?.split("/").filter(Boolean).at(-1) ||
+                  "Your project"
+                }
+                location={p.agent?.cwd || "Project location unavailable"}
+                recentChats={p.recentChats}
+                onSelect={p.onSelect}
+                execution={executionControls}
+              />
+            ))}
           {transcript}
           {after && (
             <Button
@@ -1998,45 +2042,6 @@ export default function Conversation(p: {
                             notify={p.notify}
                           />
                         )}
-                      {p.agent?.source === "managed" && !emptyMainChat && (
-                        <div className="composer-context-row">
-                          <UnifiedAgentSettings
-                            state={p.accountsState}
-                            notify={p.notify}
-                            team={p.data.runtime?.agents || []}
-                            // Transcript metadata can predate a settings change.
-                            agent={p.agent}
-                            catalog={modelCatalog}
-                            refresh={p.refresh}
-                            openRequest={modelCommandRequest}
-                            onOpenChange={setModelCommandOpen}
-                          />
-                          {!items.length && (
-                            <span className="composer-context-values">
-                              <span
-                                title={
-                                  p.limitsAccountLabel ||
-                                  "Account name unavailable"
-                                }
-                              >
-                                {p.limitsAccountLabel ||
-                                  "Account name unavailable"}
-                              </span>
-                              {p.agent.cwd && (
-                                <span title={p.agent.cwd}>
-                                  {p.data.runtime?.projects?.find(
-                                    (project) => project.path === p.agent?.cwd,
-                                  )?.name ||
-                                    p.agent.cwd
-                                      .split("/")
-                                      .filter(Boolean)
-                                      .pop()}
-                                </span>
-                              )}
-                            </span>
-                          )}
-                        </div>
-                      )}
                     </div>
                     <span id="send-state" role="status" aria-live="polite">
                       {p.sending ? "Sending…" : ""}
@@ -2044,7 +2049,8 @@ export default function Conversation(p: {
                     <div className="composer-submit-actions">
                       {managed && (
                         <span className="composer-timing">
-                          Send to current turn · Queue for next turn
+                          <span>Send to current turn</span>
+                          <span>Queue for next turn</span>
                         </span>
                       )}
                       {managed && (
@@ -2145,46 +2151,26 @@ export default function Conversation(p: {
               );
             }}
           </PromptComposer>
-          {emptyMainChat && p.agent?.source === "managed" && (
-            <div className="empty-chat-settings" aria-label="Agent settings">
-              {(["orchestrator", "worker"] as const).map((role) => (
-                <div className="empty-chat-setting" key={role}>
-                  <span>{role === "orchestrator" ? "Model" : "Workers"}</span>
-                  <UnifiedAgentSettings
-                    state={p.accountsState}
-                    notify={p.notify}
-                    team={p.data.runtime?.agents || []}
-                    agent={p.agent!}
-                    catalog={modelCatalog}
-                    refresh={p.refresh}
-                    settingsRow
-                    showAccountSummary
-                    initialRole={role}
-                    openRequest={
-                      role === "orchestrator" ? modelCommandRequest : 0
-                    }
-                    onOpenChange={
-                      role === "orchestrator" ? setModelCommandOpen : undefined
-                    }
-                  />
-                </div>
-              ))}
-            </div>
-          )}
-          {agent?.source === "managed" && (
-            <Usage
-              key={p.agent?.accountKey || "default"}
-              agent={{ ...agent, accountKey: p.agent?.accountKey || "default" }}
-              stateDir={p.data.stateDir}
-              limits={p.limits}
-              accounts={p.limitsAccounts}
-              limitsLoading={p.limitsLoading}
-              accountLabel={p.limitsAccountLabel}
-              reload={p.reloadLimits}
-              opened={limitsOpen}
-              onChange={setLimitsOpen}
-            />
-          )}
+          <div className="conversation-composer-footer">
+            {!showProjectStart && executionControls}
+            {agent?.source === "managed" && (
+              <Usage
+                key={p.agent?.accountKey || "default"}
+                agent={{
+                  ...agent,
+                  accountKey: p.agent?.accountKey || "default",
+                }}
+                stateDir={p.data.stateDir}
+                limits={p.limits}
+                accounts={p.limitsAccounts}
+                limitsLoading={p.limitsLoading}
+                accountLabel={p.limitsAccountLabel}
+                reload={p.reloadLimits}
+                opened={limitsOpen}
+                onChange={setLimitsOpen}
+              />
+            )}
+          </div>
         </>
       )}
     </section>

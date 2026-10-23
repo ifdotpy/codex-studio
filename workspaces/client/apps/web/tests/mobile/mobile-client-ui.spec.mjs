@@ -610,6 +610,7 @@ test("Mobile composer 320px setup renders the settled action row", async ({
         const rect = child.getBoundingClientRect();
         return {
           name: child.getAttribute("aria-label") || child.textContent.trim(),
+          timingHint: child.classList.contains("composer-timing"),
           width: rect.width,
           height: rect.height,
         };
@@ -618,9 +619,7 @@ test("Mobile composer 320px setup renders the settled action row", async ({
     assert.ok(rendered.length > 0, "Composer action row has rendered controls");
     assert.ok(
       rendered
-        .filter(
-          (item) => item.name !== "Send to current turn · Queue for next turn",
-        )
+        .filter((item) => !item.timingHint)
         .every((item) => item.width > 0 && item.height > 0),
       `Every action row child is laid out: ${JSON.stringify(rendered)}`,
     );
@@ -657,10 +656,7 @@ test("Mobile composer 320px setup renders the settled action row", async ({
 test("Mobile composer fits a 320px viewport", async ({
   browser: testBrowser,
 }) => {
-  test.fixme(
-    true,
-    "Composer overflow is intermittent after the settled 320px action-row setup; see c3-shell-known-failures.md",
-  );
+  test.setTimeout(90_000);
   const { page } = await setupMobile320Composer(testBrowser);
   try {
     const composer = await page.locator("#composer").boundingBox();

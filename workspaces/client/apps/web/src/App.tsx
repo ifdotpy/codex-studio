@@ -2711,21 +2711,17 @@ export default function App({ active = true }: { active?: boolean }) {
                 ? () => open(lead.id)
                 : undefined
             }
-            modeControl={
-              lead?.source === "managed" && !mobileClient ? (
-                <span className="header-mode-summary">
-                  {lead.concurrency === 0 ||
-                  (lead.concurrency == null &&
-                    lead.agentModeSupported &&
-                    lead.agentMode === "single")
-                    ? "Single agent"
-                    : lead.concurrency != null ||
-                        (lead.agentModeSupported && lead.agentMode === "multi")
-                      ? "Multi agent"
-                      : "Mode unavailable"}
-                </span>
-              ) : undefined
+            team={
+              lead
+                ? [lead, ...workers].map((member) => ({
+                    id: member.id,
+                    name: member.name || "Agent",
+                    lead: member.id === lead.id,
+                    indicator: indicators.get(member.id),
+                  }))
+                : undefined
             }
+            onTeam={workers.length ? toggleTeam : undefined}
             statusText={
               agent
                 ? indicators.get(agent.id)?.kind === "answer" ||
@@ -3165,6 +3161,31 @@ export default function App({ active = true }: { active?: boolean }) {
             />
           ) : (
             <SelectedConversation
+              projectName={projectName}
+              recentChats={
+                agent?.empty
+                  ? data.threads
+                      .filter(
+                        (chat) =>
+                          chat.id !== agent.id &&
+                          chat.isLead &&
+                          !chat.archived &&
+                          !chat.empty &&
+                          chat.cwd === agent.cwd,
+                      )
+                      .sort(
+                        (a, b) =>
+                          (b.updated || b.created || 0) -
+                          (a.updated || a.created || 0),
+                      )
+                      .slice(0, 5)
+                      .map((chat) => ({
+                        id: chat.id,
+                        title: chat.name || "Conversation",
+                        indicator: indicators.get(chat.id),
+                      }))
+                  : undefined
+              }
               accountsState={accounts}
               syncWorkspaceId={workspaceId}
               id={opened}
