@@ -12,67 +12,6 @@
   border-right: 1px solid var(--line);
   background: var(--sidebar);
 }
-.server-card-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
-}
-.server-settings-card {
-  display: grid;
-  gap: 14px;
-  min-width: 0;
-  padding: 14px;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  background: var(--surface);
-}
-.server-settings-card-header,
-.server-settings-card-header > div {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-}
-.server-settings-card-header {
-  align-items: flex-start;
-  flex-wrap: wrap;
-}
-.server-settings-card-header > div:first-child {
-  flex: 1 1 180px;
-  min-width: 0;
-  justify-content: flex-start;
-  flex-wrap: wrap;
-}
-.server-settings-card-header > div:last-child:not(:first-child) {
-  flex: 0 0 auto;
-}
-.server-settings-card-header h3 {
-  margin: 0;
-  font-size: 15px;
-  overflow-wrap: anywhere;
-}
-.server-settings-facts {
-  display: grid;
-  gap: 8px;
-  margin: 0;
-}
-.server-settings-facts > div {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-}
-.server-settings-facts dt {
-  color: var(--muted);
-}
-.server-settings-facts dd {
-  margin: 0;
-  text-align: right;
-  overflow-wrap: anywhere;
-}
-.server-settings-card > small {
-  color: var(--muted);
-  overflow-wrap: anywhere;
-}
 .server-accounts-panel {
   display: grid;
   gap: 12px;
@@ -179,15 +118,8 @@
   gap: 8px;
 }
 @media (max-width: 760px) {
-  .server-card-grid {
-    grid-template-columns: minmax(0, 1fr);
-  }
   .account-provider-choices {
     grid-template-columns: minmax(0, 1fr);
-  }
-  .server-settings-card-header {
-    align-items: flex-start;
-    flex-direction: column;
   }
 }
 .server-sidebar header {
