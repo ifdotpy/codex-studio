@@ -310,6 +310,7 @@ fn validate(request: &SessionRequest) -> Result<(), PortError> {
                 | Method::ThreadSettingsUpdate
                 | Method::ClaudeState
                 | Method::ClaudeCommands
+                | Method::ClaudeFileBackups
                 | Method::ClaudeSettings
                 | Method::ClaudeStopTask
                 | Method::ThreadRollback

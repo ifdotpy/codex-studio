@@ -163,7 +163,7 @@ pub fn admission(
         if root.get("tokenBudget").is_none_or(Value::is_null) {
             return budget::admission(&agent, &root, &[], histories);
         }
-        let members = team_snapshots(tx, root_id, now)?;
+        let members = team_snapshots(tx, root_id, true, now)?;
         budget::admission(&agent, &root, &members, histories)
     })
 }
@@ -256,11 +256,15 @@ pub fn claim_wait(
 fn team_snapshots(
     tx: &Transaction<'_>,
     root_id: &str,
+    check_coverage: bool,
     now: f64,
 ) -> Result<Vec<BudgetSnapshot>, BudgetError> {
     let mut members = Vec::new();
     for member in BudgetRepository::team(tx, root_id)? {
-        let snapshot = snapshot(tx, &member, SnapshotIdentity::Live, now)?;
+        let mut snapshot = snapshot(tx, &member, SnapshotIdentity::Live, now)?;
+        if check_coverage && snapshot.needs_live_usage() {
+            snapshot.bind_live_usage(BudgetRepository::response_tokens(tx, snapshot.agent_id())?);
+        }
         if snapshot.initialized() {
             save_state(tx, snapshot.agent_id(), snapshot.state(), true)?;
         }
@@ -286,7 +290,15 @@ pub fn status(
         let root = BudgetRepository::agent(tx, root_id)?;
         budget::team_status(
             &root,
-            &team_snapshots(tx, root_id, now)?,
+            &team_snapshots(
+                tx,
+                root_id,
+                check_coverage
+                    && root
+                        .get("tokenBudget")
+                        .is_some_and(|value| !value.is_null()),
+                now,
+            )?,
             histories,
             check_coverage,
         )

@@ -225,6 +225,7 @@ struct Scripted {
     /// Accounts for which this predicate holds fail every launch, however often
     /// the registry retries, so a retry timer cannot change the outcome.
     unavailable: std::sync::OnceLock<fn(&str) -> bool>,
+    launch_attempts: std::sync::OnceLock<mpsc::UnboundedSender<String>>,
     stops: Arc<Mutex<Vec<Shutdown>>>,
     opened_notice: Arc<Notify>,
     ready_notice: Arc<Notify>,
@@ -247,6 +248,9 @@ impl Scripted {
 impl AccountLauncher for Scripted {
     fn launch(&self, account: String) -> LaunchFuture<'_> {
         Box::pin(async move {
+            if let Some(attempts) = self.launch_attempts.get() {
+                drop(attempts.send(account.clone()));
+            }
             if self
                 .unavailable
                 .get()
@@ -559,6 +563,7 @@ fn scripted_with_policy(
             launches: AtomicUsize::new(0),
             failures: AtomicUsize::new(0),
             unavailable: std::sync::OnceLock::new(),
+            launch_attempts: std::sync::OnceLock::new(),
             stops: Arc::default(),
             opened_notice: Arc::default(),
             ready_notice: Arc::default(),
@@ -1682,6 +1687,8 @@ async fn registry_drains_strict_account_pages_after_one_global_wake() {
     // Written receipts: a lost turn/start receipt closes the session by design,
     // and that worker exit would race this test's registry shutdown.
     let (launcher, mut writes) = scripted_with_unknown_writes(false);
+    let (attempted, mut attempts) = mpsc::unbounded_channel();
+    launcher.launch_attempts.set(attempted).unwrap();
     // Every paged account except the last two fails to start on every attempt, so
     // the registry's retry timer cannot open another launch; the strict
     // continuation then reaches the eligible tail without a timer or another
@@ -1705,14 +1712,23 @@ async fn registry_drains_strict_account_pages_after_one_global_wake() {
         Arc::new(Notify::new()),
         stop.clone(),
     ));
-    let (account, request) = tokio::time::timeout(SATURATED_WAKE_TIMEOUT, writes.recv())
+    // Check strict forward progress at every account. A repeated page fails
+    // immediately; slow but ordered traversal does not consume one total deadline.
+    for index in 0..130 {
+        let account = tokio::time::timeout(TEST_HANG_GUARD, attempts.recv())
+            .await
+            .expect("strict account continuation makes progress")
+            .expect("registry retains the launcher");
+        assert_eq!(account, format!("page-{index:06}"));
+    }
+    let (account, request) = tokio::time::timeout(TEST_HANG_GUARD, writes.recv())
         .await
         .expect("strict account continuation reaches the eligible tail")
         .unwrap();
     assert_eq!(account, "account:page-000129");
     assert_eq!(request["method"], "turn/start");
     stop.cancel();
-    tokio::time::timeout(SATURATED_WAKE_TIMEOUT, task)
+    tokio::time::timeout(TEST_HANG_GUARD, task)
         .await
         .expect("registry shutdown completes after strict account paging")
         .unwrap()

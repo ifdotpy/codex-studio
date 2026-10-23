@@ -1255,3 +1255,70 @@ async fn an_adopted_turn_that_finished_while_the_worker_was_dead_is_reconciled()
     assert_eq!(after["restartRecovery"]["stage"], "finished");
     assert!(after.get("startAttempt").is_none());
 }
+
+#[tokio::test]
+async fn restart_continues_only_a_confirmed_interruption() {
+    use studio_runtime_services::recovery::CompletionMode;
+    for (status, error, should_continue) in [
+        (
+            "interrupted",
+            json!({"message":"The native Claude transcript confirms an incomplete turn."}),
+            true,
+        ),
+        (
+            "uncertain",
+            json!({"message":"Studio could not confirm the Claude turn outcome."}),
+            false,
+        ),
+        (
+            "interrupted",
+            json!({"message":"Claude connection ended. Review the saved transcript before continuing."}),
+            false,
+        ),
+    ] {
+        let root = fixture();
+        let store = open_store(root.path()).await;
+        lifecycle_transaction(&store, move |tx| {
+            let agent = json!({
+                "id":"agent","rootId":"agent","epoch":0,"turnEpoch":0,"accountKey":"default",
+                "threadId":"thread","turnId":"turn","status":"interrupted","autoWake":false,"inFlight":false,
+                "error":"Server restarted during a turn.","provider":"claude",
+                "disconnectRecovery":{"source":"restart"},
+                "restartRecovery":{"accountKey":"default","epoch":0,"autoWake":true,
+                    "threadId":"thread","turnId":"turn","stage":"pending"}
+            });
+            AgentRepository::put(tx, &studio_runtime_store::AgentRecord::from_value(agent).expect("agent"))?;
+            tx.execute("UPDATE runtime_events SET status='delivered',turn_id='turn' WHERE id='event'", [])?;
+            Ok(())
+        }).await.expect("restart fixture");
+        let before = snapshot(&store);
+        assert!(before.eligibility().restart_turn);
+        let turn = json!({"id":"turn","threadId":"thread","status":status,"error":error,
+            "items":[],"itemsView":"full"});
+        let result = apply_lifecycle(
+            &store,
+            &before,
+            RecoveryAction::Terminal {
+                turn,
+                native_state: "idle".into(),
+                mode: CompletionMode::Restart,
+            },
+        )
+        .await
+        .expect("restart reconciliation");
+        let after = snapshot(&store).record().clone();
+        assert_eq!(
+            after["status"] == "queued",
+            should_continue,
+            "{status}: {error}: {result:?}"
+        );
+        assert_eq!(
+            events(&store).iter().any(|(_, status)| status == "pending"),
+            should_continue
+        );
+        assert_eq!(
+            after["restartRecovery"]["stage"] == "continued",
+            should_continue
+        );
+    }
+}

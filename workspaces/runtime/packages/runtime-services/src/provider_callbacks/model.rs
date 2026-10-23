@@ -10,6 +10,8 @@ pub(super) const MAX_PENDING: usize = 128;
 pub enum CallbackError {
     #[error("{0}")]
     Invalid(&'static str),
+    #[error("{0}")]
+    InvalidResultSchema(String),
     #[error("Not implemented: requires {0}")]
     Dependency(&'static str),
     #[error("Callback identity or session changed")]

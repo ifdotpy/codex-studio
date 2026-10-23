@@ -69,6 +69,7 @@ impl ControlSession for RetainedClaudeSession {
                 method,
                 Method::ClaudeState
                     | Method::ClaudeCommands
+                    | Method::ClaudeFileBackups
                     | Method::ClaudeSettings
                     | Method::ClaudeStopTask
                     | Method::ThreadRollback
@@ -85,7 +86,10 @@ impl ControlSession for RetainedClaudeSession {
                     .is_some_and(|id| id.is_empty() || id.len() > 4096)
                 || (matches!(
                     method,
-                    Method::ClaudeSettings | Method::ClaudeStopTask | Method::ThreadRollback
+                    Method::ClaudeFileBackups
+                        | Method::ClaudeSettings
+                        | Method::ClaudeStopTask
+                        | Method::ThreadRollback
                 ) && scope.request_id.is_none())
             {
                 return Err(ControlError::Request);

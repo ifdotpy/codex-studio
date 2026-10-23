@@ -1,0 +1,53 @@
+import { HUMAN_INPUT, STUDIO_EVENT_INPUT } from "./input-origin.generated.mjs";
+
+// Validate every origin before conversion or submission. An omitted field is
+// the legacy human-input contract; unknown provenance must not become human.
+export async function inputGroups(input, convert) {
+  const groups = [];
+  for (const item of input || []) {
+    const origin =
+      item.inputOrigin === undefined ? HUMAN_INPUT : item.inputOrigin;
+    if (origin !== HUMAN_INPUT && origin !== STUDIO_EVENT_INPUT)
+      throw new Error("Unsupported Claude input origin: " + origin);
+    if (groups.at(-1)?.origin !== origin) groups.push({ origin, input: [] });
+    groups.at(-1).input.push(item);
+  }
+  if (!groups.length) groups.push({ origin: HUMAN_INPUT, input: input || [] });
+  return Promise.all(
+    groups.map(async ({ origin, input }) => ({
+      origin,
+      blocks: await convert(input),
+    })),
+  );
+}
+
+// Claude 2.1.302 accepts task-notification (sdk.d.ts SDKMessageOrigin).
+// Local synthetic ingress becomes unclassified + isMeta instead:
+// readable/chunk-cgx41xfz.js:1783-1795 and chunk-1w3j266c.js:32892.
+// CWe excludes that combination from the permission classifier as invisible
+// meta (chunk-2jyw98bz.js:22214-22216, 22339-22363). It is not human framing.
+// text_not_typed suppresses slash, mention, and skill expansion (:9650-9652
+// in chunk-5c94ftfz.js); it does not supply authority by itself.
+export function sdkInputMessages(sessionId, identity, groups, nativeId) {
+  return groups.map(({ origin, blocks }, index) => {
+    const last = index === groups.length - 1;
+    const message = {
+      type: "user",
+      uuid: nativeId(last ? identity : `${identity}:part:${index}`),
+      session_id: sessionId,
+      parent_tool_use_id: null,
+      message: { role: "user", content: blocks },
+      ...(origin === STUDIO_EVENT_INPUT
+        ? {
+            origin: { kind: "task-notification" },
+            isSynthetic: true,
+            text_not_typed: true,
+          }
+        : {}),
+      // Preserve separate provenance without starting one query per part.
+      ...(!last ? { shouldQuery: false } : {}),
+    };
+    Object.defineProperty(message, "studioInputIdentity", { value: identity });
+    return message;
+  });
+}

@@ -201,3 +201,144 @@ async fn codex_turn_is_held_by_the_shared_auth_gate_when_the_account_changed() {
     assert_ne!(state.event_status("input").await, "delivered");
     worker.shutdown().await.unwrap();
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn capability_claude_thread_maps_all_profile_fields() {
+    let state = State::new().await;
+    let agent = state.agent.clone();
+    let capabilities = json!({"allowedTools":["Read*"],"disallowedTools":["Bash"],"mcpServers":["docs"],"skills":["research"],"maxTurns":2});
+    let stored = capabilities.clone();
+    state
+        .bridge
+        .run(move |s| async move {
+            scheduler::lifecycle_transaction_with(s.as_ref(), move |tx| {
+                let mut row = AgentRepository::get(tx, &AgentId::from(agent.as_str()))?.unwrap();
+                row.extra.insert("provider".into(), json!("claude"));
+                row.extra.insert("nativeEffort".into(), json!("medium"));
+                row.extra.insert("capabilityProfile".into(), stored);
+                AgentRepository::put(tx, &row)?;
+                Ok(())
+            })
+            .await
+        })
+        .await
+        .unwrap();
+    let mut peer = Peer::new();
+    peer.wire = studio_runtime_providers::ProviderKind::Claude.wire();
+    let mut worker = peer
+        .open_worker_with_resources(state.bridge.clone(), claude_resources(&state))
+        .await;
+    state.wake(&worker).await;
+    let resume = peer.write("thread/resume").await;
+    assert_eq!(resume["params"]["capabilityProfile"], capabilities);
+    peer.reply(&resume, json!({"thread":{"id":"fake-thread-0"}}))
+        .await;
+    let start = peer.write("turn/start").await;
+    peer.accepted(&start).await;
+    worker.shutdown().await.unwrap();
+}
+
+struct CapabilityConfigSession {
+    fail: bool,
+}
+impl crate::account_session_runtime::AccountSessionPort for CapabilityConfigSession {
+    fn current_scope(&self, account: &str) -> Option<crate::recovery_history::ConnectionScope> {
+        Some(crate::recovery_history::ConnectionScope {
+            account: account.into(),
+            connection: "capability-config-fixture".into(),
+            generation: 1,
+        })
+    }
+    fn provider_request<'a>(
+        &'a self,
+        request: crate::account_session_runtime::ProviderRequest,
+    ) -> crate::account_session_runtime::AccountSessionFuture<
+        'a,
+        crate::account_session_runtime::SessionReceipt,
+    > {
+        Box::pin(async move {
+            use crate::account_session_runtime::*;
+            assert_eq!(request.method, Method::ConfigRead);
+            assert!(request.actor.is_some());
+            assert_eq!(request.params["includeLayers"], false);
+            if self.fail {
+                return Err(AccountSessionError::Unknown);
+            }
+            Ok(SessionReceipt {
+                scope: request.expected_scope.unwrap(),
+                operation: request.operation,
+                ticket: None,
+                certainty: RequestCertainty::Written,
+                result: Some(ProviderResponse::Reply(json!({
+                    "config":{"mcp_servers":{"docs":{"command":"docs"},"project-only":{"command":"project"}}}
+                }))),
+                not_sent_reason: None,
+                replayed: false,
+            })
+        })
+    }
+}
+
+#[tokio::test]
+async fn capability_codex_thread_uses_merged_config_and_failed_preflight_is_visible() {
+    let state = State::new().await;
+    let agent = state.agent.clone();
+    state
+        .bridge
+        .run(move |store| async move {
+            scheduler::lifecycle_transaction_with(store.as_ref(), move |tx| {
+                let mut row = AgentRepository::get(tx, &AgentId::from(agent.as_str()))?.unwrap();
+                row.extra
+                    .insert("capabilityProfile".into(), json!({"mcpServers":["docs"]}));
+                AgentRepository::put(tx, &row)?;
+                Ok(())
+            })
+            .await
+        })
+        .await
+        .unwrap();
+    let mut failed_resources = test_resources().unwrap();
+    failed_resources.account_session = Some(Arc::new(CapabilityConfigSession { fail: true }));
+    let agent = state.agent.clone();
+    let error = state
+        .bridge
+        .run(move |store| async move {
+            failed_resources
+                .for_agent(store.as_ref(), &agent)
+                .await
+                .map(|_| ())
+        })
+        .await
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("mcpServers native config/read preflight failed")
+    );
+
+    let mut resources = test_resources().unwrap();
+    resources.account_session = Some(Arc::new(CapabilityConfigSession { fail: false }));
+    let mut peer = Peer::new();
+    let mut worker = peer
+        .open_worker_with_resources(state.bridge.clone(), resources)
+        .await;
+    state.wake(&worker).await;
+    let resume = peer.write("thread/resume").await;
+    let config = &resume["params"]["config"];
+    assert_eq!(
+        config["mcp_servers"]["docs"],
+        json!({"enabled":true,"required":true})
+    );
+    assert_eq!(
+        config["mcp_servers"]["project-only"],
+        json!({"enabled":false,"required":false})
+    );
+    assert_eq!(config["features.plugins"], false);
+    assert_eq!(config["features.apps"], false);
+    peer.reply(&resume, json!({"thread":{"id":"fake-thread-0"}}))
+        .await;
+    let start = peer.write("turn/start").await;
+    peer.accepted(&start).await;
+    worker.shutdown().await.unwrap();
+}

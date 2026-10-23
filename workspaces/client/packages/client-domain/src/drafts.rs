@@ -11,6 +11,7 @@ pub const MAX_DRAFT_TEXT_CODEPOINTS: usize = 2_000_000;
 pub const MAX_DRAFT_ID_BYTES: usize = 300;
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, JsonSchema)]
+#[schemars(deny_unknown_fields)]
 pub struct DraftVersion {
     pub id: String,
     pub session: String,
@@ -18,7 +19,7 @@ pub struct DraftVersion {
     #[schemars(length(max = MAX_DRAFT_TEXT_CODEPOINTS))]
     pub text: String,
     // Historical payloads are read without rewriting their stored bytes. The
-    // serialized schema stays strict for new pushes and generated client types.
+    // generated client type stays strict for newly authored drafts.
     #[serde(default, deserialize_with = "legacy_updated")]
     #[schemars(schema_with = "safe_integer_schema")]
     pub updated: u64,
@@ -27,7 +28,9 @@ pub struct DraftVersion {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     #[schemars(schema_with = "seen_schema")]
     pub seen: BTreeMap<String, u64>,
+    // Historical extras survive decoding, merging, and pending push retries.
     #[serde(flatten)]
+    #[schemars(skip)]
     pub extra: BTreeMap<String, Value>,
 }
 
@@ -63,12 +66,15 @@ fn legacy_updated<'de, D: serde::Deserializer<'de>>(decoder: D) -> Result<u64, D
     }
 }
 
-/// Strict wire schema of newly serialized drafts; legacy reads use serde above.
+/// Push validation keeps historical extensions until persisted browser/native
+/// pending rows have a migration. Generated new-draft types remain closed.
 pub fn schema() -> Schema {
-    schemars::generate::SchemaSettings::draft2020_12()
+    let mut schema = schemars::generate::SchemaSettings::draft2020_12()
         .for_serialize()
         .into_generator()
-        .into_root_schema_for::<DraftVersion>()
+        .into_root_schema_for::<DraftVersion>();
+    schema.insert("additionalProperties".into(), true.into());
+    schema
 }
 
 impl DraftVersion {

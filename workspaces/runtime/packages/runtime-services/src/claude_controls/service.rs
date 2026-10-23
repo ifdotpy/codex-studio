@@ -51,7 +51,19 @@ pub trait ControlSession: Send + Sync {
 }
 /// Every method compares source, epoch and reservation inside the same transaction.
 /// `reserve` resolves shared workspace idle evidence before its comparison transaction.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum FailureEvidence {
+    Uncertain,
+    BeforeSubmission,
+    // The retained transport proves that this exact native request was not sent.
+    NotSent,
+    // The bridge proves this exact preparation failed before any native effects.
+    NotApplied,
+}
 pub trait ControlStorage: Send + Sync {
+    fn execution_key(&self, request: &ControlRequest) -> String {
+        format!("{:p}:{}", self, request.id)
+    }
     fn reserve(
         &self,
         request: ControlRequest,
@@ -74,41 +86,21 @@ pub trait ControlStorage: Send + Sync {
         expected: ControlSnapshot,
         request: ControlRequest,
     ) -> ControlFuture<'_, Value>;
-    fn failed(&self, expected: ControlSnapshot, uncertain: bool) -> ControlFuture<'_, ()>;
+    fn failed(&self, expected: ControlSnapshot, evidence: FailureEvidence)
+    -> ControlFuture<'_, ()>;
 }
 pub struct Controls {
     store: Arc<dyn ControlStorage>,
     session: Arc<dyn ControlSession>,
-    active: std::sync::Mutex<std::collections::BTreeSet<String>>,
-}
-struct Running<'a> {
-    owner: &'a Controls,
-    id: String,
-}
-impl Drop for Running<'_> {
-    fn drop(&mut self) {
-        if let Ok(mut active) = self.owner.active.lock() {
-            active.remove(&self.id);
-        }
-    }
 }
 impl Controls {
     pub fn new(store: Arc<dyn ControlStorage>, session: Arc<dyn ControlSession>) -> Self {
-        Self {
-            store,
-            session,
-            active: std::sync::Mutex::new(Default::default()),
-        }
+        Self { store, session }
     }
     pub async fn execute(&self, request: ControlRequest) -> Result<Value> {
-        let id = request.operation_id();
-        {
-            let mut active = self.active.lock().map_err(|_| ControlError::Unavailable)?;
-            if active.len() >= 64 || !active.insert(id.clone()) {
-                return Err(ControlError::Busy);
-            }
-        }
-        let _running = Running { owner: self, id };
+        let _running =
+            crate::checkpoints::RestoreExecution::acquire(self.store.execution_key(&request))
+                .map_err(|_| ControlError::Busy)?;
         let binding = self.session.binding();
         let mut snapshot = self.store.reserve(request.clone(), binding.clone()).await?;
         if snapshot.agent.account_key != binding.account {
@@ -127,7 +119,16 @@ impl Controls {
             .perform(&request, &binding, &mut snapshot, &mut uncertain)
             .await;
         if result.is_err() {
-            self.store.failed(snapshot, uncertain).await?;
+            let evidence = if matches!(&result, Err(ControlError::NotSent)) {
+                FailureEvidence::NotSent
+            } else if matches!(&result, Err(ControlError::RewindNotApplied(_))) {
+                FailureEvidence::NotApplied
+            } else if uncertain {
+                FailureEvidence::Uncertain
+            } else {
+                FailureEvidence::BeforeSubmission
+            };
+            self.store.failed(snapshot, evidence).await?;
         }
         result
     }
@@ -138,10 +139,24 @@ impl Controls {
         snapshot: &mut ControlSnapshot,
         uncertain: &mut bool,
     ) -> Result<Value> {
+        let attempt = snapshot
+            .saved
+            .as_ref()
+            .and_then(|op| op.get("controlAttempt"))
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        let transport_request = if attempt == 0 {
+            request.request_id.clone()
+        } else {
+            format!(
+                "claude-retry:{}",
+                request_signature(&json!([request.request_id, attempt]))
+            )
+        };
         let scope = ControlScope {
             agent: snapshot.agent.id.clone(),
             epoch: snapshot.epoch(),
-            request_id: Some(request.request_id.clone()),
+            request_id: Some(transport_request),
         };
         if snapshot
             .saved
@@ -198,12 +213,31 @@ impl Controls {
                 } else {
                     (
                         "thread/rollback",
-                        json!({"threadId":thread,"turnId":request.turn,"requestId":request.request_id}),
+                        json!({"threadId":thread,"turnId":request.turn,"requestId":request.request_id,"restoreFiles":request.restore_files}),
                     )
                 };
-                match self.bound_call(binding, &scope, method, params, 25).await {
+                match self
+                    .bound_call(
+                        binding,
+                        &scope,
+                        method,
+                        params,
+                        if request.restore_files {
+                            FILE_RESTORE_TIMEOUT_SECONDS
+                        } else {
+                            25
+                        },
+                    )
+                    .await
+                {
                     Err(error @ (ControlError::NotSent | ControlError::Request)) => {
-                        *uncertain = false;
+                        // A provider rejection can follow a partial file restore.
+                        // Only an explicit not-sent receipt proves no file effect.
+                        if !request.restore_files || matches!(error, ControlError::NotSent) {
+                            *uncertain = false;
+                        } else {
+                            return Err(ControlError::Unknown);
+                        }
                         return Err(error);
                     }
                     result => result?,
@@ -227,7 +261,12 @@ impl Controls {
         if &self.session.binding() != binding {
             return Err(ControlError::Changed);
         }
-        let result = self.call(scope.clone(), method, params, seconds).await?;
+        let mut scope = scope.clone();
+        // Idle reads must be fresh and must not consume the mutation's receipt identity.
+        if matches!(method, "claude/state" | "thread/queue/list") {
+            scope.request_id = None;
+        }
+        let result = self.call(scope, method, params, seconds).await?;
         if &self.session.binding() != binding {
             return Err(ControlError::Unknown);
         }
@@ -301,7 +340,7 @@ impl Controls {
                     return Err(ControlError::Unknown);
                 }
                 if let Some(op) = snapshot.saved {
-                    result["controlOperation"] = json!({"requestId":op.get("requestId"),"turnId":op.get("turnId"),"phase":op.get("phase"),"error":op.get("error")});
+                    result["controlOperation"] = json!({"requestId":op.get("requestId"),"turnId":op.get("turnId"),"restoreFiles":op.get("restoreFiles").and_then(Value::as_bool).unwrap_or(false),"phase":op.get("phase"),"error":op.get("error")});
                 }
                 Ok(result)
             }

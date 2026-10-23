@@ -78,6 +78,12 @@ impl crate::recovery_store::RecoveryDelivery for ProductionRecoveryDelivery {
         let mut owner = AgentRecord::from_value(agent.clone())
             .map_err(|_| crate::recovery::RecoveryError::CommitFailed)?;
         studio_runtime_store::SchedulerRepository::wait_for_owned_monitors(tx, &mut owner)?;
+        if turn["status"] == "completed" {
+            crate::worker_capabilities::count_completed(
+                &mut owner,
+                turn["id"].as_str().unwrap_or_default(),
+            );
+        }
         *agent = owner.value();
         let mut before = agent.clone();
         before["turnId"] = turn["id"].clone();
@@ -106,10 +112,10 @@ const VOICE_DELETE_RETRY_ATTEMPTS: usize = 8;
 // Ordinary voice stops can remain in flight until their 30-second deadline.
 const VOICE_DELETE_HELD_WAIT: Duration = Duration::from_secs(35);
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum InterruptWriteResult {
-    Accepted,
-    Rejected,
+    Accepted(Value),
+    Rejected(Value),
     NotSent,
     Unknown,
 }
@@ -378,16 +384,31 @@ impl ProductionLifecyclePorts {
                 continue;
             }
             let outcome = request_interrupt(self.interrupt_broker.as_ref(), &request).await;
-            let (state, error) = match outcome {
-                InterruptWriteResult::Accepted => ("accepted", None),
-                InterruptWriteResult::Rejected => ("rejected", None),
+            let (state, error) = match &outcome {
+                InterruptWriteResult::Accepted(_) => ("accepted", None),
+                InterruptWriteResult::Rejected(_) => ("rejected", None),
                 InterruptWriteResult::NotSent => ("unsent", None),
                 InterruptWriteResult::Unknown => ("unknown", None),
             };
             let request_ticket = request.ticket.clone();
             let generation = request.scope.generation;
+            let settled_outcome = outcome.clone();
+            let settled_request = request.clone();
             self.store
                 .transaction_with_error(move |tx| {
+                    let response = match &settled_outcome {
+                        InterruptWriteResult::Accepted(response) => response,
+                        InterruptWriteResult::Rejected(error) => &error["data"]["interruptReceipt"],
+                        _ => &Value::Null,
+                    };
+                    SchedulerRepository::settle_interrupt_inputs(
+                        tx,
+                        &settled_request.agent,
+                        &settled_request.scope.account,
+                        generation,
+                        &settled_request.thread,
+                        response,
+                    )?;
                     SchedulerRepository::settle_interrupt_result(
                         tx,
                         &request_ticket,
@@ -408,7 +429,7 @@ impl ProductionLifecyclePorts {
                 let cleaned =
                     request_terminal_cleanup(self.interrupt_broker.as_ref(), &request, cleanup)
                         .await;
-                if cleaned != InterruptWriteResult::Accepted {
+                if !matches!(cleaned, InterruptWriteResult::Accepted(_)) {
                     eprintln!(
                         "stopped agent {} command cleanup on thread {} was not confirmed: {cleaned:?}",
                         request.agent, request.thread
@@ -579,8 +600,12 @@ async fn request_stop_work(
                         }) =>
                 {
                     match receipt.result {
-                        Some(ProviderResponse::Reply(_)) => InterruptWriteResult::Accepted,
-                        Some(ProviderResponse::Rejected(_)) => InterruptWriteResult::Rejected,
+                        Some(ProviderResponse::Reply(response)) => {
+                            InterruptWriteResult::Accepted(response)
+                        }
+                        Some(ProviderResponse::Rejected(error)) => {
+                            InterruptWriteResult::Rejected(error)
+                        }
                         None => InterruptWriteResult::Unknown,
                     }
                 }
@@ -1430,6 +1455,10 @@ fn notify_parent_of_settled_turn(
     let disconnected_completion = agent.status == AgentStatus::Completed
         && value.pointer("/disconnectRecovery/turnId") == Some(&json!(turn_id))
         && value.pointer("/disconnectRecovery/autoWake") == Some(&json!(true));
+    let capped = value["terminalReason"] == crate::worker_capabilities::TURN_LIMIT_REASON;
+    if capped && reports_turns(agent) {
+        return enqueue_turn_result(tx, agent, &value, turn_id, at);
+    }
     if !(studio_runtime_store::truthy(agent.extra.get("autoWake")) || disconnected_completion)
         || stopped
         || safety_retry
@@ -1762,13 +1791,15 @@ mod tests {
         let broker = Broker {
             scope: Some(request.scope.clone()),
             certainty: RequestCertainty::Written,
-            response: Some(ProviderResponse::Reply(json!({"turnId":"turn"}))),
+            response: Some(ProviderResponse::Reply(
+                json!({"cancelled":["studio:input"],"still_queued":[]}),
+            )),
             observed: Mutex::new(None),
         };
 
         assert_eq!(
             request_interrupt(&broker, &request).await,
-            InterruptWriteResult::Accepted
+            InterruptWriteResult::Accepted(json!({"cancelled":["studio:input"],"still_queued":[]}))
         );
         let observed = broker.observed.lock().expect("observed request lock");
         let observed = observed.as_ref().expect("broker records request");
@@ -1835,7 +1866,7 @@ mod tests {
         };
         assert_eq!(
             request_interrupt(&broker, &request).await,
-            InterruptWriteResult::Rejected
+            InterruptWriteResult::Rejected(json!({"code":"rejected"}))
         );
     }
 }

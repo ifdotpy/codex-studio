@@ -63,7 +63,7 @@ pub struct NativeProcessSource {
 
 #[derive(Clone, Default)]
 pub struct PublicationContext {
-    native_source: Option<NativeProcessSource>,
+    pub(crate) native_source: Option<NativeProcessSource>,
 }
 impl PublicationContext {
     pub fn with_native_source(mut self, source: Option<NativeProcessSource>) -> Self {
@@ -2172,7 +2172,7 @@ mod tests {
     use studio_runtime_store::{
         AgentRecord, AgentRepository, AgentStatus, ChatMessage, ChatMessageId, MessageRepository,
         NotificationDispatchRepository, QueueEvent, QueueEventId, QueueEventRepository,
-        RuntimeStore, SchedulerRepository, TranscriptRepository,
+        RuntimeStore, SchedulerRepository, StoreError, TranscriptRepository,
     };
 
     #[test]
@@ -2512,6 +2512,69 @@ mod tests {
             let record: Value = serde_json::from_str(&raw).unwrap();
             assert_eq!(record["sourceConnectionId"], expected);
             assert_eq!(record["ownerEpoch"], 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn native_background_task_in_progress_completion_accepts_later_failure() {
+        for initial_method in ["item/completed", "item/started"] {
+            for stale in [false, true] {
+                let root = tempfile::tempdir().unwrap();
+                let store = RuntimeStore::open(Some(root.path())).await.unwrap();
+                let output_file = root
+                    .path()
+                    .join("native-1.output")
+                    .to_string_lossy()
+                    .into_owned();
+                store.transaction_with(move |tx| {
+                    tx.execute("INSERT INTO runtime_agents(id,record) VALUES('agent',?1)", [json!({
+                        "id":"agent","rootId":"agent","epoch":1,"status":"running","threadId":"thread",
+                        "accountKey":"default","provider":"claude","turnId":"turn","inFlight":true,
+                        "autoWake":true,"activeTools":[],"events":0
+                    }).to_string()]).map_err(StoreError::from)?;
+                    let read_task = || -> Value {
+                        let raw: String = tx.query_row("SELECT record FROM runtime_tasks WHERE id='agent:task:native-1'", [], |r| r.get(0)).unwrap();
+                        serde_json::from_str(&raw).unwrap()
+                    };
+                    let read_item = || -> Value {
+                        let raw: String = tx.query_row("SELECT record FROM runtime_items WHERE id='agent:task:native-1'", [], |r| r.get(0)).unwrap();
+                        serde_json::from_str(&raw).unwrap()
+                    };
+                    let mut streams = NotificationStreamBuffer::default();
+                    let params = json!({"threadId":"thread","turnId":"turn","item":{
+                        "id":"task:native-1","type":"mcpToolCall","server":"claude","tool":"local_bash",
+                        "status":"inProgress","result":{"content":[{"type":"text","text":"Running"}]}
+                    }});
+                    dispatch(tx, &mut streams, 1, &json!({"method":initial_method,"params":params}), 100.0)?;
+                    let running = read_task();
+                    assert_eq!(running["status"], "running", "{initial_method}");
+                    assert!(running.get("finished").is_none());
+                    assert!(running.get("durationMs").is_none());
+                    assert_eq!(read_item()["toolStatus"], "running");
+                    if stale {
+                        tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.turnId','next-turn') WHERE id='agent'", []).map_err(StoreError::from)?;
+                    }
+                    let mut progress = params.clone();
+                    progress["item"]["arguments"] = json!({"description":"Still running"});
+                    dispatch(tx, &mut streams, 2, &json!({"method":"item/started","params":progress}), 101.0)?;
+                    assert_eq!(read_task()["arguments"], "{\"description\": \"Still running\"}");
+                    let mut terminal = params;
+                    terminal["item"]["status"] = json!("failed");
+                    terminal["item"]["outputFile"] = json!(output_file);
+                    terminal["item"]["result"] = json!({"content":[{"type":"text","text":"Build failed"}]});
+                    dispatch(tx, &mut streams, 3, &json!({"method":"item/completed","params":terminal}), 102.0)?;
+                    let failed = read_task();
+                    assert_eq!(failed["status"], "failed");
+                    assert_eq!(failed["outputFile"], output_file);
+                    assert_eq!(failed["finished"], 102.0);
+                    assert_eq!(failed["durationMs"], 2000.0);
+                    assert!(failed["tail"].as_str().unwrap().contains("Build failed"));
+                    assert_eq!(read_item()["toolStatus"], "failed");
+                    let stored: Value = serde_json::from_str(read_item()["text"].as_str().unwrap()).unwrap();
+                    assert_eq!(stored["outputFile"], output_file);
+                    Ok::<_, super::NotificationDispatchError>(())
+                }).await.unwrap();
+            }
         }
     }
 

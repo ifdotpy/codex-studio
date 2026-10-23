@@ -11,9 +11,11 @@ mod claude_preparation;
 mod continuation_start;
 mod exited_generation_callback;
 mod idle_unload;
+mod input_origin;
 mod journal_cost;
 mod journal_publication;
 mod late_thread_reply;
+mod limits_updates;
 mod login_completion;
 #[cfg(unix)]
 mod many_agents;

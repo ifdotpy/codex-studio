@@ -7,6 +7,9 @@ import {
   nativeItem,
   usageTokens,
   InputQueue,
+  claudeErrorInfo,
+  overageAllowed,
+  limitApplies,
 } from "./features.mjs";
 
 test("subscription windows use percentages and seconds", () => {
@@ -153,4 +156,77 @@ test("persistent queue preserves order and close releases an idle consumer", asy
   queue.close();
   assert.equal((await idle).done, true);
   assert.throws(() => queue.push("late"), /closed/);
+});
+
+test("rate limit events retain overage permission without utilization", () => {
+  const current = usageLimits({
+    rate_limits_available: true,
+    rate_limits: { five_hour: { utilization: 100 } },
+  });
+  const info = {
+    rateLimitType: "five_hour",
+    status: "rejected",
+    overageStatus: "allowed",
+    resetsAt: 1234,
+  };
+  const next = limitEvent(current, info);
+  assert.deepEqual(next.rateLimits.claudeRateLimit, info);
+  assert.equal(next.rateLimits.primary.usedPercent, 100);
+  assert.equal(current.rateLimits.claudeRateLimit, undefined);
+});
+
+test("overage permission is replaced and unknown limit resets remain visible", () => {
+  const allowed = limitEvent(null, {
+    rateLimitType: "five_hour",
+    status: "rejected",
+    overageStatus: "allowed",
+    utilization: 1,
+    resetsAt: 100,
+  });
+  assert.equal(overageAllowed(allowed.claudeRateLimit), true);
+  const rejected = limitEvent(allowed, {
+    rateLimitType: "five_hour",
+    status: "rejected",
+    overageStatus: "rejected",
+    isUsingOverage: true,
+    resetsAt: 200,
+  });
+  assert.equal(overageAllowed(rejected.claudeRateLimit), false);
+  const unknown = limitEvent(allowed, {
+    rateLimitType: "future_scope",
+    status: "rejected",
+    resetsAt: 900,
+  });
+  assert.equal(overageAllowed(unknown.claudeRateLimit), false);
+  assert.equal(
+    unknown.rateLimitsByLimitId["claude-unknown-limit"].secondary.resetsAt,
+    900,
+  );
+  const overage = limitEvent(allowed, {
+    rateLimitType: "overage",
+    status: "rejected",
+    overageStatus: "allowed_warning",
+  });
+  assert.equal(overageAllowed(overage.claudeRateLimit), true);
+});
+
+test("model scope excludes only a known different family", () => {
+  const opus = { rateLimitType: "seven_day_opus" };
+  assert.equal(limitApplies(opus, "sonnet"), false);
+  assert.equal(limitApplies(opus, "claude-sonnet-4-6"), false);
+  for (const model of ["opus", "default", "custom-sonnet-proxy", null])
+    assert.equal(limitApplies(opus, model), true);
+  assert.equal(limitApplies({ rateLimitType: "future_scope" }, "sonnet"), true);
+});
+
+test("API error classification retains unrelated failure types", () => {
+  for (const [error, text, expected] of [
+    ["rate_limit", "Too Many Requests", "rateLimitExceeded"],
+    ["unknown", "API Error: 429 Too Many Requests", "rateLimitExceeded"],
+    ["overloaded", "Busy", "serverOverloaded"],
+    ["authentication_failed", "Sign in", "unauthorized"],
+    ["unknown", "ECONNRESET", "httpConnectionFailed"],
+    ["unknown", "Failed to parse row 429", null],
+  ])
+    assert.equal(claudeErrorInfo(error, text), expected);
 });

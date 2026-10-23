@@ -1,3 +1,4 @@
+import ClaudeCheckpointRestore from "../ClaudeCheckpointRestore";
 import { useServerApi } from "../../servers/ServerServicesContext";
 import { SearchContent } from "./SearchOverlay";
 import { EmptyState, PanelHeader } from "../ui/primitives";
@@ -47,6 +48,8 @@ import { useWorkerModels } from "../agents/WorkerModelPicker";
 import { useServerResourceReads } from "../../servers/ServerServicesContext";
 import TeamChats from "./messages/TeamChats";
 import FilePreview, { type PreviewTarget } from "../FilePreview";
+import { ProfileCapabilities } from "./ProfileCapabilities";
+import { capabilityDraft, parseCapabilities } from "./profileCapabilityFields";
 import "./Workspace.css";
 
 type Props = {
@@ -724,6 +727,25 @@ function Plan(c: Context) {
 }
 
 function Checkpoints(c: Context) {
+  if (
+    c.selected?.provider === "claude" &&
+    (c.selected.imageWorkspace ||
+      c.selected.workspaceMode === "shared" ||
+      (!c.selected.worktree && c.selected.workspaceMode !== "worktree"))
+  ) {
+    return (
+      <ClaudeCheckpointRestore
+        key={c.selected.id}
+        agent={c.selected}
+        revision={c.revision}
+        onRestored={c.reload}
+      />
+    );
+  }
+  return <GitCheckpoints {...c} />;
+}
+
+function GitCheckpoints(c: Context) {
   const state = useResource("/api/checkpoints", c.revision, {
       query: c.selected ? { agent: c.selected.id } : {},
     }),
@@ -822,7 +844,8 @@ function Checkpoints(c: Context) {
             </pre>
             {!preview.canRestore && (
               <p className="workspace-muted">
-                A restore requires an idle agent with an isolated worktree.
+                {preview.restoreUnavailableReason ||
+                  "A restore requires an idle agent with an isolated worktree."}
               </p>
             )}
             <Button
@@ -1038,6 +1061,8 @@ function Profiles(c: Context) {
     isDefault: !!row.isDefault,
   }));
   const draftModel = typeof draft?.model === "string" ? draft.model : "";
+  const capabilities = capabilityDraft(draft ?? {});
+  const parsedCapabilities = parseCapabilities(capabilities);
   if (draftModel && !profileModels.some((row) => row.value === draftModel))
     profileModels.unshift({ value: draftModel, label: draftModel });
   return (
@@ -1128,9 +1153,11 @@ function Profiles(c: Context) {
             className="workspace-form"
             onSubmit={async (e) => {
               e.preventDefault();
+              if (!parsedCapabilities.values) return;
               setBusy(true);
               try {
                 await c.run("/api/profiles", {
+                  ...parsedCapabilities.values,
                   action: "save",
                   id: typeof draft.id === "string" ? draft.id : undefined,
                   isNew: draft.isNew === true,
@@ -1204,7 +1231,19 @@ function Profiles(c: Context) {
                 setDraft({ ...draft, instructions: e.target.value })
               }
             />
-            <Button variant="filled" type="submit" loading={busy}>
+            <ProfileCapabilities
+              value={capabilities}
+              errors={parsedCapabilities.errors}
+              onChange={(field, value) =>
+                setDraft({ ...draft, [field]: value })
+              }
+            />
+            <Button
+              variant="filled"
+              type="submit"
+              loading={busy}
+              disabled={!parsedCapabilities.values}
+            >
               Save profile
             </Button>
           </form>

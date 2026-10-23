@@ -1,7 +1,8 @@
 //! Captured legacy decisions over immutable observations; no backend process is needed.
 use serde_json::{Value, json};
 use studio_runtime_services::turn_prepare::{
-    ContextManifest, Event, NativeReceipt, PreparationSnapshot, PrepareError, accept, compile,
+    ContextManifest, Event, NativeReceipt, PreparationSnapshot, PrepareError, ProviderInput,
+    STUDIO_INPUT_BYTES, accept, compile,
 };
 
 #[derive(serde::Deserialize)]
@@ -162,7 +163,7 @@ fn finish_observation(
         .enumerate()
         .map(|(index, input)| {
             if index == 0 {
-                let studio_runtime_services::turn_prepare::ProviderInput::Text { text } = input
+                let studio_runtime_services::turn_prepare::ProviderInput::Text { text, .. } = input
                 else {
                     panic!("text first")
                 };
@@ -231,8 +232,60 @@ fn python_submission_compiler_corpus() {
         let rows: Vec<Event> =
             serde_json::from_value(fixture["events"].clone()).expect("typed events");
         let original = json!(snapshot);
+        let mut aggregate_projection = false;
         let mut actual = match compile(&snapshot, &rows) {
             Ok(prepared) => {
+                let provider_text: String = prepared
+                    .provider_inputs
+                    .iter()
+                    .filter_map(|input| match input {
+                        ProviderInput::Text { text, .. } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect();
+                aggregate_projection = prepared.studio_input.is_some()
+                    || rows.iter().any(|row| {
+                        matches!(
+                            row.kind.as_str(),
+                            "work_decision" | "radio_turn" | "followup"
+                        ) && !provider_text.contains(&row.text)
+                    });
+                if aggregate_projection {
+                    // Rust intentionally supersedes Python's unbounded context and
+                    // decision bypass. Keep differential coverage for the unchanged
+                    // receipt, manifest, evidence, and transcript-input contracts.
+                    let user_bytes: usize = rows
+                        .iter()
+                        .filter(|row| {
+                            row.kind == "user"
+                                || (row.kind == "followup"
+                                    && row
+                                        .metadata
+                                        .extra
+                                        .get("senderId")
+                                        .and_then(Value::as_str)
+                                        .is_some_and(|id| !id.is_empty()))
+                        })
+                        .map(|row| {
+                            assert!(provider_text.contains(&row.text));
+                            row.text.len()
+                        })
+                        .sum();
+                    assert!(
+                        provider_text.len().saturating_sub(user_bytes) <= STUDIO_INPUT_BYTES,
+                        "{}",
+                        case["id"]
+                    );
+                    assert!(
+                        provider_text.contains("studio-input:") || provider_text.contains("event:")
+                    );
+                    if let Some(full) = &prepared.studio_input {
+                        assert!(
+                            provider_text
+                                .contains(&studio_runtime_store::sha256_hex(full.as_bytes()))
+                        );
+                    }
+                }
                 assert!(
                     fixture["expected"]["ok"] == true,
                     "{}: Rust prepared a submission but Python rejected it: {}",
@@ -294,9 +347,45 @@ fn python_submission_compiler_corpus() {
             json!(snapshot) == original,
             "compiler mutated its input snapshot"
         );
-        actual = oracle
-            .call(json!({"command":"normalize","segments":fixture["segments"],"value":actual}));
-        if let Some(diff) = difference(&actual, &fixture["expected"], "$") {
+        let segments = if aggregate_projection {
+            // The legacy oracle validates literal text before normalizing
+            // manifests. Budget projections have independent assertions above;
+            // exclude their text before that validation, not after it.
+            actual["provider_inputs"] = json!([{"type":"text","text":""}]);
+            actual["fulltext"] = Value::Null;
+            actual["transcript"]["text"] = json!("");
+            actual["transcript"]["truncated"] = json!(false);
+            actual["clock_segments"] = json!([]);
+            json!([])
+        } else {
+            fixture["segments"].clone()
+        };
+        actual = oracle.call(json!({"command":"normalize","segments":segments,"value":actual}));
+        let mut expected = fixture["expected"].clone();
+        if aggregate_projection {
+            for value in [&mut actual, &mut expected] {
+                for key in ["provider_inputs", "fulltext", "studio_input"] {
+                    value.as_object_mut().expect("compiled object").remove(key);
+                }
+                for key in ["text", "truncated"] {
+                    value["transcript"]
+                        .as_object_mut()
+                        .expect("transcript")
+                        .remove(key);
+                }
+                for patch in value["metadata_patches"]
+                    .as_object_mut()
+                    .expect("metadata patches")
+                    .values_mut()
+                {
+                    patch
+                        .as_object_mut()
+                        .expect("metadata patch")
+                        .remove("studioInput");
+                }
+            }
+        }
+        if let Some(diff) = difference(&actual, &expected, "$") {
             panic!("{} ({}) {diff}", case["id"], case["family"]);
         }
         count += 1;
@@ -395,7 +484,7 @@ fn reference_floor_is_soft_but_transcript_ceiling_is_hard() {
     let snapshot = serde_json::from_value(fixture["snapshot"].clone()).expect("snapshot");
     let rows: Vec<Event> = serde_json::from_value(fixture["events"].clone()).expect("events");
     let prepared = compile(&snapshot, &rows).expect("prepared");
-    let studio_runtime_services::turn_prepare::ProviderInput::Text { text } =
+    let studio_runtime_services::turn_prepare::ProviderInput::Text { text, .. } =
         &prepared.provider_inputs[0]
     else {
         panic!("text first")

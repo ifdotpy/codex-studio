@@ -298,6 +298,7 @@ impl MonitorSnapshot {
         {
             return Err(invalid("agent"));
         }
+        crate::monitor_matches::validate(&record).map_err(invalid)?;
         let fields: Fields =
             serde_json::from_value(record.clone()).map_err(|_| invalid("record"))?;
         let actor: Actor = serde_json::from_value(actor).map_err(|_| invalid("agent"))?;

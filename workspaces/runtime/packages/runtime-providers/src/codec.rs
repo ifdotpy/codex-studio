@@ -157,6 +157,7 @@ define_methods! {
     ThreadCommandExecutionBackground => "thread/commandExecution/background",
     ThreadQueueList => "thread/queue/list",
     ClaudeState => "claude/state",
+    ClaudeFileBackups => "claude/fileBackups",
     ClaudeSettings => "claude/settings",
     ClaudeActivity => "claude/activity",
     ClaudeStopTask => "claude/stopTask",

@@ -17,11 +17,14 @@ use studio_runtime_store::{
 };
 
 pub(crate) fn routes() -> RouteGroup {
-    RouteGroup::new(vec![post(
-        "/api/claude/session",
-        OperationStatus::Implemented,
-        session,
-    )])
+    RouteGroup::new(vec![
+        post("/api/claude/session", OperationStatus::Implemented, session),
+        post(
+            "/api/claude/file-backups",
+            OperationStatus::Implemented,
+            file_backups,
+        ),
+    ])
 }
 
 async fn session(
@@ -105,7 +108,7 @@ async fn session(
             .map_err(session_error)?
     };
     let controls = Controls::new(
-        Arc::new(StoredControls::new(store, Arc::new(|_| {}))),
+        Arc::new(StoredControls::new(store.clone(), Arc::new(|_| {}))),
         session,
     );
     let result = match action {
@@ -126,7 +129,61 @@ async fn session(
         }
     };
     state.event_wake.notify_one();
-    result.map(Json).map_err(control_error)
+    let mut result = result.map_err(control_error)?;
+    if action == "state" {
+        let workspace = studio_runtime_services::checkpoints::capture_context(&store, &id)
+            .await
+            .map_err(|_| ApiError::internal())?;
+        let reason = studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-http/claude-controls/restore-availability",
+            move || {
+                studio_runtime_services::checkpoints::ensure_workspace_idle(&workspace, None)
+                    .err()
+                    .map(|error| error.to_string())
+            },
+        )
+        .await
+        .map_err(|_| ApiError::internal())?;
+        if let Some(reason) = reason
+            && let Some(turns) = result.get_mut("turns").and_then(Value::as_array_mut)
+        {
+            for turn in turns {
+                turn["canRestoreFiles"] = json!(false);
+                turn["restoreFilesUnavailableReason"] = json!(reason);
+            }
+        }
+    }
+    Ok(Json(result))
+}
+
+async fn file_backups(
+    State(state): State<HttpState>,
+    ApiJson(body): ApiJson<crate::generated::ClaudeFileBackupsRequest>,
+) -> Result<Json<crate::generated::ClaudeFileBackupsResponse>, ApiError> {
+    tokio::spawn(async move {
+        use studio_runtime_services::claude_controls::service::ControlScope;
+        use studio_runtime_store::ClaudeControlRepository;
+        let store = state.store.clone().ok_or_else(ApiError::internal)?;
+        let _execution = studio_runtime_services::checkpoints::RestoreExecution::acquire(
+            format!("{}:{}", store.state_dir().display(), body.id),
+        ).map_err(|_| control_error(ControlError::Busy))?;
+        let id = body.id.clone();
+        let (agent, settled) = store.read_async("claude/file-backups", move |tx| {
+            let agent = AgentRepository::get(tx, &AgentId(id))?.ok_or_else(||
+                studio_runtime_store::StoreError::InvalidStoredRecord {object: "agent", id: "missing".into()})?.value();
+            let settled = ClaudeControlRepository::settled_file_rewinds(tx, &agent)?;
+            Ok::<_, studio_runtime_store::StoreError>((agent, settled))
+        }).await.map_err(|_| ApiError::internal())?;
+        require_claude_account(&state, &agent).await?;
+        let snapshot = studio_runtime_services::claude_controls::ControlSnapshot::from_records(agent.clone(), None).map_err(control_error)?;
+        let thread = agent["threadId"].as_str().filter(|s| !s.is_empty()).ok_or_else(|| control_error(ControlError::Request))?;
+        let account = agent["accountKey"].as_str().unwrap_or("default");
+        let session = state.account_session.as_ref().ok_or_else(ApiError::internal)?.claude_control_session(account).map_err(session_error)?;
+        let result = session.call_scoped(ControlScope {
+            agent: body.id, epoch: snapshot.epoch(), request_id: Some(body.request_id),
+        }, "claude/fileBackups", json!({"threadId":thread,"settledRequestIds":if body.release {Some(settled)} else {None}})).await.map_err(control_error)?;
+        super::generated_json::<crate::generated::ClaudeFileBackupsResponse>(result).map(Json)
+    }).await.map_err(|_| ApiError::internal())?
 }
 
 async fn require_claude_account(state: &HttpState, agent: &Value) -> Result<(), ApiError> {
@@ -274,6 +331,11 @@ fn control_error(error: ControlError) -> ApiError {
         ControlError::Unknown => ApiError::new(
             StatusCode::CONFLICT,
             "Claude control outcome is unknown; inspect workspace recovery",
+        ),
+        ControlError::RewindNotApplied(reason) => ApiError::new(StatusCode::BAD_REQUEST, reason),
+        ControlError::RewindRejected(reason) => ApiError::new(
+            StatusCode::CONFLICT,
+            format!("Claude file restore requires recovery: {reason}"),
         ),
         ControlError::NotSent => ApiError::new(
             StatusCode::BAD_REQUEST,

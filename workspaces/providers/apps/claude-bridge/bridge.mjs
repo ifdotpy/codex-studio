@@ -1,4 +1,17 @@
+import {
+  prepareFileRestore,
+  verifyFileRestore,
+  fileBackups,
+} from "./file-restore.mjs";
+import {
+  fileCheckpointOptions,
+  fileRestoreReason,
+  rewindSessionFiles,
+} from "./file-checkpoints.mjs";
+import { createAccountCheck } from "./account-identity.mjs";
+import { inputGroups, sdkInputMessages } from "./input-messages.mjs";
 // Claude Agent SDK adapter for Studio's existing local session protocol.
+import { interruptInputQueue } from "./stop-inputs.mjs";
 import { browserEnvironment } from "./browser-environment.mjs";
 import {
   query,
@@ -13,6 +26,10 @@ import {
   limitEvent,
   nativeItem,
   usageTokens,
+  overageAllowed,
+  claudeErrorInfo,
+  providerNotice,
+  limitApplies,
 } from "./features.mjs";
 import {
   commandCatalog,
@@ -36,6 +53,12 @@ import {
 } from "./session-store.mjs";
 import { claudeImage } from "./images.mjs";
 import { listSkills } from "./skills.mjs";
+import {
+  capabilityToolOptions,
+  capabilityToolDenial,
+  prepareCapabilities,
+  preflightCapabilityServers,
+} from "./worker-capabilities.mjs";
 import { reconcileHistoricalBash } from "./historical-bash-receipts.mjs";
 import { createCatalogCache, loadCatalog } from "./catalog-cache.mjs";
 import {
@@ -364,98 +387,55 @@ function diskFullInputError(error) {
 async function session(id) {
   return sessionStore.get(id);
 }
-const settings = (s) => ({
-  cwd: s.cwd,
-  pathToClaudeCodeExecutable: process.env.STUDIO_CLAUDE_BIN || "claude",
-  settingSources: s.moveProof ? [] : ["user", "project", "local"],
-  ...(s.moveProof
-    ? { strictMcpConfig: true, tools: s.moveProof.options.tools }
-    : {}),
-  // A managed worker runs without the user's MCP servers (Studio sends userMcp: false).
-  ...(s.userMcp === false ? { strictMcpConfig: true } : {}),
-  includePartialMessages: true,
-  env: {
-    ...process.env,
-    ...browserEnvironment(root, s.id),
+const settings = (s) =>
+  fileCheckpointOptions({
+    cwd: s.cwd,
+    pathToClaudeCodeExecutable: process.env.STUDIO_CLAUDE_BIN || "claude",
+    settingSources: s.moveProof ? [] : ["user", "project", "local"],
     ...(s.moveProof
-      ? {
-          ENABLE_CLAUDEAI_MCP_SERVERS: s.moveProof.externalCatalog?.some(
-            (server) => server.claudeAI,
-          )
-            ? "true"
-            : "false",
-          CLAUDE_CODE_AUTO_CONNECT_IDE: "0",
-        }
+      ? { strictMcpConfig: true, tools: s.moveProof.options.tools }
       : {}),
-    ...(s.userMcp === false ? { ENABLE_CLAUDEAI_MCP_SERVERS: "false" } : {}),
-    ...(typeof s.studioImageWorkspaceTempDir === "string"
-      ? { TMPDIR: s.studioImageWorkspaceTempDir }
+    // A managed worker runs without the user's MCP servers (Studio sends userMcp: false).
+    ...(s.userMcp === false || s.capabilityProfile?.mcpServers != null
+      ? { strictMcpConfig: true }
       : {}),
-  },
-  stderr: (line) => process.stderr.write(line),
+    includePartialMessages: true,
+    env: {
+      ...process.env,
+      // Per-thread host declarations must reach the CLI process, not settings.json.
+      ...Object.fromEntries(
+        ["CLAUDE_CODE_HOST_WORKTREE", "CLAUDE_CODE_HOST_WORKTREE_FENCE"]
+          .filter((key) => typeof s.claude?.env?.[key] === "string")
+          .map((key) => [key, s.claude.env[key]]),
+      ),
+      ...browserEnvironment(root, s.id),
+      ...(s.moveProof
+        ? {
+            ENABLE_CLAUDEAI_MCP_SERVERS: s.moveProof.externalCatalog?.some(
+              (server) => server.claudeAI,
+            )
+              ? "true"
+              : "false",
+            CLAUDE_CODE_AUTO_CONNECT_IDE: "0",
+          }
+        : {}),
+      ...(s.userMcp === false || s.capabilityProfile?.mcpServers != null
+        ? {
+            ENABLE_CLAUDEAI_MCP_SERVERS: "false",
+            CLAUDE_CODE_AUTO_CONNECT_IDE: "0",
+          }
+        : {}),
+      ...(typeof s.studioImageWorkspaceTempDir === "string"
+        ? { TMPDIR: s.studioImageWorkspaceTempDir }
+        : {}),
+    },
+    stderr: (line) => process.stderr.write(line),
+  });
+const checkAccount = createAccountCheck({
+  expectedEmail: process.env.STUDIO_CLAUDE_ACCOUNT,
+  expectedIdentity: process.env.STUDIO_CLAUDE_CREDENTIAL_IDENTITY,
+  identityPath: path.join(root, "claude-account-identity"),
 });
-function checkAccount(account) {
-  const reject = (reason, message) => {
-    throw Object.assign(new Error(message), {
-      claudeAccountValidationFailed: true,
-      data: {
-        turnStartOutcome: "not_applied",
-        claudePreparationFailure: "account_validation",
-        claudeAccountFailure: reason,
-      },
-    });
-  };
-  const expected = process.env.STUDIO_CLAUDE_ACCOUNT;
-  if (!expected)
-    reject(
-      "expected_identity",
-      "Claude Code account identity is not configured. No input was submitted.",
-    );
-  if (!account || typeof account !== "object" || Array.isArray(account))
-    reject(
-      "account_metadata",
-      "Claude Code account metadata is missing. No input was submitted.",
-    );
-  if (typeof account.email !== "string" || !account.email.trim())
-    reject(
-      "email_metadata",
-      "Claude Code email metadata is missing. No input was submitted.",
-    );
-  if (account.email !== expected)
-    reject(
-      "identity_mismatch",
-      "Claude Code account or subscription changed: expected " +
-        expected +
-        ", got " +
-        account.email +
-        ". Restore the original login.",
-    );
-  if (typeof account.apiProvider !== "string" || !account.apiProvider)
-    reject(
-      "provider_metadata",
-      "Claude Code API provider metadata is missing. No input was submitted.",
-    );
-  if (account.apiProvider !== "firstParty")
-    reject(
-      "provider_mismatch",
-      "Claude Code API provider is " +
-        account.apiProvider +
-        ", expected firstParty. Restore the original login.",
-    );
-  if (
-    typeof account.subscriptionType !== "string" ||
-    !account.subscriptionType.trim()
-  )
-    reject(
-      "subscription_metadata",
-      "Claude Code subscription metadata is missing. No input was submitted.",
-    );
-  if (account.apiKeySource && account.apiKeySource !== "none")
-    reject(
-      "api_key_source",
-      "Claude Code uses an API key instead of the configured subscription. Restore the original login.",
-    );
-}
 async function verifiedAccount(
   q,
   deadline,
@@ -478,6 +458,7 @@ async function verifiedAccount(
       ![
         "account_metadata",
         "email_metadata",
+        "organization_metadata",
         "provider_metadata",
         "subscription_metadata",
       ].includes(error?.data?.claudeAccountFailure) ||
@@ -648,12 +629,19 @@ function wireThread(s, metadata, includeTurns = true) {
     historyVersion: createHash("sha256")
       .update(metadata.revision)
       .digest("hex"),
-    ...(includeTurns ? { turns: s.turns } : { turns: [] }),
+    ...(includeTurns
+      ? {
+          turns: s.turns,
+          ...(s.journalRepair ? { journalRepair: s.journalRepair } : {}),
+        }
+      : { turns: [] }),
     status: { type: queries.get(id)?.turn ? "active" : "idle" },
     modelProvider: "claude",
   };
 }
 async function permissions(s, turn, name, input, options) {
+  const denial = capabilityToolDenial(s.capabilityProfile, name);
+  if (denial) return { behavior: "deny", message: denial };
   if (!turn)
     return {
       behavior: "deny",
@@ -917,20 +905,6 @@ async function proofOptions(s, proof) {
 // Codex continues a thread on turn/start without input; Claude needs text.
 const CONTINUE_TEXT =
   "Continue the previous turn from where it stopped. Check the current state first and do not repeat completed work.";
-// Claude API error types that Studio can retry, in Codex error names.
-function claudeErrorInfo(error, text) {
-  if (error === "overloaded") return "serverOverloaded";
-  if (error === "server_error") return "internalServerError";
-  if (error === "authentication_failed") return "unauthorized";
-  if (
-    error === "unknown" &&
-    /can't reach the api server|ENOTFOUND|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|connection error|socket hang up|fetch failed/i.test(
-      text || "",
-    )
-  )
-    return "httpConnectionFailed";
-  return null;
-}
 async function content(input) {
   if (Array.isArray(input) && !input.length)
     return [{ type: "text", text: CONTINUE_TEXT }];
@@ -1038,17 +1012,21 @@ async function finishTurn(s, active, result, error) {
   armStallWatch();
   if (
     (error?.preparationTimedOut === true ||
-      error?.claudeAccountValidationFailed === true) &&
+      error?.claudeAccountValidationFailed === true ||
+      error?.capabilityPreparationFailed === true) &&
     error?.data?.turnStartOutcome === "not_applied" &&
     turn.items[0]?.type === "userMessage" &&
     typeof turn.clientUserMessageId === "string" &&
     turn.clientUserMessageId.length > 0 &&
-    active.input.values.some(
-      (input) =>
-        input.studioInputIdentity === turn.clientUserMessageId &&
-        input.uuid === turn.items[0].nativeId &&
-        input.session_id === (s.nativeId || s.id),
-    )
+    // Stop can withdraw the initial input before preparation fails. Its
+    // cancellation receipt preserves the proof that Claude did not read it.
+    (turn.items[0].deliveryStatus === "cancelled" ||
+      active.input.values.some(
+        (input) =>
+          input.studioInputIdentity === turn.clientUserMessageId &&
+          input.uuid === turn.items[0].nativeId &&
+          input.session_id === (s.nativeId || s.id),
+      ))
   ) {
     // InputQueue removes the message before yielding it to the SDK.
     turn.startOutcome = "not_applied";
@@ -1058,20 +1036,22 @@ async function finishTurn(s, active, result, error) {
     : error || result?.is_error || result?.subtype !== "success"
       ? "failed"
       : "completed";
+  const errorMessage =
+    error?.message ||
+    result?.errors?.join("\n") ||
+    result?.result ||
+    "Claude turn failed";
+  const errorInfo =
+    turn.apiErrorInfo || claudeErrorInfo(error?.error, errorMessage);
   if (turn.stallError) turn.error = turn.stallError;
   else if (error || turn.status === "failed")
     turn.error = {
-      message:
-        error?.message ||
-        result?.errors?.join("\n") ||
-        result?.result ||
-        "Claude turn failed",
-      ...(turn.apiErrorInfo && !turn.limitError
-        ? { codexErrorInfo: turn.apiErrorInfo }
-        : {}),
+      message: errorMessage,
+      ...(errorInfo && !turn.limitError ? { codexErrorInfo: errorInfo } : {}),
       ...(turn.startOutcome === "not_applied" &&
       (error?.preparationTimedOut === true ||
-        error?.claudeAccountValidationFailed === true) &&
+        error?.claudeAccountValidationFailed === true ||
+        error?.capabilityPreparationFailed === true) &&
       error?.data?.turnStartOutcome === "not_applied"
         ? {
             data: {
@@ -1112,6 +1092,10 @@ async function finishTurn(s, active, result, error) {
   // Input already handed to Claude without an echo has an unknown outcome.
   const unappliedSteers = [];
   for (const item of turn.items) {
+    if (item.delivery === "steer" && item.deliveryStatus === "cancelled") {
+      unappliedSteers.push(item.id);
+      continue;
+    }
     if (item.delivery !== "steer" || item.deliveryStatus !== "submitted")
       continue;
     const queued = active.input.values.findIndex(
@@ -1367,6 +1351,7 @@ async function startSession(s, active, p) {
       s.claude,
       s.developerInstructions,
       s.dynamicTools,
+      s.capabilityProfile,
     ]);
   const initialSource = source();
   let admit;
@@ -1380,26 +1365,36 @@ async function startSession(s, active, p) {
     yield* active.input;
   }
   try {
+    const capabilities = await prepareCapabilities(s);
+    const externalMcpServers =
+      capabilities.mcpServers ?? (await movedExternalConfigs(s));
+    const systemPrompt = s.moveProof?.options.systemPrompt || {
+      type: "preset",
+      preset: "claude_code",
+      append: s.developerInstructions || "",
+      ...movePrompt,
+    };
     const titleOptions = ephemeralSessionOptions(s);
     const mode = titleOptions.permissionMode || permissionMode(s, p);
     const q = query({
       prompt: prompt(),
       options: {
         ...settings(s),
+        ...capabilityToolOptions(s.capabilityProfile),
         // Match Python's --no-session-persistence and --tools "" title flags.
         ...titleOptions,
         model: s.moveProof?.options.model || p.model || s.model,
         ...(s.started
           ? { resume: s.nativeId || s.id }
           : { sessionId: s.nativeId || s.id }),
-        systemPrompt: s.moveProof?.options.systemPrompt || {
-          type: "preset",
-          preset: "claude_code",
-          append: s.developerInstructions || "",
-          ...movePrompt,
-        },
-        // Studio managed agents replace native subagents, as in Codex threads.
-        disallowedTools: ["Agent"],
+        systemPrompt: capabilities.instructions
+          ? {
+              ...systemPrompt,
+              append: [systemPrompt.append, capabilities.instructions]
+                .filter(Boolean)
+                .join("\n\n"),
+            }
+          : systemPrompt,
         permissionMode: mode,
         allowDangerouslySkipPermissions: true,
         ...((s.moveProof ? s.moveProof.options.effort : p.effort)
@@ -1422,7 +1417,7 @@ async function startSession(s, active, p) {
         canUseTool: (name, input, options) =>
           permissions(s, active.turn, name, input, options),
         mcpServers: {
-          ...(await movedExternalConfigs(s)),
+          ...externalMcpServers,
           studio: studioTools(s, () => active.turn),
         },
         supportedDialogKinds: ["resume_return"],
@@ -1490,6 +1485,7 @@ async function startSession(s, active, p) {
       },
     });
     active.q = q;
+    active.externalMcpServers = externalMcpServers;
     active.session = s;
     active.permissionMode = mode;
     active.toolsIdentity = JSON.stringify(s.dynamicTools || []);
@@ -1499,6 +1495,19 @@ async function startSession(s, active, p) {
       () => q.close(),
       startedAt,
     );
+    try {
+      await boundedPreparation(
+        () => preflightCapabilityServers(q, s.capabilityProfile),
+        deadline,
+        () => q.close(),
+        "capability_mcp_servers",
+        startedAt,
+      );
+    } catch (error) {
+      if (error.preparationTimedOut)
+        error.message = `capabilityProfile.mcpServers ${JSON.stringify(s.capabilityProfile?.mcpServers)}: connection check timed out`;
+      throw error;
+    }
     if (
       initial?.interrupted ||
       active.input.closed ||
@@ -1551,6 +1560,18 @@ async function startSession(s, active, p) {
         );
         if (item) {
           item.nativeId = m.uuid;
+          if (
+            item === active.turn.items[0] &&
+            !process.env.CLAUDE_CODE_DISABLE_FILE_CHECKPOINTING
+          ) {
+            active.turn.nativeMessageId = m.uuid;
+            active.turn.fileCheckpointMessageId = m.uuid;
+            active.turn.fileCheckpointSource = {
+              nativeId: s.nativeId || s.id,
+              cwd: s.cwd,
+            };
+            persistLater(s, active);
+          }
           active.pendingSteers.delete(item.id);
           active.deferredResult = null;
         }
@@ -1601,9 +1622,8 @@ async function startSession(s, active, p) {
         if (
           turn &&
           info.status === "rejected" &&
-          !info.isUsingOverage &&
-          !info.overageInUse &&
-          !["allowed", "allowed_warning"].includes(info.overageStatus)
+          limitApplies(info, active.lastModel || s.model) &&
+          !overageAllowed(info)
         ) {
           turn.limitError = {
             codexErrorInfo: "rateLimitExceeded",
@@ -1659,29 +1679,29 @@ async function startSession(s, active, p) {
           );
         } else if (m.subtype?.startsWith("task_")) {
           const id = m.task_id || m.uuid;
-          const task = { ...active.tasks.get(id), ...m };
+          const task = { ...active.tasks.get(id), ...m, ...m.patch };
           const command = foregroundCommandUpdate(active, task, m);
           if (command && turn) turnEvent(s, turn, "item/started", command);
-          if (
-            m.subtype === "task_notification" ||
-            ["completed", "failed", "killed"].includes(m.status)
-          )
-            active.tasks.delete(id);
+          // A terminal patch can arrive before the notification's final output.
+          const terminal =
+            m.subtype === "task_notification" &&
+            ["completed", "failed", "killed", "stopped"].includes(m.status);
+          if (terminal) active.tasks.delete(id);
           else active.tasks.set(id, task);
           const taskTurn = turn || s.turns.at(-1);
-          if (taskTurn)
-            finishItem(s, taskTurn, {
+          if (taskTurn) {
+            const item = {
               id: "task:" + id,
               type: "mcpToolCall",
               server: "claude",
-              tool: m.task_type || "Background task",
-              status:
-                m.subtype === "task_notification"
-                  ? m.status === "failed"
-                    ? "failed"
-                    : "completed"
-                  : "inProgress",
-              arguments: { description: m.description || task.description },
+              tool: task.task_type || "Background task",
+              status: terminal
+                ? m.status === "completed"
+                  ? "completed"
+                  : "failed"
+                : "inProgress",
+              ...(task.output_file ? { outputFile: task.output_file } : {}),
+              arguments: { description: task.description },
               result: {
                 content: [
                   {
@@ -1695,7 +1715,20 @@ async function startSession(s, active, p) {
                   },
                 ],
               },
-            });
+            };
+            if (terminal) finishItem(s, taskTurn, item);
+            else {
+              const index = taskTurn.items.findIndex(
+                (old) => old.id === item.id,
+              );
+              if (index < 0) taskTurn.items.push(item);
+              else taskTurn.items[index] = item;
+              turnEvent(s, taskTurn, "item/started", item);
+            }
+          }
+          persistLater(s, active);
+        } else if (turn && providerNotice(m)) {
+          notice(s, turn, providerNotice(m), m.uuid);
           persistLater(s, active);
         } else if (
           turn &&
@@ -1709,13 +1742,6 @@ async function startSession(s, active, p) {
             (m.subtype === "informational" && m.level === "warning"))
         )
           notice(s, turn, m.text || m.content || m.error || m.subtype, m.uuid);
-        else if (m.subtype === "api_retry" && turn)
-          emit("item/agentMessage/delta", {
-            threadId: s.id,
-            turnId: turn.id,
-            itemId: "retry:" + turn.id,
-            delta: "",
-          });
         continue;
       }
       if (!turn) continue;
@@ -1967,6 +1993,19 @@ async function startSession(s, active, p) {
         }
         persistLater(s, active);
       } else if (m.type === "result") {
+        // A shouldQuery:false prefix produces its own zero-turn receipt.
+        // Its UUID is distinct from the final part that owns this turn.
+        if (
+          m.num_turns === 0 &&
+          active.input.nonQueryIds.delete(m.user_message_uuid)
+        ) {
+          if (!m.is_error) continue;
+          // A failed prefix must not leave its remaining parts on this query.
+          // Any part already handed to the SDK keeps an uncertain outcome.
+          await finishTurn(s, active, m);
+          active.input.withdraw();
+          break;
+        }
         if (
           (active.pendingSteers.size || active.reservingInput) &&
           !m.is_error &&
@@ -2037,17 +2076,24 @@ function newActive(turn) {
   active.ready.catch(() => {});
   return active;
 }
-function userMessage(s, turn, blocks, id) {
-  const message = {
-    type: "user",
-    uuid: nativeUserMessageId(id || turn.id),
-    session_id: s.nativeId || s.id,
-    parent_tool_use_id: null,
-    message: { role: "user", content: blocks },
-  };
-  Object.defineProperty(message, "studioInputIdentity", { value: id });
+function userMessage(s, turn, groups, id) {
+  const messages = sdkInputMessages(
+    s.nativeId || s.id,
+    id || turn.id,
+    groups,
+    nativeUserMessageId,
+  );
+  const message = messages.at(-1);
+  const item = turn.items.find((item) => item.id === id) || turn.items[0];
+  if (messages.length > 1) {
+    item.nativeIds = messages.map((part) => part.uuid);
+    // The queue removes this whole submission before yielding its first part.
+    // A partial SDK read is uncertain and must never be reported as unapplied.
+    Object.defineProperty(message, "studioInputBatch", { value: messages });
+  }
   return message;
 }
+
 async function handle(method, p) {
   if (commandMethods.has(method)) return commands.handle(method, p);
   if (
@@ -2136,6 +2182,9 @@ async function handle(method, p) {
       account: {
         type: "claude",
         email: account.email,
+        organizationUuid: account.organizationUuid,
+        accountUuid: account.accountUuid,
+        _credentialIdentity: account._credentialIdentity,
         planType: account.subscriptionType,
       },
       requiresOpenaiAuth: false,
@@ -2254,6 +2303,10 @@ async function handle(method, p) {
     await persist(s);
     return { thread: wireThread(s, await sessionStore.metadata(s.id), false) };
   }
+  if (method === "claude/fileBackups") {
+    const s = await session(p.threadId);
+    return fileBackups(s, p.settledRequestIds ?? null, root, persist);
+  }
   if (method === "claude/state") {
     const s = await session(p.threadId),
       active = queries.get(s.id);
@@ -2262,6 +2315,8 @@ async function handle(method, p) {
       turns: s.turns.map((t) => ({
         id: t.id,
         status: t.status,
+        canRestoreFiles: fileRestoreReason(s, t, active) === null,
+        restoreFilesUnavailableReason: fileRestoreReason(s, t, active),
         text:
           t.items
             .find((i) => i.type === "userMessage")
@@ -2310,7 +2365,16 @@ async function handle(method, p) {
     queries.delete(s.id);
     armStallWatch();
     catalogCache.activityChanged();
-    return rollbackSession(s, p, { persist, getSessionMessages, forkSession });
+    return rollbackSession(s, p, {
+      persist,
+      getSessionMessages,
+      forkSession,
+      prepareFileRestore: (session, messages, messageId) =>
+        prepareFileRestore(session, messages, messageId, root),
+      verifyFileRestore,
+      rewindFiles: (nativeId, messageId, options) =>
+        rewindSessionFiles(query, settings(s), nativeId, messageId, options),
+    });
   }
   if (method === "thread/start") {
     const s = {
@@ -2423,7 +2487,17 @@ async function handle(method, p) {
             : {},
         );
         await persist(s);
-      } else reattached = true;
+      } else {
+        if (
+          Object.hasOwn(p, "capabilityProfile") &&
+          canonicalJson(p.capabilityProfile) !==
+            canonicalJson(s.capabilityProfile)
+        )
+          throw new Error(
+            "Pause Claude before changing capabilityProfile on resume",
+          );
+        reattached = true;
+      }
     }
     const includeTurns =
       method === "thread/read"
@@ -2455,8 +2529,14 @@ async function handle(method, p) {
     return { data: [...queries.keys()], nextCursor: null };
   if (method === "thread/fork") {
     const old = await session(p.threadId);
-    if (queries.get(old.id)?.turn || queries.get(old.id)?.tasks.size)
-      throw new Error("Pause Claude before branching");
+    const active = queries.get(old.id);
+    if (
+      (active?.turn || active?.tasks.size) &&
+      (p.lastTurnId == null || p.lastTurnId === old.turns.at(-1)?.id)
+    )
+      throw new Error(
+        "Select an earlier completed Claude turn before branching",
+      );
     const s = await forkAtTurn(old, p, {
       forkSession,
       getSessionMessages,
@@ -2522,7 +2602,7 @@ async function handle(method, p) {
       } catch (error) {
         // The running turn ended before this input reached Claude. Nothing
         // was submitted, so the input starts the next turn instead.
-        if (!error.steerNotSubmitted) throw error;
+        if (!error.steerNotSubmitted || running.interrupted) throw error;
         await finishingTurns.get(running);
         if (queries.get(s.id)?.turn) throw error;
       }
@@ -2533,8 +2613,9 @@ async function handle(method, p) {
       nativeCommand = explicitNativeCommand(p.claudeCommand, commands);
       // Unknown slash text remains ordinary user input; never extract commands from it.
     }
-    const blocks = await content(
+    const groups = await inputGroups(
       nativeCommand ? [{ type: "text", text: nativeCommand }] : p.input,
+      content,
     );
     const turnId = randomUUID();
     const turn = {
@@ -2551,6 +2632,12 @@ async function handle(method, p) {
         },
       ],
     };
+    const message = userMessage(
+      s,
+      turn,
+      groups,
+      p.clientUserMessageId || turn.id,
+    );
     let active = queries.get(s.id);
     const startedAt = Date.now();
     const deadline = startedAt + PREPARATION_TIMEOUT_MS;
@@ -2592,10 +2679,14 @@ async function handle(method, p) {
         // Replace only the Studio MCP server; background tasks keep running.
         // The SDK keeps an already registered in-process server even when its
         // tools change. Remove it first so the new schema replaces it.
-        await control(() => active.q.setMcpServers({}), "mcp_remove");
+        await control(
+          () => active.q.setMcpServers(active.externalMcpServers || {}),
+          "mcp_remove",
+        );
         await control(
           () =>
             active.q.setMcpServers({
+              ...active.externalMcpServers,
               studio: studioTools(s, () => active.turn),
             }),
           "mcp_install",
@@ -2680,9 +2771,7 @@ async function handle(method, p) {
       threadId: s.id,
       turn: { id: turn.id, status: "inProgress" },
     });
-    active.input.push(
-      userMessage(s, turn, blocks, p.clientUserMessageId || turn.id),
-    );
+    active.input.push(message);
     turn.startOutcome = "accepted";
     // The reply reports the turn as Claude accepted it. The SDK stream runs
     // while the receipt saves, so a fast turn may already have ended; its
@@ -2707,14 +2796,18 @@ async function handle(method, p) {
   if (method === "turn/steer") {
     const s = await session(p.threadId),
       active = queries.get(s.id);
-    if (!active?.turn || active.turn.id !== p.expectedTurnId)
+    if (
+      !active?.turn ||
+      active.turn.interrupted ||
+      active.turn.id !== p.expectedTurnId
+    )
       throw new Error("The steer belongs to a different Claude turn");
     const turn = active.turn,
       id = p.clientUserMessageId;
     if (!id) throw new Error("Steer requires its original message identity");
     const previous = turn.items.find((item) => item.id === id);
     if (previous) {
-      if (previous.deliveryStatus === "not_applied")
+      if (["not_applied", "cancelled"].includes(previous.deliveryStatus))
         throw new Error(previous.error);
       if (JSON.stringify(previous.content) !== JSON.stringify(p.input))
         throw new Error("This message identity has different content");
@@ -2730,8 +2823,9 @@ async function handle(method, p) {
     active.pendingSteers.add(id);
     let item;
     try {
-      const blocks = await content(p.input);
+      const groups = await inputGroups(p.input, content);
       if (
+        turn.interrupted ||
         active.turn !== turn ||
         queries.get(s.id) !== active ||
         active.input.closed
@@ -2748,12 +2842,14 @@ async function handle(method, p) {
         deliveryStatus: "preparing",
       };
       turn.items.push(item);
+      const message = userMessage(s, turn, groups, id);
       try {
         await persist(s);
       } catch (error) {
         throw isDiskFull(error) ? diskFullInputError(error) : error;
       }
       if (
+        turn.interrupted ||
         active.turn !== turn ||
         queries.get(s.id) !== active ||
         active.input.closed
@@ -2761,7 +2857,7 @@ async function handle(method, p) {
         throw notSubmitted(
           "Claude stopped before this steer could be submitted",
         );
-      active.input.push(userMessage(s, turn, blocks, id));
+      active.input.push(message);
       item.deliveryStatus = "submitted";
       return { turnId: turn.id };
     } catch (error) {
@@ -2790,27 +2886,47 @@ async function handle(method, p) {
     if (!active?.turn) throw new Error("no active turn to interrupt");
     if (p.turnId && p.turnId !== active.turn.id)
       throw new Error("The interrupt belongs to a different Claude turn");
+    const s = sessions.get(p.threadId);
     active.turn.interrupted = true;
-    if (active.reservingInput) {
+    const reservingInput = active.reservingInput;
+    if (reservingInput) {
       // An interrupt can race the durable pre-input receipt. Invalidate only
       // that reservation so the queued background work and query stay open.
       active.turn = null;
       active.reservingInput = false;
       catalogCache.activityChanged();
     }
-    if (p.stopBackgroundTasks !== false && active.tasks.size) {
-      if (typeof active.q?.stopTask !== "function")
-        throw new Error("Claude does not support stopping background tasks");
-      const results = await Promise.allSettled(
-        [...active.tasks.keys()].map((taskId) => active.q.stopTask(taskId)),
+    const stopTasks = p.stopBackgroundTasks !== false && active.tasks.size;
+    if (stopTasks && typeof active.q?.stopTask !== "function")
+      throw new Error("Claude does not support stopping background tasks");
+    let results = [];
+    const receipt = await interruptInputQueue(
+      s,
+      active,
+      stopTasks
+        ? async () => {
+            results = await Promise.allSettled(
+              [...active.tasks.keys()].map((taskId) =>
+                active.q.stopTask(taskId),
+              ),
+            );
+          }
+        : undefined,
+    );
+    // The pending start owns the reservation's durable rejection. Do not
+    // wait for its blocked save before the caller can observe the interrupt.
+    if (!reservingInput) await persistLive(s);
+    const failure = results.find((result) => result.status === "rejected");
+    if (failure?.status === "rejected")
+      throw Object.assign(
+        new Error(
+          failure.reason?.message || "Claude background task stop failed",
+        ),
+        {
+          data: { interruptReceipt: receipt },
+        },
       );
-      await active.q.interrupt();
-      const failure = results.find((result) => result.status === "rejected");
-      if (failure?.status === "rejected") throw failure.reason;
-      return {};
-    }
-    await active.q?.interrupt();
-    return {};
+    return receipt;
   }
   if (method === "thread/name/set") {
     const s = await session(p.threadId);
@@ -2838,6 +2954,38 @@ async function handle(method, p) {
       throw new Error("This Claude background task is no longer active");
     await active.q.stopTask(p.taskId);
     return {};
+  }
+  if (method === "mcpServerStatus/list" || method === "mcpServer/reconnect") {
+    await session(p.threadId);
+    const active = queries.get(p.threadId);
+    if (!active) throw new Error("The Claude session query is not loaded");
+    await active.ready;
+    if (queries.get(p.threadId) !== active || !active.q)
+      throw new Error("The Claude session query is not loaded");
+    if (method === "mcpServer/reconnect") {
+      if (typeof p.name !== "string" || !p.name.trim())
+        throw new Error("An MCP server name is required");
+      if (typeof active.q.reconnectMcpServer !== "function")
+        throw new Error("This Claude SDK does not support MCP reconnect");
+      await active.q.reconnectMcpServer(p.name);
+      return {};
+    }
+    const offset = p.cursor == null ? 0 : Number(p.cursor);
+    if (!Number.isSafeInteger(offset) || offset < 0)
+      throw new Error("Invalid Claude MCP status cursor");
+    const limit = p.limit == null ? null : Number(p.limit);
+    if (limit !== null && (!Number.isSafeInteger(limit) || limit < 1))
+      throw new Error("Claude MCP status limit must be a positive integer");
+    const statuses = await active.q.mcpServerStatus();
+    const end = limit === null ? statuses.length : offset + limit;
+    // SDK configuration can contain credentials. Discovery exposes status only.
+    const data = statuses
+      .slice(offset, end)
+      .map(({ config: _config, ...status }) => status);
+    return {
+      data,
+      nextCursor: end < statuses.length ? String(end) : null,
+    };
   }
   if (method === "skills/list") return listSkills(p?.cwds);
   throw new Error("Claude does not support " + method);
@@ -2875,6 +3023,7 @@ lines.on("line", (line) => {
       "thread/rollback",
       "claude/settings",
       "claude/state",
+      "claude/fileBackups",
       "thread/compact/start",
     ].includes(message.method);
   const before = ordered
