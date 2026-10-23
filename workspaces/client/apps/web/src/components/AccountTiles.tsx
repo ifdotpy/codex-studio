@@ -1,5 +1,5 @@
-import { Radio, SegmentedControl, Tooltip } from "@mantine/core";
-import { Check } from "lucide-react";
+import { Badge, Radio, SegmentedControl, Tooltip } from "@mantine/core";
+import { Check, Sparkles } from "lucide-react";
 import { useEffect, useId, useState, type ReactNode } from "react";
 import { ActionButton } from "./ui/primitives";
 import { useAccountLimits } from "../usage/useAccountLimits";
@@ -328,7 +328,16 @@ export function AccountTiles(p: AccountTilesProps) {
           <Radio
             className="setup-account setup-account-automatic"
             name={automaticName}
-            label="Automatic"
+            aria-label="Automatic"
+            label={
+              <span className="setup-automatic-label">
+                <Sparkles aria-hidden="true" />
+                <span>Automatic</span>
+                <Badge size="xs" variant="light">
+                  Recommended
+                </Badge>
+              </span>
+            }
             description="Prefers a free slot, project order, then fewer active agents."
             checked={!selected}
             data-selected={!selected || undefined}
