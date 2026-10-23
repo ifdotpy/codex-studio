@@ -124,14 +124,27 @@ test("workspace ui", async ({ page: testPage }) => {
       .getByRole("button", { name: "Chat actions", exact: true })
       .click();
     await page.locator('[data-workspace-section="changes"]').click();
-    const drawer = page.locator(".workspace-drawer .mantine-Drawer-content");
+    const drawer = page.locator(
+      ".workspace-panel-inline:visible, .workspace-drawer .mantine-Drawer-content:visible",
+    );
+    const fileDraft = drawer.getByRole("textbox", { name: "Open a file" });
+    await fileDraft.fill("report.md");
+    await page.setViewportSize({ width: 840, height: 980 });
+    await page.getByRole("dialog", { name: "Workspace" }).waitFor();
+    assert.equal(await fileDraft.inputValue(), "report.md");
+    await page.setViewportSize({ width: 1440, height: 980 });
+    await page.locator(".workspace-panel-inline:visible").waitFor();
+    assert.equal(await fileDraft.inputValue(), "report.md");
+    await fileDraft.fill("");
     const section = async (name) => {
       if (
         !(await page
           .getByRole("navigation", { name: "Workspace sections" })
           .isVisible())
       ) {
-        await drawer.locator(".mantine-Drawer-close").click();
+        await drawer
+          .getByRole("button", { name: "Close", exact: true })
+          .click();
         await page
           .getByRole("button", { name: "Chat actions", exact: true })
           .click();
@@ -607,7 +620,7 @@ test("workspace ui", async ({ page: testPage }) => {
         name + " no mobile overflow",
       );
     }
-    await drawer.locator(".mantine-Drawer-close").click();
+    await drawer.getByRole("button", { name: "Close", exact: true }).click();
     await page
       .getByRole("button", { name: "Chat actions", exact: true })
       .click();
