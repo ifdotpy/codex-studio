@@ -1319,3 +1319,60 @@ async fn stop_receipt_settles_cancellation_when_background_stop_fails() {
     );
     worker.shutdown().await.unwrap();
 }
+
+/// A late echo belongs to the original turn; the bridge's continuation is a
+/// separate provider-started turn. Each completion reports to the parent once.
+#[tokio::test]
+async fn claude_late_steer_continuation_reports_each_turn_to_parent_once() {
+    let (state, mut peer, mut worker) = running_turn("claude").await;
+    let parent = adopt_parent(&state).await;
+    let request = steer(&state, &mut peer, &worker).await;
+    peer.reply(&request, json!({"turnId":"turn"})).await;
+    frame(&mut peer, finished(&[])).await;
+    assert_eq!(input(&state).await.0, "failed");
+    assert_eq!(state.record().await["status"], "completed");
+    frame(&mut peer, acknowledgement()).await;
+    assert_eq!(
+        input(&state).await,
+        ("delivered".into(), Some("turn".into()), None)
+    );
+    let started = json!({"method":"turn/started","params":{"threadId":"fake-thread-0",
+        "turn":{"id":"steer-continuation","status":"inProgress"}}});
+    frame(&mut peer, started.clone()).await;
+    assert_eq!(state.record().await["status"], "running");
+    assert_eq!(state.record().await["turnId"], "steer-continuation");
+    let done = json!({"method":"turn/completed","params":{"threadId":"fake-thread-0",
+        "turn":{"id":"steer-continuation","status":"completed"}}});
+    frame(&mut peer, done.clone()).await;
+    frame(&mut peer, started).await;
+    frame(&mut peer, done).await;
+    frame(&mut peer, finished(&[])).await;
+    frame(&mut peer, acknowledgement()).await;
+    assert_eq!(state.record().await["status"], "completed");
+    assert_eq!(
+        state.record().await["lastCompletedTurn"],
+        "steer-continuation"
+    );
+    assert_eq!(transcript(&state).await, 1);
+    let child = state.agent.clone();
+    state
+        .bridge
+        .run(move |store| async move {
+            let rows = store.test_reader()?.prepare(
+            "SELECT id FROM runtime_events WHERE agent=?1 AND kind='child_result' ORDER BY id"
+        )?.query_map([parent], |row| row.get::<_, String>(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+            assert_eq!(
+                rows,
+                vec![
+                    format!("child:{child}:steer-continuation"),
+                    format!("child:{child}:turn")
+                ]
+            );
+            Ok(())
+        })
+        .await
+        .unwrap();
+    no_write(&mut peer).await;
+    worker.shutdown().await.unwrap();
+}

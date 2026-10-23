@@ -234,6 +234,7 @@ const queryBusy = (id, active) =>
     active.turn ||
     active.tasks.size ||
     active.pendingSteers.size ||
+    active.unknownSteers.size ||
     active.reservingInput ||
     active.input.values.length ||
     operations.get(id),
@@ -1016,6 +1017,39 @@ async function flags(s, p = {}, live = false) {
 // finishTurn persists, but it accepts no more input. The value settles when
 // finishTurn has cleared the turn, or when recording its end failed.
 const finishingTurns = new WeakMap();
+function clearDeferredResult(active) {
+  clearTimeout(active.resultTimer);
+  active.resultTimer = null;
+  active.deferredResult = null;
+}
+function clearUnknownSteer(active, id) {
+  clearTimeout(active.unknownSteers.get(id));
+  active.unknownSteers.delete(id);
+}
+function clearTurnTimers(active) {
+  clearDeferredResult(active);
+  clearTimeout(active.stopTimer);
+  for (const id of active.unknownSteers.keys()) clearUnknownSteer(active, id);
+}
+function lifecycleFailure(s, active, error) {
+  active.persistFailure ??= error;
+  process.stderr.write(
+    "Claude turn finalization failed: " + error.message + "\n",
+  );
+  discardQuery(s, active);
+}
+function deferResult(s, active, result) {
+  active.deferredResult = result;
+  if (active.resultTimer) return;
+  const turn = active.turn;
+  active.resultTimer = setTimeout(() => {
+    if (active.turn !== turn || !active.deferredResult) return;
+    void finishTurn(s, active, active.deferredResult).catch((error) =>
+      lifecycleFailure(s, active, error),
+    );
+  }, limits.steerEchoGraceMs);
+  active.resultTimer.unref();
+}
 async function finishTurn(s, active, result, error) {
   const turn = active.turn;
   if (!turn) return;
@@ -1026,6 +1060,9 @@ async function finishTurn(s, active, result, error) {
   if (active.turn !== turn || finishingTurns.has(turn)) return;
   let finished;
   finishingTurns.set(turn, new Promise((resolve) => (finished = resolve)));
+  clearDeferredResult(active);
+  clearTimeout(active.stopTimer);
+  active.stopTimer = null;
   active.toolClocks.clear();
   armStallWatch();
   if (
@@ -1117,13 +1154,26 @@ async function finishTurn(s, active, result, error) {
     const queued = active.input.values.findIndex(
       (input) => input.studioInputIdentity === item.id,
     );
-    if (queued < 0) continue;
+    if (queued < 0) {
+      if (!active.unknownSteers.has(item.id)) {
+        const timer = setTimeout(() => {
+          active.unknownSteers.delete(item.id);
+          catalogCache.activityChanged();
+        }, limits.steerUnknownWaitMs);
+        timer.unref();
+        active.unknownSteers.set(item.id, timer);
+      }
+      continue;
+    }
     active.input.values.splice(queued, 1);
     item.deliveryStatus = "not_applied";
     item.error = "Claude finished before reading this steer";
     unappliedSteers.push(item.id);
   }
-  if (stall?.closed) await reconcileClosedSteers(s, turn, unappliedSteers);
+  if (stall?.closed) {
+    await reconcileClosedSteers(s, turn, unappliedSteers);
+    for (const item of turn.items) clearUnknownSteer(active, item.id);
+  }
   for (const response of active.responseUsages.values()) {
     const total =
       response.requestUsage.inputTokens +
@@ -1268,22 +1318,27 @@ async function reconcileClosedSteers(s, turn, unapplied) {
 async function recoverStall(s, active, found) {
   const turn = active.turn;
   const item = active.tools.get(found.id);
-  const message = stallMessage({ ...found, tool: item?.tool || found.tool });
+  if (!turn || active.stall || finishingTurns.has(turn)) return;
+  const message = found.stop
+    ? "Studio stopped this turn: Claude Code did not end the turn after Stop."
+    : stallMessage({ ...found, tool: item?.tool || found.tool });
   let ended;
   const finished = new Promise((resolve) => (ended = resolve));
   active.stall = { turnId: turn.id, ended, closed: null };
   turn.interrupted = true;
   turn.stallError = {
     message,
-    data: {
-      claudeToolStall: {
-        toolUseId: found.id,
-        tool: item?.tool || found.tool,
-        timeoutMs: found.timeoutMs,
-        elapsedMs: found.elapsedMs,
-        silentMs: found.silentMs,
-      },
-    },
+    data: found.stop
+      ? { claudeStopTimeout: true }
+      : {
+          claudeToolStall: {
+            toolUseId: found.id,
+            tool: item?.tool || found.tool,
+            timeoutMs: found.timeoutMs,
+            elapsedMs: found.elapsedMs,
+            silentMs: found.silentMs,
+          },
+        },
   };
   if (item)
     finishItem(s, turn, {
@@ -1313,16 +1368,18 @@ async function recoverStall(s, active, found) {
   }
   let timer;
   const deadline = new Promise(
-    (resolve) => (timer = setTimeout(resolve, limits.interruptWaitMs)),
+    (resolve) =>
+      (timer = setTimeout(resolve, found.stop ? 0 : limits.interruptWaitMs)),
   );
   // An interrupt keeps queued steers: Claude Code runs them next.
-  Promise.resolve()
-    .then(() => active.q?.interrupt())
-    .catch((error) =>
-      process.stderr.write(
-        "Claude stall: interrupt failed: " + error.message + "\n",
-      ),
-    );
+  if (!found.stop)
+    Promise.resolve()
+      .then(() => active.q?.interrupt())
+      .catch((error) =>
+        process.stderr.write(
+          "Claude stall: interrupt failed: " + error.message + "\n",
+        ),
+      );
   await Promise.race([finished, deadline]);
   clearTimeout(timer);
   if (
@@ -1526,6 +1583,10 @@ async function startSession(s, active, p) {
     admit();
     active.readyResolve();
     for await (const m of q) {
+      // A grace timer can finish a turn beside the SDK reader. Process a late
+      // echo/continuation only after that turn's completion has been recorded.
+      if (active.turn && finishingTurns.has(active.turn))
+        await finishingTurns.get(active.turn);
       if (active.persistFailure) throw active.persistFailure;
       const room = stdoutRoom();
       if (room) await room;
@@ -1566,7 +1627,7 @@ async function startSession(s, active, p) {
             persistLater(s, active);
           }
           active.pendingSteers.delete(item.id);
-          active.deferredResult = null;
+          clearDeferredResult(active);
         }
         // Claude echoed this exact steer input: it is delivered. The echo can
         // follow the end of its turn, so earlier turns are searched as well.
@@ -1575,6 +1636,7 @@ async function startSession(s, active, p) {
             ? { turn: active.turn, item }
             : submittedSteer(s, m.uuid);
         if (steer?.item.deliveryStatus === "submitted") {
+          clearUnknownSteer(active, steer.item.id);
           steer.item.deliveryStatus = "delivered";
           turnEvent(s, steer.turn, "item/completed", {
             ...steer.item,
@@ -2035,7 +2097,7 @@ async function startSession(s, active, p) {
           !m.is_error &&
           !turn.interrupted
         ) {
-          active.deferredResult = m;
+          deferResult(s, active, m);
           continue;
         }
         await finishTurn(s, active, m);
@@ -2046,6 +2108,7 @@ async function startSession(s, active, p) {
     active.readyReject(error);
     if (active.turn) await finishTurn(s, active, null, error);
   } finally {
+    clearTurnTimers(active);
     allowed = false;
     admit();
     active.input.close();
@@ -2065,6 +2128,7 @@ function deadQuery(error) {
   );
 }
 function discardQuery(s, active) {
+  clearTurnTimers(active);
   active.input.close();
   active.q?.close();
   if (queries.get(s.id) === active) {
@@ -2081,6 +2145,8 @@ function newActive(turn) {
     tasks: new Map(),
     tools: new Map(),
     pendingSteers: new Set(),
+    // Inputs handed to the CLI whose turn ended before their echo arrived.
+    unknownSteers: new Map(),
     assistantBlocks: new Map(),
     responseUsages: new Map(),
     idleRequestStartedAt: Date.now(),
@@ -2488,6 +2554,7 @@ async function handle(method, p) {
           (!query.turn &&
             !query.tasks.size &&
             !query.pendingSteers.size &&
+            !query.unknownSteers.size &&
             !query.reservingInput &&
             !query.input.values.length)
         );
@@ -2501,7 +2568,8 @@ async function handle(method, p) {
         });
       // Reattach to a live query without changing its settings or background work.
       // turn/start already steers its current turn or queues the next input.
-      if (!active?.turn && !active?.tasks.size) {
+      if (!active?.turn && !active?.tasks.size && !active?.unknownSteers.size) {
+        if (active) clearTurnTimers(active);
         active?.input.close();
         active?.q?.close();
         queries.delete(s.id);
@@ -2866,6 +2934,7 @@ async function handle(method, p) {
       if (
         turn.interrupted ||
         active.turn !== turn ||
+        finishingTurns.has(turn) ||
         queries.get(s.id) !== active ||
         active.input.closed
       )
@@ -2890,6 +2959,7 @@ async function handle(method, p) {
       if (
         turn.interrupted ||
         active.turn !== turn ||
+        finishingTurns.has(turn) ||
         queries.get(s.id) !== active ||
         active.input.closed
       )
@@ -2926,7 +2996,8 @@ async function handle(method, p) {
     if (p.turnId && p.turnId !== active.turn.id)
       throw new Error("The interrupt belongs to a different Claude turn");
     const s = sessions.get(p.threadId);
-    active.turn.interrupted = true;
+    const turn = active.turn;
+    turn.interrupted = true;
     const reservingInput = active.reservingInput;
     if (reservingInput) {
       // An interrupt can race the durable pre-input receipt. Invalidate only
@@ -2939,6 +3010,16 @@ async function handle(method, p) {
     if (stopTasks && typeof active.q?.stopTask !== "function")
       throw new Error("Claude does not support stopping background tasks");
     let results = [];
+    if (!reservingInput && !active.stopTimer) {
+      active.stopTimer = setTimeout(() => {
+        if (active.turn !== turn) return;
+        void recoverStall(s, active, {
+          id: "stop:" + turn.id,
+          stop: true,
+        }).catch((error) => lifecycleFailure(s, active, error));
+      }, limits.interruptWaitMs);
+      active.stopTimer.unref();
+    }
     const receipt = await interruptInputQueue(
       s,
       active,
@@ -2954,7 +3035,11 @@ async function handle(method, p) {
     );
     // The pending start owns the reservation's durable rejection. Do not
     // wait for its blocked save before the caller can observe the interrupt.
-    if (!reservingInput) await persistLive(s);
+    if (!reservingInput) {
+      if (active.turn === turn && active.deferredResult)
+        await finishTurn(s, active, active.deferredResult);
+      else await persistLive(s);
+    }
     const failure = results.find((result) => result.status === "rejected");
     if (failure?.status === "rejected")
       throw Object.assign(

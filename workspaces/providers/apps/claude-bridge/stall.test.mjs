@@ -65,7 +65,7 @@ export function query({prompt,options}){
   setModel:async()=>{},setPermissionMode:async()=>{},applyFlagSettings:async()=>{},stopTask:async()=>{},
   setMcpServers:async()=>({added:[],removed:[],errors:{}}),
   close(){if(!deaf)abort.abort();},
-  interrupt(){fs.appendFileSync(cwd+'/.interrupts','x');if(wedged)return new Promise(()=>{});interrupted();return Promise.resolve({still_queued:queued.map(q=>q.uuid)});},
+  interrupt(){fs.appendFileSync(cwd+'/.interrupts','x');if(wedged){if(fs.existsSync(cwd+'/.stop-now'))return Promise.resolve({still_queued:queued.map(q=>q.uuid)});return new Promise(()=>{});}interrupted();return Promise.resolve({still_queued:queued.map(q=>q.uuid)});},
   async *[Symbol.asyncIterator](){
    fs.mkdirSync(path.dirname(history),{recursive:true});
    while(!abort.signal.aborted){
@@ -510,4 +510,28 @@ test("the stall rule needs both an elapsed budget and silence", () => {
     ],
     ["u1", "u2"],
   );
+});
+
+test("Stop bounds a running Claude that ignores its interrupt", async () => {
+  const bridge = await startBridge({
+    env: { STUDIO_CLAUDE_TOOL_STALL_GRACE_MS: "600000" },
+  });
+  const turn = await start(bridge, "deaf", [
+    ["stop-recorded", "recorded steer"],
+    ["stop-lost", "lost steer"],
+  ]);
+  await fs.writeFile(path.join(bridge.root, ".stop-now"), "");
+  await bridge.call("turn/interrupt", {
+    threadId: bridge.thread,
+    turnId: turn,
+  });
+  const done = await completed(bridge, turn);
+  assert.equal(done.params.turn.status, "interrupted");
+  assert.match(
+    done.params.turn.error.message,
+    /did not end the turn after Stop/,
+  );
+  assert.deepEqual(done.params.turn.unappliedSteers, ["stop-lost"]);
+  assert.equal(acks(bridge, "stop-recorded").length, 1);
+  assert.equal(acks(bridge, "stop-lost").length, 0);
 });

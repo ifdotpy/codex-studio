@@ -29,7 +29,7 @@ const until=async(file,signal)=>{while(!fs.existsSync(file)&&!signal.aborted)awa
 const usage={input_tokens:10,output_tokens:2};
 export function query({prompt,options}){
  const abort=new AbortController(),cwd=options.cwd;
- let nativeQueue=[],stopTurn=null,queueMode=false,survive=false;
+ let nativeQueue=[],stopTurn=null,queueMode=false,survive=false,idle=false;
  const read=async()=>{const input=await prompt.next();if(!input.done){fs.appendFileSync(cwd+'/.inputs',input.value.message.content[0].text+'\n');fs.appendFileSync(cwd+'/.sdk-inputs',JSON.stringify(input.value)+'\n');}return input;};
  return {
   mcpServerStatus:async()=>[],reconnectMcpServer:async()=>{},
@@ -39,6 +39,7 @@ export function query({prompt,options}){
   setModel:async()=>{},setPermissionMode:async()=>{},applyFlagSettings:async()=>{},stopTask:async(id)=>{fs.appendFileSync(cwd+'/.stopped-tasks',id+'\n');if(fs.existsSync(cwd+'/.task-failure'))throw new Error('Task stop failed');},
   setMcpServers:async()=>({added:[],removed:[],errors:{}}),
   close(){abort.abort();},interrupt:async(options)=>{
+   if(idle)return {cancelled:[],still_queued:[]};
    if(!queueMode){abort.abort();return;}
    fs.writeFileSync(cwd+'/.interrupt-options',JSON.stringify(options??null));
    const cancelled=options?.cancelQueued&&!survive?nativeQueue.splice(0).map(m=>m.uuid):[];
@@ -72,13 +73,17 @@ export function query({prompt,options}){
     let late=null;
     if(text==='ack'){for(;;){const next=await read();yield {type:'user',isReplay:true,uuid:next.value.uuid};if(next.value.shouldQuery!==false)break;yield {type:'result',subtype:'success',num_turns:0,user_message_uuid:next.value.uuid,usage};}}
     if(text==='pulled')await read();
-    if(text==='late')late=await read();
+    if(text==='late'||text==='success-late'||text==='grace-echo')late=await read();
     await until(cwd+'/.end',abort.signal);
     if(abort.signal.aborted)return;
     fs.rmSync(cwd+'/.end');
-    if(late||fs.existsSync(cwd+'/.fail'))yield {type:'result',subtype:'error_during_execution',is_error:true,usage,errors:['Claude failed']};
+    if(text==='late'||fs.existsSync(cwd+'/.fail'))yield {type:'result',subtype:'error_during_execution',is_error:true,usage,errors:['Claude failed']};
     else yield {type:'result',subtype:'success',usage,result:'done'};
-    if(late)yield {type:'user',isReplay:true,uuid:late.value.uuid};
+    idle=true;fs.writeFileSync(cwd+'/.result-sent','');
+    if(text==='unread-result')await until(cwd+'/.release',abort.signal);
+    if(late&&text==='late'){yield {type:'user',isReplay:true,uuid:late.value.uuid};late=null;}
+    if(late){await until(cwd+'/.echo',abort.signal);if(abort.signal.aborted)return;yield {type:'user',isReplay:true,uuid:late.value.uuid};yield {type:'stream_event',event:{type:'message_start',message:{id:'continued'}}};await until(cwd+'/.continued',abort.signal);if(abort.signal.aborted)return;yield {type:'result',subtype:'success',usage,result:'continued'};}
+    idle=false;
    }
   }
  };
@@ -90,7 +95,7 @@ afterEach(async () => {
   for (const bridge of bridges.splice(0)) await bridge.close();
 });
 
-async function startBridge() {
+async function startBridge(env = {}) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "claude-steer-"));
   for (const name of await fs.readdir(HERE)) {
     if (!name.endsWith(".mjs") || name.endsWith(".test.mjs")) continue;
@@ -115,6 +120,9 @@ async function startBridge() {
         ...process.env,
         STUDIO_CLAUDE_ACCOUNT: "test@example.test",
         CLAUDE_CONFIG_DIR: path.join(root, "native-config"),
+        STUDIO_CLAUDE_STEER_ECHO_GRACE_MS: "150",
+        STUDIO_CLAUDE_STEER_UNKNOWN_WAIT_MS: "2000",
+        ...env,
       },
     },
   );
@@ -639,3 +647,176 @@ for (const scenario of [
     );
   });
 }
+
+async function marker(bridge, name) {
+  const deadline = Date.now() + HANG_GUARD_MS;
+  while (!existsSync(path.join(bridge.root, name))) {
+    if (Date.now() > deadline) throw new Error(name + " missing");
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
+const release = (bridge, name) =>
+  fs.writeFile(path.join(bridge.root, name), "");
+const turnItems = async (bridge, turn) =>
+  (
+    await bridge.call("thread/read", {
+      threadId: bridge.thread,
+      includeTurns: true,
+    })
+  ).thread.turns.find((t) => t.id === turn).items;
+
+test("a successful result without a steer echo completes without resending unknown input", async () => {
+  const bridge = await startBridge();
+  const turn = await running(bridge, "pulled");
+  await steer(bridge, turn, "missing-echo");
+  await read(bridge, "steer text");
+  await end(bridge);
+  const done = await completed(bridge, turn);
+  assert.equal(done.params.turn.status, "completed");
+  assert.equal(done.params.turn.unappliedSteers, undefined);
+  assert.equal(
+    (await turnItems(bridge, turn)).find((i) => i.id === "missing-echo")
+      .deliveryStatus,
+    "submitted",
+  );
+  assert.deepEqual(
+    await bridge.call("thread/queue/list", { threadId: bridge.thread }),
+    { data: [], items: [], nextCursor: null },
+  );
+  assert.deepEqual(await inputs(bridge), ["pulled", "steer text"]);
+  assert.equal(ack(bridge, "missing-echo"), undefined);
+});
+
+test("Stop finalizes an idle Claude turn with a deferred successful result", async () => {
+  const bridge = await startBridge({
+    STUDIO_CLAUDE_STEER_ECHO_GRACE_MS: "60000",
+  });
+  const turn = await running(bridge, "pulled");
+  await steer(bridge, turn, "stop-echo");
+  await read(bridge, "steer text");
+  await end(bridge);
+  await marker(bridge, ".result-sent");
+  await bridge.call("turn/interrupt", {
+    threadId: bridge.thread,
+    turnId: turn,
+  });
+  const done = await completed(bridge, turn);
+  assert.equal(done.params.turn.status, "interrupted");
+  assert.equal(done.params.turn.unappliedSteers, undefined);
+});
+
+test("late success echo retains the CLI and acknowledges the original turn once", async () => {
+  const bridge = await startBridge();
+  const turn = await running(bridge, "success-late");
+  await steer(bridge, turn, "late-success");
+  await read(bridge, "steer text");
+  await end(bridge);
+  await completed(bridge, turn);
+  await assert.rejects(
+    bridge.call("thread/unsubscribe", { threadId: bridge.thread }),
+    /Pause the Claude turn/,
+  );
+  // Resume must also retain the query while its steer outcome is unknown.
+  await bridge.call("thread/resume", { threadId: bridge.thread });
+  await release(bridge, ".echo");
+  const delivered = await bridge.note((n) => ack(bridge, "late-success") === n);
+  assert.equal(delivered.params.turnId, turn);
+  const continuation = await bridge.note(
+    (n) => n.method === "turn/started" && n.params.turn.id !== turn,
+  );
+  await release(bridge, ".continued");
+  await completed(bridge, continuation.params.turn.id);
+  assert.equal(
+    bridge.notes.filter(
+      (n) =>
+        n.method === "item/completed" &&
+        n.params.item.clientId === "late-success",
+    ).length,
+    1,
+  );
+  assert.deepEqual(await inputs(bridge), ["success-late", "steer text"]);
+  assert.deepEqual(
+    await bridge.call("thread/unsubscribe", { threadId: bridge.thread }),
+    { status: "unsubscribed" },
+  );
+});
+
+test("an echo inside the grace keeps its continuation in the same turn", async () => {
+  const bridge = await startBridge({
+    STUDIO_CLAUDE_STEER_ECHO_GRACE_MS: "60000",
+  });
+  const turn = await running(bridge, "grace-echo");
+  await steer(bridge, turn, "grace-steer");
+  await read(bridge, "steer text");
+  await end(bridge);
+  await marker(bridge, ".result-sent");
+  await release(bridge, ".echo");
+  await bridge.note((n) => ack(bridge, "grace-steer") === n);
+  await release(bridge, ".continued");
+  assert.equal((await completed(bridge, turn)).params.turn.status, "completed");
+  assert.equal(
+    bridge.notes.filter((n) => n.method === "turn/started").length,
+    1,
+  );
+});
+
+test("a successful result withdraws unread steer once for original-identity redelivery", async () => {
+  const bridge = await startBridge();
+  const turn = await running(bridge, "unread-result");
+  await steer(bridge, turn, "unread-steer");
+  await end(bridge);
+  const done = await completed(bridge, turn);
+  assert.deepEqual(done.params.turn.unappliedSteers, ["unread-steer"]);
+  assert.equal(
+    (await turnItems(bridge, turn)).find((i) => i.id === "unread-steer")
+      .deliveryStatus,
+    "not_applied",
+  );
+  await release(bridge, ".release");
+  const next = (
+    await bridge.call("turn/start", {
+      threadId: bridge.thread,
+      clientUserMessageId: "unread-steer",
+      input: text("steer text"),
+    })
+  ).turn.id;
+  await read(bridge, "steer text");
+  await end(bridge);
+  await completed(bridge, next);
+  assert.deepEqual(await inputs(bridge), ["unread-result", "steer text"]);
+  assert.equal(
+    bridge.notes.filter(
+      (n) =>
+        n.method === "turn/completed" &&
+        n.params.turn.unappliedSteers?.includes("unread-steer"),
+    ).length,
+    1,
+  );
+});
+
+test("unknown steer retention expires without declaring input unapplied or resending it", async () => {
+  const bridge = await startBridge({
+    STUDIO_CLAUDE_STEER_UNKNOWN_WAIT_MS: "1000",
+  });
+  const turn = await running(bridge, "pulled");
+  await steer(bridge, turn, "expired-echo");
+  await read(bridge, "steer text");
+  await end(bridge);
+  const done = await completed(bridge, turn);
+  assert.equal(done.params.turn.unappliedSteers, undefined);
+  await assert.rejects(
+    bridge.call("thread/unsubscribe", { threadId: bridge.thread }),
+    /Pause the Claude turn/,
+  );
+  await new Promise((resolve) => setTimeout(resolve, 1100));
+  assert.deepEqual(
+    await bridge.call("thread/unsubscribe", { threadId: bridge.thread }),
+    { status: "unsubscribed" },
+  );
+  assert.equal(
+    (await turnItems(bridge, turn)).find((i) => i.id === "expired-echo")
+      .deliveryStatus,
+    "submitted",
+  );
+  assert.deepEqual(await inputs(bridge), ["pulled", "steer text"]);
+});

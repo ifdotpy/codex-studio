@@ -1169,7 +1169,7 @@ function fastTierCommands(root) {
     },
     {
       item: bridge,
-      label: "Claude restart and journal evidence witnesses",
+      label: "Claude turn lifecycle, restart and journal evidence witnesses",
       commands: [
         [
           "pnpm",
@@ -1183,13 +1183,15 @@ function fastTierCommands(root) {
             "vitest.config.mjs",
             "restart-reconcile.test.mjs",
             "journal-repair.test.mjs",
+            "steer.test.mjs",
+            "stall.test.mjs",
           ],
         ],
       ],
       options: {
-        selector: "restart-reconcile and journal-repair",
+        selector: "restart-reconcile, journal-repair, steer and stall",
         reason:
-          "Preserve unconfirmed outcomes and bounded, read-only repair evidence without a model query.",
+          "Preserve unconfirmed outcomes, bounded steer completion, Stop recovery and read-only repair evidence without a model query.",
       },
     },
     {
@@ -1399,6 +1401,7 @@ function fastTierCommands(root) {
               "test(callback_panel_uses_one_file_snapshot_per_callback)",
               "test(callback_request_expires_a_terminal_inline_result)",
               "test(callback_request_invalid_action_preserves_tool_refusal)",
+              "test(claude_late_steer_continuation_reports_each_turn_to_parent_once)",
               "test(account_worker::tests::callback_handoff::)",
               "test(account_worker::tests::account_transfer::)",
               "test(account_transfer_driver::request_tests::busy_member_)",
