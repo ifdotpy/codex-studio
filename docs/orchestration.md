@@ -1526,6 +1526,8 @@ change with both options. Cross-machine Claude cache reuse remains unverified.
 4. Liveness, context and the canonical renderer view borrow that checked value in source row order; only storage and wire boundaries serialize it.
 5. Source state, receipts and renderer views commit together; a projection failure rolls them all back.
 6. Replaying committed journal identities returns the saved outcomes without decoding or publishing agents again.
+7. The store observer publishes committed entity changes; ordinary analytics receipts only project token rates, preserving complete stream batches without a pull.
+8. Recovered history, unknown publication overflow, and external writer hints retain state resets and pull recovery.
 
 ### Held child-result release
 
