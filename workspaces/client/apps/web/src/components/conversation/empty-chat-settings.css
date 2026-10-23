@@ -44,6 +44,9 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.execution-model-family {
+  display: none;
+}
 .execution-summary-segment .execution-role,
 .execution-summary-segment .execution-effort,
 .execution-inherited-label {
@@ -89,6 +92,16 @@
 @container composer (max-width: 23em) {
   .execution-summary-segment[data-role="worker"] .execution-model {
     display: none;
+  }
+  .execution-model-full {
+    display: none;
+  }
+  .execution-model-family {
+    display: inline;
+  }
+  .execution-summary-segment[data-role="lead"] .execution-model {
+    flex-shrink: 0;
+    text-overflow: clip;
   }
 }
 

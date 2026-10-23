@@ -134,7 +134,7 @@ model fields use native selects grouped by provider, with **(default)** and
 the field. Dropdown menus show text labels; their appearance follows the browser.
 Fast and Daybreak switches include visible descriptions. Chat settings has Models and Team tabs. Models has a compact Lead, Workers, and Review switch above the selected role's account, model, reasoning, and
 mode controls. One execution summary in the composer shows the lead, workers,
-and review; its title contains the full settings. On narrow layouts it keeps the lead name beside role and provider icons;
+and review; its title contains the full settings. On narrow layouts it keeps the lead name beside role and provider icons, using the complete family name at the narrowest stage;
 wider layouts name all three roles. Click it to open Models on Lead, then select a role.
 Accounts use a compact grid with remaining limits. Team contains
 permissions, subagent parallelism, delegation depth, and account eligibility; zero parallelism

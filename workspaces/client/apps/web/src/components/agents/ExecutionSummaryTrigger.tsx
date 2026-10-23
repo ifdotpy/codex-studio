@@ -124,7 +124,18 @@ export function ExecutionSummaryTrigger({
             <span className="execution-role">{label}</span>
             {value ? (
               <>
-                <span className="execution-model">{value.name}</span>
+                <span className="execution-model">
+                  {role === "lead" ? (
+                    <>
+                      <span className="execution-model-full">{value.name}</span>
+                      <span className="execution-model-family">
+                        {value.name.trim().split(/\s+/)[0]}
+                      </span>
+                    </>
+                  ) : (
+                    value.name
+                  )}
+                </span>
                 <span className="execution-effort">{value.effort}</span>
               </>
             ) : (
