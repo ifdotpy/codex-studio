@@ -671,6 +671,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/claude/repair-report": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Read saved Claude journal repair evidence without repair or replay */
+    get: operations["claude_repair_report"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/claude/session": {
     parameters: {
       query?: never;
@@ -9992,6 +10009,14 @@ export interface components {
       /** @default null */
       options?: components["schemas"]["ClaudeOptions"] | null;
     };
+    ClaudeRepairReport: {
+      invalidSequence: boolean;
+      nativeHistoryConfirmed: boolean | null;
+      scopeConfirmed: boolean | null;
+      skippedRows: number;
+      /** @enum {string} */
+      status: "none" | "needs_repair" | "repaired";
+    };
     /** ClaudeRollbackResponse */
     ClaudeRollbackResponse: {
       /**
@@ -10216,6 +10241,7 @@ export interface components {
     ClaudeTurn: {
       /** @default false */
       canRestoreFiles?: boolean;
+      error?: components["schemas"]["JsonValue"];
       /** Id */
       id: string;
       /** @default null */
@@ -10224,7 +10250,12 @@ export interface components {
        * Status
        * @enum {string}
        */
-      status: "inProgress" | "completed" | "failed" | "interrupted";
+      status:
+        | "inProgress"
+        | "completed"
+        | "failed"
+        | "interrupted"
+        | "uncertain";
       /** Text */
       text: string;
     };
@@ -30009,6 +30040,56 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["AccountsResponse"];
+        };
+      };
+      /** @description Bad Request */
+      400: components["responses"]["ApiError400"];
+      /** @description Unauthorized */
+      401: components["responses"]["ApiError401"];
+      /** @description Forbidden */
+      403: components["responses"]["ApiError403"];
+      /** @description Not Found */
+      404: components["responses"]["ApiError404"];
+      /** @description Request Timeout */
+      408: components["responses"]["ApiError408"];
+      /** @description Conflict */
+      409: components["responses"]["ApiError409"];
+      /** @description Gone */
+      410: components["responses"]["ApiError410"];
+      /** @description Content Too Large */
+      413: components["responses"]["ApiError413"];
+      /** @description Unsupported Media Type */
+      415: components["responses"]["ApiError415"];
+      /** @description Upgrade Required */
+      426: components["responses"]["ApiError426"];
+      /** @description Too Many Requests */
+      429: components["responses"]["ApiError429"];
+      /** @description Internal Server Error */
+      500: components["responses"]["ApiError500"];
+      /** @description Bad Gateway */
+      502: components["responses"]["ApiError502"];
+      /** @description Service Unavailable */
+      503: components["responses"]["ApiError503"];
+    };
+  };
+  claude_repair_report: {
+    parameters: {
+      query: {
+        id: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Safe saved repair evidence; no transcript text or paths */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ClaudeRepairReport"];
         };
       };
       /** @description Bad Request */

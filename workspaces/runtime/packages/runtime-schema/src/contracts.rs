@@ -404,6 +404,11 @@ pub fn check_schema_parity(openapi: &Value, account_transfer: &Value) -> Result<
     check_account_group_parity(openapi)?;
     crate::agent_progress::check_schema_parity(openapi)?;
     crate::task_gate::check_api_contract(openapi)?;
+    expect_number(
+        openapi,
+        "/components/schemas/ClaudeRepairReport/properties/skippedRows/maximum",
+        values::MAX_SAFE_INTEGER,
+    )?;
     let expected = serde_json::to_value(crate::agent_progress::StartWaitReason::ALL)
         .map_err(|error| error.to_string())?;
     for pointer in [

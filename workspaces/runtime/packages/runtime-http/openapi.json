@@ -20085,6 +20085,47 @@
         "title": "ClaudeProfileRequest",
         "type": "object"
       },
+      "ClaudeRepairReport": {
+        "additionalProperties": false,
+        "properties": {
+          "invalidSequence": {
+            "type": "boolean"
+          },
+          "nativeHistoryConfirmed": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "scopeConfirmed": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "skippedRows": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "status": {
+            "enum": [
+              "none",
+              "needs_repair",
+              "repaired"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "skippedRows",
+          "invalidSequence",
+          "scopeConfirmed",
+          "nativeHistoryConfirmed"
+        ],
+        "type": "object"
+      },
       "ClaudeRollbackResponse": {
         "additionalProperties": false,
         "properties": {
@@ -20678,6 +20719,9 @@
             "default": false,
             "type": "boolean"
           },
+          "error": {
+            "$ref": "#/components/schemas/JsonValue"
+          },
           "id": {
             "title": "Id",
             "type": "string"
@@ -20694,7 +20738,8 @@
               "inProgress",
               "completed",
               "failed",
-              "interrupted"
+              "interrupted",
+              "uncertain"
             ],
             "title": "Status",
             "type": "string"
@@ -67907,6 +67952,91 @@
           }
         },
         "summary": "Claude Profile"
+      }
+    },
+    "/api/claude/repair-report": {
+      "get": {
+        "operationId": "claude_repair_report",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClaudeRepairReport"
+                }
+              }
+            },
+            "description": "Safe saved repair evidence; no transcript text or paths"
+          },
+          "400": {
+            "$ref": "#/components/responses/ApiError400",
+            "description": "Bad Request"
+          },
+          "401": {
+            "$ref": "#/components/responses/ApiError401",
+            "description": "Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/ApiError403",
+            "description": "Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/ApiError404",
+            "description": "Not Found"
+          },
+          "408": {
+            "$ref": "#/components/responses/ApiError408",
+            "description": "Request Timeout"
+          },
+          "409": {
+            "$ref": "#/components/responses/ApiError409",
+            "description": "Conflict"
+          },
+          "410": {
+            "$ref": "#/components/responses/ApiError410",
+            "description": "Gone"
+          },
+          "413": {
+            "$ref": "#/components/responses/ApiError413",
+            "description": "Content Too Large"
+          },
+          "415": {
+            "$ref": "#/components/responses/ApiError415",
+            "description": "Unsupported Media Type"
+          },
+          "426": {
+            "$ref": "#/components/responses/ApiError426",
+            "description": "Upgrade Required"
+          },
+          "429": {
+            "$ref": "#/components/responses/ApiError429",
+            "description": "Too Many Requests"
+          },
+          "500": {
+            "$ref": "#/components/responses/ApiError500",
+            "description": "Internal Server Error"
+          },
+          "502": {
+            "$ref": "#/components/responses/ApiError502",
+            "description": "Bad Gateway"
+          },
+          "503": {
+            "$ref": "#/components/responses/ApiError503",
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Read saved Claude journal repair evidence without repair or replay"
       }
     },
     "/api/claude/session": {

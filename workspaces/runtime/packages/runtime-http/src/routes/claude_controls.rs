@@ -1,7 +1,7 @@
 //! Claude session reads and durable settings/rollback controls.
 use super::{
-    extractors::ApiJson,
-    manifest::{OperationStatus, RouteGroup, post},
+    extractors::{ApiJson, QueryParams},
+    manifest::{OperationStatus, RouteGroup, get, post},
 };
 use crate::{error::ApiError, router::HttpState};
 use axum::{Json, extract::State, http::StatusCode};
@@ -18,6 +18,11 @@ use studio_runtime_store::{
 
 pub(crate) fn routes() -> RouteGroup {
     RouteGroup::new(vec![
+        get(
+            "/api/claude/repair-report",
+            OperationStatus::Implemented,
+            repair_report,
+        ),
         post("/api/claude/session", OperationStatus::Implemented, session),
         post(
             "/api/claude/file-backups",
@@ -25,6 +30,71 @@ pub(crate) fn routes() -> RouteGroup {
             file_backups,
         ),
     ])
+}
+
+async fn repair_report(
+    State(state): State<HttpState>,
+    query: QueryParams,
+) -> Result<Json<crate::generated::ClaudeRepairReport>, ApiError> {
+    use studio_runtime_services::claude_controls::service::ControlScope;
+    let id = query
+        .nonempty_str("id")
+        .ok_or_else(|| ApiError::validation(vec![json!("query"), json!("id")]))?;
+    let store = state.store.clone().ok_or_else(ApiError::internal)?;
+    let (agent, _) = load_agent(store, id.to_owned()).await?;
+    require_claude_account(&state, &agent).await?;
+    if agent.get("deletedAt").is_some_and(|v| !v.is_null()) {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "This conversation was deleted",
+        ));
+    }
+    let Some(thread) = state_thread(&agent) else {
+        return super::generated_json(json!({"status":"none","skippedRows":0,"invalidSequence":false,"scopeConfirmed":null,"nativeHistoryConfirmed":null})).map(Json);
+    };
+    let account = agent
+        .pointer("/lazyAccountTransfer/sourceAccountKey")
+        .and_then(Value::as_str)
+        .or_else(|| agent.get("accountKey").and_then(Value::as_str))
+        .unwrap_or("default");
+    let session = state
+        .account_session
+        .as_ref()
+        .ok_or_else(ApiError::internal)?
+        .claude_control_session(account)
+        .map_err(session_error)?;
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        session.call_scoped(
+            ControlScope {
+                agent: id.to_owned(),
+                epoch: agent["epoch"].as_u64().unwrap_or(0),
+                request_id: None,
+            },
+            "claude/repairReport",
+            json!({"threadId":thread}),
+        ),
+    )
+    .await
+    .map_err(|_| {
+        ApiError::new(
+            StatusCode::GATEWAY_TIMEOUT,
+            "Could not read the saved repair report",
+        )
+    })?
+    .map_err(control_error)?;
+    // Project only typed evidence. Provider text, paths, and unknown fields can contain secrets.
+    let skipped_rows = result["skippedRows"]
+        .as_u64()
+        .filter(|value| *value <= studio_runtime_schema::shared_values::MAX_SAFE_INTEGER as u64)
+        .ok_or_else(ApiError::internal)?;
+    let safe = json!({
+        "status": result["status"], "skippedRows": skipped_rows,
+        "invalidSequence": result["invalidSequence"],
+        "scopeConfirmed": result["scopeConfirmed"],
+        "nativeHistoryConfirmed": result["nativeHistoryConfirmed"],
+    });
+    super::generated_json(safe).map(Json)
 }
 
 async fn session(

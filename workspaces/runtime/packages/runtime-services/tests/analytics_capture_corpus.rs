@@ -26,6 +26,27 @@ fn capture(db: &mut Connection, agent: &Value, method: &str, params: Value, at: 
 }
 
 #[test]
+fn uncertain_turn_keeps_its_outcome_and_reason_in_analytics() {
+    let (_root, mut db, agent) = started_turn();
+    let error = json!({"message":"The native transcript cannot confirm the outcome."});
+    capture(
+        &mut db,
+        &agent,
+        "turn/completed",
+        json!({"turn":{"id":"turn","status":"uncertain","error":error}}),
+        20.,
+    );
+    let raw: String = db
+        .query_row("SELECT record FROM analytics_turns LIMIT 1", [], |row| {
+            row.get(0)
+        })
+        .expect("turn");
+    let turn: Value = serde_json::from_str(&raw).expect("turn record");
+    assert_eq!(turn["status"], "uncertain");
+    assert_eq!(turn["error"], error);
+}
+
+#[test]
 fn malformed_stored_rows_refuse_without_writes() {
     let (_root, mut db, agent) = started_turn();
     for invalid in [
