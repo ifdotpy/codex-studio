@@ -138,7 +138,7 @@ and review; its title contains the full settings. On narrow layouts it keeps the
 wider layouts name all three roles. Click it to open Models on Lead, then select a role.
 Accounts use a compact grid with remaining limits. Team contains
 permissions, subagent parallelism, delegation depth, and account eligibility; zero parallelism
-uses a single agent. Account eligibility is always visible in its own grid.
+uses a single agent. Account eligibility is always visible in compact provider groups with remaining limits; long names and emails are ellipsized, with full values in the account title and accessible description.
 Automatic account selection prefers a free slot, project order, then fewer
 active agents. Eligibility is separate from each role's selected account.
 Project actions are available in the shared dialog footer. Hidden catalog models stay hidden. A proposed plan waits for a
