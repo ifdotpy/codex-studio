@@ -1,9 +1,12 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { MantineProvider } from "@mantine/core";
+import { MantineProvider, useMantineColorScheme } from "@mantine/core";
+import { useEffect, useMemo } from "react";
 import { expect, userEvent, within } from "storybook/test";
 import TeamChats from "./TeamChats";
 import { theme } from "../../../theme";
 import type { Snapshot } from "../../../types";
+import { createServerServices } from "../../../servers/serverServices";
+import { ServerServicesProvider } from "../../../servers/ServerServicesContext";
 
 const data = {
   token: "storybook",
@@ -72,6 +75,23 @@ function MessagesFixture({
   hasRooms?: boolean;
   narrow?: boolean;
 }) {
+  const services = useMemo(() => {
+    const fixtureServices = createServerServices({
+      id: "local",
+      label: "Storybook",
+      origin: window.location.origin,
+    });
+    fixtureServices.resources.watchResourceChanges = (_resource, changed) => {
+      changed();
+      return () => {};
+    };
+    return fixtureServices;
+  }, []);
+  useEffect(() => () => services.close(), [services]);
+  const { setColorScheme } = useMantineColorScheme();
+  useEffect(() => {
+    setColorScheme(light ? "light" : "dark");
+  }, [light, setColorScheme]);
   return (
     <MantineProvider theme={theme} forceColorScheme={light ? "light" : "dark"}>
       <div
@@ -79,15 +99,17 @@ function MessagesFixture({
           display: "flex",
           height: "80dvh",
           minWidth: 0,
-          maxWidth: narrow ? "var(--studio-form-max, 40rem)" : undefined,
+          maxWidth: narrow ? "var(--studio-form-max)" : undefined,
         }}
       >
-        <TeamChats
-          data={hasRooms ? populated : data}
-          leadId="lead"
-          refresh={async () => {}}
-          notify={() => {}}
-        />
+        <ServerServicesProvider services={services}>
+          <TeamChats
+            data={hasRooms ? populated : data}
+            leadId="lead"
+            refresh={async () => {}}
+            notify={() => {}}
+          />
+        </ServerServicesProvider>
       </div>
     </MantineProvider>
   );
@@ -139,7 +161,7 @@ export const NarrowDrawer: Story = {
       canvas.getByRole("textbox", { name: "Search chats" }),
     ).toBeVisible();
     await userEvent.click(
-      canvas.getByRole("button", { name: /API tests The retry test/ }),
+      canvas.getByRole("button", { name: /API tests .*The retry test/ }),
     );
     await expect(
       await canvas.findByText(

@@ -16,9 +16,9 @@
 }
 .setup-account {
   position: relative;
-  height: var(--studio-touch-target, 2.75rem);
+  height: var(--studio-touch-target);
   padding-bottom: calc(var(--mantine-spacing-xs) * 0.7);
-  border: var(--studio-border-width, 0.0625rem) solid transparent;
+  border: var(--studio-border-width) solid transparent;
 }
 .setup-account[data-selected] {
   border-color: var(--mantine-primary-color-filled);
@@ -49,7 +49,7 @@
 /* Phone and tablet controls stack at this content breakpoint. */
 @media (max-width: 47.5rem) {
   .account-tiles .mantine-SegmentedControl-label {
-    min-height: var(--studio-touch-target, 2.75rem);
+    min-height: var(--studio-touch-target);
     display: flex;
     justify-content: center;
     align-items: center;

@@ -97,7 +97,7 @@
   background: var(--studio-state-error);
 }
 .account-limits-dot[data-current] {
-  outline: var(--studio-border-width, 0.0625rem) solid var(--muted);
+  outline: var(--studio-border-width) solid var(--muted);
   outline-offset: calc(var(--mantine-spacing-xs) / 5);
 }
 .account-limits-dot-tooltip {
@@ -132,11 +132,11 @@
 .account-limits-groups {
   display: grid;
   gap: var(--mantine-spacing-sm);
-  max-height: min(var(--studio-form-max, 40rem), 53dvh);
+  max-height: min(var(--studio-form-max), 53dvh);
   overflow: auto;
 }
 .account-limit-group {
-  border: var(--studio-border-width, 0.0625rem) solid var(--line);
+  border: var(--studio-border-width) solid var(--line);
   border-radius: var(--mantine-spacing-xs);
   padding: var(--mantine-spacing-sm);
   min-width: 0;
@@ -192,7 +192,7 @@
   display: flex;
   justify-content: space-between;
   gap: var(--mantine-spacing-sm);
-  border-top: var(--studio-border-width, 0.0625rem) solid var(--line);
+  border-top: var(--studio-border-width) solid var(--line);
   margin-top: var(--mantine-spacing-sm);
   padding-top: var(--mantine-spacing-sm);
 }
@@ -225,7 +225,7 @@
 /* Dense quota rows keep both pools and reset clocks visible together. */
 .account-limits-panel {
   padding: var(--mantine-spacing-sm);
-  max-height: min(var(--studio-form-max, 40rem), 78dvh);
+  max-height: min(var(--studio-form-max), 78dvh);
   overflow-y: auto;
 }
 .account-limits-heading {
@@ -249,7 +249,7 @@
   border-radius: 0;
 }
 .account-limit-group + .account-limit-group {
-  border-top: var(--studio-border-width, 0.0625rem) solid var(--line);
+  border-top: var(--studio-border-width) solid var(--line);
   padding-top: var(--mantine-spacing-xs);
 }
 .account-limit-group > header {
@@ -260,7 +260,7 @@
 }
 .account-limit-window {
   display: grid;
-  grid-template-columns: var(--studio-settings-nav-size, 10rem) minmax(0, 1fr);
+  grid-template-columns: var(--studio-settings-nav-size) minmax(0, 1fr);
   align-items: center;
   gap: var(--studio-rail-size) var(--mantine-spacing-sm);
 }
@@ -301,7 +301,7 @@
 .account-costs {
   margin-top: var(--mantine-spacing-sm);
   padding-top: var(--mantine-spacing-xs);
-  border-top: var(--studio-border-width, 0.0625rem) solid var(--line);
+  border-top: var(--studio-border-width) solid var(--line);
 }
 .account-costs > header {
   display: flex;
@@ -355,7 +355,7 @@
 .account-reset-credits {
   margin-top: var(--mantine-spacing-xs);
   padding-top: var(--mantine-spacing-xs);
-  border-top: var(--studio-border-width, 0.0625rem) solid var(--line);
+  border-top: var(--studio-border-width) solid var(--line);
 }
 .account-reset-credits > header {
   display: flex;
@@ -402,7 +402,7 @@
 }
 .account-reset-confirm {
   background: var(--surface);
-  border: var(--studio-border-width, 0.0625rem) solid var(--line);
+  border: var(--studio-border-width) solid var(--line);
   border-radius: var(--mantine-spacing-xs);
   margin-top: var(--mantine-spacing-xs);
   padding: var(--mantine-spacing-xs);
@@ -420,8 +420,7 @@
 .account-limit-recovery {
   padding: var(--mantine-spacing-xs);
   margin-bottom: var(--mantine-spacing-xs);
-  border: var(--studio-border-width, 0.0625rem) solid
-    var(--mantine-color-orange-6);
+  border: var(--studio-border-width) solid var(--mantine-color-orange-6);
   border-radius: var(--mantine-spacing-xs);
   overflow-wrap: anywhere;
 }
@@ -490,7 +489,7 @@
   height: calc(var(--studio-action-size) * 2);
   padding: var(--mantine-spacing-xs) var(--mantine-spacing-xs)
     var(--mantine-spacing-sm);
-  border: var(--studio-border-width, 0.0625rem) solid transparent;
+  border: var(--studio-border-width) solid transparent;
   color: var(--text);
 }
 .account-limits-tiles .setup-account[data-selected] {

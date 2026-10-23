@@ -7,7 +7,7 @@
 }
 .team-chats {
   display: grid;
-  grid-template-columns: var(--studio-room-list-size, 15rem) minmax(0, 1fr);
+  grid-template-columns: var(--studio-room-list-size) minmax(0, 1fr);
   flex: 1;
   min-width: 0;
   min-height: 0;
@@ -17,7 +17,7 @@
   flex-direction: column;
   min-width: 0;
   min-height: 0;
-  border-inline-end: var(--studio-border-width, 0.0625rem) solid var(--line);
+  border-inline-end: var(--studio-border-width) solid var(--line);
   overflow: hidden;
 }
 .team-room-search {
@@ -103,7 +103,7 @@
   align-items: center;
   gap: var(--mantine-spacing-sm);
   padding: var(--mantine-spacing-sm) var(--mantine-spacing-md);
-  border-bottom: var(--studio-border-width, 0.0625rem) solid var(--line);
+  border-bottom: var(--studio-border-width) solid var(--line);
   flex: none;
 }
 .team-room-header > div {
@@ -138,7 +138,7 @@
   min-width: 0;
 }
 .unified-message-scroll > div {
-  max-width: var(--studio-form-max, 40rem);
+  max-width: var(--studio-form-max);
   margin: 0 auto;
 }
 .unified-message-scroll [data-feed-item] {
@@ -149,7 +149,7 @@
   width: 100%;
   min-width: 0;
   padding-block: var(--mantine-spacing-sm);
-  border-bottom: var(--studio-border-width, 0.0625rem) solid var(--line);
+  border-bottom: var(--studio-border-width) solid var(--line);
   overflow-wrap: anywhere;
 }
 .team-message .markdown-block {
@@ -190,7 +190,7 @@
   justify-items: start;
   gap: var(--mantine-spacing-sm);
   padding: var(--mantine-spacing-xl) var(--mantine-spacing-sm);
-  max-width: var(--studio-form-max, 40rem);
+  max-width: var(--studio-form-max);
   font-size: var(--studio-text-body);
   color: var(--muted);
   line-height: 1.6;
@@ -233,7 +233,7 @@
 }
 .message-inline-thread {
   padding: var(--mantine-spacing-md);
-  border-block-start: var(--studio-border-width, 0.0625rem) solid var(--line);
+  border-block-start: var(--studio-border-width) solid var(--line);
   background: var(--surface);
 }
 .workspace-content.workspace-messages {
@@ -246,7 +246,7 @@
 .workspace-messages > .workspace-heading {
   padding: var(--mantine-spacing-md);
   margin: 0;
-  border-bottom: var(--studio-border-width, 0.0625rem) solid var(--line);
+  border-bottom: var(--studio-border-width) solid var(--line);
 }
 .workspace-message-body {
   display: flex;
@@ -309,4 +309,11 @@
   .team-room-row {
     padding-block: var(--mantine-spacing-md);
   }
+}
+
+/* Identity stays quiet so only message state carries saturated color. */
+.team-room-row .agent-avatar,
+.team-room-header .agent-avatar,
+.team-message .agent-avatar {
+  filter: grayscale(1);
 }

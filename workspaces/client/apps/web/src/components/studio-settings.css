@@ -8,7 +8,7 @@
 
 .studio-settings-tabs {
   display: grid;
-  grid-template-columns: var(--studio-settings-nav-size, 10rem) minmax(0, 1fr);
+  grid-template-columns: var(--studio-settings-nav-size) minmax(0, 1fr);
   gap: var(--mantine-spacing-lg);
   max-height: calc(100dvh - var(--mantine-spacing-xl) * 5);
   min-width: 0;
@@ -24,6 +24,9 @@
 .studio-settings-navigation .mantine-Tabs-list {
   border: 0;
   gap: var(--mantine-spacing-xs);
+}
+.studio-settings-navigation .mantine-Tabs-tabLabel {
+  text-align: start;
 }
 
 .studio-settings-navigation .mantine-Tabs-tab {
@@ -52,7 +55,7 @@
 
 .studio-settings-content > .mantine-Tabs-panel {
   min-width: 0;
-  max-width: var(--studio-form-max, 40rem);
+  max-width: var(--studio-form-max);
   padding-block-start: 0;
 }
 

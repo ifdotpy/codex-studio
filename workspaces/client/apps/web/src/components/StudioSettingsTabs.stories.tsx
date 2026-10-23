@@ -1,6 +1,12 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { MantineProvider, NativeSelect, Tabs, TextInput } from "@mantine/core";
-import { useState } from "react";
+import {
+  MantineProvider,
+  useMantineColorScheme,
+  NativeSelect,
+  Tabs,
+  TextInput,
+} from "@mantine/core";
+import { useEffect, useState } from "react";
 import { expect, userEvent, within } from "storybook/test";
 import {
   StudioSettingsLayout,
@@ -13,6 +19,10 @@ import { theme } from "../theme";
 import "../servers/servers.css";
 
 function SettingsFixture({ light = false }: { light?: boolean }) {
+  const { setColorScheme } = useMantineColorScheme();
+  useEffect(() => {
+    setColorScheme(light ? "light" : "dark");
+  }, [light, setColorScheme]);
   const [value, setValue] = useState<StudioSettingsTab>("accounts");
   return (
     <MantineProvider theme={theme} forceColorScheme={light ? "light" : "dark"}>
@@ -33,13 +43,10 @@ function SettingsFixture({ light = false }: { light?: boolean }) {
                   help="Preferences for this Studio workspace."
                 >
                   <SettingsRow
-                    label={<label htmlFor={`${id}-name`}>Display name</label>}
-                    help="Shown to other agents in this workspace."
+                    label={<label htmlFor={`${id}-name`}>Hide old chats</label>}
+                    help="Projects with fewer chats always show all of them."
                   >
-                    <TextInput
-                      id={`${id}-name`}
-                      defaultValue="Release workstation"
-                    />
+                    <TextInput id={`${id}-name`} defaultValue="24" />
                   </SettingsRow>
                   <SettingsRow
                     label={
@@ -109,21 +116,17 @@ export const Light: Story = { args: { light: true } };
 export const SectionSelectionPreservesFields: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await userEvent.click(
-      canvas.getByRole("tab", { name: "Appearance", exact: true }),
-    );
-    const input = canvas.getByRole("textbox", { name: "Display name" });
+    await userEvent.click(canvas.getByRole("tab", { name: "Appearance" }));
+    const input = canvas.getByRole("textbox", { name: "Hide old chats" });
     await userEvent.clear(input);
-    await userEvent.type(input, "Review workstation");
-    await expect(input).toHaveValue("Review workstation");
+    await userEvent.type(input, "32");
+    await expect(input).toHaveValue("32");
     await expect(
       canvas.getByRole("combobox", { name: "Provider updates" }),
     ).toHaveValue("Check automatically");
-    const back = canvas.queryByRole("button", { name: "Back", exact: true });
+    const back = canvas.queryByRole("button", { name: "Back" });
     if (back) await userEvent.click(back);
-    await userEvent.click(
-      canvas.getByRole("tab", { name: "Accounts", exact: true }),
-    );
+    await userEvent.click(canvas.getByRole("tab", { name: "Accounts" }));
     const meters = canvas.getAllByRole("meter", { name: "Remaining limit" });
     await expect(
       meters.map((meter) => meter.getAttribute("aria-valuenow")),

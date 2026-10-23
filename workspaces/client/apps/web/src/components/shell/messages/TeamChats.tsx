@@ -1,5 +1,6 @@
 import { useServerApi } from "../../../servers/ServerServicesContext";
 import MessageDate from "../../conversation/transcript/MessageDate";
+import { localDateTime, localTime } from "../../../local-time";
 import AgentAvatar from "../../agents/AgentAvatar";
 import {
   ActionIcon,
@@ -21,6 +22,23 @@ import {
   useFollowState,
 } from "../../useConversationScroll";
 import "./team-chats.css";
+
+/** A compact room clock; its native tooltip retains the full local date. */
+function RoomDate({ at }: { at?: number | null }) {
+  if (!at || !Number.isFinite(at)) return <MessageDate at={at} />;
+  const date = new Date(at * 1000);
+  return (
+    <time
+      className="message-date"
+      dateTime={date.toISOString()}
+      title={localDateTime(date)}
+    >
+      {date.toDateString() === new Date().toDateString()
+        ? localTime(date, { hour: "2-digit", minute: "2-digit" })
+        : localDateTime(date, { month: "short", day: "numeric" })}
+    </time>
+  );
+}
 
 function firstQuestion(params: JsonValue | undefined): string | undefined {
   if (!params || typeof params !== "object" || Array.isArray(params))
@@ -362,9 +380,7 @@ export default function TeamChats({
                 <div className="team-room-copy">
                   <div className="team-room-title">
                     <strong>For you</strong>
-                    {latestPersonal && (
-                      <MessageDate at={latestPersonal.created} />
-                    )}
+                    {latestPersonal && <RoomDate at={latestPersonal.created} />}
                   </div>
                   <div className="team-room-preview">
                     <span>{personalPreview}</span>
@@ -397,7 +413,7 @@ export default function TeamChats({
                   <div className="team-room-title">
                     <strong>{name(item)}</strong>
                     {item.lastMessage && (
-                      <MessageDate at={item.lastMessage.created} />
+                      <RoomDate at={item.lastMessage.created} />
                     )}
                   </div>
                   <div className="team-room-preview">

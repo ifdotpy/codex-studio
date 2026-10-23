@@ -63,6 +63,7 @@ export function StudioSettingsLayout({
       value={value}
       onChange={onChange}
       orientation="vertical"
+      variant="pills"
       className="studio-settings-tabs"
       data-detail={detail || undefined}
     >

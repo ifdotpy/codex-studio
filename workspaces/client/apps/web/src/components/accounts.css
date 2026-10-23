@@ -41,7 +41,7 @@
   overflow-wrap: anywhere;
 }
 .account-login {
-  border: var(--studio-border-width, 0.0625rem) solid var(--line);
+  border: var(--studio-border-width) solid var(--line);
   border-radius: var(--mantine-spacing-xs);
   margin-top: var(--mantine-spacing-md);
   padding: var(--mantine-spacing-md);
@@ -232,7 +232,7 @@
   display: grid;
   gap: var(--mantine-spacing-sm);
   border: 0;
-  border-top: var(--studio-border-width, 0.0625rem) solid var(--line);
+  border-top: var(--studio-border-width) solid var(--line);
   padding: var(--mantine-spacing-md) 0 0;
   margin: var(--mantine-spacing-xs) 0;
   min-width: 0;
@@ -310,13 +310,13 @@
   width: 100%;
 }
 .account-name-form > .mantine-TextInput-root {
-  flex: 1 1 var(--studio-settings-nav-size, 10rem);
+  flex: 1 1 var(--studio-settings-nav-size);
   min-width: 0;
 }
 /* Phone and tablet controls stack at this content breakpoint. */
 @media (max-width: 37.5rem) {
   .account-name button {
-    min-height: var(--studio-touch-target, 2.75rem);
+    min-height: var(--studio-touch-target);
   }
   .account-name-form input {
     font-size: var(--mantine-font-size-lg);
@@ -350,7 +350,7 @@
   gap: var(--mantine-spacing-xs);
   padding: var(--mantine-spacing-md);
   border-radius: 0;
-  border-bottom: var(--studio-border-width, 0.0625rem) solid var(--line);
+  border-bottom: var(--studio-border-width) solid var(--line);
   background: transparent;
 }
 .account-card-heading {
@@ -445,8 +445,8 @@
     padding: var(--mantine-spacing-sm);
   }
   .account-card-menu {
-    width: var(--studio-touch-target, 2.75rem);
-    min-height: var(--studio-touch-target, 2.75rem);
+    width: var(--studio-touch-target);
+    min-height: var(--studio-touch-target);
   }
 }
 
@@ -460,7 +460,7 @@
   display: inline-flex;
   align-items: center;
   gap: calc(var(--mantine-spacing-xs) * 0.4);
-  max-width: var(--studio-room-list-size, 15rem);
+  max-width: var(--studio-room-list-size);
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
@@ -482,7 +482,7 @@
   min-width: 0;
   padding: var(--mantine-spacing-sm);
   border: 0;
-  border-bottom: var(--studio-border-width, 0.0625rem) solid var(--line);
+  border-bottom: var(--studio-border-width) solid var(--line);
   border-radius: 0;
   background: transparent;
 }

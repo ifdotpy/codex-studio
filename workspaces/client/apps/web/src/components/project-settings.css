@@ -13,8 +13,7 @@
   align-items: flex-start;
 }
 .project-settings .ui-label {
-  flex: 0 0
-    calc(var(--studio-settings-nav-size, 10rem) - var(--mantine-spacing-lg));
+  flex: 0 0 calc(var(--studio-settings-nav-size) - var(--mantine-spacing-lg));
   padding-top: var(--mantine-spacing-sm);
 }
 .project-settings .ui-row-control {
