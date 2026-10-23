@@ -252,8 +252,8 @@ export default function Usage({
   const [resetError, setResetError] = useState("");
   const [resetNotice, setResetNotice] = useState("");
   const [resetApplied, setResetApplied] = useState<string[]>([]);
-  const resetAppliedKey = (creditId: string) =>
-    `${selectedAccountKey}:${creditId}`;
+  const resetAppliedKey = (creditId: string, accountKey = selectedAccountKey) =>
+    `${accountKey}:${creditId}`;
   useEffect(() => {
     setConfirmReset(null);
     setResetError("");
@@ -441,39 +441,6 @@ export default function Usage({
     const timer = window.setInterval(() => setNow(Date.now() / 1000), 30000);
     return () => window.clearInterval(timer);
   }, []);
-  const resetCredits = jsonObject(limitsData?.rateLimitResetCredits);
-  const resetCount = number(resetCredits?.availableCount)
-    ? resetCredits.availableCount
-    : null;
-  const availableResets: AvailableReset[] = Array.isArray(resetCredits?.credits)
-    ? resetCredits.credits.flatMap((value) => {
-        const credit = jsonObject(value);
-        if (
-          !credit ||
-          typeof credit.id !== "string" ||
-          credit.status !== "available" ||
-          (number(credit.expiresAt) && credit.expiresAt <= now)
-        )
-          return [];
-        return [
-          {
-            id: credit.id,
-            ...(typeof credit.title === "string"
-              ? { title: credit.title }
-              : {}),
-            ...(typeof credit.description === "string"
-              ? { description: credit.description }
-              : {}),
-            ...(number(credit.expiresAt)
-              ? { expiresAt: credit.expiresAt }
-              : {}),
-            ...(typeof credit.resetType === "string"
-              ? { resetType: credit.resetType }
-              : {}),
-          },
-        ];
-      })
-    : [];
   const contextUsage = jsonObject(agent.contextUsage);
   const contextTokens = contextUsage?.tokens;
   const contextWindow = contextUsage?.window;
@@ -490,7 +457,9 @@ export default function Usage({
     ? Math.min(...remainingWindows.map((window) => window.remaining!))
     : null;
   const recovered = useRecoveredLimit(accountAgent, limits, now);
-  const recovery = recovered ? null : limitRecovery(accountAgent, limits, now);
+  const selectedRecovery = recovered
+    ? null
+    : limitRecovery(accountAgent, limits, now);
   useEffect(() => {
     autoReloadedAccounts.current.clear();
   }, [agent.id]);
@@ -805,21 +774,35 @@ export default function Usage({
                   if (account) setActiveAccountKey(account.key);
                 }}
               >
+                <div className="account-limits-tiles">
+                  {[...new Set(usageAccounts.map(accountProvider))].map(
+                    (provider) => (
                 <Tabs
-                  value={selectedAccountKey}
+                        key={provider}
+                        value={
+                          accountProvider(activeAccount) === provider
+                            ? selectedAccountKey
+                            : usageAccounts.find(
+                                (item) => accountProvider(item) === provider,
+                              )?.key
+                        }
                   onChange={(value) => {
                     if (value) setActiveAccountKey(value);
                   }}
-                  keepMounted={false}
                   variant="pills"
-                  className="account-limits-tiles"
+                        className="account-limits-provider-panel"
+                        data-active={
+                          accountProvider(activeAccount) === provider ||
+                          undefined
+                        }
+                        aria-hidden={
+                          accountProvider(activeAccount) !== provider
+                        }
+                        inert={accountProvider(activeAccount) !== provider}
                 >
                   <Tabs.List aria-label="Accounts with limits">
                     {usageAccounts.map((item, index) => {
-                      if (
-                        accountProvider(item) !== accountProvider(activeAccount)
-                      )
-                        return null;
+                            if (accountProvider(item) !== provider) return null;
                       const snapshot = accountLimits(
                         item.limits,
                         item.key,
@@ -852,6 +835,11 @@ export default function Usage({
                             nameClassName="account-limits-tile-name"
                             remaining={remaining}
                           />
+                                {remaining === null && (
+                                  <small className="account-remaining">
+                                    Unavailable
+                                  </small>
+                                )}
                           {item.key === fallbackKey && (
                             <small className="account-limits-current">
                               Current chat
@@ -866,7 +854,73 @@ export default function Usage({
                     })}
                   </Tabs.List>
                 </Tabs>
+                    ),
+                  )}
+                </div>
               </AccountTilesLayout>
+              <div className="account-limits-detail-stack">
+                {usageAccounts.map((activeAccount, panelIndex) => {
+                  const isSelected = activeAccount.key === selectedAccountKey;
+                  const limits = accountLimits(
+                    activeAccount.limits,
+                    activeAccount.key,
+                    activeAccount.accountId,
+                  );
+                  const limitsData = jsonObject(limits?.data);
+                  const loadingLimits = !limits?.data && activeAccount.loading;
+                  const buckets = readBuckets(limits, now);
+                  const recovery = isSelected
+                    ? selectedRecovery
+                    : limitRecovery(
+                        { ...agent, accountKey: activeAccount.key },
+                        limits,
+                        now,
+                      );
+                  const resetCredits = jsonObject(
+                    limitsData?.rateLimitResetCredits,
+                  );
+                  const resetCount = number(resetCredits?.availableCount)
+                    ? resetCredits.availableCount
+                    : null;
+                  const availableResets: AvailableReset[] = Array.isArray(
+                    resetCredits?.credits,
+                  )
+                    ? resetCredits.credits.flatMap((value) => {
+                        const credit = jsonObject(value);
+                        if (
+                          !credit ||
+                          typeof credit.id !== "string" ||
+                          credit.status !== "available" ||
+                          (number(credit.expiresAt) && credit.expiresAt <= now)
+                        )
+                          return [];
+                        return [
+                          {
+                            id: credit.id,
+                            ...(typeof credit.title === "string"
+                              ? { title: credit.title }
+                              : {}),
+                            ...(typeof credit.description === "string"
+                              ? { description: credit.description }
+                              : {}),
+                            ...(number(credit.expiresAt)
+                              ? { expiresAt: credit.expiresAt }
+                              : {}),
+                            ...(typeof credit.resetType === "string"
+                              ? { resetType: credit.resetType }
+                              : {}),
+                          },
+                        ];
+                      })
+                    : [];
+                  return (
+                    <div
+                      key={activeAccount.key}
+                      className="account-limits-detail-panel"
+                      data-active={isSelected || undefined}
+                      aria-hidden={!isSelected}
+                      inert={!isSelected}
+                    >
               <div className="account-limits-selected-name">
                 <strong>{displayAccountName(activeAccount)}</strong>
                 {!activeAccount?.email &&
@@ -884,8 +938,12 @@ export default function Usage({
               <div
                 className="account-limits-groups"
                 role="tabpanel"
-                id="usage-account-panel"
-                aria-labelledby={`usage-account-tab-${usageAccounts.findIndex((item) => item.key === selectedAccountKey)}`}
+                        id={
+                          isSelected
+                            ? "usage-account-panel"
+                            : `usage-account-panel-${panelIndex}`
+                        }
+                        aria-labelledby={`usage-account-tab-${panelIndex}`}
                 aria-label={`${humanAccountLabel(activeAccount)} limits`}
               >
                 {buckets.map((bucket) => (
@@ -929,11 +987,14 @@ export default function Usage({
                               )}
                             </strong>
                           </div>
-                          {window.remaining !== null && !window.expired && (
+                                  {window.remaining !== null &&
+                                    !window.expired && (
                             <Progress
                               value={window.remaining}
                               size="xs"
-                              color={remainingLimitColor(window.remaining)}
+                                        color={remainingLimitColor(
+                                          window.remaining,
+                                        )}
                               aria-label={`${bucket.name} ${window.label} remaining`}
                             />
                           )}
@@ -980,12 +1041,17 @@ export default function Usage({
                       <div className="account-limit-credits">
                         <span>Credits</span>
                         <strong>
-                          {jsonObject(bucket.data.credits)?.unlimited === true
+                                  {jsonObject(bucket.data.credits)
+                                    ?.unlimited === true
                             ? "Unlimited"
-                            : jsonObject(bucket.data.credits)?.balance != null
-                              ? String(jsonObject(bucket.data.credits)?.balance)
-                              : jsonObject(bucket.data.credits)?.hasCredits ===
-                                  true
+                                    : jsonObject(bucket.data.credits)
+                                          ?.balance != null
+                                      ? String(
+                                          jsonObject(bucket.data.credits)
+                                            ?.balance,
+                                        )
+                                      : jsonObject(bucket.data.credits)
+                                            ?.hasCredits === true
                                 ? "Available"
                                 : jsonObject(bucket.data.credits)
                                       ?.hasCredits === false
@@ -1014,8 +1080,8 @@ export default function Usage({
                     <span>Check on Claude</span>
                   </header>
                   <p>
-                    Opens Claude. Use the same account, then confirm “Reset for
-                    free”.
+                            Opens Claude. Use the same account, then confirm
+                            “Reset for free”.
                   </p>
                   <div className="account-reset-credit-row">
                     <Button
@@ -1032,7 +1098,9 @@ export default function Usage({
                     <Button
                       size="compact-xs"
                       variant="subtle"
-                      loading={!limits?.data && (refreshing || loadingLimits)}
+                              loading={
+                                !limits?.data && (refreshing || loadingLimits)
+                              }
                       onClick={() => void refreshLimits()}
                     >
                       Refresh after reset
@@ -1054,16 +1122,22 @@ export default function Usage({
                     </span>
                   </header>
                   {availableResets.map((credit) => (
-                    <div className="account-reset-credit" key={credit.id}>
+                            <div
+                              className="account-reset-credit"
+                              key={credit.id}
+                            >
                       <div className="account-reset-credit-row">
                         <div>
-                          <strong title={credit.description || undefined}>
+                                  <strong
+                                    title={credit.description || undefined}
+                                  >
                             {credit.title || "Reset credit"}
                           </strong>
                           <span>
                             {number(credit.expiresAt) ? (
                               <>
-                                Expires {resetIn(credit.expiresAt, now)} ·{" "}
+                                        Expires {resetIn(credit.expiresAt, now)}{" "}
+                                        ·{" "}
                                 <time
                                   dateTime={new Date(
                                     credit.expiresAt * 1000,
@@ -1090,7 +1164,12 @@ export default function Usage({
                           variant="light"
                           disabled={
                             resetPending ||
-                            resetApplied.includes(resetAppliedKey(credit.id)) ||
+                                    resetApplied.includes(
+                                      resetAppliedKey(
+                                        credit.id,
+                                        activeAccount.key,
+                                      ),
+                                    ) ||
                             credit.resetType !== "codexRateLimits" ||
                             typeof limitsData?.accountId !== "string"
                           }
@@ -1099,19 +1178,25 @@ export default function Usage({
                             setResetError("");
                           }}
                         >
-                          {resetApplied.includes(resetAppliedKey(credit.id))
+                                  {resetApplied.includes(
+                                    resetAppliedKey(
+                                      credit.id,
+                                      activeAccount.key,
+                                    ),
+                                  )
                             ? "Applied"
                             : "Apply reset"}
                         </Button>
                       </div>
-                      {confirmReset === credit.id && (
+                              {isSelected && confirmReset === credit.id && (
                         <div
                           className="account-reset-confirm"
                           role="group"
                           aria-label={`Confirm ${credit.title || "limit reset"}`}
                         >
                           <p>
-                            Use this reset credit now? This spends one credit.
+                                    Use this reset credit now? This spends one
+                                    credit.
                           </p>
                           <div>
                             <Button
@@ -1145,14 +1230,20 @@ export default function Usage({
                         : "Reset credit details unavailable. Refresh to check."}
                     </p>
                   )}
-                  {resetError && (
+                          {isSelected && resetError && (
                     <p className="account-limits-warning" role="alert">
                       {resetError}
                     </p>
                   )}
-                  {resetNotice && <p role="status">{resetNotice}</p>}
+                          {isSelected && resetNotice && (
+                            <p role="status">{resetNotice}</p>
+                          )}
                 </section>
               )}
+                    </div>
+                  );
+                })}
+              </div>
               <section
                 className="account-costs"
                 aria-label="Local cost estimates"
@@ -1212,7 +1303,7 @@ export default function Usage({
                     })}
                   </span>
                 )}
-              </footer>
+              </footer>{" "}
             </section>
           </Popover.Dropdown>
         </Popover>

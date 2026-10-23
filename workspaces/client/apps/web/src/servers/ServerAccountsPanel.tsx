@@ -150,7 +150,6 @@ export default function ServerAccountsPanel({
                       <span className="account-muted">Email unavailable</span>
                     )}
                     {row.email && <small>{row.email}</small>}
-                    {row.plan && <small>{row.plan}</small>}
                   </div>
                   <ul
                     className="server-account-servers"
@@ -244,6 +243,9 @@ export default function ServerAccountsPanel({
                       <strong title={row.label || row.email || "Account"}>
                         {row.label || row.email || "Account"}
                       </strong>
+                      {row.plan && (
+                        <span className="account-plan">{row.plan}</span>
+                      )}
                       {rowServers(row, servers).some((server) =>
                         ["offline", "degraded", "schema-mismatch"].includes(
                           statuses[server.id] || "",

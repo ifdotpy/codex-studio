@@ -294,8 +294,15 @@ test("Accounts provider cards preserve menus, confirmations, exact retries and r
       const b = await work.boundingBox();
       expect(b.y).toBeGreaterThan(a.y);
       expect(b.x).toBe(a.x);
-      expect(a.height).toBeLessThanOrEqual(56);
-      expect(b.height).toBeLessThanOrEqual(56);
+      expect(b.y - (a.y + a.height)).toBeGreaterThanOrEqual(16);
+      const windows = personal.locator(".account-window-grid");
+      await expect(windows).toBeVisible();
+      const heading = await personal
+        .locator(".account-card-heading")
+        .boundingBox();
+      expect((await windows.boundingBox()).y).toBeGreaterThanOrEqual(
+        heading.y + heading.height,
+      );
       await expect(
         personal.getByRole("textbox", {
           name: "Group of personal@example.com",
@@ -310,7 +317,8 @@ test("Accounts provider cards preserve menus, confirmations, exact retries and r
       await personal.locator(".account-limit-details > summary").click();
       expect(
         await personal
-          .locator(".account-limit-bar")
+          .locator(".account-window-meter")
+          .first()
           .evaluate((element) => element.getBoundingClientRect().height),
       ).toBe(3);
       expect(
