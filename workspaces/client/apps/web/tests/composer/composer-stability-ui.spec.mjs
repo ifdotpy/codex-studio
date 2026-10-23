@@ -36,10 +36,10 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
       (agent) => agent.name === "Other project",
     );
     const emptyWorker = initial.threads.find(
-      (agent) => agent.role === "reviewer",
+      (agent) => !agent.isLead && agent.parentId,
     );
     assert.ok(lead, "fixture provides an empty managed lead chat");
-    assert.ok(emptyWorker, "fixture provides an empty managed reviewer chat");
+    assert.ok(emptyWorker, "fixture provides a persistent managed worker chat");
     browser = fixtureBrowser;
     const measurements = [];
     for (const width of [1440, 900, 390]) {
