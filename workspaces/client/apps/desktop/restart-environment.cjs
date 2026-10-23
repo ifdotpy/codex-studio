@@ -11,6 +11,10 @@ const restartKeys = [
   "CODEX_AGENTS_SUPERVISOR_MODE",
   "CODEX_AGENTS_SUPERVISOR_FALLBACK",
 ];
+// Names that the deleted Python backend saved and no runtime reads any more.
+// A saved record may still name them in `environment` or `unsetEnvironment`:
+// they are accepted, never restored, and removed from the launch environment.
+const retiredRestartKeys = ["CODEX_AGENTS_PYTHON"];
 const environmentKeys = new Set([...restartKeys, "PATH"]);
 
 function savedLaunchEnvironment(env, saved, state) {
@@ -28,21 +32,28 @@ function savedLaunchEnvironment(env, saved, state) {
     Array.isArray(environment) ||
     !Array.isArray(unset) ||
     Object.entries(environment).some(
-      ([key, value]) => !environmentKeys.has(key) || typeof value !== "string",
+      ([key, value]) =>
+        !(environmentKeys.has(key) || retiredRestartKeys.includes(key)) ||
+        typeof value !== "string",
     ) ||
     unset.some(
-      (key) => !restartKeys.includes(key) || Object.hasOwn(environment, key),
+      (key) =>
+        !(restartKeys.includes(key) || retiredRestartKeys.includes(key)) ||
+        Object.hasOwn(environment, key),
     )
   )
     throw new Error(
       "The saved restart environment is invalid or uses a different state directory.",
     );
   for (const key of unset) delete result[key];
-  return Object.assign(result, environment);
+  Object.assign(result, environment);
+  for (const key of retiredRestartKeys) delete result[key];
+  return result;
 }
 
 module.exports = {
   restartKeys,
+  retiredRestartKeys,
   restartEnvironmentVersion,
   savedLaunchEnvironment,
 };
