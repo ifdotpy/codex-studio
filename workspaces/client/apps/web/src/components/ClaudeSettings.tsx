@@ -3,13 +3,14 @@ import { useServerApi } from "../servers/ServerServicesContext";
 import { accountCanStart } from "../accountName";
 import { createPortal } from "react-dom";
 import { SettingsSection, SettingsRow } from "./ui/primitives";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   Button,
   NativeSelect,
   Switch,
   TextInput,
   SegmentedControl,
+  Accordion,
 } from "@mantine/core";
 import { errorText, type PostBody, type PostResult } from "../api";
 import { busy, type Agent } from "../types";
@@ -18,6 +19,30 @@ import AccountSignInNotice from "./AccountSignInNotice";
 import type { Account } from "./Accounts";
 import { requiresThinking } from "studio-claude-bridge/thinking.mjs";
 import "./claude-settings.css";
+
+function ClaudeDisclosure({
+  title,
+  children,
+  className = "",
+  alwaysOpen = false,
+}: {
+  title: string;
+  children: ReactNode;
+  className?: string;
+  alwaysOpen?: boolean;
+}) {
+  if (alwaysOpen) return <div className={className}>{children}</div>;
+  return (
+    <Accordion className={`claude-disclosure ${className}`} keepMounted={false}>
+      <Accordion.Item value="settings">
+        <Accordion.Control>{title}</Accordion.Control>
+        <Accordion.Panel>
+          <div className="claude-disclosure-content">{children}</div>
+        </Accordion.Panel>
+      </Accordion.Item>
+    </Accordion>
+  );
+}
 
 type ClaudeValues = {
   permissionMode: NonNullable<
@@ -286,7 +311,6 @@ export function ClaudeSettings({
           : ""}
     </div>
   );
-  const Advanced = permissionsTarget ? "div" : "details";
   return (
     <section
       className="settings-group claude-settings"
@@ -381,8 +405,11 @@ export function ClaudeSettings({
         )}
         {fieldStatus("Extended thinking")}
       </div>
-      <Advanced className="claude-advanced">
-        {!permissionsTarget && <summary>More settings and actions</summary>}
+      <ClaudeDisclosure
+        className="claude-advanced"
+        title="More settings and actions"
+        alwaysOpen={!!permissionsTarget}
+      >
         <div className="claude-advanced-content">
           <TextInput
             label="Auto-compact token limit"
@@ -404,8 +431,7 @@ export function ClaudeSettings({
             onKeyDown={(event) => event.key === "Enter" && saveWindow()}
           />
           {fieldStatus("Auto-compact limit")}
-          <details>
-            <summary>Commands and skills</summary>
+          <ClaudeDisclosure title="Commands and skills">
             <Button
               disabled={busyAction}
               onClick={() =>
@@ -465,9 +491,8 @@ export function ClaudeSettings({
             >
               Compact conversation
             </Button>
-          </details>
-          <details>
-            <summary>Conversation history</summary>
+          </ClaudeDisclosure>
+          <ClaudeDisclosure title="Conversation history">
             <p className="claude-setting-help">
               Remove a turn and later turns from Claude’s context. Saved history
               remains.
@@ -512,7 +537,7 @@ export function ClaudeSettings({
             >
               Roll back context
             </Button>
-          </details>
+          </ClaudeDisclosure>
           <p className="claude-version">
             Claude Code {state.version || "version unavailable"}
           </p>
@@ -538,7 +563,7 @@ export function ClaudeSettings({
             </div>
           ))}
         </div>
-      </Advanced>
+      </ClaudeDisclosure>
       {error && (
         <p role="alert" className="claude-setting-error">
           {error}

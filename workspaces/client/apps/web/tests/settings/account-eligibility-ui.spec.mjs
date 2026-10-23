@@ -209,6 +209,69 @@ for (const provider of ["codex", "claude"])
         join(evidence, "measurements.json"),
         JSON.stringify(measurements, null, 2),
       );
+      for (const width of [1440, 390]) {
+        await page.setViewportSize({ width, height: 900 });
+        for (const tab of ["Models", "Team"]) {
+          await dialog
+            .getByRole("tab", { name: new RegExp("^" + tab) })
+            .click();
+          await dialog
+            .getByRole("button", { name: "Close", exact: true })
+            .focus();
+          for (const key of ["Tab", "Shift+Tab"]) {
+            for (let step = 0; step < 40; step++) {
+              await page.keyboard.press(key);
+              expect(
+                await dialog.evaluate((node) =>
+                  node.contains(document.activeElement),
+                ),
+                `${provider} ${tab} ${width}px ${key} step ${step}`,
+              ).toBe(true);
+            }
+          }
+          await expect(dialog.locator("details")).toHaveCount(0);
+          if (provider === "claude" && tab === "Team") {
+            const advanced = dialog.getByRole("button", {
+              name: "More settings and actions",
+              exact: true,
+            });
+            const compactLimit = dialog.getByLabel("Auto-compact token limit", {
+              exact: true,
+            });
+            await expect(compactLimit).toHaveCount(0);
+            await advanced.click();
+            await expect(compactLimit).toBeVisible();
+            const commands = dialog.getByRole("button", {
+              name: "Commands and skills",
+              exact: true,
+            });
+            const load = dialog.getByRole("button", {
+              name: "Load commands",
+              exact: true,
+            });
+            await expect(load).toHaveCount(0);
+            await commands.click();
+            await expect(load).toBeVisible();
+            await commands.click();
+            await expect(load).toHaveCount(0);
+            await dialog
+              .getByRole("button", { name: "Close", exact: true })
+              .focus();
+            for (const key of ["Tab", "Shift+Tab"])
+              for (let step = 0; step < 40; step++) {
+                await page.keyboard.press(key);
+                expect(
+                  await dialog.evaluate((node) =>
+                    node.contains(document.activeElement),
+                  ),
+                  `expanded ${width}px ${key} step ${step}`,
+                ).toBe(true);
+              }
+            await advanced.click();
+            await expect(compactLimit).toHaveCount(0);
+          }
+        }
+      }
       console.log(`Eligibility evidence: ${evidence}`);
     } finally {
       server.stdin?.end();
