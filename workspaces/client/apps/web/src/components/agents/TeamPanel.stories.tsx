@@ -39,6 +39,14 @@ const workerFixtures: Agent[] = [
     status: "running",
     inFlight: true,
     activity: { phase: "tool", at: now - 74 },
+    commandProgress: [
+      {
+        monitorId: "typecheck",
+        stage: "pnpm run typecheck:fast",
+        startedAt: now - 74,
+        lastOutputLine: "Checking TypeScript exports",
+      },
+    ],
     overview: { task: "Verify sticky scroll across long conversations" },
   },
   {
@@ -99,6 +107,7 @@ const workers: Agent[] = workerFixtures.map((agent) => ({
   provider: agent.role === "reviewer" ? "claude" : "codex",
   created: now - 180,
   updated: now - 20,
+  effort: "medium",
 }));
 const threads = [lead, ...workers];
 const snapshot: Snapshot = {
@@ -184,8 +193,49 @@ export const Dispatch: Story = {
     await expect(
       canvas.getByRole("complementary", { name: "Team" }),
     ).toBeVisible();
+    const failed = canvas.getByRole("region", { name: "Failed" });
+    await expect(
+      within(failed).getByText("Type check failed in the project adapter.", {
+        selector: ".worker-error",
+      }),
+    ).toBeVisible();
+    await expect(
+      canvas.getAllByRole("img", { name: /^Reviewer$/ }).length,
+    ).toBeGreaterThan(0);
+    await expect(
+      canvas.getAllByRole("img", { name: /^Codex$/ }).length,
+    ).toBeGreaterThan(0);
+    await expect(
+      canvasElement.querySelector(
+        '[data-worker="running"] [data-chat-status="working"]',
+      ),
+    ).toBeVisible();
+    await expect(
+      canvas.queryByText("No final report available"),
+    ).not.toBeInTheDocument();
+    await userEvent.click(canvas.getByRole("button", { name: /^Failed$/ }));
+    await expect(
+      canvas.getByRole("button", { name: /^Failed$/ }),
+    ).toHaveAttribute("aria-pressed", "true");
+    await expect(
+      canvas.queryByText("Transcript worker"),
+    ).not.toBeInTheDocument();
+    await expect(canvasElement.querySelectorAll("[data-worker]")).toHaveLength(
+      1,
+    );
+    await userEvent.click(canvas.getByRole("button", { name: /^All$/ }));
+    await expect(
+      canvasElement.querySelector('[data-worker="running"]'),
+    ).toBeVisible();
+    const progress = canvasElement.querySelector(".worker-command-details")!;
+    await expect(progress).not.toHaveAttribute("open");
+    await userEvent.click(progress.querySelector("summary")!);
+    await expect(
+      within(progress as HTMLElement).getByText("Checking TypeScript exports"),
+    ).toBeVisible();
+    await userEvent.click(progress.querySelector("summary")!);
     await expect(canvas.queryByText("Storage adapter")).not.toBeInTheDocument();
-    await userEvent.click(canvas.getByText(/^Finished \(/));
+    await userEvent.click(canvas.getByLabelText("Finished (14)"));
     await expect(canvas.getByText("Storage adapter")).toBeVisible();
     await userEvent.type(
       canvas.getByRole("searchbox", { name: "Find a subagent" }),
@@ -197,7 +247,7 @@ export const Dispatch: Story = {
     await userEvent.clear(
       canvas.getByRole("searchbox", { name: "Find a subagent" }),
     );
-    await userEvent.click(canvas.getByText(/^Finished \(/));
+    await userEvent.click(canvas.getByLabelText("Finished (14)"));
   },
 };
 export const AfUtils: Story = {

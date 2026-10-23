@@ -19,6 +19,8 @@ export function TeamModels({
 }
 
 import type { Agent, Snapshot } from "../../types";
+import { Users } from "lucide-react";
+import { TeamStateIcon } from "./TeamFacts";
 import { diskFullHold } from "../../capacityRetry";
 import {
   CHAT_INDICATOR_URGENCY,
@@ -62,15 +64,39 @@ export function workerState(
   return "waiting";
 }
 
+export const teamFilterValue = (state: string) =>
+  state === "working" ? "active" : state === "error" ? "attention" : state;
+export function TeamGroupLabel({
+  kind,
+  label,
+  count,
+}: {
+  kind: ChatIndicatorKind | "completed";
+  label: string;
+  count: number;
+}) {
+  return (
+    <span className="team-group-label">
+      <TeamStateIcon kind={kind === "completed" ? "unread" : kind} />
+      <span>{label}</span>
+      <span className="team-group-count">{count}</span>
+    </span>
+  );
+}
 export function TeamSummary({
   workers,
   indicators,
+  selected,
+  onFilter,
 }: {
   workers: Agent[];
   indicators: Map<string, ChatIndicator>;
+  selected: string;
+  onFilter: (value: string) => void;
 }) {
   const { groups, completed } = teamDispatchGroups(workers, indicators);
   const counts = [
+    { state: "all", label: "All", count: workers.length },
     ...groups.map((group) => ({
       state: group.kind,
       label: group.name,
@@ -80,18 +106,57 @@ export function TeamSummary({
   ];
   return (
     <div className="team-overview" aria-label="Team status summary">
-      <dl>
+      <div
+        className="team-summary-filters"
+        role="group"
+        aria-label="Filter subagents"
+      >
         {counts
-          .filter((row) => row.count > 0)
-          .map((row) => (
-            <div key={row.state} data-team-count={row.state}>
-              <dt>{row.label}</dt>
-              <dd>{row.count}</dd>
-            </div>
-          ))}
-      </dl>
+          .filter((row) => row.count > 0 || row.state === "all")
+          .map((row) => {
+            const value = teamFilterValue(row.state);
+            return (
+              <button
+                key={row.state}
+                type="button"
+                data-team-count={row.state}
+                aria-label={row.state === "working" ? "Active" : row.label}
+                aria-pressed={selected === value}
+                title={`Show ${row.label.toLowerCase()} agents`}
+                onClick={() => onFilter(selected === value ? "all" : value)}
+              >
+                {row.state === "all" ? (
+                  <Users className="team-state-icon" aria-hidden="true" />
+                ) : (
+                  <TeamStateIcon
+                    kind={
+                      row.state === "completed"
+                        ? "unread"
+                        : (row.state as ChatIndicatorKind)
+                    }
+                  />
+                )}
+                <span>{row.label}</span>
+                <strong>{row.count}</strong>
+              </button>
+            );
+          })}
+      </div>
     </div>
   );
+}
+
+export function filterTeamWorkers(
+  workers: Agent[],
+  indicators: Map<string, ChatIndicator>,
+  filter: string,
+) {
+  if (filter === "all") return workers;
+  const { groups, completed } = teamDispatchGroups(workers, indicators);
+  return filter === "completed"
+    ? completed
+    : groups.find((group) => teamFilterValue(group.kind) === filter)?.workers ||
+        [];
 }
 
 /** Indentation follows the server-owned parent relation, including filtered parents. */
@@ -108,7 +173,7 @@ export function workerDepth(agent: Agent, agents: Map<string, Agent>) {
 }
 
 const teamIndicatorLabels: Record<ChatIndicatorKind, string> = {
-  answer: "Need you",
+  answer: "Needs you",
   error: "Failed",
   working: "Working",
   unread: "New results",

@@ -1,7 +1,6 @@
-import { ActionIcon, Button, TextInput, UnstyledButton } from "@mantine/core";
+import { ActionIcon, Button, TextInput } from "@mantine/core";
 import { ArrowLeft, Search, X } from "lucide-react";
 import type { Agent } from "../../types";
-import { busy } from "../../types";
 import type { Account } from "../Accounts";
 import type { ChatIndicator } from "../chat-status/chatStatusModel";
 import type { PreviewTarget } from "../FilePreview";
@@ -14,6 +13,8 @@ import {
   teamDispatchGroups,
   workerDepth,
   orderWorkerHierarchy,
+  TeamGroupLabel,
+  filterTeamWorkers,
 } from "./WorkerOverview";
 
 type Props = {
@@ -86,21 +87,15 @@ export default function TeamPanel({
       />
     </UIErrorBoundary>
   );
-  // Failed workers are the lead's work; the filter only finds them.
-  const failed = (a: Agent) =>
-    workerState(a, answerIds, deferredIds) === "attention";
   const query = workerQuery.trim().toLowerCase();
-  const shown = orderWorkerHierarchy(workers).filter((a) =>
-    query
-      ? `${a.name} ${a.status} ${a.role || ""} ${a.overview?.task || ""} ${a.overview?.result || ""}`
+  const ordered = orderWorkerHierarchy(workers);
+  const shown = query
+    ? ordered.filter((a) =>
+        `${a.name} ${a.status} ${a.role || ""} ${a.overview?.task || ""} ${a.overview?.result || ""}`
           .toLowerCase()
-          .includes(query)
-      : workerFilter === "attention"
-        ? failed(a)
-        : workerFilter === "active"
-          ? busy.has(a.status ?? "")
-          : true,
-  );
+          .includes(query),
+      )
+    : filterTeamWorkers(ordered, indicators, workerFilter);
   const { groups, completed } = teamDispatchGroups(shown, indicators);
   const smallTeam = workers.length <= 3;
   const showTeamFilters = !smallTeam || !!workerQuery || workerFilter !== "all";
@@ -109,7 +104,7 @@ export default function TeamPanel({
       <aside
         id="team"
         aria-label="Team"
-        className={smallTeam ? "team-compact" : undefined}
+        className={`team-dispatch ${smallTeam ? "team-compact" : ""}`}
       >
         <div className="team-heading">
           <h2>Team</h2>
@@ -125,7 +120,15 @@ export default function TeamPanel({
             <X size={16} />
           </ActionIcon>
         </div>
-        <TeamSummary workers={workers} indicators={indicators} />
+        <TeamSummary
+          workers={workers}
+          indicators={indicators}
+          selected={workerFilter}
+          onFilter={(value) => {
+            setWorkerFilter(value);
+            if (value === "completed") setCompletedOpen(true);
+          }}
+        />
         {/* The lead link is only useful from a worker chat. */}
         {lead && opened !== lead.id && (
           <Button
@@ -150,31 +153,11 @@ export default function TeamPanel({
               value={workerQuery}
               onChange={(e) => setWorkerQuery(e.target.value)}
             />
-            {query ? (
+            {!!query && (
               <p className="team-search-count" role="status">
                 {shown.length} {shown.length === 1 ? "match" : "matches"} in
                 this team
               </p>
-            ) : (
-              <div
-                className="team-filters"
-                role="group"
-                aria-label="Filter subagents"
-              >
-                {[
-                  ["all", "All"],
-                  ["active", "Active"],
-                  ["attention", "Failed"],
-                ].map(([value, label]) => (
-                  <UnstyledButton
-                    key={value}
-                    aria-pressed={workerFilter === value}
-                    onClick={() => setWorkerFilter(String(value))}
-                  >
-                    {label}
-                  </UnstyledButton>
-                ))}
-              </div>
             )}
           </>
         )}
@@ -204,7 +187,13 @@ export default function TeamPanel({
                 aria-label={group.name}
                 key={group.name}
               >
-                {!smallTeam && <h3>{group.name}</h3>}
+                <h3>
+                  <TeamGroupLabel
+                    kind={group.kind}
+                    label={group.name}
+                    count={group.workers.length}
+                  />
+                </h3>
                 {group.workers.map(worker)}
               </section>
             ) : null,
@@ -217,7 +206,13 @@ export default function TeamPanel({
                 if (!query) setCompletedOpen(event.currentTarget.open);
               }}
             >
-              <summary>Finished ({completed.length})</summary>
+              <summary aria-label={`Finished (${completed.length})`}>
+                <TeamGroupLabel
+                  kind="completed"
+                  label="Finished"
+                  count={completed.length}
+                />
+              </summary>
               {/* A collapsed group keeps its rows out of the DOM; the summary
                   and the team overview still count them. */}
               {(!!query || completedOpen) && completed.map(worker)}

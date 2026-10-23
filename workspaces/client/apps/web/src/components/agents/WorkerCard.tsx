@@ -1,7 +1,14 @@
 import { useServerApi } from "../../servers/ServerServicesContext";
 import { useSyncedVisualState } from "../../sync/useSyncedVisualState";
 import { ActionIcon, Button, Menu, UnstyledButton } from "@mantine/core";
-import { ChevronRight, MoreHorizontal, Trash2 } from "lucide-react";
+import {
+  ChevronRight,
+  CircleAlert,
+  FileText,
+  MoreHorizontal,
+  Trash2,
+  Terminal,
+} from "lucide-react";
 import { memo, useContext, useMemo, type CSSProperties } from "react";
 import { useCommittedCallback } from "../../hooks";
 import { reportPromptComposerRender } from "../prompt-composer/renderProbe";
@@ -12,6 +19,8 @@ import { startWaitLabel } from "../../startWait";
 import { modelDisplayName } from "../models/modelOption";
 import { TeamModelCatalog } from "./WorkerOverview";
 import type { Account } from "../Accounts";
+import { ProviderMark } from "../AccountTiles";
+import { TeamRoleIcon, TeamStateIcon, activityPresentation } from "./TeamFacts";
 import { accountDisplayName } from "../../accountName";
 import {
   agentErrorLabel,
@@ -68,6 +77,7 @@ function WorkerExcerpt({
     >
       <summary>
         <span className="worker-excerpt-label">
+          <FileText size={11} aria-hidden="true" />
           {label}
           <ChevronRight size={11} aria-hidden="true" />
         </span>
@@ -233,10 +243,20 @@ const WorkerCardView = memo(function WorkerCardView({
     ["waiting", "parked", "queued"].includes(agent.status || "")
       ? "Waiting"
       : statusDetail;
+  const activity = activityPresentation(agent);
+  const ActivityIcon =
+    error && !diskHeld && !stopReason ? CircleAlert : activity.Icon;
+  const activityText =
+    error && !diskHeld
+      ? stopReason || errorSummary === "Could not prepare the project folder."
+        ? stopReason || errorSummary
+        : error.replace(/\s+/g, " ")
+      : agent.commandProgress?.[0]?.stage || statusText;
   return (
     <div
       className={`worker-entry ${selected ? "selected" : ""}`}
       data-studio-state={indicator?.kind || "none"}
+      data-has-parent={depth > 0 || undefined}
       style={{ "--worker-depth": depth } as CSSProperties}
     >
       <div className="worker-heading">
@@ -249,52 +269,56 @@ const WorkerCardView = memo(function WorkerCardView({
         >
           <span className="worker-text">
             <span className="worker-name-line">
-              <strong title={agent.name || undefined}>{agent.name}</strong>
-              <span className="worker-meta">
-                <span className="worker-model-summary" title={meta}>
-                  <span className="worker-role">
-                    {lead
-                      ? "Lead"
-                      : agent.role === "reviewer"
-                        ? "Reviewer"
-                        : "Worker"}
-                  </span>
-
-                  <span className="worker-model-name">{modelName}</span>
-                  <span className="worker-effort">
-                    {effort.charAt(0).toUpperCase() + effort.slice(1)}
-                  </span>
-                  {connected.length > 1 && account && (
-                    <span>{accountDisplayName(account)}</span>
-                  )}
-                </span>
+              <span className="worker-indicator">
+                <ChatStatus
+                  status={indicator}
+                  provider={agent.provider ?? undefined}
+                  model={agent.model ?? undefined}
+                />
+                {(!indicator ||
+                  ["none", "paused"].includes(indicator.kind)) && (
+                  <TeamStateIcon kind={indicator?.kind || "none"} />
+                )}
               </span>
+              <span
+                className="worker-provider"
+                role="img"
+                aria-label={provider === "claude" ? "Claude" : "Codex"}
+                title={provider === "claude" ? "Claude" : "Codex"}
+              >
+                <ProviderMark provider={provider} />
+              </span>
+              <strong title={agent.name || undefined}>{agent.name}</strong>
+              <TeamRoleIcon agent={agent} lead={lead} />
               <AgentElapsed agent={agent} />
             </span>
-            <span className="worker-status-accessible">
-              <ChatStatus
-                status={indicator}
-                provider={agent.provider ?? undefined}
-                model={agent.model ?? undefined}
-              />
-              <small>{statusText}</small>
-            </span>
             <span className="worker-live-line">
+              <ActivityIcon
+                className="worker-activity-icon"
+                aria-label={
+                  error && !diskHeld ? "Error reason" : activity.label
+                }
+                role="img"
+              />
               <span
-                className="worker-activity"
-                title={errorSummary || statusDetail}
+                className={
+                  error && !diskHeld && !stopReason
+                    ? "worker-activity worker-error"
+                    : "worker-activity"
+                }
+                title={error || statusDetail}
               >
-                {statusText}
+                {activityText}
               </span>
               {agent.overview?.task && (
                 <span className="worker-task" title={agent.overview.task}>
                   {agent.overview.task}
                 </span>
               )}
-              <TokenRate agent={agent} variant="worker" />
+              {agent.environment === "linux" && (
+                <span className="worker-environment">Linux VM</span>
+              )}
             </span>
-            <AgentProgress agent={agent} />
-            {agent.environment === "linux" && <small>Linux VM</small>}
           </span>
         </UnstyledButton>
         {remove && (
@@ -322,27 +346,60 @@ const WorkerCardView = memo(function WorkerCardView({
           </Menu>
         )}
       </div>
-      {Boolean(agent.error) && (
-        <details
-          className={
-            stopReason ? "worker-stop-details" : "worker-error-details"
-          }
-        >
-          <summary>{stopReason ? "Stop details" : "Error details"}</summary>
-          <pre>{errorView.details || errorView.message}</pre>
-        </details>
-      )}
-      {overview?.result ? (
-        <WorkerExcerpt
-          agentId={agent.id}
-          label="Last report"
-          text={overview.result}
-          truncated={overview.resultTruncated ?? undefined}
-          open={open}
-        />
-      ) : !lead && agent.status === "completed" ? (
-        <p className="worker-missing">No final report available</p>
-      ) : null}
+      <div className="worker-bottom">
+        <span className="worker-meta" title={meta}>
+          <span className="worker-model-name">{modelName}</span>
+          <span className="worker-effort">
+            {effort.charAt(0).toUpperCase() + effort.slice(1)}
+          </span>
+          {connected.length > 1 && account && (
+            <span className="worker-account">
+              {accountDisplayName(account)}
+            </span>
+          )}
+          <TokenRate agent={agent} variant="worker" />
+        </span>
+        <div className="worker-disclosures">
+          {Boolean(agent.error) && (
+            <details
+              className={
+                stopReason ? "worker-stop-details" : "worker-error-details"
+              }
+            >
+              <summary title={stopReason ? "Stop details" : "Error details"}>
+                <CircleAlert aria-hidden="true" />
+                <span className="sr-only">
+                  {stopReason ? "Stop details" : "Error details"}
+                </span>
+              </summary>
+              <pre>{errorView.details || errorView.message}</pre>
+            </details>
+          )}
+          {overview?.result ? (
+            <WorkerExcerpt
+              agentId={agent.id}
+              label="Last report"
+              text={overview.result}
+              truncated={overview.resultTruncated ?? undefined}
+              open={open}
+            />
+          ) : null}
+          {!!agent.commandProgress?.length && (
+            <details className="worker-command-details">
+              <summary title="Command progress">
+                <Terminal aria-hidden="true" />
+                <span className="sr-only">Command progress</span>
+              </summary>
+              <AgentProgress agent={agent} />
+            </details>
+          )}
+          {agent.stall && (
+            <span className="agent-stall" title={statusDetail}>
+              Waiting for lead
+            </span>
+          )}
+        </div>
+      </div>
       {overview?.resultFile && (
         <Button
           component="a"
