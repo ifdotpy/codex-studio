@@ -7,7 +7,7 @@ import {
   Stack,
   TextInput,
 } from "@mantine/core";
-import { Ellipsis, RefreshCw } from "lucide-react";
+import { Check, CloudOff, Ellipsis, LogIn, RefreshCw } from "lucide-react";
 import { useMemo, useRef, useState } from "react";
 import {
   closeMenuFromTriggerOnEscape,
@@ -248,12 +248,25 @@ export default function ServerAccountsPanel({
                         ["offline", "degraded", "schema-mismatch"].includes(
                           statuses[server.id] || "",
                         ),
-                      ) && <span className="account-strip-state">Offline</span>}
+                      ) && (
+                        <span className="account-strip-state" title="Offline">
+                          <CloudOff size={14} aria-hidden="true" />
+                          <span className="account-strip-state-label">
+                            Offline
+                          </span>
+                        </span>
+                      )}
                       {Object.values(row.byServer).some(
                         (account) => account?.status !== "ready",
                       ) && (
-                        <span className="account-strip-state">
-                          Sign in needed
+                        <span
+                          className="account-strip-state"
+                          title="Sign in needed"
+                        >
+                          <LogIn size={14} aria-hidden="true" />
+                          <span className="account-strip-state-label">
+                            Sign in needed
+                          </span>
                         </span>
                       )}
 
@@ -265,8 +278,12 @@ export default function ServerAccountsPanel({
                             size="xs"
                             color="blue"
                             variant="light"
+                            title={`Default ${server.label}`}
                           >
-                            Default <span>{server.label}</span>
+                            <Check size={12} aria-hidden="true" />
+                            <span className="account-strip-state-label">
+                              Default {server.label}
+                            </span>
                           </Badge>
                         ))}
                     </div>

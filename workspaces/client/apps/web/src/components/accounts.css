@@ -590,6 +590,10 @@
   color: var(--muted);
 }
 .account-strip-state {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: calc(var(--mantine-spacing-xs) / 5);
   color: var(--studio-state-answer);
   font-size: var(--studio-text-meta);
   white-space: nowrap;
@@ -604,6 +608,7 @@
     min-height: var(--studio-touch-target);
     text-align: center;
   }
+  .server-account-heading .account-strip-state-label,
   :is(.account-row, .server-account-row)
     .account-limit-details
     > summary
