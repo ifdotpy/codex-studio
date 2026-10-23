@@ -38,3 +38,48 @@ diff --git a/dist/esm/rx-storage-helper.js b/dist/esm/rx-storage-helper.js
 +        if (context !== "studio-projection-pull" && error.status === 409 && !error.writeRow.previous && !error.writeRow.document._deleted && ensureNotFalsy(error.documentInDb)._deleted) {
            return true;
          }
+diff --git a/src/replication-protocol/upstream.ts b/src/replication-protocol/upstream.ts
+--- a/src/replication-protocol/upstream.ts
++++ b/src/replication-protocol/upstream.ts
+@@ -267,6 +267,11 @@
+             if (openTasks.length === 0) {
+                 state.events.active.up.next(false);
+             } else {
++                // Studio: RxDB 17.6.0 bypasses the existing waitBeforePersist hook
++                // when draining edits received during a push.
++                if (state.input.waitBeforePersist) {
++                    return state.input.waitBeforePersist().then(() => processTasks());
++                }
+                 return processTasks();
+             }
+         });
+diff --git a/dist/esm/replication-protocol/upstream.js b/dist/esm/replication-protocol/upstream.js
+--- a/dist/esm/replication-protocol/upstream.js
++++ b/dist/esm/replication-protocol/upstream.js
+@@ -179,6 +179,11 @@
+       if (openTasks.length === 0) {
+         state.events.active.up.next(false);
+       } else {
++        // Studio: RxDB 17.6.0 bypasses the existing waitBeforePersist hook
++        // when draining edits received during a push.
++        if (state.input.waitBeforePersist) {
++          return state.input.waitBeforePersist().then(() => processTasks());
++        }
+         return processTasks();
+       }
+     });
+diff --git a/dist/cjs/replication-protocol/upstream.js b/dist/cjs/replication-protocol/upstream.js
+--- a/dist/cjs/replication-protocol/upstream.js
++++ b/dist/cjs/replication-protocol/upstream.js
+@@ -184,6 +184,11 @@
+       if (openTasks.length === 0) {
+         state.events.active.up.next(false);
+       } else {
++        // Studio: RxDB 17.6.0 bypasses the existing waitBeforePersist hook
++        // when draining edits received during a push.
++        if (state.input.waitBeforePersist) {
++          return state.input.waitBeforePersist().then(() => processTasks());
++        }
+         return processTasks();
+       }
+     });

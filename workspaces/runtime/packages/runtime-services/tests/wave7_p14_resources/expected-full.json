@@ -3,7838 +3,5162 @@
     "result": true,
     "revision": 2,
     "rates": {
-      "rates": {},
-      "teams": {}
+      "records": []
     }
   },
   {
     "result": false,
     "revision": 2,
     "rates": {
-      "rates": {},
-      "teams": {}
+      "records": []
     }
   },
   {
     "result": 409,
     "revision": 2,
     "rates": {
-      "rates": {},
-      "teams": {}
+      "records": []
     }
   },
   {
     "result": true,
     "revision": 3,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 0,
           "outputTokens": 0
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 0,
-            "outputTokens": 0
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": false,
     "revision": 3,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 0,
           "outputTokens": 0
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 0,
-            "outputTokens": 0
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 4,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 123,
           "outputTokens": 123
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 123,
-            "outputTokens": 123
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": false,
     "revision": 4,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 123,
           "outputTokens": 123
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 123,
-            "outputTokens": 123
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 5,
     "rates": {
-      "rates": {},
-      "teams": {}
+      "records": []
     }
   },
   {
     "result": 400,
     "revision": 5,
     "rates": {
-      "rates": {},
-      "teams": {}
+      "records": []
     }
   },
   {
     "result": 400,
     "revision": 5,
     "rates": {
-      "rates": {},
-      "teams": {}
+      "records": []
     }
   },
   {
     "result": 400,
     "revision": 5,
     "rates": {
-      "rates": {},
-      "teams": {}
+      "records": []
     }
   },
   {
     "result": 400,
     "revision": 5,
     "rates": {
-      "rates": {},
-      "teams": {}
+      "records": []
     }
   },
   {
     "result": 400,
     "revision": 5,
     "rates": {
-      "rates": {},
-      "teams": {}
+      "records": []
     }
   },
   {
     "result": 400,
     "revision": 5,
     "rates": {
-      "rates": {},
-      "teams": {}
+      "records": []
     }
   },
   {
     "result": 400,
     "revision": 5,
     "rates": {
-      "rates": {},
-      "teams": {}
+      "records": []
     }
   },
   {
     "result": 400,
     "revision": 5,
     "rates": {
-      "rates": {},
-      "teams": {}
+      "records": []
     }
   },
   {
     "result": 400,
     "revision": 5,
     "rates": {
-      "rates": {},
-      "teams": {}
+      "records": []
     }
   },
   {
     "result": 400,
     "revision": 5,
     "rates": {
-      "rates": {},
-      "teams": {}
+      "records": []
     }
   },
   {
     "result": 400,
     "revision": 5,
     "rates": {
-      "rates": {},
-      "teams": {}
+      "records": []
     }
   },
   {
     "result": 400,
     "revision": 5,
     "rates": {
-      "rates": {},
-      "teams": {}
+      "records": []
     }
   },
   {
     "result": 400,
     "revision": 5,
     "rates": {
-      "rates": {},
-      "teams": {}
+      "records": []
     }
   },
   {
     "result": 400,
     "revision": 5,
     "rates": {
-      "rates": {},
-      "teams": {}
+      "records": []
     }
   },
   {
     "result": 400,
     "revision": 5,
     "rates": {
-      "rates": {},
-      "teams": {}
+      "records": []
     }
   },
   {
     "result": true,
     "revision": 6,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": false,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": 400,
     "revision": 6,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": false,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": 400,
     "revision": 6,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": false,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": 400,
     "revision": 6,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": false,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": 400,
     "revision": 6,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": false,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": 400,
     "revision": 6,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": false,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": 400,
     "revision": 6,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": false,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 7,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": 400,
     "revision": 7,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": 400,
     "revision": 7,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": 400,
     "revision": 7,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": 400,
     "revision": 7,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": 400,
     "revision": 7,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": 400,
     "revision": 7,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": 400,
     "revision": 7,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": 400,
     "revision": 7,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": 400,
     "revision": 7,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": 400,
     "revision": 7,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": 400,
     "revision": 7,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": 400,
     "revision": 7,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": 400,
     "revision": 7,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": 400,
     "revision": 7,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": 400,
     "revision": 7,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": 400,
     "revision": 7,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 8,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": 400,
     "revision": 8,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 9,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 10,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 11,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 12,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 13,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 14,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 15,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 16,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 17,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 18,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 19,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 20,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 21,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 22,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 23,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 24,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 25,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 26,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 27,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 28,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 29,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 30,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 31,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 32,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 33,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 34,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 35,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 36,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 37,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 38,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 39,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 40,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 41,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 42,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 43,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 44,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 45,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 46,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 47,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 48,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 49,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 50,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 51,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 52,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 53,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 54,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 55,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 56,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 57,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 58,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 59,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 60,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 61,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 62,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 63,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 64,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 65,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 66,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 67,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 68,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 69,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 70,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 71,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 72,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 73,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 74,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 75,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 76,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 77,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 78,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 79,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 80,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 81,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 82,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 83,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 84,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 85,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 86,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 87,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 88,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 89,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 90,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 91,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 92,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 93,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 94,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 95,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 96,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 97,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 98,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 99,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 100,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 101,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 102,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 103,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 104,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 105,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 106,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 107,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 108,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 109,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 110,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 111,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 112,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 113,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 114,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 115,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 116,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 117,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 118,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 119,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 120,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 121,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 122,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 123,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 124,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 125,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 126,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 127,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 128,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 129,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 130,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 131,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 132,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 133,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 134,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 135,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 136,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 137,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 138,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 139,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 140,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 141,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 142,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 143,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 144,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 145,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 146,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 147,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 148,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 149,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 150,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 151,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 152,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 153,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 154,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 155,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 156,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 157,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 158,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 159,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 160,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 161,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 162,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 163,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 164,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 165,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 166,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 167,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 168,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 169,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 170,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 171,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 172,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 173,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 174,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 175,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 176,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 177,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 178,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 179,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 180,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 181,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 182,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 183,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 184,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 185,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 186,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 187,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 188,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 189,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 190,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 191,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 192,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 193,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 194,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 195,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 196,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 197,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 198,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 199,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 200,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 201,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 202,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 203,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 204,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 205,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 206,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 207,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 208,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 209,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 210,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 211,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 212,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 213,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 214,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 215,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 216,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 217,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 218,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 219,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 220,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 221,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 222,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 223,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 224,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 225,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 226,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 227,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 228,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 229,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 230,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 231,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 232,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 233,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 234,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 235,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 236,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 237,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 238,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 239,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 240,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 241,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 242,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 243,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 244,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 245,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 246,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 247,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 248,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 249,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 250,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 251,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 252,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 253,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 254,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 255,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 256,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 257,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 258,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 259,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 260,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 261,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 262,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 263,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 264,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 265,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 266,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 267,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 268,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 269,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 270,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 271,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 272,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 274,
     "rates": {
-      "rates": {
-        "agent": {
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
           "turnId": "turn",
           "active": true,
           "estimated": false,
           "rate": 1,
           "outputTokens": 1
         }
-      },
-      "teams": {
-        "lead": {
-          "agent": {
-            "turnId": "turn",
-            "active": true,
-            "estimated": false,
-            "rate": 1,
-            "outputTokens": 1
-          }
-        }
-      }
+      ]
     }
   },
   {
     "result": true,
     "revision": 0,
     "rates": {
-      "rates": {},
-      "teams": {}
+      "records": []
     }
   },
   {
     "result": true,
     "revision": 2,
     "rates": {
-      "rates": {},
-      "teams": {}
+      "records": []
     }
   }
 ]

@@ -6,6 +6,7 @@ pub mod agent_progress;
 pub mod api_schema;
 pub mod contracts;
 pub mod delivery;
+pub mod desktop;
 pub mod federation_limits;
 pub mod multi_server_protocol;
 pub mod shared_values;
@@ -23,9 +24,7 @@ use serde_json::{Value, json};
 pub mod sync_protocol;
 pub use sync_protocol::{SYNC_ENTITY_SCOPE, SYNC_PROTOCOL_VERSION, SYNC_PROTOCOL_VERSION_TEXT};
 mod token_rate_limits;
-pub use token_rate_limits::{
-    TOKEN_RATE_IDENTIFIER_MAX_CODEPOINTS, TOKEN_RATE_MAX_ENTRIES, TOKEN_RATE_MAX_TOTAL_ENTRIES,
-};
+pub use token_rate_limits::{TOKEN_RATE_IDENTIFIER_MAX_CODEPOINTS, TOKEN_RATE_MAX_ENTRIES};
 
 pub const OPENAPI_URI: &str = "https://codex-studio.invalid/openapi.json";
 const ACCOUNT_REGISTRY_URI: &str = "https://codex-studio.invalid/account-registry.schema.json";
