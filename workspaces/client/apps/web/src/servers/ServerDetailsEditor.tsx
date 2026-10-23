@@ -1,3 +1,4 @@
+import Disclosure from "../components/ui/Disclosure";
 import { useEffect, useRef, useState } from "react";
 import { TextInput } from "@mantine/core";
 import { ActionButton } from "../components/ui/primitives";
@@ -99,8 +100,7 @@ export default function ServerDetailsEditor({
     }
   };
   return (
-    <details className="server-settings-edit">
-      <summary>Edit</summary>
+    <Disclosure className="server-settings-edit" summary="Edit">
       <form
         onSubmit={(event) => {
           event.preventDefault();
@@ -156,6 +156,6 @@ export default function ServerDetailsEditor({
           Save
         </ActionButton>
       </form>
-    </details>
+    </Disclosure>
   );
 }

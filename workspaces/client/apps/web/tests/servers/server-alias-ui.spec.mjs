@@ -44,7 +44,7 @@ test("a discovered Serve HTTPS port preserves server rows and alias save", async
       remote.invitation.origin,
     );
     const row = dialog.locator("[data-settings-server=local]");
-    await row.locator(".server-settings-edit > summary").click();
+    await row.locator(".server-settings-edit .disclosure-control").click();
     await row.getByRole("textbox", { name: "Server alias" }).fill("LUM");
     await row.getByRole("button", { name: "Save", exact: true }).click();
     await expect.poll(() => local.aliases.local).toBe("LUM");
@@ -85,7 +85,7 @@ test("a confirmed alias save stays confirmed when the following read fails", asy
     await page.goto(local.origin);
     const dialog = await settings(page);
     const row = dialog.locator("[data-settings-server=local]");
-    await row.locator(".server-settings-edit > summary").click();
+    await row.locator(".server-settings-edit .disclosure-control").click();
     await row.getByRole("textbox", { name: "Server alias" }).fill("LUM");
     await row.getByRole("button", { name: "Save", exact: true }).click();
     await expect.poll(() => local.aliases.local).toBe("LUM");
@@ -143,7 +143,7 @@ test("combined server edits retry only the failed alias with its original identi
     await page.goto(local.origin);
     const dialog = await settings(page);
     const row = dialog.locator("[data-settings-server=local]");
-    await row.locator(".server-settings-edit > summary").click();
+    await row.locator(".server-settings-edit .disclosure-control").click();
     await row
       .getByRole("textbox", { name: "Server name", exact: true })
       .fill("Release workstation");

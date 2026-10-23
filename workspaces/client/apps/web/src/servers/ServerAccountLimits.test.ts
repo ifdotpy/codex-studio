@@ -1,6 +1,6 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { MantineProvider } from "@mantine/core";
+import { Accordion, MantineProvider } from "@mantine/core";
 import { expect, test } from "vitest";
 import { accountLimitView } from "../components/AccountTiles";
 import { AccountCapacityView, type Account } from "../components/Accounts";
@@ -30,7 +30,17 @@ const limits = (accountKey: string, at: number, usedPercent: number) =>
     error: null,
   }) as unknown as AccountLimitsSnapshot;
 const render = (element: ReturnType<typeof createElement>) =>
-  renderToStaticMarkup(createElement(MantineProvider, null, element));
+  renderToStaticMarkup(
+    createElement(
+      MantineProvider,
+      null,
+      createElement(
+        Accordion,
+        { keepMounted: false },
+        createElement(Accordion.Item, { value: "account" }, element),
+      ),
+    ),
+  );
 const count = (text: string, part: string) => text.split(part).length - 1;
 
 test.each(["codex", "claude"] as const)(
@@ -59,8 +69,8 @@ test.each(["codex", "claude"] as const)(
     expect(markup).toContain(
       "Turn start limits on Igor MBP: 8 per burst · 30 s pause · 16 running",
     );
-    expect(markup).toContain("<details");
-    expect(markup).not.toContain("<details open");
+    expect(markup).toContain('aria-expanded="false"');
+    expect(markup).not.toContain("Save turn start limits");
   },
 );
 
@@ -123,8 +133,8 @@ test("one reading shows one remaining limit with its age and server", () => {
   );
   expect(count(markup, "Remaining limit</span>")).toBe(1);
   expect(markup).toContain("33% left");
-  expect(markup).toContain("Updated 1 min ago on Igor MBP");
-  expect(count(markup, "Limit details")).toBe(1);
+  expect(markup).not.toContain("Updated 1 min ago on Igor MBP");
+  expect(markup).not.toContain("account-window-meter");
 });
 
 test("an account on two servers shows one limit, not one per server", () => {

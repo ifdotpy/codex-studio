@@ -947,6 +947,7 @@ export default function Usage({
                         <LimitRecoveryNotice
                           key={JSON.stringify(recovery)}
                           recovery={recovery}
+                          tabIndex={isSelected ? undefined : -1}
                         />
                       )}
                       <div
@@ -1099,6 +1100,7 @@ export default function Usage({
                           </p>
                           <div className="account-reset-credit-row">
                             <Button
+                              tabIndex={isSelected ? undefined : -1}
                               component="a"
                               href="https://claude.ai/settings/usage"
                               target="_blank"
@@ -1110,6 +1112,7 @@ export default function Usage({
                               Open free resets
                             </Button>
                             <Button
+                              tabIndex={isSelected ? undefined : -1}
                               size="compact-xs"
                               variant="subtle"
                               loading={
@@ -1174,6 +1177,7 @@ export default function Usage({
                                   </span>
                                 </div>
                                 <Button
+                                  tabIndex={isSelected ? undefined : -1}
                                   size="compact-xs"
                                   variant="light"
                                   disabled={
@@ -1214,6 +1218,7 @@ export default function Usage({
                                   </p>
                                   <div>
                                     <Button
+                                      tabIndex={isSelected ? undefined : -1}
                                       size="compact-xs"
                                       variant="default"
                                       disabled={resetPending}
@@ -1225,6 +1230,7 @@ export default function Usage({
                                       Cancel
                                     </Button>
                                     <Button
+                                      tabIndex={isSelected ? undefined : -1}
                                       size="compact-xs"
                                       loading={resetPending}
                                       disabled={resetPending}
