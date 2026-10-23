@@ -1,3 +1,4 @@
+mod agent_limits;
 mod checkpoint_rewind;
 mod child_permissions;
 mod claude_file_backups;
