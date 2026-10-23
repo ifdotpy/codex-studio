@@ -84,6 +84,161 @@ fn task_output_refuses_outside_paths_and_symlink_escapes() {
     }
 }
 
+#[cfg(unix)]
+fn claude_output_fixture() -> (tempfile::TempDir, tempfile::TempDir, std::path::PathBuf) {
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt};
+    let temporary = std::env::var_os("CLAUDE_CODE_TMPDIR")
+        .filter(|value| !value.is_empty())
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| "/tmp".into());
+    let uid = nix::unistd::getuid().as_raw();
+    let root = temporary.join(format!("claude-{uid}"));
+    match std::fs::DirBuilder::new().mode(0o700).create(&root) {
+        Ok(()) => (),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => (),
+        Err(error) => panic!("cannot prepare Claude test root: {error}"),
+    }
+    let metadata = std::fs::symlink_metadata(&root).unwrap();
+    assert!(metadata.is_dir());
+    assert_eq!(metadata.uid(), uid);
+    let project = tempfile::Builder::new()
+        .prefix("-studio-u5-output-")
+        .tempdir_in(root)
+        .unwrap();
+    let output = project.path().join("session/tasks/task_A-1.output");
+    std::fs::create_dir_all(output.parent().unwrap()).unwrap();
+    std::fs::write(&output, "real Claude task output").unwrap();
+    (project, tempfile::tempdir().unwrap(), output)
+}
+
+#[cfg(unix)]
+#[test]
+fn claude_task_output_in_cli_directory_is_readable_and_bounded() {
+    use studio_runtime_store::path_identity::CanonicalPath;
+    let (_project, workspace, output) = claude_output_fixture();
+    let (mut task, owner) = file_fixture(workspace.path(), output.to_str().unwrap());
+    assert_eq!(
+        task_output::read(&task, &owner, "owner").unwrap()["text"],
+        "real Claude task output"
+    );
+    for id in ["x", "ABCDEFGHIJKLMNOPQRST"] {
+        let boundary = output.with_file_name(format!("{id}.output"));
+        std::fs::write(&boundary, "task ID boundary").unwrap();
+        let (task, owner) = file_fixture(workspace.path(), boundary.to_str().unwrap());
+        assert_eq!(
+            task_output::read(&task, &owner, "owner").unwrap()["text"],
+            "task ID boundary"
+        );
+    }
+    task["outputFile"] = json!(CanonicalPath::existing(&output).unwrap());
+    assert_eq!(
+        task_output::read(&task, &owner, "owner").unwrap()["text"],
+        "real Claude task output"
+    );
+    std::fs::write(
+        &output,
+        vec![b'x'; task_output::MAX_TASK_OUTPUT_BYTES as usize + 1],
+    )
+    .unwrap();
+    let result = task_output::read(&task, &owner, "owner").unwrap();
+    assert_eq!(result["truncated"], true);
+    assert_eq!(
+        result["text"].as_str().unwrap().len(),
+        task_output::MAX_TASK_OUTPUT_BYTES as usize
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn claude_task_output_refuses_symlink_components() {
+    use std::os::unix::fs::symlink;
+    let (project, workspace, output) = claude_output_fixture();
+    let outside = tempfile::tempdir().unwrap();
+    std::fs::create_dir(outside.path().join("tasks")).unwrap();
+    std::fs::write(outside.path().join("tasks/task_A-1.output"), "secret").unwrap();
+    symlink(outside.path(), project.path().join("linked-session")).unwrap();
+    let linked = project.path().join("linked-session/tasks/task_A-1.output");
+    let (task, owner) = file_fixture(workspace.path(), linked.to_str().unwrap());
+    assert!(task_output::read(&task, &owner, "owner").is_err());
+    std::fs::remove_file(&output).unwrap();
+    symlink(outside.path().join("tasks/task_A-1.output"), &output).unwrap();
+    let (task, owner) = file_fixture(workspace.path(), output.to_str().unwrap());
+    assert!(task_output::read(&task, &owner, "owner").is_err());
+}
+
+#[cfg(unix)]
+#[test]
+fn claude_task_output_refuses_invalid_ids_and_parent_traversal() {
+    let (project, workspace, output) = claude_output_fixture();
+    for name in [
+        ".output".to_owned(),
+        format!("{}.output", "x".repeat(21)),
+        "bad.id.output".into(),
+        "bad+id.output".into(),
+        "é.output".into(),
+        "task_A-1.output.bak".into(),
+    ] {
+        let path = output.with_file_name(&name);
+        std::fs::write(&path, "secret").unwrap();
+        let (task, owner) = file_fixture(workspace.path(), path.to_str().unwrap());
+        assert!(task_output::read(&task, &owner, "owner").is_err(), "{name}");
+    }
+    let path = project
+        .path()
+        .join("session/tasks/../tasks/task_A-1.output");
+    let (task, owner) = file_fixture(workspace.path(), path.to_str().unwrap());
+    assert!(task_output::read(&task, &owner, "owner").is_err());
+}
+
+#[cfg(unix)]
+#[test]
+fn claude_task_output_refuses_foreign_uid_roots() {
+    let (_project, workspace, output) = claude_output_fixture();
+    let root = output.ancestors().nth(4).unwrap();
+    let foreign_uid = nix::unistd::getuid().as_raw().wrapping_add(1);
+    let relative = output.strip_prefix(root).unwrap();
+    let foreign = root
+        .parent()
+        .unwrap()
+        .join(format!("claude-{foreign_uid}"))
+        .join(relative);
+    let (task, owner) = file_fixture(workspace.path(), foreign.to_str().unwrap());
+    let error = task_output::read(&task, &owner, "owner").unwrap_err();
+    assert!(error.contains("outside"), "{error}");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn claude_task_output_uses_configured_tmp_root() {
+    use std::os::unix::fs::symlink;
+    let custom = tempfile::tempdir().unwrap();
+    let unrelated = tempfile::tempdir().unwrap();
+    let alias = unrelated.path().join("configured-temp");
+    symlink(custom.path(), &alias).unwrap();
+    let mut command = tokio::process::Command::new(std::env::current_exe().unwrap());
+    command
+        .args([
+            "--exact",
+            "monitor_output_ui::claude_task_output_in_cli_directory_is_readable_and_bounded",
+            "--test-threads",
+            "1",
+        ])
+        .env("CLAUDE_CODE_TMPDIR", &alias)
+        .env("TMPDIR", unrelated.path())
+        .kill_on_drop(true);
+    let output = tokio::time::timeout(std::time::Duration::from_secs(10), command.output())
+        .await
+        .expect("isolated configured-root check finishes")
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+}
+
 struct Workspace;
 impl monitor_runtime::WorkspaceAdmission for Workspace {
     fn check(&self, _: &Transaction<'_>, _: &AgentRecord) -> Result<(), MonitorError> {
