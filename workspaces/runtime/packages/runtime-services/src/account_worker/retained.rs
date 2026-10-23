@@ -833,6 +833,49 @@ pub async fn monitor_result(
         })
         .await
 }
+/// The recorded answer of monitor `id`'s command after its loss was decided at
+/// the command deadline. The live monitor authorization ends with that loss;
+/// the monitor's stored operation and its submitted receipt still name the
+/// request. This only reads receipts and never creates a provider request.
+/// `None` while no answer is recorded, or when the monitor is no longer that
+/// deadline loss of `operation`.
+pub async fn monitor_late_result(
+    store: &RuntimeStore,
+    id: &str,
+    operation: &crate::monitor_policy::Operation,
+) -> Result<Option<crate::account_session_runtime::ProviderResponse>, WorkerError> {
+    let id = id.to_owned();
+    let operation = operation.clone();
+    store
+        .read_async("runtime-services/retained_monitor_late_result", move |tx| {
+            let snapshot = match crate::monitor_runtime::snapshot(tx, &id) {
+                Ok((snapshot, _)) => snapshot,
+                Err(crate::monitor_policy::MonitorError::Store(error)) => {
+                    return Err(WorkerError::Store(error));
+                }
+                Err(_) => return Ok(None),
+            };
+            if !snapshot.deadline_lost() || snapshot.operation() != Some(&operation) {
+                return Ok(None);
+            }
+            let Some(call) = monitor_call(tx, &id, &operation)? else {
+                return Ok(None);
+            };
+            let Ok(storage::Replay::Return(receipt)) = storage::replay_recorded(tx, &call)? else {
+                return Ok(None);
+            };
+            Ok(match receipt.result {
+                RequestResult::Reply(value) => Some(
+                    crate::account_session_runtime::ProviderResponse::Reply(value),
+                ),
+                RequestResult::Rejected(value) => Some(
+                    crate::account_session_runtime::ProviderResponse::Rejected(value),
+                ),
+                RequestResult::Unknown | RequestResult::NotSent => None,
+            })
+        })
+        .await
+}
 /// The provider generation that received monitor `id`'s retained
 /// `command/exec`. While that generation's provider process runs, its answer
 /// reaches the retained ledger. `None` when no request was submitted for it,

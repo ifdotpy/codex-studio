@@ -861,7 +861,12 @@ fn exit_event(
         .map_err(studio_runtime_store::StoreError::from)?;
     let owner: TerminalOwner =
         serde_json::from_value(monitor.clone()).map_err(studio_runtime_store::StoreError::from)?;
-    let event_id = format!("monitor:{}", payload.id);
+    // The late answer of a deadline loss is a second outcome for the owner.
+    let event_id = if monitor.get("lateAnswerAt").is_some_and(|at| !at.is_null()) {
+        format!("monitor:{}:late-answer", payload.id)
+    } else {
+        format!("monitor:{}", payload.id)
+    };
     let monitor_epoch = owner
         .epoch
         .or_else(|| owner.operation.map(|operation| operation.epoch));
@@ -997,6 +1002,30 @@ pub async fn reconcile_unknown(
             apply(tx, &snapshot, &actor, &decision, now)
         })
         .await
+}
+
+/// Deadline losses that may still be in their late-answer window at `now`.
+/// The policy (`awaits_late_answer`) decides; this query only narrows the rows.
+pub async fn late_answer_ids(store: &RuntimeStore, now: f64) -> Result<Vec<String>, MonitorError> {
+    store
+        .read_async("runtime-services/monitor_late_answers", move |connection| {
+            let mut statement = connection.prepare_cached(
+                "SELECT id FROM runtime_monitors WHERE json_extract(record,'$.status')='lost' AND json_extract(record,'$.reattachRecovery.proof')=?1 AND json_extract(record,'$.finished')>?2 ORDER BY id LIMIT ?3",
+            )?;
+            let ids = statement
+                .query_map(
+                    (
+                        policy::DEADLINE_PASSED,
+                        now - policy::MONITOR_LATE_ANSWER_SECONDS,
+                        MONITOR_TICK_BATCH as i64,
+                    ),
+                    |row| row.get::<_, String>(0),
+                )?
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok::<_, studio_runtime_store::StoreError>(ids)
+        })
+        .await
+        .map_err(MonitorError::from)
 }
 
 /// Running commands with a native operation, no rule, no reattach in progress

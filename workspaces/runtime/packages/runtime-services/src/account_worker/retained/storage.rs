@@ -409,6 +409,16 @@ pub(super) fn replay_in_transaction(
     if !authorize(tx, call)? {
         return Ok(Err(PortError::Identity));
     }
+    replay_recorded(tx, call)
+}
+
+/// Resolve a replay from `call`'s own receipts without the live authorization.
+/// Only for reading the answer of a request that was authorized and submitted
+/// earlier: it never queues a provider write.
+pub(super) fn replay_recorded(
+    tx: &rusqlite::Transaction<'_>,
+    call: &Call,
+) -> Result<Result<Replay, PortError>, WorkerError> {
     let Some(prior) = store::receipt(tx, &call.key(), "submitted")? else {
         return Ok(Ok(Replay::Miss));
     };
