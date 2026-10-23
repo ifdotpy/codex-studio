@@ -32,6 +32,11 @@
   font-weight: 600;
   overflow-wrap: anywhere;
 }
+.sign-in-card-joined {
+  margin: 0 0 4px;
+  color: var(--mantine-color-dimmed);
+  overflow-wrap: anywhere;
+}
 .sign-in-card-rows {
   margin: 6px 0;
   font-size: var(--studio-text-meta);

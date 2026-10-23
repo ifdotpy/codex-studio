@@ -198,6 +198,72 @@ fn unanswered_event(tx: &Transaction<'_>, record: &Value, state: &str, now: f64)
     }
 }
 
+/// The chat event of a joined request whose sign-in finished on another chat's card.
+const JOINED_SIGNED_IN_TEXT: &str = "The person signed in at {host} on the sign-in card of another chat. Your own sign-in command did not get that result. Stop it if it still waits, then run it again: the sign-in session is now active.";
+
+/// Add a chat that waits on a card to the card's `params.joined`, or take it away.
+fn join_card(
+    tx: &Transaction<'_>,
+    leader: &str,
+    agent: &str,
+    waits: bool,
+) -> Result<(), BrowserCardError> {
+    let key = card_id(leader);
+    let Some(raw) = QuestionsWriteRepository::request(tx, &key)? else {
+        return Ok(());
+    };
+    let mut record: Value = serde_json::from_str(&raw).map_err(|_| BrowserCardError::Invalid)?;
+    if record.get("status").and_then(Value::as_str) != Some("pending") {
+        return Ok(());
+    }
+    let mut joined: Vec<String> = record
+        .pointer("/params/joined")
+        .and_then(Value::as_array)
+        .map(|agents| {
+            agents
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default();
+    let before = joined.clone();
+    joined.retain(|chat| chat != agent);
+    if waits {
+        joined.push(agent.to_owned());
+    }
+    if joined != before {
+        record["params"]["joined"] = json!(joined);
+        put_request(tx, &key, &record)?;
+    }
+    Ok(())
+}
+
+/// Tell a joined chat that the person signed in on the card that it waited on.
+fn joined_event(tx: &Transaction<'_>, item: &Value, now: f64) -> bool {
+    let Some(agent_id) = item.get("agentId").and_then(Value::as_str) else {
+        return false;
+    };
+    let Ok(agent) = crate::event_write::checked_agent(tx, agent_id) else {
+        return false;
+    };
+    let bridge_id = python_text(item.get("id"));
+    match crate::event_write::enqueue_event(
+        tx,
+        &agent,
+        format!("browser-joined:{bridge_id}"),
+        "browser_joined",
+        JOINED_SIGNED_IN_TEXT.replace("{host}", &python_text(item.get("host"))),
+        now,
+    ) {
+        Ok(queued) => queued,
+        Err(error) => {
+            eprintln!("browser joined event for {bridge_id} failed: {error}");
+            false
+        }
+    }
+}
+
 /// Whether startup recovery expired this card while nobody had answered it.
 fn restart_expired(record: &Value) -> bool {
     record.get("status").and_then(Value::as_str) == Some("expired")
@@ -349,6 +415,33 @@ pub async fn apply(
                         if let Err(error) = put_request(tx, &key, &record) {
                             applied.refused = Some(format!("The card is invalid: {error}"));
                         }
+                    }
+                }
+                // A request of another chat that waits on an open card (one card for one
+                // sign-in): no card of its own; the card names it.
+                None if state == crate::browser_host::JOINED => {
+                    applied.refused = refusal(tx, &source, &item)?;
+                    if applied.refused.is_none()
+                        && let (Some(leader), Some(agent)) = (
+                            item.get("joinedTo").and_then(Value::as_str),
+                            item.get("agentId").and_then(Value::as_str),
+                        )
+                    {
+                        join_card(tx, leader, agent, true)?;
+                    }
+                }
+                // A joined request ended: its chat hears a sign-in on the card it waited on.
+                None if finished => {
+                    if let (Some(leader), Some(agent)) = (
+                        item.get("joinedTo").and_then(Value::as_str),
+                        item.get("agentId").and_then(Value::as_str),
+                    ) {
+                        join_card(tx, leader, agent, false)?;
+                    }
+                    if item.get("closeReason").and_then(Value::as_str)
+                        == Some(crate::browser_host::JOINED_SIGNED_IN_REASON)
+                    {
+                        applied.event = joined_event(tx, &item, now);
                     }
                 }
                 Some(raw) if finished => {
