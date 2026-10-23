@@ -29,11 +29,20 @@ State is the only saturated color. Nothing decorative is colored.
 | Graphite  | —         | `#12161C` | Dark page background                   |
 | Surface   | `#FFFFFF` | `#1A2028` | Panels, dialogs                        |
 | Ink       | `#18202A` | `#E6EAF0` | Primary text                           |
-| Signal    | `#0E8C8F` | `#3FC1C3` | Primary action and the `working` state |
-| Beacon    | `#C98500` | `#F0B43C` | `answer`: the operator must act        |
-| Fault     | `#C73E32` | `#F0776B` | `error`                                |
-| Settled   | `#2F8A5B` | `#62C08E` | `unread`: new result to read           |
-| Idle      | `#7C8796` | `#7C8796` | `paused` and `none`                    |
+| Signal    | `#08777A` | `#3FC1C3` | Primary action and the `working` state |
+| Beacon    | `#875800` | `#F0B43C` | `answer`: the operator must act        |
+| Fault     | `#B52E25` | `#F0776B` | `error`                                |
+| Settled   | `#237448` | `#62C08E` | `unread`: new result to read           |
+| Idle      | `#5B6675` | `#95A1B0` | `paused` and `none`                    |
+
+The final light state shades are darker than the initial proposal so they can
+also label small text. Against both page and panel surfaces, the minimum WCAG
+contrast is 4.89:1 for light states and 5.90:1 for dark states. Muted text reaches
+5.79:1 in light and 6.25:1 in dark. Primary filled actions use white on Signal 7
+in light and Mantine auto-contrast on Signal 4 in dark. Token owners are
+`src/theme.ts` (Mantine palettes), `src/studio-theme.css` (surfaces/type aliases),
+and `src/design/state.css` (semantic state colors). The table records their
+reviewed values; consume the owners, not copied hex values.
 
 Signal is the Mantine primary color (a 10-shade `signal` palette). The state
 names are the existing `ChatIndicatorKind` values from
@@ -96,6 +105,31 @@ Alignment: text left aligned; numbers right aligned in their column.
   `<span class="studio-state-dot" data-studio-state="...">`. No JS.
 - State colors: `var(--studio-state-<kind>)`; soft backgrounds:
   `var(--studio-state-<kind>-soft)`.
+
+## Shared geometry
+
+`src/design/layout.css` owns the rem geometry, imported by `studio-theme.css`
+for the application and Storybook. Current reviewed values:
+
+| Token                        |    rem | Purpose                            |
+| ---------------------------- | -----: | ---------------------------------- |
+| `--studio-border-width`      | 0.0625 | Group separator                    |
+| `--studio-control-size`      |      2 | Desktop icon control               |
+| `--studio-touch-target`      |   2.75 | Standalone coarse-pointer control  |
+| `--studio-strip-min-height`  |   2.75 | Dense title/activity strip         |
+| `--studio-strip-indent`      |   0.75 | One hierarchy level                |
+| `--studio-team-size`         |     20 | Team dock inline size              |
+| `--studio-form-max`          |     40 | Readable form column               |
+| `--studio-settings-nav-size` |     12 | Settings navigation inline size    |
+| `--studio-room-list-size`    |     16 | Messages room selector inline size |
+| `--studio-meter-width`       |      3 | Context meter length               |
+| `--studio-meter-size`        | 0.1875 | Context meter thickness            |
+
+`src/studio-preferences.css` alone owns the custom transcript column through
+`--studio-content-width-ratio` and its computed `--studio-content-column`.
+Full uses the entire available conversation width minus its gutters. Original
+layout retains the geometry from `workspace-layout.css`. User-selected font
+families and sizes still override the Inter theme defaults.
 
 ## Workstreams and file ownership
 

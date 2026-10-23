@@ -23,7 +23,9 @@ export const layerZIndex = {
 export const modalSizes = { settings: 720 };
 
 export const theme = createTheme({
-  primaryColor: "indigo",
+  primaryColor: "signal",
+  primaryShade: { light: 7, dark: 4 },
+  autoContrast: true,
   defaultRadius: "md",
   fontFamily:
     'Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
@@ -32,22 +34,36 @@ export const theme = createTheme({
     xs: "var(--studio-text-meta)",
     sm: "var(--studio-text-body)",
     md: "var(--studio-text-body)",
-    lg: "1rem",
-    xl: "1.25rem",
+    lg: "var(--studio-text-title)",
+    xl: "var(--studio-text-section)",
   },
   headings: { fontWeight: "600" },
   colors: {
+    // Ten steps from pale signal to deep teal; primary shade depends on scheme.
+    signal: [
+      "#e7f8f8",
+      "#c9eeee",
+      "#9bdfdf",
+      "#6dd0d2",
+      "#3fc1c3",
+      "#20a6a9",
+      "#0e8c8f",
+      "#08777a",
+      "#09666a",
+      "#095256",
+    ],
+    // Dark[6] owns panel Surface; dark[7] owns page Graphite.
     dark: [
-      "#e9e9ee",
-      "#c2c2cd",
-      "#9696a5",
-      "#656573",
-      "#3a3a43",
-      "#2c2c34",
-      "#232329",
-      "#1b1b20",
-      "#151519",
-      "#101014",
+      "#e6eaf0",
+      "#bdc6d2",
+      "#95a1b0",
+      "#6c7a8c",
+      "#3b4858",
+      "#27323e",
+      "#1a2028",
+      "#12161c",
+      "#0e1217",
+      "#0a0e13",
     ],
   },
   components: {
@@ -77,7 +93,7 @@ export const theme = createTheme({
       },
     }),
     Menu: Menu.extend({
-      styles: { dropdown: { minWidth: 220 } },
+      styles: { dropdown: { minWidth: "var(--studio-menu-min)" } },
     }),
     Tooltip: Tooltip.extend({
       defaultProps: { openDelay: 500, withArrow: true },
