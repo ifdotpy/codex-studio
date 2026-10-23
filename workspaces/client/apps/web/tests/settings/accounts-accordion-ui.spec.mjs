@@ -115,6 +115,9 @@ test("Studio Accounts is exclusive and keeps keyboard focus inside settings and 
         );
         await page.goto(local.origin);
         await page.locator("#message").waitFor();
+        // A fresh phone page opens the chats board above the chat.
+        if (width <= 760)
+          await page.locator('#sidebar [data-chat="overlap"]').first().click();
         await page
           .getByRole("button", { name: "Account limits", exact: true })
           .click();
@@ -134,7 +137,7 @@ test("Studio Accounts is exclusive and keeps keyboard focus inside settings and 
         if (width < 761)
           await page
             .getByRole("button", {
-              name: /^(Servers and chats|Toggle conversations)$/,
+              name: /^(Servers and chats|Back to chats)$/,
             })
             .click();
         await page

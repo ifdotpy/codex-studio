@@ -1856,43 +1856,39 @@ export default function Conversation(p: {
                     <ListEnd size={18} />
                   </ActionIcon>
                 ) : null;
-              const secondaryTools = (
-                <>
-                  {managed && (
-                    <ComposerAttachments
-                      notify={p.notify}
-                      assets={assets}
-                      uploading={uploading}
-                      disabled={!canSend || p.sending}
-                      add={addFiles}
-                      remove={(id) => {
-                        const agentId = p.id || "";
-                        void uploadRecovery
-                          .remove(id, () => {
-                            setAttachments((current) => ({
-                              ...current,
-                              [agentId]: (current[agentId] || []).filter(
-                                (asset) => asset.id !== id,
-                              ),
-                            }));
-                          })
-                          .catch((error) => p.notify(errorText(error)));
-                      }}
-                    />
-                  )}
-                  {managed &&
-                    agent?.isLead &&
-                    agent?.provider !== "claude" &&
-                    p.id &&
-                    !threadBlock && (
-                      <RealtimeVoice
-                        key={`voice:${p.id}`}
-                        agentId={p.id}
-                        notify={p.notify}
-                      />
-                    )}
-                </>
+              const attachTool = managed && (
+                <ComposerAttachments
+                  notify={p.notify}
+                  assets={assets}
+                  uploading={uploading}
+                  disabled={!canSend || p.sending}
+                  add={addFiles}
+                  remove={(id) => {
+                    const agentId = p.id || "";
+                    void uploadRecovery
+                      .remove(id, () => {
+                        setAttachments((current) => ({
+                          ...current,
+                          [agentId]: (current[agentId] || []).filter(
+                            (asset) => asset.id !== id,
+                          ),
+                        }));
+                      })
+                      .catch((error) => p.notify(errorText(error)));
+                  }}
+                />
               );
+              const voiceTool = managed &&
+                agent?.isLead &&
+                agent?.provider !== "claude" &&
+                p.id &&
+                !threadBlock && (
+                  <RealtimeVoice
+                    key={`voice:${p.id}`}
+                    agentId={p.id}
+                    notify={p.notify}
+                  />
+                );
               return (
                 <>
                   <PromptInput
@@ -1985,24 +1981,18 @@ export default function Conversation(p: {
                       dismiss={(version) => p.dismissDraft?.(version)}
                     />
                     <div className="composer-tools">
-                      <div className="composer-tools-inline">
-                        {secondaryTools}
-                      </div>
+                      {attachTool}
+                      <div className="composer-tools-inline">{voiceTool}</div>
                       {managed && (
                         <details className="composer-tools-disclosure">
                           <summary
                             aria-label="Composer tools"
-                            title="Attachments and voice conversation"
+                            title="Voice conversation and queue"
                           >
                             <Ellipsis size={18} />
-                            {!!assets.length && (
-                              <span className="composer-attachment-count">
-                                {assets.length}
-                              </span>
-                            )}
                           </summary>
                           <div className="composer-tools-popover">
-                            {secondaryTools}
+                            {voiceTool}
                             {queueControl("composer-queue-disclosure")}
                           </div>
                         </details>

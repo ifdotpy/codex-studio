@@ -12,7 +12,7 @@ import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-test("320px touch composer shows a complete Codex or Claude family name", async ({
+test("390px fine-pointer composer shows a complete Codex or Claude family name", async ({
   browser,
 }) => {
   test.setTimeout(90_000);
@@ -64,9 +64,8 @@ test("320px touch composer shows a complete Codex or Claude family name", async 
           (agent) => agent.source === "managed",
         );
         const page = await browser.newPage({
-          viewport: { width: 320, height: 568 },
-          isMobile: true,
-          hasTouch: true,
+          // Touch phones show symbols only; their 44px targets leave no name room.
+          viewport: { width: 390, height: 844 },
           colorScheme: scheme,
         });
         try {
@@ -102,13 +101,8 @@ test("320px touch composer shows a complete Codex or Claude family name", async 
               }),
           );
           await page.goto(origin);
-          await page
-            .getByLabel("Toggle conversations", { exact: true })
-            .waitFor();
-          if (!(await page.locator("#sidebar").isVisible()))
-            await page
-              .getByLabel("Toggle conversations", { exact: true })
-              .click();
+          // A fresh phone page opens the chats board.
+          await page.locator("#sidebar [data-chat]").first().waitFor();
           await page
             .locator("[data-chat]")
             .filter({ hasText: "Release lead" })
@@ -147,7 +141,7 @@ test("320px touch composer shows a complete Codex or Claude family name", async 
           await expect(page.locator("#toast")).toBeHidden({ timeout: 10_000 });
           await page.mouse.move(0, 0);
           await page.screenshot({
-            path: join(evidence, `family-320-${provider}-${scheme}.png`),
+            path: join(evidence, `family-390-${provider}-${scheme}.png`),
           });
           await page.setViewportSize({ width: 1440, height: 900 });
           await expect(label.locator(".execution-model-family")).toBeHidden();

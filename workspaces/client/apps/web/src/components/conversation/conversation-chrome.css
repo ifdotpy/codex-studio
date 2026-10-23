@@ -300,17 +300,15 @@
 .composer-bar {
   padding-top: calc(var(--mantine-spacing-xs) / 2);
 }
-@container composer (width > 35em) {
-  .composer-tools:has(.composer-tools-inline .attachment-list) {
-    flex-wrap: wrap;
-  }
-  .composer-bar:has(.composer-tools-inline .attachment-list) {
-    align-items: flex-end;
-  }
-  .composer-bar:has(.composer-tools-inline .attachment-list)
-    .composer-submit-actions {
-    min-height: var(--studio-touch-target);
-  }
+/* Attach stays inline at every width; its chips take their own row. */
+.composer-tools:has(.attachment-list) {
+  flex-wrap: wrap;
+}
+.composer-bar:has(.attachment-list) {
+  align-items: flex-end;
+}
+.composer-bar:has(.attachment-list) .composer-submit-actions {
+  min-height: var(--studio-touch-target);
 }
 #composer {
   container: composer / inline-size;
@@ -363,9 +361,13 @@
   .composer-tools-disclosure[open] > summary {
     background: var(--hover);
   }
-  .composer-attachment-count {
-    font-size: var(--studio-text-meta);
-    font-variant-numeric: tabular-nums;
+}
+/* Without voice, the disclosure only carries the queue from 20em down. */
+@container composer (20em < width <= 35em) {
+  .composer-tools-disclosure:not(
+    :has(.composer-tools-popover > :not(.composer-queue-disclosure))
+  ) {
+    display: none;
   }
 }
 @container composer (max-width: 20em) {

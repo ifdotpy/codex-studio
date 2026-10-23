@@ -206,16 +206,37 @@ test("phone conversation gives the transcript its viewport budget", async ({
               page.locator(".supervisor-recovery-notice"),
             ).toHaveCount(0);
           if (width < 760) {
-            await expect(
-              page.getByRole("button", { name: "Attach files", exact: true }),
-            ).toHaveCount(0);
+            // Attach stays one tap away beside the summary at every phone width.
+            const attach = page.getByRole("button", {
+              name: "Attach files",
+              exact: true,
+            });
+            await expect(attach).toHaveCount(1);
+            await expect(attach).toBeVisible();
+            const attachBox = await attach.boundingBox();
+            expect(attachBox.width).toBeGreaterThanOrEqual(44);
+            expect(attachBox.height).toBeGreaterThanOrEqual(44);
+            // Each role keeps its role icon and provider mark on one line.
+            const symbolRows = await page
+              .locator("#composer .execution-symbols")
+              .evaluateAll((nodes) =>
+                nodes
+                  .filter((node) => node.getClientRects().length)
+                  .map((node) =>
+                    [...node.children].map(
+                      (child) => child.getBoundingClientRect().top,
+                    ),
+                  ),
+              );
+            expect(symbolRows.length).toBeGreaterThanOrEqual(2);
+            for (const tops of symbolRows)
+              expect(Math.max(...tops) - Math.min(...tops)).toBeLessThanOrEqual(
+                1,
+              );
             const disclosure = page.locator(
               ".composer-tools-disclosure > summary",
             );
             await disclosure.click();
-            await expect(
-              page.getByRole("button", { name: "Attach files", exact: true }),
-            ).toHaveCount(1);
             const toolsBounds = await page
               .locator(".composer-tools-popover")
               .boundingBox();
@@ -243,6 +264,7 @@ test("phone conversation gives the transcript its viewport budget", async ({
               ).toBeVisible();
               await disclosure.click();
             }
+            // Narrow touch composers hide the lead name; a shown name stays inside.
             const model = await page
               .locator(
                 '.execution-summary-segment[data-role="lead"] .execution-model',
@@ -251,9 +273,13 @@ test("phone conversation gives the transcript its viewport budget", async ({
             const execution = await page
               .locator(".execution-summary-trigger")
               .boundingBox();
-            expect(model.x + model.width).toBeLessThanOrEqual(
-              execution.x + execution.width,
-            );
+            if (model)
+              expect(model.x + model.width).toBeLessThanOrEqual(
+                execution.x + execution.width,
+              );
+            await expect(
+              page.locator(".execution-summary-trigger"),
+            ).toHaveAttribute("aria-label", /Lead \S/);
             const controls = await page.locator("#composer").evaluate((e) =>
               [
                 ...e.querySelectorAll(

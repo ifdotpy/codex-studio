@@ -21,6 +21,10 @@
   gap: calc(var(--mantine-spacing-xs) / 2);
   min-width: 0;
 }
+.execution-symbols {
+  flex: none;
+  gap: calc(var(--mantine-spacing-xs) / 4);
+}
 .execution-summary-segment + .execution-summary-segment {
   border-inline-start: var(--studio-border-width) solid
     var(--mantine-color-default-border);
@@ -59,18 +63,13 @@
     display: none;
   }
 }
-/* Stack paired symbols before dropping a model name; this preserves name space
-   beside the fixed-size dictation, stop, queue and send controls. */
+/* Drop role words before model names; paired symbols stay on one line. */
 @container composer (max-width: 45em) {
   .execution-summary-segment .execution-role {
     display: none;
   }
   .execution-summary-trigger {
     font-size: var(--studio-text-meta);
-  }
-  .execution-symbols {
-    display: grid;
-    gap: 0;
   }
   .execution-inherited-label {
     max-inline-size: calc(var(--studio-composer-model-min) + 1ch);
@@ -83,13 +82,13 @@
     margin-inline-start: 0;
   }
 }
-@container composer (max-width: 27.499em) {
+@container composer (max-width: 32em) {
   .execution-summary-segment[data-role="review"] .execution-model,
   .execution-inherited-label {
     display: none;
   }
 }
-@container composer (max-width: 23em) {
+@container composer (max-width: 25em) {
   .execution-summary-segment[data-role="worker"] .execution-model {
     display: none;
   }
@@ -128,5 +127,35 @@
   }
   .execution-summary-segment .execution-model {
     flex: none;
+  }
+}
+
+/* The narrowest composer keeps one-line role symbols only. */
+@container composer (max-width: 20em) {
+  .execution-summary-segment[data-role="lead"] .execution-model {
+    display: none;
+  }
+}
+
+/* Touch targets leave narrow phones room for symbols only; the trigger's
+   accessible name and title keep the full model names. */
+@media (pointer: coarse) {
+  @container composer (max-width: 30em) {
+    .execution-summary-segment:not([data-role="lead"]) .execution-model {
+      display: none;
+    }
+    .execution-summary-segment[data-role="lead"] .execution-model {
+      min-inline-size: 0;
+    }
+  }
+  @container composer (max-width: 22em) {
+    .execution-summary-segment[data-role="lead"] .execution-model {
+      display: none;
+    }
+  }
+  @container composer (max-width: 18em) {
+    .execution-summary-segment[data-role="review"] {
+      display: none;
+    }
   }
 }

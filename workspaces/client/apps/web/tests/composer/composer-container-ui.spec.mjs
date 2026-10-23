@@ -261,15 +261,13 @@ test("composer keeps one tools row and readable mixed-provider execution summary
           });
           if (target === 760 && scheme === "light") {
             await page
-              .locator('.composer-tools-inline input[type="file"]')
+              .locator('.composer-tools input[type="file"]')
               .setInputFiles({
                 name: "notes.txt",
                 mimeType: "text/plain",
                 buffer: Buffer.from("Release notes"),
               });
-            const previews = page.locator(
-              ".composer-tools-inline .attachment-list",
-            );
+            const previews = page.locator(".composer-tools .attachment-list");
             await expect(previews).toBeVisible();
             const rows = await page
               .locator("#composer")
@@ -289,7 +287,7 @@ test("composer keeps one tools row and readable mixed-provider execution summary
                     return r.top + r.height / 2;
                   }),
                   previewBottom: composer
-                    .querySelector(".composer-tools-inline .attachment-list")
+                    .querySelector(".composer-tools .attachment-list")
                     .getBoundingClientRect().bottom,
                   controlTop: Math.min(
                     ...controls.map(
@@ -323,9 +321,11 @@ test("composer keeps one tools row and readable mixed-provider execution summary
         JSON.stringify(result),
       ).toBeLessThanOrEqual(1);
       for (const chip of result.chips) {
-        expect(chip.namesHidden).toBe(false);
+        // The narrowest composer (20em) keeps role symbols only.
+        if (result.composer.width > 320) expect(chip.namesHidden).toBe(false);
         const names = chip.names.filter((name) => name.visible);
-        if (result.composer.width >= 440) expect(names).toHaveLength(3);
+        // One-line role symbols leave room for the third name from 32em.
+        if (result.composer.width >= 500) expect(names).toHaveLength(3);
         for (const name of names) {
           expect(name.left).toBeGreaterThanOrEqual(chip.button.left);
           expect(name.right).toBeLessThanOrEqual(chip.button.right);
