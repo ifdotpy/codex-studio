@@ -1393,6 +1393,73 @@ mod tests {
         });
     }
 
+    fn fulltext_fixture(body: rusqlite::types::Value) -> (Connection, super::TranscriptItem) {
+        let connection = Connection::open_in_memory().expect("in-memory database opens");
+        connection
+            .execute_batch("CREATE TABLE runtime_item_fulltext(id TEXT PRIMARY KEY,body TEXT NOT NULL);")
+            .expect("fulltext table creates");
+        connection
+            .execute(
+                "INSERT INTO runtime_item_fulltext(id,body) VALUES('agent:long',?1)",
+                [body],
+            )
+            .expect("fulltext fixture inserts");
+        let item = super::TranscriptItem {
+            id: "agent:long".to_owned(),
+            agent: "agent".to_owned(),
+            record: json!({"id":"agent:long","role":"assistant","text":"preview","truncated":true}),
+        };
+        (connection, item)
+    }
+
+    /// Stored format 1 is a version byte and one zstd frame with its content
+    /// size and checksum. This golden value pins the bytes already on disk.
+    const STORED_FORMAT_1_GOLDEN: &str = "0128b52ffd241de9000053746f72656420666f726d61742076313a2068c3a96c6c6f20e29c930afcd5cb80";
+
+    fn golden_blob() -> Vec<u8> {
+        data_encoding::HEXLOWER
+            .decode(STORED_FORMAT_1_GOLDEN.as_bytes())
+            .expect("golden hex")
+    }
+
+    #[test]
+    fn full_text_reads_a_plain_text_body() {
+        let (connection, item) =
+            fulltext_fixture(rusqlite::types::Value::Text("plain body".to_owned()));
+        assert_eq!(
+            TranscriptRepository::full_text(&connection, &item)
+                .expect("plain body reads")
+                .as_deref(),
+            Some("plain body")
+        );
+    }
+
+    #[test]
+    fn full_text_reads_a_compressed_body_in_stored_format_1() {
+        let (connection, item) = fulltext_fixture(rusqlite::types::Value::Blob(golden_blob()));
+        assert_eq!(
+            TranscriptRepository::full_text(&connection, &item)
+                .expect("compressed body reads")
+                .as_deref(),
+            Some("Stored format v1: h\u{e9}llo \u{2713}\n")
+        );
+    }
+
+    #[test]
+    fn full_text_refuses_a_damaged_compressed_body_with_its_table_and_id() {
+        let mut damaged = golden_blob();
+        let last = damaged.len() - 1;
+        damaged[last] ^= 0xff;
+        for body in [damaged, vec![0x02, 0x28, 0xb5, 0x2f, 0xfd], Vec::new()] {
+            let (connection, item) = fulltext_fixture(rusqlite::types::Value::Blob(body));
+            assert!(matches!(
+                TranscriptRepository::full_text(&connection, &item),
+                Err(TranscriptStoreError::InvalidStoredObject { table: "runtime_item_fulltext", id })
+                    if id == "agent:long"
+            ));
+        }
+    }
+
     #[test]
     fn present_null_event_metadata_remains_an_invalid_stored_object() {
         let connection = Connection::open_in_memory().expect("in-memory database opens");
