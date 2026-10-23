@@ -262,6 +262,12 @@ const missingDraftTimestamp: DraftContract = {
   device: "phone",
   text: "x",
 };
+const extraDraftField: DraftContract = {
+  ...draftContract,
+  // @ts-expect-error New draft payloads contain only fields from the Rust owner.
+  metadata: { legacy: true },
+};
+void extraDraftField;
 void draftContract;
 void missingDraftTimestamp;
 

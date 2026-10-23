@@ -132,7 +132,51 @@
         "kept": true
       }
     },
-    "push": true,
+    "push": false,
     "updated": 2
+  },
+  {
+    "name": "extension_missing_updated",
+    "payload": {
+      "id": "phone:chat",
+      "device": "phone",
+      "session": "chat",
+      "text": "x",
+      "metadata": {
+        "kept": true
+      }
+    },
+    "push": false,
+    "updated": 0
+  },
+  {
+    "name": "extension_null_updated",
+    "payload": {
+      "id": "phone:chat",
+      "device": "phone",
+      "session": "chat",
+      "text": "x",
+      "metadata": {
+        "kept": true
+      },
+      "updated": null
+    },
+    "push": false,
+    "updated": 0
+  },
+  {
+    "name": "extension_fractional_updated",
+    "payload": {
+      "id": "phone:chat",
+      "device": "phone",
+      "session": "chat",
+      "text": "x",
+      "metadata": {
+        "kept": true
+      },
+      "updated": 1.5
+    },
+    "push": false,
+    "updated": 1
   }
 ]

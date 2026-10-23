@@ -272,8 +272,8 @@ Browser draft push acknowledgement follows this flow:
 Draft payload compatibility follows this flow:
 
 1. Derive the server schema and web type from [DraftVersion](../workspaces/client/packages/client-domain/src/drafts.rs) with `pnpm run contracts:generate`.
-2. Validate new pushes against that schema; require a JavaScript-safe integer timestamp.
-3. Read historical drafts through the same Rust owner: missing or null timestamps become zero, and fractional timestamps are floored.
+2. Validate new pushes against that closed schema; reject unknown fields and require a JavaScript-safe integer timestamp.
+3. Read historical drafts and assumed masters through the same Rust compatibility decoder: preserve unknown fields, map missing or null timestamps to zero, and floor fractions.
 4. Preserve stored payload bytes; read normalization never rewrites or drops a draft. `pnpm run contracts:check` rejects generated drift.
 
 Markdown rendering follows this flow:
