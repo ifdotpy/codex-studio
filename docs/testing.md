@@ -142,9 +142,35 @@ before launching and retains JSON diagnostics for failures.
 The release-binary tooling tests check commit and SHA-256 identity for native
 packaging; see the [package cycle](../workspaces/client/apps/native/README.md#package-cycle).
 The native WebView harness uses Node and preserves hidden-window checks. Its HTTP
-fixture witness runs in the short tier. The removed installed-build Python smoke
-command has no replacement in this change. A passing unit fixture is not
+fixture witness runs in the short tier. A passing unit fixture is not
 installed-build evidence.
+
+## Installed scenario smoke
+
+`just smoke-installed` checks the main user scenarios on the app that is installed
+on this Mac, against its live backend. Run it after an install. The
+[script](../workspaces/tooling/apps/installed-smoke/smoke.mjs) owns the steps and
+their time limits:
+
+1. Refuse to run while the backend is younger than 60 s, while another backend of
+   the bundle runs or waits for the runtime lock, or while a second app instance runs.
+2. Read only: the running server is the installed binary (SHA-256), the served
+   renderer is the installed build, and each provider has a ready login.
+3. Create one test chat per provider, named `Studio smoke <run> <provider>`, in a
+   new folder below the platform temporary directory. Each chat gets one short
+   turn on the cheapest model by the backend's models.dev pricing artifact.
+4. In the first chat: one message is delivered exactly once (an exact retry adds
+   nothing), a monitor runs `true` and reports its exit, a sign-in card is
+   submitted through the chat's browser socket and declined within 5 s, and the
+   client transcript pull lists every transcript item.
+5. Always, also after a failure or an interrupt: archive the run's chats, remove
+   its project entry, and delete its folder only by exact path and run marker.
+   Then check that the owner's chats keep their names and archive state.
+
+The smoke sends small real model requests and never changes the owner's chats.
+`--no-model` runs only the read-only steps; `--provider` and `--model
+provider=id` narrow the scenarios. A pending card raises an approval alert in a
+build without the 10 s alert grace.
 
 ## Add or move a test
 
