@@ -2733,6 +2733,67 @@ fn submit(
     })
 }
 
+/// Shared identity for refusal writes and the current task read projection.
+fn submission_counter_id(
+    connection: &Connection,
+    work: &Value,
+    owner: &AgentRecord,
+) -> Result<String, WorkWriteError> {
+    let attempt = WorkItemsRepository::submission_identity(connection, owner)?;
+    let identity = json!([
+        work["id"],
+        work["version"],
+        owner.id.0,
+        owner.epoch,
+        attempt
+    ]);
+    let counter_id = format!(
+        "work-result-failures:{}",
+        studio_runtime_store::sha256_hex(identity.to_string().as_bytes())
+    );
+    Ok(counter_id)
+}
+
+/// Project only the current task version, owner epoch and provider attempt.
+/// Older receipts retain their error paths without changing the stored task.
+pub fn current_submission_refusal(
+    connection: &Connection,
+    work: &Value,
+) -> Result<Value, WorkWriteError> {
+    use studio_runtime_schema::task_results::MAX_FAILED_RESULT_SUBMITS_PER_ATTEMPT;
+    let mut view = json!({"failedSubmits":0,"limit":MAX_FAILED_RESULT_SUBMITS_PER_ATTEMPT,
+        "retryAllowed":true,"errors":[]});
+    let Some(owner_id) = work.get("owner").and_then(Value::as_str) else {
+        return Ok(view);
+    };
+    let Some(owner) = AgentRepository::get(connection, &AgentId::from(owner_id))? else {
+        return Ok(view);
+    };
+    let counter_id = submission_counter_id(connection, work, &owner)?;
+    let Some(receipt) = EventWriteRepository::receipt(connection, &counter_id)? else {
+        return Ok(view);
+    };
+    let counter: Value = serde_json::from_str(&receipt.result)
+        .map_err(|_| invalid("runtime_operation_receipts", &counter_id))?;
+    let failed = counter["failed"]
+        .as_u64()
+        .filter(|count| *count <= MAX_FAILED_RESULT_SUBMITS_PER_ATTEMPT)
+        .ok_or_else(|| invalid("runtime_operation_receipts", &counter_id))?;
+    view["failedSubmits"] = json!(failed);
+    view["retryAllowed"] = json!(failed < MAX_FAILED_RESULT_SUBMITS_PER_ATTEMPT);
+    if let Some(errors) = counter.get("errors") {
+        view["errors"] = errors.clone();
+    } else if let Some(refusal) = WorkItemsRepository::legacy_submission_refusal(
+        connection,
+        &counter_id,
+        work,
+        failed as i64,
+    )? {
+        view["errors"] = refusal["errors"].clone();
+    }
+    Ok(view)
+}
+
 /// Counter identity includes the task version, worker epoch and provider attempt.
 /// A lead update or a new provider attempt permits another bounded set of tries.
 fn result_refusal(
@@ -2747,18 +2808,7 @@ fn result_refusal(
     let Some(schema) = work.get("resultSchema") else {
         return Ok(None);
     };
-    let attempt = WorkItemsRepository::submission_identity(tx, owner)?;
-    let identity = json!([
-        work["id"],
-        work["version"],
-        owner.id.0,
-        owner.epoch,
-        attempt
-    ]);
-    let counter_id = format!(
-        "work-result-failures:{}",
-        studio_runtime_store::sha256_hex(identity.to_string().as_bytes())
-    );
+    let counter_id = submission_counter_id(tx, work, owner)?;
     let failed = EventWriteRepository::receipt(tx, &counter_id)?
         .map(|receipt| {
             serde_json::from_str::<Value>(&receipt.result)
@@ -2803,8 +2853,8 @@ fn refuse_result(
         .saturating_add(1)
         .min(MAX_FAILED_RESULT_SUBMITS_PER_ATTEMPT);
     tx.execute(
-        "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES (?1,?2,?3) ON CONFLICT(id) DO UPDATE SET result=excluded.result",
-        rusqlite::params![counter_id, "work-result-failures-v1", json!({"failed":next}).to_string()],
+        "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES (?1,?2,?3) ON CONFLICT(id) DO UPDATE SET result=excluded.result WHERE json_extract(runtime_operation_receipts.result, '$.failed') < ?4",
+        rusqlite::params![counter_id, "work-result-failures-v1", json!({"failed":next,"errors":errors}).to_string(), MAX_FAILED_RESULT_SUBMITS_PER_ATTEMPT as i64],
     ).map_err(studio_runtime_store::StoreError::from)?;
     let refusal = json!({"message":"Result does not satisfy the task result contract", "errors":errors,
         "failedSubmits":next,"limit":MAX_FAILED_RESULT_SUBMITS_PER_ATTEMPT,

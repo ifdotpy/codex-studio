@@ -75,11 +75,19 @@ test("short and comprehensive recipes preserve their owned test boundaries", () 
     /active_barrier_holds_new_requests_but_not_callback_answers/,
   );
   assert.match(fast.command, /test:unit:fast/);
+  for (const witness of [
+    "restart-reconcile.test.mjs",
+    "journal-repair.test.mjs",
+    "claude_repair_report::",
+    "restart_continues_only_a_confirmed_interruption",
+    "uncertain_turn_keeps_its_outcome_and_reason_in_analytics",
+  ])
+    assert.ok(fast.command.includes(witness), witness);
   // The provider reaping witnesses are Linux only and run only on Linux.
   const linux = process.platform === "linux";
   assert.equal(
     (fast.command.match(/'--test' 'integration'/g) ?? []).length,
-    linux ? 5 : 4,
+    linux ? 6 : 5,
   );
   for (const witness of [
     /killed_provider_is_reaped_with_full_journal_and_unobserved_write/,

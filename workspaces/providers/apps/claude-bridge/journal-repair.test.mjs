@@ -97,6 +97,8 @@ test("malformed complete journal row repairs only with exact native history and 
     assert.equal(restored.name, "Saved name");
     assert.equal(restored.journalRepair.status, "repaired");
     assert.equal(restored.journalRepair.skippedRows, 1);
+    assert.equal(restored.journalRepair.scopeConfirmed, true);
+    assert.equal(restored.journalRepair.nativeHistoryConfirmed, true);
     assert.match(
       await fs.readFile(f.journal + ".corrupt", "utf8"),
       /broken complete row/,
@@ -163,6 +165,10 @@ for (const kind of [
         ),
       );
       assert.equal(marker.status, "needs_repair");
+      assert.equal(marker.nativeHistoryConfirmed, false);
+      const read = await createSessionStore(f.root, f.options).repairReport(id);
+      assert.deepEqual(read, marker);
+      assert.equal(await fs.readFile(f.journal, "utf8"), before);
     }));
 }
 
@@ -208,6 +214,13 @@ for (const confirmed of [true, false]) {
               /needs repair: 1 malformed journal rows/,
             );
         }
+        const report = await bridge.call("claude/repairReport", {
+          threadId: id,
+        });
+        assert.equal(report.status, confirmed ? "repaired" : "needs_repair");
+        assert.equal(report.skippedRows, 1);
+        assert.equal(report.nativeHistoryConfirmed, confirmed);
+        assert.equal(report.scopeConfirmed, true);
         assert.deepEqual(await bridge.call("thread/loaded/list", {}), {
           data: [],
           nextCursor: null,
@@ -217,3 +230,33 @@ for (const confirmed of [true, false]) {
       }
     }));
 }
+
+test("repair report is bounded, excludes private fields, and never repairs the journal", async () =>
+  fixture(async (f) => {
+    const store = createSessionStore(f.root, f.options);
+    assert.equal((await store.repairReport(id)).status, "none");
+    const marker = path.join(f.root, "sessions", id + ".repair.json");
+    const before = await fs.readFile(f.journal, "utf8");
+    await fs.writeFile(
+      marker,
+      JSON.stringify({
+        status: "needs_repair",
+        skippedRows: 1,
+        invalidSequence: false,
+        secret: "never return",
+        path: "/private",
+        nativeHistoryConfirmed: false,
+      }),
+    );
+    assert.deepEqual(await store.repairReport(id), {
+      status: "needs_repair",
+      skippedRows: 1,
+      invalidSequence: false,
+      scopeConfirmed: null,
+      nativeHistoryConfirmed: false,
+    });
+    assert.equal(await fs.readFile(f.journal, "utf8"), before);
+    await fs.writeFile(marker, " ".repeat(20000));
+    await assert.rejects(store.repairReport(id), /exceeds the read limit/);
+    await assert.rejects(store.repairReport("../foreign"), /identity/);
+  }));

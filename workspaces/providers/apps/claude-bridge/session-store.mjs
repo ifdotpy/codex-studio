@@ -8,6 +8,8 @@ import {
 } from "./journal-repair.mjs";
 
 const FORMAT = "studio-claude-session-v1";
+// Maximum bytes read from a saved repair marker. Never read journal or transcript text here.
+const MAX_REPAIR_REPORT_BYTES = 16 * 1024;
 const DEFAULT_CACHE_BYTES = 64 * 1024 * 1024;
 const DEFAULT_COMPACT_BYTES = 1024 * 1024;
 const DEFAULT_COMPACT_RECORDS = 128;
@@ -311,7 +313,6 @@ export function createSessionStore(root, options = {}) {
     if (skippedRows || invalidSequence) {
       const marker = fileFor(id).replace(/\.json$/, ".repair.json");
       const report = { status: "needs_repair", skippedRows, invalidSequence };
-      await writeFileAtomic(marker, JSON.stringify(report));
       const sameScope =
         JSON.stringify(originalScope) ===
         JSON.stringify([
@@ -326,6 +327,9 @@ export function createSessionStore(root, options = {}) {
         (await nativeConfirmsJournal(base.session, options.nativeHistory).catch(
           () => false,
         ));
+      report.scopeConfirmed = sameScope;
+      report.nativeHistoryConfirmed = Boolean(confirmed);
+      await writeFileAtomic(marker, JSON.stringify(report));
       if (!confirmed)
         throw Object.assign(
           new Error(
@@ -739,7 +743,54 @@ export function createSessionStore(root, options = {}) {
       ),
     };
   }
+  // This read must remain available when get() refuses a damaged session.
+  // Do not call readAll(): it can compact a confirmed journal repair.
+  async function repairReport(id) {
+    await ready;
+    const marker = fileFor(id).replace(/\.json$/, ".repair.json");
+    let handle;
+    try {
+      handle = await fs.open(marker, "r");
+      const buffer = Buffer.alloc(MAX_REPAIR_REPORT_BYTES + 1);
+      const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+      if (bytesRead > MAX_REPAIR_REPORT_BYTES)
+        throw new Error("Claude repair report exceeds the read limit");
+      const report = JSON.parse(buffer.subarray(0, bytesRead).toString("utf8"));
+      if (
+        !["needs_repair", "repaired"].includes(report.status) ||
+        !Number.isSafeInteger(report.skippedRows) ||
+        report.skippedRows < 0 ||
+        typeof report.invalidSequence !== "boolean"
+      )
+        throw new Error("Claude repair report is invalid");
+      return {
+        status: report.status,
+        skippedRows: report.skippedRows,
+        invalidSequence: report.invalidSequence,
+        scopeConfirmed:
+          typeof report.scopeConfirmed === "boolean"
+            ? report.scopeConfirmed
+            : null,
+        nativeHistoryConfirmed:
+          typeof report.nativeHistoryConfirmed === "boolean"
+            ? report.nativeHistoryConfirmed
+            : null,
+      };
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+      return {
+        status: "none",
+        skippedRows: 0,
+        invalidSequence: false,
+        scopeConfirmed: null,
+        nativeHistoryConfirmed: null,
+      };
+    } finally {
+      await handle?.close();
+    }
+  }
   return {
+    repairReport,
     sessions,
     get,
     metadata,

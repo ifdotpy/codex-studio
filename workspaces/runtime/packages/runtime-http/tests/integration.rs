@@ -1,6 +1,8 @@
 mod checkpoint_rewind;
+mod child_permissions;
 mod claude_file_backups;
 mod claude_login;
+mod claude_repair_report;
 mod draft_replication;
 mod multi_server_incoming;
 mod orchestration_settings;
@@ -8,6 +10,7 @@ mod process_controls;
 mod project_preparation;
 mod recovery_http;
 mod remote_access_origin;
+mod task_review;
 mod voice_provider;
 mod wave7_p04_callback_http;
 mod wave7_p10_lifecycle_http;
