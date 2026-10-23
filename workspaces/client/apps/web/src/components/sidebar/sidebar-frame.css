@@ -15,7 +15,7 @@
   position: absolute;
   inset-block: 0;
   right: 0;
-  width: 8px;
+  width: var(--layout-sidebar-resize-hit-width);
   cursor: col-resize;
   touch-action: none;
   user-select: none;
