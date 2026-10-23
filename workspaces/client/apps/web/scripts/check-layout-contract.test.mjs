@@ -104,3 +104,16 @@ test("rejects stale generated output without a browser", () => {
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("the shell row does not share a class with Workspace list rows", () => {
+  const app = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
+  const workspaceCss = readFileSync(
+    new URL("../src/components/shell/Workspace.css", import.meta.url),
+    "utf8",
+  );
+  const shellClass = app.match(
+    /className="([\w-]+)" ref=\{rowLayout.rowRef\}/,
+  )?.[1];
+  assert.ok(shellClass, "The measured shell row exists");
+  assert.doesNotMatch(workspaceCss, new RegExp(`\\.${shellClass}(?![\\w-])`));
+});

@@ -54,13 +54,13 @@ test("conversation controls fit the measured column and large text", async ({
       expect(overflow, `document overflow at ${width}`).toBeLessThanOrEqual(1);
     }
     await page.setViewportSize({ width: 1600, height: 900 });
-    await page.locator(".workspace-row").evaluate((row) => {
+    await page.locator(".workspace-layout-row").evaluate((row) => {
       row.style.flex = "0 0 700.5px";
     });
     await expect(
       page.locator(".conversation-header-tools-menu"),
     ).toHaveAttribute("data-compact", "yes");
-    await page.locator(".workspace-row").evaluate((row) => {
+    await page.locator(".workspace-layout-row").evaluate((row) => {
       row.style.flex = "1 1 0";
     });
     await page.evaluate(() => {

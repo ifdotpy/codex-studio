@@ -379,7 +379,7 @@ header.workspace-header.simple-workspace-header {
 }
 
 /* The measured row excludes the navigation column exactly once. */
-.workspace-row {
+.workspace-layout-row {
   display: flex;
   flex: 1 1 0;
   min-width: 0;
@@ -387,7 +387,7 @@ header.workspace-header.simple-workspace-header {
   height: 100%;
   overflow: clip;
 }
-.workspace-row > .workspace {
+.workspace-layout-row > .workspace {
   flex: 1 1 0;
   min-width: 0;
   min-height: 0;

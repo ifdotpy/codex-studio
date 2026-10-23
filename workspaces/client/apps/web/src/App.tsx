@@ -232,6 +232,7 @@ import {
 } from "./servers/projectLocations";
 import "./desktop";
 import "./components/team-navigation.css";
+import "./hooks/viewport-surface.css";
 import WorkerCard from "./components/agents/WorkerCard";
 import FilePreview, { type PreviewTarget } from "./components/FilePreview";
 import {
@@ -618,7 +619,7 @@ export default function App({ active = true }: { active?: boolean }) {
   const selectionScope = useRef("");
   const navigationIntent = useRef(0);
   const createdSelection = useRef<string | null>(null);
-  useMobileViewport(active && mobileClient);
+  useMobileViewport(active, mobileClient);
   const teamViewportCompact = useMediaQuery(layoutQueries.teamCompact);
   const rowLayout = useWorkspaceLayout({ teamPreferred: wideTeamOpen });
   const narrowTeam = teamViewportCompact || !rowLayout.teamCanInline;
@@ -2709,7 +2710,7 @@ export default function App({ active = true }: { active?: boolean }) {
           }}
         />
       )}
-      <div className="workspace-row" ref={rowLayout.rowRef}>
+      <div className="workspace-layout-row" ref={rowLayout.rowRef}>
         <main
           className="workspace"
           data-show-message-avatars={studioPreferences.showMessageAvatars}
