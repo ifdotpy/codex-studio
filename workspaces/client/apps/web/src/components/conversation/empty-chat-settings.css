@@ -23,10 +23,6 @@
   min-width: 0;
   max-width: 100%;
 }
-.conversation-start-execution .empty-chat-settings {
-  align-items: flex-start;
-  flex-direction: column;
-}
 @media (max-width: 47.5em) {
   .empty-chat-settings {
     flex-basis: 100%;

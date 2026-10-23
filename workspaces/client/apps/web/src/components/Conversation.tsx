@@ -729,15 +729,11 @@ export default function Conversation(p: {
     !notice &&
     !p.room &&
     !["running", "starting"].includes(agent?.status || "");
-  const executionControls =
-    p.agent?.source === "managed" ? (
-      <div
-        className="empty-chat-settings composer-context-row"
-        aria-label="Agent settings"
-      >
-        {(["orchestrator", "worker"] as const).map((role) => (
-          <div className="empty-chat-setting" key={role}>
-            <span>{role === "orchestrator" ? "Model" : "Workers"}</span>
+  const executionSettings =
+    p.agent?.source === "managed"
+      ? (["orchestrator", "worker"] as const).map((role) => ({
+          label: role === "orchestrator" ? "Model" : "Workers",
+          control: (
             <UnifiedAgentSettings
               state={p.accountsState}
               notify={p.notify}
@@ -753,10 +749,22 @@ export default function Conversation(p: {
                 role === "orchestrator" ? setModelCommandOpen : undefined
               }
             />
-          </div>
-        ))}
-      </div>
-    ) : null;
+          ),
+        }))
+      : [];
+  const executionControls = executionSettings.length ? (
+    <div
+      className="empty-chat-settings composer-context-row"
+      aria-label="Agent settings"
+    >
+      {executionSettings.map(({ label, control }) => (
+        <div className="empty-chat-setting" key={label}>
+          <span>{label}</span>
+          {control}
+        </div>
+      ))}
+    </div>
+  ) : null;
   const queueScope = `${p.data.stateDir}:${p.syncWorkspaceId || ""}:${p.id}`;
   const messageQueue = useMessageQueue({
     id: p.id,
@@ -1675,7 +1683,7 @@ export default function Conversation(p: {
                 location={p.agent?.cwd || "Project location unavailable"}
                 recentChats={p.recentChats}
                 onSelect={p.onSelect}
-                execution={executionControls}
+                execution={executionSettings}
               />
             ))}
           {transcript}
