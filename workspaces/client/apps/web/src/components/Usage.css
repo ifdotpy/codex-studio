@@ -706,6 +706,12 @@
 }
 
 @media (pointer: coarse) {
+  .account-limits-dot-target {
+    flex-basis: var(--studio-secondary-touch-target);
+    width: var(--studio-secondary-touch-target);
+    min-width: var(--studio-secondary-touch-target);
+    min-height: var(--studio-secondary-touch-target);
+  }
   .usage-footer .context-use,
   .usage-footer .account-limits-toggle,
   .usage-footer .session-cost-summary {

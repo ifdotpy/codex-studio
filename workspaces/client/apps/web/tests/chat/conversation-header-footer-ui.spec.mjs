@@ -25,6 +25,7 @@ test("conversation header stays compact and usage facts remain visible", async (
   let log = "";
   fixture.stderr.on("data", (chunk) => (log += chunk));
   const results = [];
+  const serverAlias = "MAC";
   try {
     const port = await new Promise((resolve, reject) => {
       fixture.stdout.once("data", (chunk) =>
@@ -41,9 +42,9 @@ test("conversation header stays compact and usage facts remain visible", async (
           colorScheme: scheme,
         });
         try {
-          await page.addInitScript(() => {
-            localStorage.setItem("studio-local-server-alias-v1", "MAC");
-          });
+          await page.addInitScript((alias) => {
+            localStorage.setItem("studio-local-server-alias-v1", alias);
+          }, serverAlias);
           await stubSessionCost(page);
           await page.goto(`http://127.0.0.1:${port}`);
           await page
@@ -66,25 +67,17 @@ test("conversation header stays compact and usage facts remain visible", async (
             .filter({ hasText: "Release lead" })
             .first()
             .click();
-          const sidebarBadge = page
-            .locator("[data-chat]")
-            .filter({ hasText: "Release lead" })
-            .first()
-            .locator(".fleet-server-badge");
-          const sidebarAlias = await sidebarBadge.textContent();
-          const sidebarOffline =
-            (await sidebarBadge.getAttribute("data-offline")) === "true";
           if (width < 760) await expect(page.locator("#sidebar")).toBeHidden();
           await expect(
             page.locator(".conversation-server .chat-server-alias"),
-          ).toHaveText(sidebarAlias);
+          ).toHaveText(serverAlias);
           await expect(page.locator(".conversation-server")).toHaveAttribute(
             "data-offline",
-            String(sidebarOffline),
+            "false",
           );
           await expect(
             page.locator(".conversation-server .chat-server-offline"),
-          ).toHaveCount(sidebarOffline ? 1 : 0);
+          ).toHaveCount(0);
           await expect(page.locator("#conversation-title")).toHaveText(
             "Release lead",
           );
@@ -140,6 +133,9 @@ test("conversation header stays compact and usage facts remain visible", async (
               footer: rect(".usage-footer"),
               estimate: rect(".session-cost-summary"),
               dots: rect(".account-limits-dots"),
+              dotTargets: [
+                ...document.querySelectorAll(".account-limits-dot-target"),
+              ].map((element) => element.getBoundingClientRect().toJSON()),
               limits: rect(".account-limits-toggle"),
               controls: [
                 ...document.querySelectorAll(
@@ -188,14 +184,27 @@ test("conversation header stays compact and usage facts remain visible", async (
           await page.keyboard.press("Escape");
         } catch (error) {
           const failure = join(evidence, `failed-${width}-${scheme}.png`);
-          await page.screenshot({ path: failure }).catch(() => {});
-          await writeFile(
-            join(evidence, `failed-${width}-${scheme}.html`),
-            await page.content(),
+          console.error(
+            `Header/footer ${width} ${scheme} failed:`,
+            error instanceof Error ? error.stack : String(error),
           );
-          await testInfo.attach(`Header/footer ${width} ${scheme}`, {
-            path: failure,
-          });
+          // Timeout teardown may already have closed the page. Evidence must
+          // never replace the assertion or operation that actually failed.
+          await Promise.allSettled([
+            page.screenshot({ path: failure }).then(() =>
+              testInfo.attach(`Header/footer ${width} ${scheme}`, {
+                path: failure,
+              }),
+            ),
+            page
+              .content()
+              .then((html) =>
+                writeFile(
+                  join(evidence, `failed-${width}-${scheme}.html`),
+                  html,
+                ),
+              ),
+          ]);
           throw error;
         } finally {
           await page.context().close();
@@ -221,6 +230,13 @@ function assertGeometry(r) {
   expect(r.limits.width).toBeGreaterThan(0);
   expect(r.dots.width).toBeGreaterThan(0);
   expect(r.dots.height).toBeGreaterThan(0);
+  for (const [index, target] of r.dotTargets.entries()) {
+    expect(target.width).toBeGreaterThanOrEqual(r.width < 760 ? 24 : 12);
+    expect(target.height).toBeGreaterThanOrEqual(24);
+    if (index)
+      expect(target.left).toBeGreaterThanOrEqual(r.dotTargets[index - 1].right);
+  }
+
   expect(r.estimate.width).toBeGreaterThan(0);
   const centers = r.controls.map((e) => e.top + e.height / 2);
   expect(

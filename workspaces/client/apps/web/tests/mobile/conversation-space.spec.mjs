@@ -176,6 +176,7 @@ test("phone conversation gives the transcript its viewport budget", async ({
               page.getByRole("button", { name: "Chat context", exact: true }),
               page.locator(".session-cost-summary"),
               page.getByRole("button", { name: "Account limits", exact: true }),
+              ...(await page.locator(".account-limits-dot-target").all()),
             ]) {
               const box = await target.boundingBox();
               expect(box.width).toBeGreaterThanOrEqual(24);
