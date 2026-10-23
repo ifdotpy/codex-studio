@@ -52,28 +52,25 @@ test("conversation header stays compact and usage facts remain visible", async (
             .filter({ hasText: "Release lead" })
             .first()
             .click();
-          const sidebarServer = page
+          const sidebarBadge = page
             .locator("[data-chat]")
             .filter({ hasText: "Release lead" })
             .first()
-            .locator(".chat-server-line");
-          // Default-server rows omit their redundant badge; the local alias is
-          // still the shared source used by both the sidebar and the header.
-          const sidebarAlias = (await sidebarServer.count())
-            ? await sidebarServer.locator(".chat-server-alias").textContent()
-            : await page.evaluate(() =>
-                localStorage.getItem("studio-local-server-alias-v1"),
-              );
-          const sidebarOffline = await sidebarServer
-            .locator(".chat-server-offline")
-            .count();
+            .locator(".fleet-server-badge");
+          const sidebarAlias = await sidebarBadge.textContent();
+          const sidebarOffline =
+            (await sidebarBadge.getAttribute("data-offline")) === "true";
           if (width < 760) await expect(page.locator("#sidebar")).toBeHidden();
           await expect(
             page.locator(".conversation-server .chat-server-alias"),
           ).toHaveText(sidebarAlias);
+          await expect(page.locator(".conversation-server")).toHaveAttribute(
+            "data-offline",
+            String(sidebarOffline),
+          );
           await expect(
             page.locator(".conversation-server .chat-server-offline"),
-          ).toHaveCount(sidebarOffline);
+          ).toHaveCount(sidebarOffline ? 1 : 0);
           await expect(page.locator("#conversation-title")).toHaveText(
             "Release lead",
           );
@@ -103,8 +100,14 @@ test("conversation header stays compact and usage facts remain visible", async (
                 );
                 return {
                   visible: !!label?.getClientRects().length,
-                  width: label?.clientWidth,
-                  scrollWidth: label?.scrollWidth,
+                  width: label?.parentElement.clientWidth,
+                  scrollWidth: label?.parentElement.scrollWidth,
+                  dotWidth: document
+                    .querySelector(".conversation-status-dot")
+                    .getBoundingClientRect().width,
+                  accessible: document
+                    .querySelector("#conversation-status")
+                    .getAttribute("aria-label"),
                 };
               })(),
               footer: rect(".usage-footer"),
@@ -142,10 +145,13 @@ test("conversation header stays compact and usage facts remain visible", async (
       expect(r.teamStrip).toBe(false);
       expect(r.server.width).toBeGreaterThan(0);
       expect(r.server.left).toBeGreaterThanOrEqual(r.status.right);
+      expect(r.statusLabel.accessible).toBeTruthy();
       if (r.statusLabel.visible)
-        expect(r.statusLabel.scrollWidth).toBeLessThanOrEqual(
-          r.statusLabel.width + 1,
-        );
+        expect(
+          r.statusLabel.scrollWidth,
+          JSON.stringify(r),
+        ).toBeLessThanOrEqual(r.statusLabel.width + 1);
+      else expect(r.statusLabel.dotWidth).toBeGreaterThan(0);
       expect(
         Math.abs(
           r.title.top + r.title.height / 2 - r.status.top - r.status.height / 2,

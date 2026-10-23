@@ -50,8 +50,15 @@ export const AgentConversation: Story = {
 export const OfflineServer: Story = {
   args: { ...ActiveConversation.args, serverOffline: true },
   play: async ({ canvasElement }) => {
-    await expect(
-      within(canvasElement).getByLabelText("MAC offline"),
-    ).toBeVisible();
+    const server = within(canvasElement).getByLabelText("MAC offline");
+    await expect(server).toBeVisible();
+    const line = server.querySelector(".chat-server-line")!;
+    const reference = document.createElement("span");
+    reference.style.color = "var(--studio-state-error)";
+    server.append(reference);
+    await expect(getComputedStyle(line).color).toBe(
+      getComputedStyle(reference).color,
+    );
+    reference.remove();
   },
 };

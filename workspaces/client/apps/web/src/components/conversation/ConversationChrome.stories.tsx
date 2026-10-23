@@ -155,6 +155,7 @@ const meta = {
             agent={lead}
             indicator={indicators[0]}
             statusText="Complete"
+            serverAlias="MAC"
           />
           <Button
             aria-label="Team"
