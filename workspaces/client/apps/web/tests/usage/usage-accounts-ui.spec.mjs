@@ -178,7 +178,7 @@ test("usage accounts ui", async ({ browser: _browser }) => {
             if (req.url?.split("?")[0] !== "/") return next();
             res.setHeader("Content-Type", "text/html");
             res.end(
-              '<div id="root"></div><script type="module" src="/__usage-accounts-fixture.jsx"></script>',
+              '<meta name="viewport" content="width=device-width, initial-scale=1"><div id="root"></div><script type="module" src="/__usage-accounts-fixture.jsx"></script>',
             );
           });
         },
@@ -440,9 +440,14 @@ test("usage accounts ui", async ({ browser: _browser }) => {
     );
 
     // The five-account edge fixture reserves the taller mounted provider panel.
-    for (const width of [390, 1440])
+    for (const width of [320, 390, 1440])
       for (const scheme of ["light", "dark"]) {
-        await page.setViewportSize({ width, height: 844 });
+        const page = await browser.newPage({
+          viewport: { width, height: 844 },
+          isMobile: width < 760,
+          hasTouch: width < 760,
+        });
+        page.on("pageerror", (error) => errors.push(error.message));
         await page.goto(
           server.resolvedUrls.local[0] + `?geometry&scheme=${scheme}`,
         );
@@ -450,6 +455,7 @@ test("usage accounts ui", async ({ browser: _browser }) => {
           await page.locator(".context-use").innerText(),
           "Context 10%",
         );
+        await page.evaluate(() => document.fonts.ready);
         const dots = await page
           .locator(".account-limits-dot-target .account-limits-dot")
           .evaluateAll((elements) =>
@@ -482,6 +488,61 @@ test("usage accounts ui", async ({ browser: _browser }) => {
           assert.equal(dot.radius, "50%");
           assert.equal(dot.background, palette[dot.color]);
         }
+        const targets = await page
+          .locator(".account-limits-dot-target")
+          .evaluateAll((elements) =>
+            elements.map((element) => element.getBoundingClientRect().toJSON()),
+          );
+        for (const [index, target] of targets.entries()) {
+          assert.ok(
+            target.width >= (width < 760 ? 24 : 12),
+            "allowance dots have usable hit targets",
+          );
+          assert.ok(target.height >= 24);
+          if (index)
+            assert.ok(
+              target.left >= targets[index - 1].right,
+              "allowance targets do not overlap",
+            );
+        }
+        const footerControls = await page
+          .locator(
+            ".context-use, .session-cost-summary, .account-limits-dots, .account-limits-toggle",
+          )
+          .evaluateAll((elements) =>
+            elements
+              .map((element) => ({
+                name: element.className,
+                ...element.getBoundingClientRect().toJSON(),
+              }))
+              .sort((a, b) => a.left - b.left),
+          );
+        for (const [index, control] of footerControls.entries()) {
+          assert.ok(
+            control.left >= 0 && control.right <= width,
+            JSON.stringify({ width, footerControls }),
+          );
+          if (index)
+            assert.ok(
+              control.left >= footerControls[index - 1].right,
+              JSON.stringify({ width, footerControls }),
+            );
+        }
+        const footer = await page.locator(".usage-footer").boundingBox();
+        assert.ok(
+          footer.height <= (width < 760 ? 24 : 32),
+          "usage footer preserves its row height",
+        );
+        console.log(
+          "Usage footer geometry:",
+          JSON.stringify({
+            width,
+            scheme,
+            height: footer.height,
+            targetWidth: targets[0].width,
+            targetHeight: targets[0].height,
+          }),
+        );
         const popover = page.locator(".account-limits-popover");
         await page
           .getByRole("button", { name: "Apply reset", exact: true })
@@ -567,11 +628,12 @@ test("usage accounts ui", async ({ browser: _browser }) => {
             .getAttribute("data-account-key"),
           "codex-main",
         );
+        await page.context().close();
       }
 
     assert.deepEqual(errors, []);
     console.log(
-      "Usage account UI: single account, tabs, lazy load, refresh, low allowance, account-bound reset, and stable five-account popovers at 390/1440 light/dark passed.",
+      "Usage account UI: single account, tabs, lazy load, refresh, low allowance, account-bound reset, and stable five-account popovers at 320/390/1440 light/dark passed.",
     );
   } finally {
     await server.close();
