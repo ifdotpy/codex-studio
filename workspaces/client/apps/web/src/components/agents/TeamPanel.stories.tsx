@@ -383,3 +383,39 @@ export const SharedGutter: Story = {
     }
   },
 };
+
+export const ComfortableStrips: Story = {
+  play: async ({ canvasElement }) => {
+    const panel = canvasElement.querySelector("#team")!;
+    const probe = document.createElement("div");
+    probe.style.width = "var(--mantine-spacing-sm)";
+    probe.style.height = "var(--mantine-spacing-xs)";
+    panel.append(probe);
+    const { width: inlinePadding, height: blockPadding } =
+      probe.getBoundingClientRect();
+    probe.remove();
+    for (const strip of panel.querySelectorAll<HTMLElement>(".worker-entry")) {
+      const style = getComputedStyle(strip);
+      await expect(parseFloat(style.paddingInlineStart)).toBeGreaterThanOrEqual(
+        inlinePadding,
+      );
+      await expect(parseFloat(style.paddingBlockStart)).toBeGreaterThanOrEqual(
+        blockPadding,
+      );
+      await expect(parseFloat(style.paddingBlockEnd)).toBeGreaterThanOrEqual(
+        blockPadding,
+      );
+      const name = strip
+        .querySelector(".worker-name-line")!
+        .getBoundingClientRect();
+      const activity = strip
+        .querySelector(".worker-live-line")!
+        .getBoundingClientRect();
+      const model = strip
+        .querySelector(".worker-bottom")!
+        .getBoundingClientRect();
+      await expect(activity.top - name.bottom).toBeGreaterThan(0);
+      await expect(model.top - activity.bottom).toBeGreaterThan(0);
+    }
+  },
+};

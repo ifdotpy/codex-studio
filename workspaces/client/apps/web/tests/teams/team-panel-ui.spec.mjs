@@ -193,9 +193,23 @@ test("Team panel ui", async ({
         probe.style.width = "var(--mantine-spacing-md)";
         team.append(probe);
         const gutter = probe.getBoundingClientRect().width;
+        probe.style.width = "var(--mantine-spacing-sm)";
+        probe.style.height = "var(--mantine-spacing-xs)";
+        const { width: inlinePadding, height: blockPadding } =
+          probe.getBoundingClientRect();
         probe.remove();
         return {
           gutter,
+          inlinePadding,
+          blockPadding,
+          strips: [...team.querySelectorAll(".worker-entry")].map((strip) => {
+            const computed = getComputedStyle(strip);
+            return {
+              inline: parseFloat(computed.paddingInlineStart),
+              top: parseFloat(computed.paddingBlockStart),
+              bottom: parseFloat(computed.paddingBlockEnd),
+            };
+          }),
           padding: parseFloat(style.paddingInlineStart),
           edge:
             team.getBoundingClientRect().left +
@@ -213,6 +227,17 @@ test("Team panel ui", async ({
         geometry.gutter,
         "Team uses the shared md gutter",
       );
+      for (const strip of geometry.strips) {
+        assert.ok(
+          strip.inline >= geometry.inlinePadding,
+          "Strip content has at least sm inline padding",
+        );
+        assert.ok(
+          strip.top >= geometry.blockPadding &&
+            strip.bottom >= geometry.blockPadding,
+          "Strip content has at least xs block padding",
+        );
+      }
       for (const edge of geometry.edges)
         assert.ok(
           Math.abs(edge - geometry.edge) < 1,

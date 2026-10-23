@@ -118,9 +118,10 @@
   margin-inline-start: calc(
     min(var(--worker-depth, 0), 3) * var(--studio-strip-indent)
   );
-  padding: calc(var(--mantine-spacing-xs) / 4)
+  padding: var(--mantine-spacing-xs)
     calc(var(--studio-control-size) + var(--mantine-spacing-xs))
-    calc(var(--mantine-spacing-xs) / 4) var(--mantine-spacing-xs);
+    var(--mantine-spacing-xs)
+    calc(var(--studio-rail-size) + var(--mantine-spacing-sm));
   border: 0;
   border-block-end: var(--studio-border-width) solid var(--line);
   border-radius: 0;
@@ -153,7 +154,7 @@
 #team .worker-text {
   display: flex;
   flex-direction: column;
-  gap: 0;
+  gap: calc(var(--mantine-spacing-xs) / 4);
 }
 #team .worker-name-line {
   display: flex;
@@ -190,6 +191,7 @@
   color: var(--studio-state);
 }
 #team .worker-elapsed {
+  padding-inline-start: calc(var(--mantine-spacing-xs) / 2);
   flex: none;
   margin-inline-start: auto;
   color: var(--muted);
@@ -237,6 +239,7 @@
   text-overflow: ellipsis;
 }
 #team .worker-bottom {
+  margin-block-start: calc(var(--mantine-spacing-xs) / 4);
   display: flex;
   align-items: baseline;
   gap: calc(var(--mantine-spacing-xs) / 2);
@@ -265,6 +268,7 @@
   flex: none;
 }
 #team .token-rate {
+  padding-inline-start: calc(var(--mantine-spacing-xs) / 2);
   flex: 0 0 auto;
   inline-size: auto;
   margin-inline-start: auto;
@@ -276,7 +280,7 @@
 }
 #team .worker-options {
   position: absolute;
-  inset-block-start: calc(var(--mantine-spacing-xs) / 4);
+  inset-block-start: var(--mantine-spacing-xs);
   inset-inline-end: 0;
   opacity: 0;
 }
