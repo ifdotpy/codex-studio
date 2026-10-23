@@ -74,7 +74,7 @@
   gap: var(--mantine-spacing-xs);
 }
 .model-family-group + .model-family-group {
-  margin-block-start: var(--mantine-spacing-sm);
+  margin-block-start: var(--mantine-spacing-lg);
 }
 .model-family-label {
   display: block;

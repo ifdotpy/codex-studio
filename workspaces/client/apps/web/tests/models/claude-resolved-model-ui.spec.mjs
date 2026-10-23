@@ -272,6 +272,17 @@ for (const provider of ["claude", "codex"])
                 .map((el) => el.getBoundingClientRect())
                 .filter((box) => box.height);
               return {
+                groupGaps: [...node.querySelectorAll(".model-family-group")]
+                  .slice(1)
+                  .map((group) => {
+                    const previous =
+                      group.previousElementSibling.getBoundingClientRect();
+                    const current = group.getBoundingClientRect();
+                    return current.height
+                      ? current.top - previous.bottom
+                      : null;
+                  })
+                  .filter((gap) => gap !== null),
                 familyGaps: [...node.querySelectorAll(".model-family-group")]
                   .map((group) => {
                     const label = group
@@ -317,6 +328,8 @@ for (const provider of ["claude", "codex"])
             expect(geometry.chipWidthRange).toBeLessThan(2);
             for (const gap of geometry.familyGaps)
               expect(gap).toBeGreaterThanOrEqual(8);
+            for (const gap of geometry.groupGaps)
+              expect(gap).toBeGreaterThan(Math.max(...geometry.familyGaps));
             measurements.push({
               provider,
               width,
