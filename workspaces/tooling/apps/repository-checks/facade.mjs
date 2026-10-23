@@ -1635,6 +1635,7 @@ function fastTierCommands(root) {
               "test(unrelated_reservation_started_after_path_capture_does_not_refuse_ready_token)",
               "test(room_membership_uses_symlink_paths_resolved_by_the_creation_owner)",
               "test(agent_progress::tests::)",
+              "test(token_rate::tests::)",
               "test(completed_child_turn_reports_unsubmitted_assignment_once_with_final_text)",
               "test(account_worker::tests::continuation_start::capacity_retry_restart_unknown_reports_once_without_resending)",
               "test(agent_progress_schema_matches_strict_serde_contract)",
@@ -1671,6 +1672,31 @@ function fastTierCommands(root) {
       item: web,
       label: "web API contract type check",
       options: { script: "test:api-contract-types", allowZeroTests: true },
+    },
+    {
+      item: web,
+      label: "Single token record footer and team witnesses",
+      commands: [
+        [
+          "pnpm",
+          [
+            "--filter",
+            "codex-agents-web",
+            "exec",
+            "vitest",
+            "run",
+            "--config",
+            "vitest.unit.config.ts",
+            "src/usage/tokenRate.records.test.ts",
+            "src/usage/tokenRate.test.mjs",
+          ],
+        ],
+      ],
+      options: {
+        selector: "one record, root moves, removals, strict bounds and replay",
+        reason:
+          "Token snapshots carry each agent once and derive team membership without entity projections.",
+      },
     },
     {
       item: web,

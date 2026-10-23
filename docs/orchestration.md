@@ -1542,6 +1542,14 @@ change with both options. Cross-machine Claude cache reuse remains unverified.
 7. The store observer publishes committed entity changes; ordinary analytics receipts only project token rates, preserving complete stream batches without a pull.
 8. Recovered history, unknown publication overflow, and external writer hints retain state resets and pull recovery.
 
+### Token-rate snapshots
+
+1. The token owner publishes one complete record per agent, including its current root and turn.
+2. The shared workspace stream carries that list; the client validates it once before caching or replay.
+3. Footer meters read by agent ID; team meters use a derived identity lookup from each record's root ID.
+4. Replacing the list clears removed agents and previous root memberships, even without an agent entity cache.
+5. Late tabs and newly opened teams read the latest complete snapshot through the same stream coordinator.
+
 ### Held child-result release
 
 1. The account registry captures wall time and monotonic time together before

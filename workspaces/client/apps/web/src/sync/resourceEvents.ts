@@ -606,17 +606,18 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     }
     if (fromPeer && (owner || independent)) return;
     if (!fromPeer) refreshHeartbeatTimeout();
-    if (lastTokenEpoch !== event.epoch) {
-      lastTokenEpoch = event.epoch;
-      lastTokenRevision = undefined;
-      lastTokenEvent = undefined;
-    }
-    if (lastTokenRevision !== undefined && event.revision <= lastTokenRevision)
+    if (
+      lastTokenEpoch === event.epoch &&
+      lastTokenRevision !== undefined &&
+      event.revision <= lastTokenRevision
+    )
       return;
+    if (!receiveResourceTokenRates(event))
+      throw new TypeError("Invalid token-rate snapshot");
+    lastTokenEpoch = event.epoch;
     lastTokenRevision = event.revision;
     lastTokenEvent = event;
     setStatus("live");
-    receiveResourceTokenRates(event);
     for (const listener of tokenRateListeners) listener(event);
     if (owner || independent) broadcast({ kind: "token-rates", event });
   }

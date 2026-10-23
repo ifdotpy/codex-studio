@@ -895,19 +895,18 @@ fn resource_changes_event(
     })
 }
 
-/// The token-rates frame. The `rates` and `teams` members are the snapshot's shared,
+/// The token-rates frame. The record list is the snapshot's shared,
 /// once-serialized text; only the small cursor members are written per subscriber.
 fn token_rate_event(workspace_id: &str, snapshot: &ChangeSnapshot, rates: &TokenRates) -> Event {
     let wire = rates.wire();
     let text = |value: &str| serde_json::to_string(value).unwrap_or_else(|_| "\"\"".to_owned());
     let data = format!(
-        r#"{{"protocol":{},"workspaceId":{},"epoch":{},"revision":{},"rates":{},"teams":{}}}"#,
+        r#"{{"protocol":{},"workspaceId":{},"epoch":{},"revision":{},"records":{}}}"#,
         SYNC_PROTOCOL_VERSION,
         text(workspace_id),
         text(&snapshot.epoch),
         snapshot.revision,
-        wire.rates,
-        wire.teams,
+        wire.records,
     );
     Event::default()
         .event("token-rates")
@@ -2026,10 +2025,10 @@ mod tests {
 
     #[tokio::test]
     async fn stream_documents_match_frozen_resource_hub() {
-        let rate = json!({"turnId":"turn", "active":false,"estimated":true,"rate":1.25,"outputTokens":400});
+        let rate = json!({"agentId":"agent","rootId":"lead","turnId":"turn", "active":false,"estimated":true,"rate":1.25,"outputTokens":400});
         let cases = json!([
-            {"resources":[{"kind":"accounts"},{"kind":"session-cost","agentId":"agent"}],"sequence":0,"reconnect":false,"rates":{"rates":{},"teams":{}}},
-            {"resources":[{"kind":"state"}],"sequence":42,"reconnect":true,"rates":{"rates":{"agent":rate},"teams":{"lead":{"agent":rate}}}}
+            {"resources":[{"kind":"accounts"},{"kind":"session-cost","agentId":"agent"}],"sequence":0,"reconnect":false,"rates":{"records":[]}},
+            {"resources":[{"kind":"state"}],"sequence":42,"reconnect":true,"rates":{"records":[rate]}}
         ]);
         let expected: Vec<Value> =
             serde_json::from_str(include_str!("fixtures/sync_stream_documents.json"))
@@ -2158,7 +2157,7 @@ mod tests {
         };
         for index in 0..=MAX_SYNC_RESOURCE_COUNT {
             token_hub.publish(json!({
-                "rates": {"agent": {"turnId":"turn", "active":true, "estimated":false, "rate":index, "outputTokens":index}}, "teams": {}
+                "records": [{"agentId":"agent","rootId":"agent","turnId":"turn", "active":true, "estimated":false, "rate":index, "outputTokens":index}]
             })).expect("publish");
         }
         let (event, state) = next_frame(state).await.expect("token frame");
@@ -2176,7 +2175,7 @@ mod tests {
         drop(state); // Disconnect drops the only receiver; later publications remain bounded.
         assert!(
             token_hub
-                .publish(json!({"rates":{},"teams":{}}))
+                .publish(json!({"records":[]}))
                 .expect("publish disconnected")
         );
     }
@@ -2199,7 +2198,7 @@ mod tests {
         token_hub.publish(test_rates(1)).expect("token rate");
         let (token, state) = next_frame(state).await.expect("first token event at once");
         let token = event_document(token).await;
-        assert_eq!(token["rates"]["agent"]["rate"].as_f64(), Some(1.0));
+        assert_eq!(token["records"][0]["rate"].as_f64(), Some(1.0));
 
         for rate in 2..=8 {
             token_hub.publish(test_rates(rate)).expect("token burst");
@@ -2213,7 +2212,7 @@ mod tests {
         let (token, _state) = next_frame(state).await.expect("latest token snapshot");
         assert!(started.elapsed() >= SYNC_FRAME_MIN_INTERVAL - Duration::from_millis(1));
         let token = event_document(token).await;
-        assert_eq!(token["rates"]["agent"]["rate"].as_f64(), Some(8.0));
+        assert_eq!(token["records"][0]["rate"].as_f64(), Some(8.0));
     }
 
     #[test]
@@ -2234,11 +2233,11 @@ mod tests {
     }
 
     fn test_rates(rate: u64) -> Value {
-        json!({"rates":{"agent":{"turnId":"turn","active":true,"estimated":false,"rate":rate,"outputTokens":rate}},"teams":{}})
+        json!({"records":[{"agentId":"agent","rootId":"agent","turnId":"turn","active":true,"estimated":false,"rate":rate,"outputTokens":rate}]})
     }
 
     fn floating_test_rates(rate: u64) -> Value {
-        json!({"rates":{"agent":{"turnId":"turn","active":true,"estimated":false,"rate":rate as f64,"outputTokens":rate as f64}},"teams":{}})
+        json!({"records":[{"agentId":"agent","rootId":"agent","turnId":"turn","active":true,"estimated":false,"rate":rate as f64,"outputTokens":rate as f64}]})
     }
 
     fn test_stream(
@@ -2372,12 +2371,12 @@ mod tests {
                 .expect("release one publication between polls");
             assert!(producer.await.expect("producer"));
             let document = event_document(first.next().await.expect("token frame")).await;
-            assert_eq!(document["rates"], floating_test_rates(rate)["rates"]);
+            assert_eq!(document["records"], floating_test_rates(rate)["records"]);
             assert_eq!(document["revision"], rate);
             assert!(document.get("resources").is_none());
         }
         let latest = event_document(second.next().await.expect("slow reader latest")).await;
-        assert_eq!(latest["rates"], floating_test_rates(4)["rates"]);
+        assert_eq!(latest["records"], floating_test_rates(4)["records"]);
         let mut pending = first.next();
         assert!(
             futures_util::poll!(&mut pending).is_pending(),

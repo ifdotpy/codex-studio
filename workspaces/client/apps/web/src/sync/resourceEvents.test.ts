@@ -12,7 +12,7 @@ const { resumeListeners, syncDatabase } = vi.hoisted(() => ({
 vi.mock("./client", () => ({ syncDatabase }));
 vi.mock("../usage/tokenRate", () => ({
   configureTokenRateStream: vi.fn(),
-  receiveResourceTokenRates: vi.fn(),
+  receiveResourceTokenRates: vi.fn(() => true),
 }));
 vi.mock("./resume", () => ({
   onResume: (listener: () => void) => {
@@ -1825,7 +1825,17 @@ describe("shared resource event transport", () => {
       addEventListener: vi.fn(),
       removeEventListener: vi.fn(),
     });
-    vi.stubGlobal("navigator", { onLine: true });
+    vi.stubGlobal("navigator", {
+      onLine: true,
+      locks: {
+        request: (
+          _name: string,
+          _options: unknown,
+          callback: (lock: {}) => Promise<void>,
+        ) => Promise.resolve().then(() => callback({})),
+      },
+    });
+    vi.stubGlobal("BroadcastChannel", Channel);
     vi.stubGlobal("location", { origin: "http://studio.test" });
     vi.stubGlobal("crypto", { randomUUID: () => "tab-one" });
     vi.stubGlobal("EventSource", Source);
@@ -1842,14 +1852,6 @@ describe("shared resource event transport", () => {
     await vi.waitFor(() => expect(Source.instances).toHaveLength(1));
     const stream = Source.instances[0]!;
 
-    stream.emit("token-rates", {
-      protocol: 3,
-      workspaceId,
-      epoch: "epoch-one",
-      revision: 3,
-      rates: {},
-      teams: {},
-    });
     stream.emit("resources", {
       protocol: 3,
       workspaceId,
@@ -1858,9 +1860,47 @@ describe("shared resource event transport", () => {
       reason: "change",
       resources: [resource],
     });
+    stream.emit("token-rates", {
+      protocol: 3,
+      workspaceId,
+      epoch: "epoch-one",
+      revision: 3,
+      records: [
+        {
+          agentId: "worker",
+          rootId: "root",
+          turnId: "turn",
+          active: true,
+          estimated: false,
+          rate: 42,
+          outputTokens: 84,
+        },
+      ],
+    });
 
     await vi.waitFor(() => expect(onResourceChange).toHaveBeenCalledTimes(1));
     expect(onTokenRates).toHaveBeenCalledTimes(1);
+    const event = onTokenRates.mock.calls[0]![0];
+    const late = vi.fn();
+    const stopLate = transport.watchTokenRateEvents(late);
+    expect(late).toHaveBeenCalledExactlyOnceWith(event);
+    const channel = Channel.instances[0]!;
+    channel.messages.length = 0;
+    channel.onmessage?.({
+      data: {
+        kind: "subscriptions",
+        workspaceId,
+        tabId: "late-follower",
+        apiSchemaHash: API_SCHEMA_HASH,
+        resources: [],
+        tokenRates: true,
+        reset: true,
+      },
+    } as MessageEvent);
+    expect(channel.messages).toContainEqual(
+      expect.objectContaining({ kind: "token-rates", event }),
+    );
+    stopLate();
     stopTokenRates();
     stopResource();
   });
