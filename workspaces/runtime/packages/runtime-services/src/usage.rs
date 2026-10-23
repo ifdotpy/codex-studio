@@ -11,14 +11,13 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 use thiserror::Error;
 
-// Python owns the shared cost values in codex_costs.py:27-33: refresh
-// intervals, history windows, and the scan timeout. costs-contract.py checks
-// the Rust consumers against those owners.
+// This module owns cost-cache refresh intervals (seconds), history windows
+// (days), and the scan timeout (seconds).
 const COST_REFRESH_SECONDS: f64 = 120.0;
 const CLAUDE_COST_REFRESH_SECONDS: f64 = 300.0;
 const CLAUDE_COST_HISTORY_DAYS: i64 = 30;
 const COST_REPORT_HISTORY_DAYS: i64 = 30;
-// Python owns models.dev refresh policy in codex_pricing.py:17-18,120-128.
+// This module owns the models.dev catalog lifetime and request timeout.
 const PRICING_CATALOG_TTL_SECONDS: f64 = 24.0 * 60.0 * 60.0;
 const PRICING_CATALOG_REQUEST_TIMEOUT: Duration = Duration::from_secs(8);
 const COST_SCAN_TIMEOUT_SECONDS: Duration = Duration::from_secs(900);
@@ -55,10 +54,8 @@ fn is_claude_account(account: &Value) -> bool {
 /// Read an account's last locally scanned cost snapshot.
 ///
 /// The response reports stale caches as stale and never invokes a scanner,
-/// provider session, or billing endpoint. Python's reader interval/timeout and
-/// CODEX_HOME cache scope are in codex_costs.py:165-199; stale refresh
-/// scheduling is at :201-232. Account home resolution and account-scoped
-/// cache/environment construction are at :352-391.
+/// provider session, or billing endpoint. Cache identity includes the account
+/// and its resolved profile home; refresh scheduling stays with the caller.
 pub fn account_cost_snapshot(
     state_dir: &Path,
     account_key: &str,
@@ -154,11 +151,8 @@ pub fn claim_cost_refresh_attempt(account_key: &str) -> bool {
     true
 }
 
-/// Refresh local Codex session logs into the same scoped cache used by Python.
-/// Called only from the measured blocking pool; GET handlers return their cache
-/// before scheduling this work. Python's lock wait/busy result is at
-/// codex_costs.py:234-242; retry interval is at :216-219; completion-time
-/// checkedAt and cache save are at :280-292; failure timestamping is at :294-306.
+/// Refresh local session logs into the account-scoped cache.
+/// GET handlers return their cache before scheduling this blocking work.
 #[cfg(test)]
 fn refresh_account_costs(
     state_dir: &Path,
@@ -428,7 +422,6 @@ struct ClaudeUsage {
 }
 
 /// Read deduplicated Claude Code assistant usage rows under the chosen profile.
-/// Python owner: codex_claude_costs.py:6-34 and codex_costs.py:391-478.
 fn scan_claude_sessions(
     config: &Path,
     state_dir: &Path,
@@ -527,9 +520,8 @@ where
                     input: value("input_tokens"),
                     cached: value("cache_read_input_tokens"),
                     write: value("cache_creation_input_tokens"),
-                    // Python keeps an absent output_tokens field as None
-                    // (codex_claude_costs.py:37), so pricing marks the row
-                    // incomplete instead of treating it as zero usage.
+                    // An absent output count marks pricing as incomplete;
+                    // it cannot prove zero output usage.
                     output: usage.get("output_tokens").and_then(Value::as_u64),
                 });
             }
@@ -875,8 +867,7 @@ fn codex_model_name(raw: &str) -> String {
     .to_owned()
 }
 
-/// Python waits up to the scan timeout for its shared scan lock and only then
-/// raises the busy result (codex_costs.py:239-242); preserve that wait here.
+/// Wait up to the scan timeout before reporting that the shared scanner is busy.
 fn acquire_codex_scan_lock(cancelled: &AtomicBool) -> Result<MutexGuard<'static, ()>, UsageError> {
     acquire_codex_scan_lock_for(COST_SCAN_TIMEOUT_SECONDS, Some(cancelled))
 }
@@ -1437,25 +1428,7 @@ mod tests {
             &AtomicBool::new(false),
         )
         .expect("scan fixture logs");
-        let oracle = std::process::Command::new("python3")
-            .arg("-B")
-            .arg("-c")
-            .arg("import json,sys; from codex_claude_costs import parse_claude_usage; from codex_pricing import price_usage; rows=parse_claude_usage(sys.argv[1]); row=rows[0]; print(json.dumps(price_usage(json.load(open(sys.argv[2]))['catalog'],'anthropic',row['model'],row['usage'],context_tokens=100000,input_tokens_are_uncached=True)[0]))")
-            .arg(&log_path)
-            .arg(root.join("state/model-pricing/models-dev-v1.json"))
-            .env_remove("CODEX_AGENTS_PYTHON")
-            .env("PYTHONPATH", env!("CARGO_MANIFEST_DIR").replace("/packages/runtime-services", "/apps/server/src"))
-            .output()
-            .expect("run Python pricing oracle");
-        assert!(
-            oracle.status.success(),
-            "Python cost oracle failed: {}",
-            String::from_utf8_lossy(&oracle.stderr)
-        );
-        let expected: f64 =
-            serde_json::from_slice(&oracle.stdout).expect("Python cost oracle result");
         assert_eq!(result["todayUSD"], 0.3);
-        assert_eq!(result["todayUSD"].as_f64(), Some(expected));
         assert_eq!(result["last30DaysUSD"], 0.3);
         assert_eq!(result["coverage"], "reported");
         let account = json!({"id":"claude-local","provider":"claude","home":home,

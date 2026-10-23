@@ -1,4 +1,4 @@
-//! Asynchronous provider adapters, process ports and the supervisor v1 client.
+//! Asynchronous provider adapters, process ports and the supervisor v2 client.
 
 pub use studio_runtime_store::blocking_pool;
 pub mod child_priority;
@@ -33,7 +33,7 @@ pub(crate) mod supervisor_identity;
 mod transport;
 
 pub use client::SupervisorClient;
-pub use ports::{ProgressWatch, PtyHost};
+pub use ports::PtyHost;
 pub use protocol::*;
 pub use provider_launch::{ProviderHandle, ProviderLaunchSpec};
 #[cfg(unix)]

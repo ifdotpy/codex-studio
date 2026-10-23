@@ -702,3 +702,251 @@ async fn claude_deleting_a_team_unloads_its_threads() {
     scenario_deleting_a_team_unloads_its_threads(studio_runtime_providers::ProviderKind::Claude)
         .await;
 }
+
+/// Send `provider`'s diagnostics probe, an actorless retained read that names
+/// no thread, and leave it in flight: the provider has not replied.
+async fn unrelated_request_in_flight(
+    peer: &mut Peer,
+    worker: &AccountHandle,
+    provider: studio_runtime_providers::ProviderKind,
+) -> (
+    Value,
+    tokio::task::JoinHandle<
+        Result<
+            crate::account_worker::retained::SessionReceipt,
+            crate::account_worker::retained::PortError,
+        >,
+    >,
+) {
+    use crate::account_worker::retained::{DIAGNOSTICS_OPERATION_PREFIX, SessionRequest};
+    let adapter = crate::provider_adapter::adapter(provider);
+    let method = adapter.diagnostics_method();
+    let port = worker.retained_session();
+    let call = SessionRequest {
+        scope: port.scope().clone(),
+        expected_scope: Some(port.scope().clone()),
+        operation: format!("{DIAGNOSTICS_OPERATION_PREFIX}{}", method.as_str()),
+        actor: None,
+        transfer: None,
+        deleted_actor_session: None,
+        method,
+        params: adapter.diagnostics_params(),
+        deadline: (tokio::time::Instant::now() + Duration::from_secs(600)).into_std(),
+    };
+    let task = tokio::spawn(async move { port.request(call).await });
+    let wire = progress(peer.write(method.as_str())).await;
+    (wire, task)
+}
+
+/// Live defect 2026-10-22: finished and deleted workers kept their provider
+/// threads loaded for days (each Codex thread with its own node_repl MCP
+/// server processes). A due thread was parked while any request of the account
+/// was in flight, such as another agent's turn or a monitor's `command/exec`,
+/// and was checked again only when the whole account had no local work. A
+/// finished worker's thread gets no later event, so on a busy account it never
+/// unloaded. Now only a request for that thread parks it: the unrelated request
+/// stays in flight while the thread is unsubscribed, and the next turn resumes
+/// the same thread.
+async fn scenario_a_request_for_another_thread_does_not_keep_a_finished_worker_loaded(
+    provider: studio_runtime_providers::ProviderKind,
+) {
+    let state = State::new().await;
+    let mut peer = Peer::new();
+    let mut worker = provider_worker(&state, &mut peer, provider).await;
+    let start = state.start(&mut peer, &worker).await;
+    peer.accepted(&start).await;
+    enable_unload(&state, &mut peer).await;
+    set_lead(&state, false).await;
+    let (probe, probe_task) = unrelated_request_in_flight(&mut peer, &worker, provider).await;
+
+    // The finished worker's settled turn starts its unload checks at once,
+    // while the unrelated request has no reply yet.
+    progress(peer.completed()).await;
+    idle_checks(&mut peer).await;
+    answer(
+        &mut peer,
+        "thread/unsubscribe",
+        json!({"threadId": THREAD}),
+        json!({"status": "unsubscribed"}),
+    )
+    .await;
+    assert!(
+        !probe_task.is_finished(),
+        "the unrelated request is still in flight"
+    );
+    progress(peer.reply(&probe, json!({"data": []}))).await;
+    progress(probe_task).await.unwrap().unwrap();
+
+    // The next turn loads the same thread again before it starts.
+    state.enqueue("after-unload").await;
+    state.wake(&worker).await;
+    let resume = progress(peer.write("thread/resume")).await;
+    assert_eq!(
+        resume["params"]["threadId"], THREAD,
+        "the same thread reloads"
+    );
+    progress(peer.reply(&resume, json!({"thread": {"id": THREAD}}))).await;
+    let next = progress(peer.write("turn/start")).await;
+    assert_eq!(next["params"]["threadId"], THREAD);
+    assert!(
+        next["params"]["input"].to_string().contains("after-unload"),
+        "{next}"
+    );
+    progress(worker.shutdown()).await.unwrap();
+}
+
+#[tokio::test]
+async fn codex_a_request_for_another_thread_does_not_keep_a_finished_worker_loaded() {
+    scenario_a_request_for_another_thread_does_not_keep_a_finished_worker_loaded(
+        studio_runtime_providers::ProviderKind::Codex,
+    )
+    .await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn claude_a_request_for_another_thread_does_not_keep_a_finished_worker_loaded() {
+    scenario_a_request_for_another_thread_does_not_keep_a_finished_worker_loaded(
+        studio_runtime_providers::ProviderKind::Claude,
+    )
+    .await;
+}
+
+/// A Codex turn that ends with a provider error leaves the thread in
+/// `systemError`, which has no running turn; a finished worker's thread in that
+/// state unloads like an idle one instead of staying loaded until a turn that
+/// never comes.
+#[tokio::test]
+async fn codex_a_finished_worker_whose_turn_failed_unloads_its_thread() {
+    let state = State::new().await;
+    let mut peer = Peer::new();
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    let start = state.start(&mut peer, &worker).await;
+    peer.accepted(&start).await;
+    enable_unload(&state, &mut peer).await;
+    set_lead(&state, false).await;
+
+    progress(peer.completed()).await;
+    answer(
+        &mut peer,
+        "thread/read",
+        json!({"threadId": THREAD, "includeTurns": false}),
+        json!({"thread": {"id": THREAD, "status": {"type": "systemError"}}}),
+    )
+    .await;
+    answer(
+        &mut peer,
+        "thread/backgroundTerminals/list",
+        json!({"threadId": THREAD, "limit": 100}),
+        json!({"data": [], "nextCursor": null}),
+    )
+    .await;
+    answer(
+        &mut peer,
+        "thread/queue/list",
+        json!({"threadId": THREAD}),
+        json!({"data": [], "nextCursor": null}),
+    )
+    .await;
+    answer(
+        &mut peer,
+        "thread/unsubscribe",
+        json!({"threadId": THREAD}),
+        json!({"status": "unsubscribed"}),
+    )
+    .await;
+    progress(worker.shutdown()).await.unwrap();
+}
+
+/// Advance the worker's clock by `by`, which must stay shorter than the
+/// deadlines of the requests the test keeps in flight.
+async fn advance_idle_clock(worker: &AccountHandle, by: Duration) {
+    progress(worker_barrier(worker)).await;
+    tokio::time::pause();
+    tokio::time::advance(by).await;
+    tokio::time::resume();
+    progress(worker_barrier(worker)).await;
+}
+
+/// A request for the thread itself (here a retained history read of a lead's
+/// thread) parks the thread when its idle clock expires; once that request
+/// finishes, the clock runs again and the thread unloads although an unrelated
+/// request keeps the account busy. Before, the parked thread was checked again
+/// only when the whole account had no local work.
+#[tokio::test]
+async fn a_thread_parked_by_its_own_request_unloads_when_that_request_finishes() {
+    use crate::account_worker::retained::{RequestActor, SessionRequest};
+    /// The shortest idle setting above zero; unit: minutes.
+    const SETTING_MINUTES: u64 = 1;
+    let beyond_setting = Duration::from_secs(SETTING_MINUTES * 60 + 1);
+    let state = State::new().await;
+    let mut peer = Peer::new();
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    let start = state.start(&mut peer, &worker).await;
+    peer.accepted(&start).await;
+    set_delay(&state, SETTING_MINUTES).await;
+    loaded(&mut peer).await;
+    set_lead(&state, true).await;
+    progress(peer.completed()).await;
+    progress(worker_barrier(&worker)).await;
+    assert!(
+        peer.writes.try_recv().is_err(),
+        "a lead waits for the setting"
+    );
+
+    let (probe, probe_task) = unrelated_request_in_flight(
+        &mut peer,
+        &worker,
+        studio_runtime_providers::ProviderKind::Codex,
+    )
+    .await;
+    let port = worker.retained_session();
+    let history = SessionRequest {
+        scope: port.scope().clone(),
+        expected_scope: None,
+        operation: "history-of-idle-lead".into(),
+        actor: Some(RequestActor {
+            agent: state.agent.clone(),
+            epoch: state.epoch,
+        }),
+        transfer: None,
+        deleted_actor_session: None,
+        method: Method::ThreadRead,
+        params: json!({"threadId": THREAD, "includeTurns": false}),
+        deadline: (tokio::time::Instant::now() + Duration::from_secs(600)).into_std(),
+    };
+    let history_task = tokio::spawn(async move { port.request(history).await });
+    let read = progress(peer.write("thread/read")).await;
+    assert!(
+        read["id"]
+            .as_str()
+            .is_some_and(|id| id.starts_with("retained:")),
+        "the history read, not an idle check: {read}"
+    );
+
+    advance_idle_clock(&worker, beyond_setting).await;
+    assert!(
+        peer.writes.try_recv().is_err(),
+        "a request for the thread keeps it loaded while it runs"
+    );
+    progress(peer.reply(&read, json!({"thread": {"id": THREAD}}))).await;
+    progress(history_task).await.unwrap().unwrap();
+
+    // The finished request starts a fresh idle interval.
+    advance_idle_clock(&worker, beyond_setting).await;
+    idle_checks(&mut peer).await;
+    answer(
+        &mut peer,
+        "thread/unsubscribe",
+        json!({"threadId": THREAD}),
+        json!({"status": "unsubscribed"}),
+    )
+    .await;
+    assert!(
+        !probe_task.is_finished(),
+        "the unrelated request is still in flight"
+    );
+    progress(peer.reply(&probe, json!({"data": []}))).await;
+    progress(probe_task).await.unwrap().unwrap();
+    progress(worker.shutdown()).await.unwrap();
+}

@@ -3,7 +3,9 @@
 use crate::CachedSql;
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::{Value, json};
-use studio_runtime_schema::shared_values::{SYNC_BATCH_LIMIT, SYNC_ENTITY_PAGE_LIMIT};
+use studio_runtime_schema::shared_values::{
+    SYNC_BATCH_LIMIT, SYNC_ENTITY_PAGE_LIMIT, SYNC_ENTITY_STREAM_MAX_DOCUMENTS,
+};
 
 use crate::schema::{SchemaRequirements, TableRequirement, TriggerRequirement};
 use crate::{StoreError, StoreResult};
@@ -299,7 +301,12 @@ impl SyncDocumentsRepository {
         let rows = statement.query_map(
             params![
                 after,
-                limit.clamp(1, SYNC_ENTITY_PAGE_LIMIT.saturating_add(1))
+                limit.clamp(
+                    1,
+                    SYNC_ENTITY_STREAM_MAX_DOCUMENTS
+                        .max(SYNC_ENTITY_PAGE_LIMIT)
+                        .saturating_add(1)
+                )
             ],
             |row| {
                 Ok(EntityRow {
@@ -414,7 +421,28 @@ impl SyncDocumentsRepository {
             .map_err(StoreError::from)
     }
 
+    /// Latest draft row sequence, including retained tombstones. Unrelated sync
+    /// scopes share the allocator but never advance this content revision.
+    pub fn draft_sequence(connection: &Connection) -> StoreResult<i64> {
+        connection
+            .query_row_cached(
+                "SELECT COALESCE(MAX(seq),0) FROM sync_documents WHERE scope='drafts'",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(StoreError::from)
+    }
+
     pub fn pull_drafts(
+        connection: &Connection,
+        after: i64,
+        limit: i64,
+    ) -> StoreResult<Vec<SyncDocument>> {
+        Self::drafts_after(connection, after, limit.clamp(1, SYNC_BATCH_LIMIT))
+    }
+
+    /// Read a caller-bounded draft interval, shared by pull pages and stream batches.
+    pub fn drafts_after(
         connection: &Connection,
         after: i64,
         limit: i64,
@@ -423,17 +451,14 @@ impl SyncDocumentsRepository {
             "SELECT seq,id,payload,deleted FROM sync_documents \
              WHERE scope='drafts' AND seq>?1 ORDER BY seq LIMIT ?2",
         )?;
-        let rows = statement.query_map(
-            params![after.max(0), limit.clamp(1, SYNC_BATCH_LIMIT)],
-            |row| {
-                Ok(SyncDocument {
-                    sequence: row.get(0)?,
-                    id: row.get(1)?,
-                    payload: row.get(2)?,
-                    deleted: row.get::<_, i64>(3)? != 0,
-                })
-            },
-        )?;
+        let rows = statement.query_map(params![after.max(0), limit], |row| {
+            Ok(SyncDocument {
+                sequence: row.get(0)?,
+                id: row.get(1)?,
+                payload: row.get(2)?,
+                deleted: row.get::<_, i64>(3)? != 0,
+            })
+        })?;
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(StoreError::from)
     }

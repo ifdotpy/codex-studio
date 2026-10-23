@@ -1,7 +1,4 @@
 //! Test-only gates suspend the real callers after preparation, before their writer.
-use std::io::{BufRead, BufReader, Write};
-use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 
@@ -91,53 +88,29 @@ where
 
 pub struct Fixture {
     pub store: Arc<RuntimeStore>,
-    child: Child,
-    root: PathBuf,
+    _root: tempfile::TempDir,
 }
 impl Fixture {
     #[allow(clippy::disallowed_methods)]
-    pub async fn new(label: &str, prepared_python: fn(&Path) -> PathBuf) -> Self {
-        let root =
-            std::env::temp_dir().join(format!("cs-w7-p03-gate-{label}-{}", std::process::id()));
-        std::fs::create_dir(&root).expect("unique tmpfs fixture");
-        std::fs::create_dir(root.join("oracle")).expect("oracle scratch");
-        let services = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .expect("packages")
-            .join("runtime-services");
-        let mut child = Command::new(prepared_python(&services.join("../../apps/server/src")))
-            .arg("-B")
-            .arg(services.join("tests/wave7_p03_message_ingress/oracle.py"))
-            .arg(root.join("oracle"))
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .spawn()
-            .expect("isolated Python fixture");
-        let state = root.join("state");
-        writeln!(
-            child.stdin.as_mut().expect("stdin"),
-            "{}",
-            json!({"rust":state,"case":{"steps":[]}})
-        )
-        .expect("seed request");
-        child
-            .stdin
-            .as_mut()
-            .expect("stdin")
-            .flush()
-            .expect("flush seed");
-        let mut line = String::new();
-        BufReader::new(child.stdout.take().expect("stdout"))
-            .read_line(&mut line)
-            .expect("seed response");
-        let response: serde_json::Value = serde_json::from_str(&line).expect("seed JSON");
-        assert!(response.get("oracleError").is_none(), "{response}");
+    pub async fn new(label: &str) -> Self {
+        let root = tempfile::Builder::new()
+            .prefix(&format!("cs-w7-p03-gate-{label}-"))
+            .tempdir()
+            .expect("isolated gate fixture");
+        let state = root.path().join("state");
+        std::fs::create_dir(&state).expect("fixture state directory");
         let store = Arc::new(RuntimeStore::open(Some(&state)).await.expect("store"));
-        let cwd = root.to_string_lossy().into_owned();
+        let workspace = root.path().join("workspace");
+        std::fs::create_dir(&workspace).expect("recipient workspace");
+        let cwd = root.path().to_string_lossy().into_owned();
         store
             .transaction(move |tx| {
-                let mut agent = AgentRepository::get(tx, &"agent".into())?.expect("Python agent");
+                let mut agent: studio_runtime_store::AgentRecord =
+                    serde_json::from_str(include_str!("agent.json"))?;
+                agent.extra.insert("cwd".into(), json!(workspace));
+                agent
+                    .extra
+                    .insert("hostProjectPath".into(), json!(workspace));
                 agent.id = "late-operation-recipient".into();
                 agent.root_id = agent.id.clone();
                 AgentRepository::put(tx, &agent)?;
@@ -148,18 +121,6 @@ impl Fixture {
             })
             .await
             .expect("recipient and idle unrelated workspace");
-        Self { store, child, root }
-    }
-}
-impl Drop for Fixture {
-    #[allow(clippy::disallowed_methods)]
-    fn drop(&mut self) {
-        writeln!(
-            self.child.stdin.as_mut().expect("stdin"),
-            "{{\"close\":true}}"
-        )
-        .expect("close oracle");
-        assert!(self.child.wait().expect("reap oracle").success());
-        std::fs::remove_dir_all(&self.root).expect("remove own fixture");
+        Self { store, _root: root }
     }
 }

@@ -1,0 +1,18 @@
+{
+  "command": [
+    "/fixture/codex",
+    "app-server",
+    "--listen",
+    "stdio://",
+    "-c",
+    "cli_auth_credentials_store=\"file\""
+  ],
+  "env": {
+    "HOME": "/fixture/state",
+    "CODEX_HOME": "/fixture/state/codex",
+    "PATH": "/usr/bin:/bin",
+    "UNCHANGED": "Unicode caf\u00e9",
+    "CODEX_BACKEND_MARKER": "backend-only"
+  },
+  "cwd": null
+}

@@ -39,7 +39,8 @@ executable compatibility list are:
 `thread/unsubscribe`, `thread/fork`, `thread/archive`, `thread/unarchive`,
 `thread/metadata/update`, `thread/settings/update`, `thread/compact/start`,
 `thread/rollback`, `thread/backgroundTerminals/list`,
-`thread/backgroundTerminals/terminate`, `thread/commandExecution/background`
+`thread/backgroundTerminals/terminate`, `thread/backgroundTerminals/clean`,
+`thread/commandExecution/background`
 (Claude bridge only), `thread/queue/list`, `thread/goal/set`,
 `thread/realtime/start`, `thread/realtime/stop`,
 `thread/realtime/appendSpeech`, `turn/start`, `turn/steer`, `turn/interrupt`,

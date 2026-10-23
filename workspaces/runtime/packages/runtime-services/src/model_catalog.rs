@@ -224,12 +224,18 @@ struct CacheEntry {
     pending: bool,
 }
 
+/// Cache entries and their generation sequence advance under the same lock.
+#[derive(Default)]
+struct CatalogState {
+    entries: HashMap<(String, String, String), CacheEntry>,
+    next_generation: u64,
+}
+
 struct CatalogInner {
-    cache: Mutex<HashMap<(String, String, String), CacheEntry>>,
+    state: Mutex<CatalogState>,
     accounts: Mutex<HashMap<String, (String, String)>>,
     accounts_initialized: AtomicBool,
     account_session: Mutex<Option<Arc<dyn crate::account_session_runtime::AccountSessionPort>>>,
-    next_generation: Mutex<u64>,
     on_change: ChangeCallback,
     refresh_changed: tokio::sync::Notify,
     tasks: tokio::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>,
@@ -242,6 +248,28 @@ struct CatalogInner {
 pub struct ModelCatalogService(Arc<CatalogInner>);
 
 impl ModelCatalogService {
+    /// Content already available to model reads, without starting a provider or
+    /// including refresh generations and expiration timestamps in resource versions.
+    pub fn cached_resource_content(&self) -> Option<Value> {
+        let cache = self.0.state.lock().ok()?;
+        let mut entries = cache.entries.iter().collect::<Vec<_>>();
+        entries.sort_by_key(|(key, _)| *key);
+        serde_json::to_value(
+            entries
+                .into_iter()
+                .map(|(key, entry)| {
+                    (
+                        key,
+                        &entry.value,
+                        entry.error && !entry.pending,
+                        entry.value.is_none() && entry.pending,
+                    )
+                })
+                .collect::<Vec<_>>(),
+        )
+        .ok()
+    }
+
     /// Observe only an already refreshed catalog. This never starts a provider;
     /// use `read` outside admission to request/coalesce the asynchronous refresh.
     #[must_use]
@@ -255,10 +283,10 @@ impl ModelCatalogService {
         if !matches!(provider, "codex" | "claude") {
             return AdmissionCatalogRead::Unavailable;
         }
-        let Ok(cache) = self.0.cache.lock() else {
+        let Ok(cache) = self.0.state.lock() else {
             return AdmissionCatalogRead::Unavailable;
         };
-        let Some(entry) = cache.get(&key) else {
+        let Some(entry) = cache.entries.get(&key) else {
             return AdmissionCatalogRead::Pending;
         };
         if entry.pending {
@@ -326,8 +354,9 @@ impl ModelCatalogService {
             return;
         }
         let key = (account_key.to_owned(), home.to_owned(), provider.to_owned());
-        let retry_at = self.0.cache.lock().ok().and_then(|cache| {
+        let retry_at = self.0.state.lock().ok().and_then(|cache| {
             cache
+                .entries
                 .get(&key)
                 .filter(|entry| entry.error && !entry.pending)
                 .and_then(|entry| entry.expires_at)
@@ -349,11 +378,10 @@ impl ModelCatalogService {
     #[must_use]
     pub fn with_change_callback(on_change: ChangeCallback) -> Self {
         Self(Arc::new(CatalogInner {
-            cache: Mutex::new(HashMap::new()),
+            state: Mutex::new(CatalogState::default()),
             accounts: Mutex::new(HashMap::new()),
             accounts_initialized: AtomicBool::new(false),
             account_session: Mutex::new(None),
-            next_generation: Mutex::new(0),
             on_change,
             refresh_changed: tokio::sync::Notify::new(),
             tasks: tokio::sync::Mutex::new(Vec::new()),
@@ -435,10 +463,10 @@ impl ModelCatalogService {
         // read is queued and still be returned as fresh.
         let now = Instant::now();
         let (generation, stale) = {
-            let Ok(mut cache) = self.0.cache.lock() else {
+            let Ok(mut cache) = self.0.state.lock() else {
                 return CatalogRead::Unavailable;
             };
-            if let Some(entry) = cache.get_mut(&cache_key) {
+            if let Some(entry) = cache.entries.get_mut(&cache_key) {
                 if entry.pending {
                     return match &entry.value {
                         Some(value) => CatalogRead::Ready(value.clone()),
@@ -455,15 +483,17 @@ impl ModelCatalogService {
                     }
                 }
             }
-            let stale = cache.get(&cache_key).and_then(|entry| entry.value.clone());
+            let stale = cache
+                .entries
+                .get(&cache_key)
+                .and_then(|entry| entry.value.clone());
             // A changed home/provider replaces the same account's former entry.
-            cache.retain(|key, _| key.0 != account_key || *key == cache_key);
-            let Ok(mut next) = self.0.next_generation.lock() else {
-                return CatalogRead::Unavailable;
-            };
-            *next = next.saturating_add(1);
-            let generation = *next;
-            cache.insert(
+            cache
+                .entries
+                .retain(|key, _| key.0 != account_key || *key == cache_key);
+            cache.next_generation = cache.next_generation.saturating_add(1);
+            let generation = cache.next_generation;
+            cache.entries.insert(
                 cache_key.clone(),
                 CacheEntry {
                     generation,
@@ -526,7 +556,7 @@ impl ModelCatalogService {
             return None;
         }
         let key = (account_key.to_owned(), home.to_owned(), provider.to_owned());
-        self.0.cache.lock().ok()?.get(&key)?.value.clone()
+        self.0.state.lock().ok()?.entries.get(&key)?.value.clone()
     }
 
     async fn wait_until_ready(
@@ -644,9 +674,10 @@ impl ModelCatalogService {
             self.0.accounts_initialized.store(true, Ordering::Release);
         }
         self.0
-            .cache
+            .state
             .lock()
             .expect("catalog cache")
+            .entries
             .retain(|key, _| {
                 accounts.iter().any(|account| {
                     account["id"].as_str() == Some(key.0.as_str())
@@ -682,7 +713,7 @@ impl ModelCatalogService {
         provider: &str,
         value: Value,
     ) {
-        self.0.cache.lock().expect("catalog cache").insert(
+        self.0.state.lock().expect("catalog cache").entries.insert(
             (account_key.to_owned(), home.to_owned(), provider.to_owned()),
             CacheEntry {
                 generation: 1,
@@ -767,8 +798,8 @@ fn store_result(
     generation: u64,
     result: Result<Value, ()>,
 ) -> bool {
-    let stored = if let Ok(mut cache) = inner.cache.lock()
-        && let Some(entry) = cache.get_mut(key)
+    let stored = if let Ok(mut cache) = inner.state.lock()
+        && let Some(entry) = cache.entries.get_mut(key)
         && entry.generation == generation
         && entry.pending
     {
@@ -800,6 +831,36 @@ pub(crate) mod tests {
     use super::*;
 
     use std::sync::Mutex as StdMutex;
+
+    #[test]
+    fn cached_resource_content_ignores_refresh_metadata() {
+        let service = ModelCatalogService::new();
+        let payload = json!({"data":[{"model":"fixture"}]});
+        service.seed_test_admission_catalog("account", "home", "codex", payload);
+        let before = service.cached_resource_content().expect("content");
+        {
+            let mut cache = service.0.state.lock().expect("cache");
+            let entry = cache.entries.values_mut().next().expect("entry");
+            entry.generation += 1;
+            entry.expires_at = None;
+            entry.pending = true;
+            entry.error = true;
+        }
+        assert_eq!(service.cached_resource_content(), Some(before.clone()));
+        {
+            let mut cache = service.0.state.lock().expect("cache");
+            let entry = cache.entries.values_mut().next().expect("entry");
+            entry.pending = false;
+            entry.expires_at = Some(Instant::now() + CATALOG_FAILURE_RETRY);
+        }
+        assert_ne!(
+            service.cached_resource_content(),
+            Some(before.clone()),
+            "a failed worker catalog is unavailable even while display reads retain the old payload"
+        );
+        service.seed_test_admission_catalog("account", "home", "codex", json!({"data":[]}));
+        assert_ne!(service.cached_resource_content(), Some(before));
+    }
 
     /// Retained-session fake that answers each `model/list` with the next page.
     /// A gated fake holds every reply until `release` grants it.
@@ -1081,7 +1142,7 @@ pub(crate) mod tests {
     }
 
     pub(crate) fn expire_fixture(service: &ModelCatalogService) {
-        for entry in service.0.cache.lock().expect("cache").values_mut() {
+        for entry in service.0.state.lock().expect("cache").entries.values_mut() {
             entry.expires_at = Some(Instant::now());
         }
     }
@@ -1092,7 +1153,7 @@ pub(crate) mod tests {
         value: Value,
     ) {
         let key = (account.to_owned(), home.to_owned(), "codex".to_owned());
-        service.0.cache.lock().expect("cache").insert(
+        service.0.state.lock().expect("cache").entries.insert(
             key.clone(),
             CacheEntry {
                 generation: 7,
@@ -1110,7 +1171,7 @@ pub(crate) mod tests {
         let service = ModelCatalogService::new();
         let _pages = serve_pages(&service, AccountSessionPages::gated(Vec::new()));
         let key = ("account".to_owned(), "/home".to_owned(), "codex".to_owned());
-        service.0.cache.lock().expect("cache").insert(
+        service.0.state.lock().expect("cache").entries.insert(
             key.clone(),
             CacheEntry {
                 generation: 7,
@@ -1160,7 +1221,7 @@ pub(crate) mod tests {
     async fn cold_display_read_reports_failed_refresh_as_unavailable() {
         let service = ModelCatalogService::new();
         let key = ("account".to_owned(), "/home".to_owned(), "codex".to_owned());
-        service.0.cache.lock().expect("cache").insert(
+        service.0.state.lock().expect("cache").entries.insert(
             key.clone(),
             CacheEntry {
                 generation: 7,
@@ -1189,7 +1250,7 @@ pub(crate) mod tests {
         let service = ModelCatalogService::new();
         let key = ("account".to_owned(), "/home".to_owned(), "codex".to_owned());
         let known = json!({"data":[{"model":"known"}],"nextCursor":null});
-        service.0.cache.lock().expect("cache").insert(
+        service.0.state.lock().expect("cache").entries.insert(
             key.clone(),
             CacheEntry {
                 generation: 7,
@@ -1222,7 +1283,7 @@ pub(crate) mod tests {
         assert!(CATALOG_FAILURE_RETRY < CATALOG_TTL);
         let service = ModelCatalogService::new();
         let key = ("account".to_owned(), "/home".to_owned(), "codex".to_owned());
-        service.0.cache.lock().expect("cache").insert(
+        service.0.state.lock().expect("cache").entries.insert(
             key.clone(),
             CacheEntry {
                 generation: 7,
@@ -1259,7 +1320,7 @@ pub(crate) mod tests {
     async fn cold_display_read_keeps_its_bounded_pending_result() {
         let service = ModelCatalogService::new();
         let _pages = serve_pages(&service, AccountSessionPages::gated(Vec::new()));
-        service.0.cache.lock().expect("cache").insert(
+        service.0.state.lock().expect("cache").entries.insert(
             ("account".to_owned(), "/home".to_owned(), "codex".to_owned()),
             CacheEntry {
                 generation: 7,
@@ -1283,7 +1344,7 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn stale_display_value_returns_without_waiting_for_refresh() {
         let service = ModelCatalogService::new();
-        service.0.cache.lock().expect("cache").insert(
+        service.0.state.lock().expect("cache").entries.insert(
             ("account".to_owned(), "/home".to_owned(), "codex".to_owned()),
             CacheEntry {
                 generation: 7,
@@ -1315,7 +1376,7 @@ pub(crate) mod tests {
             "home":"/old-home",
             "provider":"codex"
         })]);
-        service.0.cache.lock().expect("cache").insert(
+        service.0.state.lock().expect("cache").entries.insert(
             key.clone(),
             CacheEntry {
                 generation: 7,
@@ -1343,14 +1404,30 @@ pub(crate) mod tests {
             read.await.expect("catalog waiter"),
             CatalogRead::Unavailable
         );
-        assert!(!service.0.cache.lock().expect("cache").contains_key(&key));
+        assert!(
+            !service
+                .0
+                .state
+                .lock()
+                .expect("cache")
+                .entries
+                .contains_key(&key)
+        );
         assert_eq!(
             service
                 .read_until_ready("account", "/old-home", "codex", false)
                 .await,
             CatalogRead::Unavailable
         );
-        assert!(!service.0.cache.lock().expect("cache").contains_key(&key));
+        assert!(
+            !service
+                .0
+                .state
+                .lock()
+                .expect("cache")
+                .entries
+                .contains_key(&key)
+        );
     }
 
     #[tokio::test]
@@ -1393,7 +1470,7 @@ pub(crate) mod tests {
         let service = ModelCatalogService::new();
         let _pages = serve_pages(&service, AccountSessionPages::gated(Vec::new()));
         let key = ("account".to_owned(), "/home".to_owned(), "codex".to_owned());
-        service.0.cache.lock().expect("cache").insert(
+        service.0.state.lock().expect("cache").entries.insert(
             key.clone(),
             CacheEntry {
                 generation: 7,
@@ -1415,10 +1492,10 @@ pub(crate) mod tests {
         }
         drop(task_guard);
 
-        let cache = service.0.cache.lock().expect("catalog cache");
-        assert!(!cache[&key].pending);
+        let cache = service.0.state.lock().expect("catalog cache");
+        assert!(!cache.entries[&key].pending);
         assert_eq!(
-            cache[&key].value,
+            cache.entries[&key].value,
             Some(json!({"models":[{"model":"stale"}]}))
         );
     }
@@ -1428,7 +1505,7 @@ pub(crate) mod tests {
         let service = ModelCatalogService::new();
         let _pages = serve_pages(&service, AccountSessionPages::gated(Vec::new()));
         let key = ("account".to_owned(), "/home".to_owned(), "codex".to_owned());
-        service.0.cache.lock().expect("cache").insert(
+        service.0.state.lock().expect("cache").entries.insert(
             key.clone(),
             CacheEntry {
                 generation: 7,
@@ -1454,7 +1531,7 @@ pub(crate) mod tests {
             CatalogRead::Ready(json!({"models":[{"model":"stale"}]})),
         );
         assert!(
-            service.0.cache.lock().expect("cache")[&key].pending,
+            service.0.state.lock().expect("cache").entries[&key].pending,
             "expired stale data must have a refresh registered"
         );
         service.shutdown().await.expect("join refresh task");
@@ -1479,7 +1556,7 @@ pub(crate) mod tests {
         );
         let value = json!({"data": [{"model": "one"}]});
         let expiry = Instant::now() + CATALOG_TTL;
-        service.0.cache.lock().expect("cache").insert(
+        service.0.state.lock().expect("cache").entries.insert(
             key.clone(),
             CacheEntry {
                 generation: 7,
@@ -1514,8 +1591,8 @@ pub(crate) mod tests {
             AdmissionCatalogRead::Pending
         );
         {
-            let mut cache = service.0.cache.lock().expect("cache");
-            let entry = cache.get_mut(&key).expect("entry");
+            let mut cache = service.0.state.lock().expect("cache");
+            let entry = cache.entries.get_mut(&key).expect("entry");
             entry.expires_at = Some(Instant::now() + CATALOG_TTL);
             entry.pending = true;
         }

@@ -181,6 +181,7 @@ async fn enabled_native_backend_serves_success_and_null_refusal_over_tcp() {
         value["rpcId"] = json!(id);
         value["method"] = json!(method);
         card(&store, &value).await;
+        seed_admission(&store, &value).await;
         let before = physical_snapshot(&store);
         for (decision, expected) in [(Value::Null, 400), (json!("accept"), 200)] {
             let body = if method == "item/tool/requestUserInput" {

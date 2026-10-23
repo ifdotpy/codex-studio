@@ -146,40 +146,6 @@ async fn python_admitted_resolution_keeps_its_signature_and_acked_proof_retires(
 }
 
 #[tokio::test]
-async fn python_admission_retires_written_payload_without_a_rust_cursor() {
-    let (root, mut store, context) = fixture().await;
-    let legacy = &template()["legacyCard"];
-    card(&store, legacy).await;
-    let data = json!({"decision":"accept"});
-    let reply = prepare_user_answer(&store, legacy["id"].as_str().unwrap(), &data, 20.0, false)
-        .await
-        .unwrap()
-        .unwrap();
-    delivery(&store, &reply.identity, DeliveryOutcome::Submitted)
-        .await
-        .unwrap();
-    delivery(&store, &reply.identity, DeliveryOutcome::Written)
-        .await
-        .unwrap();
-    drop(store);
-    store = Arc::new(RuntimeStore::open(Some(root.path())).await.unwrap());
-    let runtime = CallbackRuntime::new(store.clone(), Arc::new(Port::default()));
-    let raw:String=store.test_reader().unwrap().query_row("SELECT result FROM runtime_operation_receipts WHERE json_extract(result,'$.legacyAdmission')=1",[],|r|r.get(0)).unwrap();
-    let row: serde_json::Value = serde_json::from_str(&raw).unwrap();
-    assert_eq!(row["delivery"], "retired");
-    assert!(row.get("body").is_none() && row.get("unanswered").is_none());
-    assert!(row.get("journalCursor").is_none());
-    assert_eq!(
-        runtime
-            .answer(legacy["id"].as_str().unwrap(), &data, 21.0)
-            .await
-            .unwrap()["replayed"],
-        true
-    );
-    assert_eq!(checkpoint(&store, &context, 0).await, 0);
-}
-
-#[tokio::test]
 async fn queued_reply_is_checked_under_the_same_gate_as_resolution_and_stop() {
     for action in ["resolve", "stop", "delete", "complete"] {
         let (_root, store, context) = fixture().await;
@@ -581,6 +547,7 @@ async fn python_failures_null_decisions_and_race_winners_are_preserved() {
     for case in template()["races"].as_array().unwrap() {
         let (_root, store, context) = fixture().await;
         card(&store, &case["before"]).await;
+        seed_admission(&store, &case["before"]).await;
         put_actor(&store, &case["beforeActor"]).await;
         let id = case["before"]["id"].as_str().unwrap();
         let reply = prepare_user_answer(&store, id, &json!({"answers":{}}), 20.0, false)

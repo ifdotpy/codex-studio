@@ -27,7 +27,7 @@ pub const NATIVE_TERMINAL_ITEMS_PER_PAGE: usize = 100;
 pub const NATIVE_TERMINAL_MAX_PAGES: usize = 100;
 
 /// Largest integer a JavaScript number holds exactly (2^53 - 1).
-pub const MAX_SAFE_INTEGER: i64 = 9007199254740991;
+pub use studio_client_domain::MAX_SAFE_INTEGER;
 /// Largest user attachment, in bytes.
 pub const MAX_USER_ATTACHMENT_BYTES: usize = 20971520;
 /// Maximum attachment items admitted across one provider turn's input batch.
@@ -50,10 +50,11 @@ pub const PROJECT_SECRET_VALUE_LIMIT_LABEL: &str = "16 KiB";
 pub const PROJECT_SECRETS_GUEST_TIMEOUT_SECONDS: u64 = 30;
 /// Deadline of one `skills/extraRoots/set` call that registers the Chrome skill, in seconds.
 pub const BROWSER_SKILL_TIMEOUT_SECONDS: u64 = 20;
-/// Largest progress file, in bytes.
-pub const MAX_PROGRESS_FILE_BYTES: usize = 131072;
-/// Display label of `MAX_PROGRESS_FILE_BYTES`.
-pub const PROGRESS_FILE_LIMIT_LABEL: &str = "128 KiB";
+/// Text that tells a lead, once, that Studio no longer uses its old
+/// `PROGRESS.md` file. The `orchestration_context` topic `panel` returns it,
+/// and the turn context delivers it to a lead that received the old file
+/// guidance.
+pub const PROGRESS_FILE_RETIRED_NOTICE: &str = "Studio no longer reads or shows PROGRESS.md. Do not create or update a progress file for Studio. Report status in the chat.";
 /// Largest inline workspace preview, in bytes.
 pub const MAX_WORKSPACE_PREVIEW_BYTES: u64 = 20971520;
 /// Display label of `MAX_WORKSPACE_PREVIEW_BYTES`.
@@ -68,16 +69,20 @@ pub const MAX_SYNC_RESOURCE_COUNT: usize = 256;
 pub const SYNC_BATCH_LIMIT: i64 = 100;
 /// Entities per sync entity page.
 pub const SYNC_ENTITY_PAGE_LIMIT: i64 = 500;
-/// Byte budget of one sync stream response, in bytes.
-pub const SYNC_STREAM_BYTE_LIMIT: i64 = 1048576;
+/// Maximum records in a complete state stream interval, in documents.
+pub const SYNC_ENTITY_STREAM_MAX_DOCUMENTS: i64 = 512;
+/// Maximum encoded state batch (including envelopes), in UTF-8 bytes.
+pub const SYNC_ENTITY_STREAM_MAX_BYTES: usize = 262144;
+/// Maximum changed and removed transcript records in a complete stream interval, in items.
+pub const SYNC_TRANSCRIPT_STREAM_MAX_ITEMS: usize = 512;
+/// Maximum encoded transcript stream interval, in UTF-8 bytes.
+pub const SYNC_TRANSCRIPT_STREAM_MAX_BYTES: usize = 262144;
+/// Maximum records in a complete draft stream interval, in documents.
+pub const SYNC_DRAFT_STREAM_MAX_DOCUMENTS: i64 = 512;
+/// Maximum encoded draft batch (including envelopes), in UTF-8 bytes.
+pub const SYNC_DRAFT_STREAM_MAX_BYTES: usize = 262144;
 /// Seconds between sync resource heartbeats.
 pub const SYNC_RESOURCE_HEARTBEAT_SECONDS: u64 = 15;
-/// Seconds a reported progress layout stays fresh.
-pub const PROGRESS_LAYOUT_FRESH_SECONDS: f64 = 90.0;
-/// Clients whose progress layouts are retained.
-pub const PROGRESS_LAYOUT_MAX_CLIENTS: usize = 32;
-/// Largest progress layout report, in bytes.
-pub const PROGRESS_LAYOUT_MAX_BYTES: usize = 65536;
 
 // Codex model/list catalog response contract; byte values count encoded UTF-8.
 /// Largest model catalog frame, in bytes.
@@ -294,7 +299,6 @@ mod tests {
                 MAX_PROJECT_SECRET_VALUE_BYTES as u64,
                 PROJECT_SECRET_VALUE_LIMIT_LABEL,
             ),
-            (MAX_PROGRESS_FILE_BYTES as u64, PROGRESS_FILE_LIMIT_LABEL),
             (MAX_WORKSPACE_PREVIEW_BYTES, WORKSPACE_PREVIEW_LIMIT_LABEL),
         ] {
             assert_eq!(byte_label(bytes), label);

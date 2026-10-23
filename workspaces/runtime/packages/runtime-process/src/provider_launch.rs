@@ -35,7 +35,7 @@ pub struct ProviderLaunchSpec {
 }
 
 impl ProviderLaunchSpec {
-    /// Preserve Python supervisor launches, whose working directory is inherited.
+    /// Launch with the supervisor's inherited working directory.
     #[must_use]
     pub fn with_inherited_cwd(mut self) -> Self {
         self.cwd = None;

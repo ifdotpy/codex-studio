@@ -1,7 +1,7 @@
 {
   "revision": "acb4ad466bf44e9bc4e97af0f94fdf1e3734a766",
   "tree": "d6bfce484bdd94901ebc76ab2e40ea871d0697b6",
-  "sourceSha256": "9b2eb149683e2c8eefe4eac69626da59e34e340bbe785cad72deecd988db9eb1",
+  "sourceSha256": "6c80440eb278198b694271a85e6bd60aa2e12ac76291a5a1608422cff6301fba",
   "files": {
     "Cargo.lock": "7b58cc48f0dc34b4846a8f325f3a0e0945b01299b5e8aae6f6ef921ea3e92717",
     "Cargo.toml": "e56330fe0a405ca6c9b1744addec602618217e92a33ba3a7526806c3c07d61d5",
@@ -17,11 +17,10 @@
     "crates/desk-core/src/writer.rs": "73bb9c01048970d70429992e8948ff987689c0b9ca601db087022ccd787e6a91",
     "crates/desk-core/src/zst.rs": "f228390150942269cd7ee44065354d61c6b6309b73e199f7865c50f17eab833f",
     "crates/desk-core/tests/aws.rs": "d068def229de243ec02344d420bfc75af317062042544cb56cdc2ff05e1b58d3",
-    "crates/desk-core/tests/cross.py": "498dedeed8e63dc98dd2a2ab6865b59ca08a24ba5c6b42dad42edd3e36b06a33",
     "crates/desk-core/tests/fixture.rs": "b609ff40af564403dcde7bde608eef2630d9f74134955437981f33a55e6427f1",
     "crates/desk-core/tests/js-vectors.json": "f2da84588fa469c35eeece66fba9901fbbb9078f7650b8424018dcfbf5172b8b",
     "crates/desk-core/tests/keys.rs": "afcb7f0623bef0065dda06c2c1271feb708fc9e9cdc21a5b41c6af98bc679367",
-    "crates/desk-core/tests/writer.rs": "03ba61cf29e3183c10ff277132a28f9f53a386c591c9f8bc0be8a717da584a22",
+    "crates/desk-core/tests/writer.rs": "054b987d8c3cb2f3bfe7ffeed003b1680c6412a52bc28f8b6f9ee8cdc80acbe7",
     "crates/layr-desk/Cargo.toml": "083961f5f1c6e3e6e8d3b4ed55794508b868ff73b0db5767b2a1718cc0730ef0",
     "crates/layr-desk/cloud/vault.yaml": "b050d44f117d3236e93e7074ab73147953c5dbc3131cdcd86e026db5edba02e0",
     "crates/layr-desk/src/aws.rs": "a179f40a1ee5a950725ff3539b595f0c289f10b306ece2032c0641f0628404fe",

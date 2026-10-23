@@ -13,9 +13,16 @@ path = "src/main.rs"
 studio-runtime-process = { path = "../../packages/runtime-process" }
 
 [dev-dependencies]
+rusqlite.workspace = true
 studio-runtime-store = { path = "../../packages/runtime-store", features = ["test-support"] }
 serde_json.workspace = true
 tempfile.workspace = true
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+rustix = { workspace = true, features = ["param"] }
+
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+studio-runtime-proc-sys = { path = "../../packages/runtime-proc-sys" }
 
 [lints]
 workspace = true

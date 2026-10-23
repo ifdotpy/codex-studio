@@ -990,7 +990,7 @@ fn stop_receipt_survivor_stays_uncertain_until_cancellation_or_acknowledgement()
 #[test]
 fn stop_receipt_cancels_the_initial_prompt_in_pending_dispatch() {
     let mut connection = database();
-    connection.execute("INSERT INTO runtime_events VALUES('initial','agent','user','first','delivered',0,4,'turn-1',NULL)", []).unwrap();
+    connection.execute("INSERT INTO runtime_events VALUES('initial','agent','user','first','delivered',0,4,'turn-1',NULL)", []).expect("initial prompt inserts");
     settle(&mut connection, |tx| {
         SchedulerRepository::settle_interrupt_inputs(
             tx,
@@ -1003,4 +1003,74 @@ fn stop_receipt_cancels_the_initial_prompt_in_pending_dispatch() {
     });
     assert_eq!(status(&connection, "initial").0, "cancelled");
     assert_eq!(statuses(&connection), QUEUED);
+}
+
+/// SQLite virtual machine steps of one steer acknowledgement of the fixture
+/// input `u1`, after `history` delivered events of another agent. The state
+/// has the production `runtime_event_queue` index from the schema owner.
+fn acknowledgement_work(history: usize) -> u64 {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    let snapshot: Value = serde_json::from_str(include_str!("../../../runtime-state-schema.json"))
+        .expect("schema snapshot parses");
+    let queue_index = snapshot["canvas.sqlite3"]["sqlite_master"]
+        .as_array()
+        .expect("schema objects")
+        .iter()
+        .find(|object| object["name"] == "runtime_event_queue")
+        .and_then(|object| object["sql"].as_str())
+        .expect("queue index is in the schema");
+    let mut connection = database();
+    connection
+        .execute_batch(queue_index)
+        .expect("queue index creates");
+    with(&mut connection, |tx| {
+        let mut insert = tx
+            .prepare("INSERT INTO runtime_events VALUES(?1,'other','user','x','delivered',?2,1,'old-turn',NULL)")
+            .expect("history insert");
+        for index in 0..history {
+            insert
+                .execute(params![format!("history-{index:06}"), index as f64])
+                .expect("history event");
+        }
+    });
+    submit(&mut connection, "steer");
+    let steps = Arc::new(AtomicU64::new(0));
+    let counter = Arc::clone(&steps);
+    connection
+        .progress_handler(
+            1,
+            Some(move || {
+                counter.fetch_add(1, Ordering::Relaxed);
+                false
+            }),
+        )
+        .expect("progress counter");
+    let ack = acknowledge(&mut connection).expect("acknowledgement matches");
+    connection
+        .progress_handler(1, None::<fn() -> bool>)
+        .expect("progress counter");
+    assert_eq!(
+        ack.events
+            .iter()
+            .map(|e| e.id.0.as_str())
+            .collect::<Vec<_>>(),
+        ["u1", "u2", "u4"]
+    );
+    steps.load(Ordering::Relaxed)
+}
+
+/// The account worker acknowledges each delivered steer inside the single
+/// Canvas writer. On 23 October 2026 its read of the delivered rows searched
+/// `runtime_event_queue` by `status='delivered'` and visited all 162,187
+/// delivered events of the state (0.38 s per acknowledgement). The work must
+/// stay bounded by the acknowledged input, not by delivered history.
+#[test]
+fn steer_acknowledgement_work_is_independent_of_delivered_history() {
+    let small = acknowledgement_work(2_000);
+    let large = acknowledgement_work(6_000);
+    assert!(
+        large <= small + small / 20,
+        "acknowledgement work grew with delivered history: {small} steps, then {large} with 4000 more delivered events"
+    );
 }

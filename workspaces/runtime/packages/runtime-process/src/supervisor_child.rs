@@ -16,7 +16,7 @@ use std::{
     thread,
     time::Duration,
 };
-use studio_runtime_providers::supervisor_v1::{Command as SupervisorCommand, HANDLE_LIMIT};
+use studio_runtime_providers::supervisor_protocol::{Command as SupervisorCommand, HANDLE_LIMIT};
 use studio_runtime_store::supervisor_journal::{AppendResult, SupervisorJournal};
 
 const WRITE_TIMEOUT: Duration = Duration::from_secs(5);

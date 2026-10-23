@@ -543,8 +543,7 @@
     ],
     "witnesses": [],
     "workerWitnesses": [
-      "unsupported_approval_is_answered_after_commit",
-      "unsupported_question_is_answered_after_commit",
+      "unknown_provider_method_is_answered_after_commit",
       "unsupported_dynamic_tool_is_answered_after_commit"
     ],
     "lifecycleCombinations": []
@@ -561,8 +560,8 @@
     ],
     "witnesses": [],
     "workerWitnesses": [
-      "unsupported_approval_is_answered_after_commit",
-      "unsupported_question_is_answered_after_commit",
+      "native_approval_without_a_thread_is_refused_after_commit",
+      "native_question_without_a_thread_is_refused_after_commit",
       "unsupported_dynamic_tool_is_answered_after_commit"
     ],
     "lifecycleCombinations": []

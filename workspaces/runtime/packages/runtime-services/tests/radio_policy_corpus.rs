@@ -1,124 +1,24 @@
 //! Differential radio-turn policy cases from Python-created room state.
-use crate::prepared_python_support as python_test_support;
 use serde_json::{Value, json};
-use std::io::{BufRead, BufReader, Write};
-use std::path::Path;
-use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::mpsc::{self, Receiver};
-use std::time::{Duration, Instant};
+use std::collections::BTreeMap;
 use studio_runtime_services::radio::{
     RadioAuthorizationRecords, RadioAuthorizationSnapshot, RadioDenial, RadioTurnDecision,
 };
 
 struct Oracle {
-    child: Child,
-    input: ChildStdin,
-    output: Receiver<Result<String, String>>,
-    deadline: Instant,
-    _environment: python_test_support::IsolatedTestEnvironment,
-}
-
-fn receive_oracle_response(
-    output: &Receiver<Result<String, String>>,
-    timeout: Duration,
-    case_name: &str,
-) -> Result<String, String> {
-    match output.recv_timeout(timeout) {
-        Ok(Ok(line)) => Ok(line),
-        Ok(Err(error)) => Err(format!(
-            "radio Python oracle failed for {case_name}: {error}"
-        )),
-        Err(mpsc::RecvTimeoutError::Timeout) => Err(format!(
-            "radio Python oracle did not reply to {case_name} within {} seconds",
-            timeout.as_secs_f64()
-        )),
-        Err(mpsc::RecvTimeoutError::Disconnected) => Err(format!(
-            "radio Python oracle stopped before replying to {case_name}"
-        )),
-    }
+    cases: BTreeMap<String, Value>,
 }
 
 impl Oracle {
     fn new() -> Self {
-        let python = python_test_support::prepared_python(
-            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
-        );
-        let environment = python_test_support::IsolatedTestEnvironment::new();
-        let mut command = Command::new(python);
-        environment.apply(&mut command);
-        let mut child = command
-            .arg("-B")
-            .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/radio_policy/oracle.py"))
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .spawn()
-            .expect("guarded radio Python oracle");
-        let stdout = child.stdout.take().expect("oracle stdout");
-        let (sender, output) = mpsc::channel();
-        std::thread::spawn(move || {
-            let mut reader = BufReader::new(stdout);
-            loop {
-                let mut line = String::new();
-                match reader.read_line(&mut line) {
-                    Ok(0) => {
-                        if sender
-                            .send(Err("oracle closed stdout before replying".to_owned()))
-                            .is_err()
-                        {
-                            return;
-                        }
-                        return;
-                    }
-                    Ok(_) => {
-                        if sender.send(Ok(line)).is_err() {
-                            return;
-                        }
-                    }
-                    Err(error) => {
-                        if sender
-                            .send(Err(format!("could not read oracle stdout: {error}")))
-                            .is_err()
-                        {
-                            return;
-                        }
-                        return;
-                    }
-                }
-            }
-        });
         Self {
-            input: child.stdin.take().expect("oracle stdin"),
-            output,
-            child,
-            deadline: Instant::now() + python_test_support::PYTHON_ORACLE_TIMEOUT,
-            _environment: environment,
+            cases: serde_json::from_str(include_str!("radio_policy/expected.json"))
+                .expect("frozen radio policy corpus"),
         }
     }
 
-    fn call(&mut self, case: &Value) -> Value {
-        writeln!(self.input, "{case}").expect("write oracle case");
-        self.input.flush().expect("flush oracle case");
-        let case_name = case["name"].as_str().unwrap_or("unnamed case");
-        let remaining = self.deadline.saturating_duration_since(Instant::now());
-        let line = receive_oracle_response(&self.output, remaining, case_name)
-            .unwrap_or_else(|error| panic!("{error}"));
-        let result: Value = serde_json::from_str(&line).expect("oracle result JSON");
-        assert!(result.get("oracle_error").is_none(), "{result}");
-        result
-    }
-}
-
-impl Drop for Oracle {
-    fn drop(&mut self) {
-        match self.child.kill() {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::InvalidInput => {}
-            Err(error) => eprintln!("could not stop radio oracle: {error}"),
-        }
-        if let Err(error) = self.child.wait() {
-            eprintln!("could not reap radio oracle: {error}");
-        }
+    fn call(&self, case: &Value) -> Value {
+        self.cases[case["name"].as_str().expect("case name")].clone()
     }
 }
 
@@ -173,7 +73,7 @@ fn rust_denial(value: &str) -> RadioDenial {
 
 #[test]
 fn radio_turn_decisions_match_python_written_room_records() {
-    let mut oracle = Oracle::new();
+    let oracle = Oracle::new();
     let cases = cases();
     for case in cases {
         let expected = oracle.call(&case);
@@ -234,7 +134,7 @@ fn radio_turn_decisions_match_python_written_room_records() {
 
 #[test]
 fn radio_snapshot_refuses_malformed_consumed_records_with_locations() {
-    let mut oracle = Oracle::new();
+    let oracle = Oracle::new();
     let expected = oracle.call(&json!({"name":"ready-peer-team"}));
     let mut input = decode_records(&expected["records"]);
 
@@ -258,13 +158,4 @@ fn radio_snapshot_refuses_malformed_consumed_records_with_locations() {
     );
     let error = RadioAuthorizationSnapshot::from_records(&input).expect_err("null autoWake");
     assert!(error.location.ends_with("/autoWake"), "{error}");
-}
-
-#[test]
-fn radio_oracle_response_timeout_is_reported_with_case_identity() {
-    let (_sender, receiver) = mpsc::channel();
-    let error = receive_oracle_response(&receiver, Duration::from_millis(1), "test-case")
-        .expect_err("missing response times out");
-    assert!(error.contains("test-case"), "{error}");
-    assert!(error.contains("did not reply"), "{error}");
 }

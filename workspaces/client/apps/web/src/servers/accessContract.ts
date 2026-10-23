@@ -58,13 +58,7 @@ export type ServerAccessRequest =
   | { action: "settings"; autoPair: boolean; requestId: string }
   | { action: "settings"; autoUpdate: boolean; requestId: string }
   | { action: "name"; serverId: string; label: string; requestId: string }
-  | { action: "alias"; serverId: string; alias: string; requestId: string }
-  | {
-      action: "replace_server";
-      oldServerId: string;
-      newServerId: string;
-      requestId: string;
-    };
+  | { action: "alias"; serverId: string; alias: string; requestId: string };
 export type ServerAccessResponse =
   | ServerAccessState
   | { invitation: PairInvitation; expires: number }

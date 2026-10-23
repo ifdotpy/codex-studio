@@ -9,7 +9,7 @@ import {
   setupControl,
   setupToggle,
   chooseSetupValue,
-} from "../../../../../runtime/apps/server/tests/setup-controls.mjs";
+} from "../fixtures/setup-controls.mjs";
 // Production client with an isolated runtime. No model service or user state.
 import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";
@@ -19,7 +19,7 @@ import {
   modelValue,
   openModelList,
   selectModel,
-} from "../../../../../runtime/apps/server/tests/model-picker.mjs";
+} from "../fixtures/model-picker.mjs";
 
 const browserContextsByTest = new WeakMap();
 test.beforeEach(async ({ browser }, testInfo) => {

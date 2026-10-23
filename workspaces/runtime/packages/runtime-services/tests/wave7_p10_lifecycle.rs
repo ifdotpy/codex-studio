@@ -1,4 +1,3 @@
-use crate::prepared_python_support;
 use crate::projection_fixtures as projections;
 use rusqlite::{Connection, params};
 use serde_json::{Value, json};
@@ -6,7 +5,6 @@ use std::{
     collections::BTreeMap,
     fs,
     path::Path,
-    process::Command,
     sync::{Arc, Mutex},
 };
 use studio_runtime_providers::{RequestId, RequestTicket};
@@ -70,20 +68,9 @@ fn template(root: &Path) {
             .expect("fixture schema commits once");
     }
 }
-#[allow(clippy::disallowed_methods)]
 fn cases() -> Vec<Value> {
-    let output = Command::new(prepared_python_support::prepared_python(
-        &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
-    ))
-    .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/wave7_p10_lifecycle/oracle.py"))
-    .output()
-    .expect("oracle");
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    serde_json::from_slice(&output.stdout).expect("cases")
+    serde_json::from_str(include_str!("wave7_p10_lifecycle/cases.json"))
+        .expect("frozen lifecycle cases")
 }
 async fn seed(store: &RuntimeStore, records: Records) {
     store.transaction(move |tx| {
@@ -371,6 +358,120 @@ async fn production_stop_cancels_usage_and_capacity_continuations_in_store() {
         serde_json::from_str::<Value>(&capacity).expect("capacity JSON")["status"],
         "finished"
     );
+}
+
+#[tokio::test]
+async fn committed_delete_succeeds_when_post_commit_delivery_fails() {
+    struct FailedDelivery;
+    impl LifecyclePorts for FailedDelivery {
+        fn stage(
+            &self,
+            tx: &Transaction<'_>,
+            effect: &LifecycleEffect,
+        ) -> Result<(), ManagementError> {
+            InterruptFixture::default().stage(tx, effect)
+        }
+        fn committed(&self) -> agent_lifecycle_runtime::LifecycleCommitFuture<'_> {
+            Box::pin(async {
+                Err(ManagementError::Unavailable(
+                    "workspace-state/agent-lifecycle",
+                ))
+            })
+        }
+    }
+    let case = cases()
+        .into_iter()
+        .find(|case| case["name"] == "delete")
+        .expect("delete case");
+    let root = tempfile::tempdir().expect("root");
+    template(root.path());
+    let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("open"));
+    seed(
+        &store,
+        serde_json::from_value(case["records"].clone()).expect("records"),
+    )
+    .await;
+    let result = agent_lifecycle_runtime::execute(
+        store.clone(),
+        &Action::Delete {
+            target: "lead".into(),
+        },
+        case["now"].as_f64().expect("now"),
+        Arc::new(FailedDelivery),
+    )
+    .await
+    .expect("committed result survives effect failure");
+    assert!(
+        result["deleted"]
+            .as_array()
+            .expect("deleted ids")
+            .contains(&json!("lead"))
+    );
+    assert!(
+        state(&store)["tables"]["runtime_agents"]
+            .as_array()
+            .expect("agents")
+            .iter()
+            .filter(|agent| agent["id"] == "lead")
+            .all(|agent| agent["deletedAt"].is_number())
+    );
+}
+
+#[tokio::test]
+async fn committed_delete_drains_its_intent_despite_unrelated_cleanup_failure() {
+    struct NoBroker;
+    impl AccountSessionPort for NoBroker {}
+    let case = cases()
+        .into_iter()
+        .find(|case| case["name"] == "delete")
+        .expect("delete case");
+    let mut records: Records = serde_json::from_value(case["records"].clone()).expect("records");
+    let root = tempfile::tempdir().expect("root");
+    records.tables.get_mut("runtime_agents").expect("agents").push(json!({
+        "id":"a-broken-cleanup", "rootId":"a-broken-cleanup", "epoch":1, "status":"paused", "deletedAt":1,
+        "cwd":root.path(), "worktreeReady":true, "agentArchive":{"at":1,"epoch":1,"cleanupPending":true},
+        "workspaceCleanupIntent":studio_runtime_services::workspace_cleanup_runtime::queued_cleanup_intent("a-broken-cleanup", 1, studio_runtime_services::workspace_cleanup_runtime::CleanupAction::Archive)
+    }));
+    template(root.path());
+    let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("open"));
+    seed(&store, records).await;
+    let ports = ProductionLifecyclePorts::new(
+        store.clone(),
+        Arc::new(Notify::new()),
+        Arc::new(Notify::new()),
+        Arc::new(NoBroker),
+        None,
+    );
+    let result = ports
+        .execute(
+            &Action::Delete {
+                target: "lead".into(),
+            },
+            case["now"].as_f64().expect("now"),
+        )
+        .await
+        .expect("delete commits despite unrelated cleanup failure");
+    assert!(
+        result["deleted"]
+            .as_array()
+            .expect("deleted ids")
+            .contains(&json!("lead"))
+    );
+    let saved = state(&store);
+    let agents = saved["tables"]["runtime_agents"]
+        .as_array()
+        .expect("agents");
+    let deleted = agents
+        .iter()
+        .find(|agent| agent["id"] == "lead")
+        .expect("deleted lead");
+    assert!(deleted["deletedAt"].is_number());
+    assert!(deleted.get("workspaceCleanupIntent").is_none());
+    let broken = agents
+        .iter()
+        .find(|agent| agent["id"] == "a-broken-cleanup")
+        .expect("unrelated");
+    assert_eq!(broken["workspaceCleanupIntent"]["phase"], "queued");
 }
 
 #[tokio::test]
@@ -944,11 +1045,19 @@ async fn production_interrupt_is_durable_post_commit_and_retry_coalesces_after_r
                     )
                     .expect("stopped agent row");
                 let agent: Value = serde_json::from_str(&raw).expect("agent record");
-                assert_eq!(agent["startAttempt"]["interrupt"]["outcome"], "unknown");
-                assert_eq!(
-                    agent["startAttempt"]["interrupt"]["requestTicket"],
-                    request.operation
-                );
+                let interrupt = &agent["startAttempt"]["interrupt"];
+                if request.method == studio_runtime_providers::Method::TurnInterrupt {
+                    assert_eq!(interrupt["outcome"], "unknown");
+                    assert_eq!(interrupt["requestTicket"], request.operation);
+                } else {
+                    // The command cleanup follows the settled interrupt.
+                    assert_eq!(
+                        request.method,
+                        studio_runtime_providers::Method::ThreadBackgroundTerminalsClean
+                    );
+                    assert_eq!(interrupt["outcome"], "accepted");
+                    assert_eq!(request.params, json!({"threadId":agent["threadId"]}));
+                }
                 self.calls.lock().expect("calls lock").push(request.clone());
                 Ok(SessionReceipt {
                     scope: self.scope.clone(),
@@ -1041,9 +1150,12 @@ async fn production_interrupt_is_durable_post_commit_and_retry_coalesces_after_r
             );
             let calls = broker.calls.lock().expect("calls lock");
             assert_eq!(
-                calls.len(),
-                1,
-                "one provider dispatch after {boundary} rollback"
+                calls.iter().map(|call| call.method).collect::<Vec<_>>(),
+                [
+                    studio_runtime_providers::Method::TurnInterrupt,
+                    studio_runtime_providers::Method::ThreadBackgroundTerminalsClean
+                ],
+                "one interrupt and one command cleanup after {boundary} rollback"
             );
             assert_eq!(
                 calls[0].actor.as_ref().map(|actor| actor.agent.as_str()),
@@ -1749,12 +1861,34 @@ async fn production_unknown_interrupt_is_never_resent_on_repeated_stop() {
         .expect("first stop commits with unknown interrupt");
     let first = state(&store)["tables"]["runtime_agents"][0]["startAttempt"]["interrupt"].clone();
     assert_eq!(first["outcome"], "unknown");
+    let sent = broker
+        .calls
+        .lock()
+        .expect("broker calls")
+        .iter()
+        .map(|call| (call.method, call.operation.clone()))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        sent.iter().map(|(method, _)| *method).collect::<Vec<_>>(),
+        [
+            studio_runtime_providers::Method::TurnInterrupt,
+            studio_runtime_providers::Method::ThreadBackgroundTerminalsClean
+        ],
+        "an unknown interrupt is still followed by the command cleanup once"
+    );
     ports
         .execute(&action, case["now"].as_f64().expect("time"))
         .await
         .expect("repeat stop commits without another interrupt");
     let calls = broker.calls.lock().expect("broker calls");
-    assert_eq!(calls.len(), 1);
+    assert_eq!(
+        calls
+            .iter()
+            .map(|call| (call.method, call.operation.clone()))
+            .collect::<Vec<_>>(),
+        sent,
+        "the repeated stop sends nothing again"
+    );
     drop(calls);
     let reader = store.test_reader().expect("reader");
     let raw: String = reader
@@ -1976,16 +2110,9 @@ async fn lost_wake_preserves_committed_stop_for_restart() {
     )
     .await;
     let action: Action = serde_json::from_value(case["action"].clone()).expect("action");
-    assert!(matches!(
-        agent_lifecycle_runtime::execute(
-            Arc::clone(&store),
-            &action,
-            1234567.5,
-            Arc::new(LostWake),
-        )
-        .await,
-        Err(ManagementError::Store(_))
-    ));
+    agent_lifecycle_runtime::execute(Arc::clone(&store), &action, 1234567.5, Arc::new(LostWake))
+        .await
+        .expect("a lost wake preserves the committed stop result");
     drop(store);
     let store = RuntimeStore::open(Some(root.path()))
         .await

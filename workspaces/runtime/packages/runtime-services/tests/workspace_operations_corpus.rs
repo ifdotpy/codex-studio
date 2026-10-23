@@ -1,7 +1,6 @@
 use serde_json::{Value, json};
-use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::sync::Arc;
 use studio_runtime_services::workspace_operations::*;
 use studio_runtime_services::workspace_operations_effects::*;
@@ -10,47 +9,8 @@ use studio_runtime_store::{
     AgentRecord, AgentRepository, CaptureKind, CheckpointsRepository, RuntimeStore,
 };
 
-use crate::prepared_python_support as prepared_python;
-
 fn temporary() -> tempfile::TempDir {
-    prepared_python::disposable_state_dir()
-}
-fn oracle(root: &Path, request: Value) -> Value {
-    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src");
-    let python = prepared_python::prepared_python(&source);
-    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/workspace_operations/oracle.py");
-    for name in ["home", "codex", "claude"] {
-        std::fs::create_dir_all(root.join(name)).expect("isolated home");
-    }
-    let mut child = Command::new("timeout")
-        .arg("120")
-        .arg(&python)
-        .arg("-B")
-        .arg(script)
-        .current_dir(root)
-        .env("HOME", root.join("home"))
-        .env("CODEX_HOME", root.join("codex"))
-        .env("CLAUDE_CONFIG_DIR", root.join("claude"))
-        .env("PATH", "/usr/bin:/bin")
-        .env_remove("CODEX_BIN")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("oracle starts");
-    child
-        .stdin
-        .take()
-        .expect("stdin")
-        .write_all(request.to_string().as_bytes())
-        .expect("request");
-    let out = child.wait_with_output().expect("oracle exit");
-    assert!(
-        out.status.success(),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    serde_json::from_slice(&out.stdout).expect("oracle JSON")
+    tempfile::tempdir().expect("workspace state")
 }
 fn ticket() -> ProviderTicket {
     ProviderTicket {
@@ -67,11 +27,17 @@ fn ticket() -> ProviderTicket {
 
 #[test]
 fn complete_python_outputs_match_checked_snapshots() {
-    let root = temporary();
     let cases: Vec<Value> =
         serde_json::from_str(include_str!("workspace_operations/cases.json")).expect("cases");
-    let expected = oracle(root.path(), json!({"cases":cases}));
-    for (case, output) in cases.iter().zip(expected.as_array().expect("results")) {
+    let expected: Vec<Value> =
+        serde_json::from_str(include_str!("workspace_operations/oracle.json"))
+            .expect("frozen workspace outputs");
+    assert_eq!(
+        cases.len(),
+        expected.len(),
+        "every case has a frozen result"
+    );
+    for (case, output) in cases.iter().zip(&expected) {
         let expected = &output["result"];
         let stored = &output["stored"];
         let result = match case["family"].as_str().expect("family") {
@@ -235,9 +201,18 @@ impl Fixture {
         );
         let state = root.path().join("state");
         std::fs::create_dir(&state).expect("state");
-        let actor = oracle(
-            root.path(),
-            json!({"command":"seed","root":state,"cwd":repo}),
+        let actor_json = include_str!("workspace_operations/actor.json");
+        let encoded = serde_json::to_string(&repo).expect("encode repository path");
+        let encoded = &encoded[1..encoded.len() - 1];
+        let actor: Value =
+            serde_json::from_str(&actor_json.replace("/FROZEN_WORKSPACE_REPO", encoded))
+                .expect("frozen workspace actor");
+        let canvas = include_str!("workspace_operations/canvas.sql")
+            .replace("/FROZEN_WORKSPACE_REPO", &encoded.replace("'", "''"));
+        crate::recovery_fixtures::state(
+            &state,
+            &canvas,
+            include_str!("workspace_operations/analytics.sql"),
         );
         let store = Arc::new(
             RuntimeStore::open(Some(&state))

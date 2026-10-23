@@ -1,23 +1,17 @@
 # Context repair integration contract
 
-For the runtime integrator. This slice preserves existing Python receipt meaning
+For the runtime integrator. This slice reconciles current Rust input receipts
 without sending a model request or modifying native history.
 
 ## Change contract
 
-The pure cores are `context_repair::decide` and
-`historical_input_receipts::HistoricalBatch`. Checked constructors consume raw
+The pure core is `context_repair::decide`. Checked constructors consume raw
 stored records, including absent and null fields, and freeze them before native
 reads. The effect adapter is `context_repair::recover`. It uses `RuntimeStore`
 transactions and rechecks the complete snapshot and cached connection identity
 before writing. No provider call occurs in a transaction.
 
-Run `cargo nextest run -p studio-runtime-services --test integration -E 'test(/^context_repair_corpus::/)'`
-with the isolated equipped Python selected by `CODEX_AGENTS_PYTHON` or
-`STUDIO_HTTP_BACKEND_PYTHON`. The oracle imports the shared provider-home guard.
-It never constructs Runtime, opens real provider history, or runs a provider.
-The extracted recurring decision block is pinned by its enclosing function hash.
-Historical batch tests call Python's actual capture and acceptance functions.
+Run `cargo nextest run -p studio-runtime-services --test integration -E 'test(/^context_repair_corpus::/)'`.
 The default fail-point witness uses SQLite in memory. Set
 `STUDIO_RUNTIME_CORPUS_FULL=1` for the durable restart matrix, or run
 `just test-rust-runtime-corpora -p studio-runtime-services --test integration -E 'test(/^context_repair_corpus::/)'`; this is an
@@ -28,10 +22,7 @@ explicit opt-in run because filesystem durability can exceed the fast budget.
 Call `recover(store, agent, reader, manifests, now)` from the owning account
 worker after draining its existing event stream. `HistoryReader::identity` must
 return cached account, connection and generation without I/O. `read` returns
-bounded native turns, native thread state, and the owning supervisor's operation
-rows, all from that same transport identity. Return a sentinel row beyond the
-per-batch operation bound; never silently truncate a journal scan into apparently
-unique evidence. Missing pages or an incomplete history read must return an error. Arm reads through the account
+bounded native turns and native thread state from that same transport identity. Missing pages or an incomplete history read must return an error. Arm reads through the account
 worker's existing cancellation and deadline mechanism. Supply the unchanged
 identity only while that connection remains current.
 
@@ -86,11 +77,9 @@ Build failures and unavailable fixture infrastructure do not count.
 
 ## Native start outcomes
 
-The writers enumerate three values: Python's `codex_native_input_projection.py`
-writes `accepted`; the Claude bridge's `bridge.mjs` writes `preparing`,
+The native projection and Claude bridge write `preparing`,
 `not_applied`, and `accepted`. Older native history can omit the field or use
-null. The oracle extracts the literal assignments from both writers and checks
-this inventory. Every admitted value matches the Python decision oracle.
+null. The regression corpus checks these admitted values.
 
 `failed`, `completed`, and `interrupted` are turn statuses, not start outcomes.
 Python's loose consumer happens to accept other outcome strings as delivery, but

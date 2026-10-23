@@ -28,31 +28,37 @@ export async function startBridge(fakeSdk, prefix = "claude-bridge-") {
     path.join(BRIDGE, "node_modules"),
     path.join(root, "node_modules"),
   );
-  const child = spawn(
-    process.execPath,
-    [path.join(root, "bridge.mjs"), path.join(root, "state")],
-    {
-      cwd: root,
-      stdio: ["pipe", "pipe", "pipe"],
-      env: {
-        ...process.env,
-        STUDIO_CLAUDE_ACCOUNT: "test@example.test",
-        STUDIO_CLAUDE_IDLE_SECONDS: "60",
-        CLAUDE_CONFIG_DIR: path.join(root, "native-config"),
+  const launch = () =>
+    spawn(
+      process.execPath,
+      [path.join(root, "bridge.mjs"), path.join(root, "state")],
+      {
+        cwd: root,
+        stdio: ["pipe", "pipe", "pipe"],
+        env: {
+          ...process.env,
+          STUDIO_CLAUDE_ACCOUNT: "test@example.test",
+          STUDIO_CLAUDE_IDLE_SECONDS: "60",
+          CLAUDE_CONFIG_DIR: path.join(root, "native-config"),
+        },
       },
-    },
-  );
+    );
+  let child;
   let stderr = "";
-  child.stderr.on("data", (chunk) => (stderr += chunk));
   const notes = [];
   const waiting = new Map();
   let wake = () => {};
-  createInterface({ input: child.stdout }).on("line", (line) => {
-    const message = JSON.parse(line);
-    if (message.method) notes.push(message);
-    else waiting.get(message.id)?.(message);
-    wake();
-  });
+  const attach = () => {
+    child = launch();
+    child.stderr.on("data", (chunk) => (stderr += chunk));
+    createInterface({ input: child.stdout }).on("line", (line) => {
+      const message = JSON.parse(line);
+      if (message.method) notes.push(message);
+      else waiting.get(message.id)?.(message);
+      wake();
+    });
+  };
+  attach();
   let sequence = 0;
   const bridge = {
     root,
@@ -85,6 +91,16 @@ export async function startBridge(fakeSdk, prefix = "claude-bridge-") {
           setTimeout(resolve, 50);
         });
       }
+    },
+    async restart() {
+      child.stdin.end();
+      if (child.exitCode === null)
+        await new Promise((resolve) => child.once("exit", resolve));
+      notes.length = 0;
+      waiting.clear();
+      stderr = "";
+      attach();
+      await bridge.call("thread/resume", { threadId: bridge.thread });
     },
     async close() {
       child.stdin.end();

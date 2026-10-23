@@ -24,16 +24,8 @@ fn sql<T>(value: rusqlite::Result<T>) -> Result<T, String> {
     value.map_err(|e| e.to_string())
 }
 fn decode(document: &Document) -> Result<DraftVersion, String> {
-    let mut value: Value = serde_json::from_str(&document.payload).map_err(|e| e.to_string())?;
-    if value.get("id").is_none() {
-        value["id"] = json!(document.id);
-    }
-    let value: DraftVersion = serde_json::from_value(value).map_err(|e| e.to_string())?;
-    value.validate()?;
-    if value.id != document.id || value.text.chars().count() > 2_000_000 {
-        return Err("Invalid draft document.".into());
-    }
-    Ok(value)
+    let value = serde_json::from_str(&document.payload).map_err(|e| e.to_string())?;
+    DraftVersion::from_stored_value(&document.id, value)
 }
 fn document(version: &DraftVersion) -> Document {
     // Value's ordered map matches the server's canonical key order.
@@ -44,6 +36,9 @@ fn document(version: &DraftVersion) -> Document {
         payload: serde_json::to_value(version).unwrap().to_string(),
     }
 }
+#[cfg(test)]
+thread_local! { static STORED_DRAFT_DECODES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+
 fn rows(
     db: &Connection,
     workspace: &str,
@@ -58,18 +53,37 @@ fn rows(
             row.get::<_, bool>(2)?,
         ))
     }))?;
-    rows.map(|row| {
-        let (local, master, dirty) = sql(row)?;
-        Ok((
-            serde_json::from_str(&local).map_err(|e| e.to_string())?,
-            master
-                .map(|v| serde_json::from_str(&v).map_err(|e| e.to_string()))
-                .transpose()?,
-            dirty,
-        ))
-    })
-    .collect()
+    rows.map(|row| decode_row(sql(row)?)).collect()
 }
+fn decode_row(
+    (local, master, dirty): (String, Option<String>, bool),
+) -> Result<(Document, Option<Document>, bool), String> {
+    #[cfg(test)]
+    STORED_DRAFT_DECODES.update(|count| count + 1);
+    Ok((
+        serde_json::from_str(&local).map_err(|e| e.to_string())?,
+        master
+            .map(|v| serde_json::from_str(&v).map_err(|e| e.to_string()))
+            .transpose()?,
+        dirty,
+    ))
+}
+fn keyed_row(
+    db: &Connection,
+    workspace: &str,
+    id: &str,
+) -> Result<Option<(Document, Option<Document>, bool)>, String> {
+    sql(db
+        .query_row(
+            "SELECT document,master,dirty FROM client_draft_branches WHERE workspace=?1 AND id=?2",
+            params![workspace, id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional())?
+    .map(decode_row)
+    .transpose()
+}
+
 fn save(
     db: &Connection,
     workspace: &str,
@@ -155,9 +169,7 @@ fn execute(db: &Connection, request: &Request) -> Result<Value, String> {
             for version in versions {
                 let incoming = document(&version);
                 decode(&incoming)?;
-                let existing = rows(db, workspace)?
-                    .into_iter()
-                    .find(|(doc, _, _)| doc.id == version.id);
+                let existing = keyed_row(db, workspace, &version.id)?;
                 match existing {
                     Some((local, master, _)) => {
                         let merged = document(&drafts::merge(&decode(&local)?, &version)?);
@@ -233,9 +245,7 @@ fn execute(db: &Connection, request: &Request) -> Result<Value, String> {
                 serde_json::from_value(p["documents"].clone()).map_err(|e| e.to_string())?;
             for master in incoming {
                 let master_version = decode(&master)?;
-                let old = rows(db, workspace)?
-                    .into_iter()
-                    .find(|(d, _, _)| d.id == master.id);
+                let old = keyed_row(db, workspace, &master.id)?;
                 match old {
                     Some((local, previous, dirty)) => {
                         if previous.as_ref().is_some_and(|v| v.seq > master.seq) {
@@ -272,10 +282,7 @@ fn execute(db: &Connection, request: &Request) -> Result<Value, String> {
                 serde_json::from_value(p["documents"].clone()).map_err(|e| e.to_string())?;
             for master in sent {
                 decode(&master)?;
-                if let Some((local, _, _)) = rows(db, workspace)?
-                    .into_iter()
-                    .find(|(d, _, _)| d.id == master.id)
-                {
+                if let Some((local, _, _)) = keyed_row(db, workspace, &master.id)? {
                     save(db, workspace, &local, Some(&master), !same(&local, &master))?;
                 }
             }
@@ -323,6 +330,84 @@ mod tests {
         });
         assert!(response.error.is_none(), "{:?}", response.error);
         response.result.unwrap()
+    }
+    #[test]
+    fn draft_receive_normalizes_shared_legacy_fixtures_without_rewriting_storage() {
+        let cases: Vec<Value> =
+            serde_json::from_str(include_str!("../../../contracts/draft-compatibility.json"))
+                .unwrap();
+        for case in cases {
+            let mut store = crate::store::Store::open(std::path::Path::new(":memory:")).unwrap();
+            let payload = case["payload"].to_string();
+            let response = store.dispatch(Request {
+                id: "receive".into(),
+                method: "drafts.receive".into(),
+                params: json!({"workspace":"a".repeat(32),"documents":[{
+                    "id":"phone:chat","payload":payload,"seq":1,"_deleted":false
+                }]}),
+            });
+            if let Some(updated) = case["updated"].as_u64() {
+                assert!(
+                    response.error.is_none(),
+                    "{}: {:?}",
+                    case["name"],
+                    response.error
+                );
+                let stored = rows(&store.connection, &"a".repeat(32)).unwrap();
+                assert_eq!(stored[0].0.payload, payload, "stored bytes must survive");
+                let version = decode(&stored[0].0).unwrap();
+                assert_eq!(version.updated, updated, "{}", case["name"]);
+                assert_eq!(response.result.unwrap()["drafts"]["chat"], "x");
+            } else {
+                assert!(response.error.is_some(), "{}", case["name"]);
+            }
+        }
+    }
+
+    #[test]
+    fn synchronization_decodes_only_the_keyed_draft_per_incoming_document() {
+        const STORED: usize = 8;
+        const BATCH: usize = 3;
+        let workspace = "a".repeat(32);
+        for method in ["drafts.receive", "drafts.acknowledge", "drafts.import"] {
+            let mut store = crate::store::Store::open(std::path::Path::new(":memory:")).unwrap();
+            let versions: Vec<DraftVersion> = (0..STORED)
+                .map(|index| {
+                    serde_json::from_value(json!({
+                        "id":format!("device:room{index}"), "device":"device",
+                        "session":format!("room{index}"), "text":"saved", "updated":1
+                    }))
+                    .unwrap()
+                })
+                .collect();
+            let documents: Vec<_> = versions.iter().map(document).collect();
+            for doc in &documents {
+                save(&store.connection, &workspace, doc, Some(doc), false).unwrap();
+            }
+            // A matching ID in another workspace must never be read or changed.
+            let other_workspace = "b".repeat(32);
+            let mut other = documents[0].clone();
+            other.payload = "unrelated invalid payload".into();
+            save(&store.connection, &other_workspace, &other, None, true).unwrap();
+            STORED_DRAFT_DECODES.set(0);
+            let response = store.dispatch(Request {
+                id: method.into(),
+                method: method.into(),
+                params: json!({"workspace":workspace, "documents":documents[..BATCH],
+                    "versions":versions[..BATCH], "checkpoint":7}),
+            });
+            assert!(response.error.is_none(), "{method}: {:?}", response.error);
+            // The response view decodes STORED records once. The batch itself
+            // must decode only its BATCH matching records, independent of STORED.
+            assert_eq!(STORED_DRAFT_DECODES.get() - STORED, BATCH, "{method}");
+            assert_eq!(
+                serde_json::to_value(&rows(&store.connection, &other_workspace).unwrap()[0].0)
+                    .unwrap(),
+                serde_json::to_value(&other).unwrap()
+            );
+            let result = response.result.unwrap();
+            assert_eq!(result["drafts"]["room0"], "saved");
+        }
     }
     #[test]
     fn imported_branches_keep_conflicts_and_retry_cannot_undo_later_edits() {

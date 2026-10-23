@@ -34,7 +34,6 @@ test("Structured operational errors ui", async ({
   import Requests from '/src/components/questions/Requests.tsx';
   import UserMessages from '/src/components/shell/messages/UserMessages.tsx';
   import BackgroundTasks from '/src/components/shell/BackgroundTasks.tsx';
-  import AgentPanel from '/src/components/agents/AgentPanel.tsx';
   import CapacityRetry from '/src/components/CapacityRetry.tsx';
   import SafetyBuffering from '/src/components/conversation/transcript/SafetyBuffering.tsx';
   import {Dictation} from '/src/components/Dictation.tsx';
@@ -67,8 +66,7 @@ test("Structured operational errors ui", async ({
     await saveRecording({id:'recording',chatId:'lead',state:'ready',sampleRate:16000,samples:4,created:Date.now(),error:value});
     component=React.createElement(Dictation,{chatId:'lead',onInsert:noop});
    }
-   if(which==='panel') component=React.createElement(AgentPanel,{agentId:'panel-'+(++renderId),token:'fixture',stateDir:'fixture'});
-   root.render(React.createElement(MantineProvider,null,React.createElement(Boundary,{key:which==='panel'?'panel':++renderId},component)));
+   root.render(React.createElement(MantineProvider,null,React.createElement(Boundary,{key:++renderId},component)));
   };
   window.crashes=[];
   `;
@@ -139,7 +137,6 @@ test("Structured operational errors ui", async ({
         body: '<!doctype html><div id="root"></div><script type="module">import "/@id/__x00__virtual:operational-errors";</script>',
       }),
     );
-    let getFailure;
     let messageFailure;
     await page.route("**/api/**", async (route) => {
       const fulfill = (options) =>
@@ -174,8 +171,6 @@ test("Structured operational errors ui", async ({
         });
       if (url.pathname === "/api/complaint")
         return fulfill({ status: 503, json: messageFailure });
-      if (url.pathname === "/api/panel" && getFailure !== undefined)
-        return fulfill({ status: 503, json: getFailure });
       if (url.pathname === "/api/workspace/tasks")
         return fulfill({
           json: {
@@ -331,46 +326,10 @@ test("Structured operational errors ui", async ({
         .click();
       await page.getByText(legacy, { exact: true }).first().waitFor();
     }
-    const beforeGetFailures = writes.length;
-    for (const body of [
-      {
-        error: "Structured GET failure",
-        code: "access_failed",
-      },
-      {
-        message: "Message-only GET failure",
-      },
-      null,
-    ]) {
-      getFailure = body;
-      await page.evaluate((value) => window.renderCase("panel", value), body);
-      await page
-        .getByText("Cannot read PROGRESS.md.", { exact: false })
-        .first()
-        .waitFor();
-      assert.equal(
-        writes.length,
-        beforeGetFailures,
-        "Read errors cannot send callback requests",
-      );
-      if (body?.code) {
-        await page.getByRole("button", { name: /Error details/ }).click();
-        const dialog = page.getByRole("dialog");
-        await dialog
-          .getByRole("button", { name: "Error details", exact: true })
-          .click();
-        const detail = await dialog.innerText();
-        assert.ok(
-          detail.includes(body.code),
-          "Progress errors retain the typed error code",
-        );
-        await page.keyboard.press("Escape");
-      }
-    }
     assert.deepEqual(await page.evaluate(() => window.crashes), []);
     assert.deepEqual(errors, []);
     console.log(
-      "PASS: structured request/message/retry/safety/dictation and progress read diagnostics preserve render and manual actions",
+      "PASS: structured request/message/retry/safety/dictation diagnostics preserve render and manual actions",
     );
   } finally {
     for (const stream of syncStreams) stream.end();

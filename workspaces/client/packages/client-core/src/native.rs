@@ -118,7 +118,6 @@ fn serve(channel: UnixStream, config: ConnectionConfig) -> Result<(), String> {
         let active = Arc::new(AtomicBool::new(false));
         let previews = crate::file_preview::Previews::default();
         let terminals = crate::terminal::Terminals::default();
-        let progress = Arc::new(crate::progress::Progress::default());
         let mut background = tokio::task::JoinSet::new();
         let (events, mut event_receiver) = tokio::sync::mpsc::channel::<serde_json::Value>(64);
         let mut views = crate::views::Views::new(
@@ -195,7 +194,6 @@ fn serve(channel: UnixStream, config: ConnectionConfig) -> Result<(), String> {
                 Desktop(Request),
                 Preview(Request),
                 RichDocument(Request),
-                Progress(Request),
                 Startup(Request),
                 Delivery(Request),
                 Sync(Request),
@@ -222,11 +220,6 @@ fn serve(channel: UnixStream, config: ConnectionConfig) -> Result<(), String> {
                 Ok(request) if request.method == "dictation.wav" => Work::Immediate(
                     Response::failure(request.id, "invalid_request", "Unknown command."),
                 ),
-                Ok(request)
-                    if matches!(request.method.as_str(), "progress.read" | "progress.peek") =>
-                {
-                    Work::Progress(request)
-                }
                 Ok(request)
                     if matches!(
                         request.method.as_str(),
@@ -286,7 +279,6 @@ fn serve(channel: UnixStream, config: ConnectionConfig) -> Result<(), String> {
             // Completed tasks must leave the set; the permit bounds active work.
             while requests.try_join_next().is_some() {}
             let startup = startup.clone();
-            let progress = progress.clone();
             let previews = previews.clone();
             requests.spawn(async move {
                 let _permit = permit;
@@ -309,9 +301,6 @@ fn serve(channel: UnixStream, config: ConnectionConfig) -> Result<(), String> {
                             }
                             Err(error) => Response::failure(request.id, "backend_startup", error),
                         }
-                    }
-                    Work::Progress(request) => {
-                        progress.dispatch(backend.as_ref(), &sender, request).await
                     }
                     Work::RichDocument(request) => crate::rich_document::dispatch(request).await,
                     Work::Preview(request) => {

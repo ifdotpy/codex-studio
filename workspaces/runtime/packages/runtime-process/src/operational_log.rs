@@ -17,8 +17,6 @@ use std::{
     },
     thread,
 };
-#[cfg(test)]
-use studio_runtime_store::path_identity::CanonicalPath;
 
 pub const APP_SERVER_LOG: LogConfig = LogConfig {
     filename: "app-server.log",
@@ -225,7 +223,7 @@ fn writer_task<W: Write>(receiver: mpsc::Receiver<WriterCommand>, mut writer: W)
 #[allow(clippy::disallowed_methods)]
 mod tests {
     use super::*;
-    use std::{io, process::Command, sync::mpsc as std_mpsc};
+    use std::{io, sync::mpsc as std_mpsc};
     use tempfile::tempdir;
 
     #[test]
@@ -281,58 +279,39 @@ mod tests {
     }
 
     #[test]
-    fn appends_to_python_written_current_and_backup_files_with_identical_bytes() {
-        let directory = tempdir().expect("isolated test directory");
-        let python_source = CanonicalPath::existing(
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
+    fn appends_to_existing_current_and_backup_files_with_identical_bytes() {
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct RotationFixture {
+            max_bytes: usize,
+            backups: usize,
+            seed: std::collections::BTreeMap<String, String>,
+            chunks: Vec<String>,
+            expected: std::collections::BTreeMap<String, String>,
+        }
+        const QUEUED_CHUNKS: usize = 16;
+        let fixture: RotationFixture =
+            serde_json::from_str(include_str!("../tests/fixtures/log-rotation.json"))
+                .expect("frozen log rotation fixture");
+        let root = tempdir().expect("isolated log directory");
+        for (name, bytes) in fixture.seed {
+            fs::write(root.path().join(name), bytes).expect("seed existing logs");
+        }
+        let writer = OperationalLog::open(
+            root.path().join("app-server.log"),
+            fixture.max_bytes,
+            fixture.backups,
+            QUEUED_CHUNKS,
         )
-        .expect("Python source directory");
-        let seed = directory.path().join("seed");
-        fs::create_dir_all(&seed).expect("seed directory");
-        let python = |script: &str, root: &Path| {
-            Command::new("python3")
-                .arg("-c")
-                .arg(script)
-                .arg(&python_source)
-                .arg(root)
-                .output()
-                .expect("run Python log oracle")
-        };
-        let seed_result = python(
-            "import sys; from pathlib import Path; sys.path.insert(0, sys.argv[1]); from codex_log_rotation import RotatingLog; p=Path(sys.argv[2])/'app-server.log'; w=RotatingLog(p,max_bytes=8,backups=2); w.write(b'python-seed-current-and-backups'); w.close()",
-            &seed,
-        );
-        assert!(seed_result.status.success(), "Python seed writer failed");
-
-        let rust_root = directory.path().join("rust");
-        let python_root = directory.path().join("python");
-        fs::create_dir_all(&rust_root).expect("Rust directory");
-        fs::create_dir_all(&python_root).expect("Python directory");
-        for name in ["app-server.log", "app-server.log.1", "app-server.log.2"] {
-            let source = seed.join(name);
-            if source.exists() {
-                fs::copy(&source, rust_root.join(name)).expect("copy seed for Rust");
-                fs::copy(&source, python_root.join(name)).expect("copy seed for Python");
-            }
+        .expect("writer opens existing logs");
+        for chunk in fixture.chunks {
+            writer.write_line(chunk.as_bytes());
         }
-
-        let rust = OperationalLog::open(rust_root.join("app-server.log"), 8, 2, 16)
-            .expect("Rust writer opens existing logs");
-        let chunks = [b"-continued".as_slice(), b"-and-rotated"];
-        for chunk in chunks {
-            rust.write_line(chunk);
-        }
-        rust.flush().expect("Rust writer flush");
-        let python_result = python(
-            "import sys; from pathlib import Path; sys.path.insert(0, sys.argv[1]); from codex_log_rotation import RotatingLog; p=Path(sys.argv[2])/'app-server.log'; w=RotatingLog(p,max_bytes=8,backups=2); w.write(b'-continued'); w.write(b'-and-rotated'); w.close()",
-            &python_root,
-        );
-        assert!(python_result.status.success(), "Python continuation failed");
-
-        for name in ["app-server.log", "app-server.log.1", "app-server.log.2"] {
+        writer.flush().expect("writer flush");
+        for (name, bytes) in fixture.expected {
             assert_eq!(
-                fs::read(rust_root.join(name)).expect("Rust result"),
-                fs::read(python_root.join(name)).expect("Python result"),
+                fs::read(root.path().join(&name)).expect("rotated log"),
+                bytes.as_bytes(),
                 "on-disk bytes differ for {name}"
             );
         }

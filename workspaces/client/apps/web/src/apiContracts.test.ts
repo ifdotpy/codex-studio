@@ -25,6 +25,31 @@ type Equal<Actual, Expected> =
 type Assert<Condition extends true> = Condition;
 type NotNever<Value> = [Value] extends [never] ? false : true;
 
+const desktopDiskStatusHasOnlyRenderedFields: Assert<
+  Equal<keyof components["schemas"]["DiskSpaceStatus"], "level" | "message">
+> = true;
+void desktopDiskStatusHasOnlyRenderedFields;
+
+// OpenAPI owns one boolean selector; callers cannot send a string or a second mode.
+const streamTokenInterestIsBoolean: Assert<
+  Equal<
+    NonNullable<
+      paths["/api/sync/stream"]["get"]["parameters"]["query"]
+    >["tokenRates"],
+    boolean | undefined
+  >
+> = true;
+void streamTokenInterestIsBoolean;
+
+// The transcript producer has no string-valued unavailable reasons.
+const transcriptUnavailableIsNull: Assert<
+  Equal<
+    components["schemas"]["TranscriptStreamDelta"]["unavailable"],
+    null | undefined
+  >
+> = true;
+void transcriptUnavailableIsNull;
+
 type NumericSuccess = ApiSuccessBodyFor<{
   responses: { 200: { content: { "application/json": { value: number } } } };
 }>;
@@ -236,3 +261,107 @@ type AccountProvider =
 const accountProvider: Assert<Equal<AccountProvider, "codex" | "claude">> =
   true;
 void accountProvider;
+
+// Draft wire properties come from the Rust owner, including required updated.
+type DraftContract = import("./generated/rustOwned").DraftVersion;
+const draftContract: DraftContract = {
+  id: "phone:chat",
+  session: "chat",
+  device: "phone",
+  text: "x",
+  updated: 1,
+};
+// @ts-expect-error A new draft must carry its version timestamp.
+const missingDraftTimestamp: DraftContract = {
+  id: "phone:chat",
+  session: "chat",
+  device: "phone",
+  text: "x",
+};
+const extraDraftField: DraftContract = {
+  ...draftContract,
+  // @ts-expect-error New draft payloads contain only fields from the Rust owner.
+  metadata: { legacy: true },
+};
+void extraDraftField;
+void draftContract;
+void missingDraftTimestamp;
+
+// Both Markdown transports consume the serialized Rust parser output.
+import type {
+  MarkdownBlock,
+  MarkdownNode,
+  MarkdownTree,
+} from "./generated/rustOwned";
+const markdownNode: MarkdownNode = {
+  text: "Hello.",
+  sentences: [{ text: "Hello.", index: 0 }],
+};
+const markdownTree: MarkdownTree = { nodes: [markdownNode], length: 6 };
+const markdownBlocks: MarkdownBlock[] = [
+  markdownTree,
+  { kind: "mermaid", source: "graph TD; A-->B" },
+];
+// @ts-expect-error Rich Markdown blocks have a closed set of kinds.
+const invalidMarkdownBlock: MarkdownBlock = { kind: "script", source: "run()" };
+const markdownParserContract: Assert<
+  Equal<
+    Awaited<ReturnType<typeof import("./wasm/client").parseMarkdown>>,
+    MarkdownBlock[]
+  >
+> = true;
+void markdownBlocks;
+void invalidMarkdownBlock;
+void markdownParserContract;
+
+// Desktop and local storage adapters consume their existing contract owners.
+type DesktopDeclaration = import("../../desktop/bridge").CodexDesktop;
+type WebDesktopDeclaration = import("./desktop").DesktopBridge;
+type PreferenceDeclaration =
+  import("./components/accountPreference").PreferenceAccount;
+type PreferenceProjectDeclaration =
+  import("./components/accountPreference").PreferenceProject;
+type LocalSyncRow = import("./sync/client").SyncDocument;
+type ProjectionSyncRow = import("./sync/entityProjection").EntityRow;
+type LocalContractAssertions = [
+  Assert<Equal<DesktopDeclaration, WebDesktopDeclaration>>,
+  Assert<
+    Equal<
+      PreferenceDeclaration["provider"],
+      Partial<components["schemas"]["Account"]>["provider"]
+    >
+  >,
+  Assert<
+    Equal<
+      PreferenceDeclaration["status"],
+      Partial<components["schemas"]["Account"]>["status"]
+    >
+  >,
+  Assert<
+    Equal<
+      PreferenceProjectDeclaration,
+      Pick<
+        components["schemas"]["ProjectEntityDto"],
+        "accountKey" | "accountKeys" | "accountGroups"
+      >
+    >
+  >,
+  Assert<
+    Equal<
+      Parameters<NonNullable<DesktopDeclaration["openSignIn"]>>[0],
+      string | { url: string; forward: import("./desktop").SignInForward }
+    >
+  >,
+  Assert<Equal<LocalSyncRow, ProjectionSyncRow>>,
+  Assert<Equal<Required<LocalSyncRow>, components["schemas"]["SyncDocument"]>>,
+];
+const localContractAssertions: LocalContractAssertions = [
+  true,
+  true,
+  true,
+  true,
+  true,
+  true,
+  true,
+];
+void localContractAssertions;

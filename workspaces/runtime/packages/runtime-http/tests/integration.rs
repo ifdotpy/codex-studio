@@ -2,6 +2,7 @@ mod mcp_reconnect;
 mod checkpoint_rewind;
 mod claude_file_backups;
 mod claude_login;
+mod draft_replication;
 mod multi_server_incoming;
 mod orchestration_settings;
 mod process_controls;
@@ -16,6 +17,9 @@ mod wave7_p18_account_session;
 mod worker_capabilities;
 // Register every integration test module here; the tooling witness checks coverage.
 
+// The shared callback fixture prepares files before any HTTP handler runs; the
+// HTTP-only blocking filesystem ban does not apply to that test setup.
+#[allow(clippy::disallowed_methods)]
 #[path = "../../runtime-services/tests/wave7_p04_callback/fixture.rs"]
 pub(crate) mod callback_fixtures;
 
@@ -33,6 +37,3 @@ pub(crate) mod monitor_runtime_support;
 
 #[path = "../../runtime-services/tests/multi_server/common.rs"]
 pub(crate) mod multi_server_fixtures;
-
-#[path = "../../runtime-services/tests/support/prepared_python.rs"]
-pub(crate) mod prepared_python_support;

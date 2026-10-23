@@ -1,0 +1,31 @@
+[
+  {
+    "request": {
+      "action": "open",
+      "handle": "fixture",
+      "command": ["fixture"],
+      "env": {}
+    },
+    "accepted": false
+  },
+  {
+    "request": {
+      "action": "open",
+      "handle": "fixture",
+      "command": ["fixture"],
+      "env": {},
+      "cwd": null
+    },
+    "accepted": true
+  },
+  {
+    "request": {
+      "action": "open",
+      "handle": "fixture",
+      "command": ["fixture"],
+      "env": {},
+      "cwd": "/fixture"
+    },
+    "accepted": true
+  }
+]

@@ -1,6 +1,4 @@
-use crate::prepared_python_support;
-use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::path::Path;
 
 use rusqlite::{Connection, params};
 use serde_json::{Value, json};
@@ -17,7 +15,6 @@ async fn live_schema_opens_and_supported_repositories_preserve_the_catalog() {
     let state = state_directory.path();
     create_from_live_schema(state);
     seed_records(&state.join("canvas.sqlite3"));
-    let analytics_before = catalog(&state.join("analytics.sqlite3"));
     let derived_before_open = derived_catalog(&state.join("canvas.sqlite3"));
 
     let store = RuntimeStore::open(Some(state))
@@ -37,6 +34,7 @@ async fn live_schema_opens_and_supported_repositories_preserve_the_catalog() {
         "old event triggers upgrade to atomic portable window maintenance"
     );
     let before = catalog(&state.join("canvas.sqlite3"));
+    let analytics_before = catalog(&state.join("analytics.sqlite3"));
     let reader = store.test_reader().expect("reader opens");
     assert!(
         AgentRepository::get(&reader, &AgentId::from("fixture-agent"))
@@ -110,19 +108,10 @@ async fn live_schema_opens_and_supported_repositories_preserve_the_catalog() {
     drop(store);
 
     assert_eq!(before, catalog(&state.join("canvas.sqlite3")));
-    // Opening adds only the Rust-owned cost aggregate to analytics.
-    let analytics_after = catalog(&state.join("analytics.sqlite3"));
-    let (added, kept): (Vec<_>, Vec<_>) = analytics_after.into_iter().partition(|(_, name, _)| {
-        studio_runtime_store::cost_aggregate::SCHEMA_OBJECTS.contains(&name.as_str())
-    });
-    assert_eq!(analytics_before, kept);
-    assert_eq!(
-        added.len(),
-        studio_runtime_store::cost_aggregate::SCHEMA_OBJECTS.len()
-    );
+    assert_eq!(analytics_before, catalog(&state.join("analytics.sqlite3")));
     let reopened = RuntimeStore::open(Some(state))
         .await
-        .expect("Python-shaped schema remains openable");
+        .expect("migrated schema remains openable");
     let reader = reopened
         .test_reader()
         .expect("reader opens after Rust writes");
@@ -135,6 +124,132 @@ async fn live_schema_opens_and_supported_repositories_preserve_the_catalog() {
     );
     drop(reader);
     drop(reopened);
+}
+
+#[tokio::test]
+async fn migration_2026_10_22_drops_python_cost_projection_once() {
+    let state_directory = temporary_state();
+    let state = state_directory.path();
+    create_from_live_schema(state);
+    let analytics = state.join("analytics.sqlite3");
+    let retired_objects = |path: &Path| {
+        catalog(path)
+            .into_iter()
+            .filter(|(_, name, _)| {
+                name.starts_with("analytics_cost_projection_")
+                    || name.starts_with("analytics_cost_usage_")
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        retired_objects(&analytics).len(),
+        11,
+        "fixture has the projection table, index and nine triggers"
+    );
+    let existing_record = r#"{"id":"existing-usage","agentId":"agent","rootId":"root","at":0.5,"model":"gpt-5","last":{"inputTokens":5,"outputTokens":1}}"#;
+    Connection::open(&analytics).expect("analytics fixture opens")
+        .execute("INSERT INTO analytics_usage(id,agent,root,at,record) VALUES('existing-usage','agent','root',0.5,?1)", [existing_record])
+        .expect("usage fixture runs the original projection triggers");
+    let store = RuntimeStore::open(Some(state))
+        .await
+        .expect("fixture opens");
+    assert_eq!(
+        Connection::open(&analytics)
+            .expect("analytics opens")
+            .query_row(
+                "SELECT record FROM analytics_usage WHERE id='existing-usage'",
+                [],
+                |row| row.get::<_, String>(0)
+            )
+            .expect("original usage survives"),
+        existing_record
+    );
+    assert!(
+        retired_objects(&analytics).is_empty(),
+        "Python projection objects are removed"
+    );
+    let record = json!({
+        "id": "usage-after-migration", "agentId": "agent", "rootId": "root",
+        "threadId": "thread", "turnId": "turn", "at": 1.0, "model": "gpt-5",
+        "last": {"inputTokens": 10, "outputTokens": 2, "totalTokens": 12},
+        "total": {"inputTokens": 10, "outputTokens": 2, "totalTokens": 12}
+    });
+    for at in [1.0, 2.0] {
+        let mut record = record.clone();
+        record["at"] = json!(at);
+        store
+            .analytics_transaction::<_, StoreError>(move |tx, _| {
+                studio_runtime_store::analytics_capture::AnalyticsCaptureRepository::write(
+                    tx,
+                    studio_runtime_store::analytics_capture::CaptureTable::Usage,
+                    &record,
+                )
+            })
+            .await
+            .expect("usage insert and update still maintain the Rust aggregate");
+    }
+    let before = catalog(&analytics);
+    let cookie = schema_version(&analytics);
+    let aggregate = Connection::open(&analytics)
+        .expect("analytics opens")
+        .query_row("SELECT count(*) FROM analytics_cost_rows", [], |row| {
+            row.get::<_, i64>(0)
+        })
+        .expect("Rust aggregate reads");
+    assert_eq!(aggregate, 2, "existing usage backfills alongside new usage");
+    drop(store);
+    let store = RuntimeStore::open(Some(state))
+        .await
+        .expect("second open succeeds");
+    assert_eq!(
+        catalog(&analytics),
+        before,
+        "second open preserves every schema definition"
+    );
+    assert_eq!(
+        schema_version(&analytics),
+        cookie,
+        "second open performs no DDL"
+    );
+    store
+        .analytics_transaction::<_, StoreError>(|tx, _| {
+            tx.execute(
+                "DELETE FROM analytics_usage WHERE id='usage-after-migration'",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .expect("usage deletion has no retired trigger dependency");
+    drop(store);
+}
+
+#[tokio::test]
+async fn cost_projection_migration_rolls_back_if_rust_backfill_fails() {
+    let state_directory = temporary_state();
+    let state = state_directory.path();
+    create_from_live_schema(state);
+    let analytics = state.join("analytics.sqlite3");
+    Connection::open(&analytics).expect("analytics fixture opens")
+        .execute("INSERT INTO analytics_usage(id,agent,root,at,record) VALUES('invalid-cost','agent','root',1.0,?1)",
+            [r#"{"last":[]}"#])
+        .expect("valid JSON with an invalid token object inserts");
+    let before = catalog(&analytics);
+    let cookie = schema_version(&analytics);
+    assert!(
+        RuntimeStore::open(Some(state)).await.is_err(),
+        "invalid cost facts refuse open"
+    );
+    assert_eq!(
+        catalog(&analytics),
+        before,
+        "failed backfill rolls back every projection drop"
+    );
+    assert_eq!(
+        schema_version(&analytics),
+        cookie,
+        "failed migration commits no DDL"
+    );
 }
 
 #[tokio::test]
@@ -455,51 +570,6 @@ fn drop_sync_family(path: &Path) {
     }
 }
 
-#[allow(clippy::disallowed_methods)]
-fn prepare_with_python(state: &Path) {
-    let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src");
-    let script = r#"
-import contextlib, pathlib, sqlite3, sys
-sys.path.insert(0, sys.argv[2])
-from codex_sync import SyncStore
-from codex_sync_entities import ensure_tables, install_bypass_triggers, register_functions
-path = pathlib.Path(sys.argv[1]) / 'canvas.sqlite3'
-@contextlib.contextmanager
-def connect():
-    db = sqlite3.connect(path)
-    register_functions(db)
-    try:
-        yield db
-    finally:
-        db.close()
-with connect() as db:
-    register_functions(db)
-    ensure_tables(db)
-    install_bypass_triggers(db)
-store = SyncStore(connect, lambda _agent: None)
-store._ensure_versions()
-"#;
-    let output = Command::new(python_executable())
-        .arg("-c")
-        .arg(script)
-        .arg(state)
-        .arg(&source)
-        .env("PYTHONDONTWRITEBYTECODE", "1")
-        .output()
-        .expect("isolated Python starts for the schema producer test");
-    assert!(
-        output.status.success(),
-        "Python SyncStore preparation failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-}
-
-fn python_executable() -> PathBuf {
-    prepared_python_support::prepared_python(
-        &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
-    )
-}
-
 fn derived_catalog(path: &Path) -> Vec<(String, String, String)> {
     let db = Connection::open(path).expect("fixture DB opens");
     let mut statement = db
@@ -585,21 +655,18 @@ fn sync_seed_rows(path: &Path) -> Vec<String> {
 }
 
 #[tokio::test]
-async fn python_upgraded_event_windows_remain_atomic_when_reopened_by_rust() {
+async fn current_event_windows_remain_atomic_when_reopened_by_rust() {
     let state_directory = temporary_state();
     let state = state_directory.path();
     create_from_live_schema(state);
-    prepare_with_python(state);
-    let canvas = state.join("canvas.sqlite3");
-    // Simulate a development state that briefly had the Python-only trigger.
-    let database = Connection::open(&canvas).expect("Python-prepared state opens");
-    database
-        .execute_batch("CREATE TRIGGER sync_entity_event_window_v2_INSERT AFTER INSERT ON runtime_events BEGIN SELECT sync_entity_event_window(); END;")
-        .expect("intermediate trigger fixture creates");
-    drop(database);
+    drop(
+        RuntimeStore::open(Some(state))
+            .await
+            .expect("initial store opens"),
+    );
     let store = RuntimeStore::open(Some(state))
         .await
-        .expect("Rust upgrades the actual Python-prepared state");
+        .expect("Rust reopens the current event-window schema");
     let window = include_str!("../src/sync_schema.sql")
         .lines()
         .find_map(|line| line.strip_prefix("-- event-window-size: "))
@@ -686,67 +753,14 @@ async fn python_upgraded_event_windows_remain_atomic_when_reopened_by_rust() {
 }
 
 #[tokio::test]
-async fn python_prepared_sync_schema_matches_rust_bootstrap_and_is_idempotent() {
-    let python_state_directory = temporary_state();
-    let python_state = python_state_directory.path();
+async fn sync_schema_bootstrap_is_idempotent() {
     let rust_state_directory = temporary_state();
     let rust_state = rust_state_directory.path();
-    for state in [python_state, rust_state] {
-        create_from_live_schema(state);
-        drop_sync_family(&state.join("canvas.sqlite3"));
-    }
-    prepare_with_python(python_state);
-    let python_canvas = python_state.join("canvas.sqlite3");
-    let python_before_open = derived_catalog(&python_canvas);
-    let python_seeds = sync_seed_rows(&python_state.join("canvas.sqlite3"));
-
-    let python_store = RuntimeStore::open(Some(python_state))
-        .await
-        .expect("Rust structurally accepts the actual Python-prepared tables");
-    drop(python_store);
-    let python_after_open = derived_catalog(&python_canvas);
-    let python_replaced = replaced_derived_objects(&python_before_open, &python_after_open);
-
+    create_from_live_schema(rust_state);
+    drop_sync_family(&rust_state.join("canvas.sqlite3"));
     let store = RuntimeStore::open(Some(rust_state))
         .await
-        .expect("Rust opens an empty sync family and bootstraps it");
-    assert_eq!(
-        derived_catalog(&rust_state.join("canvas.sqlite3")),
-        python_after_open,
-        "indexes and triggers match the canonical stored SQL byte for byte"
-    );
-    assert_eq!(
-        python_replaced,
-        Vec::<String>::new(),
-        "Python first-open replacements"
-    );
-    let rust_seeds = sync_seed_rows(&rust_state.join("canvas.sqlite3"));
-    for seed in &rust_seeds {
-        assert!(
-            python_seeds.contains(seed),
-            "shared schema seed differs: {seed}"
-        );
-    }
-    // Python prepares renderer projections before serving; Rust's bootstrap
-    // prepares their storage without claiming those projections were seeded.
-    // Opening that Python state must retain its exact projection checkpoints.
-    for extra in python_seeds
-        .iter()
-        .filter(|seed| !rust_seeds.contains(seed))
-    {
-        assert!(
-            [
-                "meta:seeded:",
-                "meta:event_window_seq:",
-                "meta:task_window_migrated:"
-            ]
-            .iter()
-            .any(|prefix| extra.starts_with(prefix)),
-            "unexpected producer-specific schema seed: {extra}"
-        );
-    }
-    assert_eq!(sync_seed_rows(&python_canvas), python_seeds);
-
+        .expect("Rust bootstraps an empty sync family");
     store
         .transaction(move |tx| {
             tx.execute(
@@ -795,7 +809,6 @@ async fn sync_bootstrap_repairs_missing_objects_in_the_committed_live_fixture() 
         "DROP INDEX sync_entities_tombstone_order;
          DROP TABLE sync_versions;
          DROP TRIGGER sync_entity_event_UPDATE;
-         CREATE TRIGGER sync_watch_legacy AFTER INSERT ON runtime_events BEGIN SELECT 1; END;
          CREATE TRIGGER syncXwatchYprotect_rows BEFORE DELETE ON runtime_tasks BEGIN SELECT RAISE(ABORT,'retain task'); END;
          INSERT INTO runtime_tasks(id,record) VALUES('protected-task','{}');
          DELETE FROM sync_entity_meta WHERE key='entity_tombstone_count';
@@ -809,16 +822,6 @@ async fn sync_bootstrap_repairs_missing_objects_in_the_committed_live_fixture() 
     let store = RuntimeStore::open(Some(state))
         .await
         .expect("partially prepared fixture opens");
-    let legacy_watch: i64 = store
-        .test_reader()
-        .expect("reader opens")
-        .query_row(
-            "SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name GLOB 'sync_watch_*'",
-            [],
-            |row| row.get(0),
-        )
-        .expect("legacy watch trigger count reads");
-    assert_eq!(legacy_watch, 0);
     let protected_trigger: i64 = store
         .test_reader()
         .expect("reader opens")
@@ -952,7 +955,6 @@ async fn sync_bootstrap_failure_rolls_back_earlier_ddl_and_seed_rows() {
     let db = Connection::open(&canvas).expect("fixture DB opens");
     db.execute_batch(
         "CREATE TABLE sync_identity (id TEXT PRIMARY KEY);
-         CREATE TRIGGER sync_watch_legacy AFTER INSERT ON runtime_events BEGIN SELECT 1; END;
          CREATE TRIGGER reject_sync_identity BEFORE INSERT ON sync_identity BEGIN SELECT RAISE(ABORT,'fixture failure'); END;",
     )
     .expect("failing seed trigger is created");

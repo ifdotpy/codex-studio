@@ -22,12 +22,17 @@ export class ResourceEntityDelivery {
 
   receive(event: ResourceChangeEvent) {
     const hasChanges = event.resourceVersions?.some(
-      (entry) => entry.entityChanges,
+      (entry) => entry.entityChanges || entry.transcriptChanges,
     );
     const hasState = event.resources.some(
       (resource) => resource.kind === "state",
     );
-    if (event.reason === "change" && !hasState && this.epoch === event.epoch) {
+    if (
+      event.reason === "change" &&
+      !hasState &&
+      !hasChanges &&
+      this.epoch === event.epoch
+    ) {
       this.dispatch(event);
       return;
     }

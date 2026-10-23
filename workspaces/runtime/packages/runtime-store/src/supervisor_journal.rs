@@ -10,7 +10,7 @@ use std::{
     path::Path,
     sync::{Mutex, MutexGuard},
 };
-use studio_runtime_providers::supervisor_v1::{
+use studio_runtime_providers::supervisor_protocol::{
     HANDLE_LIMIT, HandleSnapshot, NativeId, ReceiptSnapshot, Refusal, WriteDecision,
 };
 
@@ -500,30 +500,6 @@ impl SupervisorJournal {
             Ok(((), None))
         })
     }
-    /// Commit stronger identity before the caller may signal an adopted child.
-    pub fn upgrade_identity(&self, expected: &StoredHandle, start: &str) -> Result<()> {
-        self.transaction(|tx, buffered| {
-            let current = stored(
-                tx,
-                &expected.id,
-                buffered.get(&expected.id).copied().unwrap_or_default(),
-            )?
-            .ok_or(Refusal("Unknown supervisor handle"))?;
-            if current.closed_at.is_some()
-                || current.pid != expected.pid
-                || current.pgid != expected.pgid
-                || current.start_time != expected.start_time
-                || current.signature != expected.signature
-            {
-                return Err(Refusal("Child identity changed before durable upgrade").into());
-            }
-            tx.execute(
-                "UPDATE child_identities SET start_time=? WHERE handle=?",
-                params![start, expected.id],
-            )?;
-            Ok(((), None))
-        })
-    }
     pub fn recovered(
         &self,
         row: &StoredHandle,
@@ -603,39 +579,10 @@ fn validate_event(event: &Value) -> Result<()> {
 }
 
 fn migrate(db: &Connection) -> Result<()> {
-    // Match Journal's additive legacy migrations, atomically and before readers.
+    // Create the current journal schema atomically before readers.
     db.execute_batch("BEGIN IMMEDIATE")?;
     let result = (|| -> Result<()> {
         db.execute_batch(include_str!("supervisor_schema.sql"))?;
-        for (table, column, declaration) in [
-            ("handles", "closed_at", "REAL"),
-            ("handles", "closed_reason", "TEXT"),
-            ("handles", "generation", "INTEGER NOT NULL DEFAULT 0"),
-            ("events", "generation", "INTEGER NOT NULL DEFAULT 1"),
-            ("child_identities", "job_name", "TEXT NOT NULL DEFAULT ''"),
-            (
-                "child_identities",
-                "job_kill_on_close",
-                "INTEGER NOT NULL DEFAULT 0",
-            ),
-            ("operations", "generation", "INTEGER"),
-            ("operations", "response", "TEXT"),
-            ("operations", "response_sequence", "INTEGER"),
-        ] {
-            let present: bool = db.query_row(
-                "SELECT EXISTS(SELECT 1 FROM pragma_table_info(?) WHERE name=?)",
-                params![table, column],
-                |row| row.get(0),
-            )?;
-            if !present {
-                db.execute_batch(&format!(
-                    "ALTER TABLE {table} ADD COLUMN {column} {declaration}"
-                ))?;
-                if table == "handles" && column == "generation" {
-                    db.execute("UPDATE handles SET generation=1 WHERE pid>0", [])?;
-                }
-            }
-        }
         db.execute_batch("CREATE INDEX IF NOT EXISTS operations_monitor_native ON operations(handle,generation,native_id) WHERE substr(operation_id,1,8)='monitor:'")?;
         Ok(())
     })();

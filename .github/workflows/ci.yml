@@ -25,6 +25,8 @@ jobs:
       - uses: ./.github/actions/client-build-setup
         with:
           native: "true"
+      - name: Generated contract check
+        run: pnpm run contracts:check
       - name: Rust formatting
         run: cargo fmt --check
       - name: Rust Clippy
@@ -58,74 +60,13 @@ jobs:
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           package_json_file: package.json
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: "3.14"
       - name: Install locked JavaScript dependencies
         run: pnpm install --frozen-lockfile
-      - name: Prepare the repository-managed Python environment for the renderer API check
-        run: |
-          echo "XDG_CACHE_HOME=$RUNNER_TEMP/codex-studio-cache" >> "$GITHUB_ENV"
-          cargo build --release -p studio-operations-python
-          XDG_CACHE_HOME="$RUNNER_TEMP/codex-studio-cache" python3 workspaces/runtime/apps/server/src/install-cli.py --dev --bin-dir "$RUNNER_TEMP/codex-studio-bin"
       - uses: ./.github/actions/client-build-setup
         with:
           native: "true"
       - name: Build every Rust target for macOS
         run: cargo check --workspace --all-targets --locked
-
-  python:
-    name: Python checks
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: ["3.11", "3.14"]
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: ${{ matrix.python-version }}
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: 22
-      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
-        with:
-          package_json_file: package.json
-      - name: Install locked JavaScript tools for API generation
-        run: pnpm install --frozen-lockfile
-      - name: Prepare the repository-managed Python environments
-        run: |
-          echo "XDG_CACHE_HOME=$RUNNER_TEMP/codex-studio-cache" >> "$GITHUB_ENV"
-          cargo build --release -p studio-operations-python
-          XDG_CACHE_HOME="$RUNNER_TEMP/codex-studio-cache" python3 workspaces/runtime/apps/server/src/install-cli.py --dev --bin-dir "$RUNNER_TEMP/codex-studio-bin"
-      - name: Strict runtime mypy ratchet
-        run: pnpm run typecheck:runtime
-      - name: Generated contract check
-        run: pnpm run contracts:check
-
-  # The Rust code is compiled once per profile in the two build jobs below. The
-  # server shards and the Rust partitions download the output instead of
-  # compiling it again. download-build-output refuses output from another commit.
-  rust-build-server:
-    name: "Build: Rust HTTP backend"
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: ./.github/actions/fast-tier-setup
-        with:
-          rust-cache: rust-release
-      - name: Build Rust HTTP backend for server contracts
-        run: |
-          cargo build --locked --release -p studio-runtime-server
-          mkdir -p "$RUNNER_TEMP/rust-http-backend"
-          cp target/release/studio-runtime-server "$RUNNER_TEMP/rust-http-backend/"
-      - uses: ./.github/actions/upload-build-output
-        with:
-          name: rust-http-backend
-          directory: ${{ runner.temp }}/rust-http-backend
 
   rust-build-tests:
     name: "Build: Rust workspace tests"
@@ -159,65 +100,6 @@ jobs:
           # The nextest archive is already zstd-compressed.
           compression-level: "0"
 
-  fast-server:
-    name: "Fast tier: server (${{ matrix.label }})"
-    needs: rust-build-server
-    # Run after a failed build too, so that each shard reports a failure, not a skip.
-    if: ${{ !cancelled() }}
-    runs-on: ubuntu-latest
-    # Server shards take 4–9 minutes after about 2 minutes of setup.
-    timeout-minutes: 20
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - index: 0
-            label: 1/4
-          - index: 1
-            label: 2/4
-          - index: 2
-            label: 3/4
-          - index: 3
-            label: 4/4
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-      - name: Require the Rust HTTP backend build
-        env:
-          BUILD_RESULT: ${{ needs.rust-build-server.result }}
-        run: |
-          if [ "$BUILD_RESULT" != success ]; then
-            echo "::error::The Build: Rust HTTP backend job ended with result $BUILD_RESULT." >&2
-            exit 1
-          fi
-      - uses: ./.github/actions/fast-tier-setup
-      - uses: ./.github/actions/download-build-output
-        with:
-          name: rust-http-backend
-          directory: ${{ runner.temp }}/rust-http-backend
-      - name: Install the Rust HTTP backend for server contracts
-        run: install -D -m 0755 "$RUNNER_TEMP/rust-http-backend/studio-runtime-server" target/release/studio-runtime-server
-      - name: Confirm hosted runner has no Codex executable
-        run: if command -v codex >/dev/null 2>&1; then echo "Codex must not be installed for this offline suite" >&2; exit 1; fi
-      - name: Run server shard
-        run: just test-server-shard ${{ matrix.index }} 4
-      - name: Show the full log of a failed server run
-        if: failure()
-        run: |
-          log="$(ls -t "$XDG_CACHE_HOME"/codex-studio/checks/run-*/full.log 2>/dev/null | head -n 1)"
-          if [ -n "$log" ]; then
-            grep -n -E -A 80 '^(ERROR|FAIL): ' "$log" | head -n 800 || true
-            tail -n 100 "$log"
-          fi
-      - name: Upload facade log from failed server shard
-        if: failure() || cancelled()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: facade-full-log-server-${{ matrix.index }}
-          path: ${{ runner.temp }}/codex-studio-cache/codex-studio/checks/run-*/full.log
-          if-no-files-found: ignore
-
   fast-rest:
     name: "Fast tier: remaining checks"
     runs-on: ubuntu-latest
@@ -228,6 +110,9 @@ jobs:
           fetch-depth: 0
       - uses: ./.github/actions/fast-tier-setup
       - uses: ./.github/actions/client-build-setup
+        with:
+          native: "true"
+          renderer-checks: "false"
       - name: List facade recipes
         run: just --list
       - name: Run non-Rust fast-tier checks
@@ -238,16 +123,6 @@ jobs:
         run: just boundaries-check
       - name: Confirm hosted runner has no Codex executable
         run: if command -v codex >/dev/null 2>&1; then echo "Codex must not be installed for this offline suite" >&2; exit 1; fi
-      - name: Run audited offline server suites
-        run: just test-server-opt-in
-      - name: Show the full log of a failed server run
-        if: failure()
-        run: |
-          log="$(ls -t "$XDG_CACHE_HOME"/codex-studio/checks/run-*/full.log 2>/dev/null | head -n 1)"
-          if [ -n "$log" ]; then
-            grep -n -E -A 80 '^(ERROR|FAIL): ' "$log" | head -n 800 || true
-            tail -n 100 "$log"
-          fi
       - name: Upload facade log from failed remaining checks
         if: failure() || cancelled()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

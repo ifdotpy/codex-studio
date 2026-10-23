@@ -18,7 +18,7 @@ from guest_update import ADMIN_UNIT, GUEST_UNIT, LAYR_UNIT, UpdateHandlers, sign
 KEY = "ab" * 32
 RECORD = {"codex": "0.160.1", "claude": "2.1.291", "pnpm": "10.0.0", "script": "c" * 64}
 OLD = {"vm/guest/service.py": b"old service\n", "vm/guest/share_bridge.py": b"old bridge\n",
-       "vm/layr/src/service.rs": b"old layr\n", "scripts/codex_process_supervisor.py": b"supervisor\n",
+       "vm/layr/src/service.rs": b"old layr\n", "bin/codex-process-supervisor": b"supervisor\n",
        ".agents/skills/codex-workspace/SKILL.md": b"skill\n"}
 
 
@@ -93,9 +93,9 @@ class GuestUpdateTests(unittest.TestCase):
 
     def test_provider_parts_an_older_guest_or_new_versions_need_a_reboot(self) -> None:
         # The process supervisor owns the running provider processes.
-        manifest, _ = self.files({"scripts/codex_process_supervisor.py": b"new supervisor\n"})
+        manifest, _ = self.files({"bin/codex-process-supervisor": b"new supervisor\n"})
         chosen = self.plan(manifest)
-        self.assertEqual((chosen["path"], chosen["reboot"]), ("reboot", ["scripts/codex_process_supervisor.py"]))
+        self.assertEqual((chosen["path"], chosen["reboot"]), ("reboot", ["bin/codex-process-supervisor"]))
         manifest, _ = self.files({"vm/guest/service.py": b"new service\n"})
         self.assertEqual(self.plan(manifest, {**RECORD, "claude": "2.1.292"})["path"], "reboot")
         self.record.unlink()
@@ -158,7 +158,7 @@ class GuestUpdateTests(unittest.TestCase):
 
     def test_a_reboot_file_or_a_missing_part_writes_nothing(self) -> None:
         manifest, content = self.files({"vm/guest/service.py": b"new service\n",
-                                       "scripts/codex_process_supervisor.py": b"new supervisor\n"})
+                                       "bin/codex-process-supervisor": b"new supervisor\n"})
         self.stage("op-4", content["vm/guest/service.py"])
         with self.assertRaises(GuestError) as caught:
             self.apply("op-4", manifest)
