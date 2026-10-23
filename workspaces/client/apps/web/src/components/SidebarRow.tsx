@@ -9,7 +9,6 @@ import {
 import {
   ActionIcon,
   Button,
-  Badge,
   Menu,
   TextInput,
   UnstyledButton,
@@ -33,9 +32,6 @@ import {
   type ChatIndicator,
 } from "./chat-status/chatStatusModel";
 import ChatStatus from "./agents/ChatStatus";
-import { AgentProgress } from "./agents/AgentProgress";
-import { ProviderMark } from "./AccountTiles";
-import { relativeChatTime } from "./sidebar/fleet";
 import { offlineServerDescription } from "../servers/ProjectChatRows";
 import { reportPromptComposerRender } from "./prompt-composer/renderProbe";
 
@@ -62,15 +58,14 @@ type Bindings = HTMLAttributes<HTMLElement> & {
 type Props = {
   disabled?: boolean;
   row: Agent;
-  now?: number;
   selected: boolean;
   serverAlias: string;
-  projectLabel?: string;
+  showServer: boolean;
   indicator?: ChatIndicator;
   serverOffline?: boolean;
   renaming: boolean;
-  name: string;
   organizing: boolean;
+  name: string;
   compact: boolean;
   markingRead: boolean;
   bindings: Bindings;
@@ -133,15 +128,14 @@ export default function SidebarRow(props: Props) {
   return (
     <SidebarRowView
       row={props.row}
-      now={props.now}
       selected={props.selected}
       serverAlias={props.serverAlias}
-      projectLabel={props.projectLabel}
+      showServer={props.showServer}
       indicator={indicator}
       serverOffline={props.serverOffline}
       renaming={props.renaming}
-      name={props.name}
       organizing={props.organizing}
+      name={props.name}
       compact={props.compact}
       markingRead={props.markingRead}
       disabled={props.disabled}
@@ -154,15 +148,14 @@ export default function SidebarRow(props: Props) {
 
 const SidebarRowView = memo(function SidebarRowView({
   row,
-  now,
   selected,
   serverAlias,
-  projectLabel,
+  showServer,
   indicator,
   serverOffline = false,
   renaming,
-  name,
   organizing,
+  name,
   compact,
   markingRead,
   disabled = false,
@@ -175,14 +168,6 @@ const SidebarRowView = memo(function SidebarRowView({
   const offlineDescription = serverOffline
     ? offlineServerDescription(serverAlias)
     : undefined;
-  const timestamp = row.updated || row.created;
-  const commands = row.commandProgress || [];
-  const moreCommands = Math.max(0, commands.length - 1);
-  const activityDetails = commands
-    .map((command) =>
-      [command.stage, command.lastOutputLine].filter(Boolean).join("\n"),
-    )
-    .join("\n\n");
   const chatRow = (
     <UnstyledButton
       {...bindingValues}
@@ -210,78 +195,34 @@ const SidebarRowView = memo(function SidebarRowView({
             provider={a.provider ?? undefined}
             model={a.model ?? undefined}
           />
-          <span
-            className="fleet-chat-provider"
-            role="img"
-            aria-label={a.provider === "claude" ? "Claude" : "Codex"}
-            title={a.provider === "claude" ? "Claude" : "Codex"}
-          >
-            <ProviderMark provider={a.provider || "codex"} />
-          </span>
           <strong>
             {a?.pinned && <Pin size={11} className="chat-pin" />}
             {row.name ?? ""}
           </strong>
         </span>
-        <span className="fleet-chat-meta">
-          <Badge
-            className="fleet-server-badge"
-            size="xs"
-            variant="outline"
-            color="gray"
-            data-offline={serverOffline || undefined}
-            title={offlineDescription || serverAlias}
-            aria-label={
-              serverOffline
-                ? `Server ${serverAlias} Offline. ${offlineDescription}`
-                : `Server ${serverAlias}`
-            }
-            leftSection={
-              serverOffline ? (
-                <WifiOff size="1em" aria-hidden="true" />
-              ) : undefined
-            }
-          >
-            {serverAlias}
-          </Badge>
-          {projectLabel && (
-            <span className="fleet-chat-project" title={projectLabel}>
-              {projectLabel}
-            </span>
-          )}
-          {(row.stall || commands.length > 0) && (
-            <span
-              className="fleet-chat-activity"
-              title={activityDetails || undefined}
-            >
-              <AgentProgress
-                agent={{
-                  stall: row.stall,
-                  commandProgress: commands.slice(0, 1),
-                }}
-              />
-              {moreCommands > 0 && (
-                <span
-                  className="fleet-command-count"
-                  aria-label={`${moreCommands} more managed command${moreCommands === 1 ? "" : "s"}`}
-                  title={activityDetails}
-                >
-                  +{moreCommands}
-                </span>
-              )}
-            </span>
-          )}
-        </span>
+        {(showServer || serverOffline || row.stall) && (
+          <span className="fleet-chat-meta">
+            {(showServer || serverOffline) && (
+              <span
+                className="fleet-server-badge"
+                data-offline={serverOffline || undefined}
+                title={offlineDescription || serverAlias}
+                aria-label={
+                  serverOffline ? offlineDescription : `Server ${serverAlias}`
+                }
+              >
+                {serverOffline && <WifiOff size="1em" aria-hidden="true" />}
+                {showServer ? serverAlias : "Offline"}
+              </span>
+            )}
+            {row.stall && (
+              <span className="agent-stall" role="status">
+                Waiting for lead
+              </span>
+            )}
+          </span>
+        )}
       </span>
-      {timestamp != null && Number.isFinite(timestamp) && (
-        <time
-          className="fleet-chat-time"
-          dateTime={new Date(timestamp * 1000).toISOString()}
-          title={new Date(timestamp * 1000).toLocaleString()}
-        >
-          {relativeChatTime(timestamp, now)}
-        </time>
-      )}
     </UnstyledButton>
   );
   return (
@@ -291,17 +232,6 @@ const SidebarRowView = memo(function SidebarRowView({
       data-studio-state={indicator?.kind || "none"}
     >
       {chatRow}
-      {!renaming && (
-        <ActionIcon
-          className="row-pin-action"
-          aria-label={`${row.pinned ? "Unpin" : "Pin"} ${row.name}`}
-          title={row.pinned ? "Unpin chat" : "Pin chat"}
-          disabled={organizing || disabled}
-          onClick={() => actions.pin()}
-        >
-          {row.pinned ? <PinOff size={14} /> : <Pin size={14} />}
-        </ActionIcon>
-      )}
       {renaming ? (
         <form className="inline-rename" onSubmit={(e) => actions.rename(e)}>
           <TextInput
@@ -365,7 +295,7 @@ const SidebarRowView = memo(function SidebarRowView({
             {a && (
               <>
                 <Menu.Item
-                  disabled={disabled}
+                  disabled={disabled || organizing}
                   leftSection={
                     a.pinned ? <PinOff size={14} /> : <Pin size={14} />
                   }

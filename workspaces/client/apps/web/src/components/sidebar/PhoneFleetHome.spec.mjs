@@ -110,6 +110,11 @@ test("fresh phone entry shows the board; explicit opens, Back and resume preserv
         await expect(
           board.locator(".chat-row").filter({ hasText: lead.name }).first(),
         ).toBeFocused();
+        const activeMenu = strip.locator("..").locator(".row-actions");
+        await expect(activeMenu).toHaveCSS("opacity", "1");
+        const target = await activeMenu.boundingBox();
+        expect(target.width).toBeGreaterThanOrEqual(44);
+        expect(target.height).toBeGreaterThanOrEqual(44);
         await strip.click();
         await expect(page.locator(".workspace-frame")).not.toHaveAttribute(
           "inert",

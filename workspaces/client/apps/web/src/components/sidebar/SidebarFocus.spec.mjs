@@ -28,10 +28,6 @@ async function focusGeometry(page) {
     };
     const strip = element.closest(".fleet-strip");
     const stripStyle = strip && getComputedStyle(strip);
-    const railRight =
-      strip &&
-      strip.getBoundingClientRect().left +
-        parseFloat(stripStyle.getPropertyValue("--studio-rail-size")) * rem;
     const ancestors = [];
     for (let node = element; node; node = node.parentElement)
       ancestors.push(node);
@@ -90,8 +86,7 @@ async function focusGeometry(page) {
         .getPropertyValue("--mantine-primary-color-filled")
         .trim(),
       ring,
-      railRight,
-      railShadow: stripStyle?.boxShadow,
+      stripShadow: stripStyle?.boxShadow,
       clipped: clips.length > 0,
       clips: clips.map((node) => ({
         className: node.className,
@@ -123,16 +118,12 @@ async function checkFocus(page) {
   expect(geometry.clipped, JSON.stringify(geometry)).toBe(false);
   expect(geometry.contrast, geometry.name).toBeGreaterThanOrEqual(3);
   expect(geometry.duplicates, geometry.name).toBe(0);
-  if (geometry.railRight != null) {
-    expect(geometry.railShadow, geometry.name).toContain("inset");
-    expect(geometry.ring.left, geometry.name).toBeGreaterThan(
-      geometry.railRight,
-    );
-  }
+  if (geometry.stripShadow != null)
+    expect(geometry.stripShadow, geometry.name).toBe("none");
   return geometry;
 }
 
-test("sidebar keyboard focus is consistent, unclipped and clear of state rails", async ({
+test("sidebar keyboard focus is consistent, unclipped and visible without state rails", async ({
   browser,
 }) => {
   test.setTimeout(90000);
@@ -234,10 +225,6 @@ test("sidebar keyboard focus is consistent, unclipped and clear of state rails",
               item.state === "working" && item.className.includes("chat-row"),
           ),
         ).toBe(true);
-        if (width === 1440)
-          expect(
-            visited.some((item) => item.className.includes("row-pin-action")),
-          ).toBe(true);
         for (const [menuIndex, target] of [
           page.locator("#sidebar .row-actions").first(),
           page

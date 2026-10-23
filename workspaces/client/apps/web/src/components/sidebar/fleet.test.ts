@@ -7,12 +7,7 @@ import {
   chatIndicators,
   type ChatIndicator,
 } from "../chat-status/chatStatusModel";
-import {
-  needsYou,
-  projectStateCounts,
-  projectStateLabel,
-  relativeChatTime,
-} from "./fleet";
+import { needsYou, projectStateCounts, projectStateLabel } from "./fleet";
 import ProjectStateCounts from "./ProjectStateCounts";
 import SidebarRow from "../SidebarRow";
 
@@ -71,12 +66,6 @@ describe("fleet presentation", () => {
       ),
     ).toBe("");
   });
-  it("formats relative time without negative or fractional durations", () => {
-    expect(relativeChatTime(120, 100)).toBe("now");
-    expect(relativeChatTime(0, 179)).toBe("2m");
-    expect(relativeChatTime(0, 7200)).toBe("2h");
-    expect(relativeChatTime(0, 172800)).toBe("2d");
-  });
   it("uses the supplied indicator even when the agent's saved status differs", () => {
     const row: Agent = { ...chat("answer"), status: "running" };
     expect(needsYou([row], indicators)).toEqual([row]);
@@ -116,10 +105,11 @@ function renderRow(overrides: Partial<Parameters<typeof SidebarRow>[0]> = {}) {
         },
         selected: true,
         serverAlias: "MAC",
+        showServer: false,
         indicator: indicators.get("answer"),
         renaming: false,
-        name: "",
         organizing: false,
+        name: "",
         compact: false,
         markingRead: false,
         bindings: {},
@@ -144,58 +134,48 @@ function renderRow(overrides: Partial<Parameters<typeof SidebarRow>[0]> = {}) {
 }
 
 describe("real fleet strip", () => {
-  it("renders state, one live activity line, time, unread/status and action accessibility", () => {
+  it("keeps the title, state, pin and accessible menu without routine metadata", () => {
     const html = renderRow();
     expect(html).toContain('data-studio-state="answer"');
     expect(html).toContain('data-chat-status="answer"');
     expect(html).toContain("Needs your answer");
-    expect(html).toContain("Checking permissions");
-    expect(html).toContain('aria-label="1 more managed command"');
-    expect(html).toContain("+1");
-    expect(html).toContain("Second command");
-    expect(html).toContain('aria-label="Elapsed time"');
-    expect(html).toContain("Output details");
-    expect(html).toContain('aria-label="Codex"');
-    expect(html).toContain('<time class="fleet-chat-time"');
-    expect(renderRow({ now: 160 })).toContain(">1m</time>");
-    expect(renderRow({ now: 220 })).toContain(">2m</time>");
-    expect(html).toContain('aria-label="Unpin Chat answer"');
+    expect(html).toContain("Chat answer");
+    expect(html).toContain("chat-pin");
     expect(html).toContain('aria-label="Actions for Chat answer"');
-    expect(html).toContain('class="fleet-server-badge');
-    expect(html).toContain('aria-label="Server MAC"');
-    expect(html.indexOf('aria-label="Server MAC"')).toBeGreaterThan(
-      html.indexOf("</strong>"),
-    );
+    for (const detail of [
+      "Checking permissions",
+      "Second command",
+      "Output details",
+      "Elapsed time",
+      "fleet-chat-time",
+      "fleet-chat-provider",
+      "fleet-chat-meta",
+      "row-pin-action",
+    ])
+      expect(html).not.toContain(detail);
   });
-  it("preserves the stall status and puts project context after the full title", () => {
+  it("preserves the stall attention cue", () => {
     const html = renderRow({
-      projectLabel: "Long project name",
-      row: {
-        ...chat("stalled"),
-        provider: "claude",
-        stall: { taskId: "task-4", since: 10 },
-      },
+      row: { ...chat("stalled"), stall: { taskId: "task-4", since: 10 } },
     });
     expect(html).toContain('role="status"');
     expect(html).toContain("Waiting for lead");
-    expect(html).toContain("task-4");
-    expect(html).toContain('aria-label="Claude"');
-    expect(html.indexOf("Long project name")).toBeGreaterThan(
-      html.indexOf("</strong>"),
-    );
   });
-  it("shows local, remote and offline server badges even without live activity", () => {
+  it("shows only non-default server identities and retains offline attention", () => {
     const quiet = renderRow({ row: chat("quiet") });
-    expect(quiet).toContain('aria-label="Server MAC"');
-    expect(quiet).toContain("fleet-chat-meta");
-    expect(renderRow({ serverAlias: "RMT" })).toContain(
-      'aria-label="Server RMT"',
+    expect(quiet).not.toContain("fleet-server-badge");
+    expect(quiet).not.toContain("fleet-chat-meta");
+    const remote = renderRow({ serverAlias: "RMT", showServer: true });
+    expect(remote).toContain('aria-label="Server RMT"');
+    expect(remote.indexOf('aria-label="Server RMT"')).toBeGreaterThan(
+      remote.indexOf("</strong>"),
     );
     const offline = renderRow({ serverOffline: true });
     expect(offline).toContain(
       "MAC is unreachable. Showing the last known state.",
     );
-    expect(offline).toContain("Offline");
+    expect(offline).toContain(">Offline</span>");
+    expect(offline).not.toContain(">MAC</span>");
     expect(offline).toContain('data-offline="true"');
   });
 });

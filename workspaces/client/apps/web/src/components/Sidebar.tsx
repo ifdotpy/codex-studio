@@ -57,11 +57,7 @@ import {
 } from "./shell/messages/PeerTeams";
 
 import SidebarRow from "./SidebarRow";
-import {
-  FLEET_CLOCK_INTERVAL_MS,
-  needsYou,
-  projectStateCounts,
-} from "./sidebar/fleet";
+import { needsYou, projectStateCounts } from "./sidebar/fleet";
 import ProjectStateCounts from "./sidebar/ProjectStateCounts";
 import {
   activeLayrReadiness,
@@ -178,14 +174,6 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
   const services = p.services;
   const lastOpened = useRef(p.opened);
   if (p.opened) lastOpened.current = p.opened;
-  const [now, setNow] = useState(() => Date.now() / 1000);
-  useEffect(() => {
-    const timer = window.setInterval(
-      () => setNow(Date.now() / 1000),
-      FLEET_CLOCK_INTERVAL_MS,
-    );
-    return () => window.clearInterval(timer);
-  }, []);
   const canEdit = (target: SidebarTarget) =>
     services.available?.(target) ?? true;
   /** Why an action on this target is disabled, or null when it is available. */
@@ -840,9 +828,8 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
     <SidebarRow
       key={row.id}
       row={row}
-      now={now}
       selected={p.opened === row.id}
-      projectLabel={priority ? groupMap.get(row.cwd || "")?.name : undefined}
+      showServer={services.serverForChat(row.id) !== services.cache.ownerId}
       serverAlias={
         services.alias?.({ kind: "chat", id: row.id }) ||
         aliases[
@@ -858,8 +845,8 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
         p.offlineServers?.has(services.serverForChat(row.id)) ?? false
       }
       renaming={renaming === row.id && renameInPriority === priority}
-      name={renaming === row.id ? name : ""}
       organizing={organizing === row.id}
+      name={renaming === row.id ? name : ""}
       disabled={!canEdit({ kind: "chat", id: row.id })}
       compact={compact}
       markingRead={p.markingRead.has(row.id)}
@@ -1916,10 +1903,8 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
                         >
                           <span className="row-copy">
                             <strong>{room.name}</strong>
-                            {(serverOffline ||
-                              alias !==
-                                (aliases[services.cache.ownerId] ||
-                                  DEFAULT_LOCAL_SERVER_ALIAS)) && (
+                            {services.serverForChat(room.id) !==
+                              services.cache.ownerId && (
                               <ChatServerLine
                                 provider={
                                   p.data.threads.find((agent) =>
@@ -1930,6 +1915,16 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
                                 offline={serverOffline}
                               />
                             )}
+                            {serverOffline &&
+                              services.serverForChat(room.id) ===
+                                services.cache.ownerId && (
+                                <span
+                                  className="fleet-server-badge"
+                                  data-offline="true"
+                                >
+                                  Offline
+                                </span>
+                              )}
                           </span>
                         </UnstyledButton>
                       );

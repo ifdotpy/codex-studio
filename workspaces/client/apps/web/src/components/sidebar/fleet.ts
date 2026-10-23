@@ -49,18 +49,3 @@ export function projectStateLabel(
     .filter(Boolean)
     .join(", ");
 }
-
-/** Refresh all fleet timestamps together, in milliseconds. */
-export const FLEET_CLOCK_INTERVAL_MS = 60_000;
-
-/** Durations in seconds for compact, tabular fleet timestamps. */
-const minuteSeconds = 60;
-const hourSeconds = 60 * minuteSeconds;
-const daySeconds = 24 * hourSeconds;
-export function relativeChatTime(timestamp: number, now = Date.now() / 1000) {
-  const elapsed = Math.max(0, now - timestamp);
-  if (elapsed < minuteSeconds) return "now";
-  if (elapsed < hourSeconds) return `${Math.floor(elapsed / minuteSeconds)}m`;
-  if (elapsed < daySeconds) return `${Math.floor(elapsed / hourSeconds)}h`;
-  return `${Math.floor(elapsed / daySeconds)}d`;
-}

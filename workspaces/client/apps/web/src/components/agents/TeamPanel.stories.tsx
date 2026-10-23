@@ -193,6 +193,8 @@ export const Dispatch: Story = {
     await expect(
       canvas.getByRole("complementary", { name: "Team" }),
     ).toBeVisible();
+    for (const worker of canvasElement.querySelectorAll(".worker-entry"))
+      await expect(getComputedStyle(worker).boxShadow).toBe("none");
     const failed = canvas.getByRole("region", { name: "Failed" });
     await expect(
       within(failed).getByText("Type check failed in the project adapter.", {
@@ -230,9 +232,13 @@ export const Dispatch: Story = {
     const progress = canvasElement.querySelector(".worker-command-details")!;
     await expect(progress).not.toHaveAttribute("data-expanded");
     await userEvent.click(progress.querySelector(".disclosure-control")!);
-    await expect(
-      within(progress as HTMLElement).getByText("Checking TypeScript exports"),
-    ).toBeVisible();
+    await waitFor(() =>
+      expect(
+        within(progress as HTMLElement).getByText(
+          "Checking TypeScript exports",
+        ),
+      ).toBeVisible(),
+    );
     await userEvent.click(progress.querySelector(".disclosure-control")!);
     await expect(canvas.queryByText("Storage adapter")).not.toBeInTheDocument();
     await userEvent.click(canvas.getByLabelText("Finished (14)"));

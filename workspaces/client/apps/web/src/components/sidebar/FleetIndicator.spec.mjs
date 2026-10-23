@@ -85,7 +85,7 @@ test("fleet state indicators remain visible and animated in priority and project
               '.sidebar-project .fleet-strip[data-studio-state="working"]',
             )
             .first(),
-        ).toHaveCSS("box-shadow", /inset/);
+        ).toHaveCSS("box-shadow", "none");
         expect(
           await page.evaluate(
             () => document.documentElement.scrollWidth <= innerWidth,

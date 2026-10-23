@@ -261,15 +261,6 @@
 .fleet-strip[data-studio-state="unread"] strong {
   font-weight: 600;
 }
-.fleet-chat-provider {
-  display: inline-flex;
-  flex: none;
-  color: var(--muted);
-}
-.fleet-chat-provider > svg {
-  inline-size: var(--mantine-font-size-xs);
-  block-size: var(--mantine-font-size-xs);
-}
 .fleet-chat-meta {
   display: flex;
   align-items: center;
@@ -278,67 +269,10 @@
   color: var(--muted);
   font-size: var(--mantine-font-size-xs);
 }
-.fleet-chat-project {
-  flex: 0 1 auto;
-  min-inline-size: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.fleet-chat-activity {
-  display: flex;
-  align-items: center;
-  flex: 1;
-  gap: calc(var(--mantine-spacing-xs) / 2);
-  min-inline-size: 0;
-}
-.fleet-chat-activity
-  :is(.agent-stall, .agent-command-progress, .agent-command-stage) {
-  min-inline-size: 0;
-  margin: 0;
-  font-size: inherit;
-  line-height: inherit;
-  color: inherit;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.fleet-chat-activity :is(.agent-stall, .agent-command-progress) {
-  flex: 1;
-}
-.fleet-chat-activity .agent-command-stage {
-  display: block;
-  position: relative;
-  padding-inline-end: calc(var(--mantine-font-size-xs) * 5);
-}
-.fleet-chat-activity .agent-command-stage > [aria-label="Elapsed time"] {
-  position: absolute;
-  inset-inline-end: 0;
-  inset-block-start: 0;
-}
-.fleet-chat-activity .agent-command-progress {
-  pointer-events: none;
-}
-.fleet-chat-project:has(+ .fleet-chat-activity) {
-  max-inline-size: 40%;
-}
-.fleet-chat-activity .agent-command-output {
-  display: none;
-}
-.fleet-chat-activity [aria-label="Elapsed time"],
-.fleet-command-count {
-  font-variant-numeric: tabular-nums;
-}
-.fleet-command-count {
-  flex: none;
-}
-.fleet-chat-time {
-  flex: none;
-  color: var(--muted);
-  font-size: var(--mantine-font-size-xs);
-  text-align: end;
-}
 .fleet-server-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: calc(var(--mantine-spacing-xs) / 2);
   flex: none;
   color: var(--muted);
   font-size: var(--mantine-font-size-xs);
@@ -353,18 +287,30 @@
   margin-inline-end: calc(var(--mantine-spacing-xs) / 2);
   color: var(--muted);
 }
-.row-actions,
-.row-pin-action {
-  position: static;
-  flex: none;
-  opacity: 1;
+/* Hidden actions consume no title width, but remain keyboard focusable. */
+.row-actions {
+  position: absolute;
+  inset-inline-end: 0;
+  opacity: 0;
+  pointer-events: none;
   color: var(--muted);
 }
-.row-pin-action {
-  display: none;
+.fleet-strip:is(
+    :hover,
+    :focus-within,
+    .selected,
+    :has(.row-actions[data-expanded])
+  )
+  > .chat-row {
+  padding-inline-end: calc(
+    var(--ai-size, var(--studio-control-size)) + var(--mantine-spacing-xs)
+  );
 }
-.sidebar-row:is(:hover, :focus-within) .row-pin-action {
-  display: inline-flex;
+.sidebar-row:is(:hover, :focus-within, .selected) .row-actions,
+.row-actions:focus-visible,
+.row-actions[data-expanded] {
+  opacity: 1;
+  pointer-events: auto;
 }
 .inline-rename {
   position: relative;
@@ -519,9 +465,16 @@
   .projects-heading .mantine-ActionIcon-root {
     --ai-size: var(--studio-touch-target);
   }
-  .row-pin-action,
-  .sidebar-row:is(:hover, :focus-within) .row-pin-action {
-    display: none;
+  .fleet-strip:is(
+      :hover,
+      :focus-within,
+      .selected,
+      :has(.row-actions[data-expanded])
+    )
+    > .chat-row {
+    padding-inline-end: calc(
+      var(--studio-touch-target) + var(--mantine-spacing-xs)
+    );
   }
   .sidebar-nav-button {
     min-block-size: var(--studio-touch-target);

@@ -78,8 +78,8 @@
   --studio-state: var(--studio-state-paused);
 }
 
-/* A strip: the leading edge carries the state. */
-[data-studio-state]:not(.studio-state-dot) {
+/* Other surfaces retain rails; fleet and Team use their inline state indicators. */
+[data-studio-state]:not(.studio-state-dot, .fleet-strip, .worker-entry) {
   box-shadow: inset var(--studio-rail-size) 0 0 var(--studio-state);
 }
 

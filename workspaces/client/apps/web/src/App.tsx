@@ -601,7 +601,7 @@ export default function App({ active = true }: { active?: boolean }) {
   // --studio-sidebar-width when the desktop fleet occupies space. The Team
   // layout parity test keeps the media queries aligned with those owners.
   const teamFitsWithoutSidebar = useMediaQuery("(min-width: 60rem)");
-  const teamFitsWithSidebar = useMediaQuery("(min-width: 78rem)");
+  const teamFitsWithSidebar = useMediaQuery("(min-width: 79.8rem)");
   const teamHasSidebar =
     (!isServerView || isClassicServerView) &&
     !mobileClient &&
