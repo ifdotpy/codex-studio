@@ -1301,6 +1301,8 @@ function fastTierCommands(root) {
               "test(callback_request_expires_a_terminal_inline_result)",
               "test(callback_request_invalid_action_preserves_tool_refusal)",
               "test(account_worker::tests::callback_handoff::)",
+              "test(account_worker::tests::account_transfer::)",
+              "test(account_transfer_driver::request_tests::busy_member_)",
               "test(account_worker::tests::auth_hold::held_start_wakes_nothing_until_an_account_change)",
               "test(account_worker::tests::callback_head_of_line)",
               "test(account_worker::tests::native_requests::)",
@@ -1352,9 +1354,9 @@ function fastTierCommands(root) {
       ],
       options: {
         selector:
-          "account_worker::tests::callback_handoff, callback_head_of_line, native_requests, stale batch stamp recovery, automatic turn recovery, the session callback lane, monitor publication work and work_write submission boundaries",
+          "account_worker::tests::callback_handoff, account_transfer, callback_head_of_line, native_requests, stale batch stamp recovery, automatic turn recovery, the session callback lane, monitor publication work and work_write submission boundaries",
         reason:
-          "Check that a provider request is durably accepted with its journal batch, that its record owns the answer through every crash point without a repeated answer, and that an unanswered request never stops provider events or new work, that a native approval or question of a lead waits as a card and its user answer reaches the provider once, also after a worker reattach, and that a stamp left by an undelivered steer batch is replaced instead of holding the agent. Monitor output must publish exactly one monitor projection while preserving window membership and rollback. Task submissions keep limits, workspace ownership and replay at the shared manifest bound. Native-history recovery continues authorized workers once, preserves explicit Stop, and never replays uncertain input.",
+          "Check that a provider request is durably accepted with its journal batch, that its record owns the answer through every crash point without a repeated answer, and that an unanswered request never stops provider events or new work, that a native approval or question of a lead waits as a card and its user answer reaches the provider once, also after a worker reattach, and that a stamp left by an undelivered steer batch is replaced instead of holding the agent. Monitor output must publish exactly one monitor projection while preserving window membership and rollback. Task submissions keep limits, workspace ownership and replay at the shared manifest bound. Native-history recovery continues authorized workers once, preserves explicit Stop, and never replays uncertain input. An account transfer member moves at its next wake and keeps its queued input.",
       },
     },
     // The reaping witnesses are Linux only (#[cfg(target_os = "linux")]), so
