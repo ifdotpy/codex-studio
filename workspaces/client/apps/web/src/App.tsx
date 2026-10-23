@@ -1,3 +1,4 @@
+import Disclosure from "./components/ui/Disclosure";
 import { ChatSettingsDialog } from "./components/agents/ChatSettingsDialog";
 import { DeliveryMoment } from "./generated/deliveryMoment";
 import { useScreenEnvironment } from "./servers/ScreenContext";
@@ -3379,8 +3380,7 @@ export default function App({ active = true }: { active?: boolean }) {
                     }}
                   />
                 </SettingsRow>
-                <details className="studio-appearance-more">
-                  <summary>More</summary>
+                <Disclosure className="studio-appearance-more" summary="More">
                   <div className="studio-appearance-more-content">
                     <section className="settings-group" aria-label="Fonts">
                       <h2>Fonts</h2>
@@ -3587,7 +3587,7 @@ export default function App({ active = true }: { active?: boolean }) {
                       </Button>
                     </section>
                   </div>
-                </details>
+                </Disclosure>
               </div>
             </Tabs.Panel>
             <Tabs.Panel value="federation" pt="md">

@@ -119,3 +119,11 @@
     width: 100%;
   }
 }
+
+.studio-appearance-more > .disclosure-control {
+  width: fit-content;
+  min-height: var(--studio-touch-target);
+  padding: var(--mantine-spacing-xs) 0;
+  color: var(--muted);
+  font-size: var(--studio-text-body);
+}

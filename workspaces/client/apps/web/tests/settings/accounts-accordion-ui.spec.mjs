@@ -260,6 +260,33 @@ test("Studio Accounts is exclusive and keeps keyboard focus inside settings and 
             (element) => element.scrollWidth <= element.clientWidth + 1,
           ),
         ).toBe(true);
+        if (
+          await dialog
+            .getByRole("button", { name: "Back", exact: true })
+            .isVisible()
+        )
+          await dialog
+            .getByRole("button", { name: "Back", exact: true })
+            .click();
+        await dialog
+          .getByRole("tab", { name: "Appearance", exact: true })
+          .click();
+        const more = dialog.getByRole("button", { name: "More", exact: true });
+        await expect(more).toHaveAttribute("aria-expanded", "false");
+        await expect(
+          dialog.getByRole("combobox", { name: "Studio text style" }),
+        ).toHaveCount(0);
+        await keyboardCycle(page, dialog);
+        await more.click();
+        await expect(
+          dialog.getByRole("combobox", { name: "Studio text style" }),
+        ).toBeVisible();
+        await keyboardCycle(page, dialog);
+        await more.click();
+        await expect(
+          dialog.getByRole("combobox", { name: "Studio text style" }),
+        ).toHaveCount(0);
+        await keyboardCycle(page, dialog);
       }
   } finally {
     await local.close();
