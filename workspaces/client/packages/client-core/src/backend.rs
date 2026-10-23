@@ -64,7 +64,7 @@ impl Backend {
         {
             return Err("The backend origin must be a loopback HTTP URL.".into());
         }
-        let client = Client::builder()
+        let client = crate::tls::client_builder()
             .no_proxy()
             .redirect(reqwest::redirect::Policy::none())
             .retry(reqwest::retry::never())

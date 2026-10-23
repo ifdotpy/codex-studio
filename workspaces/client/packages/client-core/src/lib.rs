@@ -32,6 +32,7 @@ pub mod startup;
 pub mod store;
 pub mod sync;
 pub mod terminal;
+mod tls;
 pub mod uploads;
 pub mod views;
 pub mod voice;
