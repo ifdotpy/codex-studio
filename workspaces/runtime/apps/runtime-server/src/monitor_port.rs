@@ -301,6 +301,16 @@ impl RetainedMonitorPort {
             }
             .await;
             if let Err(error) = result {
+                // An unanswered command at its deadline has an unknown outcome
+                // that its late answer may still settle.
+                let reason = if matches!(
+                    error,
+                    MonitorError::Unavailable("provider-session/monitor-result-deadline")
+                ) {
+                    studio_runtime_services::monitor_policy::DEADLINE_PASSED
+                } else {
+                    "retained_exit_unavailable"
+                };
                 studio_runtime_services::diagnostics::log_stderr(format_args!(
                     "monitor {id} retained exit wait ended: {error}"
                 ));
@@ -315,10 +325,7 @@ impl RetainedMonitorPort {
                         )
                         .await?;
                         studio_runtime_services::monitor_runtime::settle_reattach(
-                            store,
-                            monitor_id,
-                            "retained_exit_unavailable",
-                            now,
+                            store, monitor_id, reason, now,
                         )
                         .await
                     },
@@ -1526,13 +1533,80 @@ impl MonitorPort for RetainedMonitorPort {
         let timing: CommandTiming = serde_json::from_value(snapshot.record().clone())
             .map_err(studio_runtime_store::StoreError::from)?;
         let now = studio_runtime_services::event_write::unix_time()?;
-        let remaining =
-            ((timing.created + timing.timeout_ms as f64 / 1000.0 - now).max(0.0) * 1000.0) as u64;
+        // The provider grace belongs to the deadline. A command reattached
+        // after it does not wait another grace.
+        let deadline = timing.created
+            + timing.timeout_ms.saturating_add(MONITOR_TIMEOUT_GRACE_MS) as f64 / 1000.0;
         self.await_retained_exit(
             snapshot.id(),
             operation,
-            Duration::from_millis(remaining.saturating_add(MONITOR_TIMEOUT_GRACE_MS)),
+            Duration::from_secs_f64((deadline - now).max(0.0)),
         )
+    }
+
+    fn await_late_answer(&self, snapshot: &MonitorSnapshot) -> Result<(), MonitorError> {
+        let operation = snapshot
+            .operation()
+            .cloned()
+            .ok_or(MonitorError::Refused("Missing retained command identity"))?;
+        let finished = snapshot
+            .record()
+            .get("finished")
+            .and_then(Value::as_f64)
+            .ok_or(MonitorError::Refused("Monitor loss time is invalid"))?;
+        let now = studio_runtime_services::event_write::unix_time()?;
+        let window = Duration::from_secs_f64(
+            (finished + studio_runtime_services::monitor_policy::MONITOR_LATE_ANSWER_SECONDS - now)
+                .max(0.0),
+        );
+        let port = self
+            .this
+            .upgrade()
+            .ok_or(MonitorError::Unavailable("provider-session/monitor-result"))?;
+        let Some(guard) = self.claim(&self.execs, snapshot.id()) else {
+            return Ok(());
+        };
+        let id = snapshot.id().to_owned();
+        tokio::spawn(async move {
+            // The waiter ends only with the answer or with its window, so a
+            // read that proves nothing is not offered again at once.
+            let deadline = tokio::time::Instant::now() + window;
+            loop {
+                let changed = port.receipt_wake.notified();
+                tokio::pin!(changed);
+                changed.as_mut().enable();
+                match studio_runtime_services::account_worker::retained::monitor_late_result(
+                    &port.store,
+                    &id,
+                    &operation,
+                )
+                .await
+                {
+                    Ok(Some(response)) => {
+                        if let Err(error) = port
+                            .command_result_until_saved(&id, &operation, response)
+                            .await
+                        {
+                            studio_runtime_services::diagnostics::log_stderr(format_args!(
+                                "monitor {id} late answer was not recorded: {error}"
+                            ));
+                        }
+                        break;
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        studio_runtime_services::diagnostics::log_stderr(format_args!(
+                            "monitor {id} late answer read failed: {error}"
+                        ));
+                    }
+                }
+                if tokio::time::timeout_at(deadline, changed).await.is_err() {
+                    break;
+                }
+            }
+            drop(guard);
+        });
+        Ok(())
     }
 
     fn probe<'a>(
@@ -2633,6 +2707,189 @@ mod tests {
                 "{case}: the retained request is the proof"
             );
         }
+    }
+
+    /// The provider never answered a command by its deadline (`timeout_ms`
+    /// plus the provider grace). At the deadline the owner sees a truthful
+    /// loss: the outcome is unknown and the command is not run again. The
+    /// provider process of the same generation can still answer later; that
+    /// real answer completes the command once, with its own exit event, and a
+    /// repeated delivery changes nothing. No provider request is sent.
+    #[tokio::test]
+    async fn an_unanswered_deadline_is_lost_until_a_late_answer_completes_it_once() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        struct SameGeneration {
+            requests: AtomicUsize,
+        }
+        impl AccountSessionPort for SameGeneration {
+            fn current_scope(
+                &self,
+                account: &str,
+            ) -> Option<studio_runtime_services::account_session_runtime::ConnectionScope>
+            {
+                Some(
+                    studio_runtime_services::account_session_runtime::ConnectionScope {
+                        account: account.into(),
+                        connection: "current".into(),
+                        generation: 1,
+                    },
+                )
+            }
+            fn provider_request<'a>(
+                &'a self,
+                _request: ProviderRequest,
+            ) -> studio_runtime_services::account_session_runtime::AccountSessionFuture<
+                'a,
+                SessionReceipt,
+            > {
+                self.requests.fetch_add(1, Ordering::SeqCst);
+                Box::pin(async {
+                    Err(
+                        studio_runtime_services::account_session_runtime::AccountSessionError::Refused(
+                            "no provider request is expected",
+                        ),
+                    )
+                })
+            }
+        }
+        let root = tempfile::tempdir().expect("state root");
+        let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
+        let now = studio_runtime_services::event_write::unix_time().expect("clock");
+        let operation = Operation {
+            agent: "owner".into(),
+            epoch: 0,
+            account_key: "default".into(),
+            connection_id: "old".into(),
+            evidence: BTreeMap::new(),
+        };
+        // The deadline and the provider grace passed long ago.
+        let mut watch = starting_watch(root.path(), "watch");
+        watch["status"] = json!("running");
+        watch["created"] = json!(now - 3600.0);
+        watch["timeout_ms"] = json!(60_000);
+        watch["operation"] = json!(operation);
+        let owner = owner(root.path(), true);
+        let key = format!(
+            "retained:default:{}",
+            studio_runtime_store::sha256_hex(b"monitor:watch")
+        );
+        let submitted = json!({
+            "call":{"scope":{"account":"default","connection":"old","generation":1},
+                "operation":"monitor:watch","actor":{"agent":"owner","epoch":0},
+                "transfer":null,"deleted_actor_session":null,"method":"command/exec",
+                "params":{"processId":"watch","cwd":root.path().to_string_lossy(),"command":["true"]}},
+            "request":{"id":key,"generation":1,"method":"command/exec","operation":key,
+                "thread":null,"lightweight":true,"deadline":60000,"remoteId":null}
+        });
+        let submitted_id = format!("account-worker:{key}:submitted");
+        store.transaction(move |tx| {
+            AgentRepository::put(tx, &AgentRecord::from_value(owner)?)?;
+            studio_runtime_store::Table::new(tx).put(&studio_runtime_store::MonitorRecord::from_value(watch)?)?;
+            tx.execute("INSERT INTO runtime_operation_receipts(id,signature,result) VALUES (?1,'test',?2)", (submitted_id, submitted.to_string()))?;
+            Ok::<_, studio_runtime_store::StoreError>(())
+        }).await.expect("persist a command whose answer is still owed");
+        // The same entry as a request that timed out: the answer is unknown.
+        studio_runtime_services::monitor_runtime::reconcile_unknown(&store, "watch", now)
+            .await
+            .expect("unknown outcome");
+        let session = Arc::new(SameGeneration {
+            requests: AtomicUsize::new(0),
+        });
+        let port = RetainedMonitorPort::new(
+            Arc::clone(&store),
+            Arc::clone(&session) as Arc<dyn AccountSessionPort>,
+        );
+        let runtime = studio_runtime_services::monitor_runtime_wiring::MonitorRuntime::new(
+            Arc::clone(&store),
+            Arc::clone(&port) as Arc<dyn MonitorPort>,
+            Arc::new(Notify::new()),
+        );
+        port.set_dispatch_wake(runtime.dispatch_wake_handle())
+            .expect("install wake");
+        let read = |store: Arc<RuntimeStore>| async move {
+            store
+                .read_async("test/deadline-watch", |tx| {
+                    MonitorsRepository::get(tx, "watch")
+                })
+                .await
+                .expect("read")
+                .expect("watch")
+                .value()
+                .clone()
+        };
+        let exits = |store: Arc<RuntimeStore>| async move {
+            store
+                .read_async("test/deadline-exits", |tx| {
+                    let mut statement = tx.prepare(
+                        "SELECT id FROM runtime_events WHERE kind='monitor_exit' AND status='pending' ORDER BY id",
+                    )?;
+                    let ids = statement
+                        .query_map([], |row| row.get::<_, String>(0))?
+                        .collect::<Result<Vec<_>, _>>()?;
+                    Ok::<_, studio_runtime_store::StoreError>(ids)
+                })
+                .await
+                .expect("exit events")
+        };
+        let until = |status: &'static str| {
+            let (runtime, store) = (&runtime, Arc::clone(&store));
+            async move {
+                tokio::time::timeout(Duration::from_secs(10), async {
+                    loop {
+                        runtime.tick(now + 1.0).await.expect("monitor tick");
+                        let watch = read(Arc::clone(&store)).await;
+                        if watch["status"] == status {
+                            return watch;
+                        }
+                        tokio::time::sleep(Duration::from_millis(20)).await;
+                    }
+                })
+                .await
+                .unwrap_or_else(|_| panic!("the monitor becomes {status}"))
+            }
+        };
+        let lost = until("lost").await;
+        assert_eq!(
+            lost["reattachRecovery"]["proof"], "deadline_passed",
+            "{lost}"
+        );
+        assert_eq!(
+            lost["error"],
+            "Command deadline passed without an answer. Outcome unknown; not rerun."
+        );
+        assert_eq!(
+            exits(Arc::clone(&store)).await,
+            vec!["monitor:watch".to_owned()]
+        );
+        // The provider process answers late; the answer commits to the ledger.
+        store.transaction(move |tx| {
+            for (id, result) in [
+                (format!("account-worker:{key}:result"), json!({"result":{"Reply":{"exitCode":0}},"cursor":1})),
+                ("account-worker:cursor:default:1:ack".into(),json!(1)),
+            ] {
+                tx.execute("INSERT OR REPLACE INTO runtime_operation_receipts(id,signature,result) VALUES (?1,'test',?2)",(id,result.to_string()))?;
+            }
+            Ok::<_, studio_runtime_store::StoreError>(())
+        }).await.expect("late native reply and checkpoint commit");
+        let completed = until("completed").await;
+        assert_eq!(completed["exitCode"], 0, "{completed}");
+        for _ in 0..3 {
+            runtime.tick(now + 2.0).await.expect("replay tick");
+        }
+        assert_eq!(read(Arc::clone(&store)).await["status"], "completed");
+        assert_eq!(
+            exits(Arc::clone(&store)).await,
+            vec![
+                "monitor:watch".to_owned(),
+                "monitor:watch:late-answer".to_owned()
+            ],
+            "one loss and one late result"
+        );
+        assert_eq!(
+            session.requests.load(Ordering::SeqCst),
+            0,
+            "nothing is sent again"
+        );
     }
 
     #[tokio::test]

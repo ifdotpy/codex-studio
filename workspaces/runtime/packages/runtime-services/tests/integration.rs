@@ -23,6 +23,7 @@ mod continuation_corpus;
 mod continuation_recovery;
 mod image_workspace_corpus;
 mod media_auth_fixtures;
+mod monitor_deadline_answer;
 mod monitor_flood_and_missed_rules;
 mod monitor_recovery;
 mod monitor_start_preparation;

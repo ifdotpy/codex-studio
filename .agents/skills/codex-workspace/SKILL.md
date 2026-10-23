@@ -151,8 +151,10 @@ Use `orchestration_monitor` for long commands. The server waits without model
 calls and delivers an event for every command exit, including success, failure,
 signal, or a lost process. Backend restart keeps the command active while
 reattach is unresolved; its real exit or a decided loss queues the same single
-terminal event. Turn completion with unfinished owned monitors leaves the agent
-in `waiting_on_monitor`. Every monitor exit can resume its owner through the
+terminal event. A command without an answer by its timeout and a short grace
+ends `lost` with an unknown outcome and is not run again. A real answer that
+arrives later can still report its result once in a second event. Turn
+completion with unfinished owned monitors leaves the agent in `waiting_on_monitor`. Every monitor exit can resume its owner through the
 ordinary event queue. Explicit stops, deletion, and epoch changes still apply.
 `wake_on` cannot suppress an exit event. Read the exit
 code, status, and output before claiming success. Inspect an uncertain command

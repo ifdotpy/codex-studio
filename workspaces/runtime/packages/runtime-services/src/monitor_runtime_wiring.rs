@@ -147,6 +147,12 @@ pub trait MonitorPort: MonitorNative + rules_tick::RuleMonitor + Send + Sync {
     fn exit_owned(&self, _id: &str) -> Option<bool> {
         None
     }
+    /// Wait, within its late-answer window, for the real answer of a command
+    /// lost at its deadline, and deliver it as the command's exit. Returns
+    /// promptly and never sends a provider request.
+    fn await_late_answer(&self, _snapshot: &MonitorSnapshot) -> Result<(), MonitorError> {
+        Ok(())
+    }
     /// Reserve through the account owner, using liveness:{id}:{generation}.
     /// Return promptly; completion is delivered as MonitorEvent::Probe.
     fn probe<'a>(
@@ -648,6 +654,9 @@ impl MonitorRuntime {
                 Ok(more) => orphan_more = more,
                 Err(error) => record_tick_failure(&mut failure, error),
             }
+            if let Err(error) = self.await_late_answers(now).await {
+                record_tick_failure(&mut failure, error);
+            }
         }
         let more = result_batch_full
             || attach_more
@@ -699,6 +708,40 @@ impl MonitorRuntime {
             }
         }
         Ok(staged || full)
+    }
+
+    /// Give each deadline loss in its late-answer window an answer waiter in
+    /// this process. Runs on a drained result queue, so a queued late exit is
+    /// delivered before its command is offered again.
+    async fn await_late_answers(&self, now: f64) -> Result<(), MonitorError> {
+        for id in monitor_runtime::late_answer_ids(&self.store, now).await? {
+            if self.port.exit_owned(&id) != Some(false) {
+                continue;
+            }
+            let read_id = id.clone();
+            let result = match self
+                .store
+                .read_async("runtime-services/monitor_late_answer", move |tx| {
+                    monitor_runtime::snapshot(tx, &read_id)
+                })
+                .await
+            {
+                Ok((snapshot, _)) if snapshot.awaits_late_answer(now) => {
+                    self.port.await_late_answer(&snapshot)
+                }
+                Ok(_) => Ok(()),
+                Err(error) => Err(error),
+            };
+            match result {
+                Ok(()) => {}
+                // A store failure retries this pass from durable state.
+                Err(error) if error.store_failure_for_task() => return Err(error),
+                // One unreadable row, for example of a deleted owner, must not
+                // hold back the other late answers.
+                Err(_) => {}
+            }
+        }
+        Ok(())
     }
 
     async fn quarantine_delivery(
