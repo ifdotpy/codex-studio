@@ -3,7 +3,14 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { once } from "node:events";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  mkdtemp,
+  mkdir,
+  readFile,
+  realpath,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -165,8 +172,10 @@ export async function createFixture(directory) {
 }
 
 async function main() {
-  const directory = await mkdtemp(
-    path.join(tmpdir(), "studio-native-webview-"),
+  // The client canonicalizes its state folder (macOS /var is /private/var), and
+  // the fixture identity must name the same folder.
+  const directory = await realpath(
+    await mkdtemp(path.join(tmpdir(), "studio-native-webview-")),
   );
   try {
     for (const [profile, mode] of [
