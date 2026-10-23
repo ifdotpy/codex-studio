@@ -985,6 +985,12 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
         sign_in_sources,
         monitor_shutdown.subscribe(),
     ));
+    // Sign-in alerts on the owner's phones (docs/web-push.md).
+    let web_push_task = tokio::spawn(studio_runtime_services::web_push::run(
+        Arc::clone(&store),
+        state_root.to_path_buf(),
+        monitor_shutdown.subscribe(),
+    ));
     let retention_task = tokio::spawn(studio_runtime_services::storage_retention::run(
         Arc::clone(&store),
         monitor_shutdown.subscribe(),
@@ -1286,6 +1292,7 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
         shutdown_join("browser card poll", task).await??;
     }
     shutdown_join("sign-in message links", sign_in_task).await??;
+    shutdown_join("web push", web_push_task).await??;
     #[cfg(unix)]
     if let Some(service) = browser_host {
         shutdown_join("browser host bridge", service.stop()).await?;

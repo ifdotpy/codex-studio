@@ -271,6 +271,14 @@ pub const LINUX_VM_ROSETTA_TAG: &str = "rosetta";
 /// the agent ID (docs/linux-vm-workspaces.md). The host builds the handle; the guest checks
 /// that a handle names its own agent.
 pub const LINUX_VM_PROVIDER_HANDLE_PREFIX: &str = "linux-worker:";
+/// A pending sign-in card alerts the owner only after it stayed open this long, in seconds:
+/// on a Mac host the browser can finish the sign-in at once without the person. The desktop
+/// alerts (`web/src/desktop/desktopAlerts.ts`) and the phone pushes (`runtime-services`
+/// `web_push`) use it.
+pub const SIGN_IN_ALERT_GRACE_SECONDS: u64 = 10;
+/// The one reminder of an open sign-in card comes this long before the card closes, in
+/// seconds. The desktop alerts and the phone pushes use it.
+pub const SIGN_IN_REMINDER_SECONDS: u64 = 300;
 
 #[cfg(test)]
 mod tests {

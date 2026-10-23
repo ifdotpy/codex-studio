@@ -194,6 +194,7 @@ import { useWorkerModels } from "./components/agents/WorkerModelPicker";
 import { UnifiedAgentSettings } from "./components/agents/UnifiedAgentSettings";
 import { FederationSettings } from "./components/FederationSettings";
 import { LinuxVMSettings } from "./components/LinuxVMSettings";
+import { SignInPushSettings } from "./components/SignInPushSettings";
 import { OrchestrationSettings } from "./components/OrchestrationSettings";
 import BrowserAccessNotice from "./components/BrowserAccessNotice";
 import ProviderUpdateSettings from "./components/ProviderUpdateSettings";
@@ -3728,6 +3729,9 @@ export default function App({ active = true }: { active?: boolean }) {
             </Tabs.Panel>
             <Tabs.Panel value="linux-vm" pt="md">
               <LinuxVMSettings active={studioSettingsOpen} />
+            </Tabs.Panel>
+            <Tabs.Panel value="phone-alerts" pt="md" keepMounted={false}>
+              <SignInPushSettings active={studioSettingsOpen} />
             </Tabs.Panel>
             <Tabs.Panel value="hotkeys" pt="md">
               <section className="settings-group" aria-label="Sidebar shortcut">
