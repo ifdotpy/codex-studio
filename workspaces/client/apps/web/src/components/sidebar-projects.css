@@ -1,821 +1,404 @@
-.projects-heading,
-.project-tree-heading {
+/* Fleet owns sidebar layout. Shared state rails/colors live in design/state.css. */
+#sidebar {
   display: flex;
-  align-items: center;
-  min-width: 0;
-  gap: 2px;
-}
-.projects-heading {
-  margin: 0;
-  color: var(--muted);
-}
-.projects-heading-label {
-  flex: 1;
-  min-width: 0;
-  padding: 6px 8px;
-  font-size: 12px;
-}
-.projects-heading .mantine-ActionIcon-root {
-  width: 26px;
-  min-width: 26px;
-  height: 26px;
-}
-.sidebar-project {
-  margin: 0 0 12px;
-}
-.project-tree-heading {
-  padding: 0 4px;
-}
-#sidebar .project-tree-heading[data-folder-drop="true"] {
-  border-radius: 8px;
-  background: var(--mantine-primary-color-light);
-  box-shadow: inset 0 0 0 1px var(--mantine-primary-color-filled);
-}
-.project-tree-toggle {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  flex: 1;
-  min-width: 0;
-  padding: 7px 4px;
+  flex: 0 0 var(--studio-sidebar-width);
+  flex-direction: column;
+  inline-size: var(--studio-sidebar-width);
+  min-inline-size: 0;
+  min-block-size: 0;
+  gap: var(--mantine-spacing-xs);
+  padding: var(--mantine-spacing-md);
   color: var(--text);
-  font-size: 13px;
+  background: var(--sidebar);
+  border-inline-end: calc(var(--mantine-spacing-xs) / 8) solid var(--line);
 }
-.project-tree-toggle svg {
-  flex-shrink: 0;
+.sidebar-header,
+.sidebar-primary-actions,
+.projects-heading,
+.project-tree-heading,
+.project-tree-toggle,
+.fleet-chat-heading {
+  display: flex;
+  align-items: center;
+  min-inline-size: 0;
+  gap: var(--mantine-spacing-xs);
+}
+.sidebar-header {
+  flex: none;
+}
+.brand {
+  flex: 1;
+  color: var(--text);
+  text-decoration: none;
+  font-size: var(--mantine-font-size-lg);
+  font-weight: 600;
+}
+.brand-name strong {
+  font: inherit;
+}
+.sidebar-nav {
+  display: grid;
+  gap: var(--mantine-spacing-xs);
+  flex: none;
+}
+.sidebar-primary-actions .sidebar-search {
+  flex: 1;
+  min-inline-size: 0;
+}
+.sidebar-nav-button {
+  min-inline-size: 0;
+  color: var(--text);
+  font-size: var(--mantine-font-size-sm);
+}
+.sidebar-search .mantine-Button-inner {
+  justify-content: flex-start;
+}
+.sidebar-search .mantine-Button-label {
+  flex: 1;
+  justify-content: space-between;
+  gap: var(--mantine-spacing-xs);
+}
+.sidebar-search kbd {
   color: var(--muted);
+  font: inherit;
+  font-size: var(--mantine-font-size-xs);
 }
-.project-tree-toggle span {
+.sidebar-new-chat {
+  flex: none;
+  color: var(--studio-state-working);
+}
+.sidebar-shared-chat .mantine-Button-label {
+  min-inline-size: 0;
   overflow: hidden;
-  white-space: nowrap;
   text-overflow: ellipsis;
 }
-/* The project name keeps room before the chip. */
-.project-tree-toggle > span {
-  flex: 0 1 auto;
-  min-width: min(6em, 45%);
+#chat-search {
+  font-size: var(--mantine-font-size-sm);
 }
-.project-tree-action {
-  opacity: 0;
-  width: 24px;
-  min-width: 24px;
-  height: 24px;
+.chat-scroll {
+  flex: 1;
+  min-block-size: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
 }
-.project-tree-heading:hover .project-tree-action,
-.project-tree-heading:focus-within .project-tree-action {
-  opacity: 1;
+.fleet-attention {
+  margin-block-end: var(--mantine-spacing-md);
 }
-/* The LAYR chip matches .workspace-mode-badge; the dot tells the VM import state. It sits on
-   a second line under the project name, so the name keeps the whole width, and opens the
-   project's layr menu. */
-.project-tree-heading:has(> .project-tree-layr) {
-  flex-wrap: wrap;
-}
-.project-tree-layr {
-  flex: 1 0 100%;
-  margin-top: -5px;
-  padding: 0 0 4px 31px;
-}
-.project-tree-layr .project-layr-readiness {
-  cursor: pointer;
-  background: none;
-  font-family: inherit;
-}
-.project-tree-layr .project-layr-readiness:hover,
-.project-tree-layr .project-layr-readiness[aria-expanded="true"] {
-  border-color: var(--muted);
-}
-.project-tree-layr .project-layr-readiness:focus-visible {
-  outline: 2px solid var(--mantine-primary-color-filled);
-  outline-offset: 1px;
-}
-.project-tree-layr .project-layr-readiness {
-  display: inline-flex;
-  flex: 0 0 auto;
-  align-items: center;
-  gap: 4px;
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  padding: 1px 6px;
+.fleet-lane-heading,
+.projects-heading-label {
+  flex: 1;
+  min-inline-size: 0;
+  margin: 0;
+  padding: var(--mantine-spacing-xs) 0;
+  font-size: var(--mantine-font-size-xs);
+  font-weight: 500;
   color: var(--muted);
-  font-size: 9px;
+}
+.fleet-lane-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: var(--text);
   font-weight: 600;
-  letter-spacing: 0.04em;
-  line-height: 1.4;
+}
+.fleet-lane-heading > span,
+.project-state-counts,
+.fleet-chat-time {
+  font-variant-numeric: tabular-nums;
+}
+.fleet-lane-heading > span {
+  color: var(--studio-state-answer);
+}
+.sidebar-project {
+  margin-block-end: var(--mantine-spacing-md);
+}
+.project-tree-heading {
+  position: relative;
+  gap: 0;
+}
+.project-tree-toggle {
+  flex: 1;
+  padding: var(--mantine-spacing-xs) 0;
+  color: var(--text);
+  font-size: var(--mantine-font-size-sm);
+  font-weight: 600;
+  text-align: start;
+}
+.project-tree-toggle > svg {
+  flex: none;
+  color: var(--muted);
+  inline-size: var(--mantine-font-size-sm);
+}
+.project-tree-name,
+.project-tree-toggle > span:first-of-type {
+  min-inline-size: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
-.project-layr-readiness::before {
-  content: "";
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: currentColor;
+.project-tree-name {
+  flex: 1;
 }
-.project-layr-readiness[data-state="ready"]::before {
-  color: light-dark(#18713a, #6ed491);
+.project-tree-action {
+  flex: none;
+  color: var(--muted);
 }
-.project-layr-readiness[data-state="importing"]::before {
-  color: var(--accent);
-  animation: project-layr-importing 2s ease-in-out infinite;
+.project-state-counts {
+  display: inline-flex;
+  flex: none;
+  gap: var(--mantine-spacing-xs);
+  margin-inline-start: auto;
+  font-size: var(--mantine-font-size-xs);
+  font-weight: 400;
+  color: var(--muted);
 }
-.project-layr-readiness[data-state="not_imported"]::before {
-  background: transparent;
-  box-shadow: inset 0 0 0 1px currentColor;
+.project-state-count {
+  display: inline-flex;
+  align-items: center;
+  gap: calc(var(--mantine-spacing-xs) / 2);
 }
-.project-layr-readiness[data-state="failed"]::before {
-  color: light-dark(#956000, #f0bb60);
-}
-/* A project with a vault shows a cloud instead of the dot. */
-.project-layr-readiness[data-vault]::before {
-  display: none;
-}
-.project-layr-readiness[data-vault] svg {
-  flex: 0 0 auto;
-  color: light-dark(#18713a, #6ed491);
-}
-.project-layr-readiness[data-vault="error"] svg,
-.project-layr-readiness[data-attention="true"] svg {
-  color: light-dark(#956000, #f0bb60);
-}
-/* A Mac folder sync that needs the user: a conflict, a failure or deletions to confirm. */
-.project-layr-readiness[data-attention="true"],
-.project-layr-readiness[data-attention="true"]::before {
-  color: light-dark(#956000, #f0bb60);
-}
-.mac-sync-conflict-path {
-  flex: 1 1 12em;
-  min-width: 0;
-  overflow-wrap: anywhere;
-  font-family: var(--mantine-font-family-monospace);
-}
-@keyframes project-layr-importing {
-  50% {
-    opacity: 0.35;
-  }
-}
-@media (prefers-reduced-motion: reduce) {
-  .project-layr-readiness[data-state="importing"]::before {
-    animation: none;
-  }
+.project-tree-toggle > .project-state-counts {
+  overflow: visible;
 }
 .project-chats {
-  padding-left: 24px;
+  padding-inline-start: var(--mantine-spacing-xs);
 }
 .project-folder {
-  margin: 4px 0;
+  margin-block: var(--mantine-spacing-xs);
 }
 .project-folder-chats {
-  padding-left: 14px;
+  padding-inline-start: var(--mantine-spacing-sm);
+}
+.sidebar-row {
+  display: flex;
+  align-items: center;
+  position: relative;
+  min-inline-size: 0;
+  border-radius: 0;
+  margin: 0;
+}
+.sidebar-row:hover {
+  background: var(--hover);
+}
+.sidebar-row.selected {
+  background: var(--raised);
+}
+.chat-row {
+  display: flex;
+  align-items: center;
+  flex: 1;
+  inline-size: 100%;
+  min-inline-size: 0;
+  min-block-size: calc(var(--mantine-spacing-xl) + var(--mantine-spacing-xs));
+  gap: var(--mantine-spacing-xs);
+  padding: var(--mantine-spacing-xs) var(--mantine-spacing-xs)
+    var(--mantine-spacing-xs) var(--mantine-spacing-sm);
+  border-radius: 0;
+  text-align: start;
+}
+.fleet-strip .chat-row[data-studio-state="answer"] {
+  background: var(--studio-state-answer-soft);
+}
+.fleet-strip .chat-row[data-studio-state="error"] {
+  background: var(--studio-state-error-soft);
+}
+.row-copy {
+  flex: 1;
+  min-inline-size: 0;
+}
+.row-copy strong {
+  display: block;
+  min-inline-size: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--mantine-font-size-sm);
+  font-weight: 400;
+}
+.fleet-chat-heading > strong {
+  flex: 1;
+}
+.fleet-strip:has([data-studio-state="unread"]) strong {
+  font-weight: 600;
+}
+.fleet-chat-project {
+  flex: 0 1 30%;
+  min-inline-size: 0;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--mantine-font-size-xs);
+}
+.fleet-chat-activity {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: var(--mantine-font-size-xs);
+}
+.fleet-chat-time {
+  flex: none;
+  color: var(--muted);
+  font-size: var(--mantine-font-size-xs);
+  text-align: end;
+}
+.fleet-chat-heading .chat-server-line {
+  display: inline-flex;
+  flex: 0 1 30%;
+  min-inline-size: 0;
+  margin: 0;
+  font-size: var(--mantine-font-size-xs);
+}
+.fleet-chat-heading .chat-server-alias {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fleet-chat-heading .chat-server-line > svg {
+  display: none;
+}
+.chat-pin {
+  margin-inline-end: calc(var(--mantine-spacing-xs) / 2);
+  color: var(--muted);
+}
+.row-actions,
+.row-pin-action {
+  position: static;
+  flex: none;
+  opacity: 1;
+  color: var(--muted);
+}
+.row-pin-action {
+  display: none;
+}
+.sidebar-row:is(:hover, :focus-within) .row-pin-action {
+  display: inline-flex;
+}
+.inline-rename {
+  position: relative;
+  display: flex;
+  flex-wrap: wrap;
+  flex: 1;
+  min-inline-size: 0;
+  gap: var(--mantine-spacing-xs);
+  padding: var(--mantine-spacing-xs);
+  background: var(--sidebar);
+}
+.inline-rename > :first-child {
+  flex-basis: 100%;
+  min-inline-size: 0;
+}
+.sidebar-row:has(.inline-rename) > .chat-row {
+  display: none;
+}
+.project-empty,
+.project-show-more,
+.project-show-all {
+  display: block;
+  margin: 0;
+  padding: var(--mantine-spacing-xs);
+  color: var(--muted);
+  font-size: var(--mantine-font-size-xs);
+}
+.project-show-more:hover,
+.project-show-all:hover {
+  color: var(--text);
 }
 .project-directory {
   color: var(--muted);
   overflow-wrap: anywhere;
 }
-#sidebar .project-tree-toggle span {
-  white-space: normal;
-  overflow-wrap: anywhere;
-  text-overflow: clip;
-}
-.project-chats .sidebar-row {
-  margin: 1px 0;
-}
-.project-chats .chat-row {
-  min-height: 34px;
-  padding: 7px 44px 7px 8px;
-}
-.project-chats .row-actions {
-  right: 4px;
-  width: 28px;
-  min-width: 28px;
-  height: 28px;
-}
-@media (max-width: 760px) {
-  .project-chats .chat-row {
-    padding-right: 56px;
-  }
-}
-.project-chats .row-copy strong {
-  font-weight: 400;
-}
-.project-empty,
-.project-show-more {
-  display: block;
-  margin: 0;
-  padding: 8px;
-  color: var(--muted);
-  font-size: 12px;
-}
-.project-show-more:hover {
-  color: var(--text);
-}
-@media (hover: none) {
-  .project-tree-action {
-    opacity: 1;
-  }
-}
-
-/* Titles own the row until pointer or keyboard interaction reveals controls. */
-#sidebar .project-chats .chat-row {
-  padding-right: 8px;
-}
-#sidebar .project-chats .row-actions,
-#sidebar .row-pin-action {
-  position: absolute;
-  width: 26px;
-  min-width: 26px;
-  height: 26px;
-  opacity: 0;
-  pointer-events: none;
-}
-#sidebar .row-pin-action {
-  right: 31px;
-}
-#sidebar .project-chats .row-actions {
-  right: 3px;
-}
-#sidebar
-  .sidebar-row:is(:hover, :has(:focus-visible), :has([aria-expanded="true"]))
-  .chat-row {
-  padding-right: 62px;
-}
-#sidebar
-  .sidebar-row:is(:hover, :has(:focus-visible), :has([aria-expanded="true"]))
-  :is(.row-actions, .row-pin-action) {
-  opacity: 1;
-  pointer-events: auto;
-}
-.chat-pin {
-  margin-right: 5px;
-  vertical-align: -1px;
-  color: var(--muted);
-}
-#sidebar .project-tree-heading {
-  position: relative;
-}
-#sidebar .project-tree-action {
-  z-index: 1;
-  position: absolute;
-  right: 2px;
-  opacity: 0;
-  pointer-events: none;
-}
-#sidebar .project-tree-action:has(+ .project-tree-action) {
-  right: 28px;
-}
-#sidebar
-  .project-tree-heading:is(
-    :hover,
-    :has(:focus-visible),
-    :has(.project-tree-action[aria-expanded="true"])
-  )
-  .project-tree-toggle {
-  margin-right: 28px;
-}
-#sidebar
-  .project-tree-heading:has(.project-tree-action + .project-tree-action):is(
-    :hover,
-    :has(:focus-visible),
-    :has(.project-tree-action[aria-expanded="true"])
-  )
-  .project-tree-toggle {
-  margin-right: 54px;
-}
-#sidebar
-  .project-tree-heading:is(
-    :hover,
-    :has(:focus-visible),
-    :has(.project-tree-action[aria-expanded="true"])
-  )
-  .project-tree-action {
-  opacity: 1;
-  pointer-events: auto;
-}
-#sidebar [draggable="true"] {
-  position: relative;
+.project-tree-heading[data-folder-drop="true"],
+.chat-row[data-folder-drop="true"] {
+  background: var(--mantine-primary-color-light);
+  outline: var(--studio-rail-size) solid var(--mantine-primary-color-filled);
+  outline-offset: calc(-1 * var(--studio-rail-size));
 }
 #sidebar [data-drop-edge]::after {
   content: "";
   position: absolute;
-  left: 3px;
-  right: 3px;
-  height: 2px;
-  border-radius: 2px;
+  inset-inline: 0;
+  block-size: var(--studio-rail-size);
   background: var(--mantine-primary-color-filled);
   pointer-events: none;
 }
 #sidebar [data-drop-edge="before"]::after {
-  top: 0;
+  inset-block-start: 0;
 }
 #sidebar [data-drop-edge="after"]::after {
-  bottom: 0;
+  inset-block-end: 0;
 }
-@media (hover: none), (max-width: 760px) {
-  #sidebar .row-pin-action {
-    display: none;
-  }
-  #sidebar .project-chats .chat-row,
-  #sidebar
-    .sidebar-row:is(:hover, :has(:focus-visible), :has([aria-expanded="true"]))
-    .chat-row {
-    padding-right: 46px;
-  }
-  #sidebar .project-chats .row-actions,
-  #sidebar .project-tree-action {
-    opacity: 1;
-    pointer-events: auto;
-    width: 40px;
-    height: 40px;
-  }
-  #sidebar .project-tree-toggle {
-    margin-right: 42px;
-  }
-  #sidebar .project-tree-action:has(+ .project-tree-action) {
-    right: 44px;
-  }
-  #sidebar
-    .project-tree-heading:has(.project-tree-action + .project-tree-action)
-    .project-tree-toggle {
-    margin-right: 84px;
-  }
+.project-tree-heading:has(> .project-tree-layr) {
+  flex-wrap: wrap;
 }
-
-/* Project and team menus remain reachable without a prior pointer hover. */
-#sidebar .project-tree-action[aria-haspopup="menu"] {
-  opacity: 1;
-  pointer-events: auto;
+.project-tree-layr {
+  flex: 1 0 100%;
+  padding: 0 0 var(--mantine-spacing-xs) var(--mantine-spacing-lg);
 }
-#sidebar
-  .project-tree-heading:has(.project-tree-action[aria-haspopup="menu"])
-  .project-tree-toggle {
-  margin-right: 28px;
-}
-@media (hover: none), (max-width: 760px) {
-  #sidebar
-    .project-tree-heading:has(.project-tree-action[aria-haspopup="menu"])
-    .project-tree-toggle {
-    margin-right: 84px;
-  }
-}
-
-#sidebar .chat-row[data-folder-drop="true"] {
-  background: var(--mantine-primary-color-light);
-  box-shadow: inset 0 0 0 1px var(--mantine-primary-color-filled);
-}
-.project-show-all {
-  display: block;
-  padding: 8px;
-  color: var(--muted);
-  font-size: 12px;
-}
-
-/* Sidebar rules moved from style.css. */
-
-#sidebar {
-  width: 256px;
-  flex: 0 0 256px;
-  background: var(--sidebar);
-  border-right: 1px solid var(--line);
-  padding: 22px 12px 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  min-height: 0;
-}
-
-.sidebar-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  flex-shrink: 0;
-  min-width: 0;
-}
-
-.brand {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  padding: 0;
-  flex-shrink: 0;
-  color: var(--text);
-  font-size: 24px;
-  font-weight: 650;
-  text-decoration: none;
-  letter-spacing: -0.3px;
-}
-
-.brand-name {
+.project-tree-layr .project-layr-readiness {
   display: inline-flex;
-  align-items: baseline;
-  gap: 6px;
-  white-space: nowrap;
-  line-height: 32px;
-}
-
-.brand-name strong {
-  font: inherit;
-}
-
-.brand-name > span {
-  font-weight: 400;
+  align-items: center;
+  gap: calc(var(--mantine-spacing-xs) / 2);
+  padding: 0;
+  border: 0;
+  background: none;
   color: var(--muted);
+  font-family: inherit;
+  font-size: var(--mantine-font-size-xs);
+  font-weight: 400;
+  cursor: pointer;
 }
-
-#chat-search {
-  height: 36px;
-  min-height: 36px;
-  border-radius: 8px;
-  background: light-dark(#18244703, #ffffff03);
-  border-color: light-dark(#18244707, #ffffff07);
-  font-size: 12px;
+.project-tree-layr .project-layr-readiness:focus-visible {
+  outline: var(--studio-rail-size) solid var(--mantine-primary-color-filled);
 }
-
-#chat-search:focus {
-  border-color: light-dark(#3e51aa, #6366f1);
+.project-layr-readiness::before {
+  content: "";
+  inline-size: var(--studio-dot-size);
+  block-size: var(--studio-dot-size);
+  border-radius: 50%;
+  background: currentColor;
 }
-
-.chat-scroll {
+.project-layr-readiness[data-state="ready"]::before,
+.project-layr-readiness[data-vault] svg {
+  color: var(--studio-state-unread);
+}
+.project-layr-readiness[data-state="importing"]::before {
+  color: var(--studio-state-working);
+}
+.project-layr-readiness[data-state="not_imported"]::before {
+  background: transparent;
+  outline: calc(var(--mantine-spacing-xs) / 8) solid currentColor;
+}
+.project-layr-readiness[data-vault]::before {
+  display: none;
+}
+.project-layr-readiness[data-state="failed"]::before,
+.project-layr-readiness[data-vault="error"] svg,
+.project-layr-readiness[data-attention="true"] {
+  color: var(--studio-state-answer);
+}
+.mac-sync-conflict-path {
   flex: 1;
-  min-height: 0;
-  overflow: auto;
-  scrollbar-width: thin;
-  scrollbar-color: light-dark(#18244718, #ffffff18) transparent;
-  margin: 0 -4px;
-  padding: 0 4px;
+  min-inline-size: 0;
+  overflow-wrap: anywhere;
+  font-family: var(--mantine-font-family-monospace);
 }
-
-.sidebar-row {
-  position: relative;
-  display: flex;
-  align-items: center;
-  border-radius: 8px;
-  margin: 2px 0;
-}
-
-.sidebar-row:hover {
-  background: light-dark(#18244705, #ffffff05);
-}
-
-.sidebar-row.selected {
-  background: light-dark(#1824470c, #ffffff0c);
-}
-
-.chat-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  width: 100%;
-  min-width: 0;
-  text-align: left;
-  border-radius: 8px;
-  padding: 11px 33px 11px 10px;
-}
-
-.room-row .chat-row {
-  padding: 12px 29px 12px 5px;
-}
-
-.row-copy {
-  flex: 1;
-  min-width: 0;
-}
-
-.row-copy strong {
-  display: block;
-  font-weight: 450;
-  font-size: 13px;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
-
-.room-row .row-copy strong {
-  font-weight: 550;
-}
-
-.row-copy small {
-  display: block;
-  margin-top: 4px;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-  font-size: var(--studio-text-meta);
-}
-
-.row-actions {
-  position: absolute;
-  right: 1px;
-  width: 28px;
-  height: 28px;
-  opacity: 0;
-}
-
-.sidebar-row:hover .row-actions,
-.sidebar-row:focus-within .row-actions,
-.sidebar-row.selected .row-actions {
-  opacity: 1;
-}
-
-.inline-rename {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  background: var(--sidebar);
-  border-radius: 8px;
-}
-
-.inline-rename > :first-child {
-  flex: 1;
-  min-width: 0;
-}
-
 .desktop-inset-titlebar .sidebar-header {
   -webkit-app-region: drag;
+  padding-block: var(--mantine-spacing-md) var(--mantine-spacing-xs);
 }
-
 .desktop-inset-titlebar .sidebar-header :is(button, a) {
   -webkit-app-region: no-drag;
 }
-
-.desktop-inset-titlebar .sidebar-header {
-  height: 60px;
-  padding: 20px 12px 8px;
-}
-
-.desktop-inset-titlebar #sidebar {
-  padding-top: 0;
-}
-
-@media (max-width: 760px) {
-  #sidebar {
-    width: 100%;
-    height: 100dvh;
-  }
-
-  .row-actions {
-    opacity: 1;
-  }
-}
-@media (max-width: 760px) {
-  #sidebar {
-    height: var(--mobile-viewport-height, 100dvh);
-    padding-top: max(
-      16px,
-      var(--mobile-safe-area-top, env(safe-area-inset-top))
-    );
-    padding-bottom: max(
-      16px,
-      var(--mobile-safe-area-bottom, env(safe-area-inset-bottom))
-    );
-  }
-
-  #sidebar .row-actions,
-  #sidebar .project-tree-action {
-    opacity: 1;
-    visibility: visible;
-    width: 40px;
-    height: 40px;
-  }
-
-  #sidebar .chat-row {
-    min-height: 44px;
-  }
-
-  #chat-search {
-    font-size: 16px;
-  }
-}
-#sidebar .brand {
-  font-size: 18px;
-}
-
-#sidebar .sidebar-primary-actions {
-  display: flex;
-  gap: 2px;
-}
-
-#sidebar .sidebar-primary-actions .sidebar-nav-button {
-  width: auto;
-  min-width: 0;
-  padding-inline: 4px;
-}
-
-#sidebar .sidebar-search {
-  flex: 1;
-}
-
-#sidebar .sidebar-search .mantine-Button-label {
-  flex: 1;
-  justify-content: space-between;
-  white-space: nowrap;
-  gap: 8px;
-}
-
-#sidebar .sidebar-new-chat {
-  flex-shrink: 0;
-  width: 34px;
-  height: 34px;
-  color: var(--muted);
-}
-
-#sidebar #chat-list .project-tree-toggle span {
-  min-width: 0;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-#sidebar .sidebar-search kbd {
-  color: var(--muted);
-  font: inherit;
-  font-size: 12px;
-}
-
-#sidebar .row-actions,
-#sidebar .row-pin-action,
-#sidebar .project-tree-action {
-  opacity: 0;
-}
-
-#sidebar .sidebar-row:hover :is(.row-actions, .row-pin-action),
-#sidebar .sidebar-row:focus-within :is(.row-actions, .row-pin-action),
-#sidebar .project-tree-heading:hover .project-tree-action,
-#sidebar .project-tree-heading:focus-within .project-tree-action {
-  opacity: 1;
-}
-
-#sidebar .inline-rename {
-  position: relative;
-  flex-wrap: wrap;
-  width: 100%;
-  padding: 4px;
-  background: var(--sidebar);
-}
-
-#sidebar .inline-rename > :first-child {
-  flex-basis: 100%;
-}
-
-#sidebar .project-chats {
-  padding-left: 18px;
-}
-
-#sidebar .project-folder-chats {
-  padding-left: 18px;
-}
-
-[data-mantine-color-scheme="light"] #sidebar {
-  background: #f1f2f6;
-}
-
-@media (hover: none) {
-  #sidebar :is(.row-actions, .row-pin-action, .project-tree-action) {
-    opacity: 1;
-  }
-}
-#sidebar .project-tree-action[aria-haspopup="menu"] {
-  opacity: 0;
-  pointer-events: none;
-}
-
-#sidebar .project-tree-heading:focus-within .project-tree-action,
-#sidebar .project-tree-heading:hover .project-tree-action,
-#sidebar .sidebar-row:focus-within :is(.row-actions, .row-pin-action) {
-  opacity: 1;
-  pointer-events: auto;
-}
-
-#sidebar #chat-list .project-tree-toggle {
-  margin-right: 28px;
-}
-
-#sidebar
-  #chat-list
-  .project-tree-heading:has(.project-tree-action + .project-tree-action)
-  .project-tree-toggle {
-  margin-right: 54px;
-}
-
-#sidebar #chat-list .chat-row {
-  padding-right: 10px;
-}
-
-#sidebar
-  #chat-list
-  .sidebar-row:is(:hover, :focus-within, .selected)
-  > .chat-row {
-  padding-right: 62px;
-}
-
-@media (hover: none), (max-width: 760px) {
-  #sidebar .project-tree-action[aria-haspopup="menu"] {
-    opacity: 1;
-    pointer-events: auto;
-  }
-
-  #sidebar #chat-list .chat-row {
-    padding-right: 46px;
-  }
-
-  #sidebar #chat-list .project-tree-toggle {
-    margin-right: 42px;
-  }
-
-  #sidebar
-    #chat-list
-    .project-tree-heading:has(.project-tree-action + .project-tree-action)
-    .project-tree-toggle {
-    margin-right: 84px;
-  }
-}
-#sidebar .sidebar-row:has(.inline-rename) > .chat-row {
-  display: none;
-}
-
-#sidebar .sidebar-row.selected :is(.row-actions, .row-pin-action) {
-  opacity: 1;
-  pointer-events: auto;
-}
-
-/* Sidebar rules moved from appearance.css. */
-
-.sidebar-nav {
-  display: grid;
-  gap: 2px;
-  flex-shrink: 0;
-}
-
-.sidebar-nav-button {
-  width: 100%;
-  height: auto;
-  min-height: 34px;
-  padding-block: 4px;
-  padding-inline: 10px;
-  color: var(--text);
-}
-
-.sidebar-nav-button .mantine-Button-inner {
-  justify-content: flex-start;
-}
-
-@media (max-width: 760px) {
-  #sidebar .projects-heading .mantine-ActionIcon-root,
-  #sidebar .project-tree-action,
-  #sidebar .project-chats .row-actions {
-    width: 44px;
-    height: 44px;
-  }
-
-  #sidebar .project-tree-action:has(+ .project-tree-action) {
-    right: 48px;
-  }
-
-  #sidebar .project-tree-toggle {
-    margin-right: 48px;
-  }
-
-  #sidebar
-    .project-tree-heading:has(.project-tree-action + .project-tree-action)
-    .project-tree-toggle {
-    margin-right: 92px;
-  }
-
-  #sidebar .project-chats .chat-row {
-    padding-right: 52px;
-  }
-
-  #sidebar .sidebar-nav-button {
-    height: 44px;
-  }
-}
-.sidebar-shared-chat .mantine-Button-label {
-  display: block;
-  min-width: 0;
-  text-overflow: ellipsis;
-}
-
-/* Sidebar rules moved from workspace-layout.css. */
-
-@media (min-width: 761px) {
-  #sidebar {
-    width: var(--studio-sidebar-width);
-    flex-basis: var(--studio-sidebar-width);
-    padding-inline: 16px;
-  }
-
-  .desktop-inset-titlebar .sidebar-header {
-    padding-inline: 0;
-  }
-}
-/* Sidebar rules moved from studio-preferences.css. */
-
+/* Retain the existing user-selected sidebar typography contract. */
 :root:not([data-studio-typography="original"]) #sidebar {
   font-family: var(--studio-font-family);
   font-size: var(--studio-sidebar-font-size);
 }
-
 :root:not([data-studio-typography="original"])
   #sidebar
   :is(
@@ -831,9 +414,34 @@
   ) {
   font-size: var(--studio-sidebar-font-size);
 }
-
 :root:not([data-studio-typography="original"])
   #sidebar
   :is(button, input, textarea, select) {
   font-family: var(--studio-font-family);
+}
+@media (max-width: 47.5em) {
+  #sidebar {
+    inline-size: 100%;
+    flex-basis: 100%;
+    block-size: 100%;
+    padding-block: var(--mantine-spacing-md);
+  }
+  .chat-row {
+    min-block-size: calc(var(--mantine-spacing-xl) + var(--mantine-spacing-md));
+  }
+  .row-actions,
+  .project-tree-action,
+  .projects-heading .mantine-ActionIcon-root {
+    --ai-size: calc(var(--mantine-spacing-xl) + var(--mantine-spacing-md));
+  }
+  .row-pin-action,
+  .sidebar-row:is(:hover, :focus-within) .row-pin-action {
+    display: none;
+  }
+  .sidebar-nav-button {
+    min-block-size: calc(var(--mantine-spacing-xl) + var(--mantine-spacing-md));
+  }
+  #chat-search {
+    font-size: var(--mantine-font-size-md);
+  }
 }
