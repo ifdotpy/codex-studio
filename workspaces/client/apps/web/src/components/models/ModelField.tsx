@@ -42,12 +42,12 @@ export function ModelField({
     return (
       <NativeSelect
         id={id}
-        label={label}
+        aria-label={label}
         size="sm"
         value={selectedValue}
         data-value={selectedValue}
         disabled={disabled}
-        description={selected?.disabledReason || selected?.description}
+        description={selected?.disabledReason}
         onChange={(event) => onChange(event.currentTarget.value)}
         className="model-select"
         data={[...new Set(options.map((option) => option.provider))].map(
@@ -72,9 +72,6 @@ export function ModelField({
   }
   return (
     <div className="model-field">
-      <Text size="sm" fw={500}>
-        {label}
-      </Text>
       <div
         id={id}
         className="setup-models"
@@ -133,16 +130,6 @@ export function ModelField({
           </Button>
         ))}
       </div>
-      {selected?.description && (
-        <Text
-          size="xs"
-          c="dimmed"
-          className="model-description"
-          title={selected.description}
-        >
-          {selected.description}
-        </Text>
-      )}
       {[
         ...new Set(
           options.map((option) => option.disabledReason).filter(Boolean),

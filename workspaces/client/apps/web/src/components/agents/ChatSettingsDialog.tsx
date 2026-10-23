@@ -107,7 +107,7 @@ export function ChatSettingsDialog(p: Props) {
                   aria-label="Agent role"
                   value={role}
                   onChange={(value) => setRole(value as SetupRole)}
-                  className="settings-role-switch"
+                  className="settings-role-switch model-picker-role-switch"
                   data={roles}
                 />
               )}

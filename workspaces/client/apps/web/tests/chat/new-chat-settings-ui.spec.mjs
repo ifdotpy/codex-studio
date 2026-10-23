@@ -1,6 +1,6 @@
 import { test, expect, spawnFixture, rustUiFixture } from "../playwright.mjs";
 import { chooseSetupValue } from "../fixtures/setup-controls.mjs";
-import { mkdtemp } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -44,18 +44,81 @@ test("new chat controls are inline, save settings and keep the compact composer 
     await expect(
       creation.getByLabel("Main agent model", { exact: true }),
     ).toBeVisible();
+    await expect(creation.getByRole("listbox")).toHaveCount(1);
     await expect(
-      creation.getByLabel("Default subagent model", { exact: true }),
-    ).toBeVisible();
+      creation.getByText("Main agent model", { exact: true }),
+    ).toHaveCount(0);
+    await expect(
+      creation.getByText("Main agent reasoning", { exact: true }),
+    ).toHaveCount(0);
+    await expect(creation.locator(".model-description")).toHaveCount(0);
     await expect(page.getByRole("dialog")).toHaveCount(1);
+    const screenshotDirectory = process.env.EXECUTION_COMPACT_SCREENSHOTS;
+    const measurements = [];
+    if (screenshotDirectory)
+      await mkdir(screenshotDirectory, { recursive: true });
+    for (const [width, height] of [
+      [1440, 900],
+      [390, 844],
+    ]) {
+      for (const scheme of ["light", "dark"]) {
+        await page.setViewportSize({ width, height });
+        await page.emulateMedia({ colorScheme: scheme });
+        await expect(page.locator("html")).toHaveAttribute(
+          "data-mantine-color-scheme",
+          scheme,
+        );
+        const geometry = await creation
+          .getByRole("listbox")
+          .evaluate((node) => {
+            const root = getComputedStyle(document.documentElement);
+            return {
+              picker: node.getBoundingClientRect().width,
+              previous:
+                parseFloat(root.getPropertyValue("--studio-form-max")) *
+                parseFloat(root.fontSize),
+              overflow: document.documentElement.scrollWidth > innerWidth,
+            };
+          });
+        if (width === 1440)
+          expect(geometry.picker).toBeCloseTo(geometry.previous * 0.65, 0);
+        expect(geometry.overflow).toBe(false);
+        measurements.push({ width, scheme, ...geometry });
+        if (screenshotDirectory)
+          await page.screenshot({
+            animations: "disabled",
+            path: join(screenshotDirectory, `new-chat-${width}-${scheme}.png`),
+          });
+      }
+    }
+    if (screenshotDirectory)
+      await writeFile(
+        join(screenshotDirectory, "new-chat-measurements.json"),
+        JSON.stringify(measurements, null, 2),
+      );
+    await page.setViewportSize({ width: 1440, height: 900 });
     await chooseSetupValue(
       creation.getByLabel("Main agent reasoning", { exact: true }),
       "high",
     );
+    const roles = creation.getByRole("radiogroup", {
+      name: "Agent role",
+      exact: true,
+    });
+    await roles.getByText("Workers", { exact: true }).click();
+    await expect(creation.getByRole("listbox")).toHaveCount(1);
+    await expect(
+      creation.getByLabel("Default subagent model", { exact: true }),
+    ).toBeVisible();
     await chooseSetupValue(
       creation.getByLabel("Default subagent reasoning", { exact: true }),
       "medium",
     );
+    await roles.getByText("Lead", { exact: true }).click();
+    await expect(creation.getByRole("listbox")).toHaveCount(1);
+    await expect(
+      creation.getByLabel("Main agent reasoning", { exact: true }),
+    ).toHaveAttribute("data-value", "high");
     const startChat = page.waitForResponse(
       (response) =>
         response.request().method() === "POST" &&

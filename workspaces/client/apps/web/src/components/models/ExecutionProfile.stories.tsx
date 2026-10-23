@@ -1,4 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
+import { expect, within } from "storybook/test";
 import { useState, type ContextType } from "react";
 import { Paper, Stack } from "@mantine/core";
 import { AgentSetupPicker, type SetupRole } from "../agents/AgentSetupPicker";
@@ -99,13 +100,13 @@ function Profile({
         }
         model={model}
         onModel={onModel}
-        modelLabel={shared ? "Model for agent 1" : "Default subagent model"}
+        modelLabel={shared ? "Main agent model" : "Default subagent model"}
         efforts={["low", "medium", "high", "xhigh", "max", "ultra"].map(
           (value) => ({ value, label: value }),
         )}
         effort={effort}
         onEffort={onEffort}
-        effortLabel="Reasoning"
+        effortLabel={shared ? "Main agent reasoning" : "Reasoning"}
         disabled={false}
         fastAvailable={!shared}
         fast={fast}
@@ -119,7 +120,35 @@ function Profile({
 }
 export const AgentSetupSheet: Story = { render: () => <Profile /> };
 export const ManyModels: Story = { render: () => <Profile many /> };
-export const SharedChatPicker: Story = { render: () => <Profile shared /> };
+export const SharedChatPicker: Story = {
+  render: () => <Profile shared />,
+  play: async ({ canvasElement, userEvent }) => {
+    const canvas = within(canvasElement);
+    const model = canvas.getByRole("listbox", { name: "Main agent model" });
+    await expect(model).toBeVisible();
+    await expect(
+      canvas.queryByText("Main agent model"),
+    ).not.toBeInTheDocument();
+    await expect(
+      canvas.queryByText("Main agent reasoning"),
+    ).not.toBeInTheDocument();
+    await expect(
+      canvas.queryByText("General coding and planning."),
+    ).not.toBeInTheDocument();
+    await expect(
+      canvas.getByRole("radiogroup", { name: "Main agent reasoning" }),
+    ).toBeVisible();
+    const rows = within(model);
+    await userEvent.click(rows.getByRole("option", { name: "Sol 6.1" }));
+    await expect(rows.getByRole("option", { name: "Sol 6.1" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    await expect(
+      rows.getByRole("option", { name: "Unavailable model" }),
+    ).toBeDisabled();
+  },
+};
 export const WorkspaceCompact: Story = {
   render: function Compact() {
     const [value, onChange] = useState("gpt-6-astra");
