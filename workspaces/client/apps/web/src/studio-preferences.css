@@ -185,7 +185,8 @@
   display: none;
 }
 
-@media (max-width: 760px) {
+/* layout-query: navigation.inlineMin < */
+@media (width < 761px) {
   :root:not([data-studio-typography="original"])
     #conversation
     #composer
@@ -292,7 +293,8 @@
   color: var(--muted);
   margin: 0;
 }
-@media (max-width: 760px) {
+/* layout-query: navigation.inlineMin < */
+@media (width < 761px) {
   .studio-settings-tabs > .mantine-Tabs-list {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -366,7 +368,8 @@
   padding-top: 16px;
 }
 
-@media (max-width: 760px) {
+/* layout-query: navigation.inlineMin < */
+@media (width < 761px) {
   .studio-appearance-segments span {
     min-height: 44px;
   }

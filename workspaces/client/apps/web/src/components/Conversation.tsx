@@ -1,3 +1,8 @@
+import {
+  isCompactTools,
+  resolveLayoutLength,
+} from "../layout/deriveWorkspaceLayout";
+import { layoutQueries } from "../layout/layout-contract.generated";
 import { MAX_TURN_ATTACHMENTS } from "../generated/sharedValues";
 import { DeliveryMoment } from "../generated/deliveryMoment";
 import { useSendingMessageRemoval } from "./useSendingMessageRemoval";
@@ -174,13 +179,6 @@ function FollowLatest(p: {
   );
 }
 
-const compactToolsBreakpoint = "(max-width: 760px)";
-const compactToolsWorkspaceWidthPx = 900;
-const compactToolsFontThresholdPx = 20;
-const compactToolsMenuMaxWidthPx = 360;
-const compactToolsMenuViewportGutterPx = 8;
-const compactToolsMenuGapPx = 4;
-
 function useCompactHeaderTools() {
   const isCompact = () => {
     const fontSize = Number.parseFloat(
@@ -189,19 +187,18 @@ function useCompactHeaderTools() {
       ),
     );
     const workspaceWidth =
-      document.querySelector<HTMLElement>(".workspace")?.clientWidth ??
-      window.innerWidth;
+      document.querySelector<HTMLElement>(".workspace")?.getBoundingClientRect()
+        .width ?? window.innerWidth;
     return (
-      window.matchMedia(compactToolsBreakpoint).matches ||
-      fontSize >= compactToolsFontThresholdPx ||
-      workspaceWidth < compactToolsWorkspaceWidthPx
+      window.matchMedia(layoutQueries.navigationCompact).matches ||
+      isCompactTools(workspaceWidth, fontSize)
     );
   };
   const [compact, setCompact] = useState(() =>
     typeof window === "undefined" ? false : isCompact(),
   );
   useEffect(() => {
-    const viewport = window.matchMedia(compactToolsBreakpoint);
+    const viewport = window.matchMedia(layoutQueries.navigationCompact);
     const workspace = document.querySelector<HTMLElement>(".workspace");
     const update = () => setCompact(isCompact());
     const preferences = new MutationObserver(update);
@@ -311,7 +308,7 @@ export default function Conversation(p: {
     : undefined;
   const planType =
     typeof rateLimits?.planType === "string" ? rateLimits.planType : undefined;
-  const mobileClient = useMediaQuery("(max-width: 760px)");
+  const mobileClient = useMediaQuery(layoutQueries.navigationCompact);
   const kind = p.room ? "room" : p.legacy ? "legacy" : "agent";
   const compactHeaderTools = useCompactHeaderTools();
   const [headerTools, setHeaderTools] = useState<HTMLElement | null>(null);
@@ -359,6 +356,21 @@ export default function Conversation(p: {
     if (!summary) return;
     const updatePosition = () => {
       const anchor = summary.getBoundingClientRect();
+      const rootFontPx = Number.parseFloat(
+        getComputedStyle(document.documentElement).fontSize,
+      );
+      const compactToolsMenuMaxWidthPx = resolveLayoutLength(
+        "tools.menuMax",
+        rootFontPx,
+      );
+      const compactToolsMenuViewportGutterPx = resolveLayoutLength(
+        "tools.menuGutter",
+        rootFontPx,
+      );
+      const compactToolsMenuGapPx = resolveLayoutLength(
+        "tools.menuGap",
+        rootFontPx,
+      );
       const viewportWidth =
         document.documentElement.clientWidth || window.innerWidth;
       const menuWidth = Math.min(

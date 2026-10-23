@@ -9,18 +9,9 @@ import {
   Menu,
 } from "@mantine/core";
 
-// Mantine defaults put popovers at 300 and overlays at 400. Dialogs opened
-// from a popover sit between them so they own focus and input.
-export const layerZIndex = {
-  app: 100,
-  modal: 200,
-  popover: 300,
-  modalAbovePopover: 350,
-  overlay: 400,
-  max: 9999,
-} as const;
-
-export const modalSizes = { settings: 720 };
+import { layoutValues, layerZIndex } from "./layout/layout-contract.generated";
+export { layerZIndex };
+export const modalSizes = { settings: layoutValues.modal.settings };
 
 export const theme = createTheme({
   primaryColor: "indigo",

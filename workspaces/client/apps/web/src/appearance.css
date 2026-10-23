@@ -191,7 +191,8 @@
 .sidebar-nav-button .mantine-Button-inner {
   justify-content: flex-start;
 }
-@media (max-width: 760px) {
+/* layout-query: navigation.inlineMin < */
+@media (width < 761px) {
   .workspace-header.simple-workspace-header {
     gap: 2px;
     padding: 8px;
@@ -307,7 +308,8 @@
 }
 
 /* Phone controls must work with a finger, including menus and disclosures. */
-@media (max-width: 760px) {
+/* layout-query: navigation.inlineMin < */
+@media (width < 761px) {
   html
     body
     :is(button, summary, [role="option"], [role="tab"]):not(
@@ -494,7 +496,8 @@
   }
 }
 
-@media (min-width: 761px) {
+/* layout-query: navigation.inlineMin >= */
+@media (width >= 761px) {
   .simple-workspace-header :is(.mantine-ActionIcon-root, .mantine-Button-root) {
     height: var(--studio-action-size);
     min-height: var(--studio-action-size);
@@ -817,7 +820,8 @@
   color: var(--mantine-color-dimmed);
   padding: 8px 0;
 }
-@media (max-width: 760px) {
+/* layout-query: navigation.inlineMin < */
+@media (width < 761px) {
   .chat-settings-rows .execution-menu,
   .chat-settings-rows .agent-mode-limit-label input {
     min-height: 44px;

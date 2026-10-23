@@ -1,0 +1,1717 @@
+{
+  "tokens": {
+    "navigation.inlineMin": {
+      "value": 761,
+      "unit": "px",
+      "purpose": "Minimum viewport width for inline navigation"
+    },
+    "sidebar.preferred": {
+      "value": 15,
+      "unit": "rem",
+      "purpose": "Preferred conversation navigation width"
+    },
+    "sidebar.min": {
+      "value": 13,
+      "unit": "rem",
+      "purpose": "Minimum navigation width before header measurement"
+    },
+    "sidebar.drawerMax": {
+      "value": 22.5,
+      "unit": "rem",
+      "purpose": "Maximum navigation drawer width"
+    },
+    "serverSelector.preferred": {
+      "value": 16.875,
+      "unit": "rem",
+      "purpose": "Classic server selector width"
+    },
+    "conversation.min": {
+      "value": 40,
+      "unit": "rem",
+      "purpose": "Reserved conversation width before optional columns"
+    },
+    "conversation.textMax": {
+      "value": 42.5,
+      "unit": "rem",
+      "purpose": "Maximum transcript text width"
+    },
+    "conversation.composerMax": {
+      "value": 53.75,
+      "unit": "rem",
+      "purpose": "Maximum composer and queue width"
+    },
+    "workspacePanel.min": {
+      "value": 22.5,
+      "unit": "rem",
+      "purpose": "Minimum inline Workspace panel width"
+    },
+    "workspacePanel.preferred": {
+      "value": 33.75,
+      "unit": "rem",
+      "purpose": "Preferred inline Workspace panel width"
+    },
+    "workspacePanel.viewportMaxRatio": {
+      "value": 0.7,
+      "unit": "ratio",
+      "purpose": "Maximum panel fraction of viewport"
+    },
+    "workspaceDrawer.defaultMax": {
+      "value": 52.5,
+      "unit": "rem",
+      "purpose": "Default Workspace drawer maximum"
+    },
+    "workspaceDrawer.wideMax": {
+      "value": 65,
+      "unit": "rem",
+      "purpose": "Wide Workspace section drawer maximum"
+    },
+    "team.inlineMin": {
+      "value": 1200,
+      "unit": "px",
+      "purpose": "Compatibility viewport floor for inline team"
+    },
+    "team.preferred": {
+      "value": 15.5,
+      "unit": "rem",
+      "purpose": "Preferred inline team width"
+    },
+    "team.drawerMax": {
+      "value": 18.75,
+      "unit": "rem",
+      "purpose": "Team drawer maximum width"
+    },
+    "terminal.preferred": {
+      "value": 22.5,
+      "unit": "rem",
+      "purpose": "Preferred terminal height"
+    },
+    "terminal.min": {
+      "value": 13.75,
+      "unit": "rem",
+      "purpose": "Nominal terminal minimum height"
+    },
+    "terminal.viewportMaxRatio": {
+      "value": 0.75,
+      "unit": "ratio",
+      "purpose": "Terminal maximum fraction of visible viewport"
+    },
+    "terminal.closedBar": {
+      "value": 2.375,
+      "unit": "rem",
+      "purpose": "Closed terminal bar total height with border"
+    },
+    "tools.compactContainerMax": {
+      "value": 900,
+      "unit": "px",
+      "purpose": "Exclusive compact conversation tools width"
+    },
+    "tools.compactFontMin": {
+      "value": 20,
+      "unit": "px",
+      "purpose": "Inclusive main font size for compact tools"
+    },
+    "tools.teamToggleContainerMax": {
+      "value": 660,
+      "unit": "px",
+      "purpose": "Inclusive team toggle container width"
+    },
+    "tools.menuMax": {
+      "value": 22.5,
+      "unit": "rem",
+      "purpose": "Compact tools menu maximum width"
+    },
+    "tools.menuGutter": {
+      "value": 0.5,
+      "unit": "rem",
+      "purpose": "Compact tools viewport gutter"
+    },
+    "tools.menuGap": {
+      "value": 0.25,
+      "unit": "rem",
+      "purpose": "Compact tools anchor gap"
+    },
+    "controls.touchMin": {
+      "value": 44,
+      "unit": "px",
+      "purpose": "Minimum coarse pointer control size"
+    },
+    "spacing.sidebarInset": {
+      "value": 0.5,
+      "unit": "rem",
+      "purpose": "Navigation surface inset"
+    },
+    "spacing.controlGap": {
+      "value": 0.5,
+      "unit": "rem",
+      "purpose": "Gap between conversation controls"
+    },
+    "spacing.floatingInset": {
+      "value": 0.75,
+      "unit": "rem",
+      "purpose": "Floating surface inset"
+    },
+    "spacing.conversationGutter": {
+      "value": 1.5,
+      "unit": "rem",
+      "purpose": "Conversation desktop edge gutter"
+    },
+    "spacing.compactGutter": {
+      "value": 0.875,
+      "unit": "rem",
+      "purpose": "Conversation compact edge gutter"
+    },
+    "resize.step": {
+      "value": 1,
+      "unit": "rem",
+      "purpose": "Keyboard resize step"
+    },
+    "keyboard.occlusionMin": {
+      "value": 100,
+      "unit": "px",
+      "purpose": "Minimum visible viewport height loss for keyboard"
+    },
+    "viewport.zoomTolerance": {
+      "value": 0.01,
+      "unit": "ratio",
+      "purpose": "Allowed scale error around unzoomed viewport"
+    },
+    "modal.settings": {
+      "value": 720,
+      "unit": "px",
+      "purpose": "Settings modal width cap"
+    },
+    "layers.app": {
+      "value": 100,
+      "unit": "layer",
+      "purpose": "Application layer"
+    },
+    "layers.modal": {
+      "value": 200,
+      "unit": "layer",
+      "purpose": "Mantine modal layer"
+    },
+    "layers.popover": {
+      "value": 300,
+      "unit": "layer",
+      "purpose": "Mantine popover layer"
+    },
+    "layers.modalAbovePopover": {
+      "value": 350,
+      "unit": "layer",
+      "purpose": "Nested dialog above popover"
+    },
+    "layers.overlay": {
+      "value": 400,
+      "unit": "layer",
+      "purpose": "Mantine overlay layer"
+    },
+    "layers.max": {
+      "value": 9999,
+      "unit": "layer",
+      "purpose": "Highest ordinary overlay"
+    },
+    "layers.terminal": {
+      "value": 90,
+      "unit": "layer",
+      "purpose": "Terminal dock layer"
+    },
+    "layers.navigation": {
+      "value": 190,
+      "unit": "layer",
+      "purpose": "Navigation layer"
+    },
+    "layers.navigationToggle": {
+      "value": 201,
+      "unit": "layer",
+      "purpose": "Classic navigation toggle layer"
+    },
+    "layers.emergency": {
+      "value": 2147483647,
+      "unit": "layer",
+      "purpose": "Native emergency error banner exception"
+    },
+    "legacy_appearance.width600": {
+      "value": 600,
+      "unit": "px",
+      "purpose": "Retained appearance width threshold 600px, owned by slice1-contract"
+    },
+    "legacy_appearance.dimension3": {
+      "value": 44,
+      "unit": "px",
+      "purpose": "Retained appearance width threshold 44px, owned by slice1-contract"
+    },
+    "legacy_appearance.dimension7": {
+      "value": 14,
+      "unit": "px",
+      "purpose": "Retained appearance width threshold 14px, owned by slice1-contract"
+    },
+    "legacy_appearance.dimension11": {
+      "value": 240,
+      "unit": "px",
+      "purpose": "Retained appearance width threshold 240px, owned by slice1-contract"
+    },
+    "legacy_appearance.dimension12": {
+      "value": 16,
+      "unit": "px",
+      "purpose": "Retained appearance width threshold 16px, owned by slice1-contract"
+    },
+    "legacy_Analytics.width850": {
+      "value": 850,
+      "unit": "px",
+      "purpose": "Retained Analytics width threshold 850px, owned by slice1-contract"
+    },
+    "legacy_Analytics.width520": {
+      "value": 520,
+      "unit": "px",
+      "purpose": "Retained Analytics width threshold 520px, owned by slice1-contract"
+    },
+    "legacy_Sidebar.width760": {
+      "value": 760,
+      "unit": "px",
+      "purpose": "Retained Sidebar width threshold 760px, owned by slice2-sidebar"
+    },
+    "legacy_Usage.width600": {
+      "value": 600,
+      "unit": "px",
+      "purpose": "Retained Usage width threshold 600px, owned by slice1-contract"
+    },
+    "legacy_account_tiles.width760": {
+      "value": 760,
+      "unit": "px",
+      "purpose": "Retained account_tiles width threshold 760px, owned by slice1-contract"
+    },
+    "legacy_accounts.width600": {
+      "value": 600,
+      "unit": "px",
+      "purpose": "Retained accounts width threshold 600px, owned by slice1-contract"
+    },
+    "legacy_accounts.dimension28": {
+      "value": 220,
+      "unit": "px",
+      "purpose": "Retained accounts width threshold 220px, owned by slice1-contract"
+    },
+    "legacy_ExecutionSettings.width760": {
+      "value": 760,
+      "unit": "px",
+      "purpose": "Retained ExecutionSettings width threshold 760px, owned by slice1-contract"
+    },
+    "legacy_execution_settings.width760": {
+      "value": 760,
+      "unit": "px",
+      "purpose": "Retained execution_settings width threshold 760px, owned by slice1-contract"
+    },
+    "legacy_session_activity.width760": {
+      "value": 760,
+      "unit": "px",
+      "purpose": "Retained session_activity width threshold 760px, owned by slice1-contract"
+    },
+    "legacy_subagent_concurrency_control.width760": {
+      "value": 760,
+      "unit": "px",
+      "purpose": "Retained subagent_concurrency_control width threshold 760px, owned by slice1-contract"
+    },
+    "legacy_chat_controls.width760": {
+      "value": 760,
+      "unit": "px",
+      "purpose": "Retained chat_controls width threshold 760px, owned by slice1-contract"
+    },
+    "legacy_chat_controls.dimension40": {
+      "value": 300,
+      "unit": "px",
+      "purpose": "Retained chat_controls width threshold 300px, owned by slice1-contract"
+    },
+    "legacy_claude_settings.width420": {
+      "value": 420,
+      "unit": "px",
+      "purpose": "Retained claude_settings width threshold 420px, owned by slice1-contract"
+    },
+    "legacy_empty_chat_settings.width760": {
+      "value": 760,
+      "unit": "px",
+      "purpose": "Retained empty_chat_settings width threshold 760px, owned by slice1-contract"
+    },
+    "legacy_message_info.width761": {
+      "value": 761,
+      "unit": "px",
+      "purpose": "Retained message_info width threshold 761px, owned by slice1-contract"
+    },
+    "legacy_message_info.width760": {
+      "value": 760,
+      "unit": "px",
+      "purpose": "Retained message_info width threshold 760px, owned by slice1-contract"
+    },
+    "legacy_message_info.dimension49": {
+      "value": 44,
+      "unit": "px",
+      "purpose": "Retained message_info width threshold 44px, owned by slice1-contract"
+    },
+    "legacy_file_diff.width480": {
+      "value": 480,
+      "unit": "px",
+      "purpose": "Retained file_diff width threshold 480px, owned by slice1-contract"
+    },
+    "legacy_message_queue.width600": {
+      "value": 600,
+      "unit": "px",
+      "purpose": "Retained message_queue width threshold 600px, owned by slice1-contract"
+    },
+    "legacy_model_picker.width360": {
+      "value": 360,
+      "unit": "px",
+      "purpose": "Retained model_picker width threshold 360px, owned by slice1-contract"
+    },
+    "legacy_project_directory_picker.dimension59": {
+      "value": 220,
+      "unit": "px",
+      "purpose": "Retained project_directory_picker width threshold 220px, owned by slice1-contract"
+    },
+    "legacy_project_settings.width760": {
+      "value": 760,
+      "unit": "px",
+      "purpose": "Retained project_settings width threshold 760px, owned by slice1-contract"
+    },
+    "legacy_prompt_navigation.width760": {
+      "value": 760,
+      "unit": "px",
+      "purpose": "Retained prompt_navigation width threshold 760px, owned by slice1-contract"
+    },
+    "legacy_request_questions.width560": {
+      "value": 560,
+      "unit": "px",
+      "purpose": "Retained request_questions width threshold 560px, owned by slice1-contract"
+    },
+    "legacy_request_questions.dimension65": {
+      "value": 20,
+      "unit": "px",
+      "purpose": "Retained request_questions width threshold 20px, owned by slice1-contract"
+    },
+    "legacy_radio_chat.width600": {
+      "value": 600,
+      "unit": "px",
+      "purpose": "Retained radio_chat width threshold 600px, owned by slice1-contract"
+    },
+    "legacy_radio_chat.dimension68": {
+      "value": 900,
+      "unit": "px",
+      "purpose": "Retained radio_chat width threshold 900px, owned by slice1-contract"
+    },
+    "legacy_realtime_voice.dimension70": {
+      "value": 100,
+      "unit": "px",
+      "purpose": "Retained realtime_voice width threshold 100px, owned by slice1-contract"
+    },
+    "legacy_rich_preview.width480": {
+      "value": 480,
+      "unit": "px",
+      "purpose": "Retained rich_preview width threshold 480px, owned by slice1-contract"
+    },
+    "legacy_rich_preview.dimension76": {
+      "value": 44,
+      "unit": "px",
+      "purpose": "Retained rich_preview width threshold 44px, owned by slice1-contract"
+    },
+    "legacy_shared_chat_create.width600": {
+      "value": 600,
+      "unit": "px",
+      "purpose": "Retained shared_chat_create width threshold 600px, owned by slice1-contract"
+    },
+    "legacy_Tasks.width480": {
+      "value": 480,
+      "unit": "px",
+      "purpose": "Retained Tasks width threshold 480px, owned by slice3-workspace-panel"
+    },
+    "legacy_Workspace.width760": {
+      "value": 760,
+      "unit": "px",
+      "purpose": "Retained Workspace width threshold 760px, owned by slice3-workspace-panel"
+    },
+    "legacy_background_controls.width600": {
+      "value": 600,
+      "unit": "px",
+      "purpose": "Retained background_controls width threshold 600px, owned by slice3-workspace-panel"
+    },
+    "legacy_team_chats.width640": {
+      "value": 640,
+      "unit": "px",
+      "purpose": "Retained team_chats width threshold 640px, owned by slice3-workspace-panel"
+    },
+    "legacy_team_chats.width760": {
+      "value": 760,
+      "unit": "px",
+      "purpose": "Retained team_chats width threshold 760px, owned by slice3-workspace-panel"
+    },
+    "legacy_team_chats.dimension89": {
+      "value": 850,
+      "unit": "px",
+      "purpose": "Retained team_chats width threshold 850px, owned by slice3-workspace-panel"
+    },
+    "legacy_sidebar_projects.width760": {
+      "value": 760,
+      "unit": "px",
+      "purpose": "Retained sidebar_projects width threshold 760px, owned by slice2-sidebar"
+    },
+    "legacy_sidebar_projects.dimension94": {
+      "value": 24,
+      "unit": "px",
+      "purpose": "Retained sidebar_projects width threshold 24px, owned by slice2-sidebar"
+    },
+    "legacy_team_navigation.width760": {
+      "value": 760,
+      "unit": "px",
+      "purpose": "Retained team_navigation width threshold 760px, owned by slice1-contract"
+    },
+    "legacy_team_navigation.dimension97": {
+      "value": 44,
+      "unit": "px",
+      "purpose": "Retained team_navigation width threshold 44px, owned by slice1-contract"
+    },
+    "legacy_terminal_dock.width650": {
+      "value": 650,
+      "unit": "px",
+      "purpose": "Retained terminal_dock width threshold 650px, owned by slice4-terminal"
+    },
+    "legacy_terminal_dock.width761": {
+      "value": 761,
+      "unit": "px",
+      "purpose": "Retained terminal_dock width threshold 761px, owned by slice4-terminal"
+    },
+    "legacy_primitives.width760": {
+      "value": 760,
+      "unit": "px",
+      "purpose": "Retained primitives width threshold 760px, owned by slice1-contract"
+    },
+    "legacy_chatPrefetch.width760": {
+      "value": 760,
+      "unit": "px",
+      "purpose": "Retained chatPrefetch width threshold 760px, owned by slice1-contract"
+    },
+    "legacy_style.width640": {
+      "value": 640,
+      "unit": "px",
+      "purpose": "Retained style width threshold 640px, owned by slice1-contract"
+    },
+    "legacy_style.width480": {
+      "value": 480,
+      "unit": "px",
+      "purpose": "Retained style width threshold 480px, owned by slice1-contract"
+    },
+    "legacy_style.width1050": {
+      "value": 1050,
+      "unit": "px",
+      "purpose": "Retained style width threshold 1050px, owned by slice1-contract"
+    },
+    "legacy_style.dimension121": {
+      "value": 44,
+      "unit": "px",
+      "purpose": "Retained style width threshold 44px, owned by slice1-contract"
+    },
+    "legacy_client.width760": {
+      "value": 760,
+      "unit": "px",
+      "purpose": "Retained client width threshold 760px, owned by slice1-contract"
+    },
+    "viewport.rootFontDefault": {
+      "value": 16,
+      "unit": "px",
+      "purpose": "Fallback root font size before a valid browser measurement"
+    },
+    "edgeRail.minInset": {
+      "value": 44,
+      "unit": "px",
+      "purpose": "Minimum side safe inset for the coarse pointer landscape rail"
+    },
+    "edgeRail.statusReserve": {
+      "value": 112,
+      "unit": "px",
+      "purpose": "Clearance below the side strip system status cluster"
+    },
+    "legacy_style.dimension120": {
+      "value": 44,
+      "unit": "px",
+      "purpose": "Retained style width threshold 44px, owned by slice1-contract"
+    }
+  },
+  "queries": {
+    "navigationCompact": {
+      "key": "navigation.inlineMin",
+      "operator": "<"
+    },
+    "navigationInline": {
+      "key": "navigation.inlineMin",
+      "operator": ">="
+    },
+    "teamCompact": {
+      "key": "team.inlineMin",
+      "operator": "<"
+    },
+    "teamInline": {
+      "key": "team.inlineMin",
+      "operator": ">="
+    }
+  },
+  "legacyConsumers": [
+    {
+      "path": "src/appearance.css",
+      "kind": "query",
+      "signature": "@media (max-width: 600px) {",
+      "key": "legacy_appearance.width600",
+      "count": 1,
+      "purpose": "Retained query consumer in appearance",
+      "plannedOwner": "slice1-contract"
+    },
+    {
+      "path": "src/appearance.css",
+      "kind": "dimension",
+      "signature": "{ min-height: 20px",
+      "key": "legacy_appearance.dimension2",
+      "count": 1,
+      "purpose": "Retained dimension consumer in appearance",
+      "plannedOwner": "slice1-contract"
+    },
+    {
+      "path": "src/appearance.css",
+      "kind": "dimension",
+      "signature": "min-width: 44px",
+      "key": "legacy_appearance.dimension3",
+      "count": 1,
+      "purpose": "Retained dimension consumer in appearance",
+      "plannedOwner": "slice1-contract"
+    },
+    {
+      "path": "src/appearance.css",
+      "kind": "dimension",
+      "signature": "; min-height: 44px",
+      "key": "legacy_appearance.dimension4",
+      "count": 1,
+      "purpose": "Retained dimension consumer in appearance",
+      "plannedOwner": "slice1-contract"
+    },
+    {
+      "path": "src/appearance.css",
+      "kind": "dimension",
+      "signature": "{ min-height: 44px",
+      "key": "legacy_appearance.dimension5",
+      "count": 2,
+      "purpose": "Retained dimension consumer in appearance",
+      "plannedOwner": "slice1-contract"
+    },
+    {
+      "path": "src/appearance.css",
+      "kind": "dimension",
+      "signature": "{ width: 44px",
+      "key": "legacy_appearance.dimension6",
+      "count": 4,
+      "purpose": "Retained dimension consumer in appearance",
+      "plannedOwner": "slice1-contract"
+    },
+    {
+      "path": "src/appearance.css",
+      "kind": "dimension",
+      "signature": "; min-width: 14px",
+      "key": "legacy_appearance.dimension7",
+      "count": 1,
+      "purpose": "Retained dimension consumer in appearance",
+      "plannedOwner": "slice1-contract"
+    },
+    {
+      "path": "src/appearance.css",
+      "kind": "dimension",
+      "signature": "; min-height: 100px",
+      "key": "legacy_appearance.dimension8",
+      "count": 1,
+      "purpose": "Retained dimension consumer in appearance",
+      "plannedOwner": "slice1-contract"
+    },
+    {
+      "path": "src/appearance.css",
+      "kind": "dimension",
+      "signature": "; height: 44px",
+      "key": "legacy_appearance.dimension9",
+      "count": 3,
+      "purpose": "Retained dimension consumer in appearance",
+      "plannedOwner": "slice1-contract"
+    },
+    {
+      "path": "src/appearance.css",
+      "kind": "dimension",
+      "signature": "{ height: 44px",
+      "key": "legacy_appearance.dimension10",
+      "count": 1,
+      "purpose": "Retained dimension consumer in appearance",
+      "plannedOwner": "slice1-contract"
+    },
+    {
+      "path": "src/appearance.css",
+      "kind": "dimension",
+      "signature": "; max-width: 240px",
+      "key": "legacy_appearance.dimension11",
+      "count": 1,
+      "purpose": "Retained dimension consumer in appearance",
+      "plannedOwner": "slice1-contract"
+    },
+    {
+      "path": "src/appearance.css",
+      "kind": "dimension",
+      "signature": "{ min-width: 16px",
+      "key": "legacy_appearance.dimension12",
+      "count": 1,
+      "purpose": "Retained dimension consumer in appearance",
+      "plannedOwner": "slice1-contract"
+    },
+    {
+      "path": "src/appearance.css",
+      "kind": "dimension",
+      "signature": "; width: 14px",
+      "key": "legacy_appearance.dimension13",
+      "count": 1,
+      "purpose": "Retained dimension consumer in appearance",
+      "plannedOwner": "slice1-contract"
+    },
+    {
+      "path": "src/components/Analytics.css",
+      "kind": "query",
+      "signature": "@media (max-width: 850px) {",
+      "key": "legacy_Analytics.width850",
+      "count": 1,
+      "purpose": "Retained query consumer in Analytics",
+      "plannedOwner": "slice1-contract"
+    },
+    {
+      "path": "src/components/Analytics.css",
+      "kind": "query",
+      "signature": "@media (max-width: 520px) {",
+      "key": "legacy_Analytics.width520",
+      "count": 1,
+      "purpose": "Retained query consumer in Analytics",
+      "plannedOwner": "slice1-contract"
+    },
+    {
+      "path": "src/components/Analytics.css",
+      "kind": "dimension",
+      "signature": "; min-height: 270px",
+      "key": "legacy_Analytics.dimension16",
+      "count": 1,
+      "purpose": "Retained dimension consumer in Analytics",
+      "plannedOwner": "slice1-contract"
+    },
+    {
+      "path": "src/components/Dictation.css",
+      "kind": "dimension",
+      "signature": "; min-height: 100px",
+      "key": "legacy_Dictation.dimension17",
+      "count": 1,
+      "purpose": "Retained dimension consumer in Dictation",
+      "plannedOwner": "slice1-contract"
+    },
+    {
+      "path": "src/components/Sidebar.tsx",
+      "kind": "query",
+      "signature": "useMediaQuery(\"(max-width: 760px)\"",
+      "key": "legacy_Sidebar.width760",
+      "count": 1,
+      "purpose": "Retained query consumer in Sidebar",
+      "plannedOwner": "slice2-sidebar"
+    },
+    {
+      "path": "src/components/Usage.css",
+      "kind": "query",
+      "signature": "@media (max-width: 600px) {",
+      "key": "legacy_Usage.width600",
+      "count": 4,
+      "purpose": "Retained query consumer in Usage",
+      "plannedOwner": "slice1-contract"
+    },
+    {
+      "path": "src/components/Usage.css",
+      "kind": "dimension",
+      "signature": "; width: 12px",
+      "key": "legacy_Usage.dimension20",
+      "count": 1,
+      "purpose": "Retained dimension consumer in Usage",
+      "plannedOwner": "slice1-contract"
+    },
+    {
+      "path": "src/components/account-tiles.css",
+      "kind": "query",
+      "signature": "@media (max-width: 760px) {",
+      "key": "legacy_account_tiles.width760",
+      "count": 1,
+      "purpose": "Retained query consumer in account_tiles",
+      "plannedOwner": "slice1-contract"
+    },
+    {
+      "path": "src/components/account-tiles.css",
+      "kind": "dimension",
+      "signature": "; height: 44px",
+      "key": "legacy_account_tiles.dimension22",
+      "count": 1,
+      "purpose": "Retained dimension consumer in account_tiles",
+      "plannedOwner": "slice1-contract"
+    },
+    {
+      "path": "src/components/account-tiles.css",
+      "kind": "dimension",
+      "signature": "{ min-height: 44px",
+      "key": "legacy_account_tiles.dimension23",
+      "count": 1,
+      "purpose": "Retained dimension consumer in account_tiles",
+      "plannedOwner": "slice1-contract"
+    },
+    {
+      "path": "src/components/accounts.css",
+      "kind": "query",
+      "signature": "@media (max-width: 600px) {",
+      "key": "legacy_accounts.width600",
+      "count": 5,
+      "purpose": "Retained query consumer in accounts",
+      "plannedOwner": "slice1-contract"
+    },
+    {
+      "path": "src/components/accounts.css",
+      "kind": "dimension",
+      "signature": "{ min-height: 44px",
+      "key": "legacy_accounts.dimension25",
+      "count": 1,
+      "purpose": "Retained dimension consumer in accounts",
+      "plannedOwner": "slice1-contract"
+    },
+    {
+      "path": "src/components/accounts.css",
+      "kind": "dimension",
+      "signature": "{ width: 44px",
+      "key": "legacy_accounts.dimension26",
+      "count": 1,
+      "purpose": "Retained dimension consumer in accounts",
+      "plannedOwner": "slice1-contract"
+    },
+    {
+      "path": "src/components/accounts.css",
+      "kind": "dimension",
+      "signature": "; min-height: 44px",
+      "key": "legacy_accounts.dimension27",
+      "count": 1,
+      "purpose": "Retained dimension consumer in accounts",
+      "plannedOwner": "slice1-contract"
+    },
+    {
+      "path": "src/components/accounts.css",
+      "kind": "dimension",
+      "signature": "; max-width: 220px",
+      "key": "legacy_accounts.dimension28",
+      "count": 1,
+      "purpose": "Retained dimension consumer in accounts",
+      "plannedOwner": "slice1-contract"
+    },
+    {
+      "path": "src/components/agents/ExecutionSettings.tsx",
+      "kind": "query",
+      "signature": "useMediaQuery(\"(max-width: 760px)\"",
+      "key": "legacy_ExecutionSettings.width760",
+      "count": 1,
+      "purpose": "Retained query consumer in ExecutionSettings",
+      "plannedOwner": "slice1-contract"
+    },
+    {
+      "path": "src/components/agents/chat-status.css",
+      "kind": "dimension",
+      "signature": "; width: 16px",
+      "key": "legacy_chat_status.dimension30",
+      "count": 1,
+      "purpose": "Retained dimension consumer in chat_status",
+      "plannedOwner": "slice1-contract"
+    },
+    {
+      "path": "src/components/agents/chat-status.css",
+      "kind": "dimension",
+      "signature": "; height: 16px",
+      "key": "legacy_chat_status.dimension31",
+      "count": 1,
+      "purpose": "Retained dimension consumer in chat_status",
+      "plannedOwner": "slice1-contract"
+    },
+    {
+      "path": "src/components/agents/execution-settings.css",
+      "kind": "query",
+      "signature": "@media (max-width: 760px) {",
+      "key": "legacy_execution_settings.width760",
+      "count": 1,
+      "purpose": "Retained query consumer in execution_settings",
+      "plannedOwner": "slice1-contract"
+    },
+    {
+      "path": "src/components/agents/execution-settings.css",
+      "kind": "dimension",
+      "signature": "{ min-height: 44px",
+      "key": "legacy_execution_settings.dimension33",
+      "count": 2,
+      "purpose": "Retained dimension consumer in execution_settings",
+      "plannedOwner": "slice1-contract"
+    },
+    {
+      "path": "src/components/agents/provider-activity.css",
+      "kind": "layer",
+      "signature": "z-index: 5",
+      "key": "legacy_provider_activity.layer34",
+      "count": 1,
+      "purpose": "Local stacking context",
+      "plannedOwner": "slice1-contract",
+      "scope": "local"
+    },
+    {
+      "path": "src/components/agents/session-activity.css",
+      "kind": "query",
+      "signature": "@media (max-width: 760px) {",
+      "key": "legacy_session_activity.width760",
+      "count": 1,
+      "purpose": "Retained query consumer in session_activity",
+      "plannedOwner": "slice1-contract"
+    },
+    {
+      "path": "src/components/agents/subagent-concurrency-control.css",
+      "kind": "query",
+      "signature": "@media (max-width: 760px) {",
+      "key": "legacy_subagent_concurrency_control.width760",
+      "count": 1,
+      "purpose": "Retained query consumer in subagent_concurrency_control",
+      "plannedOwner": "slice1-contract"
+    },
+    {
+      "path": "src/components/chat-controls.css",
+      "kind": "query",
+      "signature": "@media (max-width: 760px) {",
+      "key": "legacy_chat_controls.width760",
+      "count": 2,
+      "purpose": "Retained query consumer in chat_controls",
+      "plannedOwner": "slice1-contract"
+    },
+    {
+      "path": "src/components/chat-controls.css",
+      "kind": "dimension",
+      "signature": "{ width: 24px",
+      "key": "legacy_chat_controls.dimension38",
+      "count": 1,
+      "purpose": "Retained dimension consumer in chat_controls",
+      "plannedOwner": "slice1-contract"
+    },
+    {
+      "path": "src/components/chat-controls.css",
+      "kind": "dimension",
+      "signature": "; height: 24px",
+      "key": "legacy_chat_controls.dimension39",
+      "count": 1,
+      "purpose": "Retained dimension consumer in chat_controls",
+      "plannedOwner": "slice1-contract"
+    },
+    {
+      "path": "src/components/chat-controls.css",
+      "kind": "dimension",
+      "signature": "; max-width: 300px",
+      "key": "legacy_chat_controls.dimension40",
+      "count": 1,
+      "purpose": "Retained dimension consumer in chat_controls",
+      "plannedOwner": "slice1-contract"
+    },
+    {
+      "path": "src/components/chat-controls.css",
+      "kind": "dimension",
+      "signature": "; max-height: 220px",
+      "key": "legacy_chat_controls.dimension41",
+      "count": 1,
+      "purpose": "Retained dimension consumer in chat_controls",
+      "plannedOwner": "slice1-contract"
+    },
+    {
+      "path": "src/components/claude-settings.css",
+      "kind": "query",
+      "signature": "@media (max-width: 420px) {",
+      "key": "legacy_claude_settings.width420",
+      "count": 1,
+      "purpose": "Retained query consumer in claude_settings",
+      "plannedOwner": "slice1-contract"
+    },
+    {
+      "path": "src/components/claude-settings.css",
+      "kind": "dimension",
+      "signature": "{ min-height: 16px",
+      "key": "legacy_claude_settings.dimension43",
+      "count": 1,
+      "purpose": "Retained dimension consumer in claude_settings",
+      "plannedOwner": "slice1-contract"
+    },
+    {
+      "path": "src/components/conversation/empty-chat-settings.css",
+      "kind": "query",
+      "signature": "@media (max-width: 760px) {",
+      "key": "legacy_empty_chat_settings.width760",
+      "count": 1,
+      "purpose": "Retained query consumer in empty_chat_settings",
+      "plannedOwner": "slice1-contract"
+    },
+    {
+      "path": "src/components/conversation/empty-chat-settings.css",
+      "kind": "dimension",
+      "signature": "; min-height: 44px",
+      "key": "legacy_empty_chat_settings.dimension45",
+      "count": 1,
+      "purpose": "Retained dimension consumer in empty_chat_settings",
+      "plannedOwner": "slice1-contract"
+    },
+    {
+      "path": "src/components/conversation/empty-chat-settings.css",
+      "kind": "dimension",
+      "signature": "{ min-height: 44px",
+      "key": "legacy_empty_chat_settings.dimension46",
+      "count": 1,
+      "purpose": "Retained dimension consumer in empty_chat_settings",
+      "plannedOwner": "slice1-contract"
+    },
+    {
+      "path": "src/components/conversation/transcript/message-info.css",
+      "kind": "query",
+      "signature": "@media (min-width: 761px) and (hover: hover) and (pointer: fine) {",
+      "key": "legacy_message_info.width761",
+      "count": 1,
+      "purpose": "Retained query consumer in message_info",
+      "plannedOwner": "slice1-contract"
+    },
+    {
+      "path": "src/components/conversation/transcript/message-info.css",
+      "kind": "query",
+      "signature": "@media (max-width: 760px), (pointer: coarse) {",
+      "key": "legacy_message_info.width760",
+      "count": 1,
+      "purpose": "Retained query consumer in message_info",
+      "plannedOwner": "slice1-contract"
+    },
+    {
+      "path": "src/components/conversation/transcript/message-info.css",
+      "kind": "dimension",
+      "signature": "{ min-width: 44px",
+      "key": "legacy_message_info.dimension49",
+      "count": 1,
+      "purpose": "Retained dimension consumer in message_info",
+      "plannedOwner": "slice1-contract"
+    },
+    {
+      "path": "src/components/conversation/transcript/message-info.css",
+      "kind": "dimension",
+      "signature": "; min-height: 44px",
+      "key": "legacy_message_info.dimension50",
+      "count": 1,
+      "purpose": "Retained dimension consumer in message_info",
+      "plannedOwner": "slice1-contract"
+    },
+    {
+      "path": "src/components/conversation/transcript/reasoning-duration.css",
+      "kind": "dimension",
+      "signature": "; min-height: 24px",
+      "key": "legacy_reasoning_duration.dimension51",
+      "count": 1,
+      "purpose": "Retained dimension consumer in reasoning_duration",
+      "plannedOwner": "slice1-contract"
+    },
+    {
+      "path": "src/components/conversation/transcript/selection-quote.css",
+      "kind": "layer",
+      "signature": "z-index: 220",
+      "key": "legacy_selection_quote.layer52",
+      "count": 1,
+      "purpose": "Retained layer consumer in selection_quote",
+      "plannedOwner": "slice1-contract",
+      "scope": "global"
+    },
+    {
+      "path": "src/components/conversation/transcript/turn-history.css",
+      "kind": "dimension",
+      "signature": "{ height: 8px",
+      "key": "legacy_turn_history.dimension53",
+      "count": 1,
+      "purpose": "Retained dimension consumer in turn_history",
+      "plannedOwner": "slice1-contract"
+    },
+    {
+      "path": "src/components/file-diff.css",
+      "kind": "query",
+      "signature": "@media (max-width: 480px) {",
+      "key": "legacy_file_diff.width480",
+      "count": 1,
+      "purpose": "Retained query consumer in file_diff",
+      "plannedOwner": "slice1-contract"
+    },
+    {
+      "path": "src/components/message-queue.css",
+      "kind": "query",
+      "signature": "@media (max-width: 600px) {",
+      "key": "legacy_message_queue.width600",
+      "count": 1,
+      "purpose": "Retained query consumer in message_queue",
+      "plannedOwner": "slice1-contract"
+    },
+    {
+      "path": "src/components/message-queue.css",
+      "kind": "dimension",
+      "signature": "; min-height: 24px",
+      "key": "legacy_message_queue.dimension56",
+      "count": 1,
+      "purpose": "Retained dimension consumer in message_queue",
+      "plannedOwner": "slice1-contract"
+    },
+    {
+      "path": "src/components/message-queue.css",
+      "kind": "dimension",
+      "signature": "; width: 24px",
+      "key": "legacy_message_queue.dimension57",
+      "count": 1,
+      "purpose": "Retained dimension consumer in message_queue",
+      "plannedOwner": "slice1-contract"
+    },
+    {
+      "path": "src/components/model-picker.css",
+      "kind": "query",
+      "signature": "@media (max-width: 360px) {",
+      "key": "legacy_model_picker.width360",
+      "count": 1,
+      "purpose": "Retained query consumer in model_picker",
+      "plannedOwner": "slice1-contract"
+    },
+    {
+      "path": "src/components/project-directory-picker.css",
+      "kind": "dimension",
+      "signature": "{ max-width: 220px",
+      "key": "legacy_project_directory_picker.dimension59",
+      "count": 1,
+      "purpose": "Retained dimension consumer in project_directory_picker",
+      "plannedOwner": "slice1-contract"
+    },
+    {
+      "path": "src/components/project-settings.css",
+      "kind": "query",
+      "signature": "@media (max-width: 760px) {",
+      "key": "legacy_project_settings.width760",
+      "count": 1,
+      "purpose": "Retained query consumer in project_settings",
+      "plannedOwner": "slice1-contract"
+    },
+    {
+      "path": "src/components/prompt-navigation.css",
+      "kind": "query",
+      "signature": "@media (max-width: 760px) {",
+      "key": "legacy_prompt_navigation.width760",
+      "count": 1,
+      "purpose": "Retained query consumer in prompt_navigation",
+      "plannedOwner": "slice1-contract"
+    },
+    {
+      "path": "src/components/questions/question-card.css",
+      "kind": "dimension",
+      "signature": "; width: 14px",
+      "key": "legacy_question_card.dimension62",
+      "count": 1,
+      "purpose": "Retained dimension consumer in question_card",
+      "plannedOwner": "slice1-contract"
+    },
+    {
+      "path": "src/components/questions/request-questions.css",
+      "kind": "query",
+      "signature": "@media (max-width: 560px) {",
+      "key": "legacy_request_questions.width560",
+      "count": 2,
+      "purpose": "Retained query consumer in request_questions",
+      "plannedOwner": "slice1-contract"
+    },
+    {
+      "path": "src/components/questions/request-questions.css",
+      "kind": "layer",
+      "signature": "z-index: 1",
+      "key": "legacy_request_questions.layer64",
+      "count": 1,
+      "purpose": "Local stacking context",
+      "plannedOwner": "slice1-contract",
+      "scope": "local"
+    },
+    {
+      "path": "src/components/questions/request-questions.css",
+      "kind": "dimension",
+      "signature": "; min-width: 20px",
+      "key": "legacy_request_questions.dimension65",
+      "count": 1,
+      "purpose": "Retained dimension consumer in request_questions",
+      "plannedOwner": "slice1-contract"
+    },
+    {
+      "path": "src/components/questions/request-questions.css",
+      "kind": "dimension",
+      "signature": "; height: 20px",
+      "key": "legacy_request_questions.dimension66",
+      "count": 1,
+      "purpose": "Retained dimension consumer in request_questions",
+      "plannedOwner": "slice1-contract"
+    },
+    {
+      "path": "src/components/radio-chat.css",
+      "kind": "query",
+      "signature": "@media (max-width: 600px) {",
+      "key": "legacy_radio_chat.width600",
+      "count": 1,
+      "purpose": "Retained query consumer in radio_chat",
+      "plannedOwner": "slice1-contract"
+    },
+    {
+      "path": "src/components/radio-chat.css",
+      "kind": "dimension",
+      "signature": "; max-width: 900px",
+      "key": "legacy_radio_chat.dimension68",
+      "count": 1,
+      "purpose": "Retained dimension consumer in radio_chat",
+      "plannedOwner": "slice1-contract"
+    },
+    {
+      "path": "src/components/realtime-voice.css",
+      "kind": "dimension",
+      "signature": "{ max-height: 220px",
+      "key": "legacy_realtime_voice.dimension69",
+      "count": 1,
+      "purpose": "Retained dimension consumer in realtime_voice",
+      "plannedOwner": "slice1-contract"
+    },
+    {
+      "path": "src/components/realtime-voice.css",
+      "kind": "dimension",
+      "signature": "; min-width: 100px",
+      "key": "legacy_realtime_voice.dimension70",
+      "count": 1,
+      "purpose": "Retained dimension consumer in realtime_voice",
+      "plannedOwner": "slice1-contract"
+    },
+    {
+      "path": "src/components/rich-preview.css",
+      "kind": "query",
+      "signature": "@media (max-width: 480px) {",
+      "key": "legacy_rich_preview.width480",
+      "count": 1,
+      "purpose": "Retained query consumer in rich_preview",
+      "plannedOwner": "slice1-contract"
+    },
+    {
+      "path": "src/components/rich-preview.css",
+      "kind": "dimension",
+      "signature": "; height: 360px",
+      "key": "legacy_rich_preview.dimension72",
+      "count": 1,
+      "purpose": "Retained dimension consumer in rich_preview",
+      "plannedOwner": "slice1-contract"
+    },
+    {
+      "path": "src/components/rich-preview.css",
+      "kind": "dimension",
+      "signature": "; max-height: 480px",
+      "key": "legacy_rich_preview.dimension73",
+      "count": 1,
+      "purpose": "Retained dimension consumer in rich_preview",
+      "plannedOwner": "slice1-contract"
+    },
+    {
+      "path": "src/components/rich-preview.css",
+      "kind": "dimension",
+      "signature": "{ height: 300px",
+      "key": "legacy_rich_preview.dimension74",
+      "count": 1,
+      "purpose": "Retained dimension consumer in rich_preview",
+      "plannedOwner": "slice1-contract"
+    },
+    {
+      "path": "src/components/rich-preview.css",
+      "kind": "dimension",
+      "signature": "; max-height: 360px",
+      "key": "legacy_rich_preview.dimension75",
+      "count": 2,
+      "purpose": "Retained dimension consumer in rich_preview",
+      "plannedOwner": "slice1-contract"
+    },
+    {
+      "path": "src/components/rich-preview.css",
+      "kind": "dimension",
+      "signature": "; min-width: 44px",
+      "key": "legacy_rich_preview.dimension76",
+      "count": 1,
+      "purpose": "Retained dimension consumer in rich_preview",
+      "plannedOwner": "slice1-contract"
+    },
+    {
+      "path": "src/components/rich-preview.css",
+      "kind": "dimension",
+      "signature": "; min-height: 44px",
+      "key": "legacy_rich_preview.dimension77",
+      "count": 1,
+      "purpose": "Retained dimension consumer in rich_preview",
+      "plannedOwner": "slice1-contract"
+    },
+    {
+      "path": "src/components/shared-chat-create.css",
+      "kind": "query",
+      "signature": "@media (max-width: 600px) {",
+      "key": "legacy_shared_chat_create.width600",
+      "count": 1,
+      "purpose": "Retained query consumer in shared_chat_create",
+      "plannedOwner": "slice1-contract"
+    },
+    {
+      "path": "src/components/shared-chat-create.css",
+      "kind": "dimension",
+      "signature": "{ min-height: 44px",
+      "key": "legacy_shared_chat_create.dimension79",
+      "count": 2,
+      "purpose": "Retained dimension consumer in shared_chat_create",
+      "plannedOwner": "slice1-contract"
+    },
+    {
+      "path": "src/components/shell/Tasks.css",
+      "kind": "query",
+      "signature": "@media (max-width: 480px) {",
+      "key": "legacy_Tasks.width480",
+      "count": 1,
+      "purpose": "Retained query consumer in Tasks",
+      "plannedOwner": "slice3-workspace-panel"
+    },
+    {
+      "path": "src/components/shell/Tasks.css",
+      "kind": "dimension",
+      "signature": "; max-height: 360px",
+      "key": "legacy_Tasks.dimension81",
+      "count": 1,
+      "purpose": "Retained dimension consumer in Tasks",
+      "plannedOwner": "slice3-workspace-panel"
+    },
+    {
+      "path": "src/components/shell/Workspace.css",
+      "kind": "query",
+      "signature": "@media (max-width: 760px) {",
+      "key": "legacy_Workspace.width760",
+      "count": 4,
+      "purpose": "Retained query consumer in Workspace",
+      "plannedOwner": "slice3-workspace-panel"
+    },
+    {
+      "path": "src/components/shell/Workspace.css",
+      "kind": "layer",
+      "signature": "z-index: 2",
+      "key": "legacy_Workspace.layer83",
+      "count": 1,
+      "purpose": "Local stacking context",
+      "plannedOwner": "slice3-workspace-panel",
+      "scope": "local"
+    },
+    {
+      "path": "src/components/shell/Workspace.css",
+      "kind": "dimension",
+      "signature": "; max-height: 420px",
+      "key": "legacy_Workspace.dimension84",
+      "count": 1,
+      "purpose": "Retained dimension consumer in Workspace",
+      "plannedOwner": "slice3-workspace-panel"
+    },
+    {
+      "path": "src/components/shell/background-controls.css",
+      "kind": "query",
+      "signature": "@media (max-width: 600px) {",
+      "key": "legacy_background_controls.width600",
+      "count": 1,
+      "purpose": "Retained query consumer in background_controls",
+      "plannedOwner": "slice3-workspace-panel"
+    },
+    {
+      "path": "src/components/shell/messages/peer-teams.css",
+      "kind": "dimension",
+      "signature": "; max-height: 220px",
+      "key": "legacy_peer_teams.dimension86",
+      "count": 1,
+      "purpose": "Retained dimension consumer in peer_teams",
+      "plannedOwner": "slice3-workspace-panel"
+    },
+    {
+      "path": "src/components/shell/messages/team-chats.css",
+      "kind": "query",
+      "signature": "@media (max-width: 640px) {",
+      "key": "legacy_team_chats.width640",
+      "count": 4,
+      "purpose": "Retained query consumer in team_chats",
+      "plannedOwner": "slice3-workspace-panel"
+    },
+    {
+      "path": "src/components/shell/messages/team-chats.css",
+      "kind": "query",
+      "signature": "@media (max-width: 760px) {",
+      "key": "legacy_team_chats.width760",
+      "count": 1,
+      "purpose": "Retained query consumer in team_chats",
+      "plannedOwner": "slice3-workspace-panel"
+    },
+    {
+      "path": "src/components/shell/messages/team-chats.css",
+      "kind": "dimension",
+      "signature": "{ max-width: 850px",
+      "key": "legacy_team_chats.dimension89",
+      "count": 1,
+      "purpose": "Retained dimension consumer in team_chats",
+      "plannedOwner": "slice3-workspace-panel"
+    },
+    {
+      "path": "src/components/sidebar-projects.css",
+      "kind": "query",
+      "signature": "@media (max-width: 760px) {",
+      "key": "legacy_sidebar_projects.width760",
+      "count": 1,
+      "purpose": "Retained query consumer in sidebar_projects",
+      "plannedOwner": "slice2-sidebar"
+    },
+    {
+      "path": "src/components/sidebar-projects.css",
+      "kind": "query",
+      "signature": "@media (hover: none), (max-width: 760px) {",
+      "key": "legacy_sidebar_projects.width760",
+      "count": 2,
+      "purpose": "Retained query consumer in sidebar_projects",
+      "plannedOwner": "slice2-sidebar"
+    },
+    {
+      "path": "src/components/sidebar-projects.css",
+      "kind": "layer",
+      "signature": "z-index: 1",
+      "key": "legacy_sidebar_projects.layer92",
+      "count": 1,
+      "purpose": "Local stacking context",
+      "plannedOwner": "slice2-sidebar",
+      "scope": "local"
+    },
+    {
+      "path": "src/components/sidebar-projects.css",
+      "kind": "dimension",
+      "signature": "; width: 24px",
+      "key": "legacy_sidebar_projects.dimension93",
+      "count": 1,
+      "purpose": "Retained dimension consumer in sidebar_projects",
+      "plannedOwner": "slice2-sidebar"
+    },
+    {
+      "path": "src/components/sidebar-projects.css",
+      "kind": "dimension",
+      "signature": "; min-width: 24px",
+      "key": "legacy_sidebar_projects.dimension94",
+      "count": 1,
+      "purpose": "Retained dimension consumer in sidebar_projects",
+      "plannedOwner": "slice2-sidebar"
+    },
+    {
+      "path": "src/components/sidebar-projects.css",
+      "kind": "dimension",
+      "signature": "; height: 24px",
+      "key": "legacy_sidebar_projects.dimension95",
+      "count": 1,
+      "purpose": "Retained dimension consumer in sidebar_projects",
+      "plannedOwner": "slice2-sidebar"
+    },
+    {
+      "path": "src/components/team-navigation.css",
+      "kind": "query",
+      "signature": "@media (hover: none), (pointer: coarse), (max-width: 760px) {",
+      "key": "legacy_team_navigation.width760",
+      "count": 1,
+      "purpose": "Retained query consumer in team_navigation",
+      "plannedOwner": "slice1-contract"
+    },
+    {
+      "path": "src/components/team-navigation.css",
+      "kind": "dimension",
+      "signature": "; min-width: 44px",
+      "key": "legacy_team_navigation.dimension97",
+      "count": 1,
+      "purpose": "Retained dimension consumer in team_navigation",
+      "plannedOwner": "slice1-contract"
+    },
+    {
+      "path": "src/components/team-navigation.css",
+      "kind": "dimension",
+      "signature": "; min-height: 44px",
+      "key": "legacy_team_navigation.dimension98",
+      "count": 1,
+      "purpose": "Retained dimension consumer in team_navigation",
+      "plannedOwner": "slice1-contract"
+    },
+    {
+      "path": "src/components/terminal-dock.css",
+      "kind": "query",
+      "signature": "@media (max-width: 650px) {",
+      "key": "legacy_terminal_dock.width650",
+      "count": 1,
+      "purpose": "Retained query consumer in terminal_dock",
+      "plannedOwner": "slice4-terminal"
+    },
+    {
+      "path": "src/components/terminal-dock.css",
+      "kind": "query",
+      "signature": "@media (min-width: 761px) {",
+      "key": "legacy_terminal_dock.width761",
+      "count": 3,
+      "purpose": "Retained query consumer in terminal_dock",
+      "plannedOwner": "slice4-terminal"
+    },
+    {
+      "path": "src/components/terminal-dock.css",
+      "kind": "layer",
+      "signature": "z-index: 90",
+      "key": "legacy_terminal_dock.layer101",
+      "count": 1,
+      "purpose": "Retained layer consumer in terminal_dock",
+      "plannedOwner": "slice4-terminal",
+      "scope": "global"
+    },
+    {
+      "path": "src/components/terminal-dock.css",
+      "kind": "layer",
+      "signature": "z-index: 2",
+      "key": "legacy_terminal_dock.layer102",
+      "count": 1,
+      "purpose": "Local stacking context",
+      "plannedOwner": "slice4-terminal",
+      "scope": "local"
+    },
+    {
+      "path": "src/components/ui/primitives.css",
+      "kind": "query",
+      "signature": "@media (max-width: 760px) {",
+      "key": "legacy_primitives.width760",
+      "count": 1,
+      "purpose": "Retained query consumer in primitives",
+      "plannedOwner": "slice1-contract"
+    },
+    {
+      "path": "src/hooks/chatPrefetch.ts",
+      "kind": "query",
+      "signature": "matchMedia(\"(max-width: 760px)\"",
+      "key": "legacy_chatPrefetch.width760",
+      "count": 1,
+      "purpose": "Retained query consumer in chatPrefetch",
+      "plannedOwner": "slice1-contract"
+    },
+    {
+      "path": "src/native/close.ts",
+      "kind": "layer",
+      "signature": "z-index:2147483647",
+      "key": "legacy_close.layer105",
+      "count": 2,
+      "purpose": "Native emergency error banner, explicit exception",
+      "plannedOwner": "slice1-contract",
+      "scope": "emergency"
+    },
+    {
+      "path": "src/servers/servers.css",
+      "kind": "layer",
+      "signature": "z-index: 2",
+      "key": "legacy_servers.layer106",
+      "count": 1,
+      "purpose": "Local stacking context",
+      "plannedOwner": "slice1-contract",
+      "scope": "local"
+    },
+    {
+      "path": "src/servers/servers.css",
+      "kind": "layer",
+      "signature": "z-index: 1",
+      "key": "legacy_servers.layer107",
+      "count": 1,
+      "purpose": "Local stacking context",
+      "plannedOwner": "slice1-contract",
+      "scope": "local"
+    },
+    {
+      "path": "src/servers/servers.css",
+      "kind": "layer",
+      "signature": "z-index: 3",
+      "key": "legacy_servers.layer108",
+      "count": 1,
+      "purpose": "Local stacking context",
+      "plannedOwner": "slice1-contract",
+      "scope": "local"
+    },
+    {
+      "path": "src/servers/sidebar-status.css",
+      "kind": "dimension",
+      "signature": "; min-height: 14px",
+      "key": "legacy_sidebar_status.dimension109",
+      "count": 1,
+      "purpose": "Retained dimension consumer in sidebar_status",
+      "plannedOwner": "slice2-sidebar"
+    },
+    {
+      "path": "src/servers/sidebar-status.css",
+      "kind": "dimension",
+      "signature": "; height: 14px",
+      "key": "legacy_sidebar_status.dimension110",
+      "count": 1,
+      "purpose": "Retained dimension consumer in sidebar_status",
+      "plannedOwner": "slice2-sidebar"
+    },
+    {
+      "path": "src/studio-preferences.css",
+      "kind": "dimension",
+      "signature": "{ min-height: 44px",
+      "key": "legacy_studio_preferences.dimension111",
+      "count": 1,
+      "purpose": "Retained dimension consumer in studio_preferences",
+      "plannedOwner": "slice1-contract"
+    },
+    {
+      "path": "src/style.css",
+      "kind": "query",
+      "signature": "@media (max-width: 640px) {",
+      "key": "legacy_style.width640",
+      "count": 1,
+      "purpose": "Retained query consumer in style",
+      "plannedOwner": "slice1-contract"
+    },
+    {
+      "path": "src/style.css",
+      "kind": "query",
+      "signature": "@media (max-width: 480px) {",
+      "key": "legacy_style.width480",
+      "count": 1,
+      "purpose": "Retained query consumer in style",
+      "plannedOwner": "slice1-contract"
+    },
+    {
+      "path": "src/style.css",
+      "kind": "query",
+      "signature": "@media (max-width: 1050px) {",
+      "key": "legacy_style.width1050",
+      "count": 1,
+      "purpose": "Retained query consumer in style",
+      "plannedOwner": "slice1-contract"
+    },
+    {
+      "path": "src/style.css",
+      "kind": "layer",
+      "signature": "z-index: 2",
+      "key": "legacy_style.layer115",
+      "count": 2,
+      "purpose": "Local stacking context",
+      "plannedOwner": "slice1-contract",
+      "scope": "local"
+    },
+    {
+      "path": "src/style.css",
+      "kind": "dimension",
+      "signature": "{ min-height: 38px",
+      "key": "legacy_style.dimension116",
+      "count": 1,
+      "purpose": "Retained dimension consumer in style",
+      "plannedOwner": "slice1-contract"
+    },
+    {
+      "path": "src/style.css",
+      "kind": "dimension",
+      "signature": "; max-height: 100px",
+      "key": "legacy_style.dimension117",
+      "count": 1,
+      "purpose": "Retained dimension consumer in style",
+      "plannedOwner": "slice1-contract"
+    },
+    {
+      "path": "src/style.css",
+      "kind": "dimension",
+      "signature": "; min-height: 24px",
+      "key": "legacy_style.dimension118",
+      "count": 1,
+      "purpose": "Retained dimension consumer in style",
+      "plannedOwner": "slice1-contract"
+    },
+    {
+      "path": "src/style.css",
+      "kind": "dimension",
+      "signature": "{ min-height: 44px",
+      "key": "legacy_style.dimension119",
+      "count": 1,
+      "purpose": "Retained dimension consumer in style",
+      "plannedOwner": "slice1-contract"
+    },
+    {
+      "path": "src/style.css",
+      "kind": "dimension",
+      "signature": "{ min-width: 44px",
+      "key": "legacy_style.dimension120",
+      "count": 1,
+      "purpose": "Retained dimension consumer in style",
+      "plannedOwner": "slice1-contract"
+    },
+    {
+      "path": "src/style.css",
+      "kind": "dimension",
+      "signature": "; min-height: 44px",
+      "key": "legacy_style.dimension121",
+      "count": 1,
+      "purpose": "Retained dimension consumer in style",
+      "plannedOwner": "slice1-contract"
+    },
+    {
+      "path": "src/style.css",
+      "kind": "dimension",
+      "signature": "{ max-height: 100px",
+      "key": "legacy_style.dimension122",
+      "count": 1,
+      "purpose": "Retained dimension consumer in style",
+      "plannedOwner": "slice1-contract"
+    },
+    {
+      "path": "src/sync/client.ts",
+      "kind": "query",
+      "signature": "matchMedia(\"(max-width: 760px)\"",
+      "key": "legacy_client.width760",
+      "count": 1,
+      "purpose": "Retained query consumer in client",
+      "plannedOwner": "slice1-contract"
+    },
+    {
+      "path": "src/workspace-layout.css",
+      "kind": "dimension",
+      "signature": "{ width: 44px",
+      "key": "legacy_workspace_layout.dimension124",
+      "count": 1,
+      "purpose": "Retained dimension consumer in workspace_layout",
+      "plannedOwner": "slice1-contract"
+    },
+    {
+      "path": "src/workspace-layout.css",
+      "kind": "dimension",
+      "signature": "; height: 44px",
+      "key": "legacy_workspace_layout.dimension125",
+      "count": 1,
+      "purpose": "Retained dimension consumer in workspace_layout",
+      "plannedOwner": "slice1-contract"
+    },
+    {
+      "path": "src/workspace-layout.css",
+      "kind": "dimension",
+      "signature": "; height: 24px",
+      "key": "legacy_workspace_layout.dimension126",
+      "count": 1,
+      "purpose": "Retained dimension consumer in workspace_layout",
+      "plannedOwner": "slice1-contract"
+    }
+  ],
+  "witnessViewports": [
+    {
+      "width": 951,
+      "height": 669,
+      "safeInsets": {
+        "top": 0,
+        "right": 84,
+        "bottom": 34,
+        "left": 0
+      }
+    }
+  ],
+  "safeAreaPolicy": {
+    "bottomInteractive": "exclude",
+    "bottomScrollBackground": "extend",
+    "bottomScrollPadding": "safe-inset-bottom"
+  }
+}

@@ -1,3 +1,4 @@
+import { layoutQueries } from "../layout/layout-contract.generated";
 import { ScreenContext } from "./ScreenContext";
 import {
   createScreenChannel,
@@ -197,7 +198,7 @@ function MultiServerShell({
   >({});
   const [shellSidebarWidth, setShellSidebarWidth] = useState(0);
   const toggleSidebar = useCallback(() => {
-    if (window.matchMedia("(max-width: 760px)").matches)
+    if (window.matchMedia(layoutQueries.navigationCompact).matches)
       setMobileOpen((old) => !old);
     else setSidebarHidden((old) => !old);
   }, []);
@@ -843,7 +844,7 @@ function MultiServerShell({
     </Modal>
   );
   useEffect(() => {
-    const narrow = window.matchMedia("(max-width: 760px)");
+    const narrow = window.matchMedia(layoutQueries.navigationCompact);
     let observed: Element | null = null;
     const measure = () => {
       const sidebar = document.querySelector(".multi-server-shell > #sidebar");

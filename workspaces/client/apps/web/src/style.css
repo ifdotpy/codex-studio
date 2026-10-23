@@ -1,7 +1,8 @@
+@import "./layout/layout-contract.generated.css";
 @import "./studio-theme.css";
 
 :root {
-  --studio-chat-max: 760px;
+  --studio-chat-max: var(--layout-conversation-composer-max);
 }
 
 * {
@@ -17,7 +18,8 @@ body {
   overflow: hidden;
 }
 /* The desktop shell never scrolls; focus must not shift it out of view. */
-@media (min-width: 761px) {
+/* layout-query: navigation.inlineMin >= */
+@media (width >= 761px) {
   html,
   body {
     overflow: hidden;
@@ -86,8 +88,8 @@ p {
 
 /* Navigation. Lead conversations deliberately have no messenger metadata. */
 #sidebar {
-  width: 256px;
-  flex: 0 0 256px;
+  width: var(--layout-sidebar-preferred);
+  flex: 0 0 var(--layout-sidebar-preferred);
   background: var(--sidebar);
   border-right: 1px solid var(--line);
   padding: 22px 12px 12px;
@@ -284,7 +286,8 @@ p {
 .desktop-inset-titlebar #sidebar {
   padding-top: 0;
 }
-@media (max-width: 760px) {
+/* layout-query: navigation.inlineMin < */
+@media (width < 761px) {
   .desktop-inset-titlebar .workspace-header {
     padding-left: 96px;
   }
@@ -331,7 +334,7 @@ p {
 }
 #toast {
   position: fixed;
-  z-index: 400;
+  z-index: var(--layout-layers-overlay);
   bottom: 24px;
   left: 50%;
   transform: translateX(-50%);
@@ -729,8 +732,8 @@ p {
 
 /* Team: compact rows, with independent scroll for dozens of workers. */
 #team {
-  width: 248px;
-  flex: 0 0 248px;
+  width: var(--layout-team-preferred);
+  flex: 0 0 var(--layout-team-preferred);
   display: flex;
   flex-direction: column;
   min-height: 0;
@@ -968,7 +971,8 @@ p {
   margin: 4px 0 12px;
 }
 
-@media (max-width: 1199px) {
+/* layout-query: team.inlineMin < */
+@media (width < 1200px) {
   #team-toggle,
   #team-close {
     display: inline-flex;
@@ -978,7 +982,8 @@ p {
     height: 100dvh;
   }
 }
-@media (max-width: 760px) {
+/* layout-query: navigation.inlineMin < */
+@media (width < 761px) {
   #sidebar-toggle {
     display: inline-flex;
   }
@@ -1721,7 +1726,9 @@ p {
 
 /* Reserve space only in the document that contains the terminal dock. */
 html body #root:has(.terminal-dock) {
-  height: calc(100dvh - var(--terminal-dock-height, 38px));
+  height: calc(
+    100dvh - var(--terminal-dock-height, var(--layout-terminal-closed-bar))
+  );
   min-height: 0;
 }
 
@@ -1760,7 +1767,8 @@ html body #root:has(.terminal-dock) {
 }
 
 /* The phone keeps the selected orchestrator chat in the full viewport. */
-@media (max-width: 760px) {
+/* layout-query: navigation.inlineMin < */
+@media (width < 761px) {
   html,
   body {
     width: 100%;
@@ -1918,7 +1926,8 @@ html body #root:has(.terminal-dock) {
   gap: 8px;
 }
 
-@media (max-width: 760px) {
+/* layout-query: navigation.inlineMin < */
+@media (width < 761px) {
   #team-toggle {
     flex-shrink: 0;
     width: 40px;
@@ -1941,7 +1950,8 @@ html body #root:has(.terminal-dock) {
   }
 }
 
-@media (max-width: 760px) {
+/* layout-query: navigation.inlineMin < */
+@media (width < 761px) {
   .workspace-header:has(#back-lead) {
     height: 84px;
     min-height: 84px;
@@ -2089,7 +2099,8 @@ html body #root:has(.terminal-dock) {
   > .chat-row {
   padding-right: 62px;
 }
-@media (hover: none), (max-width: 760px) {
+/* layout-query: navigation.inlineMin < */
+@media (hover: none), (width < 761px) {
   #sidebar .project-tree-action[aria-haspopup="menu"] {
     opacity: 1;
     pointer-events: auto;
@@ -2156,7 +2167,8 @@ html body #root:has(.terminal-dock) {
 .ai-conversation .message.user .message-bottom {
   display: flex;
 }
-@media (min-width: 761px) and (hover: hover) and (pointer: fine) {
+/* layout-query: navigation.inlineMin >= */
+@media (width >= 761px) and (hover: hover) and (pointer: fine) {
   .ai-conversation .message.user .message-bottom,
   .agent-conversation .message.bubble.outgoing .message-bottom {
     position: absolute;
@@ -2220,7 +2232,8 @@ html body #root:has(.terminal-dock) {
 
 /* Delivery status and message actions both sit under a user bubble. Stack
    them so the status never covers the action buttons. */
-@media (min-width: 761px) and (hover: hover) and (pointer: fine) {
+/* layout-query: navigation.inlineMin >= */
+@media (width >= 761px) and (hover: hover) and (pointer: fine) {
   .ai-conversation
     .message.user:has(.message-delivery-heading, .message-delivery-inline)
     .message-bottom {
