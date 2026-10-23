@@ -722,7 +722,7 @@ async fn a_new_host_card_is_published_to_clients_and_pushed_to_the_phone() {
     let start = format!("http://localhost:{}/", tool.port);
     let (code, message) = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-services/browser_host",
-        move || browser_host::shim(&[start], &socket, Some(agent)),
+        move || browser_host::shim(&[start], &socket, Some(agent), &|_: &str| false),
     )
     .await
     .expect("test step");
