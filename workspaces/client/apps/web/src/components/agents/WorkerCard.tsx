@@ -1,21 +1,8 @@
 import { useServerApi } from "../../servers/ServerServicesContext";
 import { useSyncedVisualState } from "../../sync/useSyncedVisualState";
-import {
-  ActionIcon,
-  Button,
-  Loader,
-  Menu,
-  UnstyledButton,
-} from "@mantine/core";
-import {
-  Check,
-  ChevronRight,
-  CircleAlert,
-  Clock,
-  MoreHorizontal,
-  Trash2,
-} from "lucide-react";
-import { memo, useContext, useMemo } from "react";
+import { ActionIcon, Button, Menu, UnstyledButton } from "@mantine/core";
+import { ChevronRight, MoreHorizontal, Trash2 } from "lucide-react";
+import { memo, useContext, useMemo, type CSSProperties } from "react";
 import { useCommittedCallback } from "../../hooks";
 import { reportPromptComposerRender } from "../prompt-composer/renderProbe";
 import "../../api";
@@ -24,7 +11,6 @@ import { DISK_FULL_WAIT_LABEL, diskFullHold } from "../../capacityRetry";
 import { startWaitLabel } from "../../startWait";
 import { setupModelName } from "./AgentSetupPicker";
 import { TeamModelCatalog } from "./WorkerOverview";
-import { ProviderMark } from "../AccountTiles";
 import type { Account } from "../Accounts";
 import { accountDisplayName } from "../../accountName";
 import {
@@ -36,7 +22,7 @@ import {
 } from "../../types";
 import ChatStatus from "./ChatStatus";
 import TokenRate from "../TokenRate";
-import { AgentProgress, commandWaitLabel } from "./AgentProgress";
+import { AgentElapsed, AgentProgress, commandWaitLabel } from "./AgentProgress";
 import type { ChatIndicator } from "../chat-status/chatStatusModel";
 
 function WorkerExcerpt({
@@ -101,6 +87,8 @@ function WorkerExcerpt({
 
 type WorkerCardProps = {
   agent: Agent;
+  depth?: number;
+  lead?: boolean;
   accounts?: Account[];
   selected: boolean;
   awaitingAnswer: boolean;
@@ -132,6 +120,8 @@ export default function WorkerCard(props: WorkerCardProps) {
 
 const WorkerCardView = memo(function WorkerCardView({
   agent,
+  depth = 0,
+  lead = false,
   accounts = [],
   selected,
   awaitingAnswer,
@@ -182,7 +172,7 @@ const WorkerCardView = memo(function WorkerCardView({
     connected.length > 1 && account ? accountDisplayName(account) : "",
   ]
     .filter(Boolean)
-    .join(" · ");
+    .join(", ");
   const overview = agent.overview;
   const errorView = nativeErrorView(agent.error);
   const diskHeld = Boolean(diskFullHold(agent));
@@ -225,7 +215,10 @@ const WorkerCardView = memo(function WorkerCardView({
                             ? DISK_FULL_WAIT_LABEL
                             : "Failed"
                           : agent.status === "running" && agent.inFlight
-                            ? "Working"
+                            ? statusLabel(
+                                agent.status,
+                                agent.activity?.phase || undefined,
+                              )
                             : statusLabel(
                                 agent.status ?? "",
                                 undefined,
@@ -241,39 +234,42 @@ const WorkerCardView = memo(function WorkerCardView({
       ? "Waiting"
       : statusDetail;
   return (
-    <div className={`worker-entry ${selected ? "selected" : ""}`}>
+    <div
+      className={`worker-entry ${selected ? "selected" : ""}`}
+      data-studio-state={indicator?.kind || "none"}
+      style={{ "--worker-depth": depth } as CSSProperties}
+    >
       <div className="worker-heading">
         <UnstyledButton
           className="worker"
-          data-worker={agent.id}
+          data-worker={lead ? undefined : agent.id}
+          data-lead={lead ? agent.id : undefined}
           aria-current={selected ? "page" : undefined}
           onClick={open}
         >
-          <span className="worker-provider">
-            <ProviderMark provider={provider} />
-          </span>
           <span className="worker-text">
             <span className="worker-name-line">
-              <strong>{agent.name}</strong>
-              <span
-                className={`worker-state worker-state-${agent.stall ? "stalled" : agent.status || "waiting"}`}
-                role="img"
-                aria-label={statusDetail}
-                title={statusDetail}
-              >
-                {agent.stall ||
-                (agent.status === "failed" && !diskHeld) ||
-                indicator?.kind === "error" ||
-                awaitingAnswer ? (
-                  <CircleAlert size={14} aria-hidden="true" />
-                ) : agent.status === "completed" ? (
-                  <Check size={14} aria-hidden="true" />
-                ) : ["running", "starting"].includes(agent.status || "") ? (
-                  <Loader size={13} color="gray" aria-hidden="true" />
-                ) : (
-                  <Clock size={14} aria-hidden="true" />
-                )}
+              <strong title={agent.name || undefined}>{agent.name}</strong>
+              <span className="worker-meta">
+                <span className="worker-model-summary" title={meta}>
+                  <span className="worker-role">
+                    {lead
+                      ? "Lead"
+                      : agent.role === "reviewer"
+                        ? "Reviewer"
+                        : "Worker"}
+                  </span>
+
+                  <span className="worker-model-name">{modelName}</span>
+                  <span className="worker-effort">
+                    {effort.charAt(0).toUpperCase() + effort.slice(1)}
+                  </span>
+                  {connected.length > 1 && account && (
+                    <span>{accountDisplayName(account)}</span>
+                  )}
+                </span>
               </span>
+              <AgentElapsed agent={agent} />
             </span>
             <span className="worker-status-accessible">
               <ChatStatus
@@ -283,21 +279,22 @@ const WorkerCardView = memo(function WorkerCardView({
               />
               <small>{statusText}</small>
             </span>
-            <AgentProgress agent={agent} />
-            {agent.environment === "linux" && <small>Linux VM</small>}
-            <span className="worker-meta">
-              <span className="worker-model-summary" title={meta}>
-                {meta}
+            <span className="worker-live-line">
+              <span
+                className="worker-activity"
+                title={errorSummary || statusDetail}
+              >
+                {statusText}
               </span>
+              {agent.overview?.task && (
+                <span className="worker-task" title={agent.overview.task}>
+                  {agent.overview.task}
+                </span>
+              )}
               <TokenRate agent={agent} variant="worker" />
             </span>
-            {Boolean(agent.error) && (
-              <span
-                className={stopReason ? "worker-stop-reason" : "worker-error"}
-              >
-                {stopReason || errorSummary}
-              </span>
-            )}
+            <AgentProgress agent={agent} />
+            {agent.environment === "linux" && <small>Linux VM</small>}
           </span>
         </UnstyledButton>
         {remove && (
@@ -343,7 +340,7 @@ const WorkerCardView = memo(function WorkerCardView({
           truncated={overview.resultTruncated ?? undefined}
           open={open}
         />
-      ) : agent.status === "completed" ? (
+      ) : !lead && agent.status === "completed" ? (
         <p className="worker-missing">No final report available</p>
       ) : null}
       {overview?.resultFile && (

@@ -266,14 +266,33 @@ test("team-navigation-ui", async ({ page: fixturePage }) => {
     );
     assert.deepEqual(
       (await groupIds("Working")).sort(),
-      [0, 1, 5, 6].map((n) => worker(n).id).sort(),
+      [0, 1, 5, 6, ...Array.from({ length: 18 }, (_, index) => index + 8)]
+        .map((n) => worker(n).id)
+        .sort(),
       JSON.stringify(
         (await groupIds("Working")).map(
           (id) => workers.find((agent) => agent.id === id)?.name,
         ),
       ),
     );
-    assert.equal((await groupIds("Waiting")).length, 18);
+    assert.equal(
+      await team.getByRole("region", { name: "Waiting", exact: true }).count(),
+      0,
+    );
+    assert.deepEqual(
+      await team
+        .locator("#workers > .team-status-group")
+        .evaluateAll((nodes) =>
+          nodes.map((node) => node.getAttribute("aria-label")),
+        ),
+      ["Need you", "Failed", "Working", "Stopped"],
+    );
+    assert.equal(
+      await row(2).evaluate((node) =>
+        node.closest(".worker-entry")?.getAttribute("data-studio-state"),
+      ),
+      "answer",
+    );
     assert.equal(
       await team.locator(".worker-group").getAttribute("open"),
       null,
@@ -336,10 +355,19 @@ test("team-navigation-ui", async ({ page: fixturePage }) => {
       lineHeight: parseFloat(getComputedStyle(node).lineHeight),
     }));
     assert.equal(titleLayout.text, longName);
-    assert.equal(titleLayout.clipped, false);
+    assert.equal(
+      titleLayout.clipped,
+      true,
+      "the strip keeps long names on one line",
+    );
+    assert.equal(
+      await title.getAttribute("title"),
+      longName,
+      "the full name remains available",
+    );
     assert.ok(
-      titleLayout.height > titleLayout.lineHeight * 2,
-      "the full worker name wraps",
+      titleLayout.height <= titleLayout.lineHeight * 1.5,
+      "long names preserve dispatch density",
     );
     await team.locator("#workers").evaluate((node) => {
       node.scrollTop = node.scrollHeight;
