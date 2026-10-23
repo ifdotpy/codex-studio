@@ -461,6 +461,8 @@ test("usage accounts ui", async ({ browser: _browser }) => {
               requestAnimationFrame(() => requestAnimationFrame(resolve)),
             ),
         );
+        assert.doesNotMatch(await popover.innerText(), /Session estimate/);
+        assert.match(await popover.innerText(), /Estimated API cost/);
         const before = await popover.boundingBox();
         assert.equal(await page.getByRole("tab").count(), 3);
         const assertFits = async () => {

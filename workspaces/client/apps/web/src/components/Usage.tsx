@@ -748,11 +748,6 @@ export default function Usage({
               className="account-limits-panel"
               aria-label="Account limits details"
             >
-              <p className="limits-session-estimate">
-                {sessionCost
-                  ? `Session estimate: ${dollars(sessionCost.totalUSD)}`
-                  : "Session estimate unavailable"}
-              </p>
               <header className="account-limits-heading">
                 <div>
                   <h3>Account limits</h3>
