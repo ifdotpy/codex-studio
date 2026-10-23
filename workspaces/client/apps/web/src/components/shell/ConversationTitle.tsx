@@ -1,3 +1,4 @@
+import "../conversation/conversation-chrome.css";
 import { ActionButton } from "../ui/primitives";
 import { ArrowLeft } from "lucide-react";
 import type { ReactNode } from "react";
