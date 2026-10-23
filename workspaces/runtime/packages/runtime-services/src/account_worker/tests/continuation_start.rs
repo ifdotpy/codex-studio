@@ -452,3 +452,59 @@ async fn a_due_usage_resume_starts_its_turn_and_reports_once() {
         worker.shutdown().await.unwrap();
     }
 }
+
+/// The Claude bridge reports a session limit with the provider reset time. The
+/// resume is planned for that reset; once due with fresh allowed limits, the
+/// worker starts one continuation turn and the lead gets its result once.
+#[tokio::test]
+async fn a_claude_session_limit_resumes_once_after_the_provider_reset() {
+    let (state, account) = fixture(ProviderKind::Claude).await;
+    let (mut peer, mut worker) = open(&state, &account).await;
+    let reset = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock")
+        .as_secs_f64()
+        .floor()
+        + 3600.0;
+    let limit = json!({"message":"You've hit your session limit · resets 3:40am (UTC)",
+        "codexErrorInfo":"rateLimitExceeded","resetsAt":reset});
+    fail_first_turn(&state, &mut peer, &worker, limit).await;
+    let record = record_of(&state, &state.agent).await;
+    assert_eq!(record["usageResume"]["status"], "scheduled", "{record}");
+    assert_eq!(record["usageResume"]["cause"], "rate_limit", "{record}");
+    assert_eq!(record["usageResume"]["plannedAt"], reset, "{record}");
+    assert_eq!(record["usageResume"]["dueAt"], reset + 5.0, "{record}");
+    assert!(child_results(&state).await.is_empty());
+
+    let due = reset + 6.0;
+    let limits = LimitsObservation::from_record(
+        json!({"accountKey":"default","at":due,"error":null,
+            "data":{"rateLimits":{"primary":{"usedPercent":0.0,"resetsAt":due + 18_000.0}}}}),
+        None,
+    )
+    .expect("limits");
+    tick_when_due(&state, "usageResume", Some(limits)).await;
+    wake_agent(&state, &worker, &state.agent).await;
+    let start = next_turn_start(&mut peer).await;
+    assert!(
+        start["params"]["input"]
+            .to_string()
+            .contains("usage or rate limit"),
+        "{start}"
+    );
+    finish(&mut peer, &start, RETRIED_TURN, "completed", Value::Null).await;
+
+    let record = record_of(&state, &state.agent).await;
+    assert_eq!(record["status"], "completed", "{record}");
+    assert_eq!(record["usageResume"]["status"], "started");
+    let results = child_results(&state).await;
+    assert_eq!(results.len(), 1, "{results:?}");
+    assert_eq!(
+        results[0].0,
+        format!("child:{}:{RETRIED_TURN}", state.agent)
+    );
+    worker.shutdown().await.unwrap();
+    while let Ok(write) = peer.writes.try_recv() {
+        assert_ne!(write.value["method"], "turn/start", "{}", write.value);
+    }
+}
