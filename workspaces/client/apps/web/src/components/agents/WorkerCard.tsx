@@ -268,7 +268,6 @@ const WorkerCardView = memo(function WorkerCardView({
                     <span>{accountDisplayName(account)}</span>
                   )}
                 </span>
-                <TokenRate agent={agent} variant="worker" />
               </span>
               <AgentElapsed agent={agent} />
             </span>
@@ -292,6 +291,7 @@ const WorkerCardView = memo(function WorkerCardView({
                   {agent.overview.task}
                 </span>
               )}
+              <TokenRate agent={agent} variant="worker" />
             </span>
             <AgentProgress agent={agent} />
             {agent.environment === "linux" && <small>Linux VM</small>}
@@ -340,7 +340,7 @@ const WorkerCardView = memo(function WorkerCardView({
           truncated={overview.resultTruncated ?? undefined}
           open={open}
         />
-      ) : agent.status === "completed" ? (
+      ) : !lead && agent.status === "completed" ? (
         <p className="worker-missing">No final report available</p>
       ) : null}
       {overview?.resultFile && (
