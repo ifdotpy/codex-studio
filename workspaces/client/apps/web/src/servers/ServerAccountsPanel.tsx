@@ -149,31 +149,37 @@ export default function ServerAccountsPanel({
                 servicesFor,
               );
               const facts = (
-                <dl className="account-facts">
-                  <dt>Email</dt>
-                  <dd>{row.email || "Unavailable"}</dd>
-                  <dt>Servers</dt>
-                  <dd>
-                    {rowServers(row, servers)
-                      .map((server) => server.label)
-                      .join(", ")}
-                  </dd>
-                  <dt>Default</dt>
-                  <dd>
-                    {servers
-                      .filter((server) => row.byServer[server.id]?.isDefault)
-                      .map((server) => server.label)
-                      .join(", ") || "No"}
-                  </dd>
-                  <dt>Sign-in</dt>
-                  <dd>
-                    {Object.values(row.byServer).some(
-                      (account) => account?.status !== "ready",
-                    )
-                      ? "Sign in needed"
-                      : "Signed in"}
-                  </dd>
-                </dl>
+                <>
+                  <dl className="account-facts">
+                    <dt>Email</dt>
+                    <dd>{row.email || "Unavailable"}</dd>
+                    <dt>Servers</dt>
+                    <dd>
+                      {rowServers(row, servers)
+                        .map((server) => server.label)
+                        .join(", ")}
+                    </dd>
+                    <dt>Default</dt>
+                    <dd>
+                      {servers
+                        .filter((server) => row.byServer[server.id]?.isDefault)
+                        .map((server) => server.label)
+                        .join(", ") || "No"}
+                    </dd>
+                    <dt>Sign-in</dt>
+                    <dd>
+                      {Object.values(row.byServer).some(
+                        (account) => account?.status !== "ready",
+                      )
+                        ? "Sign in needed"
+                        : "Signed in"}
+                    </dd>
+                  </dl>
+                  <small className="server-accounts-help">
+                    Limits are shared across servers. Sign-in and turn start
+                    limits are set per server.
+                  </small>
+                </>
               );
               const accountDetails = (
                 <>
@@ -273,56 +279,55 @@ export default function ServerAccountsPanel({
                         <strong title={row.label || row.email || "Account"}>
                           {row.label || row.email || "Account"}
                         </strong>
-
-                        {rowServers(row, servers).some((server) =>
-                          ["offline", "degraded", "schema-mismatch"].includes(
-                            statuses[server.id] || "",
-                          ),
-                        ) && (
-                          <span className="account-strip-state" title="Offline">
-                            <CloudOff size={14} aria-hidden="true" />
-                            <span className="account-strip-state-label">
-                              Offline
-                            </span>
-                          </span>
-                        )}
-                        {Object.values(row.byServer).some(
-                          (account) => account?.status !== "ready",
-                        ) && (
-                          <span
-                            className="account-strip-state"
-                            title="Sign in needed"
-                          >
-                            <LogIn size={14} aria-hidden="true" />
-                            <span className="account-strip-state-label">
-                              Sign in needed
-                            </span>
-                          </span>
-                        )}
-
-                        {servers
-                          .filter(
-                            (server) => row.byServer[server.id]?.isDefault,
-                          )
-                          .map((server) => (
-                            <Badge
-                              key={server.id}
-                              size="xs"
-                              color="blue"
-                              variant="light"
-                              title={`Default ${server.label}`}
-                            >
-                              <Check size={12} aria-hidden="true" />
-                              <span className="account-strip-state-label">
-                                Default {server.label}
-                              </span>
-                            </Badge>
-                          ))}
                       </span>
                     </Accordion.Control>
                     {row.plan && (
                       <span className="account-plan">{row.plan}</span>
                     )}
+                    <span className="account-status-markers">
+                      {rowServers(row, servers).some((server) =>
+                        ["offline", "degraded", "schema-mismatch"].includes(
+                          statuses[server.id] || "",
+                        ),
+                      ) && (
+                        <span className="account-strip-state" title="Offline">
+                          <CloudOff size={14} aria-hidden="true" />
+                          <span className="account-strip-state-label">
+                            Offline
+                          </span>
+                        </span>
+                      )}
+                      {Object.values(row.byServer).some(
+                        (account) => account?.status !== "ready",
+                      ) && (
+                        <span
+                          className="account-strip-state"
+                          title="Sign in needed"
+                        >
+                          <LogIn size={14} aria-hidden="true" />
+                          <span className="account-strip-state-label">
+                            Sign in needed
+                          </span>
+                        </span>
+                      )}
+
+                      {servers
+                        .filter((server) => row.byServer[server.id]?.isDefault)
+                        .map((server) => (
+                          <Badge
+                            key={server.id}
+                            size="xs"
+                            color="blue"
+                            variant="light"
+                            title={`Default ${server.label}`}
+                          >
+                            <Check size={12} aria-hidden="true" />
+                            <span className="account-strip-state-label">
+                              Default {server.label}
+                            </span>
+                          </Badge>
+                        ))}
+                    </span>
                     <Menu
                       opened={openAccountMenuKey === row.key}
                       onChange={(nextOpened) => {
@@ -455,12 +460,6 @@ export default function ServerAccountsPanel({
             })}
           </Accordion>
         )}
-        <p className="server-accounts-help">
-          The remaining limit belongs to the account, so it shows once. Each
-          server line shows the sign-in on that server and its turn start
-          limits. Green: signed in. Yellow: sign in again. Dashed: click to sign
-          in on that server.
-        </p>
       </SettingsSection>
       <Modal
         opened={adding}

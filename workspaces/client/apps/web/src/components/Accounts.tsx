@@ -1114,56 +1114,6 @@ export default function Accounts({
                                   >
                                     <ProviderMark provider={provider} />
                                   </span>
-                                  {(account.error ||
-                                    account.status !== "ready") && (
-                                    <span
-                                      className="account-strip-state"
-                                      data-error={
-                                        Boolean(account.error) ||
-                                        account.status === "error" ||
-                                        undefined
-                                      }
-                                    >
-                                      {account.error ||
-                                      account.status === "error" ? (
-                                        <AlertCircle
-                                          size={14}
-                                          aria-hidden="true"
-                                        />
-                                      ) : (
-                                        <LogIn size={14} aria-hidden="true" />
-                                      )}
-                                      <span className="account-strip-state-label">
-                                        {account.error ||
-                                        account.status === "error"
-                                          ? "Error"
-                                          : "Sign in needed"}
-                                      </span>
-                                    </span>
-                                  )}
-                                  {account.id ===
-                                    state.data.defaultAccountKey && (
-                                    <span
-                                      className="account-default"
-                                      title="Application default"
-                                    >
-                                      <Check size={12} />
-                                      <span className="sr-only">
-                                        Application default
-                                      </span>
-                                    </span>
-                                  )}
-                                  {account.id === accountKey && (
-                                    <span
-                                      className="account-strip-state"
-                                      title="Current account"
-                                    >
-                                      <CircleDot size={14} aria-hidden="true" />
-                                      <span className="sr-only">
-                                        Current account
-                                      </span>
-                                    </span>
-                                  )}
                                   <strong
                                     title={account.email || account.label}
                                   >
@@ -1176,6 +1126,58 @@ export default function Accounts({
                                   {account.plan}
                                 </span>
                               )}
+                              <span className="account-status-markers">
+                                {(account.error ||
+                                  account.status !== "ready") && (
+                                  <span
+                                    className="account-strip-state"
+                                    data-error={
+                                      Boolean(account.error) ||
+                                      account.status === "error" ||
+                                      undefined
+                                    }
+                                  >
+                                    {account.error ||
+                                    account.status === "error" ? (
+                                      <AlertCircle
+                                        size={14}
+                                        aria-hidden="true"
+                                      />
+                                    ) : (
+                                      <LogIn size={14} aria-hidden="true" />
+                                    )}
+                                    <span className="account-strip-state-label">
+                                      {account.error ||
+                                      account.status === "error"
+                                        ? "Error"
+                                        : "Sign in needed"}
+                                    </span>
+                                  </span>
+                                )}
+                                {account.id ===
+                                  state.data.defaultAccountKey && (
+                                  <span
+                                    className="account-default"
+                                    title="Application default"
+                                  >
+                                    <Check size={12} />
+                                    <span className="sr-only">
+                                      Application default
+                                    </span>
+                                  </span>
+                                )}
+                                {account.id === accountKey && (
+                                  <span
+                                    className="account-strip-state"
+                                    title="Current account"
+                                  >
+                                    <CircleDot size={14} aria-hidden="true" />
+                                    <span className="sr-only">
+                                      Current account
+                                    </span>
+                                  </span>
+                                )}
+                              </span>
                               <Menu
                                 opened={openActionMenuAccountId === account.id}
                                 onChange={(nextOpened) => {

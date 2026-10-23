@@ -161,18 +161,39 @@ test("Studio Accounts is exclusive and keeps keyboard focus inside settings and 
         const heights = await rows.evaluateAll((elements) =>
           elements.map((element) => element.getBoundingClientRect().height),
         );
-        expect(heights.every((height) => height <= 80)).toBe(true);
+        expect(
+          heights.every((height) => height <= (width === 1440 ? 44 : 80)),
+        ).toBe(true);
         const names = await rows
           .locator(".account-identity > strong")
           .evaluateAll((elements) =>
             elements.map((element) => ({
               width: element.getBoundingClientRect().width,
               full: element.scrollWidth,
+              eightCh: (() => {
+                const context = document
+                  .createElement("canvas")
+                  .getContext("2d");
+                context.font = getComputedStyle(element).font;
+                return context.measureText("00000000").width;
+              })(),
             })),
           );
-        expect(
-          names.every((name) => name.width >= Math.min(name.full - 1, 64)),
-        ).toBe(true);
+        expect(names.every((name) => name.width >= name.eightCh - 1)).toBe(
+          true,
+        );
+        if (width === 320) {
+          const alignment = await rows.first().evaluate((row) => {
+            const name = row.querySelector(".account-identity > strong");
+            const plan = row.querySelector(".account-plan");
+            return Math.abs(
+              name.getBoundingClientRect().x -
+                plan.getBoundingClientRect().x -
+                parseFloat(getComputedStyle(plan).paddingLeft),
+            );
+          });
+          expect(alignment).toBeLessThanOrEqual(1);
+        }
         await dialog
           .getByRole("button", { name: "Close", exact: true })
           .focus();
