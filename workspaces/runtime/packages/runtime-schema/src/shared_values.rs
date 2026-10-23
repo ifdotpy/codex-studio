@@ -73,6 +73,10 @@ pub const SYNC_ENTITY_PAGE_LIMIT: i64 = 500;
 pub const SYNC_ENTITY_STREAM_MAX_DOCUMENTS: i64 = 512;
 /// Maximum encoded state batch (including envelopes), in UTF-8 bytes.
 pub const SYNC_ENTITY_STREAM_MAX_BYTES: usize = 262144;
+/// Maximum changed and removed transcript records in a complete stream interval, in items.
+pub const SYNC_TRANSCRIPT_STREAM_MAX_ITEMS: usize = 512;
+/// Maximum encoded transcript stream interval, in UTF-8 bytes.
+pub const SYNC_TRANSCRIPT_STREAM_MAX_BYTES: usize = 262144;
 /// Seconds between sync resource heartbeats.
 pub const SYNC_RESOURCE_HEARTBEAT_SECONDS: u64 = 15;
 

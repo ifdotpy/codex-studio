@@ -43818,6 +43818,16 @@
             "minimum": 0,
             "title": "Revision",
             "type": "integer"
+          },
+          "transcriptChanges": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TranscriptChangeBatch"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -54174,6 +54184,32 @@
         "title": "TranscriptAsset",
         "type": "object"
       },
+      "TranscriptChangeBatch": {
+        "additionalProperties": false,
+        "description": "Complete transcript sync interval. The delta flag is true; oversize or unavailable intervals remain hints.",
+        "properties": {
+          "after": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "delta": {
+            "$ref": "#/components/schemas/TranscriptStreamDelta"
+          },
+          "through": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "after",
+          "through",
+          "delta"
+        ],
+        "title": "TranscriptChangeBatch",
+        "type": "object"
+      },
       "TranscriptContextUsage": {
         "additionalProperties": false,
         "description": "Runtime token usage shape published by tokenUsage notifications.",
@@ -55584,6 +55620,166 @@
         ],
         "title": "TranscriptSearchResult",
         "type": "object"
+      },
+      "TranscriptStreamDelta": {
+        "additionalProperties": false,
+        "description": "Existing full transcript snapshot or sparse sync delta; item records share TranscriptMessageRecord.",
+        "properties": {
+          "agent": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TranscriptAgent"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "delta": {
+            "const": true,
+            "type": "boolean"
+          },
+          "historyVersion": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "default": null,
+            "title": "Historyversion"
+          },
+          "itemRevisions": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/TranscriptMessageRecord"
+            },
+            "maxItems": 512,
+            "title": "Items",
+            "type": "array"
+          },
+          "nextAfterCursor": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "default": null,
+            "title": "Nextaftercursor"
+          },
+          "nextCursor": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "default": null,
+            "title": "Nextcursor"
+          },
+          "order": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "removed": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 512,
+            "type": "array"
+          },
+          "tail": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "default": null,
+            "title": "Tail"
+          },
+          "truncated": {
+            "title": "Truncated",
+            "type": "boolean"
+          },
+          "unavailable": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "default": null,
+            "title": "Unavailable"
+          }
+        },
+        "required": [
+          "delta",
+          "items",
+          "truncated",
+          "removed",
+          "itemRevisions"
+        ],
+        "title": "TranscriptStreamDelta",
+        "type": "object"
+      },
+      "TranscriptSyncPage": {
+        "additionalProperties": false,
+        "description": "Transcript projection owner result before the HTTP adapter adds generation.",
+        "properties": {
+          "checkpoint": {
+            "$ref": "#/components/schemas/SyncCheckpoint"
+          },
+          "documents": {
+            "items": {
+              "$ref": "#/components/schemas/SyncDocument"
+            },
+            "title": "Documents",
+            "type": "array"
+          },
+          "workspaceId": {
+            "title": "Workspaceid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "workspaceId",
+          "documents",
+          "checkpoint"
+        ],
+        "title": "TranscriptSyncPage",
+        "type": "object"
+      },
+      "TranscriptSyncPayload": {
+        "anyOf": [
+          {
+            "$ref": "#/components/schemas/TranscriptPageResponse"
+          },
+          {
+            "$ref": "#/components/schemas/TranscriptStreamDelta"
+          }
+        ],
+        "description": "Existing complete snapshot or sparse sync delta, decoded at the projection boundary.",
+        "title": "TranscriptSyncPayload"
       },
       "TranscriptsResource": {
         "additionalProperties": false,

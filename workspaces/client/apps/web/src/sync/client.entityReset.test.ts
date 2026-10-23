@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { TranscriptPageData } from "../types";
+import type { ResourceChangeEvent } from "./resourceEvents";
+import { SYNC_TRANSCRIPT_STREAM_MAX_BYTES } from "../generated/sharedValues";
 import { readRetryDelay } from "./readRetry";
 
 const mocks = vi.hoisted(() => ({
@@ -290,6 +292,120 @@ describe("entity pull reset wiring", () => {
     expect(rows.get("state:entities:checkpoint")?.seq).toBe(900);
     stop();
   });
+
+  it.each(["delta", "retry", "gap", "oversize", "epoch", "storage"])(
+    "applies or rejects a transcript stream %s through the pulled delta applier",
+    async (scenario) => {
+      const workspaceId = "8".repeat(32);
+      const rows = new Map<string, Record<string, unknown>>();
+      rows.set("transcript:agent", {
+        id: "transcript:agent",
+        seq: 1,
+        payload: JSON.stringify({
+          format: 2,
+          epoch: scenario === "epoch" ? "old" : "epoch",
+          metadata: { truncated: false },
+          order: ["answer"],
+          itemRevisions: {},
+        }),
+      });
+      rows.set("transcript:item:agent:answer", {
+        id: "transcript:item:agent:answer",
+        seq: 1,
+        payload: JSON.stringify({ id: "answer", text: "before" }),
+      });
+      const storageInstance = {
+        findDocumentsById: vi.fn(async (ids: string[]) =>
+          ids.flatMap((id) => (rows.has(id) ? [rows.get(id)!] : [])),
+        ),
+        bulkWrite: vi.fn(
+          async (writes: { document: Record<string, unknown> }[]) => {
+            for (const { document } of writes)
+              rows.set(String(document.id), document);
+            return { error: [] };
+          },
+        ),
+      };
+      const projections = {
+        database: { name: "transcript-test" },
+        storageInstance,
+        $: { subscribe: vi.fn(() => ({ unsubscribe: vi.fn() })) },
+      };
+      mocks.createRxDatabase
+        .mockResolvedValueOnce({ addCollections: vi.fn(async () => ({})) })
+        .mockResolvedValueOnce({
+          addCollections: vi.fn(async () => ({ projections })),
+        });
+      mocks.syncGet.mockResolvedValue({ workspaceId });
+      vi.stubGlobal("window", { addEventListener: vi.fn() });
+      vi.stubGlobal("navigator", {
+        onLine: true,
+        locks: {
+          request: (_key: string, callback: () => Promise<unknown>) =>
+            callback(),
+        },
+      });
+      const client = await import("./client");
+      const event: ResourceChangeEvent = {
+        protocol: 3,
+        workspaceId,
+        epoch: "epoch",
+        revision: 2,
+        reason: "change",
+        resources: [{ kind: "transcript", agentId: "agent" }],
+        resourceVersions: [
+          {
+            revision: 2,
+            transcriptChanges: {
+              after: scenario === "gap" ? 0 : 1,
+              through: 2,
+              delta: {
+                delta: true,
+                items: [
+                  {
+                    id: "answer",
+                    role: "assistant",
+                    text:
+                      scenario === "oversize"
+                        ? "x".repeat(SYNC_TRANSCRIPT_STREAM_MAX_BYTES)
+                        : "streamed",
+                  },
+                ],
+                removed: [],
+                itemRevisions: { answer: "hash" },
+                truncated: false,
+              },
+            },
+          },
+        ],
+      };
+      if (scenario === "storage")
+        storageInstance.bulkWrite.mockRejectedValueOnce(
+          new Error("storage unavailable"),
+        );
+      if (["gap", "oversize", "epoch", "storage"].includes(scenario)) {
+        await expect(
+          client.persistResourceEntityChanges(event, () => true),
+        ).rejects.toThrow();
+        expect(rows.get("transcript:agent")?.seq).toBe(1);
+        return;
+      }
+      await client.persistResourceEntityChanges(event, () => true);
+      const writes = storageInstance.bulkWrite.mock.calls.length;
+      if (scenario === "retry") {
+        await client.persistResourceEntityChanges(event, () => true);
+        expect(storageInstance.bulkWrite).toHaveBeenCalledTimes(writes);
+      }
+      expect(rows.get("transcript:agent")?.seq).toBe(2);
+      expect(
+        JSON.parse(String(rows.get("transcript:item:agent:answer")?.payload))
+          .text,
+      ).toBe("streamed");
+      expect(
+        mocks.syncGet.mock.calls.filter(([path]) => path === "/api/sync/pull"),
+      ).toHaveLength(0);
+    },
+  );
 
   it.each([
     { liveBeforeConflict: false, stopDuringBackoff: false },

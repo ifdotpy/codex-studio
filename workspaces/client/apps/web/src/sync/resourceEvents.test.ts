@@ -144,6 +144,57 @@ describe("shared resource event transport", () => {
     resumeListeners.clear();
   });
 
+  it("delivers a hint-only transcript failure even when its publication revision is below the durable cursor", async () => {
+    vi.useFakeTimers();
+    syncDatabase.mockResolvedValue({ workspaceId });
+    vi.stubGlobal("window", {
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    });
+    vi.stubGlobal("document", {
+      hidden: false,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    });
+    vi.stubGlobal("navigator", { onLine: true });
+    vi.stubGlobal("location", { origin: "http://studio.test" });
+    vi.stubGlobal("crypto", { randomUUID: () => "tab-one" });
+    vi.stubGlobal("EventSource", Source);
+    const transport = await loadTransport();
+    const onChange = vi.fn();
+    const stop = transport.watchResourceChanges(
+      { kind: "transcript", agentId: "open" },
+      onChange,
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    const source = Source.instances[0]!;
+    const event = {
+      protocol: 3,
+      workspaceId,
+      epoch: "one",
+      revision: 1,
+      reason: "initial",
+      resources: [{ kind: "transcript", agentId: "open" }],
+      resourceVersions: [{ revision: 100 }],
+    };
+    source.emit("resources", event);
+    await vi.advanceTimersByTimeAsync(20);
+    onChange.mockClear();
+    const failure = {
+      ...event,
+      revision: 2,
+      reason: "change",
+      resourceVersions: [{ revision: 2 }],
+    };
+    source.emit("resources", failure);
+    await vi.advanceTimersByTimeAsync(20);
+    expect(onChange).toHaveBeenCalledOnce();
+    source.emit("resources", failure);
+    await vi.advanceTimersByTimeAsync(20);
+    expect(onChange).toHaveBeenCalledOnce();
+    stop();
+  });
+
   it("retries a transient initial identity failure without a page resume", async () => {
     vi.useFakeTimers();
     vi.spyOn(Math, "random").mockReturnValue(0.5);

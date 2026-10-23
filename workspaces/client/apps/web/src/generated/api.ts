@@ -19605,6 +19605,7 @@ export interface components {
       resource?: components["schemas"]["ResourceRef"] | null;
       /** Revision */
       revision: number;
+      transcriptChanges?: components["schemas"]["TranscriptChangeBatch"] | null;
     };
     /**
      * ResourceTokenRatesEvent
@@ -23782,6 +23783,15 @@ export interface components {
       size: number;
     };
     /**
+     * TranscriptChangeBatch
+     * @description Complete transcript sync interval. The delta flag is true; oversize or unavailable intervals remain hints.
+     */
+    TranscriptChangeBatch: {
+      after: number;
+      delta: components["schemas"]["TranscriptStreamDelta"];
+      through: number;
+    };
+    /**
      * TranscriptContextUsage
      * @description Runtime token usage shape published by tokenUsage notifications.
      */
@@ -24395,6 +24405,68 @@ export interface components {
        */
       kind: "transcripts";
     };
+    /**
+     * TranscriptStreamDelta
+     * @description Existing full transcript snapshot or sparse sync delta; item records share TranscriptMessageRecord.
+     */
+    TranscriptStreamDelta: {
+      /** @default null */
+      agent?: components["schemas"]["TranscriptAgent"] | null;
+      /** @constant */
+      delta: true;
+      /**
+       * Historyversion
+       * @default null
+       */
+      historyVersion?: null | string;
+      itemRevisions: {
+        [key: string]: string;
+      };
+      /** Items */
+      items: components["schemas"]["TranscriptMessageRecord"][];
+      /**
+       * Nextaftercursor
+       * @default null
+       */
+      nextAfterCursor?: null | string;
+      /**
+       * Nextcursor
+       * @default null
+       */
+      nextCursor?: null | string;
+      order?: string[];
+      removed: string[];
+      /**
+       * Tail
+       * @default null
+       */
+      tail?: null | string;
+      /** Truncated */
+      truncated: boolean;
+      /**
+       * Unavailable
+       * @default null
+       */
+      unavailable?: null | string;
+    };
+    /**
+     * TranscriptSyncPage
+     * @description Transcript projection owner result before the HTTP adapter adds generation.
+     */
+    TranscriptSyncPage: {
+      checkpoint: components["schemas"]["SyncCheckpoint"];
+      /** Documents */
+      documents: components["schemas"]["SyncDocument"][];
+      /** Workspaceid */
+      workspaceId: string;
+    };
+    /**
+     * TranscriptSyncPayload
+     * @description Existing complete snapshot or sparse sync delta, decoded at the projection boundary.
+     */
+    TranscriptSyncPayload:
+      | components["schemas"]["TranscriptPageResponse"]
+      | components["schemas"]["TranscriptStreamDelta"];
     /**
      * TransferAction
      * @enum {string}
