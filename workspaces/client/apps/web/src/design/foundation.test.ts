@@ -21,3 +21,11 @@ test("touch sizing uses Mantine variables without stretching NumberInput stepper
   expect(appearance.includes("--input-height:")).toBe(true);
   expect(appearance.includes("--button-height:")).toBe(true);
 });
+
+test("the composer and submit action consume the shared surface and primary tokens", () => {
+  const source = css("../style.css");
+  for (const selector of ["#composer", "#send", "#send:disabled"]) {
+    const block = source.split(`${selector} {`)[1].split("}")[0];
+    expect(/#[\da-f]{3,8}\b/i.test(block), selector).toBe(false);
+  }
+});

@@ -16,6 +16,7 @@ const kinds = [...kindDeclaration.matchAll(/"(\w+)"/g)].map(
 function variables(scheme: "light" | "dark") {
   const values: Record<string, string> = {};
   for (const [palette, shades] of Object.entries(theme.colors!)) {
+    if (!shades) continue;
     shades.forEach((shade, index) => {
       values[`--mantine-color-${palette}-${index}`] = shade;
     });
