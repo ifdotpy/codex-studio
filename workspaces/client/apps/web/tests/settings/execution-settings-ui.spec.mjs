@@ -205,58 +205,63 @@ test("execution settings ui", async ({ browser: _browser }) => {
         summary.locator(".execution-disclosure-chevron"),
       ).toHaveCount(1);
     }
-    if (process.env.EXECUTION_POLISH_SCREENSHOTS) {
-      await mkdir(process.env.EXECUTION_POLISH_SCREENSHOTS, {
-        recursive: true,
-      });
-      for (const width of [1440, 390])
-        for (const scheme of ["light", "dark"]) {
-          await page.setViewportSize({ width, height: 960 });
-          await page.emulateMedia({ colorScheme: scheme });
-          await expect(page.locator("html")).toHaveAttribute(
-            "data-mantine-color-scheme",
-            scheme,
-          );
-          for (const opened of await chatSettingsDialog
-            .locator("details[open]")
-            .all())
-            await opened.locator(":scope > summary").click();
-          for (const scene of ["overview", "worker", "accounts"]) {
-            if (scene === "worker")
-              await chatSettingsDialog
-                .locator('details[data-role="worker"] > summary')
-                .click();
-            if (scene === "accounts") {
-              await chatSettingsDialog
-                .locator('details[data-role="worker"] > summary')
-                .click();
-              await chatSettingsDialog
-                .locator(".execution-accounts > summary")
-                .click();
-              await chatSettingsDialog
-                .locator(".execution-accounts")
-                .scrollIntoViewIfNeeded();
-            } else
-              await chatSettingsDialog.evaluate((node) => {
-                for (let el = node; el; el = el.parentElement) el.scrollTop = 0;
-              });
-            expect(
-              await chatSettingsDialog.evaluate(
-                (node) => node.scrollWidth <= node.clientWidth,
-              ),
-            ).toBe(true);
-            await page.screenshot({
-              path: join(
-                process.env.EXECUTION_POLISH_SCREENSHOTS,
-                `polish-chat-settings-${scene}-${width}-${scheme}.png`,
-              ),
-            });
-          }
-        }
-      await page.setViewportSize({ width: 1440, height: 960 });
-      await page.emulateMedia({ colorScheme: "light" });
-      await openSettings("Main agent settings");
+    const screenshotDirectory = process.env.EXECUTION_COMPACT_SCREENSHOTS;
+    if (screenshotDirectory)
+      await mkdir(screenshotDirectory, { recursive: true });
+    for (const [width, height] of [
+      [1440, 900],
+      [390, 844],
+    ]) {
+      for (const scheme of ["light", "dark"]) {
+        await page.setViewportSize({ width, height });
+        await page.emulateMedia({ colorScheme: scheme });
+        await expect(page.locator("html")).toHaveAttribute(
+          "data-mantine-color-scheme",
+          scheme,
+        );
+        for (const opened of await chatSettingsDialog
+          .locator("details[open]")
+          .all())
+          await opened.locator(":scope > summary").click();
+        await chatSettingsDialog.evaluate((node) => {
+          for (let el = node; el; el = el.parentElement) el.scrollTop = 0;
+        });
+        const geometry = await chatSettingsDialog.evaluate((node) => {
+          const body = node.querySelector(".mantine-Modal-body");
+          return {
+            dialogContent: node.scrollHeight,
+            dialogHeight: node.clientHeight,
+            bodyContent: body.scrollHeight,
+            bodyHeight: body.clientHeight,
+          };
+        });
+        expect(
+          geometry.dialogContent,
+          JSON.stringify({ width, height, scheme, ...geometry }),
+        ).toBeLessThanOrEqual(geometry.dialogHeight);
+        expect(geometry.bodyContent).toBeLessThanOrEqual(geometry.bodyHeight);
+        if (screenshotDirectory)
+          await page.screenshot({
+            path: join(
+              screenshotDirectory,
+              `compact-chat-settings-collapsed-${width}-${scheme}.png`,
+            ),
+          });
+        await chatSettingsDialog
+          .locator('details[data-role="orchestrator"] > summary')
+          .click();
+        if (screenshotDirectory)
+          await page.screenshot({
+            path: join(
+              screenshotDirectory,
+              `compact-chat-settings-lead-${width}-${scheme}.png`,
+            ),
+          });
+      }
     }
+    await page.setViewportSize({ width: 1440, height: 960 });
+    await page.emulateMedia({ colorScheme: "light" });
+    await openSettings("Main agent settings");
     // Model rows use short names, one recommendation tag, and a selected state.
     const leadModel = page.getByLabel("Main agent model", { exact: true });
     assert.equal(await modelValue(leadModel), lead.model);
