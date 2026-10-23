@@ -16,6 +16,7 @@ mod sqlite_actor;
 pub mod state_owner;
 pub mod stored_text;
 pub mod stored_text_compaction;
+pub mod stored_text_dictionary;
 pub mod supervisor_journal;
 pub use schema::{
     python_float_json, python_json, python_json_compact, python_json_utf8,
@@ -1291,6 +1292,8 @@ impl RuntimeStore {
         let analytics = open_database(&analytics_path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
         analytics.pragma_update(None, "journal_mode", "WAL")?;
         analytics.pragma_update(None, "synchronous", ANALYTICS_SYNCHRONOUS)?;
+        stored_text_dictionary::ensure_analytics_schema(&analytics)?;
+        stored_text_dictionary::install_analytics_sql(&analytics)?;
         let version_reader = open_database(&canvas_path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
         version_reader.pragma_update(None, "query_only", "ON")?;
         let identity_registry_path = canvas_path.clone();
