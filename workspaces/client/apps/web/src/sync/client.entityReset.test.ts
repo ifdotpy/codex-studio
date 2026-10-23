@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { TranscriptPageData } from "../types";
 import type { ResourceChangeEvent } from "./resourceEvents";
 import { SYNC_STREAM_EVENT_MAX_BYTES } from "../generated/sharedValues";
+import { SYNC_PROTOCOL_VERSION } from "../generated/api";
 import { readRetryDelay } from "./readRetry";
 
 const mocks = vi.hoisted(() => ({
@@ -203,7 +204,7 @@ describe("entity pull reset wiring", () => {
       after: number,
       items: Record<string, unknown>[],
     ): ResourceChangeEvent => ({
-      protocol: 3,
+      protocol: SYNC_PROTOCOL_VERSION,
       workspaceId,
       epoch: "epoch",
       revision: after + 1,
@@ -619,7 +620,7 @@ describe("entity pull reset wiring", () => {
       after: number,
       items: Record<string, unknown>[],
     ): ResourceChangeEvent => ({
-      protocol: 3,
+      protocol: SYNC_PROTOCOL_VERSION,
       workspaceId,
       epoch: "epoch",
       revision: after + 1,
