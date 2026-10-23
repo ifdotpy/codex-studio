@@ -377,15 +377,33 @@ impl EventWriteRepository {
                 }
             }
             value != &before
-        })
+        })?;
+        // The scheduler's lifecycle fields are the projection of this transition.
+        crate::entity_publication::mark_published("agent", agent_id);
+        Ok(())
     }
 
     /// Publish runtime-owned agent fields through the same sequenced projection writer.
+    /// Under the default publication ([`crate::entity_publication`]) the patch is
+    /// provisional: the chat gets a full publication before the commit, which also
+    /// recomputes the derived view fields and creates a missing entity.
     pub fn set_agent_sync_values(
         transaction: &Transaction<'_>,
         agent_id: &str,
         fields: &[(&str, Value)],
     ) -> StoreResult<()> {
+        if crate::entity_publication::active() {
+            crate::entity_publication::mark_stale("agent", agent_id);
+            let live = transaction
+                .query_row_cached(
+                    "SELECT EXISTS(SELECT 1 FROM sync_entities WHERE collection='agent' AND id=?1 AND deleted=0)",
+                    [agent_id],
+                    |row| row.get::<_, bool>(0),
+                )?;
+            if !live {
+                return Ok(());
+            }
+        }
         Self::update_agent_sync(transaction, agent_id, |value| {
             let mut changed = false;
             for (field, next) in fields {

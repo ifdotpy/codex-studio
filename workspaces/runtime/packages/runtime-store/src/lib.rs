@@ -3,7 +3,9 @@ pub mod agent_volatile;
 pub mod blocking_pool;
 mod bootstrap;
 mod cached_sql;
+pub mod entity_publication;
 pub use cached_sql::{CachedSql, STATEMENT_CACHE_CAPACITY};
+pub use entity_publication::{EntityPublisher, PendingEntities};
 mod feature_schema;
 mod fresh_state;
 mod multi_server_state_check;
@@ -578,6 +580,7 @@ fn install_table_change_hooks(
             if database_name != "main" {
                 return;
             }
+            entity_publication::observe_row(table_name, row_id);
             if ENTITY_RESOURCE_TABLES.contains(&table_name) {
                 resource_entity_update_count.fetch_add(1, Ordering::Relaxed);
             }
@@ -894,6 +897,8 @@ pub struct RuntimeStore {
     entity_projection_maintenance_lock: tokio::sync::Mutex<()>,
     wal_checkpoint_requested: Arc<AtomicBool>,
     last_wal_checkpoint: Mutex<Instant>,
+    /// The projection that each writer transaction runs before commit; see [`entity_publication`].
+    entity_publisher: Arc<std::sync::OnceLock<Arc<dyn EntityPublisher>>>,
 }
 
 struct ReadConnectionPool {
@@ -1332,6 +1337,7 @@ impl RuntimeStore {
             entity_projection_maintenance_lock: tokio::sync::Mutex::new(()),
             wal_checkpoint_requested: Arc::new(AtomicBool::new(false)),
             last_wal_checkpoint: Mutex::new(Instant::now()),
+            entity_publisher: Arc::new(std::sync::OnceLock::new()),
         };
         store
             .transaction(move |transaction| {
@@ -1477,6 +1483,13 @@ impl RuntimeStore {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push(Arc::new(observer));
+    }
+
+    /// Make every later writer transaction publish the client entities of the agent and
+    /// request rows it changed, before it commits. Returns false when a publisher is
+    /// already installed; the first one stays.
+    pub fn install_entity_publisher(&self, publisher: Arc<dyn EntityPublisher>) -> bool {
+        self.entity_publisher.set(publisher).is_ok()
     }
 
     /// Install the process-local notification fired after each successful write commit.
@@ -1774,6 +1787,7 @@ impl RuntimeStore {
         let resource_entity_update_count = Arc::clone(&self.resource_entity_update_count);
         let table_row_interest = Arc::clone(&self.table_row_interest);
         let changed_rows = Arc::clone(&self.changed_rows);
+        let entity_publisher = self.entity_publisher.get().cloned();
         #[cfg(test)]
         let simulate_unknown_commit_after_success =
             Arc::clone(&self.simulate_unknown_commit_after_success);
@@ -1794,7 +1808,25 @@ impl RuntimeStore {
                     .transaction_with_behavior(TransactionBehavior::Immediate)
                     .map_err(StoreError::from)?;
                 let initial_changes = transaction.total_changes();
-                match sql_callback(|| operation(&transaction)) {
+                if entity_publisher.is_some() {
+                    entity_publication::begin();
+                }
+                let outcome = sql_callback(|| operation(&transaction));
+                let journal = entity_publication::finish();
+                // Publish the rows the operation changed before the commit, in its transaction.
+                let outcome = match (outcome, &entity_publisher) {
+                    (Ok(value), Some(publisher)) => sql_callback(|| {
+                        let pending = entity_publication::pending(&transaction, journal)?;
+                        if !pending.is_empty() {
+                            publisher.publish(&transaction, &pending)?;
+                        }
+                        Ok::<_, StoreError>(())
+                    })
+                    .map(|()| value)
+                    .map_err(E::from),
+                    (outcome, _) => outcome,
+                };
+                match outcome {
                     Ok(value) => {
                         let final_changes = transaction.total_changes();
                         let changed = final_changes != initial_changes;

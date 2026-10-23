@@ -67,6 +67,7 @@ pub mod coordination_reads;
 pub mod costs;
 pub mod diagnostics;
 pub mod disk_space;
+pub mod entity_publication;
 pub mod event_write;
 pub mod federation;
 pub mod federation_credentials;

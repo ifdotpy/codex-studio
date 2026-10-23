@@ -30,6 +30,18 @@ updates. Stream payloads are not walked against generated
 runtime validators; handlers retain structural preconditions and workspace,
 epoch, revision, and ordering checks.
 
+### Entity publication
+
+The renderer reads chats and cards only from their `sync_entities` rows, and a
+pull does not rebuild a complete projection. Every writer transaction therefore
+publishes the `runtime_agents` and `runtime_requests` rows it changed before it
+commits. The [store journal](../workspaces/runtime/packages/runtime-store/src/entity_publication.rs)
+records each changed row, and the services publisher projects it through
+`sync_policy::publish_entity_changes`. A write path needs no publish call of its
+own. A path that publishes after its last write is not published twice.
+Volatile agent fields are outside this rule: their writers leave
+`runtime_agents` unchanged on purpose.
+
 The existing native EventSource transport and RxDB projection cache remain in
 use. Adding a separate query cache is unnecessary for this contract. FastAPI
 owns SSE framing; the renderer and server compare the same generated schema
