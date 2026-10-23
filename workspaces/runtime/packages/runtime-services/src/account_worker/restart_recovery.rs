@@ -64,6 +64,15 @@ pub(super) fn start_first_pass(first_pass: FirstPass) -> tokio::task::JoinHandle
         }
         // Restart turns are settled above, so their commands are checked too.
         super::background_commands::check_account(
+            Arc::clone(&store),
+            &first_pass.account,
+            &first_pass.scope,
+            &first_pass.session,
+        )
+        .await;
+        // A turn stopped while no worker was attached still runs in this
+        // provider generation; end it on this connection.
+        super::stopped_turns::end_account(
             store,
             &first_pass.account,
             &first_pass.scope,
