@@ -1,24 +1,24 @@
 .account-tiles {
   display: grid;
-  gap: 9px;
-  margin-block: 8px;
+  gap: var(--mantine-spacing-xs);
+  margin-block: var(--mantine-spacing-xs);
 }
 .setup-provider {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 7px;
+  gap: calc(var(--mantine-spacing-xs) * 0.7);
 }
 .setup-accounts {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 7px;
+  grid-template-columns: minmax(0, 1fr);
+  gap: calc(var(--mantine-spacing-xs) * 0.7);
 }
 .setup-account {
   position: relative;
-  height: 44px;
-  padding-bottom: 7px;
-  border: 1px solid transparent;
+  height: var(--studio-touch-target, 2.75rem);
+  padding-bottom: calc(var(--mantine-spacing-xs) * 0.7);
+  border: var(--studio-border-width, 0.0625rem) solid transparent;
 }
 .setup-account[data-selected] {
   border-color: var(--mantine-primary-color-filled);
@@ -33,11 +33,11 @@
 }
 .setup-limit {
   position: absolute;
-  bottom: 5px;
-  left: 8px;
-  right: 8px;
-  height: 3px;
-  border-radius: 3px;
+  bottom: calc(var(--mantine-spacing-xs) * 0.5);
+  left: var(--mantine-spacing-xs);
+  right: var(--mantine-spacing-xs);
+  height: var(--studio-rail-size);
+  border-radius: var(--studio-rail-size);
   background: var(--mantine-color-default-hover);
 }
 .setup-limit > span {
@@ -46,9 +46,10 @@
   border-radius: inherit;
 }
 
-@media (max-width: 760px) {
+/* Phone and tablet controls stack at this content breakpoint. */
+@media (max-width: 47.5rem) {
   .account-tiles .mantine-SegmentedControl-label {
-    min-height: 44px;
+    min-height: var(--studio-touch-target, 2.75rem);
     display: flex;
     justify-content: center;
     align-items: center;
@@ -56,18 +57,18 @@
 }
 
 .account-tiles-label {
-  font-size: 14px;
+  font-size: var(--studio-text-body);
   font-weight: 500;
 }
 
 /* Tiles read as cards: every tile has a quiet surface; the selected one adds
    the accent outline. */
 .setup-account {
-  background: light-dark(#f1f2f6, #26262b);
-  border-radius: 8px;
+  background: var(--mantine-color-default-hover);
+  border-radius: 0;
 }
 .setup-account:hover:not(:disabled) {
-  background: light-dark(#e8eaf0, #2f3038);
+  background: var(--mantine-color-default-hover);
 }
 
 /* A tile names the account and states its remaining limit on one line. */
@@ -79,7 +80,7 @@
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  gap: 6px;
+  gap: var(--mantine-spacing-xs);
   min-width: 0;
 }
 .setup-account-name {

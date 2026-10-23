@@ -14,6 +14,7 @@ import LimitRecoveryNotice from "./LimitRecoveryNotice";
 import { useServerResourceReads } from "../servers/ServerServicesContext";
 export { limitRecovery } from "../usage/limitRecovery";
 import "./Usage.css";
+import { remainingLimitColor } from "./accountLimitColor";
 import TokenRate from "./TokenRate";
 import {
   AccountTilesLayout,
@@ -870,15 +871,8 @@ export default function Usage({
                           {window.remaining !== null && !window.expired && (
                             <Progress
                               value={window.remaining}
-                              size={3}
-                              radius="xl"
-                              color={
-                                window.remaining > 50
-                                  ? "green"
-                                  : window.remaining >= 15
-                                    ? "yellow"
-                                    : "red"
-                              }
+                              size="xs"
+                              color={remainingLimitColor(window.remaining)}
                               aria-label={`${bucket.name} ${window.label} remaining`}
                             />
                           )}

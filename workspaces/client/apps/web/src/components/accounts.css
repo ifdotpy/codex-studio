@@ -1,18 +1,18 @@
 .account-menu-note,
 .accounts-intro {
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--studio-text-meta);
 }
 .account-menu-note {
   display: flex;
   align-items: flex-start;
-  gap: 6px;
-  margin: 8px 12px;
+  gap: var(--mantine-spacing-xs);
+  margin: var(--mantine-spacing-xs) var(--mantine-spacing-sm);
   line-height: 1.5;
 }
 .account-menu-note svg {
   flex-shrink: 0;
-  margin-top: 3px;
+  margin-top: var(--studio-rail-size);
 }
 /* Each transfer line starts on its own row. */
 .account-menu-note small {
@@ -23,53 +23,53 @@
 }
 .accounts-intro {
   line-height: 1.6;
-  margin: 0 0 12px;
+  margin: 0 0 var(--mantine-spacing-sm);
 }
 .account-plan {
   text-transform: capitalize;
 }
 .accounts-actions {
   display: flex;
-  gap: 8px;
+  gap: var(--mantine-spacing-xs);
   flex-wrap: wrap;
-  margin-top: 14px;
+  margin-top: var(--studio-text-body);
 }
 .account-action-error,
 .account-row p[role="alert"] {
-  color: light-dark(var(--mantine-color-red-7), var(--mantine-color-red-5));
-  font-size: 12px;
+  color: var(--studio-state-error);
+  font-size: var(--studio-text-meta);
   overflow-wrap: anywhere;
 }
 .account-login {
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  margin-top: 16px;
-  padding: 16px;
-  font-size: 13px;
+  border: var(--studio-border-width, 0.0625rem) solid var(--line);
+  border-radius: var(--mantine-spacing-xs);
+  margin-top: var(--mantine-spacing-md);
+  padding: var(--mantine-spacing-md);
+  font-size: var(--studio-text-body);
 }
 .account-login p {
-  margin: 8px 0;
+  margin: var(--mantine-spacing-xs) 0;
   color: var(--muted);
 }
 .account-login > small {
   display: block;
-  margin-top: 12px;
+  margin-top: var(--mantine-spacing-sm);
   color: var(--muted);
 }
 .account-login-code {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
-  margin: 12px 0;
+  gap: var(--mantine-spacing-xs);
+  margin: var(--mantine-spacing-sm) 0;
 }
 .account-login-code code {
-  font-size: 20px;
-  letter-spacing: 2px;
+  font-size: var(--mantine-font-size-xl);
+  letter-spacing: calc(var(--mantine-spacing-xs) * 0.2);
 }
 .account-register {
-  margin-top: 14px;
-  font-size: 12px;
+  margin-top: var(--studio-text-body);
+  font-size: var(--studio-text-meta);
   color: var(--muted);
 }
 .account-register summary {
@@ -78,8 +78,8 @@
 .account-register form {
   display: flex;
   align-items: flex-end;
-  gap: 8px;
-  margin-top: 12px;
+  gap: var(--mantine-spacing-xs);
+  margin-top: var(--mantine-spacing-sm);
 }
 .account-register .mantine-TextInput-root {
   flex: 1;
@@ -87,15 +87,15 @@
 }
 .account-capacity {
   display: grid;
-  gap: 6px;
+  gap: var(--mantine-spacing-xs);
   line-height: 1.4;
 }
 .account-capacity-pool {
   display: grid;
-  grid-template-columns: 48px minmax(0, 1fr);
-  gap: 12px;
+  grid-template-columns: calc(var(--studio-action-size) * 1.5) minmax(0, 1fr);
+  gap: var(--mantine-spacing-sm);
   align-items: baseline;
-  font-size: 12px;
+  font-size: var(--studio-text-meta);
 }
 .account-capacity-pool > span {
   color: var(--muted);
@@ -104,16 +104,16 @@
 .account-capacity-pool > div {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 6px 12px;
+  gap: var(--mantine-spacing-xs) var(--mantine-spacing-sm);
 }
 .account-capacity-window {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: calc(var(--mantine-spacing-xs) * 0.2);
   min-width: 0;
 }
 .account-capacity-window strong {
-  font-size: 12px;
+  font-size: var(--studio-text-meta);
   font-weight: 500;
   font-variant-numeric: tabular-nums;
 }
@@ -122,13 +122,14 @@
   font-size: var(--studio-text-meta);
   overflow-wrap: anywhere;
 }
-@media (max-width: 600px) {
+/* Phone and tablet controls stack at this content breakpoint. */
+@media (max-width: 37.5rem) {
   .account-capacity-pool {
-    grid-template-columns: 38px minmax(0, 1fr);
-    gap: 8px;
+    grid-template-columns: calc(var(--mantine-spacing-xs) * 3.8) minmax(0, 1fr);
+    gap: var(--mantine-spacing-xs);
   }
   .account-capacity-pool > div {
-    gap: 6px;
+    gap: var(--mantine-spacing-xs);
   }
   .account-capacity-window strong {
     font-size: var(--studio-text-meta);
@@ -147,46 +148,47 @@
   }
 }
 .account-add {
-  margin-bottom: 20px;
+  margin-bottom: var(--mantine-spacing-lg);
 }
 .account-add-heading {
   display: flex;
   align-items: center;
-  gap: 16px;
+  gap: var(--mantine-spacing-md);
   justify-content: space-between;
 }
 .account-add-heading strong {
-  font-size: 14px;
+  font-size: var(--studio-text-body);
 }
 .account-add-heading p {
-  margin: 4px 0 0;
+  margin: calc(var(--mantine-spacing-xs) * 0.4) 0 0;
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--studio-text-meta);
 }
 .account-add-heading > button {
   flex-shrink: 0;
 }
 .account-login-actions {
   display: flex;
-  gap: 8px;
-  margin-top: 12px;
+  gap: var(--mantine-spacing-xs);
+  margin-top: var(--mantine-spacing-sm);
 }
 .account-login > p[role="status"] {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--mantine-spacing-xs);
   flex-wrap: wrap;
 }
 .account-login > small {
   display: block;
-  margin-top: 12px;
+  margin-top: var(--mantine-spacing-sm);
   color: var(--muted);
 }
-@media (max-width: 600px) {
+/* Phone and tablet controls stack at this content breakpoint. */
+@media (max-width: 37.5rem) {
   .account-add-heading {
     align-items: stretch;
     flex-direction: column;
-    gap: 12px;
+    gap: var(--mantine-spacing-sm);
   }
 }
 
@@ -199,7 +201,7 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: var(--mantine-spacing-sm);
 }
 .accounts-add-header h3,
 .accounts-runtime h3 {
@@ -207,15 +209,15 @@
   font-size: var(--studio-text-body);
 }
 .accounts-setup {
-  margin-bottom: 16px;
+  margin-bottom: var(--mantine-spacing-md);
 }
 .account-register {
   font-size: var(--studio-text-body);
 }
 .claude-profile {
-  padding: 12px;
+  padding: var(--mantine-spacing-sm);
   background: var(--mantine-color-default-hover);
-  border-radius: 6px;
+  border-radius: var(--mantine-spacing-xs);
 }
 .claude-profile summary {
   font-weight: 600;
@@ -228,42 +230,43 @@
 }
 .claude-advanced {
   display: grid;
-  gap: 12px;
+  gap: var(--mantine-spacing-sm);
   border: 0;
-  border-top: 1px solid var(--line);
-  padding: 16px 0 0;
-  margin: 8px 0;
+  border-top: var(--studio-border-width, 0.0625rem) solid var(--line);
+  padding: var(--mantine-spacing-md) 0 0;
+  margin: var(--mantine-spacing-xs) 0;
   min-width: 0;
 }
 .claude-advanced legend {
-  padding: 0 8px 0 0;
+  padding: 0 var(--mantine-spacing-xs) 0 0;
   color: var(--text);
   font-weight: 600;
 }
 .account-replacement {
-  padding: 12px;
+  padding: var(--mantine-spacing-sm);
   background: var(--mantine-color-default-hover);
-  border-radius: 6px;
+  border-radius: var(--mantine-spacing-xs);
 }
 .account-confirm-actions {
   justify-content: flex-end;
-  margin-top: 20px;
+  margin-top: var(--mantine-spacing-lg);
 }
 .account-disconnect-effects {
-  padding-left: 20px;
+  padding-left: var(--mantine-spacing-lg);
   line-height: 1.6;
 }
 .accounts-runtime {
-  margin-top: 24px;
+  margin-top: var(--mantine-spacing-xl);
   display: grid;
-  gap: 12px;
+  gap: var(--mantine-spacing-sm);
 }
 .accounts-runtime summary {
   cursor: pointer;
   color: var(--muted);
   font-size: var(--studio-text-meta);
 }
-@media (max-width: 600px) {
+/* Phone and tablet controls stack at this content breakpoint. */
+@media (max-width: 37.5rem) {
   .account-register form {
     flex-direction: column;
     align-items: stretch;
@@ -272,7 +275,7 @@
 
 .accounts-setup h3 {
   font-size: var(--studio-text-body);
-  margin: 0 0 12px;
+  margin: 0 0 var(--mantine-spacing-sm);
 }
 .account-add-heading strong {
   font-weight: 600;
@@ -287,7 +290,7 @@
 .account-name-actions {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--mantine-spacing-xs);
   min-width: 0;
 }
 .account-name > button {
@@ -303,25 +306,26 @@
   display: flex;
   align-items: flex-end;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: var(--mantine-spacing-xs);
   width: 100%;
 }
 .account-name-form > .mantine-TextInput-root {
-  flex: 1 1 180px;
+  flex: 1 1 var(--studio-settings-nav-size, 10rem);
   min-width: 0;
 }
-@media (max-width: 600px) {
+/* Phone and tablet controls stack at this content breakpoint. */
+@media (max-width: 37.5rem) {
   .account-name button {
-    min-height: 44px;
+    min-height: var(--studio-touch-target, 2.75rem);
   }
   .account-name-form input {
-    font-size: 16px;
+    font-size: var(--mantine-font-size-lg);
   }
 }
 
 .accounts-list {
   display: grid;
-  gap: 24px;
+  gap: var(--mantine-spacing-xl);
 }
 .accounts-provider {
   min-width: 0;
@@ -329,29 +333,30 @@
 .accounts-provider > h3 {
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin: 0 0 12px;
+  gap: var(--mantine-spacing-xs);
+  margin: 0 0 var(--mantine-spacing-sm);
   font-size: var(--studio-text-body);
-  font-weight: 550;
+  font-weight: 600;
 }
 .accounts-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0;
   align-items: start;
 }
 .account-row {
   display: grid;
   min-width: 0;
-  gap: 10px;
-  padding: 16px;
-  border-radius: 10px;
-  background: light-dark(#f1f2f6, #26262b);
+  gap: var(--mantine-spacing-xs);
+  padding: var(--mantine-spacing-md);
+  border-radius: 0;
+  border-bottom: var(--studio-border-width, 0.0625rem) solid var(--line);
+  background: transparent;
 }
 .account-card-heading {
   display: flex;
   align-items: flex-start;
-  gap: 4px;
+  gap: calc(var(--mantine-spacing-xs) * 0.4);
   min-width: 0;
 }
 .account-card-heading .account-name {
@@ -359,7 +364,7 @@
 }
 .account-card-heading .account-name > button {
   padding-inline: 0;
-  font-weight: 550;
+  font-weight: 600;
 }
 .account-card-menu {
   flex: 0 0 auto;
@@ -374,23 +379,23 @@
 .account-card-status {
   display: flex;
   align-items: center;
-  gap: 6px 8px;
+  gap: var(--mantine-spacing-xs) var(--mantine-spacing-xs);
   flex-wrap: wrap;
 }
 .account-status {
   font-size: var(--studio-text-meta);
-  padding: 3px 7px;
-  border-radius: 5px;
+  padding: var(--studio-rail-size) calc(var(--mantine-spacing-xs) * 0.7);
+  border-radius: calc(var(--mantine-spacing-xs) * 0.5);
   color: var(--muted);
-  background: light-dark(#e6e7ec, #323238);
+  background: var(--mantine-color-default-hover);
 }
 .account-status[data-status="error"] {
-  color: light-dark(var(--mantine-color-red-7), var(--mantine-color-red-4));
+  color: var(--studio-state-error);
 }
 .account-default {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: calc(var(--mantine-spacing-xs) * 0.4);
   color: var(--muted);
   font-size: var(--studio-text-meta);
 }
@@ -398,7 +403,7 @@
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  gap: 8px;
+  gap: var(--mantine-spacing-xs);
   font-size: var(--studio-text-meta);
   color: var(--muted);
 }
@@ -410,15 +415,8 @@
   font-variant-numeric: tabular-nums;
 }
 .account-limit-bar {
-  display: block;
-  height: 3px;
-  border-radius: 3px;
-  background: light-dark(#dedfe6, #3a3a43);
-}
-.account-limit-bar > span {
-  display: block;
-  height: 100%;
-  border-radius: inherit;
+  background: var(--mantine-color-default-hover);
+  border-radius: 0;
 }
 .account-limit-details {
   color: var(--muted);
@@ -428,7 +426,7 @@
   cursor: pointer;
 }
 .account-limit-details[open] > summary {
-  margin-bottom: 10px;
+  margin-bottom: var(--mantine-spacing-xs);
 }
 .account-row > p {
   margin: 0;
@@ -436,18 +434,19 @@
   color: var(--muted);
 }
 .account-limit-details .account-capacity-pool + .account-capacity-pool {
-  margin-top: 10px;
+  margin-top: var(--mantine-spacing-xs);
 }
-@media (max-width: 600px) {
+/* Phone and tablet controls stack at this content breakpoint. */
+@media (max-width: 37.5rem) {
   .accounts-grid {
     grid-template-columns: minmax(0, 1fr);
   }
   .account-row {
-    padding: 12px;
+    padding: var(--mantine-spacing-sm);
   }
   .account-card-menu {
-    width: 44px;
-    min-height: 44px;
+    width: var(--studio-touch-target, 2.75rem);
+    min-height: var(--studio-touch-target, 2.75rem);
   }
 }
 
@@ -460,42 +459,44 @@
 .account-transfer-chip {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  max-width: 220px;
+  gap: calc(var(--mantine-spacing-xs) * 0.4);
+  max-width: var(--studio-room-list-size, 15rem);
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--studio-text-meta);
 }
 .account-transfer-chip[data-blocked] {
-  color: light-dark(var(--mantine-color-red-7), var(--mantine-color-red-5));
+  color: var(--studio-state-error);
 }
 
 /* Account strips are shared by local and multi-server settings. */
 .server-accounts-list {
   display: grid;
-  gap: 10px;
+  gap: var(--mantine-spacing-xs);
 }
 .server-account-row {
   display: grid;
-  gap: 10px;
+  gap: var(--mantine-spacing-xs);
   min-width: 0;
-  padding: 12px;
-  border: 1px solid var(--line);
-  border-radius: 9px;
-  background: var(--surface);
+  padding: var(--mantine-spacing-sm);
+  border: 0;
+  border-bottom: var(--studio-border-width, 0.0625rem) solid var(--line);
+  border-radius: 0;
+  background: transparent;
 }
 .server-account-heading {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 10px;
+  gap: var(--mantine-spacing-xs);
 }
 .server-account-heading > div:first-child {
-  display: grid;
-  justify-items: start;
-  gap: 4px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: calc(var(--mantine-spacing-xs) * 0.4);
   min-width: 0;
 }
 .server-account-heading strong,
@@ -506,5 +507,18 @@
 .account-muted,
 .server-accounts-help {
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--studio-text-meta);
+}
+
+.server-account-heading strong {
+  flex: 1 1 100%;
+}
+.server-account-heading .mantine-Badge-root {
+  color: var(--muted);
+  background: transparent;
+  padding-inline: 0;
+}
+.server-account-heading .mantine-Badge-label {
+  display: flex;
+  gap: var(--mantine-spacing-xs);
 }

@@ -162,19 +162,14 @@ export default function ServerAccountsPanel({
                             color="blue"
                             variant="light"
                           >
-                            Default · {server.label}
+                            Default <span>{server.label}</span>
                           </Badge>
                         ))}
                       {!row.email && (
                         <span className="account-muted">Email unavailable</span>
                       )}
-                      {row.plan && (
-                        <small>
-                          {row.email ? `${row.email} · ` : ""}
-                          {row.plan}
-                        </small>
-                      )}
-                      {row.email && !row.plan && <small>{row.email}</small>}
+                      {row.email && <small>{row.email}</small>}
+                      {row.plan && <small>{row.plan}</small>}
                     </div>
                     <Menu
                       opened={openAccountMenuKey === row.key}
