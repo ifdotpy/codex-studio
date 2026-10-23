@@ -292,7 +292,8 @@ test("committed entities propagate between renderer tabs @sync", async ({
         assert.equal(created.status(), 200);
         assert.ok(createdBody._syncEntities?.length);
         const createdEntity = createdBody._syncEntities.find(
-          (document) => document.id === `entity:agent:${createdBody.id}`,
+          (document) =>
+            document.collection === "agent" && document.id === createdBody.id,
         );
         assert.ok(
           createdEntity,
@@ -358,7 +359,7 @@ test("committed entities propagate between renderer tabs @sync", async ({
           mutationEntity: {
             id: createdEntity.id,
             seq: createdEntity.seq,
-            deleted: createdEntity._deleted ?? false,
+            deleted: createdEntity.op === "delete",
           },
           collection: "agent",
           deleted: false,
@@ -395,9 +396,10 @@ test("committed entities propagate between renderer tabs @sync", async ({
                             "state" &&
                           version.entityChanges?.documents.some(
                             (row) =>
-                              row.id === documentId &&
+                              `entity:${row.collection}:${row.id}` ===
+                                documentId &&
                               row.seq === seq &&
-                              row._deleted === deleted,
+                              (row.op === "delete") === deleted,
                           ),
                       ),
                     ),
@@ -442,7 +444,9 @@ test("committed entities propagate between renderer tabs @sync", async ({
               )
                 continue;
               const document = version.entityChanges?.documents.find(
-                (row) => row.id === documentId && row.seq === seq,
+                (row) =>
+                  `entity:${row.collection}:${row.id}` === documentId &&
+                  row.seq === seq,
               );
               if (document) return { at: frame.at, document };
             }
@@ -600,10 +604,10 @@ test("committed entities propagate between renderer tabs @sync", async ({
         );
       }
       if (params.operation === "rename") {
-        assert.equal(JSON.parse(document.payload).value.name, params.name);
+        assert.equal(document.value.name, params.name);
       }
       if (params.operation === "budget")
-        assert.ok(JSON.parse(document.payload).value.tokensUsed >= 13);
+        assert.ok(document.value.tokensUsed >= 13);
       const observedAt = observed.at;
       const changedFrames = await Promise.all(
         pages.map((page, tab) =>
@@ -740,12 +744,15 @@ test("committed entities propagate between renderer tabs @sync", async ({
               )
                 continue;
               const document = version.entityChanges.documents.find(
-                (row) => row.id === `entity:agent:${leadId}` && row.seq === seq,
+                (row) =>
+                  row.collection === "agent" &&
+                  row.id === leadId &&
+                  row.seq === seq,
               );
               if (document)
                 return {
                   seq: document.seq,
-                  value: JSON.parse(document.payload).value,
+                  value: document.value,
                 };
             }
           }

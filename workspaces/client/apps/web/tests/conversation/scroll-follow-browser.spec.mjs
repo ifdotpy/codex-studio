@@ -103,7 +103,7 @@ test("a scrolled-up reader keeps its place while the agent streams", async ({
   let streamRevision = 0;
   let transcriptPulls = 0;
   const streamFrame = (resources, reason, batch) => ({
-    protocol: 3,
+    protocol: 4,
     workspaceId: syncContract.identity.workspaceId,
     epoch: "scroll-follow-transcripts",
     revision: ++streamRevision,

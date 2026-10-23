@@ -135,7 +135,7 @@ test.describe("legacy schema mismatch", () => {
           );
           ({ workspaceId } = await identity.json());
           body = protocol3SseEvent("resources", {
-            protocol: 3,
+            protocol: 4,
             workspaceId,
             epoch: "schema-cache-test",
             revision: 1,
@@ -162,7 +162,7 @@ test.describe("legacy schema mismatch", () => {
               ({ workspaceId } = await identity.json());
             }
             body += protocol3SseEvent("resources", {
-              protocol: 3,
+              protocol: 4,
               workspaceId,
               epoch: "schema-cache-test",
               revision: 2,
@@ -719,12 +719,17 @@ test("different build collection sets share only drafts and outbox", async ({
   stateUrl.searchParams.set("limit", "500");
   stateUrl.searchParams.set("fresh", "1");
   const statePull = await fetch(stateUrl).then((response) => response.json());
-  const lead = statePull.documents
-    .map(({ payload }) => JSON.parse(payload))
-    .find(
-      (row) => row.collection === "agent" && row.value.name === "Release lead",
-    );
-  const legacyRows = statePull.documents.filter(({ _deleted }) => !_deleted);
+  const lead = statePull.documents.find(
+    (row) => row.collection === "agent" && row.value.name === "Release lead",
+  );
+  const legacyRows = statePull.documents
+    .filter(({ op }) => op === "upsert")
+    .map(({ collection, id, value, seq }) => ({
+      id: `entity:${collection}:${id}`,
+      seq,
+      payload: JSON.stringify({ collection, id, value }),
+      _deleted: false,
+    }));
   let legacyTranscriptRows = 0;
   if (lead) {
     const transcriptUrl = new URL("/api/sync/pull", fixtureOrigin);

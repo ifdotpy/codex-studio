@@ -24,7 +24,7 @@ vi.mock("./sync/resume", () => ({
 
 type Ref = { kind: string; [key: string]: unknown };
 type HubEvent = {
-  protocol: 3;
+  protocol: 4;
   workspaceId: string;
   epoch: string;
   revision: number;
@@ -49,7 +49,7 @@ class Hub {
   }
   event(reason: string, resources: Ref[]): HubEvent {
     return {
-      protocol: 3,
+      protocol: 4,
       workspaceId,
       epoch: this.epoch,
       revision: this.revision,

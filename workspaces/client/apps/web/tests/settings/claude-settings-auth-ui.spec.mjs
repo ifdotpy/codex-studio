@@ -65,7 +65,7 @@ test("claude settings auth ui", async ({ browser: _browser }) => {
             res.write(
               apiSchemaHandshakeSse(
                 protocol3SseEvent("resources", {
-                  protocol: 3,
+                  protocol: 4,
                   workspaceId,
                   epoch: "claude-settings-auth",
                   revision: 1,
@@ -80,7 +80,7 @@ test("claude settings auth ui", async ({ browser: _browser }) => {
             );
             const heartbeat = setInterval(() => {
               res.write(
-                `event: heartbeat\ndata: ${JSON.stringify({ protocol: 3, workspaceId, epoch: "claude-settings-auth", revision: 1 })}\n\n`,
+                `event: heartbeat\ndata: ${JSON.stringify({ protocol: 4, workspaceId, epoch: "claude-settings-auth", revision: 1 })}\n\n`,
               );
             }, 1000);
             res.on("close", () => clearInterval(heartbeat));

@@ -30,7 +30,7 @@ test("Chat prefetch browser", async ({
               for (const stream of streams)
                 stream.write(
                   `event: resources\ndata: ${JSON.stringify({
-                    protocol: 3,
+                    protocol: 4,
                     workspaceId: workspace,
                     epoch: "fixture-epoch",
                     revision,

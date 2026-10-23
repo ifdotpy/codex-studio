@@ -236,7 +236,7 @@ test("message delivery ui", async ({ browser: _browser }) => {
                 stream.dispatchEvent(
                   new MessageEvent("resources", {
                     data: JSON.stringify({
-                      protocol: 3,
+                      protocol: 4,
                       workspaceId,
                       epoch: "fixture-epoch",
                       revision,

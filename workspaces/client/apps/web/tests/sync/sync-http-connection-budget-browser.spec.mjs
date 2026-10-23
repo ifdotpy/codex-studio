@@ -37,7 +37,7 @@ test("Sync http connection budget browser", async ({
       if (!refs.some((resource) => resource.kind === "state")) continue;
       response.write(
         `event: resources\ndata: ${JSON.stringify({
-          protocol: 3,
+          protocol: 4,
           workspaceId,
           epoch: "budget-epoch",
           revision,
@@ -137,7 +137,7 @@ test("Sync http connection budget browser", async ({
           streamResources.set(res, refs);
           res.write(
             `event: resources\ndata: ${JSON.stringify({
-              protocol: 3,
+              protocol: 4,
               workspaceId,
               epoch: "budget-epoch",
               revision,
@@ -163,16 +163,14 @@ test("Sync http connection budget browser", async ({
           const document =
             scope === "state:entities:v1"
               ? {
-                  id: "entity:workspace:current",
+                  op: "upsert",
+                  collection: "workspace",
+                  id: "current",
+                  value: {
+                    stateDir: "/fixture",
+                    marker: "revision-" + revision,
+                  },
                   seq: revision,
-                  payload: JSON.stringify({
-                    collection: "workspace",
-                    id: "current",
-                    value: {
-                      stateDir: "/fixture",
-                      marker: "revision-" + revision,
-                    },
-                  }),
                 }
               : scope.startsWith("transcript:")
                 ? { id: scope, seq: 1, payload: JSON.stringify({ items: [] }) }

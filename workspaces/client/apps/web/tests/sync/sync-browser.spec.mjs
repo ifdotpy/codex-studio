@@ -92,7 +92,7 @@ test("Sync Browser", async ({
         contentType: "text/event-stream",
         body: apiSchemaHandshakeSse(
           protocol3SseEvent("resources", {
-            protocol: 3,
+            protocol: 4,
             workspaceId: "a".repeat(32),
             epoch: "fixture-epoch",
             revision,
@@ -125,19 +125,16 @@ test("Sync Browser", async ({
               after < revision
                 ? [
                     {
-                      id: "entity:agent:lead",
-                      payload: JSON.stringify({
-                        collection: "agent",
+                      op: "upsert",
+                      collection: "agent",
+                      id: "lead",
+                      value: {
                         id: "lead",
-                        value: {
-                          id: "lead",
-                          name: content,
-                          status: "running",
-                          source: "managed",
-                        },
-                      }),
+                        name: content,
+                        status: "running",
+                        source: "managed",
+                      },
                       seq: revision,
-                      _deleted: false,
                     },
                   ]
                 : [],
@@ -188,7 +185,7 @@ test("Sync Browser", async ({
       stream.source.dispatchEvent(
         new MessageEvent("resources", {
           data: JSON.stringify({
-            protocol: 3,
+            protocol: 4,
             workspaceId: "a".repeat(32),
             epoch: "fixture-epoch",
             revision: seq,

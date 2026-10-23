@@ -93,11 +93,12 @@ describe("schema-keyed entity cache storage", () => {
       { name: "rxdb-dexie-studio-unrelated--0--projections" },
       { name: "codex-studio-uploads" },
     ]);
-    await vi.waitFor(() => expect(deleteDatabase).toHaveBeenCalledTimes(3));
+    await vi.waitFor(() => expect(deleteDatabase).toHaveBeenCalledTimes(4));
     expect(deleteDatabase.mock.calls.map(([name]) => name).sort()).toEqual([
       `rxdb-dexie-${entityProjectionDatabaseName(workspace, staleHash)}--0--_rxdb_internal`,
       `rxdb-dexie-${entityProjectionDatabaseName(workspace, staleHash)}--0--projections`,
       `rxdb-dexie-${entityProjectionDatabaseName(workspace, staleHash)}--0--rx-replication-meta-${"4".repeat(64)}`,
+      `rxdb-dexie-${entityProjectionDatabaseName(workspace, staleHash)}--1--projections`,
     ]);
   });
 

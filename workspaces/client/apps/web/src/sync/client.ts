@@ -349,6 +349,8 @@ export function createSyncClient(options: SyncClientOptions) {
     });
     const { projections } = await projectionDb.addCollections({
       projections: {
+        // The schema-hashed database starts empty after a wire change.
+        autoMigrate: false,
         schema: {
           ...schema,
           version: ENTITY_PROJECTION_CACHE_VERSION,

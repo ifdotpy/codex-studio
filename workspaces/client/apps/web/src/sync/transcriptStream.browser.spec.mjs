@@ -37,7 +37,7 @@ test("an open transcript streams text without pulls and recovers incomplete inte
   let text = "Before streaming";
   const item = () => ({ id: "answer", role: "assistant", text });
   const frame = (reason, after, delta) => ({
-    protocol: 3,
+    protocol: 4,
     workspaceId,
     epoch,
     revision: ++revision,

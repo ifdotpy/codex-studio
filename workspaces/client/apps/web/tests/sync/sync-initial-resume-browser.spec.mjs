@@ -18,14 +18,11 @@ test("sync initial resume browser", async ({ page }) => {
     const workspaceId = "a".repeat(32);
     const pulls = [];
     const live = Array.from({ length: 499 }, (_, index) => ({
-      id: `entity:agent:worker-${index}`,
+      op: "upsert",
+      collection: "agent",
+      id: `worker-${index}`,
+      value: { id: `worker-${index}`, name: `Worker ${index}` },
       seq: index + 2,
-      _deleted: false,
-      payload: JSON.stringify({
-        collection: "agent",
-        id: `worker-${index}`,
-        value: { id: `worker-${index}`, name: `Worker ${index}` },
-      }),
     }));
     await page.route("**/check", (route) =>
       route.fulfill({
@@ -51,14 +48,11 @@ test("sync initial resume browser", async ({ page }) => {
           documents: [
             ...live,
             {
-              id: "entity:agent:stale",
+              op: "delete",
+              collection: "agent",
+              id: "stale",
+              value: {},
               seq: 601,
-              _deleted: true,
-              payload: JSON.stringify({
-                collection: "agent",
-                id: "stale",
-                value: {},
-              }),
             },
           ],
           checkpoint: { seq: 601 },
@@ -77,13 +71,11 @@ test("sync initial resume browser", async ({ page }) => {
         seq: 600,
       });
       await client.persistProjection(db.projections, {
-        id: "entity:agent:stale",
+        op: "upsert",
+        collection: "agent",
+        id: "stale",
+        value: { id: "stale", name: "Old" },
         seq: 1,
-        payload: JSON.stringify({
-          collection: "agent",
-          id: "stale",
-          value: { id: "stale", name: "Old" },
-        }),
       });
       window.writeCalls = 0;
       const storage = db.projections.storageInstance;

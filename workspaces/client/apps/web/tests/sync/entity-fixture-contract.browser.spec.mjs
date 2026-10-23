@@ -121,10 +121,16 @@ test("entity fixture contract matches the real sync backend", async () => {
     maxSeq: realPull.maxSeq,
   });
   const realById = new Map(
-    realPull.documents.map((doc) => [doc.id, JSON.parse(doc.payload)]),
+    realPull.documents.map((doc) => [
+      `entity:${doc.collection}:${doc.id}`,
+      { collection: doc.collection, id: doc.id, value: doc.value },
+    ]),
   );
   const stubById = new Map(
-    stubPull.documents.map((doc) => [doc.id, JSON.parse(doc.payload)]),
+    stubPull.documents.map((doc) => [
+      `entity:${doc.collection}:${doc.id}`,
+      { collection: doc.collection, id: doc.id, value: doc.value },
+    ]),
   );
   assert.deepEqual(
     [...stubById.keys()].sort(),
@@ -177,14 +183,18 @@ test("entity fixture contract matches the real sync backend", async () => {
       );
     }
     assert.equal(
-      typeof realPull.documents.find((doc) => doc.id === id)._deleted,
-      "boolean",
-      `${id} tombstone marker`,
+      typeof realPull.documents.find(
+        (doc) => `entity:${doc.collection}:${doc.id}` === id,
+      ).op,
+      "string",
+      `${id} operation`,
     );
     assert.equal(
-      typeof stubPull.documents.find((doc) => doc.id === id)._deleted,
-      "boolean",
-      `${id} stub tombstone marker`,
+      typeof stubPull.documents.find(
+        (doc) => `entity:${doc.collection}:${doc.id}` === id,
+      ).op,
+      "string",
+      `${id} stub operation`,
     );
   }
   assert.equal(stubPull.initialHigh, realPull.initialHigh, "fresh initialHigh");
@@ -232,7 +242,7 @@ test("entity fixture contract matches the real sync backend", async () => {
       limit: 1,
     });
     assert.equal(
-      priorityPage.documents[0].id,
+      `entity:${priorityPage.documents[0].collection}:${priorityPage.documents[0].id}`,
       `entity:agent:${priorityAgent.id}`,
       "priorityId places its agent first",
     );
@@ -240,7 +250,7 @@ test("entity fixture contract matches the real sync backend", async () => {
 
   const stream = await fetch(
     new URL(
-      `/api/sync/stream?protocol=3&resources=${encodeURIComponent(JSON.stringify([{ kind: "state" }]))}`,
+      `/api/sync/stream?protocol=4&resources=${encodeURIComponent(JSON.stringify([{ kind: "state" }]))}`,
       origin,
     ),
   );
@@ -294,7 +304,7 @@ test("entity fixture contract matches the real sync backend", async () => {
   });
   await new Promise((resolve) => streamServer.listen(0, "127.0.0.1", resolve));
   const stubStream = await fetch(
-    `http://127.0.0.1:${streamServer.address().port}/api/sync/stream?protocol=3&resources=%5B%5D`,
+    `http://127.0.0.1:${streamServer.address().port}/api/sync/stream?protocol=4&resources=%5B%5D`,
   );
   assert.equal(stubStream.status, 200);
   const stubOrigin = `http://127.0.0.1:${streamServer.address().port}`;
@@ -313,7 +323,8 @@ test("entity fixture contract matches the real sync backend", async () => {
   assert.ok(
     nodeChanged.documents.some(
       (document) =>
-        document.id === "entity:workspace:current" &&
+        document.collection === "workspace" &&
+        document.id === "current" &&
         document.seq > nodeInitial.maxSeq,
     ),
     "Node fixture assigns a new sequence to an in-place entity change",
@@ -321,8 +332,9 @@ test("entity fixture contract matches the real sync backend", async () => {
   assert.ok(
     nodeChanged.documents.some(
       (document) =>
-        document.id === `entity:project:${removedNodeProject.id}` &&
-        document._deleted === true &&
+        document.collection === "project" &&
+        document.id === removedNodeProject.id &&
+        document.op === "delete" &&
         document.seq > nodeInitial.maxSeq,
     ),
     "Node fixture emits a sequenced tombstone for an in-place removal",
@@ -618,16 +630,18 @@ test("shared entity stub converges on one matching stream", async ({
       initial.maxSeq,
     );
     const changedWorkspace = changed.documents.find(
-      (document) => document.id === "entity:workspace:current",
+      (document) =>
+        document.collection === "workspace" && document.id === "current",
     );
     const removedDocument = changed.documents.find(
-      (document) => document.id === `entity:project:${removedProject.id}`,
+      (document) =>
+        document.collection === "project" && document.id === removedProject.id,
     );
     assert.ok(changedWorkspace, "changed workspace receives a new sequence");
     assert.ok(changedWorkspace.seq > initial.maxSeq);
     assert.equal(
-      removedDocument?._deleted,
-      true,
+      removedDocument?.op,
+      "delete",
       "removed work gets a tombstone",
     );
     assert.ok(removedDocument.seq > initial.maxSeq);

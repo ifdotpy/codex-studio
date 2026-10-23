@@ -104,14 +104,11 @@ test("Session Poll Browser", async ({
             ? []
             : [
                 {
-                  id: "entity:workspace:current",
+                  op: "upsert",
+                  collection: "workspace",
+                  id: "current",
+                  value: { marker: "replicated", stateDir: "fixture" },
                   seq: 1,
-                  _deleted: false,
-                  payload: JSON.stringify({
-                    collection: "workspace",
-                    id: "current",
-                    value: { marker: "replicated", stateDir: "fixture" },
-                  }),
                 },
               ],
           checkpoint: { seq: 1 },

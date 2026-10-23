@@ -947,12 +947,12 @@ export { browserExecutablePath, waitForFixturePort };
 /** @typedef {Record<string, JsonValue>} JsonObject */
 /** @typedef {{ collection: string, id: string, value: JsonValue }} EntityEnvelope */
 
-/** @typedef {{ scope?: string, after?: number, limit?: number, fresh?: boolean, initialHigh?: number, reset?: boolean, floor?: number, maxSeq?: number, generation?: number, priorityId?: string, tombstones?: SyncEntity[], transcript?: TranscriptPageResponse, transcriptSeq?: number, drafts?: SyncEntity[], documents?: SyncEntity[] }} EntityPullFixtureOptions */
+/** @typedef {{ scope?: string, after?: number, limit?: number, fresh?: boolean, initialHigh?: number, reset?: boolean, floor?: number, maxSeq?: number, generation?: number, priorityId?: string, tombstones?: SyncEntity[], transcript?: TranscriptPageResponse, transcriptSeq?: number, drafts?: import("../src/generated/api").components["schemas"]["SyncDocument"][], documents?: SyncEntity[] }} EntityPullFixtureOptions */
 
 /** @type {number} */
 const ENTITY_PAGE_SIZE = 500;
 /** @type {ResourceChangeEvent["protocol"]} */
-const RESOURCE_STREAM_PROTOCOL = 3;
+const RESOURCE_STREAM_PROTOCOL = 4;
 
 async function readJson(response, path) {
   if (!response.ok)
@@ -999,9 +999,9 @@ export async function readTestState(origin) {
     } else {
       fresh = false;
       for (const document of page.documents) {
-        if (document._deleted) continue;
-        /** @type {JsonValue} */
-        const decoded = JSON.parse(document.payload);
+        if (!("op" in document)) throw new Error("Expected an entity change");
+        if (document.op === "delete") continue;
+        const decoded = document;
         if (
           !isJsonObject(decoded) ||
           typeof decoded.collection !== "string" ||
@@ -1177,9 +1177,13 @@ function pickJsonKeys(value, keys) {
   return picked;
 }
 
-/** @param {SyncEntity} document @returns {SyncEntity} */
+/**
+ * The fixture projection selects fields by collection. The real-server parity
+ * witness validates these dynamically projected DTOs against the schema owner.
+ * @param {JsonObject} document @returns {SyncEntity}
+ */
 function generatedSyncEntity(document) {
-  return document;
+  return /** @type {SyncEntity} */ (document);
 }
 
 /** @param {SyncPullResponse | SyncPullResetResponse} response @returns {SyncPullResponse | SyncPullResetResponse} */
@@ -1352,8 +1356,8 @@ export function syncIdentityFixture(
 /** @param {{ unixSocket?: boolean }} [options] @returns {SyncProtocolResponse} */
 export function syncProtocolFixture({ unixSocket = false } = {}) {
   return {
-    protocolVersion: 3,
-    supportedVersions: [3],
+    protocolVersion: 4,
+    supportedVersions: [4],
     capabilities: [
       "pull",
       "stream",
@@ -1400,7 +1404,7 @@ export async function readFixtureSyncContract(origin) {
   if (
     !/^[a-f0-9]{32}$/.test(identity.workspaceId) ||
     identity.syncProtocol !== 2 ||
-    protocol.protocolVersion !== 3
+    protocol.protocolVersion !== 4
   )
     throw new Error("Fixture server returned an invalid sync contract");
   return { identity, protocol };
@@ -1429,48 +1433,40 @@ function reconcileMutableEntityPullState(pullState, snapshot) {
       entity,
     ]),
   );
-  for (const [id, previous] of pullState.documents) {
-    if (previous._deleted) continue;
-    const next = nextById.get(id);
+  for (const [key, previous] of pullState.documents) {
+    if (previous.op === "delete") continue;
+    const next = nextById.get(key);
     if (!next) {
-      const previousEntity = JSON.parse(previous.payload);
       pullState.documents.set(
-        id,
+        key,
         generatedSyncEntity({
-          ...previous,
+          op: "delete",
+          collection: previous.collection,
+          id: previous.id,
           seq: ++pullState.maxSeq,
-          payload: JSON.stringify({
-            collection: previousEntity.collection,
-            id: previousEntity.id,
-            value: {},
-          }),
-          _deleted: true,
         }),
       );
       continue;
     }
-    const payload = JSON.stringify(next);
-    if (payload !== previous.payload)
+    if (JSON.stringify(next.value) !== JSON.stringify(previous.value))
       pullState.documents.set(
-        id,
+        key,
         generatedSyncEntity({
-          ...previous,
+          op: "upsert",
+          ...next,
           seq: ++pullState.maxSeq,
-          payload,
-          _deleted: false,
         }),
       );
   }
-  for (const [id, entity] of nextById) {
-    const previous = pullState.documents.get(id);
-    if (!previous || previous._deleted)
+  for (const [key, entity] of nextById) {
+    const previous = pullState.documents.get(key);
+    if (!previous || previous.op === "delete")
       pullState.documents.set(
-        id,
+        key,
         generatedSyncEntity({
-          id,
+          op: "upsert",
+          ...entity,
           seq: ++pullState.maxSeq,
-          payload: JSON.stringify(entity),
-          _deleted: false,
         }),
       );
   }
@@ -1720,12 +1716,12 @@ export function entityPullFixture(snapshot, optionsOrAfter = {}) {
       unavailable: null,
     };
     const availableDocuments = [
-      generatedSyncEntity({
+      {
         id: scope,
         seq: highWatermark,
         payload: JSON.stringify(transcript),
         _deleted: false,
-      }),
+      },
     ];
     const page = availableDocuments
       .filter((document) => document.seq > after)
@@ -1748,10 +1744,9 @@ export function entityPullFixture(snapshot, optionsOrAfter = {}) {
   const values = entityValuesFromSnapshot(snapshot);
   const baseDocuments = values.map((entity, index) =>
     generatedSyncEntity({
-      id: `entity:${entity.collection}:${entity.id}`,
+      op: "upsert",
+      ...entity,
       seq: index + 1,
-      payload: JSON.stringify(entity),
-      _deleted: false,
     }),
   );
   const tombstones = options.tombstones ?? [];
@@ -1773,13 +1768,17 @@ export function entityPullFixture(snapshot, optionsOrAfter = {}) {
   let eligible = documents.filter(
     (document) =>
       document.seq > after &&
-      (!document._deleted || document.seq > floor) &&
-      (!fresh || !document._deleted || document.seq > initialHigh),
+      (document.op !== "delete" || document.seq > floor) &&
+      (!fresh || document.op !== "delete" || document.seq > initialHigh),
   );
   if (after === 0 && fresh && options.priorityId) {
     eligible = eligible.sort((left, right) => {
-      const priority = `entity:agent:${options.priorityId}`;
-      return Number(right.id === priority) - Number(left.id === priority);
+      return (
+        Number(
+          right.collection === "agent" && right.id === options.priorityId,
+        ) -
+        Number(left.collection === "agent" && left.id === options.priorityId)
+      );
     });
   }
   const page = eligible.slice(0, limit);
@@ -1892,7 +1891,7 @@ export async function stubEntityState(page, snapshot, contract) {
   if (
     !/^[a-f0-9]{32}$/.test(identityResponse.workspaceId) ||
     identityResponse.syncProtocol !== 2 ||
-    protocolResponse.protocolVersion !== 3
+    protocolResponse.protocolVersion !== 4
   )
     throw new Error(
       "stubEntityState requires the fixture backend's generated sync contract",

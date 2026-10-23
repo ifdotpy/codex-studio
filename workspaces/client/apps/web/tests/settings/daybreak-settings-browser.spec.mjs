@@ -120,7 +120,7 @@ test("Daybreak settings", async ({ context }) => {
         contentType: "text/event-stream",
         headers: { [API_SCHEMA_HASH_HEADER]: readApiSchemaHash() },
         body: apiSchemaHandshakeSse(
-          `event: resources\ndata: ${JSON.stringify({ protocol: 3, workspaceId: "1234567890abcdef1234567890abcdef", epoch: "fixture", revision: 1, reason: "initial", resources })}\n\n`,
+          `event: resources\ndata: ${JSON.stringify({ protocol: 4, workspaceId: "1234567890abcdef1234567890abcdef", epoch: "fixture", revision: 1, reason: "initial", resources })}\n\n`,
         ),
       });
     });

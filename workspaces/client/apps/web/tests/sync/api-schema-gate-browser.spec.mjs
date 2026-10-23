@@ -990,7 +990,7 @@ test("schema hash change uses a fresh entity cache and keeps the local draft", a
           headers: { "content-type": "text/event-stream" },
           body: apiSchemaHandshakeSse(
             protocol3SseEvent("resources", {
-              protocol: 3,
+              protocol: 4,
               workspaceId: fixtureWorkspace,
               epoch: "schema-cache-variant",
               revision: 1,

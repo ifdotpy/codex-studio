@@ -261,12 +261,13 @@ it("skips receipt recovery only for an explicitly deleted agent projection", asy
   projections.storageInstance.findDocumentsById.mockResolvedValue([
     {
       id: "entity:agent:deleted-chat",
-      seq: 7,
-      payload: JSON.stringify({
+      payload: "",
+      entity: {
         collection: "agent",
         id: "deleted-chat",
         value: { id: "deleted-chat", deletedAt: 123 },
-      }),
+      },
+      seq: 7,
     },
   ]);
 
@@ -284,13 +285,14 @@ it("does not mistake a sequence-zero stream reset tombstone for agent deletion",
   projections.storageInstance.findDocumentsById.mockResolvedValue([
     {
       id: "entity:agent:reset-chat",
-      seq: 0,
-      _deleted: true,
-      payload: JSON.stringify({
+      payload: "",
+      entity: {
         collection: "agent",
         id: "reset-chat",
         value: { id: "reset-chat", deletedAt: null },
-      }),
+      },
+      seq: 0,
+      _deleted: true,
     },
   ]);
   mocks.syncGet.mockResolvedValue({
@@ -313,13 +315,14 @@ it("recognizes a positive-sequence agent tombstone with an empty value", async (
   projections.storageInstance.findDocumentsById.mockResolvedValue([
     {
       id: "entity:agent:deleted-chat",
-      seq: 9,
-      _deleted: true,
-      payload: JSON.stringify({
+      payload: "",
+      entity: {
         collection: "agent",
         id: "deleted-chat",
         value: {},
-      }),
+      },
+      seq: 9,
+      _deleted: true,
     },
   ]);
 
@@ -354,12 +357,13 @@ it("aborts in-flight receipt recovery when the agent deletion projection arrives
   expect(signal.aborted).toBe(false);
   emitProjection({
     id: "entity:agent:deleted-chat",
-    seq: 8,
-    payload: JSON.stringify({
+    payload: "",
+    entity: {
       collection: "agent",
       id: "deleted-chat",
       value: { id: "deleted-chat", deletedAt: 456 },
-    }),
+    },
+    seq: 8,
   });
 
   await expect(recovery).resolves.toBeUndefined();
@@ -398,12 +402,13 @@ it("does not reconcile a receipt if deletion arrives during the outbox write", a
   await modifying;
   emitProjection({
     id: "entity:agent:deleted-chat",
-    seq: 10,
-    payload: JSON.stringify({
+    payload: "",
+    entity: {
       collection: "agent",
       id: "deleted-chat",
       value: { id: "deleted-chat", deletedAt: 789 },
-    }),
+    },
+    seq: 10,
   });
   resumeModify();
   await recovery;

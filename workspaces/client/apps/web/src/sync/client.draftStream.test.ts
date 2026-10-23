@@ -95,7 +95,7 @@ async function setup() {
     through: number,
     deleted = false,
   ): ResourceChangeEvent => ({
-    protocol: 3,
+    protocol: 4,
     workspaceId,
     epoch: "one",
     revision: through,

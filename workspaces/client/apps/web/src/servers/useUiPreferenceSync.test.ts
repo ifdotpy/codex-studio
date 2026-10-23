@@ -71,7 +71,7 @@ it("leaves preference transport to mounted server projections", () => {
       stream.dispatchEvent(
         new MessageEvent("resources", {
           data: JSON.stringify({
-            protocol: 3,
+            protocol: 4,
             workspaceId: "local-workspace",
             epoch: "epoch",
             reason: "change",

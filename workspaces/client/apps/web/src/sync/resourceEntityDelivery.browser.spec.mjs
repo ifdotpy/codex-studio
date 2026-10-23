@@ -28,16 +28,11 @@ test("state stream persists records across tabs without pulls and repairs missin
   let epoch = "entity-stream-first";
   const put = (id, name, deleted = false) => {
     const row = {
-      id: `entity:agent:${id}`,
+      op: "upsert",
+      collection: "agent",
+      id,
+      value: deleted ? {} : { id, name, status: "running", source: "managed" },
       seq: ++sequence,
-      payload: JSON.stringify({
-        collection: "agent",
-        id,
-        value: deleted
-          ? {}
-          : { id, name, status: "running", source: "managed" },
-      }),
-      _deleted: deleted,
     };
     rows.set(row.id, row);
     return row;
@@ -46,7 +41,7 @@ test("state stream persists records across tabs without pulls and repairs missin
   put("removed", "Remove me");
 
   const frame = (reason, documents, after, reset = false) => ({
-    protocol: 3,
+    protocol: 4,
     workspaceId,
     epoch,
     revision: ++revision,

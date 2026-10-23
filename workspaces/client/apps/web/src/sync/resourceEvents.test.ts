@@ -152,7 +152,7 @@ describe("shared resource event transport", () => {
       reason: "initial" | "change" | "reconnect",
     ) =>
       Source.instances[0]!.emit("resources", {
-        protocol: 3,
+        protocol: 4,
         workspaceId,
         epoch: "drafts",
         revision,
@@ -189,7 +189,7 @@ describe("shared resource event transport", () => {
       listener.mock.calls.map(([version]) => version.draftChanges.through),
     ).toEqual([1, 2]);
     Source.instances[0]!.emit("resources", {
-      protocol: 3,
+      protocol: 4,
       workspaceId,
       epoch: "drafts",
       revision: 3,
@@ -244,7 +244,7 @@ describe("shared resource event transport", () => {
     await vi.advanceTimersByTimeAsync(0);
     const source = Source.instances[0]!;
     const event = {
-      protocol: 3,
+      protocol: 4,
       workspaceId,
       epoch: "one",
       revision: 1,
@@ -387,7 +387,7 @@ describe("shared resource event transport", () => {
     await vi.waitFor(() => expect(Source.instances).toHaveLength(1));
     const stream = Source.instances[0]!;
     const initial = {
-      protocol: 3,
+      protocol: 4,
       workspaceId,
       epoch: "catalog-epoch",
       revision: 3,
@@ -447,7 +447,7 @@ describe("shared resource event transport", () => {
       resourceRevision = revision,
     ) =>
       stream.emit("resources", {
-        protocol: 3,
+        protocol: 4,
         workspaceId,
         epoch: "epoch-one",
         revision,
@@ -485,7 +485,7 @@ describe("shared resource event transport", () => {
       entitySequence: 4,
     });
     stream.emitRaw("resources", {
-      protocol: 3,
+      protocol: 4,
       workspaceId,
       epoch: "epoch-one",
       revision: 5,
@@ -527,7 +527,7 @@ describe("shared resource event transport", () => {
     await vi.waitFor(() => expect(Source.instances).toHaveLength(1));
     const stream = Source.instances[0]!;
     stream.emit("resources", {
-      protocol: 3,
+      protocol: 4,
       workspaceId,
       epoch: "epoch-one",
       revision: 8,
@@ -538,7 +538,7 @@ describe("shared resource event transport", () => {
     await vi.waitFor(() => expect(onChange).toHaveBeenCalledTimes(1));
 
     stream.emit("resources", {
-      protocol: 3,
+      protocol: 4,
       workspaceId,
       epoch: "epoch-one",
       revision: 8,
@@ -692,7 +692,7 @@ describe("shared resource event transport", () => {
         tabId: "tab-foreign",
         apiSchemaHash: "foreign-schema",
         event: {
-          protocol: 3,
+          protocol: 4,
           workspaceId,
           epoch: "epoch-one",
           revision: 1,
@@ -707,7 +707,7 @@ describe("shared resource event transport", () => {
         workspaceId,
         tabId: "tab-hashless",
         event: {
-          protocol: 3,
+          protocol: 4,
           workspaceId,
           epoch: "epoch-one",
           revision: 1,
@@ -812,7 +812,7 @@ describe("shared resource event transport", () => {
     await vi.waitFor(() => expect(Source.instances).toHaveLength(1));
     const source = Source.instances[0]!;
     source.emit("resources", {
-      protocol: 3,
+      protocol: 4,
       workspaceId,
       epoch: "epoch-one",
       revision: 1,
@@ -1326,7 +1326,7 @@ describe("shared resource event transport", () => {
     const source = Source.instances[0]!;
     source.emit("api-schema", { hash: API_SCHEMA_HASH });
     source.emit("resources", {
-      protocol: 3,
+      protocol: 4,
       workspaceId,
       epoch: "epoch-one",
       revision: 1,
@@ -1510,7 +1510,7 @@ describe("shared resource event transport", () => {
     await vi.waitFor(() => expect(Source.instances).toHaveLength(1));
     const first = Source.instances[0]!;
     first.emit("resources", {
-      protocol: 3,
+      protocol: 4,
       workspaceId,
       epoch: "epoch-one",
       revision: 1,
@@ -1520,7 +1520,7 @@ describe("shared resource event transport", () => {
     });
     await vi.waitFor(() => expect(queueChanges).toHaveBeenCalledTimes(1));
     first.emit("resources", {
-      protocol: 3,
+      protocol: 4,
       workspaceId,
       epoch: "epoch-one",
       revision: 1,
@@ -1531,7 +1531,7 @@ describe("shared resource event transport", () => {
     await new Promise((resolve) => setTimeout(resolve, 30));
     expect(queueChanges).toHaveBeenCalledTimes(1);
     first.emit("resources", {
-      protocol: 3,
+      protocol: 4,
       workspaceId,
       epoch: "epoch-one",
       revision: 2,
@@ -1591,7 +1591,7 @@ describe("shared resource event transport", () => {
 
     for (let revision = 1; revision <= 4; revision++) {
       stream.emit("heartbeat", {
-        protocol: 3,
+        protocol: 4,
         workspaceId,
         epoch: "epoch-one",
         revision,
@@ -1657,7 +1657,7 @@ describe("shared resource event transport", () => {
       ),
     ).toBe("true");
     const currentSnapshot = {
-      protocol: 3,
+      protocol: 4,
       workspaceId,
       epoch: "epoch-one",
       revision: 1,
@@ -1754,7 +1754,7 @@ describe("shared resource event transport", () => {
     await vi.waitFor(() => expect(Source.instances).toHaveLength(1));
     const first = Source.instances[0]!;
     first.emit("resources", {
-      protocol: 3,
+      protocol: 4,
       workspaceId,
       epoch: "epoch-one",
       revision: 1,
@@ -1805,7 +1805,7 @@ describe("shared resource event transport", () => {
 
     for (let revision = 1; revision <= 6; revision++) {
       first.emit("resources", {
-        protocol: 3,
+        protocol: 4,
         workspaceId,
         epoch: "epoch-one",
         revision,
@@ -1823,7 +1823,7 @@ describe("shared resource event transport", () => {
     expect(states).toContain("degraded");
     const replacement = Source.instances[1]!;
     replacement.emit("resources", {
-      protocol: 3,
+      protocol: 4,
       workspaceId,
       epoch: "epoch-one",
       revision: 7,
@@ -1887,7 +1887,7 @@ describe("shared resource event transport", () => {
     expect(Source.instances[0]!.closed).toBe(true);
     expect(interest(Source.instances[1]!)).toBe("true");
     const event = {
-      protocol: 3,
+      protocol: 4,
       workspaceId,
       epoch: "epoch-one",
       revision: 3,
@@ -1960,7 +1960,7 @@ describe("shared resource event transport", () => {
     const stream = Source.instances[0]!;
 
     stream.emit("resources", {
-      protocol: 3,
+      protocol: 4,
       workspaceId,
       epoch: "epoch-one",
       revision: 3,
@@ -1968,7 +1968,7 @@ describe("shared resource event transport", () => {
       resources: [resource],
     });
     stream.emit("token-rates", {
-      protocol: 3,
+      protocol: 4,
       workspaceId,
       epoch: "epoch-one",
       revision: 3,
@@ -2046,7 +2046,7 @@ describe("shared resource event transport", () => {
     await vi.waitFor(() => expect(Source.instances).toHaveLength(1));
     const ownerChannel = Channel.instances[0]!;
     Source.instances[0]!.emit("resources", {
-      protocol: 3,
+      protocol: 4,
       workspaceId,
       epoch: "epoch-one",
       revision: 7,
@@ -2128,7 +2128,7 @@ describe("shared resource event transport", () => {
     await vi.waitFor(() => expect(Source.instances).toHaveLength(1));
     const ownerChannel = Channel.instances[0]!;
     Source.instances[0]!.emit("resources", {
-      protocol: 3,
+      protocol: 4,
       workspaceId,
       epoch: "epoch-one",
       revision: 7,
@@ -2201,7 +2201,7 @@ describe("shared resource event transport", () => {
     ).toBe(false);
 
     Source.instances.at(-1)!.emit("resources", {
-      protocol: 3,
+      protocol: 4,
       workspaceId,
       epoch: "epoch-one",
       revision: 8,
@@ -2259,7 +2259,7 @@ describe("shared resource event transport", () => {
     const stop = transport.watchResourceChanges(local, onChange);
     await vi.waitFor(() => expect(Source.instances).toHaveLength(1));
     const initial = {
-      protocol: 3,
+      protocol: 4,
       workspaceId,
       epoch: "epoch-one",
       revision: 7,
@@ -2329,7 +2329,7 @@ describe("shared resource event transport", () => {
       await vi.waitFor(() => expect(Source.instances).toHaveLength(1));
       const original = Source.instances[0]!;
       original.emit("resources", {
-        protocol: 3,
+        protocol: 4,
         workspaceId,
         epoch: "server-before-restart",
         revision: 12,
@@ -2343,7 +2343,7 @@ describe("shared resource event transport", () => {
       await vi.advanceTimersByTimeAsync(500);
       expect(Source.instances).toHaveLength(2);
       Source.instances[1]!.emit("resources", {
-        protocol: 3,
+        protocol: 4,
         workspaceId,
         epoch: "server-after-restart",
         revision: 1,
@@ -2399,7 +2399,7 @@ describe("shared resource event transport", () => {
     expect(Source.instances).toHaveLength(0);
     const followerChannel = Channel.instances[0]!;
     const baseline = {
-      protocol: 3,
+      protocol: 4,
       workspaceId,
       epoch: "epoch-one",
       revision: 7,
@@ -2493,7 +2493,7 @@ describe("shared resource event transport", () => {
     await vi.waitFor(() => expect(Source.instances).toHaveLength(1));
 
     const baseline = {
-      protocol: 3,
+      protocol: 4,
       workspaceId,
       epoch: "epoch-one",
       revision: 7,

@@ -85,7 +85,7 @@ test("Structured operational errors ui", async ({
               ) || "[]",
             );
             const event = {
-              protocol: 3,
+              protocol: 4,
               workspaceId: syncIdentity.workspaceId,
               epoch: "fixture",
               revision: 1,
