@@ -1033,6 +1033,7 @@ mod tests {
         history_output, new_id, output, receipt_signature, size, terminal_title,
     };
     use serde_json::Value;
+    use studio_runtime_store::path_identity::CanonicalPath;
     use studio_runtime_store::{
         AgentId, AgentRecord, AgentRepository, AgentStatus, RuntimeStore, TerminalRecord,
         TerminalsRepository,
@@ -2865,13 +2866,17 @@ mod tests {
         rust_results.push((Value::Null, Some("receipt_conflict".to_owned())));
         rust_tables.push(snapshot(&store));
 
+        // Terminals record the canonical cwd (macOS `/var` is `/private/var`).
+        let root = CanonicalPath::existing(&state.root)
+            .expect("canonical terminal cwd")
+            .into_path_buf();
         for (index, (python, (rust, rust_error))) in
             python_actions.iter().zip(rust_results.iter()).enumerate()
         {
             let mut expected_result = python.result.clone();
             let mut actual_result = rust.clone();
-            normalize(&mut expected_result, &state.root);
-            normalize(&mut actual_result, &state.root);
+            normalize(&mut expected_result, &root);
+            normalize(&mut actual_result, &root);
             if let Some(error) = rust_error {
                 assert_eq!(python.error.as_deref(), Some(error.as_str()));
                 assert_eq!(actual_result, expected_result, "rejected action return");
@@ -2885,8 +2890,8 @@ mod tests {
 
             let mut expected_tables = python.tables.clone();
             let mut actual_tables = rust_tables[index].clone();
-            normalize(&mut expected_tables, &state.root);
-            normalize(&mut actual_tables, &state.root);
+            normalize(&mut expected_tables, &root);
+            normalize(&mut actual_tables, &root);
             assert_eq!(
                 actual_tables, expected_tables,
                 "stored rows after action {} (index {index})",
