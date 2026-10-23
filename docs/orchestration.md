@@ -20,6 +20,12 @@ State updates follow this flow:
    scoped stream publication advances; unrelated commits and exact publication
    retries cause no pull. Active transcript text uses the existing pull path.
 
+Browser draft notifications follow this flow:
+
+1. Read the [draft sequence owner](../workspaces/runtime/packages/runtime-store/src/repositories/sync_documents.rs) when a subscribed draft resource is invalidated.
+2. The shared content filter suppresses hints when that sequence is unchanged.
+3. Draft edits and retained tombstones advance the sequence and notify the existing draft replication owner.
+
 Server command output follows this flow:
 
 1. Retain the first and last bytes within the command's output limit.

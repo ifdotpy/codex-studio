@@ -1658,6 +1658,34 @@ function fastTierCommands(root) {
       },
     },
     {
+      item: { name: "studio-runtime-http", ecosystem: "cargo" },
+      label: "Draft stream content witness",
+      commands: [
+        [
+          "cargo",
+          [
+            "nextest",
+            "run",
+            "--locked",
+            "--no-tests",
+            "fail",
+            "--message-format",
+            "libtest-json-plus",
+            "-p",
+            "studio-runtime-http",
+            "--lib",
+            "-E",
+            "test(unchanged_drafts_ignore_unrelated_commits_and_publications)",
+          ],
+        ],
+      ],
+      options: {
+        selector: "unchanged draft revisions and retained tombstones",
+        reason:
+          "Unrelated commits must not request draft pulls; draft changes still notify.",
+      },
+    },
+    {
       item: web,
       label: "State stream persistence and recovery witnesses",
       commands: [

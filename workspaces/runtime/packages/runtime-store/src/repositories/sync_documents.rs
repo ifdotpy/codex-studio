@@ -421,6 +421,18 @@ impl SyncDocumentsRepository {
             .map_err(StoreError::from)
     }
 
+    /// Latest draft row sequence, including retained tombstones. Unrelated sync
+    /// scopes share the allocator but never advance this content revision.
+    pub fn draft_sequence(connection: &Connection) -> StoreResult<i64> {
+        connection
+            .query_row_cached(
+                "SELECT COALESCE(MAX(seq),0) FROM sync_documents WHERE scope='drafts'",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(StoreError::from)
+    }
+
     pub fn pull_drafts(
         connection: &Connection,
         after: i64,

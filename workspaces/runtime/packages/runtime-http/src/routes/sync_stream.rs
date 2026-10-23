@@ -201,6 +201,17 @@ async fn resource_content(state: HttpState, resource: Value) -> Option<Vec<u8>> 
     use crate::generated::ResourceRef;
     let resource: ResourceRef = serde_json::from_value(resource).ok()?;
     match resource {
+        ResourceRef::DraftsResource(_) => state
+            .store?
+            .read_async(
+                "runtime-http/routes/sync_stream/draft-revision",
+                |connection| {
+                    let sequence = SyncDocumentsRepository::draft_sequence(connection)?;
+                    serde_json::to_vec(&sequence).map_err(studio_runtime_store::StoreError::from)
+                },
+            )
+            .await
+            .ok(),
         ResourceRef::TranscriptResource(resource) => {
             // A scoped stream hint may precede the next stored transcript flush.
             let publication = state
@@ -710,6 +721,90 @@ where
 mod tests {
     use super::*;
     use studio_runtime_services::change_notifications::ChangeNotificationHub;
+
+    #[tokio::test]
+    async fn unchanged_drafts_ignore_unrelated_commits_and_publications() {
+        let root = tempfile::tempdir().expect("isolated state");
+        let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
+        let state = HttpState::new(
+            "token".into(),
+            "workspace".into(),
+            root.path().display().to_string(),
+            4321,
+            None,
+            Some(store.clone()),
+            None,
+        );
+        let resources = [json!({"kind":"drafts"})];
+        let baseline = state
+            .resource_notifications
+            .changes_since_with_content(&resources, None, |resource| {
+                resource_content(state.clone(), resource)
+            })
+            .await
+            .expect("baseline");
+        assert_eq!(baseline.resources, resources);
+        store
+            .transaction(|tx| {
+                tx.execute(
+                    "INSERT INTO runtime_agents(id,record) VALUES('other',?1)",
+                    [json!({"id":"other","status":"idle"}).to_string()],
+                )?;
+                Ok(())
+            })
+            .await
+            .expect("unrelated broad commit");
+        state
+            .resource_notifications
+            .publish_once(&json!({
+                "requestId":"unchanged-drafts", "resources":resources
+            }))
+            .expect("redundant external hint");
+        let unchanged = state
+            .resource_notifications
+            .changes_since_with_content(&resources, Some(baseline.cursor.revision), |resource| {
+                resource_content(state.clone(), resource)
+            })
+            .await
+            .expect("unchanged drafts");
+        assert!(
+            unchanged.resources.is_empty(),
+            "unchanged drafts must cause zero pulls"
+        );
+        store
+            .transaction(|tx| {
+                SyncDocumentsRepository::put_draft(tx, "phone:chat", "draft", false)?;
+                Ok(())
+            })
+            .await
+            .expect("draft edit");
+        let edited = state
+            .resource_notifications
+            .changes_since_with_content(&resources, Some(unchanged.cursor.revision), |resource| {
+                resource_content(state.clone(), resource)
+            })
+            .await
+            .expect("edited draft");
+        assert_eq!(edited.resources, resources, "real draft edits still notify");
+        store
+            .transaction(|tx| {
+                SyncDocumentsRepository::put_draft(tx, "phone:chat", "draft", true)?;
+                Ok(())
+            })
+            .await
+            .expect("draft deletion");
+        let deleted = state
+            .resource_notifications
+            .changes_since_with_content(&resources, Some(edited.cursor.revision), |resource| {
+                resource_content(state.clone(), resource)
+            })
+            .await
+            .expect("deleted draft");
+        assert_eq!(
+            deleted.resources, resources,
+            "draft tombstones still notify"
+        );
+    }
 
     #[tokio::test(start_paused = true)]
     async fn state_stream_delivers_complete_coalesced_records_and_tombstones() {
