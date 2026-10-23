@@ -544,16 +544,25 @@ export default function Usage({
           .filter(Boolean)
           .join("\n")}
       >
-        {sessionCost?.pricingState === "loading"
-          ? ""
-          : sessionCost
-            ? `Session estimate: ${dollars(sessionCost.totalUSD)}${
-                sessionCost.claudeHistoryIncomplete ||
-                sessionCost.unknownModels?.length
-                  ? "*"
-                  : ""
-              }`
-            : ""}
+        {sessionCost?.pricingState === "loading" ? (
+          ""
+        ) : sessionCost ? (
+          <>
+            <span className="session-cost-label">Session estimate: </span>
+            <span className="session-cost-compact-label" aria-hidden="true">
+              ≈{" "}
+            </span>
+            <span>
+              {dollars(sessionCost.totalUSD)}
+              {sessionCost.claudeHistoryIncomplete ||
+              sessionCost.unknownModels?.length
+                ? "*"
+                : ""}
+            </span>
+          </>
+        ) : (
+          ""
+        )}
       </div>
       <TokenRate agent={agent} />
       <Popover

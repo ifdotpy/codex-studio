@@ -6,10 +6,11 @@
   gap: var(--mantine-spacing-xs);
   min-height: var(--studio-touch-target);
   height: auto;
-  padding: var(--mantine-spacing-xs) var(--chat-gutter);
+  padding: 0 var(--chat-gutter);
 }
 .conversation-heading {
-  display: grid;
+  display: flex;
+  align-items: center;
   gap: var(--mantine-spacing-xs);
   flex: 1;
   min-width: 0;
@@ -35,12 +36,14 @@
 .conversation-meta {
   display: flex;
   align-items: center;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+  flex: none;
   gap: var(--mantine-spacing-xs);
   min-width: 0;
 }
 #conversation-status {
-  max-width: 100%;
+  flex: none;
+  max-width: none;
   height: auto;
   min-height: var(--mantine-spacing-lg);
   padding-block: 0;
@@ -69,35 +72,32 @@
   color: var(--studio-state-unread);
   background: var(--studio-state-unread-soft);
 }
-.conversation-team-strip {
-  display: inline-flex;
-  align-items: center;
-  gap: calc(var(--studio-dot-size) / 2);
-  min-width: 0;
-  min-height: var(--studio-control-size);
-  padding: 0;
-  border: 0;
-  background: transparent;
-  color: var(--muted);
-  font-size: var(--studio-text-meta);
-}
-.conversation-team-strip > span {
+.conversation-status-label {
+  display: inline-block;
   white-space: nowrap;
 }
-.conversation-team-strip:hover {
-  color: var(--text);
+.conversation-status-dot {
+  display: none;
+  width: var(--mantine-spacing-xs);
+  height: var(--mantine-spacing-xs);
+  border-radius: 50%;
+  background: currentColor;
 }
-.conversation-team-count {
+.conversation-server {
+  flex: none;
   font-variant-numeric: tabular-nums;
 }
-.conversation-worker-dots {
-  display: flex;
-  max-inline-size: 100%;
-  gap: calc(var(--studio-dot-size) / 2);
-  overflow: hidden;
+.conversation-server .chat-server-line {
+  margin: 0;
+  font-size: var(--studio-text-meta);
+  white-space: nowrap;
 }
-.conversation-team-strip .studio-state-dot[data-studio-state="none"] {
-  background: var(--studio-state-paused);
+.conversation-server .chat-server-line > svg {
+  display: none;
+}
+.conversation-server[data-offline="true"] {
+  --muted: var(--studio-state-error);
+  --warning: var(--studio-state-error);
 }
 .simple-workspace-header > button {
   flex-shrink: 0;
@@ -269,10 +269,8 @@
     flex: 1;
   }
   .conversation-meta {
-    flex: 0 1 auto;
-    max-width: 45%;
+    flex: none;
   }
-  .conversation-team-strip,
   .conversation-meta .workspace-mode-badge,
   .simple-workspace-header .messages-toggle-label {
     display: none;
@@ -375,5 +373,18 @@
   }
   .composer-queue-disclosure {
     display: inline-flex;
+  }
+}
+
+@container workspace (max-width: 24em) {
+  .conversation-status-label,
+  .conversation-server .chat-server-offline-label {
+    display: none;
+  }
+  .conversation-status-dot {
+    display: inline-block;
+  }
+  #conversation-status {
+    padding-inline: var(--mantine-spacing-xs);
   }
 }

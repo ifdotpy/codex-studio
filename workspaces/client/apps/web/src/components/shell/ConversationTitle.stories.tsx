@@ -23,6 +23,7 @@ export const ActiveConversation: Story = {
     title: "Refactor the conversation view",
     agent: lead,
     statusText: "Working",
+    serverAlias: "MAC",
   },
   play: async ({ canvasElement }) => {
     expect(
@@ -43,5 +44,14 @@ export const AgentConversation: Story = {
       within(canvasElement).getByRole("button", { name: "Back to main agent" }),
     );
     await expect(args.onBack).toHaveBeenCalledOnce();
+  },
+};
+
+export const OfflineServer: Story = {
+  args: { ...ActiveConversation.args, serverOffline: true },
+  play: async ({ canvasElement }) => {
+    await expect(
+      within(canvasElement).getByLabelText("MAC offline"),
+    ).toBeVisible();
   },
 };
