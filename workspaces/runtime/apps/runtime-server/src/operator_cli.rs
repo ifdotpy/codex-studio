@@ -2,6 +2,7 @@
 mod install;
 mod linux_vm;
 mod service;
+mod stored_text;
 
 use serde::Deserialize;
 use std::{error::Error, path::PathBuf, process::ExitCode};
@@ -32,9 +33,10 @@ pub(crate) fn dispatch() -> Option<ExitCode> {
         Some("service") => service::run(&args[1..]),
         Some("install-cli") => install::run(&args[1..]),
         Some("linux-vm") => linux_vm::run(&args[1..]),
+        Some("stored-text") => stored_text::run(&args[1..]),
         Some("--help" | "-h") => {
             println!(
-                "usage: studio-runtime-server [--port PORT]\n       studio-runtime-server service <install|status|uninstall> [--state DIRECTORY]\n       studio-runtime-server install-cli [--bin-dir DIRECTORY] [--project DIRECTORY]\n       studio-runtime-server linux-vm <start|status> [--state DIRECTORY]\n\nService installation enables startup without starting or restarting a service.\nUse just deliver-server to change the Linux server release."
+                "usage: studio-runtime-server [--port PORT]\n       studio-runtime-server service <install|status|uninstall> [--state DIRECTORY]\n       studio-runtime-server install-cli [--bin-dir DIRECTORY] [--project DIRECTORY]\n       studio-runtime-server linux-vm <start|status> [--state DIRECTORY]\n       studio-runtime-server stored-text inflate --state DIRECTORY\n\nService installation enables startup without starting or restarting a service.\nUse just deliver-server to change the Linux server release."
             );
             Ok(ExitCode::SUCCESS)
         }

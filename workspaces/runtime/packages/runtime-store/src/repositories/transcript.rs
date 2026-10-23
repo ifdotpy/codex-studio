@@ -503,7 +503,7 @@ impl TranscriptRepository {
             transaction.execute_cached(
                 "INSERT INTO runtime_item_fulltext(id,body) VALUES(?1,?2) \
                  ON CONFLICT(id) DO UPDATE SET body=excluded.body",
-                params![id, StoredTextValue::for_write(text)],
+                params![id, StoredTextValue::compressed(text)],
             )?;
         } else if has_fulltext {
             transaction.execute_cached("DELETE FROM runtime_item_fulltext WHERE id=?1", [id])?;
