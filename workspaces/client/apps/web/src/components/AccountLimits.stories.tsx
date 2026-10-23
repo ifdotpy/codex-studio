@@ -167,6 +167,11 @@ export const PopoverDark: Story = {
       );
     await expect(selectedName()).toHaveTextContent("main@example.test");
     await expect(selectedName()).toHaveAttribute("title", "main@example.test");
+    const details = within(popover);
+    await expect(
+      details.queryByText(/Session estimate/),
+    ).not.toBeInTheDocument();
+    await expect(details.getByText("Estimated API cost")).toBeVisible();
     const original = popover.getBoundingClientRect();
     await expect(canvas.getAllByRole("tab")).toHaveLength(3);
     await userEvent.click(

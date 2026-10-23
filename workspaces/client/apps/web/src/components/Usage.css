@@ -560,11 +560,6 @@
   gap: var(--mantine-spacing-xs);
 }
 
-.limits-session-estimate {
-  margin: 0 0 var(--mantine-spacing-xs);
-  color: var(--muted);
-  font-variant-numeric: tabular-nums;
-}
 .usage-context-icon {
   align-self: center;
   flex: none;
@@ -711,8 +706,7 @@
   margin-top: var(--mantine-spacing-xs);
   padding-top: var(--studio-rail-size);
 }
-.account-limits-heading,
-.account-limits-panel .limits-session-estimate {
+.account-limits-heading {
   margin-bottom: var(--studio-rail-size);
 }
 
