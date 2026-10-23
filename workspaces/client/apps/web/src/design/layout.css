@@ -18,6 +18,12 @@
   --studio-settings-nav-size: 12rem;
   /* Messages room selector alongside the selected room. */
   --studio-room-list-size: 16rem;
+  /* Voice overlay maximum height, input minimum, and compact label width. */
+  --studio-voice-max: 35rem;
+  --studio-voice-input-min: 7.5rem;
+  --studio-voice-label-min: 6.25rem;
+  /* Native voice actions share a target that grows on coarse pointers. */
+  --studio-voice-control-size: 2.5rem;
   /* Minimum overlay menu width, constrained by the viewport on phones. */
   --studio-menu-min: 13.75rem;
   /* Compact context usage meter length and thickness. */

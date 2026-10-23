@@ -10,6 +10,8 @@
 
 :root,
 [data-mantine-color-scheme="dark"] {
+  /* State tint opacity, a percentage mixed over a page or panel surface. */
+  --studio-state-tint: 14%;
   --studio-state-working: var(--mantine-color-signal-4);
   --studio-state-answer: var(--studio-warning);
   --studio-state-error: #f0776b;
@@ -19,6 +21,7 @@
 }
 
 [data-mantine-color-scheme="light"] {
+  --studio-state-tint: 5%;
   --studio-state-working: var(--mantine-color-signal-7);
   --studio-state-answer: var(--studio-warning);
   --studio-state-error: #b52e25;
@@ -31,22 +34,22 @@
 [data-mantine-color-scheme] {
   --studio-state-working-soft: color-mix(
     in srgb,
-    var(--studio-state-working) 14%,
+    var(--studio-state-working) var(--studio-state-tint),
     transparent
   );
   --studio-state-answer-soft: color-mix(
     in srgb,
-    var(--studio-state-answer) 16%,
+    var(--studio-state-answer) var(--studio-state-tint),
     transparent
   );
   --studio-state-error-soft: color-mix(
     in srgb,
-    var(--studio-state-error) 14%,
+    var(--studio-state-error) var(--studio-state-tint),
     transparent
   );
   --studio-state-unread-soft: color-mix(
     in srgb,
-    var(--studio-state-unread) 12%,
+    var(--studio-state-unread) var(--studio-state-tint),
     transparent
   );
   --studio-state-paused-soft: transparent;
