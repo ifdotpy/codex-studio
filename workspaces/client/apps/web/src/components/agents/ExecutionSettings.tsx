@@ -2,6 +2,7 @@ import { useServerApi } from "../../servers/ServerServicesContext";
 import { accountCanStart } from "../../accountName";
 import {
   Button,
+  AccordionChevron,
   Popover,
   Drawer,
   Switch,
@@ -1570,6 +1571,11 @@ function ScopedExecutionSettings({
           }
         >
           <span className="execution-selected">{summaryContent}</span>
+          <AccordionChevron
+            className="execution-disclosure-chevron"
+            size="var(--mantine-font-size-sm)"
+            aria-hidden="true"
+          />
         </summary>
         <div className="execution-profile-body">{controls}</div>
       </details>

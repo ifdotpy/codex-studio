@@ -12,16 +12,30 @@
 .execution-disclosure > summary,
 .execution-accounts > summary {
   cursor: pointer;
-  padding-block: var(--mantine-spacing-sm);
+  display: flex;
+  align-items: center;
+  gap: var(--mantine-spacing-xs);
+  list-style: none;
+  padding: var(--mantine-spacing-sm) var(--mantine-spacing-xs);
 }
-.execution-disclosure > summary::marker {
+.execution-disclosure > summary::-webkit-details-marker,
+.execution-accounts > summary::-webkit-details-marker {
+  display: none;
+}
+.execution-disclosure-chevron {
+  flex: none;
+  margin-inline-start: auto;
   color: var(--mantine-color-dimmed);
+}
+[open] > summary > .execution-disclosure-chevron {
+  transform: rotate(180deg);
 }
 .execution-profile-body {
   padding: var(--mantine-spacing-sm) 0 var(--mantine-spacing-md);
 }
 .execution-disclosure .execution-selected {
   display: inline-flex;
+  flex: 1;
   flex-wrap: wrap;
   align-items: center;
   gap: var(--mantine-spacing-xs);
@@ -52,8 +66,13 @@
 .execution-accounts > summary {
   display: flex;
   flex-wrap: wrap;
-  justify-content: space-between;
   gap: var(--mantine-spacing-xs);
+}
+.execution-accounts > summary > :first-child {
+  margin-inline-end: auto;
+}
+.execution-accounts > summary > .execution-disclosure-chevron {
+  margin-inline-start: 0;
 }
 .execution-dialog-actions {
   display: flex;
