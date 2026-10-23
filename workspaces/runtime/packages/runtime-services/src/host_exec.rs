@@ -135,6 +135,15 @@ impl HostExecRuntime {
     pub fn new(guest: Arc<dyn GuestRpc>, service: Arc<dyn HostExecService>) -> Arc<Self> {
         Arc::new(Self { guest, service })
     }
+
+    /// Make sure the Mac service runs and give the guest its channel token, as
+    /// each call does. A VM start does it once the guest answers.
+    pub async fn configure_guest(&self) -> Result<(), String> {
+        let token = self.service.ensure().await?;
+        configure(Arc::clone(&self.guest), token)
+            .await
+            .map_err(|error| guest_error_text(&error))
+    }
 }
 
 /// The exact guest request of one tool request (the receipt field `hostExecRequest`).

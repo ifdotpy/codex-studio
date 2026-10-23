@@ -239,6 +239,30 @@ A static x86_64 binary needs only the handler. A dynamic glibc binary also needs
 runtime. A binary that needs another amd64 library needs that package too: the project
 installs it, as for any other guest package.
 
+## VM start
+
+The Rust backend starts a created VM (`runtime-services/src/linux_vm_runtime.rs`). It does
+not create or provision a VM.
+
+- A person starts it with `studio-runtime-server linux-vm start [--state DIRECTORY]`, and
+  `studio-runtime-server linux-vm status` prints the helper state.
+- At backend startup, and before a VM chat starts its provider, the backend uses the automatic
+  rule of the watchdog below. It starts a stopped VM only when its last intent is a start from
+  before the current Mac boot (the Mac restarted under the VM), or to finish its own automatic
+  restart that a backend stop interrupted less than 30 minutes ago. The restart limits and
+  `maintenance.lock` apply, and the record in `watchdog.json` has kind `host_restart`. A VM that
+  stopped in this Mac boot or by a stop on purpose stays stopped, and the chat waits with the
+  reason.
+- A start runs `studio-linux-vm serve <state>` in a new session through
+  `studio-runtime-server linux-vm-helper`, so a backend restart keeps the VM. It waits for the
+  control socket, a guest `health` answer, the provisioning `ready` line of the current boot,
+  and the guest clock (`timedatectl`). It records the answer in `guest-health.json`, then starts
+  the Mac `host_exec` service and gives the guest its channel token.
+
+The Rust backend has no watchdog yet: a failed guest (a kernel panic) stays failed, and there
+are no health or LAYR probes. A start does not remount the project shares, and there is no
+`stop` command.
+
 ## Guest crash watchdog
 
 The guest kernel can panic, for example `Kernel panic - not syncing: corrupted stack end

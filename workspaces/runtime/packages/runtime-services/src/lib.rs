@@ -86,6 +86,8 @@ pub mod limit_reset;
 pub mod linux_vm_guest;
 pub mod linux_vm_provider;
 pub mod linux_vm_settings;
+#[cfg(unix)]
+pub mod linux_vm_runtime;
 pub mod mac_sync;
 pub mod maintenance;
 #[allow(dead_code)] // The managed-tools callback caller is integrated by its owning package.

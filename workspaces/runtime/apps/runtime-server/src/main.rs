@@ -112,6 +112,11 @@ fn main() -> std::process::ExitCode {
     if let Some(code) = studio_runtime_services::browser_host::shim_main(env::args_os()) {
         std::process::exit(code);
     }
+    // The Linux VM helper in its own session (`linux_vm_runtime::TrampolineLauncher`).
+    #[cfg(unix)]
+    if let Some(code) = studio_runtime_services::linux_vm_runtime::helper_main(env::args_os()) {
+        std::process::exit(code);
+    }
     // The Mac host_exec service of a VM state folder (`host_exec_service::lifecycle`).
     #[cfg(unix)]
     if let Some(code) = studio_runtime_services::host_exec_service::main(env::args_os()) {
