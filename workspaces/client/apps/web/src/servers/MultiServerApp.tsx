@@ -1,3 +1,4 @@
+import { readTerminalDockHeight } from "../layout/terminalGeometry";
 import { layoutQueries } from "../layout/layout-contract.generated";
 import { ScreenContext } from "./ScreenContext";
 import {
@@ -648,9 +649,10 @@ function MultiServerShell({
       } catch {}
     } else if (data.kind === "studio-server-terminal") {
       const value = data;
+      const height = readTerminalDockHeight(value.height);
       if (
         typeof value.opened !== "boolean" ||
-        !Number.isFinite(value.height) ||
+        height === undefined ||
         !Number.isInteger(value.count) ||
         !Number.isInteger(value.active) ||
         typeof value.canCreate !== "boolean"
@@ -660,7 +662,7 @@ function MultiServerShell({
         ...old,
         [id]: {
           opened: value.opened,
-          height: Math.max(0, Math.min(4000, value.height)),
+          height,
           count: value.count,
           active: value.active,
           canCreate: value.canCreate,
