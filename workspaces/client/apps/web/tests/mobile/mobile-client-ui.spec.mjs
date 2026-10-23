@@ -565,10 +565,13 @@ async function setupMobile320Composer(testBrowser) {
         state: "visible",
       });
     if (managed) {
-      // The 320px layout intentionally hides the timing hint; the action stays available.
-      await actionRow
+      // The narrowest layout keeps queue available in the native tools disclosure.
+      const tools = page.locator(".composer-tools-disclosure > summary");
+      await tools.click();
+      await page
         .getByRole("button", { name: "Queue for next turn", exact: true })
         .waitFor({ state: "visible" });
+      await tools.click();
     }
     return { page, managed };
   } catch (error) {
@@ -592,6 +595,9 @@ test("Mobile composer 320px setup renders the settled action row", async ({
         return {
           name: child.getAttribute("aria-label") || child.textContent.trim(),
           timingHint: child.classList.contains("composer-timing"),
+          queueInTools:
+            child.classList.contains("composer-queue-primary") &&
+            getComputedStyle(child).display === "none",
           width: rect.width,
           height: rect.height,
         };
@@ -600,7 +606,7 @@ test("Mobile composer 320px setup renders the settled action row", async ({
     assert.ok(rendered.length > 0, "Composer action row has rendered controls");
     assert.ok(
       rendered
-        .filter((item) => !item.timingHint)
+        .filter((item) => !item.timingHint && !item.queueInTools)
         .every((item) => item.width > 0 && item.height > 0),
       `Every action row child is laid out: ${JSON.stringify(rendered)}`,
     );
@@ -616,12 +622,21 @@ test("Mobile composer 320px setup renders the settled action row", async ({
         await actionRow.locator(".composer-timing").isVisible(),
         false,
       );
+      const disclosure = page.locator(".composer-tools-disclosure > summary");
+      await disclosure.click();
       assert.equal(
-        await actionRow
-          .getByRole("button", { name: "Queue for next turn" })
-          .isVisible(),
+        await page.locator(".composer-queue-primary").isVisible(),
+        false,
+      );
+      assert.equal(
+        await page.locator(".composer-queue-disclosure").isVisible(),
         true,
       );
+      const queueBounds = await page
+        .locator(".composer-queue-disclosure")
+        .boundingBox();
+      assert.ok(queueBounds.width >= 44 && queueBounds.height >= 44);
+      await disclosure.click();
       assert.equal(
         await page
           .locator("#usage-footer .session-cost-summary")

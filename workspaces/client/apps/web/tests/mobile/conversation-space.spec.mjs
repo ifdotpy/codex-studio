@@ -163,7 +163,7 @@ test("phone conversation gives the transcript its viewport budget", async ({
             expect(toolsBounds.x + toolsBounds.width).toBeLessThanOrEqual(
               width,
             );
-            await disclosure.click();
+            if (width > 320) await disclosure.click();
             for (const label of ["Queue for next turn", "Send message"]) {
               const button = page.getByRole("button", {
                 name: label,
@@ -172,6 +172,15 @@ test("phone conversation gives the transcript its viewport budget", async ({
               const bounds = await button.boundingBox();
               expect(bounds.width).toBeGreaterThanOrEqual(44);
               expect(bounds.height).toBeGreaterThanOrEqual(44);
+            }
+            if (width <= 320) {
+              await expect(
+                page.locator(".composer-queue-primary"),
+              ).toBeHidden();
+              await expect(
+                page.locator(".composer-queue-disclosure"),
+              ).toBeVisible();
+              await disclosure.click();
             }
           } else {
             await expect(
