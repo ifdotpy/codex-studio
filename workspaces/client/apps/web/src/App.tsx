@@ -528,10 +528,6 @@ export default function App({ active = true }: { active?: boolean }) {
     };
   }, []);
   const toggleSidebar = useCallback(() => {
-    if (mobileClient) {
-      navigationIntent.current++;
-      setOpened(null);
-    }
     if (isServerView && !isClassicServerView) {
       postToShell(
         {

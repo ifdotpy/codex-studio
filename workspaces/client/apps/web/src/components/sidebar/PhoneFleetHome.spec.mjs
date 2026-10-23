@@ -98,9 +98,23 @@ test("fresh phone entry shows the board; explicit opens, Back and resume preserv
         await back.click();
         await expect(board).toBeInViewport({ ratio: 1 });
         await expect(
+          page.getByRole("dialog", { name: "Conversations", exact: true }),
+        ).toHaveAttribute("aria-modal", "true");
+        await expect(page.locator(".workspace-frame")).toHaveAttribute(
+          "inert",
+          "",
+        );
+        await expect(
+          page.getByRole("button", { name: "Chat actions", exact: true }),
+        ).toHaveCount(0);
+        await expect(
           board.locator(".chat-row").filter({ hasText: lead.name }).first(),
         ).toBeFocused();
         await strip.click();
+        await expect(page.locator(".workspace-frame")).not.toHaveAttribute(
+          "inert",
+          "",
+        );
         await expect(page.locator("#message")).toHaveValue("Saved phone draft");
         // Returning from another app or bfcache preserves the current detail.
         await page.evaluate(() =>
@@ -178,6 +192,60 @@ test("fresh phone entry shows the board; explicit opens, Back and resume preserv
         .first(),
     ).toBeFocused();
     await classic.close();
+    const combined = await browser.newPage({
+      viewport: { width: 390, height: 844 },
+    });
+    await combined.route("https://offline.fixture.ts.net/**", (route) =>
+      route.abort(),
+    );
+    await combined.addInitScript(() => {
+      localStorage.setItem(
+        "studio-paired-servers-v1",
+        JSON.stringify([
+          {
+            id: "offline",
+            label: "Offline fixture",
+            alias: "OFF",
+            origin: "https://offline.fixture.ts.net",
+            credentialId: "fixture-only",
+          },
+        ]),
+      );
+    });
+    await combined.goto(origin);
+    const combinedBoard = combined.locator("#sidebar");
+    await expect(combined.locator(".server-views")).toHaveCount(1);
+    await expect(combinedBoard).toBeInViewport({ ratio: 1 });
+    const combinedStrip = combinedBoard
+      .locator(".sidebar-project .chat-row")
+      .filter({ hasText: lead.name })
+      .first();
+    await combinedStrip.click();
+    await expect(combinedBoard).toBeHidden();
+    await expect(combined.locator("#conversation-title")).toContainText(
+      lead.name,
+    );
+    await combined
+      .getByRole("button", { name: "Back to chats", exact: true })
+      .click();
+    await expect(combinedBoard).toBeInViewport({ ratio: 1 });
+    await expect(combined.locator(".server-views")).toHaveAttribute(
+      "inert",
+      "",
+    );
+    await expect(
+      combined.getByRole("button", { name: "Chat actions", exact: true }),
+    ).toHaveCount(0);
+    await expect(
+      combinedBoard.locator(".chat-row").filter({ hasText: lead.name }).first(),
+    ).toBeFocused();
+    await combinedStrip.click();
+    await expect(combinedBoard).toBeHidden();
+    await expect(combined.locator(".server-views")).not.toHaveAttribute(
+      "inert",
+      "",
+    );
+    await combined.close();
     const desktop = await browser.newPage({
       viewport: { width: 1440, height: 900 },
     });
