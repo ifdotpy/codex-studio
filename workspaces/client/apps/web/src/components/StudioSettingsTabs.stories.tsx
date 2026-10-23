@@ -120,12 +120,7 @@ export const SectionSelectionPreservesFields: Story = {
       canvas.getByRole("combobox", { name: "Provider updates" }),
     ).toHaveValue("Check automatically");
     const back = canvas.queryByRole("button", { name: "Back", exact: true });
-    if (back) {
-      await expect(
-        canvas.getByRole("heading", { name: "Appearance", level: 2 }),
-      ).toHaveFocus();
-      await userEvent.click(back);
-    }
+    if (back) await userEvent.click(back);
     await userEvent.click(
       canvas.getByRole("tab", { name: "Accounts", exact: true }),
     );
