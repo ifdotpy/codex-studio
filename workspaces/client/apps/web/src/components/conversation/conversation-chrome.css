@@ -201,6 +201,7 @@
   font-size: var(--studio-text-meta);
 }
 .conversation-composer-footer {
+  container: conversation-footer / inline-size;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -217,7 +218,7 @@
   align-items: center;
   flex: 1 1 0;
   min-width: 0;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: var(--mantine-spacing-xs);
 }
 .composer-tools .attachment-list {
@@ -284,23 +285,59 @@
     margin: 0;
   }
   #composer {
-    position: relative;
     padding: calc(var(--mantine-spacing-xs) / 2);
     margin-top: 0;
   }
-  #composer #message {
+  .conversation-composer-footer {
+    margin-block: 0;
+    gap: 0;
+  }
+  .conversation-start {
+    padding-block: var(--mantine-spacing-xs);
+    gap: var(--mantine-spacing-sm);
+  }
+}
+
+/* Toolbar decisions follow the actual content column, including Team overlays. */
+.composer-bar {
+  padding-top: calc(var(--mantine-spacing-xs) / 2);
+}
+@container composer (width > 35em) {
+  .composer-tools:has(.composer-tools-inline .attachment-list) {
+    flex-wrap: wrap;
+  }
+  .composer-bar:has(.composer-tools-inline .attachment-list) {
+    align-items: flex-end;
+  }
+  .composer-bar:has(.composer-tools-inline .attachment-list)
+    .composer-submit-actions {
+    min-height: var(--studio-touch-target);
+  }
+}
+#composer {
+  container: composer / inline-size;
+  position: relative;
+}
+.composer-queue-disclosure {
+  display: none;
+}
+@container composer (max-width: 70em) {
+  .composer-timing {
+    display: none;
+  }
+}
+@container composer (max-width: 35em) {
+  #message {
     min-height: var(--studio-control-size);
     padding-right: var(--studio-touch-target);
   }
-  #composer .composer-bar,
+  .composer-bar,
   .composer-tools,
   .composer-submit-actions {
-    flex-wrap: nowrap;
     gap: calc(var(--mantine-spacing-xs) / 5);
     padding-top: 0;
   }
-  .composer-tools-inline,
-  .composer-timing {
+  .composer-tools-inline {
     display: none;
   }
   .composer-tools-disclosure {
@@ -331,12 +368,12 @@
     font-size: var(--studio-text-meta);
     font-variant-numeric: tabular-nums;
   }
-  .conversation-composer-footer {
-    margin-block: 0;
-    gap: 0;
+}
+@container composer (max-width: 20em) {
+  .composer-queue-primary {
+    display: none;
   }
-  .conversation-start {
-    padding-block: var(--mantine-spacing-xs);
-    gap: var(--mantine-spacing-sm);
+  .composer-queue-disclosure {
+    display: inline-flex;
   }
 }

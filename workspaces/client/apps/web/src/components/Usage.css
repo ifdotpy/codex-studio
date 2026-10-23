@@ -569,7 +569,7 @@
   align-self: center;
   flex: none;
 }
-@container workspace (max-width: 47.5em) {
+@container conversation-footer (max-width: 47.5em) {
   .usage-footer {
     gap: var(--mantine-spacing-xs);
   }

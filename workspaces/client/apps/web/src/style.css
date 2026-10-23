@@ -410,7 +410,6 @@ p {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding-top: 5px;
 }
 #project {
   max-width: 55%;
