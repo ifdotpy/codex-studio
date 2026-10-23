@@ -63,6 +63,11 @@ def archive(entries):
     return data.getvalue()
 
 
+# The native supervisor lease names its owner with the Linux /proc identity of the guest
+# (native_identity.py). On another host the test cannot prove or stop that owner.
+LINUX_IDENTITY = "the native supervisor lease uses the Linux process identity of the guest"
+
+
 class GuestTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="guest-")
@@ -228,6 +233,12 @@ class GuestTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(replay, received)
         self.assertEqual(marker.read_text(), "once")
 
+    async def test_worker_processes_get_the_free_space_floor_of_the_service(self):
+        # Upload workers check the data disk floor (`upload.tree_space`) in their own process,
+        # so they must enforce the floor that the service was started with.
+        self.assertEqual(self.service.environment.get("CODEX_WORKSPACE_MIN_FREE_BYTES"), "0")
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), LINUX_IDENTITY)
     async def test_native_recovers_dead_supervisor_socket(self):
         await self.service.native.ensure()
         previous = self.service.native.process
@@ -645,6 +656,7 @@ class GuestTests(unittest.IsolatedAsyncioTestCase):
             await self.call("upload.chunk", {"uploadId": "resume", "seq": 0, "data": encoded(b"changed")})
         self.assertEqual(error.exception.code, "id_conflict")
 
+    @unittest.skipUnless(sys.platform.startswith("linux"), LINUX_IDENTITY)
     async def test_native_supervisor_init_remap_replay_and_restart(self):
         source = """import json,sys
 for line in sys.stdin:
@@ -685,6 +697,7 @@ for line in sys.stdin:
         stopped = await self.call("provider.stop", {"handle": handle})
         self.assertEqual(stopped["state"], "exited")
 
+    @unittest.skipUnless(sys.platform.startswith("linux"), LINUX_IDENTITY)
     async def test_large_native_event_chunks_survive_reattach_and_ack(self):
         text = "é🙂" + "x" * 2_200_000
         source = "import json,time; print(json.dumps({'method':'fixture/large','params':{'text':'é🙂'+'x'*2200000}},ensure_ascii=False),flush=True); time.sleep(60)"
