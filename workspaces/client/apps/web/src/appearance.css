@@ -208,9 +208,6 @@
   color: var(--text);
   background: var(--studio-page);
 }
-:root[data-mantine-color-scheme="light"] a {
-  color: var(--accent);
-}
 :root[data-mantine-color-scheme="light"]
   :is(
     .message-content,

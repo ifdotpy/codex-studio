@@ -40,6 +40,12 @@ function Foundation({ scheme }: { scheme: "light" | "dark" }) {
         <h1>Dispatch foundation</h1>
         <p>Three projects. Eighteen agents. One place to see what needs you.</p>
       </header>
+      <nav aria-label="Foundation navigation">
+        <a href="#projects">Project overview</a>
+      </nav>
+      <p className="prose">
+        <a href="#evidence">Review evidence</a>
+      </p>
       <section aria-label="Palette" className="foundation-palette">
         {["Page", "Surface", "Ink", "Signal"].map((name) => (
           <div
@@ -144,6 +150,14 @@ async function verifyFoundation(canvasElement: HTMLElement) {
   expect(canvas.getAllByText("Needs your answer")).toHaveLength(3);
   expect(canvas.getAllByText("Ready", { exact: true })).toHaveLength(4);
   expect(canvas.getByLabelText("Workers")).toHaveValue("6");
+  const navigation = canvas.getByRole("link", { name: "Project overview" });
+  expect(getComputedStyle(navigation).color).toBe(
+    getComputedStyle(navigation.parentElement!).color,
+  );
+  const content = canvas.getByRole("link", { name: "Review evidence" });
+  expect(getComputedStyle(content).color).not.toBe(
+    getComputedStyle(navigation).color,
+  );
   const action = canvas.getByRole("button", { name: "Start task" });
   const signal = canvasElement.querySelector(".foundation-swatch-signal")!;
   expect(getComputedStyle(action).backgroundColor).toBe(

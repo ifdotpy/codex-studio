@@ -36,3 +36,12 @@ test("the composer and submit action consume the shared surface and primary toke
     expect(/#[\da-f]{3,8}\b/i.test(block), selector).toBe(false);
   }
 });
+
+test("navigation links inherit the neutral text color in both schemes", () => {
+  const source = css("../style.css");
+  const links = source.split("\na {")[1].split("}")[0];
+  expect(links.includes("color: inherit")).toBe(true);
+  expect(css("../appearance.css").includes('color-scheme="light"] a {')).toBe(
+    false,
+  );
+});
