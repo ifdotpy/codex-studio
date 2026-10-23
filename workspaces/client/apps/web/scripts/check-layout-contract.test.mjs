@@ -117,3 +117,20 @@ test("the shell row does not share a class with Workspace list rows", () => {
   assert.ok(shellClass, "The measured shell row exists");
   assert.doesNotMatch(workspaceCss, new RegExp(`\\.${shellClass}(?![\\w-])`));
 });
+
+test("rejects duplicate JSON owner keys before parsing erases them", () => {
+  const root = mkdtempSync(join(tmpdir(), "layout-owner-"));
+  try {
+    mkdirSync(join(root, "src/layout"), { recursive: true });
+    writeFileSync(
+      join(root, "src/layout/layout-contract.json"),
+      '{"tokens":{"navigation.inlineMin":{},"navigation.inlineMin":{}},"queries":{}}',
+    );
+    assert.throws(
+      () => readLayoutContract(root),
+      /duplicate owner navigation.inlineMin/,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

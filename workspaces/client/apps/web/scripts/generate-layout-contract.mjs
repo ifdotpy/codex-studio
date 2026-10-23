@@ -5,8 +5,25 @@ import { resolve } from "node:path";
 
 export const webRoot = fileURLToPath(new URL("../", import.meta.url));
 export const ownerPath = "src/layout/layout-contract.json";
-export const readLayoutContract = (root = webRoot) =>
-  JSON.parse(readFileSync(resolve(root, ownerPath), "utf8"));
+export function readLayoutContract(root = webRoot) {
+  const source = readFileSync(resolve(root, ownerPath), "utf8");
+  // JSON.parse keeps only the last duplicate property. Check object keys first.
+  const stack = [];
+  for (const match of source.matchAll(/"(?:[^"\\]|\\.)*"|[{}[\]]/g)) {
+    const token = match[0];
+    if (token === "{" || token === "[")
+      stack.push(token === "{" ? new Set() : null);
+    else if (token === "}" || token === "]") stack.pop();
+    else if (/^\s*:/.test(source.slice(match.index + token.length))) {
+      const keys = stack.at(-1);
+      const key = JSON.parse(token);
+      if (keys?.has(key))
+        throw new Error(`${ownerPath}: duplicate owner ${key}`);
+      keys?.add(key);
+    }
+  }
+  return JSON.parse(source);
+}
 export const cssName = (key) =>
   `--layout-${key
     .replace(/([a-z])([A-Z])/g, "$1-$2")
