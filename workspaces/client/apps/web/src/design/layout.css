@@ -6,6 +6,8 @@
   --studio-control-size: 2rem;
   /* Minimum standalone control target for a coarse pointer. */
   --studio-touch-target: 2.75rem;
+  /* Minimum hit area for secondary inline facts, WCAG 2.2 AA. */
+  --studio-secondary-touch-target: 1.5rem;
   /* A title and optional live activity line on a dispatch strip. */
   --studio-strip-min-height: 2.75rem;
   /* One level of project or agent hierarchy. */

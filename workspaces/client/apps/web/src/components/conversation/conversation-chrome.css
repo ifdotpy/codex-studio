@@ -315,6 +315,7 @@
 #composer {
   container: composer / inline-size;
   position: relative;
+  padding: var(--mantine-spacing-xs) var(--mantine-spacing-sm);
 }
 .composer-queue-disclosure {
   display: none;
@@ -386,5 +387,40 @@
   }
   #conversation-status {
     padding-inline: var(--mantine-spacing-xs);
+  }
+}
+
+@media (pointer: coarse) {
+  .composer-tools-disclosure > summary {
+    min-height: var(--studio-touch-target);
+  }
+  @container workspace (max-width: 47.5em) {
+    #composer {
+      padding-block: calc(var(--mantine-spacing-xs) / 4);
+    }
+  }
+}
+
+@media (pointer: coarse) {
+  @container composer (max-width: 35em) {
+    .composer-tools-disclosure {
+      position: relative;
+      top: auto;
+      right: auto;
+      flex: none;
+    }
+    .composer-tools-popover {
+      left: 0;
+      right: auto;
+    }
+    #message {
+      padding-right: 0;
+    }
+    .composer-queue-primary {
+      display: none;
+    }
+    .composer-queue-disclosure {
+      display: inline-flex;
+    }
   }
 }
