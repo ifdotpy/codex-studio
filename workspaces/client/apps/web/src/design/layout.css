@@ -29,4 +29,8 @@
   /* Compact context usage meter length and thickness. */
   --studio-meter-width: 3rem;
   --studio-meter-size: 0.1875rem;
+  /* Keyboard focus ring stroke, and its gap inward from the control edge.
+     Inset rings stay inside scroll containers and clear the state rail. */
+  --studio-focus-ring-width: 0.125rem;
+  --studio-focus-ring-inset: 0.125rem;
 }
