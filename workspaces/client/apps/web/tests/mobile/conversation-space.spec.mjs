@@ -255,7 +255,7 @@ test("phone conversation gives the transcript its viewport budget", async ({
               width,
             );
 
-            if (width > 320) await disclosure.click();
+            // Both phone widths keep Queue in the open tools disclosure.
             for (const label of ["Queue for next turn", "Send message"]) {
               const button = page.getByRole("button", {
                 name: label,
@@ -265,15 +265,11 @@ test("phone conversation gives the transcript its viewport budget", async ({
               expect(bounds.width).toBeGreaterThanOrEqual(44);
               expect(bounds.height).toBeGreaterThanOrEqual(44);
             }
-            if (width <= 320) {
-              await expect(
-                page.locator(".composer-queue-primary"),
-              ).toBeHidden();
-              await expect(
-                page.locator(".composer-queue-disclosure"),
-              ).toBeVisible();
-              await disclosure.click();
-            }
+            await expect(page.locator(".composer-queue-primary")).toBeHidden();
+            await expect(
+              page.locator(".composer-queue-disclosure"),
+            ).toBeVisible();
+            await disclosure.click();
             // Narrow touch composers hide the lead name; a shown name stays inside.
             const model = await page
               .locator(
