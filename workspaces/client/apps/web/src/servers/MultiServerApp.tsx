@@ -214,7 +214,9 @@ function MultiServerShell({
   });
   const preferencesRef = useRef(preferences);
   preferencesRef.current = preferences;
-  const [mobileOpen, setMobileOpen] = useState(false);
+  const [mobileOpen, setMobileOpen] = useState(
+    () => window.matchMedia("(max-width: 760px)").matches,
+  );
   const screens = useRef(new Map<string, ScreenChannel>());
   const screenEvents = useRef<
     (owner: string, data: ScreenMessage, channel: ScreenChannel) => void
@@ -667,7 +669,8 @@ function MultiServerShell({
         },
       }));
     } else if (data.kind === "studio-server-toggle-sidebar") {
-      toggleSidebar();
+      if (typeof data.opened === "boolean") setMobileOpen(data.opened);
+      else toggleSidebar();
     } else if (data.kind === "studio-server-search") setSearchOpen(true);
     else if (
       data.kind === "studio-server-search-results" &&

@@ -109,11 +109,15 @@ for (const [platform, userAgent] of mobileBrowsers) {
       const errors = [];
       page.on("pageerror", (error) => errors.push(error.message));
       await page.goto(`http://127.0.0.1:${port}`);
+      await page
+        .locator("#sidebar .project-chats .chat-row")
+        .filter({ hasText: "Release lead" })
+        .first()
+        .click();
       await page.locator("#composer").waitFor();
       await expect
         .poll(async () => page.locator("#conversation-title").innerText(), {
-          message:
-            "After the initial lead list settles, the default conversation must be Release lead",
+          message: "The explicitly selected conversation must be Release lead",
           timeout: 10_000,
         })
         .toBe("Release lead");
@@ -485,7 +489,7 @@ for (const [platform, userAgent] of mobileBrowsers) {
       );
       assert.equal(minimumViewport.footerBottom, 378);
 
-      await page.getByLabel("Toggle conversations").click();
+      await page.getByLabel("Back to chats").click();
       await page
         .locator(".chat-row")
         .filter({ hasText: "Other project" })
@@ -591,7 +595,7 @@ for (const [platform, userAgent] of mobileBrowsers) {
   });
 }
 
-test("default mobile chat is stable across ten fresh iPhone starts", async ({
+test("mobile board and explicit chat selection are stable across ten fresh iPhone starts", async ({
   browser,
 }) => {
   test.setTimeout(180_000);
@@ -622,10 +626,21 @@ test("default mobile chat is stable across ten fresh iPhone starts", async ({
       });
       const page = await context.newPage();
       await page.goto(`http://127.0.0.1:${port}`);
+      await expect(
+        page.locator("#sidebar .sidebar-project").first(),
+      ).toBeVisible();
+      await expect(
+        page.locator('#sidebar .chat-row[aria-current="true"]'),
+      ).toHaveCount(0);
+      await page
+        .locator("#sidebar .project-chats .chat-row")
+        .filter({ hasText: "Other project" })
+        .first()
+        .click();
       await page.locator("#composer").waitFor();
       await expect
         .poll(() => page.locator("#conversation-title").innerText(), {
-          message: `Fresh iPhone fixture ${run} must default to Other project`,
+          message: `Fresh iPhone fixture ${run} must open the selected Other project`,
           timeout: 10_000,
         })
         .toBe("Other project");
@@ -636,5 +651,7 @@ test("default mobile chat is stable across ten fresh iPhone starts", async ({
       await exited;
     }
   }
-  console.log("mobile-default-chat: PASS (10/10 fresh iPhone fixture states)");
+  console.log(
+    "mobile-board-selection: PASS (10/10 fresh iPhone fixture states)",
+  );
 });

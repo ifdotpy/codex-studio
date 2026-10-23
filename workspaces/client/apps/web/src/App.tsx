@@ -81,6 +81,7 @@ import {
 import { useMediaQuery } from "@mantine/hooks";
 import {
   Activity,
+  ArrowLeft,
   BookOpen,
   Clock3,
   FileDiff,
@@ -347,7 +348,9 @@ export default function App({ active = true }: { active?: boolean }) {
       ),
     [],
   );
-  const mobileClient = useMediaQuery("(max-width: 760px)");
+  const mobileClient = useMediaQuery("(max-width: 760px)", undefined, {
+    getInitialValueInEffect: false,
+  });
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [localStudioSettingsOpen, setLocalStudioSettingsOpen] = useState(false);
   const [localStudioSettingsTab, setLocalStudioSettingsTab] =
@@ -531,7 +534,13 @@ export default function App({ active = true }: { active?: boolean }) {
   }, []);
   const toggleSidebar = useCallback(() => {
     if (isServerView && !isClassicServerView) {
-      postToShell({ kind: "studio-server-toggle-sidebar" }, serverParentOrigin);
+      postToShell(
+        {
+          kind: "studio-server-toggle-sidebar",
+          ...(mobileClient ? { opened: true } : {}),
+        },
+        serverParentOrigin,
+      );
       return;
     }
     if (mobileClient) {
@@ -615,11 +624,7 @@ export default function App({ active = true }: { active?: boolean }) {
       forgetCreated,
       creationScope,
     } = useSnapshot(preferenceBridge ? receiveUiPreferences : undefined),
-    [opened, setOpened] = useState<string | null>(() =>
-      window.matchMedia("(max-width: 760px)").matches
-        ? saved("codex-mobile-opened", null)
-        : null,
-    ),
+    [opened, setOpened] = useState<string | null>(null),
     [roomContext, setRoomContext] = useState<string | null>(null),
     [sidebar, setSidebar] = useState(false),
     [teamOpen, setTeamOpen] = useState(false),
@@ -1027,6 +1032,10 @@ export default function App({ active = true }: { active?: boolean }) {
       : `codex-desktop-opened:${data.stateDir}`;
     if (selectionScope.current !== scope) {
       selectionScope.current = scope;
+      if (mobileClient) {
+        if (!opened) setSidebar(true);
+        return;
+      }
       const selected = saved<string | null>(key, null);
       if (
         selected &&
@@ -1046,6 +1055,13 @@ export default function App({ active = true }: { active?: boolean }) {
     )
       return;
     if (agent?.id === createdSelection.current) createdSelection.current = null;
+    if (mobileClient) {
+      if (opened && !agent && !room && !legacy) {
+        setOpened(null);
+        setSidebar(true);
+      } else if (opened) save(key, opened);
+      return;
+    }
     if (!opened || (!agent && !room && !legacy))
       setOpened(
         mostRecentActivity(leads)?.id ||
@@ -1096,6 +1112,7 @@ export default function App({ active = true }: { active?: boolean }) {
     } else {
       navigationIntent.current++;
       setOpened(navigationTarget.agentId);
+      setSidebar(false);
       setWorkspaceSection("messages");
       setWorkspaceFocus(
         navigationTarget.itemId
@@ -2414,13 +2431,13 @@ export default function App({ active = true }: { active?: boolean }) {
         window.focus();
         document.getElementById("message")?.focus();
         window.dispatchEvent(new Event("focus"));
-      } else if (command.action === "notifications")
+      } else if (command.action === "notifications") {
         setNavigationTarget({
           ...command,
           section: "messages",
           requestId: crypto.randomUUID(),
         });
-      else if (command.action === "projects") {
+      } else if (command.action === "projects") {
         document.documentElement.dataset.serverProjects = "true";
         setSidebarCollapsed(false);
         setSidebar(true);
@@ -2555,14 +2572,28 @@ export default function App({ active = true }: { active?: boolean }) {
         >
           <SupervisorRecoveryNotice />
           <header className="workspace-header simple-workspace-header">
-            <ActionIcon
-              id="sidebar-toggle"
-              aria-label="Toggle conversations"
-              aria-expanded={mobileClient ? sidebar : !sidebarCollapsed}
-              onClick={toggleSidebar}
-            >
-              <PanelLeft size={18} />
-            </ActionIcon>
+            {mobileClient ? (
+              <Button
+                id="sidebar-toggle"
+                variant="subtle"
+                size="compact-xs"
+                aria-label="Back to chats"
+                aria-expanded={sidebar}
+                onClick={toggleSidebar}
+                leftSection={<ArrowLeft size={18} />}
+              >
+                Chats
+              </Button>
+            ) : (
+              <ActionIcon
+                id="sidebar-toggle"
+                aria-label="Toggle conversations"
+                aria-expanded={!sidebarCollapsed}
+                onClick={toggleSidebar}
+              >
+                <PanelLeft size={18} />
+              </ActionIcon>
+            )}
             <ConversationTitle
               title={title}
               agent={agent}

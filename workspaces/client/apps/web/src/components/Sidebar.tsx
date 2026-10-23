@@ -176,6 +176,8 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
   const { canPickDirectory, pickDirectory, revealPath } =
     useServerFileDialogs();
   const services = p.services;
+  const lastOpened = useRef(p.opened);
+  if (p.opened) lastOpened.current = p.opened;
   const [now, setNow] = useState(() => Date.now() / 1000);
   useEffect(() => {
     const timer = window.setInterval(
@@ -224,6 +226,22 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
   const runtime = p.data.runtime;
   const aliases = useServerAliases(readServerAliases);
   const compact = useMediaQuery("(max-width: 760px)");
+  useEffect(() => {
+    if (!compact || !p.mobile) return;
+    const background =
+      document.querySelector<HTMLElement>(".server-views") ||
+      document.querySelector<HTMLElement>(".workspace-frame");
+    if (!background) return;
+    const wasInert = background.inert;
+    const wasHidden = background.getAttribute("aria-hidden");
+    background.inert = true;
+    background.setAttribute("aria-hidden", "true");
+    return () => {
+      background.inert = wasInert;
+      if (wasHidden == null) background.removeAttribute("aria-hidden");
+      else background.setAttribute("aria-hidden", wasHidden);
+    };
+  }, [compact, p.mobile]);
   const [query, setQuery] = useState(""),
     [renaming, setRenaming] = useState<string | null>(null),
     [name, setName] = useState(""),
@@ -1976,6 +1994,14 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
         <Drawer
           zIndex={p.settings ? 190 : undefined}
           opened={p.mobile}
+          onEnterTransitionEnd={() => {
+            if (lastOpened.current)
+              document
+                .querySelector<HTMLElement>(
+                  `#sidebar [data-chat="${CSS.escape(lastOpened.current)}"]`,
+                )
+                ?.focus();
+          }}
           onClose={p.close}
           size="100%"
           padding={0}

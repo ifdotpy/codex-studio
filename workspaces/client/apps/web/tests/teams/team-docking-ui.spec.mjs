@@ -59,7 +59,13 @@ test("Team docks beside readable chats and uses a modal sheet below that width",
       const sidebar = page.locator("#sidebar");
       if ((await sidebar.isVisible()) !== sidebarOpen)
         await page
-          .getByRole("button", { name: "Toggle conversations", exact: true })
+          .getByRole("button", {
+            name:
+              page.viewportSize().width <= 760
+                ? "Back to chats"
+                : "Toggle conversations",
+            exact: true,
+          })
           .click();
       await expect(sidebar).toBeVisible({ visible: sidebarOpen });
       for (const scheme of ["light", "dark"]) {
