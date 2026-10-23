@@ -8,8 +8,12 @@
 //! as a BLOB in a TEXT-affinity column, so a reader that does not use this
 //! module fails with a type error instead of reading compressed bytes as text.
 //!
-//! Owned columns: `runtime_item_fulltext.body`. Its writers store stored
-//! format 1, and `stored_text_compaction` converts older plain values.
+//! A frame may name a trained dictionary (`stored_text_dictionary`); the
+//! dictionary must be loaded to decode it.
+//!
+//! Owned columns: `runtime_item_fulltext.body` (no dictionary) and
+//! `analytics_items.record` (with a dictionary). Writers of the first store
+//! stored format 1, and `stored_text_compaction` converts older plain values.
 
 use std::cell::RefCell;
 use std::sync::OnceLock;
@@ -59,8 +63,10 @@ pub enum StoredTextError {
     NoChecksum,
     #[error("stored text frame declares {0} bytes, more than the limit")]
     TooLarge(u64),
-    #[error("stored text frame needs dictionary {0}")]
+    #[error("stored text frame needs dictionary {0}, which is not loaded")]
     DictionaryRequired(u32),
+    #[error("stored text dictionary {0} is invalid or conflicts with a loaded one")]
+    BadDictionary(u32),
     #[error("stored text is not UTF-8")]
     NotUtf8,
 }
@@ -129,9 +135,13 @@ pub fn decode_blob(bytes: &[u8]) -> Result<String, StoredTextError> {
     if descriptor & FRAME_CHECKSUM_FLAG == 0 {
         return Err(StoredTextError::NoChecksum);
     }
-    if let Some(dictionary) = zstd_safe::get_dict_id_from_frame(frame) {
-        return Err(StoredTextError::DictionaryRequired(dictionary.get()));
-    }
+    let dictionary = match zstd_safe::get_dict_id_from_frame(frame) {
+        Some(id) => Some(
+            crate::stored_text_dictionary::dictionary(id.get())
+                .ok_or(StoredTextError::DictionaryRequired(id.get()))?,
+        ),
+        None => None,
+    };
     let size = zstd_safe::get_frame_content_size(frame)
         .map_err(|_| StoredTextError::Damaged)?
         .ok_or(StoredTextError::UnknownSize)?;
@@ -141,9 +151,14 @@ pub fn decode_blob(bytes: &[u8]) -> Result<String, StoredTextError> {
     let size = usize::try_from(size).map_err(|_| StoredTextError::TooLarge(size))?;
     let mut text = Vec::with_capacity(size);
     let written = DECOMPRESSOR.with_borrow_mut(|slot| {
-        slot.get_or_insert_with(DCtx::create)
-            .decompress(&mut text, frame)
-            .map_err(|_| StoredTextError::Damaged)
+        let context = slot.get_or_insert_with(DCtx::create);
+        match dictionary {
+            Some(dictionary) => {
+                context.decompress_using_ddict(&mut text, frame, dictionary.decompressor())
+            }
+            None => context.decompress(&mut text, frame),
+        }
+        .map_err(|_| StoredTextError::Damaged)
     })?;
     if written != size || text.len() != size {
         return Err(StoredTextError::Damaged);

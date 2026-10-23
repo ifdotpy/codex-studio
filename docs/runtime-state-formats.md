@@ -90,6 +90,23 @@ plain_bytes, stored_bytes, sha256, created)`, primary key `(name, batch)`.
 `sha256` covers, for each converted row in rowid order, the rowid and the text
 length as little-endian 64-bit integers, then the UTF-8 text.
 
+`analytics_items.record` in `analytics.sqlite3` uses the same stored format 1,
+but its frames name a dictionary trained from the table's own rows
+([`stored_text_dictionary.rs`](../workspaces/runtime/packages/runtime-store/src/stored_text_dictionary.rs)).
+Dictionaries are rows of `analytics_stored_text_dictionaries(id, name, created,
+sha256, dictionary)`; `id` is the zstd dictionary id that frames carry. The
+rows hold fragments of user data, stay only in the state, and are never
+changed or deleted. Writers store a record compressed once the newest
+dictionary of `analytics_items.record` exists, and plain TEXT before. Every
+analytics connection that Studio opens registers the SQL function
+`stored_text(value)` and a temporary view `temp.analytics_items` with the
+table's columns and the decoded `record`. The view shadows the table for
+unqualified names, so reads keep their SQL and writes name
+`main.analytics_items`. A connection without the view, such as the `sqlite3`
+shell, sees the BLOB: `json_extract` on it fails, and `json_valid` returns 0.
+The analytics database has its own `runtime_payload_migrations` progress row
+(`stored-text-v1:analytics_items.record`) and `runtime_stored_text_batches`.
+
 ### Connection recovery request receipt
 
 `runtime_agents.record.connectionRecovery` may include `requestId`,

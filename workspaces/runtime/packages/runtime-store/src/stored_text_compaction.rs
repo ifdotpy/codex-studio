@@ -30,8 +30,12 @@ pub struct CompactedColumn {
     /// The owned stored-text column.
     pub column: &'static str,
     /// Name of the compaction progress row in `runtime_payload_migrations`
-    /// and of its batch rows in `runtime_stored_text_batches`.
+    /// and of its batch rows in `runtime_stored_text_batches`, in the
+    /// database that holds the column.
     pub progress: &'static str,
+    /// Name of the column's trained dictionary in
+    /// `analytics_stored_text_dictionaries`, or `None` for frames without one.
+    pub dictionary: Option<&'static str>,
 }
 
 /// `runtime_item_fulltext.body`, owned by [`stored_text`].
@@ -40,6 +44,17 @@ pub const FULLTEXT_BODY: CompactedColumn = CompactedColumn {
     key: "id",
     column: "body",
     progress: "stored-text-v1:runtime_item_fulltext.body",
+    dictionary: None,
+};
+
+/// `analytics_items.record` in `analytics.sqlite3`, compressed with its
+/// trained dictionary. `main.` skips the decoding view of the same name.
+pub const ANALYTICS_ITEMS_RECORD: CompactedColumn = CompactedColumn {
+    table: "main.analytics_items",
+    key: "id",
+    column: "record",
+    progress: "stored-text-v1:analytics_items.record",
+    dictionary: Some(crate::stored_text_dictionary::ANALYTICS_ITEMS_RECORD),
 };
 
 /// Batch records of the compaction and inflate passes, in each database that
@@ -168,6 +183,17 @@ pub fn scan_window(
         column = column.column,
         table = column.table,
     ))?;
+    let dictionary = match (direction, column.dictionary) {
+        (Direction::Compress, Some(name)) => Some(
+            crate::stored_text_dictionary::current(connection, name)?.ok_or_else(|| {
+                StoreError::InvalidStoredObject {
+                    table: "analytics_stored_text_dictionaries",
+                    id: name.to_owned(),
+                }
+            })?,
+        ),
+        _ => None,
+    };
     let mut rows = statement.query(params![cursor, end, direction.source_type()])?;
     let mut window = CompactionWindow {
         direction,
@@ -189,7 +215,12 @@ pub fn scan_window(
         let candidate = match direction {
             Direction::Compress => {
                 let text: String = row.get(2)?;
-                let stored = stored_text::encode(&text);
+                let stored = match dictionary {
+                    Some(dictionary) => {
+                        crate::stored_text_dictionary::encode_with(&text, dictionary)
+                    }
+                    None => stored_text::encode(&text),
+                };
                 if stored_text::decode_blob(&stored).as_deref() != Ok(text.as_str()) {
                     return Err(round_trip_failure(column, &key));
                 }
@@ -630,5 +661,93 @@ mod tests {
             scan_window(&connection, FULLTEXT_BODY, Direction::Compress, 0).expect("large window");
         assert_eq!(window.candidates.len(), 1);
         assert_eq!(window.next_cursor, 1);
+    }
+
+    #[test]
+    fn analytics_records_compress_with_their_dictionary_and_inflate_back() {
+        use crate::stored_text_dictionary as dictionaries;
+        let mut connection = Connection::open_in_memory().expect("database");
+        connection
+            .execute_batch(
+                "CREATE TABLE analytics_items (
+                    id TEXT PRIMARY KEY, agent TEXT NOT NULL, root TEXT, thread TEXT, turn TEXT,
+                    at REAL NOT NULL, type TEXT, name TEXT, is_tool INTEGER NOT NULL, record TEXT NOT NULL);",
+            )
+            .expect("table");
+        dictionaries::ensure_analytics_schema(&connection).expect("schema");
+        dictionaries::install_analytics_sql(&connection).expect("sql");
+        let record = |index: usize| {
+            serde_json::json!({"id": format!("item-{index:05}"), "agentId": "agent",
+                "type": "agentMessage", "output": {"bytes": index}})
+            .to_string()
+        };
+        for index in 0..2_500 {
+            connection
+                .execute(
+                    "INSERT INTO main.analytics_items VALUES (?1,'agent',NULL,NULL,NULL,1.0,'agentMessage',NULL,0,?2)",
+                    params![format!("item-{index:05}"), record(index)],
+                )
+                .expect("row");
+        }
+        assert!(
+            scan_window(&connection, ANALYTICS_ITEMS_RECORD, Direction::Compress, 0).is_err(),
+            "a dictionary column is not compressed without its dictionary"
+        );
+        let samples = (0..2_500)
+            .map(|index| record(index).into_bytes())
+            .collect::<Vec<_>>();
+        let transaction = connection.transaction().expect("transaction");
+        let dictionary = dictionaries::insert(
+            &transaction,
+            dictionaries::ANALYTICS_ITEMS_RECORD,
+            dictionaries::train(&samples).expect("trained"),
+            NOW,
+        )
+        .expect("stored");
+        transaction.commit().expect("commit");
+
+        let window =
+            scan_window(&connection, ANALYTICS_ITEMS_RECORD, Direction::Compress, 0).expect("scan");
+        assert_eq!(window.candidates.len(), COMPACTION_BATCH_ROWS);
+        let transaction = connection.transaction().expect("transaction");
+        apply_window(&transaction, ANALYTICS_ITEMS_RECORD, &window, NOW).expect("apply");
+        transaction.commit().expect("commit");
+        let (kind, stored, text): (String, Vec<u8>, String) = connection
+            .query_row(
+                "SELECT typeof(m.record),m.record,v.record FROM main.analytics_items m \
+                 JOIN analytics_items v ON v.id=m.id WHERE m.rowid=1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("row");
+        assert_eq!(kind, "blob");
+        assert_eq!(
+            zstd_safe::get_dict_id_from_frame(&stored[1..]).map(|id| id.get()),
+            Some(dictionary.id)
+        );
+        assert_eq!(text, record(0));
+        assert_eq!(
+            progress(&connection, ANALYTICS_ITEMS_RECORD).expect("progress"),
+            CompactionProgress {
+                cursor: COMPACTION_BATCH_ROWS as i64,
+                complete: false
+            }
+        );
+
+        let window = scan_window(&connection, ANALYTICS_ITEMS_RECORD, Direction::Inflate, 0)
+            .expect("inflate scan");
+        let transaction = connection.transaction().expect("transaction");
+        let batch =
+            apply_window(&transaction, ANALYTICS_ITEMS_RECORD, &window, NOW).expect("inflate");
+        transaction.commit().expect("commit");
+        assert_eq!(batch.converted, COMPACTION_BATCH_ROWS);
+        let plain: i64 = connection
+            .query_row(
+                "SELECT count(*) FROM main.analytics_items WHERE typeof(record)='text'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count");
+        assert_eq!(plain, 2_500);
     }
 }
