@@ -246,6 +246,10 @@ not create or provision a VM.
 
 - A person starts it with `studio-runtime-server linux-vm start [--state DIRECTORY]`, and
   `studio-runtime-server linux-vm status` prints the helper state.
+- A person stops it with `studio-runtime-server linux-vm stop [--state DIRECTORY]`. The stop
+  saves its intent first, also for a stopped VM and while another VM operation holds the lock.
+  So the VM stays stopped: a pending automatic restart ends, and neither the watchdog nor a VM
+  chat starts it again.
 - At backend startup, and before a VM chat starts its provider, the backend uses the automatic
   rule of the watchdog below. It starts a stopped VM only when its last intent is a start from
   before the current Mac boot (the Mac restarted under the VM), or to finish its own automatic
@@ -259,9 +263,18 @@ not create or provision a VM.
   and the guest clock (`timedatectl`). It records the answer in `guest-health.json`, then starts
   the Mac `host_exec` service and gives the guest its channel token.
 
-The Rust backend has no watchdog yet: a failed guest (a kernel panic) stays failed, and there
-are no health or LAYR probes. A start does not remount the project shares, and there is no
-`stop` command.
+- The watchdog checks the VM every 30 seconds (`VmRuntime::check`). It restarts a failed
+  guest: a kernel panic or kernel error in the console of the current boot behind a live
+  helper, or the helper's own failure. It holds `maintenance.lock` and the client lock and
+  applies the restart limits. Before `host.stop`, it keeps the console of the failed boot as
+  `console-crash-<UTC time>.log` (the last 5) and saves the record and the restart intent. Then
+  it starts the VM through the normal start. A guest without an answer is never restarted: a
+  busy guest can refuse connections. A stopped VM follows the automatic rule above.
+- After each start, the registered Finder views of the layr projects mount again
+  (`linux_vm_share.rs`; see [vm-layr.md](vm-layr.md), "Mac share"). A failed view keeps its
+  reason in `mount-error.json`, and the VM keeps running.
+
+The Rust watchdog has no health or LAYR probes and posts no chat notice about a restart.
 
 ## Guest crash watchdog
 

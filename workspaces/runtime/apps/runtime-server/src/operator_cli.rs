@@ -34,7 +34,7 @@ pub(crate) fn dispatch() -> Option<ExitCode> {
         Some("linux-vm") => linux_vm::run(&args[1..]),
         Some("--help" | "-h") => {
             println!(
-                "usage: studio-runtime-server [--port PORT]\n       studio-runtime-server service <install|status|uninstall> [--state DIRECTORY]\n       studio-runtime-server install-cli [--bin-dir DIRECTORY] [--project DIRECTORY]\n       studio-runtime-server linux-vm <start|status> [--state DIRECTORY]\n\nService installation enables startup without starting or restarting a service.\nUse just deliver-server to change the Linux server release."
+                "usage: studio-runtime-server [--port PORT]\n       studio-runtime-server service <install|status|uninstall> [--state DIRECTORY]\n       studio-runtime-server install-cli [--bin-dir DIRECTORY] [--project DIRECTORY]\n       studio-runtime-server linux-vm <start|stop|status> [--state DIRECTORY]\n\nService installation enables startup without starting or restarting a service.\nUse just deliver-server to change the Linux server release."
             );
             Ok(ExitCode::SUCCESS)
         }
