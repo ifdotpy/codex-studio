@@ -410,9 +410,6 @@ export default function App({ active = true }: { active?: boolean }) {
     ServerCommand,
     { action: "account-sign-in" | "account-action" }
   > | null>(null);
-  const [mainSettingsOpen, setMainSettingsOpen] = useState(false);
-  const [workerSettingsOpen, setWorkerSettingsOpen] = useState(false);
-  const [reviewSettingsOpen, setReviewSettingsOpen] = useState(false);
   const [filePreview, setFilePreview] = useState<PreviewTarget | null>(null);
   const { colorScheme, setColorScheme } = useMantineColorScheme();
   const preferenceLoad = useMemo(() => {
@@ -3784,29 +3781,19 @@ export default function App({ active = true }: { active?: boolean }) {
       <ChatSettingsDialog
         settingsOpen={settingsOpen}
         accountModalOpen={accountModalOpen}
-        mainSettingsOpen={mainSettingsOpen}
-        workerSettingsOpen={workerSettingsOpen}
-        reviewSettingsOpen={reviewSettingsOpen}
-        accountModalOpenRef={accountModalOpenRef}
         setSettingsOpen={setSettingsOpen}
         agent={agent}
         lead={lead}
         accounts={accounts}
         notify={notify}
-        setMainSettingsOpen={setMainSettingsOpen}
         updateAccountModalOpen={updateAccountModalOpen}
         agentModels={agentModels}
         data={data}
         refresh={refresh}
-        setWorkerSettingsOpen={setWorkerSettingsOpen}
-        setReviewSettingsOpen={setReviewSettingsOpen}
-        setAccountModalOpen={setAccountModalOpen}
         workspaceId={workspaceId}
         accountKey={accountKey}
         creating={creating}
         newChat={newChat}
-        run={run}
-        submitNativeAction={submitNativeAction}
         project={project}
         selectedAccount={selectedAccount}
         setClaudeLoginKey={setClaudeLoginKey}

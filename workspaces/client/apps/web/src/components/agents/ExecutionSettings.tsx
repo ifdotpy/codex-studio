@@ -6,8 +6,9 @@ import {
   Drawer,
   Switch,
   SegmentedControl,
-  Select,
-  Tooltip,
+  NativeSelect,
+  Stack,
+  Text,
 } from "@mantine/core";
 import { ChevronDown } from "lucide-react";
 import {
@@ -41,7 +42,7 @@ import { ProviderMark, setupAccountName } from "../AccountTiles";
 import { useMediaQuery } from "@mantine/hooks";
 import { AgentSetupPicker, type SetupRole } from "./AgentSetupPicker";
 import "./execution-settings.css";
-import { SettingsSection, SettingsRow } from "../ui/primitives";
+import { SettingsSection } from "../ui/primitives";
 
 type Catalog = ReturnType<typeof useWorkerModels>;
 type ConversationBody = PostBody<"/api/conversation">;
@@ -89,6 +90,8 @@ const fastTier = (info?: WorkerModelInfo) =>
   info?.serviceTiers?.find((tier) => tier.id === "priority");
 
 type SettingsProps = {
+  presentation?: "menu" | "disclosure";
+  teamOnly?: boolean;
   agent: Agent;
   catalog: Catalog;
   accounts?: Account[];
@@ -238,6 +241,8 @@ export function ExecutionSettings(props: SettingsProps) {
 
 function ScopedExecutionSettings({
   agent,
+  presentation = "menu",
+  teamOnly = false,
   catalog: parentCatalog,
   accounts = [],
   team,
@@ -1136,33 +1141,35 @@ function ScopedExecutionSettings({
     pickerInfo?.defaultReasoningEffort ||
     pickerEfforts[0]?.value ||
     "";
+  const delegation =
+    teamDefaults && agent.isLead && !onDraftChange ? (
+      <NativeSelect
+        label="Delegation depth"
+        value={String(current.delegation_depth)}
+        description="Lowering blocks new delegation immediately. Existing descendants keep running."
+        data={[
+          { value: "1", label: "Lead only (1)" },
+          { value: "2", label: "One nested level (2)" },
+          { value: "3", label: "Two nested levels (3)" },
+        ]}
+        disabled={saving}
+        onChange={(event) =>
+          void change({ delegation_depth: Number(event.currentTarget.value) })
+        }
+      />
+    ) : null;
   const controls = (
     <>
-      {teamDefaults && agent.isLead && !onDraftChange && (
-        <SettingsRow label="Delegation depth">
-          <Select
-            aria-label="Delegation depth"
-            value={String(current.delegation_depth)}
-            description="New worker sessions use this depth. Lowering blocks new delegation immediately; existing descendants keep running."
-            comboboxProps={{ withinPortal: false }}
-            data={[
-              { value: "1", label: "Lead only (1)" },
-              { value: "2", label: "One nested level (2)" },
-              { value: "3", label: "Two nested levels (3)" },
-            ]}
-            disabled={saving}
-            onChange={(value) => {
-              if (value !== null)
-                void change({ delegation_depth: Number(value) });
-            }}
-          />
-        </SettingsRow>
-      )}
+      {presentation !== "disclosure" && delegation}
       <AgentSetupPicker
         role={role}
         onRole={onRole}
         roles={
-          agent.isLead ? ["orchestrator", "worker", "review"] : ["orchestrator"]
+          presentation === "disclosure"
+            ? []
+            : agent.isLead
+              ? ["orchestrator", "worker", "review"]
+              : ["orchestrator"]
         }
         provider={pickerProvider}
         providers={pickerProviders}
@@ -1190,6 +1197,11 @@ function ScopedExecutionSettings({
             shownTransfer.scope !== "subagents" &&
             account.id !== shownTransfer.targetAccountKey
           )
+        }
+        modelId={
+          presentation === "disclosure"
+            ? `${agent.id}-${role}-model`
+            : undefined
         }
         models={pickerModels}
         model={pickerModel}
@@ -1327,40 +1339,36 @@ function ScopedExecutionSettings({
   const permissions =
     agent.isLead && agent.provider !== "claude" ? (
       settingsRow ? (
-        <SettingsRow label="Permissions">
-          <Tooltip
-            label={
-              permissionsActive
-                ? "Available when this turn ends."
-                : !("yoloMode" in agent)
-                  ? "Available after the server update."
-                  : ""
+        <Stack gap="xs">
+          <Text size="sm" fw={500}>
+            Permissions
+          </Text>
+          <SegmentedControl
+            fullWidth
+            aria-label="Full access without approval"
+            value={
+              (pendingYolo?.value ?? agent.yoloMode === true) ? "full" : "ask"
             }
-            disabled={!permissionsActive && "yoloMode" in agent}
-          >
-            <span>
-              <SegmentedControl
-                aria-label="Full access without approval"
-                value={
-                  (pendingYolo?.value ?? agent.yoloMode === true)
-                    ? "full"
-                    : "ask"
-                }
-                disabled={saving || permissionsActive || !("yoloMode" in agent)}
-                data={[
-                  { value: "ask", label: "Ask" },
-                  { value: "full", label: "Full" },
-                ]}
-                onChange={(value) => void changeYolo(value === "full")}
-              />
-            </span>
-          </Tooltip>
+            disabled={saving || permissionsActive || !("yoloMode" in agent)}
+            data={[
+              { value: "ask", label: "Ask" },
+              { value: "full", label: "Full" },
+            ]}
+            onChange={(value) => void changeYolo(value === "full")}
+          />
+          <Text size="xs" c="dimmed">
+            {permissionsActive
+              ? "Available when this turn ends."
+              : !("yoloMode" in agent)
+                ? "Available after the server update."
+                : "Applies to the whole team."}
+          </Text>
           {error && (
             <p className="execution-error" role="alert">
               {error}
             </p>
           )}
-        </SettingsRow>
+        </Stack>
       ) : (
         <SettingsSection title="Permissions">
           <p>Applies to the whole team.</p>
@@ -1433,6 +1441,39 @@ function ScopedExecutionSettings({
     summaryInfo?.defaultReasoningEffort ||
     mainSettings.effort ||
     mainInfo?.defaultReasoningEffort;
+  const summaryAccountName =
+    summaryRole !== "review" &&
+    (showAccountSummary ||
+      connectedAccounts.filter(
+        (account) => (account.provider || "codex") === summaryProvider,
+      ).length > 1)
+      ? setupAccountName(
+          accounts.find((account) => account.id === summaryAccount),
+        )
+      : "";
+  const summaryContent = (
+    <>
+      <ProviderMark provider={summaryProvider} />
+      <span className="execution-role">
+        {summaryRole === "worker"
+          ? "Workers"
+          : summaryRole === "review"
+            ? "Review"
+            : agent.isLead
+              ? "Lead"
+              : "Agent"}
+      </span>
+      <span className="execution-model">
+        {displayModel(summaryCatalog, summaryModel)}
+      </span>
+      {summaryEffort && (
+        <span className="execution-effort">{title(summaryEffort)}</span>
+      )}
+      {summaryAccountName && (
+        <span className="execution-account">{summaryAccountName}</span>
+      )}
+    </>
+  );
   const trigger = (
     <Button
       className="execution-menu"
@@ -1456,7 +1497,6 @@ function ScopedExecutionSettings({
         setOpened(!opened);
       }}
     >
-      <ProviderMark provider={summaryProvider} />
       <span
         className="execution-selected"
         data-inherited={
@@ -1467,21 +1507,7 @@ function ScopedExecutionSettings({
               : undefined
         }
       >
-        {[
-          displayModel(summaryCatalog, summaryModel),
-          summaryEffort && title(summaryEffort),
-          summaryRole !== "review" &&
-          (showAccountSummary ||
-            connectedAccounts.filter(
-              (account) => (account.provider || "codex") === summaryProvider,
-            ).length > 1)
-            ? setupAccountName(
-                accounts.find((account) => account.id === summaryAccount),
-              )
-            : "",
-        ]
-          .filter(Boolean)
-          .join(" · ")}
+        {summaryContent}
       </span>
     </Button>
   );
@@ -1522,6 +1548,32 @@ function ScopedExecutionSettings({
       )}
     </div>
   );
+  if (teamOnly)
+    return (
+      <Stack gap="sm">
+        {delegation}
+        {error && <p role="alert">{error}</p>}
+      </Stack>
+    );
+  if (presentation === "disclosure" && !permissionsOnly)
+    return (
+      <details
+        name="agent"
+        className="execution-disclosure"
+        data-role={initialRole}
+      >
+        <summary
+          data-studio-state={
+            role === "orchestrator" && busy.has(agent.status || "")
+              ? "working"
+              : "none"
+          }
+        >
+          <span className="execution-selected">{summaryContent}</span>
+        </summary>
+        <div className="execution-profile-body">{controls}</div>
+      </details>
+    );
   if (permissionsOnly) return permissions;
   if (mobile)
     return (

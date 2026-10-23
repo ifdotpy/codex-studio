@@ -24,6 +24,7 @@ export type AgentSetupPickerProps = {
   model: string;
   onModel: (model: string) => void;
   modelLabel: string;
+  modelId?: string;
   efforts: { value: string; label: string }[];
   effort: string;
   onEffort: (effort: string) => void;
@@ -76,14 +77,14 @@ export function AgentSetupPicker(p: AgentSetupPickerProps) {
           onChange={(value) => p.onAccount(value || null)}
           provider={p.provider}
           onProvider={p.onProvider}
-          providers={p.providers}
+          providers={p.providers.length > 1 ? p.providers : []}
           disabled={p.accountDisabled}
           accountDisabled={p.isAccountDisabled}
           automatic={p.automaticAccount}
         />
       )}
       <ModelField
-        id={p.role === "review" ? "review-model" : "model"}
+        id={p.modelId || (p.role === "review" ? "review-model" : "model")}
         label={p.modelLabel}
         options={p.models}
         value={p.model}

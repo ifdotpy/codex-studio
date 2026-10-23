@@ -2,75 +2,20 @@
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 4px 8px;
+  gap: var(--mantine-spacing-xs);
   min-width: 0;
-  margin-top: 3px;
-  font-size: 11px;
   -webkit-app-region: no-drag;
 }
-.agent-mode-apply,
-.agent-mode-retry {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  min-height: 30px;
-  padding: 2px 6px;
-  color: var(--text);
-  background: transparent;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  font: inherit;
-  cursor: pointer;
-}
-.agent-mode-apply:disabled,
-.agent-mode-retry:disabled {
-  cursor: default;
-  opacity: 0.65;
-}
-.agent-mode-apply:focus-visible,
-.agent-mode-retry:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-}
-.agent-mode-limit-label {
-  display: inline-flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 4px 8px;
-}
-.agent-mode-limit-mode {
-  color: var(--muted);
-}
-.agent-mode-limit-label input {
-  width: 6em;
-  min-height: 30px;
-  padding: 2px 6px;
-  color: var(--text);
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  font: inherit;
-}
-.agent-mode-limit-label input:focus-visible,
-.agent-mode-apply:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
+.agent-mode-field {
+  flex: 1;
+  min-width: 0;
 }
 .agent-mode-note {
-  color: var(--muted);
+  color: var(--mantine-color-dimmed);
+  font-size: var(--mantine-font-size-xs);
 }
 .agent-mode-error {
   width: 100%;
-  color: var(--mantine-color-red-4);
+  color: var(--mantine-color-red-6);
   overflow-wrap: anywhere;
-}
-@media (max-width: 760px) {
-  .agent-mode-apply,
-  .agent-mode-retry {
-    min-height: 36px;
-  }
-  .agent-mode-limit-label input {
-    min-height: 36px;
-    font-size: 16px;
-  }
 }
