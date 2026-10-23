@@ -657,10 +657,7 @@ test("Mobile composer 320px setup renders the settled action row", async ({
 test("Mobile composer fits a 320px viewport", async ({
   browser: testBrowser,
 }) => {
-  test.fixme(
-    true,
-    "Composer overflow is intermittent after the settled 320px action-row setup; see c3-shell-known-failures.md",
-  );
+  test.setTimeout(90_000);
   const { page } = await setupMobile320Composer(testBrowser);
   try {
     const composer = await page.locator("#composer").boundingBox();

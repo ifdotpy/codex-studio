@@ -1,61 +1,37 @@
+/* The execution controls own their contents; this file owns their placement. */
 .empty-chat-settings {
   display: flex;
+  align-items: center;
   flex-wrap: wrap;
-  gap: 8px 20px;
-  width: calc(100% - 64px);
-  max-width: var(--studio-chat-max, 736px);
-  flex-shrink: 0;
-  margin-inline: auto;
-  padding: 8px 0;
+  gap: var(--mantine-spacing-xs) var(--mantine-spacing-md);
+  min-width: 0;
+  flex: 1 1 auto;
 }
-
 .empty-chat-setting {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--mantine-spacing-xs);
   min-width: 0;
   max-width: 100%;
+  color: var(--muted);
   font-size: var(--studio-text-meta);
-  color: var(--mantine-color-dimmed);
 }
-
 .empty-chat-setting > span {
-  flex-shrink: 0;
+  flex: none;
 }
-
 .empty-chat-setting .execution-menu {
   min-width: 0;
   max-width: 100%;
 }
-
-.empty-chat-setting .execution-menu .mantine-Button-label {
-  min-width: 0;
+.conversation-start-execution .empty-chat-settings {
+  align-items: flex-start;
+  flex-direction: column;
 }
-
-.empty-chat-setting .execution-selected {
-  flex: 1 1 auto;
-  min-width: 0;
-  white-space: normal;
-  overflow-wrap: anywhere;
-  text-align: left;
-}
-
 @media (max-width: 760px) {
   .empty-chat-settings {
-    width: calc(100% - 28px);
-    flex-direction: column;
-    flex-shrink: 1;
-    min-height: 44px;
-    overflow-y: auto;
-    overscroll-behavior: contain;
-    gap: 4px;
+    flex-basis: 100%;
   }
-
-  .empty-chat-setting > span {
-    width: 48px;
-  }
-
-  .empty-chat-setting .execution-menu {
-    min-height: 44px;
+  .empty-chat-setting {
+    flex: 1 1 100%;
   }
 }
