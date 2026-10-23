@@ -32,7 +32,7 @@ use studio_runtime_services::resource_notify::{
 #[cfg(test)]
 use studio_runtime_services::token_rate::TokenRateHub;
 use studio_runtime_services::token_rate::TokenRateSnapshot as TokenRates;
-use studio_runtime_store::{RuntimeStore, SyncDocumentsRepository};
+use studio_runtime_store::{Connection, RuntimeStore, SyncDocumentsRepository};
 use tokio::time::{Instant, Interval, interval_at};
 
 use super::extractors::{ApiHeaders, QueryParams};
@@ -385,36 +385,49 @@ async fn read_entity_changes(
             if !(0..=MAX_SAFE_REVISION).contains(&sequence) {
                 return Err(ApiError::internal());
             }
-            let batch = after
-                .filter(|after| *after >= floor && *after < sequence)
-                .and_then(|after| {
-                    let rows = SyncDocumentsRepository::entities_after(
-                        connection,
-                        after,
-                        SYNC_ENTITY_STREAM_MAX_DOCUMENTS + 1,
-                    )
-                    .ok()?;
-                    if rows.len() as i64 > SYNC_ENTITY_STREAM_MAX_DOCUMENTS {
-                        return None;
-                    }
-                    let documents = rows
-                        .iter()
-                        .map(super::sync_documents::entity_document)
-                        .collect::<Option<Vec<_>>>()?;
-                    if documents.last()?.seq != sequence {
-                        return None;
-                    }
-                    let batch = EntityChangeBatch {
-                        after,
-                        through: sequence,
-                        documents,
-                    };
-                    (serde_json::to_vec(&batch).ok()?.len() <= SYNC_ENTITY_STREAM_MAX_BYTES)
-                        .then_some(batch)
-                });
+            let batch = entity_change_batch(connection, after, floor, sequence);
             Ok((sequence, batch))
         })
         .await
+}
+
+/// Keep conversion and size checks outside the asynchronous SQLite read closure.
+fn entity_change_batch(
+    connection: &Connection,
+    after: Option<i64>,
+    floor: i64,
+    through: i64,
+) -> Option<EntityChangeBatch> {
+    let after = after?;
+    if after < floor || after >= through {
+        return None;
+    }
+    let rows = SyncDocumentsRepository::entities_after(
+        connection,
+        after,
+        SYNC_ENTITY_STREAM_MAX_DOCUMENTS + 1,
+    )
+    .ok()?;
+    if rows.len() as i64 > SYNC_ENTITY_STREAM_MAX_DOCUMENTS {
+        return None;
+    }
+    let mut documents = Vec::with_capacity(rows.len());
+    for row in &rows {
+        documents.push(super::sync_documents::entity_document(row)?);
+    }
+    if documents.last()?.seq != through {
+        return None;
+    }
+    let batch = EntityChangeBatch {
+        after,
+        through,
+        documents,
+    };
+    let bytes = serde_json::to_vec(&batch).ok()?;
+    if bytes.len() > SYNC_ENTITY_STREAM_MAX_BYTES {
+        return None;
+    }
+    Some(batch)
 }
 
 struct ResourceStream {
