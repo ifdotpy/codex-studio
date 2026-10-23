@@ -715,3 +715,18 @@
 .account-limits-panel .limits-session-estimate {
   margin-bottom: var(--studio-rail-size);
 }
+
+.account-limits-selected-name {
+  flex-wrap: nowrap;
+  min-width: 0;
+}
+.account-limits-selected-name > strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.account-limits-selected-name .account-plan {
+  flex: none;
+  text-transform: capitalize;
+}

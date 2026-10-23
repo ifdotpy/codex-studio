@@ -12,6 +12,7 @@ export const accountLimitFixtures: UsageAccount[] = [
     label: "Codex",
     email: "main@example.test",
     provider: "codex",
+    plan: "pro",
     accountId: "main",
     loading: false,
     reload: () => {},
@@ -52,6 +53,7 @@ export const accountLimitFixtures: UsageAccount[] = [
     label: "Review",
     email: "review@example.test",
     provider: "codex",
+    plan: "pro",
     accountId: "review",
     loading: false,
     reload: () => {},
@@ -73,6 +75,7 @@ export const accountLimitFixtures: UsageAccount[] = [
     label: "Documentation",
     email: "docs@example.test",
     provider: "codex",
+    plan: "pro",
     loading: false,
     reload: () => {},
     limits: {
@@ -87,6 +90,7 @@ export const accountLimitFixtures: UsageAccount[] = [
     label: "Claude code 2",
     email: "claude-two@example.test",
     provider: "claude",
+    plan: "max",
     loading: false,
     reload: () => {},
     limits: {
@@ -113,6 +117,7 @@ export const accountLimitFixtures: UsageAccount[] = [
     label: "Claude code 1",
     email: "claude-one@example.test",
     provider: "claude",
+    plan: "max",
     loading: false,
     reload: () => {},
     limits: {
