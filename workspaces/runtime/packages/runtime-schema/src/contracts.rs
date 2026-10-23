@@ -56,6 +56,14 @@ fn shared_values_ts() -> String {
         &[
             ("MAX_SAFE_INTEGER", values::MAX_SAFE_INTEGER.to_string()),
             (
+                "SYNC_ENTITY_STREAM_MAX_DOCUMENTS",
+                values::SYNC_ENTITY_STREAM_MAX_DOCUMENTS.to_string(),
+            ),
+            (
+                "SYNC_ENTITY_STREAM_MAX_BYTES",
+                values::SYNC_ENTITY_STREAM_MAX_BYTES.to_string(),
+            ),
+            (
                 "MAX_USER_ATTACHMENT_BYTES",
                 values::MAX_USER_ATTACHMENT_BYTES.to_string(),
             ),
@@ -354,6 +362,11 @@ fn check_account_group_parity(openapi: &Value) -> Result<(), String> {
 
 /// Hold the committed OpenAPI document and persisted-state schemas to the Rust owners.
 pub fn check_schema_parity(openapi: &Value, account_transfer: &Value) -> Result<(), String> {
+    expect_number(
+        openapi,
+        "/components/schemas/EntityChangeBatch/properties/documents/maxItems",
+        values::SYNC_ENTITY_STREAM_MAX_DOCUMENTS,
+    )?;
     check_delivery_parity(openapi)?;
     check_account_group_parity(openapi)?;
     crate::agent_progress::check_schema_parity(openapi)?;

@@ -3,7 +3,9 @@
 use crate::CachedSql;
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::{Value, json};
-use studio_runtime_schema::shared_values::{SYNC_BATCH_LIMIT, SYNC_ENTITY_PAGE_LIMIT};
+use studio_runtime_schema::shared_values::{
+    SYNC_BATCH_LIMIT, SYNC_ENTITY_PAGE_LIMIT, SYNC_ENTITY_STREAM_MAX_DOCUMENTS,
+};
 
 use crate::schema::{SchemaRequirements, TableRequirement, TriggerRequirement};
 use crate::{StoreError, StoreResult};
@@ -299,7 +301,12 @@ impl SyncDocumentsRepository {
         let rows = statement.query_map(
             params![
                 after,
-                limit.clamp(1, SYNC_ENTITY_PAGE_LIMIT.saturating_add(1))
+                limit.clamp(
+                    1,
+                    SYNC_ENTITY_STREAM_MAX_DOCUMENTS
+                        .max(SYNC_ENTITY_PAGE_LIMIT)
+                        .saturating_add(1)
+                )
             ],
             |row| {
                 Ok(EntityRow {

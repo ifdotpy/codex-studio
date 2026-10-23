@@ -5,6 +5,10 @@ use std::convert::Infallible;
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::generated::{
+    EntityChangeBatch, ResourceChangeEvent, ResourceChangeEventReason, ResourceRef,
+    ResourceRevisionEntry,
+};
 use axum::Json;
 use axum::extract::State;
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
@@ -12,9 +16,11 @@ use axum::response::sse::{Event, Sse};
 use axum::response::{IntoResponse, Response};
 use futures_util::Stream;
 use futures_util::stream;
+use serde::Serialize;
 use serde_json::{Value, json};
 use studio_runtime_schema::shared_values::{
-    MAX_SYNC_RESOURCE_COUNT, MAX_SYNC_RESOURCE_QUERY_BYTES, SYNC_RESOURCE_HEARTBEAT_SECONDS,
+    MAX_SYNC_RESOURCE_COUNT, MAX_SYNC_RESOURCE_QUERY_BYTES, SYNC_ENTITY_STREAM_MAX_BYTES,
+    SYNC_ENTITY_STREAM_MAX_DOCUMENTS, SYNC_RESOURCE_HEARTBEAT_SECONDS,
 };
 use studio_runtime_schema::{SYNC_PROTOCOL_VERSION, SYNC_PROTOCOL_VERSION_TEXT};
 use studio_runtime_services::change_notifications::{
@@ -26,7 +32,7 @@ use studio_runtime_services::resource_notify::{
 #[cfg(test)]
 use studio_runtime_services::token_rate::TokenRateHub;
 use studio_runtime_services::token_rate::TokenRateSnapshot as TokenRates;
-use studio_runtime_store::{RuntimeStore, SyncDocumentsRepository};
+use studio_runtime_store::{Connection, RuntimeStore, SyncDocumentsRepository};
 use tokio::time::{Instant, Interval, interval_at};
 
 use super::extractors::{ApiHeaders, QueryParams};
@@ -127,9 +133,9 @@ async fn sync_stream(
         Err(error) => return error.into_response(),
     };
     let reason = if headers.contains_key("last-event-id") {
-        "reconnect"
+        ResourceChangeEventReason::Reconnect
     } else {
-        "initial"
+        ResourceChangeEventReason::Initial
     };
     let view = match state
         .resource_notifications
@@ -142,8 +148,16 @@ async fn sync_stream(
         _ => return ApiError::internal().into_response(),
     };
     let subscription_snapshot = view.cursor.clone();
-    let initial_event =
-        resource_changes_event(&state.workspace_id, &view, reason, initial_entity_sequence);
+    let initial_event = match resource_changes_event(
+        &state.workspace_id,
+        &view,
+        reason,
+        initial_entity_sequence,
+        None,
+    ) {
+        Ok(event) => event,
+        Err(error) => return error.into_response(),
+    };
     let mut initial = VecDeque::new();
     if renderer_hash.is_some() {
         initial.push_back(sse_event("api-schema", None, json!({"hash": server_hash})));
@@ -187,6 +201,25 @@ async fn resource_content(state: HttpState, resource: Value) -> Option<Vec<u8>> 
     use crate::generated::ResourceRef;
     let resource: ResourceRef = serde_json::from_value(resource).ok()?;
     match resource {
+        ResourceRef::TranscriptResource(resource) => {
+            let store = state.store?;
+            store
+                .read_async(
+                    "runtime-http/routes/sync_stream/transcript-revision",
+                    move |connection| {
+                        Ok::<_, studio_runtime_store::StoreError>(
+                            studio_runtime_store::TranscriptRepository::revision(
+                                connection,
+                                &resource.agent_id,
+                            )?
+                            .to_le_bytes()
+                            .to_vec(),
+                        )
+                    },
+                )
+                .await
+                .ok()
+        }
         ResourceRef::AccountsResource(_) => {
             serde_json::to_vec(&super::catalog::accounts(State(state)).await.ok()?.0).ok()
         }
@@ -319,22 +352,82 @@ async fn read_entity_sequence(
     store: Option<Arc<RuntimeStore>>,
     resources: &[Value],
 ) -> Result<i64, ApiError> {
+    Ok(read_entity_changes(store, resources, None).await?.0)
+}
+
+/// One SQLite snapshot proves the advertised interval, including the tombstone floor.
+/// A missing, oversized or unreadable interval carries only its revision for pull recovery.
+async fn read_entity_changes(
+    store: Option<Arc<RuntimeStore>>,
+    resources: &[Value],
+    after: Option<i64>,
+) -> Result<(i64, Option<EntityChangeBatch>), ApiError> {
+    let resources = resources
+        .iter()
+        .cloned()
+        .map(serde_json::from_value::<ResourceRef>)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| ApiError::internal())?;
     if !resources
         .iter()
-        .any(|resource| resource.get("kind").and_then(Value::as_str) == Some("state"))
+        .any(|resource| matches!(resource, ResourceRef::StateResource(_)))
     {
-        return Ok(0);
+        return Ok((after.unwrap_or(0), None));
     }
-    let store = store.ok_or_else(ApiError::internal)?;
-    let sequence = store
-        .read_async("runtime-http/routes/sync_stream", |connection| {
-            SyncDocumentsRepository::entity_sequence(connection).map_err(|_| ApiError::internal())
+    store
+        .ok_or_else(ApiError::internal)?
+        .read_async("runtime-http/routes/sync_stream", move |connection| {
+            let floor = SyncDocumentsRepository::entity_tombstone_floor(connection)
+                .map_err(|_| ApiError::internal())?;
+            let sequence = SyncDocumentsRepository::entity_sequence(connection)
+                .map_err(|_| ApiError::internal())?
+                .max(floor);
+            if !(0..=MAX_SAFE_REVISION).contains(&sequence) {
+                return Err(ApiError::internal());
+            }
+            let batch = entity_change_batch(connection, after, floor, sequence);
+            Ok((sequence, batch))
         })
-        .await?;
-    if !(0..=MAX_SAFE_REVISION).contains(&sequence) {
-        return Err(ApiError::internal());
+        .await
+}
+
+/// Keep conversion and size checks outside the asynchronous SQLite read closure.
+fn entity_change_batch(
+    connection: &Connection,
+    after: Option<i64>,
+    floor: i64,
+    through: i64,
+) -> Option<EntityChangeBatch> {
+    let after = after?;
+    if after < floor || after >= through {
+        return None;
     }
-    Ok(sequence)
+    let rows = SyncDocumentsRepository::entities_after(
+        connection,
+        after,
+        SYNC_ENTITY_STREAM_MAX_DOCUMENTS + 1,
+    )
+    .ok()?;
+    if rows.len() as i64 > SYNC_ENTITY_STREAM_MAX_DOCUMENTS {
+        return None;
+    }
+    let mut documents = Vec::with_capacity(rows.len());
+    for row in &rows {
+        documents.push(super::sync_documents::entity_document(row)?);
+    }
+    if documents.last()?.seq != through {
+        return None;
+    }
+    let batch = EntityChangeBatch {
+        after,
+        through,
+        documents,
+    };
+    let bytes = serde_json::to_vec(&batch).ok()?;
+    if bytes.len() > SYNC_ENTITY_STREAM_MAX_BYTES {
+        return None;
+    }
+    Some(batch)
 }
 
 struct ResourceStream {
@@ -403,7 +496,7 @@ async fn next_frame(
                 _ = state.heartbeat.tick() => true,
             }
         };
-        let view = match state
+        let mut view = match state
             .notifications
             .changes_since_with_content(&state.resources, Some(state.last_revision), |resource| {
                 let http_state = state.http_state.clone();
@@ -414,23 +507,30 @@ async fn next_frame(
             Ok(view) if !view.cursor.closed => view,
             _ => return None,
         };
-        let previous = state.last_revision;
         state.last_revision = view.cursor.revision;
         if !view.resources.is_empty() {
             state.consecutive_token_frames = 0;
-            state.entity_sequence =
-                match read_entity_sequence(state.store.clone(), &state.resources).await {
-                    Ok(sequence) => sequence,
-                    Err(_) => return None,
-                };
-            let reason =
-                if view.overflow || view.cursor.resource_revision.saturating_sub(previous) > 1 {
-                    "overflow"
-                } else {
-                    "change"
-                };
+            let (sequence, batch) = match read_entity_changes(
+                state.store.clone(),
+                &view.resources,
+                (!view.overflow && !view.entity_reset).then_some(state.entity_sequence),
+            )
+            .await
+            {
+                Ok(update) => update,
+                Err(_) => {
+                    view.entity_reset = true;
+                    (state.entity_sequence, None)
+                }
+            };
+            state.entity_sequence = sequence;
+            let reason = if view.overflow {
+                ResourceChangeEventReason::Overflow
+            } else {
+                ResourceChangeEventReason::Change
+            };
             let event =
-                resource_changes_event(&state.workspace_id, &view, reason, state.entity_sequence);
+                resource_changes_event(&state.workspace_id, &view, reason, sequence, batch).ok()?;
             state.next_resources_frame_at = Some(Instant::now() + SYNC_FRAME_MIN_INTERVAL);
             return Some((
                 Ok(sse_event("resources", Some(view.cursor.revision), event)),
@@ -486,24 +586,40 @@ fn token_snapshot(
 fn resource_changes_event(
     workspace: &str,
     view: &ResourceChanges,
-    reason: &str,
+    reason: ResourceChangeEventReason,
     sequence: i64,
-) -> Value {
-    let mut event = resource_event(
-        workspace,
-        &view.cursor.epoch,
-        view.cursor.revision,
+    changes: Option<EntityChangeBatch>,
+) -> Result<ResourceChangeEvent, ApiError> {
+    let resources = view
+        .resources
+        .iter()
+        .cloned()
+        .map(serde_json::from_value::<ResourceRef>)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| ApiError::internal())?;
+    let resource_versions = resources
+        .iter()
+        .zip(&view.versions)
+        .map(|(resource, revision)| {
+            let state = matches!(resource, ResourceRef::StateResource(_));
+            ResourceRevisionEntry {
+                revision: if state { sequence } else { *revision },
+                entity_changes: state.then(|| changes.clone()).flatten().map(Some),
+                entity_sequence_reset: state.then_some(Some(view.entity_reset)),
+                entity_sequences: None,
+                resource: None,
+            }
+        })
+        .collect();
+    Ok(ResourceChangeEvent {
+        protocol: i64::from(SYNC_PROTOCOL_VERSION),
+        workspace_id: workspace.into(),
+        epoch: view.cursor.epoch.clone(),
+        revision: view.cursor.revision,
         reason,
-        &view.resources,
-        sequence,
-        view.entity_reset,
-    );
-    for (index, resource) in view.resources.iter().enumerate() {
-        if resource["kind"] != "state" {
-            event["resourceVersions"][index]["revision"] = json!(view.versions[index]);
-        }
-    }
-    event
+        resources,
+        resource_versions,
+    })
 }
 
 /// The token-rates frame. The `rates` and `teams` members are the snapshot's shared,
@@ -526,6 +642,7 @@ fn token_rate_event(workspace_id: &str, snapshot: &ChangeSnapshot, rates: &Token
         .id(snapshot.revision.to_string())
 }
 
+#[cfg(test)]
 fn resource_event(
     workspace_id: &str,
     epoch: &str,
@@ -535,34 +652,36 @@ fn resource_event(
     entity_sequence: i64,
     entity_reset: bool,
 ) -> Value {
-    let resource_versions = resources
-        .iter()
-        .map(|resource| {
-            let version = if resource.get("kind").and_then(Value::as_str) == Some("state") {
-                entity_sequence
-            } else {
-                revision
-            };
-            let mut value = json!({"revision": version});
-            if resource.get("kind").and_then(Value::as_str) == Some("state") {
-                value["entitySequenceReset"] = json!(entity_reset);
-            }
-            value
-        })
-        .collect::<Vec<_>>();
-    json!({
-        "protocol": SYNC_PROTOCOL_VERSION,
-        "workspaceId": workspace_id,
-        "epoch": epoch,
-        "revision": revision,
-        "reason": reason,
-        "resources": resources,
-        "resourceVersions": resource_versions,
-    })
+    serde_json::to_value(
+        resource_changes_event(
+            workspace_id,
+            &ResourceChanges {
+                cursor: ChangeSnapshot {
+                    epoch: epoch.into(),
+                    revision,
+                    resource_revision: revision,
+                    closed: false,
+                },
+                resources: resources.to_vec(),
+                versions: vec![revision; resources.len()],
+                entity_reset,
+                overflow: false,
+            },
+            serde_json::from_value(json!(reason)).expect("fixture reason"),
+            entity_sequence,
+            None,
+        )
+        .expect("typed fixture event"),
+    )
+    .expect("event serializes")
 }
 
-fn sse_event(name: &str, revision: Option<i64>, payload: Value) -> Event {
-    let event = Event::default().event(name).data(payload.to_string());
+fn sse_event(name: &str, revision: Option<i64>, payload: impl Serialize) -> Event {
+    // These stream DTOs contain only JSON-compatible fields and string map keys.
+    let event = Event::default()
+        .event(name)
+        .json_data(payload)
+        .expect("stream DTO serializes");
     match revision {
         Some(revision) => event.id(revision.to_string()),
         None => event,
@@ -588,6 +707,242 @@ where
 mod tests {
     use super::*;
     use studio_runtime_services::change_notifications::ChangeNotificationHub;
+
+    #[tokio::test(start_paused = true)]
+    async fn state_stream_delivers_complete_coalesced_records_and_tombstones() {
+        let root = tempfile::tempdir().expect("isolated state");
+        let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
+        let hub = Arc::new(ChangeNotificationHub::new());
+        let notifications = Arc::new(ResourceNotifications::new(hub.clone()));
+        let tokens = TokenRateHub::new();
+        let mut state = test_stream(&hub, &tokens, notifications, vec![json!({"kind":"state"})]);
+        state.store = Some(store.clone());
+        state.entity_sequence = read_entity_sequence(Some(store.clone()), &state.resources)
+            .await
+            .expect("baseline sequence");
+        let baseline = state.entity_sequence;
+        store
+            .transaction(|tx| {
+                SyncDocumentsRepository::put_entity(
+                    tx,
+                    "agent",
+                    "first",
+                    json!({"id":"first","name":"First","status":"idle","source":"managed"}),
+                    false,
+                )?;
+                SyncDocumentsRepository::put_entity(tx, "agent", "removed", json!({}), true)?;
+                Ok(())
+            })
+            .await
+            .expect("records");
+        hub.notify_one();
+        hub.notify_one();
+        let (event, _) = next_frame(state).await.expect("state frame");
+        let event = event_document(event).await;
+        assert_eq!(
+            event["reason"], "change",
+            "a complete coalesced range is ordinary data"
+        );
+        let batch = &event["resourceVersions"][0]["entityChanges"];
+        assert_eq!(batch["after"], baseline);
+        assert_eq!(batch["through"], baseline + 2);
+        assert_eq!(
+            batch["documents"].as_array().expect("full records").len(),
+            2
+        );
+        assert_eq!(batch["documents"][1]["_deleted"], true);
+        assert!(event["resourceVersions"][0]["revision"] == batch["through"]);
+    }
+
+    #[tokio::test]
+    async fn state_stream_accepts_the_full_contract_document_limit() {
+        let root = tempfile::tempdir().expect("isolated state");
+        let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
+        let resources = vec![json!({"kind":"state"})];
+        let baseline = read_entity_sequence(Some(store.clone()), &resources)
+            .await
+            .expect("baseline");
+        store
+            .transaction(|tx| {
+                for index in 0..SYNC_ENTITY_STREAM_MAX_DOCUMENTS {
+                    SyncDocumentsRepository::put_entity(
+                        tx,
+                        "agent",
+                        &format!("deleted-{index}"),
+                        json!({}),
+                        true,
+                    )?;
+                }
+                Ok(())
+            })
+            .await
+            .expect("maximum batch");
+        let (sequence, batch) = read_entity_changes(Some(store), &resources, Some(baseline))
+            .await
+            .expect("batch read");
+        let batch = batch.expect("all documents fit");
+        assert_eq!(
+            batch.documents.len() as i64,
+            SYNC_ENTITY_STREAM_MAX_DOCUMENTS
+        );
+        assert_eq!(batch.through, sequence);
+    }
+
+    #[tokio::test]
+    async fn state_stream_falls_back_for_oversize_pruned_or_unreadable_intervals() {
+        for scenario in ["documents", "bytes", "pruned", "payload"] {
+            let root = tempfile::tempdir().expect("isolated state");
+            let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
+            let hub = Arc::new(ChangeNotificationHub::new());
+            let tokens = TokenRateHub::new();
+            let notifications = Arc::new(ResourceNotifications::new(hub.clone()));
+            let mut state =
+                test_stream(&hub, &tokens, notifications, vec![json!({"kind":"state"})]);
+            state.store = Some(store.clone());
+            store.transaction(move |tx| {
+                let count = if scenario == "documents" { 513 } else { 1 };
+                for index in 0..count {
+                    let id = format!("agent-{index}");
+                    let name = if scenario == "bytes" { "é".repeat(262144) } else { "Agent".into() };
+                    SyncDocumentsRepository::put_entity(tx, "agent", &id, json!({"id":id,"name":name,"status":"idle","source":"managed"}), false)?;
+                }
+                if scenario == "pruned" {
+                    tx.execute("INSERT OR REPLACE INTO sync_entity_meta(key,value) VALUES('entity_tombstone_floor','1')", [])?;
+                }
+                if scenario == "payload" {
+                    tx.execute("UPDATE sync_entities SET payload='broken'", [])?;
+                }
+                Ok(())
+            }).await.expect("interval");
+            hub.notify_one();
+            let (event, _) = next_frame(state).await.expect("revision fallback");
+            let event = event_document(event).await;
+            assert!(
+                event["resourceVersions"][0].get("entityChanges").is_none(),
+                "{scenario}"
+            );
+            assert!(
+                event["resourceVersions"][0]["revision"]
+                    .as_i64()
+                    .expect("revision")
+                    > 0
+            );
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn state_stream_merges_changes_inside_the_200_ms_flush_window() {
+        use futures_util::FutureExt;
+        let hub = Arc::new(ChangeNotificationHub::new());
+        let tokens = TokenRateHub::new();
+        let notifications = Arc::new(ResourceNotifications::new(hub.clone()));
+        let state = test_stream(
+            &hub,
+            &tokens,
+            notifications,
+            vec![json!({"kind":"accounts"})],
+        );
+        hub.notify_one();
+        let (_, state) = next_frame(state).await.expect("first frame");
+        let mut next = Box::pin(next_frame(state));
+        for _ in 0..5 {
+            hub.notify_one();
+            tokio::time::advance(Duration::from_millis(30)).await;
+            assert!(
+                next.as_mut().now_or_never().is_none(),
+                "no intermediate frame inside 200 ms"
+            );
+        }
+        tokio::time::advance(Duration::from_millis(50)).await;
+        let (event, _) = next.await.expect("merged frame");
+        assert_eq!(event_document(event).await["revision"], 6);
+    }
+
+    #[tokio::test]
+    async fn unchanged_open_chat_ignores_unrelated_agent_commits() {
+        let root = tempfile::tempdir().expect("isolated state");
+        let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
+        let state = HttpState::new(
+            "token".into(),
+            "workspace".into(),
+            root.path().display().to_string(),
+            4321,
+            None,
+            Some(store.clone()),
+            None,
+        );
+        let resources = vec![json!({"kind":"transcript","agentId":"open"})];
+        let baseline = state
+            .resource_notifications
+            .changes_since_with_content(&resources, None, |resource| {
+                resource_content(state.clone(), resource)
+            })
+            .await
+            .expect("baseline");
+        store
+            .transaction(|tx| {
+                tx.execute(
+                    "INSERT INTO runtime_agents(id,record) VALUES('other',?1)",
+                    [json!({"id":"other","status":"idle"}).to_string()],
+                )?;
+                Ok(())
+            })
+            .await
+            .expect("unrelated commit");
+        state.sync_changes.notify_one();
+        let unchanged = state
+            .resource_notifications
+            .changes_since_with_content(&resources, Some(baseline.cursor.revision), |resource| {
+                resource_content(state.clone(), resource)
+            })
+            .await
+            .expect("unchanged conversation");
+        assert!(
+            unchanged.resources.is_empty(),
+            "an unrelated agent must cause zero open-chat pulls"
+        );
+        store
+            .transaction(|tx| {
+                tx.execute(
+                    "INSERT INTO runtime_agents(id,record) VALUES('open',?1)",
+                    [json!({"id":"open","status":"running"}).to_string()],
+                )?;
+                Ok(())
+            })
+            .await
+            .expect("active conversation");
+        state.sync_changes.notify_one();
+        let active = state
+            .resource_notifications
+            .changes_since_with_content(&resources, Some(unchanged.cursor.revision), |resource| {
+                resource_content(state.clone(), resource)
+            })
+            .await
+            .expect("active conversation revision");
+        assert_eq!(active.resources, resources);
+        store
+            .transaction(|tx| {
+                tx.execute(
+                    "INSERT INTO runtime_items(id,agent,record,created) VALUES('text','open',?1,1)",
+                    [json!({"id":"text","text":"Live transcript text"}).to_string()],
+                )?;
+                Ok(())
+            })
+            .await
+            .expect("active text changes");
+        state.sync_changes.notify_one();
+        let text = state
+            .resource_notifications
+            .changes_since_with_content(&resources, Some(active.cursor.revision), |resource| {
+                resource_content(state.clone(), resource)
+            })
+            .await
+            .expect("active text revision");
+        assert_eq!(
+            text.resources, resources,
+            "active transcript text still requests a pull"
+        );
+    }
 
     #[cfg(not(windows))]
     #[test]
@@ -909,7 +1264,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn overflow_is_recovered_by_next_frame_with_the_latest_full_resource_event() {
+    async fn coalesced_revisions_keep_the_latest_ordinary_resource_event() {
         let hub = ChangeNotificationHub::new();
         let tokens = TokenRateHub::new();
         let mut changes = hub.subscribe();
@@ -946,7 +1301,7 @@ mod tests {
             .expect("SSE body");
         let frame = String::from_utf8(body.to_vec()).expect("UTF-8 SSE frame");
         assert!(frame.contains("id: 3"), "{frame}");
-        assert!(frame.contains("\"reason\":\"overflow\""), "{frame}");
+        assert!(frame.contains("\"reason\":\"change\""), "{frame}");
         assert!(frame.contains("\"revision\":3"), "{frame}");
     }
 
