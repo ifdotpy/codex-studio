@@ -5,11 +5,6 @@
 .chat-execution-settings section {
   min-width: 0;
 }
-.execution-disclosure {
-  border-block-end: var(--studio-border-width) solid
-    var(--mantine-color-default-border);
-}
-.execution-disclosure > summary,
 .execution-accounts > summary {
   cursor: pointer;
   display: flex;
@@ -19,7 +14,6 @@
   min-height: var(--studio-touch-target);
   padding: var(--mantine-spacing-xs);
 }
-.execution-disclosure > summary::-webkit-details-marker,
 .execution-accounts > summary::-webkit-details-marker {
   display: none;
 }
@@ -33,14 +27,6 @@
 }
 .execution-profile-body {
   padding: var(--mantine-spacing-sm) 0 var(--mantine-spacing-md);
-}
-.execution-disclosure .execution-selected {
-  display: inline-flex;
-  flex: 1;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--mantine-spacing-xs);
-  min-width: 0;
 }
 .execution-selected > .execution-role {
   font-size: var(--mantine-font-size-xs);
@@ -131,4 +117,46 @@
   .execution-setting-description {
     grid-column: 1 / -1;
   }
+}
+
+.chat-execution-settings .mantine-Tabs-list {
+  flex-wrap: nowrap;
+}
+.chat-execution-settings .mantine-Tabs-tab {
+  padding-inline: var(--mantine-spacing-xs);
+  min-height: var(--studio-touch-target);
+}
+.settings-tab-summary {
+  margin-inline-start: calc(var(--mantine-spacing-xs) / 2);
+  color: var(--mantine-color-dimmed);
+  font-size: var(--mantine-font-size-xs);
+  font-variant-numeric: tabular-nums;
+}
+.settings-role-label {
+  display: grid;
+  gap: calc(var(--mantine-spacing-xs) / 2);
+  text-align: start;
+  min-width: 0;
+}
+.settings-role-model {
+  font-size: var(--mantine-font-size-xs);
+  font-weight: 400;
+  color: var(--mantine-color-dimmed);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-execution-settings .mantine-SegmentedControl-label {
+  min-width: 0;
+}
+.chat-execution-settings .mantine-SegmentedControl-control {
+  min-width: 0;
+}
+
+#chat-settings-permissions > .claude-settings {
+  grid-column: 1 / -1;
+  gap: var(--mantine-spacing-sm);
+}
+.chat-execution-settings .claude-save-status:empty {
+  display: none;
 }

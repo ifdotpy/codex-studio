@@ -197,14 +197,32 @@ function AccountTile({
   disabled,
   onSelect,
   multiple = false,
+  readOnly = false,
 }: {
   account: Account;
   selected: boolean;
   disabled: boolean;
   onSelect: () => void;
   multiple?: boolean;
+  readOnly?: boolean;
 }) {
   const { remaining } = useAccountLimitView(account, { signedInOnly: false });
+  if (readOnly)
+    return (
+      <Tooltip label={accountTooltip(account)}>
+        <div
+          className="setup-account setup-account-status"
+          data-account-key={account.id}
+          data-selected={selected || undefined}
+        >
+          <AccountTileLabel
+            name={setupAccountName(account)}
+            remaining={remaining}
+          />
+          {remaining !== null && <AccountRemainingBar remaining={remaining} />}
+        </div>
+      </Tooltip>
+    );
   return (
     <Tooltip label={accountTooltip(account)}>
       <ActionButton
@@ -327,6 +345,14 @@ export function AccountTiles(p: AccountTilesProps) {
                   : p.value === account.id
               }
               multiple={p.multiple}
+              readOnly={
+                !p.multiple &&
+                p.value === account.id &&
+                !p.automatic &&
+                p.accounts.filter(
+                  (item) => (item.provider || "codex") === provider,
+                ).length === 1
+              }
               disabled={!!p.disabled || !!p.accountDisabled?.(account)}
               onSelect={() => select(account.id)}
             />

@@ -1,19 +1,8 @@
-.model-options {
-  margin-block-start: var(--mantine-spacing-xs);
-}
-.model-radio {
-  padding: calc(var(--mantine-spacing-xs) / 2) var(--mantine-spacing-xs);
-  border-radius: var(--mantine-radius-sm);
-}
 .model-radio:has(:checked) {
   background: var(--mantine-primary-color-light);
 }
 .model-radio:has(:focus-visible) {
   outline: auto;
-}
-.model-radio:not(:has(:checked)):not(:has([data-unavailable]))
-  .mantine-Radio-description {
-  display: none;
 }
 .model-radio .mantine-Radio-labelWrapper,
 .model-select {
@@ -29,5 +18,71 @@
   flex: 1 0 auto;
 }
 .execution-profile .effort-scale .mantine-SegmentedControl-label {
+  white-space: nowrap;
+}
+
+/* The same native radio grid serves setup sheets and chat settings. */
+.model-options {
+  margin-block-start: var(--mantine-spacing-xs);
+  display: grid;
+  grid-template-columns: repeat(
+    auto-fill,
+    minmax(min(100%, calc(var(--mantine-spacing-xl) * 3)), 1fr)
+  );
+  gap: var(--mantine-spacing-xs);
+}
+.model-radio {
+  border-radius: var(--mantine-radius-sm);
+  display: flex;
+  align-items: center;
+  min-height: var(--studio-touch-target);
+  padding: calc(var(--mantine-spacing-xs) / 2);
+  border: var(--studio-border-width) solid var(--mantine-color-default-border);
+}
+.model-radio:has(:disabled) {
+  opacity: var(--mantine-disabled-opacity);
+}
+.model-radio > .mantine-Radio-body {
+  width: 100%;
+}
+.model-radio .mantine-Radio-label {
+  padding-inline-start: calc(var(--mantine-spacing-xs) / 2);
+}
+.model-option-label {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: calc(var(--mantine-spacing-xs) / 2);
+  overflow-wrap: anywhere;
+  line-height: var(--mantine-line-height-xs);
+}
+.model-option-badges {
+  color: var(--mantine-color-dimmed);
+  font-size: var(--mantine-font-size-xs);
+}
+.execution-profile .model-description {
+  margin-block-start: var(--mantine-spacing-xs);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.model-unavailable-reason {
+  margin-block-start: calc(var(--mantine-spacing-xs) / 2);
+}
+.model-family-label {
+  margin-block-start: var(--mantine-spacing-xs);
+}
+.model-option-name {
+  white-space: nowrap;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.model-context-badge {
+  padding-inline: calc(var(--mantine-spacing-xs) / 4);
+  border-radius: var(--mantine-radius-xs);
+  background: var(--mantine-color-default-hover);
+  color: var(--mantine-color-dimmed);
+  font-size: var(--mantine-font-size-xs);
   white-space: nowrap;
 }

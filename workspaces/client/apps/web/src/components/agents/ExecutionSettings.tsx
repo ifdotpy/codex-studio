@@ -2,7 +2,6 @@ import { useServerApi } from "../../servers/ServerServicesContext";
 import { accountCanStart } from "../../accountName";
 import {
   Button,
-  AccordionChevron,
   Popover,
   Drawer,
   Switch,
@@ -90,7 +89,7 @@ const fastTier = (info?: WorkerModelInfo) =>
   info?.serviceTiers?.find((tier) => tier.id === "priority");
 
 type SettingsProps = {
-  presentation?: "menu" | "disclosure";
+  presentation?: "menu" | "panel";
   teamOnly?: boolean;
   agent: Agent;
   catalog: Catalog;
@@ -1155,12 +1154,12 @@ function ScopedExecutionSettings({
     ) : null;
   const controls = (
     <>
-      {presentation !== "disclosure" && delegation}
+      {presentation === "menu" && delegation}
       <AgentSetupPicker
         role={role}
         onRole={onRole}
         roles={
-          presentation === "disclosure"
+          presentation !== "menu"
             ? []
             : agent.isLead
               ? ["orchestrator", "worker", "review"]
@@ -1194,9 +1193,7 @@ function ScopedExecutionSettings({
           )
         }
         modelId={
-          presentation === "disclosure"
-            ? `${agent.id}-${role}-model`
-            : undefined
+          presentation !== "menu" ? `${agent.id}-${role}-model` : undefined
         }
         models={pickerModels}
         model={pickerModel}
@@ -1575,31 +1572,13 @@ function ScopedExecutionSettings({
         {error && <p role="alert">{error}</p>}
       </Stack>
     );
-  if (presentation === "disclosure" && !permissionsOnly)
-    return (
-      <details
-        name="agent"
-        className="execution-disclosure"
-        data-role={initialRole}
-      >
-        <summary
-          data-studio-state={
-            role === "orchestrator" && busy.has(agent.status || "")
-              ? "working"
-              : "none"
-          }
-        >
-          <span className="execution-selected">{summaryContent}</span>
-          <AccordionChevron
-            className="execution-disclosure-chevron"
-            size="var(--mantine-font-size-sm)"
-            aria-hidden="true"
-          />
-        </summary>
-        <div className="execution-profile-body">{controls}</div>
-      </details>
-    );
   if (permissionsOnly) return permissions;
+  if (presentation === "panel")
+    return (
+      <div className="execution-profile-body" data-role={role}>
+        {controls}
+      </div>
+    );
   if (mobile)
     return (
       <>

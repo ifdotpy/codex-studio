@@ -76,10 +76,13 @@ test("Mobile client ui", async ({
         exact: true,
       });
       await chatSettings.waitFor();
-      const lead = chatSettings.locator('details[data-role="orchestrator"]');
-      if (!(await lead.evaluate((node) => node.open)))
-        await lead.locator(":scope > summary").click();
-      await expect(lead).toHaveAttribute("open", "");
+      await chatSettings
+        .getByRole("tab", { name: "Models", exact: true })
+        .click();
+      await chatSettings
+        .getByRole("radiogroup", { name: "Agent role", exact: true })
+        .getByText("Lead", { exact: true })
+        .click();
     };
     const closeChatSettings = async () => {
       const dialog = page.getByRole("dialog", {
@@ -90,9 +93,10 @@ test("Mobile client ui", async ({
       await expect(dialog).not.toBeVisible();
     };
     const closeMainAgentSettings = async () => {
-      const lead = page.locator('details[data-role="orchestrator"]');
-      if (await lead.evaluate((node) => node.open))
-        await lead.locator(":scope > summary").click();
+      await page
+        .getByRole("dialog", { name: "Chat settings", exact: true })
+        .getByRole("tab", { name: /^Access/ })
+        .click();
     };
     const startProjectChat = async (name) => {
       await page.getByRole("button", { name, exact: true }).click();
@@ -107,7 +111,7 @@ test("Mobile client ui", async ({
     };
     const selectedAccount = () =>
       page
-        .locator('details[data-role="orchestrator"]')
+        .locator('.execution-profile-body[data-role="orchestrator"]')
         .locator('.setup-account[data-selected="true"]');
     const inspectConversationTools = async (hasUsage) => {
       const menu = page.locator(".conversation-header-tools-menu");

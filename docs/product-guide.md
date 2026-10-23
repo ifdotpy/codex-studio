@@ -125,17 +125,19 @@ the remaining weekly allowance.
 
 Chat settings includes Claude permission modes, extended thinking, automatic
 compaction, native commands and skills, and context rollback. Model, effort, and
-fast-mode controls use the native model catalog. Setup sheets list models as
-native radio choices with descriptions and reasons for unavailable choices.
+fast-mode controls use the native model catalog. Setup sheets show a compact native radio grid. The grid groups Claude families and Codex generations, newest first, with
+context-size variants shown as badges. The selected model description appears
+below it, followed by reasons for unavailable choices.
 Tab enters the selected model; arrow keys select another enabled model. Compact
 model fields use native selects grouped by provider, with **(default)** and
 **(current)** tags where applicable and the selected model's description below
 the field. Dropdown menus show text labels; their appearance follows the browser.
-Fast and Daybreak switches include visible descriptions. Chat settings groups
-Lead, Workers, and Review in native disclosures, with one role open at a time.
-Team contains subagent parallelism and delegation depth; zero parallelism uses
-a single agent. Account eligibility is separate from each role's selected account.
-Access shows permissions and the reason browser access is unavailable. Hidden catalog models stay hidden. A proposed plan waits for a
+Fast and Daybreak switches include visible descriptions. Chat settings has Models, Team, and Access tabs. Models shows Lead, Workers,
+and Review summaries above the selected role's account, model, reasoning, and
+mode controls. Accounts use a compact grid with remaining limits. Team contains
+subagent parallelism, delegation depth, and account eligibility; zero parallelism
+uses a single agent. Eligibility is separate from each role's selected account.
+Access shows permissions, browser availability, and project actions. Hidden catalog models stay hidden. A proposed plan waits for a
 separate implementation request. Rollback preserves the original saved history.
 Commands and rollback retain their request identities after a lost response.
 

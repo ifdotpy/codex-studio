@@ -82,11 +82,15 @@ export function ClaudeSettings({
   account,
   onSignIn,
   permissionsTargetId,
+  onPermissionModeChange,
 }: {
   permissionsTargetId?: string;
   agent: Agent;
   account?: Account;
   onSignIn?: (accountKey: string) => void;
+  onPermissionModeChange?: (
+    mode: ClaudeValues["permissionMode"] | null,
+  ) => void;
 }) {
   const localStorage = useServerStorage();
   const { post, saved } = useServerApi();
@@ -121,6 +125,11 @@ export function ClaudeSettings({
   const [savingField, setSavingField] = useState("");
   const [savedLabel, setSavedLabel] = useState("");
   const [savedField, setSavedField] = useState("");
+  useEffect(() => {
+    onPermissionModeChange?.(
+      stateLoaded && !savingField ? values.permissionMode : null,
+    );
+  }, [stateLoaded, savingField, values.permissionMode, onPermissionModeChange]);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const windowSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const call = (body: ClaudeSessionRequest) =>
