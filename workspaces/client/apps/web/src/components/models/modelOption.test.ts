@@ -48,6 +48,25 @@ describe("modelDisplayName", () => {
   });
 });
 
+describe("Claude description aliases", () => {
+  it.each([
+    [
+      "Claude · Default (recommended)",
+      "Opus 4.6 · Best for reasoning",
+      "Opus 4.6",
+    ],
+    ["Claude · Sonnet", "Claude Sonnet 4.6 · Balanced", "Sonnet 4.6"],
+    ["Claude · Custom", "Opus 4.6 · Custom deployment", "Custom · Opus 4.6"],
+  ])(
+    "keeps the description family for %s",
+    (displayName, description, expected) => {
+      expect(
+        modelDisplayName({ model: "default", displayName, description }),
+      ).toBe(expected);
+    },
+  );
+});
+
 describe("toModelOptions", () => {
   it("preserves values, provider, descriptions, default/current tags and disabled reasons", () => {
     const options = toModelOptions(

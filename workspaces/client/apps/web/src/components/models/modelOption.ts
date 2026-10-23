@@ -50,8 +50,9 @@ export function modelDisplayName(
       `\\b${family}(?: \\d+(?:\\.\\d+)*)?\\b`,
       "i",
     );
-    if (familyLabel.test(label))
-      label = label.replace(familyLabel, `${family} ${number}`);
+    label = familyLabel.test(label)
+      ? label.replace(familyLabel, `${family} ${number}`)
+      : [label, `${family} ${number}`].filter(Boolean).join(" · ");
   }
   return (
     label || (row?.resolvedModel ? modelDisplayName(row.resolvedModel) : id)
