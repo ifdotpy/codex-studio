@@ -214,7 +214,7 @@ test("execution settings ui", async ({ browser: _browser }) => {
           "data-mantine-color-scheme",
           scheme,
         );
-        for (const tab of ["Models", "Team", "Access"]) {
+        for (const tab of ["Models", "Team"]) {
           await chatSettingsDialog
             .getByRole("tab", { name: new RegExp("^" + tab) })
             .click();
@@ -333,7 +333,7 @@ test("execution settings ui", async ({ browser: _browser }) => {
         (await state()).find((a) => a.id === lead.id).effort === "high",
     );
     await waitFor(() => leadReasoning.isEnabled());
-    await chatSettingsDialog.getByRole("tab", { name: /^Access/ }).click();
+    await chatSettingsDialog.getByRole("tab", { name: /^Team/ }).click();
     const yolo = page.getByRole("radio", {
       name: "Full",
       exact: true,
@@ -636,7 +636,7 @@ test("execution settings ui", async ({ browser: _browser }) => {
     await page.reload();
     await page.locator(`[data-chat="${fresh.id}"]`).click();
     await openSettings("Main agent settings");
-    await chatSettingsDialog.getByRole("tab", { name: /^Access/ }).click();
+    await chatSettingsDialog.getByRole("tab", { name: /^Team/ }).click();
     const freshYolo = page.getByRole("radio", {
       name: "Full",
       exact: true,

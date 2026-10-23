@@ -38,6 +38,10 @@
   gap: var(--mantine-spacing-xs);
 }
 .execution-dialog-actions {
+  margin-block-start: var(--mantine-spacing-sm);
+  padding-block-start: var(--mantine-spacing-xs);
+  border-block-start: var(--studio-border-width) solid
+    var(--mantine-color-default-border);
   display: flex;
   flex-wrap: wrap;
   gap: var(--mantine-spacing-xs);
@@ -109,19 +113,11 @@
   font-size: var(--mantine-font-size-xs);
   font-variant-numeric: tabular-nums;
 }
-.settings-role-label {
-  display: grid;
-  gap: calc(var(--mantine-spacing-xs) / 2);
-  text-align: start;
-  min-width: 0;
-}
-.settings-role-model {
-  font-size: var(--mantine-font-size-xs);
-  font-weight: 400;
-  color: var(--mantine-color-dimmed);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.settings-role-switch .mantine-SegmentedControl-label {
+  min-height: var(--studio-control-size);
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 .chat-execution-settings .mantine-SegmentedControl-label {
   min-width: 0;
@@ -143,4 +139,8 @@
 }
 .execution-account-eligibility .setup-account {
   padding: var(--mantine-spacing-xs);
+}
+
+.execution-dialog-actions .mantine-Button-root {
+  min-height: var(--studio-touch-target);
 }

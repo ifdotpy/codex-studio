@@ -188,9 +188,7 @@ for (const provider of ["claude", "codex"])
         await expect(
           dialog.locator(".model-option-name").filter({ hasText: "1M" }),
         ).toHaveCount(0);
-        await expect(
-          dialog.getByRole("tab", { name: "Access Edits", exact: true }),
-        ).toBeVisible();
+        await expect(dialog.getByRole("tab")).toHaveCount(2);
       } else {
         await expect(dialog.locator(".model-family-label")).toHaveText([
           "Codex 6.x",
@@ -202,9 +200,10 @@ for (const provider of ["claude", "codex"])
         "role",
         "button",
       );
+      await expect(roles.locator(".settings-role-model")).toHaveCount(0);
       await expect(
-        roles.getByText("Same as caller", { exact: true }),
-      ).toBeVisible();
+        page.locator("#composer .execution-summary-trigger"),
+      ).toHaveAttribute("title", /Review same as caller/);
       for (const role of ["Lead", "Workers"]) {
         await roles.getByText(role, { exact: true }).click();
         const selected = dialog.locator(
@@ -237,7 +236,7 @@ for (const provider of ["claude", "codex"])
             "data-mantine-color-scheme",
             scheme,
           );
-          for (const tab of ["Models", "Team", "Access"]) {
+          for (const tab of ["Models", "Team"]) {
             await dialog
               .getByRole("tab", { name: new RegExp("^" + tab) })
               .click();
@@ -272,6 +271,21 @@ for (const provider of ["claude", "codex"])
                 .map((el) => el.getBoundingClientRect())
                 .filter((box) => box.height);
               return {
+                roleHeight:
+                  node
+                    .querySelector(".settings-role-switch")
+                    ?.getBoundingClientRect().height || 0,
+                groupGaps: [...node.querySelectorAll(".model-family-group")]
+                  .slice(1)
+                  .map((group) => {
+                    const previous =
+                      group.previousElementSibling.getBoundingClientRect();
+                    const current = group.getBoundingClientRect();
+                    return current.height
+                      ? current.top - previous.bottom
+                      : null;
+                  })
+                  .filter((gap) => gap !== null),
                 familyGaps: [...node.querySelectorAll(".model-family-group")]
                   .map((group) => {
                     const label = group
@@ -315,8 +329,12 @@ for (const provider of ["claude", "codex"])
                 width === 1440 ? 3 : 5,
               );
             expect(geometry.chipWidthRange).toBeLessThan(2);
+            if (tab === "Models")
+              expect(geometry.roleHeight).toBeLessThanOrEqual(44);
             for (const gap of geometry.familyGaps)
               expect(gap).toBeGreaterThanOrEqual(8);
+            for (const gap of geometry.groupGaps)
+              expect(gap).toBeGreaterThan(Math.max(...geometry.familyGaps));
             measurements.push({
               provider,
               width,
@@ -330,6 +348,25 @@ for (const provider of ["claude", "codex"])
             });
             if (tab === "Models") {
               await roles.getByText("Workers", { exact: true }).click();
+              await expect
+                .poll(async () =>
+                  roles.evaluate((node) => {
+                    const indicator = node
+                      .querySelector(".mantine-SegmentedControl-indicator")
+                      .getBoundingClientRect();
+                    const checked = node
+                      .querySelector(
+                        ".mantine-SegmentedControl-control:has(input:checked) .mantine-SegmentedControl-label",
+                      )
+                      .getBoundingClientRect();
+                    return Math.max(
+                      ...["x", "y", "width", "height"].map((key) =>
+                        Math.abs(indicator[key] - checked[key]),
+                      ),
+                    );
+                  }),
+                )
+                .toBeLessThan(2);
               await expect(
                 dialog.getByRole("radio", { name: "Automatic", exact: true }),
               ).not.toBeChecked();

@@ -147,3 +147,22 @@
 .setup-account-automatic:has(:focus-visible) {
   outline: auto;
 }
+
+.setup-account-automatic:not(:has(input:disabled)) {
+  border-color: var(--mantine-primary-color-light-color);
+}
+.setup-account-automatic:has(input:checked) {
+  border-color: var(--mantine-primary-color-filled);
+}
+.setup-automatic-label {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: calc(var(--mantine-spacing-xs) / 2);
+}
+.setup-automatic-label > svg {
+  flex: none;
+  width: var(--mantine-font-size-sm);
+  height: var(--mantine-font-size-sm);
+  color: var(--mantine-primary-color-light-color);
+}
