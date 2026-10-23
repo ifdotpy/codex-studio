@@ -182,6 +182,9 @@ test("execution settings ui", async ({ browser: _browser }) => {
       name: "Chat settings",
       exact: true,
     });
+    await expect(
+      chatSettingsDialog.getByRole("tab", { name: "Models", exact: true }),
+    ).toBeVisible();
     const parallelInput = chatSettingsDialog.getByRole("textbox", {
       name: "Subagent parallelism",
       exact: true,
