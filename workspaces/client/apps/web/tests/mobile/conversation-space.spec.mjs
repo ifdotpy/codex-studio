@@ -141,6 +141,50 @@ test("phone conversation gives the transcript its viewport budget", async ({
           await expect(
             page.getByRole("button", { name: "Dictation", exact: true }),
           ).toBeVisible();
+          if (width < 760) {
+            for (const target of [
+              page.getByRole("button", { name: "Dictation", exact: true }),
+              page.locator(".composer-tools-disclosure > summary"),
+              page.locator("#composer .execution-summary-trigger"),
+            ]) {
+              const box = await target.boundingBox();
+              expect(box.width).toBeGreaterThanOrEqual(44);
+              expect(box.height).toBeGreaterThanOrEqual(44);
+            }
+            for (const target of [
+              page.getByRole("button", { name: "Chat context", exact: true }),
+              page.locator(".session-cost-summary"),
+              page.getByRole("button", { name: "Account limits", exact: true }),
+            ]) {
+              const box = await target.boundingBox();
+              expect(box.width).toBeGreaterThanOrEqual(24);
+              expect(box.height).toBeGreaterThanOrEqual(24);
+            }
+            await expect(page.locator(".account-limits-dots")).toBeHidden();
+            await page
+              .getByRole("button", { name: "Account limits", exact: true })
+              .click();
+            await expect(
+              page.getByRole("region", { name: "Account limits details" }),
+            ).toBeVisible();
+            await page.keyboard.press("Escape");
+            await expect(page.locator(".account-limits-popover")).toBeHidden();
+            const footerFacts = await page
+              .locator(".usage-footer")
+              .evaluate((e) =>
+                [
+                  ".context-use",
+                  ".session-cost-summary",
+                  ".account-limits-toggle",
+                ].map((s) =>
+                  e.querySelector(s).getBoundingClientRect().toJSON(),
+                ),
+              );
+            for (let i = 1; i < footerFacts.length; i++)
+              expect(
+                footerFacts[i].left - footerFacts[i - 1].right,
+              ).toBeGreaterThanOrEqual(8);
+          }
           if (warning) {
             const notice = page.locator(".supervisor-recovery-notice");
             await expect(notice).toHaveAttribute("title", /13 GB free/);
@@ -167,6 +211,7 @@ test("phone conversation gives the transcript its viewport budget", async ({
             expect(toolsBounds.x + toolsBounds.width).toBeLessThanOrEqual(
               width,
             );
+
             if (width > 320) await disclosure.click();
             for (const label of ["Queue for next turn", "Send message"]) {
               const button = page.getByRole("button", {
@@ -186,6 +231,43 @@ test("phone conversation gives the transcript its viewport budget", async ({
               ).toBeVisible();
               await disclosure.click();
             }
+            const model = await page
+              .locator(
+                '.execution-summary-segment[data-role="lead"] .execution-model',
+              )
+              .boundingBox();
+            const execution = await page
+              .locator(".execution-summary-trigger")
+              .boundingBox();
+            expect(model.x + model.width).toBeLessThanOrEqual(
+              execution.x + execution.width,
+            );
+            const controls = await page.locator("#composer").evaluate((e) =>
+              [
+                ...e.querySelectorAll(
+                  "button, .composer-tools-disclosure > summary",
+                ),
+              ]
+                .filter(
+                  (b) =>
+                    b.getClientRects().length &&
+                    !b.closest(".composer-tools-popover"),
+                )
+                .map((b) => ({
+                  name: b.getAttribute("aria-label"),
+                  ...b.getBoundingClientRect().toJSON(),
+                })),
+            );
+            for (let i = 0; i < controls.length; i++)
+              for (let j = i + 1; j < controls.length; j++) {
+                const a = controls[i],
+                  b = controls[j];
+                expect(
+                  Math.min(a.right, b.right) - Math.max(a.left, b.left) > 0 &&
+                    Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top) > 0,
+                  JSON.stringify({ a, b }),
+                ).toBe(false);
+              }
           } else {
             await expect(
               page.locator(".composer-tools-disclosure"),
@@ -256,7 +338,7 @@ test("phone conversation gives the transcript its viewport budget", async ({
       );
       expect(result.overflow).toBe(false);
       expect(result.footerHeight).toBeLessThanOrEqual(
-        result.width < 760 ? 20 : 32,
+        result.width < 760 ? 24 : 32,
       );
       expect(result.estimate.width).toBeGreaterThan(0);
       expect(

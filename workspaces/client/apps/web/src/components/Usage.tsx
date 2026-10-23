@@ -716,7 +716,18 @@ export default function Usage({
                     : undefined
               }
               onClick={() => changeOpened(!limitsOpened)}
-              leftSection={<Gauge size={13} />}
+              leftSection={
+                <>
+                  <Gauge className="account-limits-gauge" size={13} />
+                  <span
+                    className="account-limits-dot account-limits-compact-dot"
+                    aria-hidden="true"
+                    data-color={
+                      weeklyRunway(limits, now, activeAccount?.signedOut).color
+                    }
+                  />
+                </>
+              }
               rightSection={<ChevronUp size={12} />}
             >
               <span className="account-limits-summary">

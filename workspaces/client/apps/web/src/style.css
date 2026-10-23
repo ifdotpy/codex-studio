@@ -378,7 +378,6 @@ p {
   flex-shrink: 1;
   min-height: 0;
   margin: 8px auto 0;
-  padding: 10px 12px 8px;
   background: var(--raised);
   border: var(--studio-border-width) solid var(--line);
   border-radius: 18px;
@@ -791,7 +790,6 @@ p {
   }
   #composer {
     width: calc(100% - 28px);
-    padding: 12px 14px 10px;
   }
   #requests {
     padding: 0 14px;
@@ -1582,7 +1580,6 @@ html body #root:has(.terminal-dock) {
     --composer-chrome-allowance: 143px;
     width: calc(100% - 16px);
     margin-bottom: 0;
-    padding: 8px 10px;
   }
   #composer textarea,
   html body input,

@@ -281,6 +281,8 @@ export default function Conversation(p: {
     delivery?: DeliveryMoment;
   }) => Promise<void>;
   outgoing?: OutgoingMessage[];
+  offlineSendPending?: boolean;
+  offlineSendDetails?: string;
   onObserved?: (ids: string[]) => void;
   onReadResult?: (proof: ChatReadProof) => void;
   onOutgoingEdit?: (id: string, text: string) => void;
@@ -690,6 +692,7 @@ export default function Conversation(p: {
     !!threadBlock ||
     capacityRetry?.status === "scheduled" ||
     connection === "reconnecting" ||
+    !!p.offlineSendPending ||
     !!agent?.error ||
     !!agent?.startAttempt?.prepareError ||
     !!agent?.startAttempt?.responseError ||
@@ -1289,6 +1292,11 @@ export default function Conversation(p: {
         />
       )}
       {m.deliveryError &&
+        !(
+          p.offlineSendPending &&
+          m.localDelivery &&
+          m.deliveryStatus === "queued"
+        ) &&
         ["failed", "uncertain", "queued"].includes(m.deliveryStatus || "") && (
           <div className="message-delivery-error">
             <p>{m.deliveryError}</p>
@@ -1689,6 +1697,8 @@ export default function Conversation(p: {
                     },
                   }}
                   connection={connection}
+                  savedMessagePending={p.offlineSendPending}
+                  connectionDetails={p.offlineSendDetails}
                 />
               )}
           </div>
@@ -1697,6 +1707,8 @@ export default function Conversation(p: {
               source={p.waitSource}
               agent={agent}
               connection={connection}
+              savedMessagePending={p.offlineSendPending}
+              connectionDetails={p.offlineSendDetails}
             />
           )}
           <Requests

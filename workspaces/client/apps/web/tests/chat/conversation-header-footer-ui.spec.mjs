@@ -94,9 +94,10 @@ test("conversation header stays compact and usage facts remain visible", async (
           await expect(
             tools.locator(".prompt-history-toggle-label"),
           ).toHaveText("1 / 1");
-          await expect(
-            page.locator('.account-limits-dot-target[aria-current="true"]'),
-          ).toBeVisible();
+          if (width >= 760)
+            await expect(
+              page.locator('.account-limits-dot-target[aria-current="true"]'),
+            ).toBeVisible();
           await expect(
             page.getByRole("button", { name: "Account limits", exact: true }),
           ).toBeVisible();
@@ -148,6 +149,7 @@ test("conversation header stays compact and usage facts remain visible", async (
               footer: rect(".usage-footer"),
               estimate: rect(".session-cost-summary"),
               dots: rect(".account-limits-dots"),
+              limits: rect(".account-limits-toggle"),
               controls: [
                 ...document.querySelectorAll(
                   ".usage-footer >*, .account-limits-toggle",
@@ -212,8 +214,12 @@ function assertGeometry(r) {
       r.title.top + r.title.height / 2 - r.status.top - r.status.height / 2,
     ),
   ).toBeLessThanOrEqual(1);
-  expect(r.dots.width).toBeGreaterThan(0);
-  expect(r.dots.height).toBeGreaterThan(0);
+  expect(r.limits.width).toBeGreaterThan(0);
+  if (r.width < 760) expect(r.dots.width).toBe(0);
+  else {
+    expect(r.dots.width).toBeGreaterThan(0);
+    expect(r.dots.height).toBeGreaterThan(0);
+  }
   expect(r.estimate.width).toBeGreaterThan(0);
   const centers = r.controls.map((e) => e.top + e.height / 2);
   expect(

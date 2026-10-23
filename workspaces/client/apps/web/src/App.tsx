@@ -198,6 +198,10 @@ import ClaudeSignIn from "./components/ClaudeSignIn";
 import AccountSignInNotice from "./components/AccountSignInNotice";
 import CodexSignIn from "./components/CodexSignIn";
 import ConversationTitle from "./components/shell/ConversationTitle";
+import {
+  useOfflineSendFeedback,
+  connectionFailureText,
+} from "./components/message-delivery/useOfflineSendFeedback";
 import Conversation from "./components/Conversation";
 const SelectedConversation = memo(Conversation);
 import type { UsageAccount } from "./components/Usage";
@@ -742,6 +746,16 @@ export default function App({ active = true }: { active?: boolean }) {
   const conversationDraftConflicts = useRetainedArray(
     draftConflicts.filter((version) => version.session === (opened || "new")),
   );
+  const offlineSendFeedback = useOfflineSendFeedback(visibleOutgoing, opened, [
+    error,
+    draftError,
+    outbox.error,
+    toast,
+  ]);
+  useEffect(() => {
+    if (offlineSendFeedback.pending && connectionFailureText(toast))
+      setToast("");
+  }, [offlineSendFeedback.pending, toast]);
   useServerActivity(localPersistenceFailed || sending);
   const rendererBusy = useSyncExternalStore(
     subscribeServerActivity,
@@ -2957,7 +2971,7 @@ export default function App({ active = true }: { active?: boolean }) {
                 }
               />
             ))}
-          {error && (
+          {error && !offlineSendFeedback.owns(error) && (
             <div id="error" role="alert">
               {error}
             </div>
@@ -3006,12 +3020,12 @@ export default function App({ active = true }: { active?: boolean }) {
                   </Button>
                 </div>
               ))}
-            {draftError && (
+            {draftError && !offlineSendFeedback.owns(draftError) && (
               <p className="sync-status" role="status" data-draft-sync-status>
                 {draftError}
               </p>
             )}
-            {outbox.error && (
+            {outbox.error && !offlineSendFeedback.owns(outbox.error) && (
               <p className="sync-status" role="alert">
                 {outbox.error}
               </p>
@@ -3079,6 +3093,8 @@ export default function App({ active = true }: { active?: boolean }) {
                 sending={sending}
                 schemaMismatch={schemaMismatch}
                 outgoing={conversationOutgoing}
+                offlineSendPending={offlineSendFeedback.pending}
+                offlineSendDetails={offlineSendFeedback.details}
                 onObserved={observeSends}
                 onReadResult={readState.observeRead}
                 onOutgoingEdit={editSend}
@@ -3744,7 +3760,7 @@ export default function App({ active = true }: { active?: boolean }) {
         )}
       </Modal>
       {schemaMismatch && schemaMismatchDialog}
-      {toast && (
+      {toast && !offlineSendFeedback.owns(toast) && (
         <div id="toast" role="status">
           {toast}
         </div>
