@@ -1,0 +1,86 @@
+/* Owner of the dispatch-board state colors and rail size.
+   States are ChatIndicatorKind values (chat-status/chatStatusModel.ts).
+   See docs/design/redesign-brief.md. */
+:root {
+  /* Width of the leading state rail on a strip. */
+  --studio-rail-size: 0.1875rem;
+  /* Diameter of an inline state marker. */
+  --studio-dot-size: 0.5rem;
+}
+
+:root,
+[data-mantine-color-scheme="dark"] {
+  --studio-state-working: #3fc1c3;
+  --studio-state-answer: #f0b43c;
+  --studio-state-error: #f0776b;
+  --studio-state-unread: #62c08e;
+  --studio-state-paused: #7c8796;
+  --studio-state-none: transparent;
+}
+
+[data-mantine-color-scheme="light"] {
+  --studio-state-working: #0e8c8f;
+  --studio-state-answer: #c98500;
+  --studio-state-error: #c73e32;
+  --studio-state-unread: #2f8a5b;
+  --studio-state-paused: #7c8796;
+  --studio-state-none: transparent;
+}
+
+:root {
+  --studio-state-working-soft: color-mix(
+    in srgb,
+    var(--studio-state-working) 14%,
+    transparent
+  );
+  --studio-state-answer-soft: color-mix(
+    in srgb,
+    var(--studio-state-answer) 16%,
+    transparent
+  );
+  --studio-state-error-soft: color-mix(
+    in srgb,
+    var(--studio-state-error) 14%,
+    transparent
+  );
+  --studio-state-unread-soft: color-mix(
+    in srgb,
+    var(--studio-state-unread) 12%,
+    transparent
+  );
+  --studio-state-paused-soft: transparent;
+  --studio-state-none-soft: transparent;
+}
+
+[data-studio-state] {
+  --studio-state: var(--studio-state-none);
+}
+[data-studio-state="working"] {
+  --studio-state: var(--studio-state-working);
+}
+[data-studio-state="answer"] {
+  --studio-state: var(--studio-state-answer);
+}
+[data-studio-state="error"] {
+  --studio-state: var(--studio-state-error);
+}
+[data-studio-state="unread"] {
+  --studio-state: var(--studio-state-unread);
+}
+[data-studio-state="paused"] {
+  --studio-state: var(--studio-state-paused);
+}
+
+/* A strip: the leading edge carries the state. */
+[data-studio-state]:not(.studio-state-dot) {
+  box-shadow: inset var(--studio-rail-size) 0 0 var(--studio-state);
+}
+
+.studio-state-dot {
+  display: inline-block;
+  flex: none;
+  inline-size: var(--studio-dot-size);
+  block-size: var(--studio-dot-size);
+  border-radius: 50%;
+  background: var(--studio-state);
+}
