@@ -66,7 +66,7 @@ it("pauses inactive animations of pseudo-elements too", () => {
   const css = readFileSync(
     new URL("./visual-activity.css", import.meta.url),
     "utf8",
-  );
+  ).replace(/\/\*[\s\S]*?\*\//g, "");
   const selectors = css
     .slice(0, css.indexOf("{"))
     .split(",")

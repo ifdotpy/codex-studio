@@ -1,6 +1,15 @@
+/* A universal selector does not match pseudo-elements, so list them too. */
 [data-visual-active="false"],
+[data-visual-active="false"]::before,
+[data-visual-active="false"]::after,
 [data-visual-active="false"] *,
+[data-visual-active="false"] *::before,
+[data-visual-active="false"] *::after,
 details:not([open]) > :not(summary),
-details:not([open]) > :not(summary) * {
+details:not([open]) > :not(summary)::before,
+details:not([open]) > :not(summary)::after,
+details:not([open]) > :not(summary) *,
+details:not([open]) > :not(summary) *::before,
+details:not([open]) > :not(summary) *::after {
   animation-play-state: paused !important;
 }
