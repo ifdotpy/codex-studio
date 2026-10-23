@@ -265,7 +265,6 @@ export default function TerminalDock({
         if (operation === "toggle") setOpened((value) => !value);
         else void createRef.current();
       });
-    if (!shellTerminal) return;
     const command = (event: Event) => {
       const operation = (event as CustomEvent<string>).detail;
       if (operation === "toggle") setOpened((value: boolean) => !value);

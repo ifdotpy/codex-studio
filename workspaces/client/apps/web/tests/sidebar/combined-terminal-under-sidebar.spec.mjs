@@ -120,6 +120,33 @@ test("the combined window keeps the closed terminal bar under the sidebar and op
       })
       .toBe(true);
     await page.setViewportSize({ width: 1440, height: 900 });
+    // Switching servers cancels the local drag before it can save to either owner.
+    const preference = await page.evaluate(() =>
+      localStorage.getItem("codex.terminal.height"),
+    );
+    const handle = await dock.getByRole("separator").boundingBox();
+    await page.mouse.move(
+      handle.x + handle.width / 2,
+      handle.y + handle.height / 2,
+    );
+    await page.mouse.down();
+    await page.mouse.move(
+      handle.x + handle.width / 2,
+      handle.y + handle.height / 2 - 40,
+    );
+    await sidebar
+      .getByRole("button", { name: "Remote Saved pin", exact: true })
+      .dispatchEvent("click");
+    await page.mouse.up();
+    await expect(shell).toHaveAttribute("data-shell-terminal", "closed");
+    expect(
+      await page.evaluate(() => localStorage.getItem("codex.terminal.height")),
+    ).toBe(preference);
+    await sidebar
+      .getByRole("button", { name: "Local Saved pin", exact: true })
+      .click();
+    await expect(shell).toHaveAttribute("data-shell-terminal", "open");
+    await expect(dock).toBeVisible();
 
     await dock
       .getByRole("button", { name: "Hide terminals", exact: true })
