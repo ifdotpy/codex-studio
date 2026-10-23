@@ -259,12 +259,13 @@ Python registers this operation in `studio_api/accounts/router.py:214-228`. The 
 Account limits synchronize as `rateLimit` entities keyed by account, independently
 of `workspace/current`. The [account-state repository](../runtime-store/src/repositories/account_state.rs)
 moves persisted workspace snapshots once at startup. The existing per-account
-observation receipt keeps the freshest validated snapshot and ordered provider
+observation receipt keeps observation times and the ordered provider
 cursor in the same transaction as publication. Timestamp-only observations update
 that receipt without advancing sync sequence; changed provider data or errors
-publish one account entity. Startup and resume checks use the freshest durable
-observation. Client projections assemble these entities into account limits for
-the UI; reset windows already carry absolute `resetsAt` timestamps. Invalid
+publish one account entity. Startup and resume checks join its provider data with
+the freshest durable observation times. Client projections assemble these entities
+into account limits for the UI; reset windows already carry absolute `resetsAt`
+timestamps. Invalid
 startup snapshots remain isolated with value-free diagnostics.
 
 `account_key` is a scalar query value defaulting to `default`; missing or blank values select `default`. Repeated scalar values are rejected with HTTP 400 and `location: ["query", "account_key"]`. Extra query names are rejected with HTTP 400 and `location: ["query", "<name>"]`; validation errors use `{ "error": "Invalid request", "location": [...] }` in both runtimes. An explicit unknown account with no restored snapshot returns HTTP 400 `{ "error": "Unknown Codex account" }`.

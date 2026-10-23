@@ -1,6 +1,7 @@
 //! Ordered limits persistence. The journal identity and the snapshot commit together.
 use super::*;
 use rusqlite::OptionalExtension;
+use studio_runtime_store::account_state::limits_observation_key as watermark_key;
 use studio_runtime_store::{StoreError, SyncDocumentsRepository};
 
 pub(super) enum LimitsWrite {
@@ -29,14 +30,27 @@ impl LimitsWrite {
     }
 }
 
-use studio_runtime_store::account_state::limits_observation_key as watermark_key;
-
 // Fresh observations are durable even when their public content has not changed.
 #[derive(serde::Serialize)]
 struct ObservationReceipt<'a> {
     scope: &'a Value,
     cursor: u64,
-    snapshot: &'a Value,
+    #[serde(flatten)]
+    times: ObservationTimes<'a>,
+}
+
+struct ObservationTimes<'a>(&'a Value);
+impl serde::Serialize for ObservationTimes<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let mut map = serializer.serialize_map(None)?;
+        for field in studio_runtime_store::account_state::LIMITS_OBSERVATION_TIME_FIELDS {
+            if let Some(value) = self.0.get(*field) {
+                map.serialize_entry(*field, value)?;
+            }
+        }
+        map.end()
+    }
 }
 
 pub(super) async fn persist(
@@ -107,19 +121,9 @@ fn commit(
         .transpose()
         .map_err(|error| StoreError::SchemaMismatch(error.to_string()))?
         .unwrap_or(Value::Null);
-    let old = match stamp.get_mut("snapshot") {
-        Some(snapshot) => Some(snapshot.take()),
-        None => {
-            let raw: Option<String> = tx.query_row(
-                "SELECT payload FROM sync_entities WHERE collection='rateLimit' AND id=?1 AND deleted=0",
-                [account], |row| row.get(0),
-            ).optional()?;
-            raw.map(|raw| serde_json::from_str::<Value>(&raw))
-                .transpose()
-                .map_err(|error| StoreError::SchemaMismatch(error.to_string()))?
-                .and_then(|mut entity| entity.get_mut("value").map(Value::take))
-        }
-    };
+    let old = studio_runtime_store::account_state::limits_snapshot_with_observation(
+        tx, account, &mut stamp,
+    )?;
     let mut next_stamp = None;
     let value = match write {
         LimitsWrite::Snapshot(value) => value,
@@ -215,19 +219,24 @@ fn commit(
     let value = LimitsSnapshot::read(account, value)
         .map_err(|error| StoreError::SchemaMismatch(error.to_string()))?
         .into_value();
-    let content_changed = old.as_ref().is_none_or(|old| {
-        old["data"] != value["data"]
-            || old["error"] != value["error"]
-            || old["stale"] != value["stale"]
-    });
+    let identical = old.as_ref() == Some(&value);
+    if identical && next_stamp.is_none() {
+        return Ok((Some(value), false));
+    }
+    let content_changed = !identical
+        && old.as_ref().is_none_or(|old| {
+            old["data"] != value["data"]
+                || old["error"] != value["error"]
+                || old["stale"] != value["stale"]
+        });
     let stamp = next_stamp.as_ref().unwrap_or(&stamp);
     let receipt = serde_json::to_string(&ObservationReceipt {
         scope: &stamp["scope"],
         cursor: stamp["cursor"].as_u64().unwrap_or(0),
-        snapshot: &value,
+        times: ObservationTimes(&value),
     })?;
     tx.execute("INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,'limits-observation',?2) ON CONFLICT(id) DO UPDATE SET result=excluded.result", rusqlite::params![key,receipt])?;
-    if old.as_ref() == Some(&value) {
+    if identical {
         return Ok((Some(value), false));
     }
     if content_changed {
@@ -268,12 +277,15 @@ pub(super) async fn read_for_resume(
                 let Some(stamp) = stamp else {
                     return Ok(None);
                 };
-                let stamp: Value = serde_json::from_str(&stamp)
+                let mut stamp: Value = serde_json::from_str(&stamp)
                     .map_err(|error| StoreError::SchemaMismatch(error.to_string()))?;
                 if stamp["scope"] != serde_json::json!(expected) {
                     return Ok(None);
                 }
-                let candidate = stamp.get("snapshot").cloned();
+                let candidate =
+                    studio_runtime_store::account_state::limits_snapshot_with_observation(
+                        db, &key, &mut stamp,
+                    )?;
                 Ok::<_, StoreError>(candidate)
             })
             .await

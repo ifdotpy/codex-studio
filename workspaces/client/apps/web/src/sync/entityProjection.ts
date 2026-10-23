@@ -1,5 +1,4 @@
 import type {
-  AccountRateLimitsDto,
   AgentEntityDto,
   ChatEntityDto,
   ComplaintEntityDto,
@@ -17,6 +16,7 @@ import type {
   WorkspaceEntityDto,
 } from "../generated/api";
 import type { components } from "../generated/api";
+type AccountRateLimitsDto = components["schemas"]["AccountRateLimitsDto"];
 export type UiPreferencesDto = components["schemas"]["UiPreferencesDto"];
 import type { Snapshot } from "../types";
 

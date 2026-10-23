@@ -2016,7 +2016,14 @@ mod persistence_tests {
                     tx,
                     "workspace",
                     "current",
-                    json!({"untouched":true}),
+                    json!({"stateDir":"fixture"}),
+                    false,
+                )?;
+                SyncDocumentsRepository::put_entity(
+                    tx,
+                    "rateLimit",
+                    "other",
+                    json!({"accountKey":"other","at":1.0,"data":{"accountId":"other"}}),
                     false,
                 )?;
                 Ok(())
@@ -2037,7 +2044,7 @@ mod persistence_tests {
         .unwrap();
 
         let entity = stored_workspace(&store);
-        assert_eq!(entity["value"], json!({"untouched":true}));
+        assert_eq!(entity["value"], json!({"stateDir":"fixture"}));
         let raw: String = store
             .test_reader()
             .unwrap()
@@ -2049,6 +2056,10 @@ mod persistence_tests {
             .unwrap();
         assert_eq!(serde_json::from_str::<Value>(&raw).unwrap()["value"], value);
         assert_eq!(cache.lock().unwrap().get("default"), Some(&value));
+        let restored =
+            studio_runtime_store::account_state::limits_snapshots(&store.test_reader().unwrap())
+                .unwrap();
+        assert!(restored.snapshots.iter().any(|(account,value)| account=="other" && value["data"]["accountId"]=="other"));
     }
 
     #[tokio::test]
@@ -2061,7 +2072,7 @@ mod persistence_tests {
                     tx,
                     "workspace",
                     "current",
-                    json!({"untouched":true}),
+                    json!({"stateDir":"fixture"}),
                     false,
                 )?;
                 Ok(())
@@ -2405,6 +2416,23 @@ mod limits_runtime_tests {
             restored.snapshots[0].1["at"], repeated.observed_at,
             "startup restoration retains timestamp-only freshness"
         );
+        let raw: String = store
+            .test_reader()
+            .unwrap()
+            .query_row(
+                "SELECT result FROM runtime_operation_receipts WHERE id=?1",
+                [studio_runtime_store::account_state::limits_observation_key(
+                    "default",
+                )],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let receipt: Value = serde_json::from_str(&raw).unwrap();
+        assert!(
+            receipt.get("snapshot").is_none(),
+            "observation receipts must not duplicate provider data serialization"
+        );
+        assert_eq!(receipt["at"], repeated.observed_at);
         let mut changed = update(&f, 3, 60);
         changed.observed_at = repeated.observed_at + 1.0;
         assert!(

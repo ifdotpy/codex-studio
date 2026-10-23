@@ -44,6 +44,31 @@ pub struct LimitsReadDiagnostic {
     pub keyword: String,
 }
 
+/// Freshness fields stored privately between content changes. Unit: Unix seconds.
+pub const LIMITS_OBSERVATION_TIME_FIELDS: &[&str] = &["at", "readAt", "checkedAt", "processedAt"];
+
+/// Move observation times onto a decoded account snapshot without cloning provider data.
+pub fn apply_limits_observation(snapshot: &mut Value, observation: &mut Value) {
+    let (Some(snapshot), Some(observation)) =
+        (snapshot.as_object_mut(), observation.as_object_mut())
+    else {
+        return;
+    };
+    if !LIMITS_OBSERVATION_TIME_FIELDS
+        .iter()
+        .any(|field| observation.contains_key(*field))
+    {
+        return;
+    }
+    for field in LIMITS_OBSERVATION_TIME_FIELDS {
+        if let Some((key, value)) = observation.remove_entry(*field) {
+            snapshot.insert(key, value);
+        } else {
+            snapshot.remove(*field);
+        }
+    }
+}
+
 /// One ordered observation receipt per account; cursor generations are connection-local.
 pub fn limits_observation_key(account: &str) -> String {
     format!("{LIMITS_OBSERVATION_PREFIX}{account}")
@@ -61,22 +86,31 @@ pub fn latest_limits_snapshot(
             |row| row.get(0),
         )
         .optional()?;
-    let receipt = raw
+    let mut receipt = raw
         .map(|raw| serde_json::from_str::<Value>(&raw))
-        .transpose()?;
-    if let Some(mut receipt) = receipt
-        && let Some(snapshot) = receipt.get_mut("snapshot")
-    {
-        return Ok(Some(snapshot.take()));
-    }
+        .transpose()?
+        .unwrap_or(Value::Null);
+    limits_snapshot_with_observation(connection, account, &mut receipt)
+}
+
+/// Join one already-decoded receipt with its account entity; each document parses once.
+pub fn limits_snapshot_with_observation(
+    connection: &Connection,
+    account: &str,
+    observation: &mut Value,
+) -> StoreResult<Option<Value>> {
     let raw: Option<String> = connection.query_row(
         "SELECT payload FROM sync_entities WHERE collection='rateLimit' AND id=?1 AND deleted=0",
         [account], |row| row.get(0),
     ).optional()?;
-    Ok(raw
+    let mut snapshot = raw
         .map(|raw| serde_json::from_str::<Value>(&raw))
         .transpose()?
-        .and_then(|mut envelope| envelope.get_mut("value").map(Value::take)))
+        .and_then(|mut envelope| envelope.get_mut("value").map(Value::take));
+    if let Some(snapshot) = &mut snapshot {
+        apply_limits_observation(snapshot, observation);
+    }
+    Ok(snapshot)
 }
 
 /// Move persisted v3 workspace snapshots once, without changing their account identity.
@@ -92,6 +126,15 @@ pub(crate) fn migrate_workspace_limits(transaction: &Transaction<'_>) -> StoreRe
     let Some(value) = envelope.get_mut("value").and_then(Value::as_object_mut) else {
         return Ok(());
     };
+    if value
+        .get("rateLimitsByAccount")
+        .is_some_and(|accounts| !accounts.is_object())
+    {
+        return Err(StoreError::InvalidSyncObject {
+            scope: "workspace".into(),
+            id: "current".into(),
+        });
+    }
     let accounts = value.remove("rateLimitsByAccount");
     let default = value.remove("rateLimits");
     if accounts.is_none() && default.is_none() {
@@ -143,18 +186,18 @@ pub fn limits_snapshots(connection: &Connection) -> StoreResult<LimitsRead> {
         let receipt: Option<Vec<u8>> = row.get(3)?;
         let receipt_length: Option<i64> = row.get(4)?;
         let decoded = (|| {
-            if let Some(receipt) = receipt {
-                let mut receipt = decode_limits_document(&receipt, receipt_length)?;
-                if let Some(snapshot) = receipt.get_mut("snapshot") {
-                    return Ok(snapshot.take());
-                }
-            }
+            let mut receipt = receipt
+                .map(|receipt| decode_limits_document(&receipt, receipt_length))
+                .transpose()?
+                .unwrap_or(Value::Null);
             let bytes = bytes.ok_or_else(|| ("/value".to_owned(), "type".to_owned()))?;
             let mut envelope = decode_limits_document(&bytes, length)?;
-            envelope
+            let mut snapshot = envelope
                 .get_mut("value")
                 .map(Value::take)
-                .ok_or_else(|| ("/value".to_owned(), "type".to_owned()))
+                .ok_or_else(|| ("/value".to_owned(), "type".to_owned()))?;
+            apply_limits_observation(&mut snapshot, &mut receipt);
+            Ok(snapshot)
         })();
         let (snapshot, invalid) = match decoded {
             Ok(snapshot) => {
@@ -373,6 +416,38 @@ mod tests {
         assert_eq!(read.diagnostics.len(), 1);
         assert_eq!(read.diagnostics[0].account_key, "default");
         assert_eq!(read.diagnostics[0].pointer, "/data");
+    }
+
+    #[test]
+    fn durable_observation_times_restore_freshness_without_duplicating_provider_data() {
+        let db = database(
+            &json!({"value":{"rateLimitsByAccount":{"alpha":{"accountKey":"alpha","at":1.0,"readAt":1.0,"data":{"accountId":"A"}}}}}),
+        );
+        let key = super::limits_observation_key("alpha");
+        db.execute(
+            "INSERT INTO runtime_operation_receipts(id,result) VALUES(?1,?2)",
+            rusqlite::params![key, json!({"scope":null,"cursor":0,"at":2.0}).to_string()],
+        )
+        .expect("metadata receipt");
+        let restored = limits_snapshots(&db).expect("restore");
+        assert!(restored.diagnostics.is_empty());
+        assert_eq!(restored.snapshots[0].1["at"], 2.0);
+        assert!(restored.snapshots[0].1.get("readAt").is_none());
+        assert_eq!(restored.snapshots[0].1["data"]["accountId"], "A");
+        db.execute(
+            "UPDATE runtime_operation_receipts SET result=?1",
+            [json!({"at":"private-corrupt-timestamp"}).to_string()],
+        )
+        .expect("invalid metadata");
+        let restored = limits_snapshots(&db).expect("isolated diagnostic");
+        assert!(restored.snapshots.is_empty());
+        assert_eq!(restored.diagnostics[0].account_key, "alpha");
+        assert_eq!(restored.diagnostics[0].pointer, "/at");
+        assert!(
+            !restored.diagnostics[0]
+                .keyword
+                .contains("private-corrupt-timestamp")
+        );
     }
 
     #[test]
