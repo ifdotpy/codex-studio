@@ -212,6 +212,7 @@ test("phone conversation gives the transcript its viewport budget", async ({
               width,
             );
 
+            if (width > 320) await disclosure.click();
             for (const label of ["Queue for next turn", "Send message"]) {
               const button = page.getByRole("button", {
                 name: label,
@@ -221,7 +222,7 @@ test("phone conversation gives the transcript its viewport budget", async ({
               expect(bounds.width).toBeGreaterThanOrEqual(44);
               expect(bounds.height).toBeGreaterThanOrEqual(44);
             }
-            {
+            if (width <= 320) {
               await expect(
                 page.locator(".composer-queue-primary"),
               ).toBeHidden();
@@ -230,6 +231,17 @@ test("phone conversation gives the transcript its viewport budget", async ({
               ).toBeVisible();
               await disclosure.click();
             }
+            const model = await page
+              .locator(
+                '.execution-summary-segment[data-role="lead"] .execution-model',
+              )
+              .boundingBox();
+            const execution = await page
+              .locator(".execution-summary-trigger")
+              .boundingBox();
+            expect(model.x + model.width).toBeLessThanOrEqual(
+              execution.x + execution.width,
+            );
             const controls = await page.locator("#composer").evaluate((e) =>
               [
                 ...e.querySelectorAll(
