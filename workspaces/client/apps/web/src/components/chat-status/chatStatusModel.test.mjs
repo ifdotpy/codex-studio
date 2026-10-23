@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import {
+  CHAT_INDICATOR_URGENCY,
   chatIndicators,
   unreadResult,
   chatActivities,
@@ -1569,4 +1570,15 @@ it("keeps completion receipts and operational indicator priority aligned", () =>
     ).get("lead"),
     { kind: "none", label: "Turn ended. Send a message to continue." },
   );
+});
+
+it("orders every indicator kind once by operator urgency", () => {
+  assert.deepEqual(CHAT_INDICATOR_URGENCY, [
+    "answer",
+    "error",
+    "working",
+    "unread",
+    "paused",
+    "none",
+  ]);
 });
