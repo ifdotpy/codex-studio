@@ -25,6 +25,17 @@ type Equal<Actual, Expected> =
 type Assert<Condition extends true> = Condition;
 type NotNever<Value> = [Value] extends [never] ? false : true;
 
+// OpenAPI owns one boolean selector; callers cannot send a string or a second mode.
+const streamTokenInterestIsBoolean: Assert<
+  Equal<
+    NonNullable<
+      paths["/api/sync/stream"]["get"]["parameters"]["query"]
+    >["tokenRates"],
+    boolean | undefined
+  >
+> = true;
+void streamTokenInterestIsBoolean;
+
 // The transcript producer has no string-valued unavailable reasons.
 const transcriptUnavailableIsNull: Assert<
   Equal<

@@ -25,6 +25,15 @@ State updates follow this flow:
    External `/api/sync/notify` hints proven empty at the same pull cursor are consumed;
    changed content is delivered, and incomplete intervals retain a pull hint.
 
+Token-rate subscriptions follow this flow:
+
+1. The browser stream owner sends the tabs' aggregate interest through the `tokenRates`
+   query selector owned by [OpenAPI](../workspaces/runtime/packages/runtime-http/openapi.json).
+2. Interest changes reopen the existing shared stream. An interested stream receives
+   the current snapshot immediately, including when a new tab takes ownership.
+3. A stream with explicit false interest receives resources and heartbeats without token frames.
+4. Native and signed clients omitting the selector retain the schema's compatibility default.
+
 Browser draft notifications follow this flow:
 
 1. Read the [draft sequence owner](../workspaces/runtime/packages/runtime-store/src/repositories/sync_documents.rs) when a subscribed draft resource is invalidated.

@@ -1641,6 +1641,8 @@ describe("shared resource event transport", () => {
 
     const transport = await loadTransport();
     const stop = transport.watchResourceChanges({ kind: "state" }, vi.fn());
+    const onTokenRates = vi.fn();
+    const stopTokens = transport.watchTokenRateEvents(onTokenRates);
     await vi.waitFor(() => expect(request).toHaveBeenCalledTimes(1));
     expect(request.mock.calls[0]?.[1].signal.aborted).toBe(false);
     expect(Source.instances).toHaveLength(0);
@@ -1649,6 +1651,27 @@ describe("shared resource event transport", () => {
     releaseQueuedRequest?.();
     await vi.waitFor(() => expect(Source.instances).toHaveLength(1));
     expect(Source.instances[0]?.closed).toBe(false);
+    expect(
+      new URL(Source.instances[0]!.url, "http://studio.test").searchParams.get(
+        "tokenRates",
+      ),
+    ).toBe("true");
+    const currentSnapshot = {
+      protocol: 3,
+      workspaceId,
+      epoch: "epoch-one",
+      revision: 1,
+      records: [],
+    };
+    Source.instances[0]!.emit("token-rates", currentSnapshot);
+    expect(onTokenRates).toHaveBeenCalledWith(currentSnapshot);
+    stopTokens();
+    await vi.waitFor(() => expect(Source.instances).toHaveLength(2));
+    expect(
+      new URL(Source.instances[1]!.url, "http://studio.test").searchParams.get(
+        "tokenRates",
+      ),
+    ).toBe("false");
     stop();
     await vi.waitFor(() => expect(Source.instances[0]?.closed).toBe(true));
   });
@@ -1812,6 +1835,90 @@ describe("shared resource event transport", () => {
     stopChanges();
     stopStatus();
     vi.useRealTimers();
+  });
+
+  it("sends aggregate token interest through follower changes and owner reacquisition", async () => {
+    syncDatabase.mockResolvedValue({ workspaceId });
+    vi.stubGlobal("window", {
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    });
+    const visibility = {
+      hidden: false,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    };
+    vi.stubGlobal("document", visibility);
+    vi.stubGlobal("navigator", {
+      onLine: true,
+      locks: {
+        request: (
+          _name: string,
+          _options: unknown,
+          callback: (lock: {}) => Promise<void>,
+        ) => Promise.resolve().then(() => callback({})),
+      },
+    });
+    vi.stubGlobal("location", { origin: "http://studio.test" });
+    vi.stubGlobal("crypto", { randomUUID: () => "tab-owner" });
+    vi.stubGlobal("EventSource", Source);
+    vi.stubGlobal("BroadcastChannel", Channel);
+    const transport = await loadTransport();
+    const stop = transport.watchResourceChanges({ kind: "drafts" }, vi.fn());
+    await vi.waitFor(() => expect(Source.instances).toHaveLength(1));
+    const interest = (source: Source) =>
+      new URL(source.url, "http://studio.test").searchParams.get("tokenRates");
+    expect(interest(Source.instances[0]!)).toBe("false");
+    const channel = Channel.instances[0]!;
+    const peerInterest = (tokenRates: boolean) =>
+      channel.onmessage?.({
+        data: {
+          kind: "subscriptions",
+          workspaceId,
+          apiSchemaHash: API_SCHEMA_HASH,
+          tabId: "tab-follower",
+          resources: [],
+          tokenRates,
+          reset: true,
+        },
+      } as MessageEvent);
+    peerInterest(true);
+    await vi.waitFor(() => expect(Source.instances).toHaveLength(2));
+    expect(Source.instances[0]!.closed).toBe(true);
+    expect(interest(Source.instances[1]!)).toBe("true");
+    const event = {
+      protocol: 3,
+      workspaceId,
+      epoch: "epoch-one",
+      revision: 3,
+      records: [],
+    };
+    const beforeSnapshot = channel.messages.length;
+    Source.instances[1]!.emit("token-rates", event);
+    expect(channel.messages.slice(beforeSnapshot)).toContainEqual(
+      expect.objectContaining({ kind: "token-rates", event }),
+    );
+    peerInterest(false);
+    await vi.waitFor(() => expect(Source.instances).toHaveLength(3));
+    expect(interest(Source.instances[2]!)).toBe("false");
+    peerInterest(true);
+    await vi.waitFor(() => expect(Source.instances).toHaveLength(4));
+    visibility.hidden = true;
+    for (const resume of resumeListeners) resume();
+    expect(Source.instances[3]!.closed).toBe(true);
+    visibility.hidden = false;
+    for (const resume of resumeListeners) resume();
+    await vi.waitFor(() => expect(Source.instances).toHaveLength(5));
+    expect(interest(Source.instances[4]!)).toBe("true");
+    const beforeTakeover = channel.messages.length;
+    Source.instances[4]!.emit("token-rates", { ...event, revision: 4 });
+    expect(channel.messages.slice(beforeTakeover)).toContainEqual(
+      expect.objectContaining({
+        kind: "token-rates",
+        event: { ...event, revision: 4 },
+      }),
+    );
+    stop();
   });
 
   it("delivers resource and token-rate events that share a hub revision", async () => {
