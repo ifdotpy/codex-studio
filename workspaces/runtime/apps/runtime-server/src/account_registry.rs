@@ -1088,6 +1088,24 @@ impl AccountRegistry {
             studio_runtime_services::account_start_gate::show_blocked(&self.store, waits).await?;
         }
         if let Err(error) = self.start(account).await {
+            // A launch that only a sign-in can fix holds these starts with
+            // their reason and action, instead of a silent provider wait.
+            if let Some(reason) =
+                studio_runtime_services::account_auth_gate::launch_hold_reason(&error)
+            {
+                let held = agents.clone();
+                if let Err(hold) = studio_runtime_services::account_auth_gate::hold_unstarted(
+                    &self.store,
+                    held,
+                    reason,
+                )
+                .await
+                {
+                    studio_runtime_services::diagnostics::log_stderr(format_args!(
+                        "account {account} sign-in hold was not recorded: {hold}"
+                    ));
+                }
+            }
             return Ok(AccountPageDispatch::StartFailed(error));
         }
         if shutdown.is_some_and(|stop| *stop.subscribe().borrow()) {
