@@ -22,10 +22,26 @@ test("touch sizing uses Mantine variables without stretching NumberInput stepper
   expect(appearance.includes("--button-height:")).toBe(true);
 });
 
+test("voice surfaces follow the active scheme instead of hard-coded dark colors", () => {
+  const voice = css("../components/realtime-voice.css");
+  expect(/#[\da-f]{3,8}\b|--mantine-color-dark-/i.test(voice)).toBe(false);
+  expect(voice.includes("var(--surface)")).toBe(true);
+  expect(voice.includes("var(--text)")).toBe(true);
+});
+
 test("the composer and submit action consume the shared surface and primary tokens", () => {
   const source = css("../style.css");
   for (const selector of ["#composer", "#send", "#send:disabled"]) {
     const block = source.split(`${selector} {`)[1].split("}")[0];
     expect(/#[\da-f]{3,8}\b/i.test(block), selector).toBe(false);
   }
+});
+
+test("navigation links inherit the neutral text color in both schemes", () => {
+  const source = css("../style.css");
+  const links = source.split("\na {")[1].split("}")[0];
+  expect(links.includes("color: inherit")).toBe(true);
+  expect(css("../appearance.css").includes('color-scheme="light"] a {')).toBe(
+    false,
+  );
 });

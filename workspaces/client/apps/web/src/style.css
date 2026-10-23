@@ -25,6 +25,18 @@ body {
   }
 }
 a {
+  color: inherit;
+}
+/* Reading links keep a clear destination cue; navigation stays neutral. */
+:where(
+    .prose,
+    .markdown-body,
+    .file-preview-body,
+    .native-notice,
+    .browser-access-notice,
+    .studio-recovery-banner
+  )
+  a {
   color: var(--accent);
 }
 button,
