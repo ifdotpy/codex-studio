@@ -263,15 +263,16 @@ async fn team_budget_http_includes_deleted_members_and_reports_incomplete_usage(
     );
     assert!(!summary.to_string().contains("private"));
     assert_eq!(summary["incomplete"].as_array().unwrap().len(), 3);
-    assert!(
-        studio_runtime_schema::first_error("TeamBudgetSummary", &summary)
-            .unwrap()
-            .is_none()
-    );
+    let validator = studio_runtime_schema::compiled_validator("TeamBudgetSummary")
+        .expect("team budget response schema compiles");
+    assert!(validator.is_valid(&summary));
+    let mut invalid = summary.clone();
+    invalid["tokenBudget"] = json!(-1);
+    assert!(!validator.is_valid(&invalid));
     // Resource-triggered reads must settle without publishing another update.
     let updates = Arc::new(AtomicUsize::new(0));
     let observed = Arc::clone(&updates);
-    store.add_resource_change_observer(move || {
+    store.add_resource_change_observer(move |_| {
         observed.fetch_add(1, Ordering::SeqCst);
     });
     let (status, repeated) = call(
