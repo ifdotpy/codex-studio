@@ -42,6 +42,14 @@ const POLL_MS = 1_000;
  * declines well before that, so the owner gets no alert.
  */
 const CARD_DECLINE_MS = 5_000;
+/** Milliseconds the smoke waits for the card in the client state before it declines it anyway. */
+const CARD_SHOWN_MS = 3_000;
+/** Milliseconds for a stopped test chat to end its turn before the smoke archives it. */
+const STOP_MS = 60_000;
+/** Milliseconds for an archive to reach the client state. */
+const ARCHIVE_SHOWN_MS = 10_000;
+/** RFC 4122 URL namespace of the sign-in card id. */
+const URL_NAMESPACE = "6ba7b811-9dad-11d1-80b4-00c04fd430c8";
 /** Pricing owner: the models.dev artifact that the backend reads in its state folder. */
 const PRICING_ARTIFACT = "model-pricing/models-dev-v1.json";
 /** models.dev provider names of the Studio providers. */
@@ -194,6 +202,30 @@ export function syncTranscriptIds(documents, agent) {
 }
 
 /**
+ * The request id of the sign-in card for a browser bridge item. The owner is
+ * `browser_cards::card_id` in runtime-services: a UUID v5 in the URL namespace
+ * of `studio-browser-open:<bridge id>`. A tooling test checks the owner.
+ */
+export function browserCardId(bridgeId) {
+  const namespace = Buffer.from(URL_NAMESPACE.replaceAll("-", ""), "hex");
+  const bytes = createHash("sha1")
+    .update(namespace)
+    .update(`studio-browser-open:${bridgeId}`)
+    .digest()
+    .subarray(0, 16);
+  bytes[6] = (bytes[6] & 0x0f) | 0x50;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = bytes.toString("hex");
+  return [
+    hex.slice(0, 8),
+    hex.slice(8, 12),
+    hex.slice(12, 16),
+    hex.slice(16, 20),
+    hex.slice(20),
+  ].join("-");
+}
+
+/**
  * Delete the run folder only when it is the exact folder that this run made:
  * a direct child of the temporary root with the run prefix and a marker that
  * holds this run id. Never by pattern.
@@ -327,6 +359,8 @@ class Smoke {
     this.root = null;
     this.projectRegistered = false;
     this.chats = [];
+    /** Sign-in cards that this run submitted and did not decline yet: request id to chat. */
+    this.openCards = new Map();
     this.ownerChats = new Map();
     this.desktop = null;
     this.state = null;
@@ -695,46 +729,80 @@ class Smoke {
       });
       connection.on("error", reject);
     });
-    if (reply?.ok !== true) {
+    if (reply?.ok !== true || typeof reply.id !== "string") {
       throw new CheckFailed(
         `the sign-in socket refused the card: ${reply?.message}`,
       );
     }
-    // Wait longer than the decline limit, so that a late card is still declined
-    // at once and the check fails on its time instead of leaving it open.
-    const card = await until("sign-in card", REQUEST_MS, async () => {
-      const cards = await this.changedEntities(
-        after,
-        "request",
-        (value) => value?.agent === agent && value.method === "browser/open",
-      );
-      const pending = cards.find((value) => value.status === "pending");
-      return { done: Boolean(pending), value: pending };
-    });
-    await this.backend.post("/api/answer", {
-      id: card.id,
-      decision: "decline",
-    });
+    const id = browserCardId(reply.id);
+    this.openCards.set(id, agent);
+    // The client shows a card through its pending request entity.
+    let shown = false;
+    try {
+      shown = await until("sign-in card", CARD_SHOWN_MS, async () => {
+        const cards = await this.changedEntities(
+          after,
+          "request",
+          (value) => value?.id === id && value.status === "pending",
+        );
+        return { done: cards.length > 0, value: true };
+      });
+    } catch (error) {
+      if (!(error instanceof CheckFailed)) {
+        throw error;
+      }
+    }
+    // Decline by the server id in every case, so the card never stays open.
+    await this.declineCard(id);
     const declinedAfter = Date.now() - submitted;
-    const closed = await until("closed sign-in card", REQUEST_MS, async () => {
-      const rows = await this.changedEntities(
-        after,
-        "request",
-        (value) => value?.id === card.id,
-      );
-      const latest = rows.at(-1);
-      return {
-        done: Boolean(latest) && latest.status !== "pending",
-        value: latest,
-        note: latest?.status,
-      };
-    });
-    if (declinedAfter > CARD_DECLINE_MS) {
+    // The decline wakes the chat with an outcome event; archive needs it idle.
+    await this.settled(agent, after);
+    const card = id.slice(0, 8);
+    if (!shown) {
       throw new CheckFailed(
-        `card ${card.id.slice(0, 8)} was declined ${declinedAfter} ms after submission; the limit is ${CARD_DECLINE_MS} ms`,
+        `card ${card} did not reach the client state in ${CARD_SHOWN_MS} ms; the smoke declined it by its server id after ${declinedAfter} ms`,
       );
     }
-    return `card ${card.id.slice(0, 8)} declined ${declinedAfter} ms after submission (${closed.status})`;
+    if (declinedAfter > CARD_DECLINE_MS) {
+      throw new CheckFailed(
+        `card ${card} was declined ${declinedAfter} ms after submission; the limit is ${CARD_DECLINE_MS} ms`,
+      );
+    }
+    return `card ${card} shown and declined ${declinedAfter} ms after submission`;
+  }
+
+  async declineCard(id) {
+    const result = await this.backend.post("/api/answer", {
+      id,
+      decision: "decline",
+    });
+    if (result?.status !== "answered") {
+      throw new CheckFailed(
+        `the decline of card ${id.slice(0, 8)} returned ${JSON.stringify(result?.status)}`,
+      );
+    }
+    this.openCards.delete(id);
+  }
+
+  /** Wait until the chat has no pending event after `after` and no turn in flight. */
+  async settled(agent, after) {
+    return until(`chat ${agent.slice(0, 8)} settles`, TURN_MS, async () => {
+      const chat = await this.chatStatus(agent);
+      const pending = await this.changedEntities(
+        after,
+        "event",
+        (value) => value?.agent === agent && value.status === "pending",
+      );
+      return {
+        done:
+          Boolean(chat) &&
+          !chat.inFlight &&
+          TERMINAL_STATUSES.has(chat.status) &&
+          pending.length === 0,
+        value: chat,
+        note: `status ${chat?.status}, ${pending.length} pending events`,
+      };
+    });
   }
 
   async clientTranscript(agent) {
@@ -773,15 +841,67 @@ class Smoke {
     return `${this.ownerChats.size} owner chats unchanged`;
   }
 
-  /** Archive every chat of this run, remove its project entry, delete its folder. */
+  /** Stop the chat when a turn still runs, so that the archive is accepted. */
+  async idle(id) {
+    const chat = await this.chatStatus(id);
+    if (!chat?.inFlight) {
+      return;
+    }
+    await this.backend.post("/api/stop", { id });
+    await until(`stop ${id.slice(0, 8)}`, STOP_MS, async () => {
+      const now = await this.chatStatus(id);
+      return { done: !now?.inFlight, value: now, note: now?.status };
+    });
+  }
+
+  /**
+   * Decline the run's open cards, archive its chats, remove its project entry
+   * and delete its folder. The folder goes last: a chat woken without it fails.
+   */
   async cleanup() {
     const problems = [];
+    // A Map iteration skips no entry when the current entry is deleted.
+    for (const [id, agent] of this.openCards) {
+      try {
+        const after = await this.entitySeq();
+        await this.declineCard(id);
+        // The decline wakes the chat; it must run while the folder exists.
+        await this.settled(agent, after);
+      } catch (error) {
+        problems.push(`card ${id}: ${error.message}`);
+      }
+    }
+    const archived = [];
     for (const id of this.chats) {
       try {
-        await this.backend.post("/api/organization", { id, archived: true });
+        await this.idle(id);
+        const agent = await this.backend.post("/api/organization", {
+          id,
+          archived: true,
+        });
+        if (agent?.archived !== true) {
+          throw new CheckFailed("the server did not store the archive");
+        }
+        archived.push(id);
       } catch (error) {
         problems.push(`archive ${id}: ${error.message}`);
       }
+    }
+    try {
+      // The owner sees the chat list through the client state, not the stored row.
+      await until("archive in the client state", ARCHIVE_SHOWN_MS, async () => {
+        const summary = await this.backend.get("/api/ui-summary");
+        const shown = new Map(
+          (summary.chats ?? []).map((chat) => [chat.id, chat.archived]),
+        );
+        const visible = archived.filter((id) => shown.get(id) === false);
+        return {
+          done: visible.length === 0,
+          note: `${visible.length} archived chats still show, first ${visible[0]}`,
+        };
+      });
+    } catch (error) {
+      problems.push(error.message);
     }
     if (this.projectRegistered) {
       try {

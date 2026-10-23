@@ -161,11 +161,15 @@ their time limits:
    turn on the cheapest model by the backend's models.dev pricing artifact.
 4. In the first chat: one message is delivered exactly once (an exact retry adds
    nothing), a monitor runs `true` and reports its exit, a sign-in card is
-   submitted through the chat's browser socket and declined within 5 s, and the
-   client transcript pull lists every transcript item.
-5. Always, also after a failure or an interrupt: archive the run's chats, remove
-   its project entry, and delete its folder only by exact path and run marker.
-   Then check that the owner's chats keep their names and archive state.
+   submitted through the chat's browser socket, shows in the client state, and
+   is declined within 5 s, and the client transcript pull lists every transcript
+   item. The smoke declines its card by the server id even when the card does
+   not show, and waits until the chat handles the decline.
+5. Always, also after a failure or an interrupt: decline the run's open cards,
+   stop and archive its chats, check that the archive shows in the client state,
+   remove its project entry, and then delete its folder only by exact path and
+   run marker. Then check that the owner's chats keep their names and archive
+   state.
 
 The smoke sends small real model requests and never changes the owner's chats.
 `--no-model` runs only the read-only steps; `--provider` and `--model

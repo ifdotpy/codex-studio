@@ -8,6 +8,7 @@ import {
   CheckFailed,
   RUN_MARKER,
   RUN_PREFIX,
+  browserCardId,
   cheapestModel,
   elapsedSeconds,
   lowestEffort,
@@ -102,6 +103,28 @@ test("the client transcript order comes from a full page or a stream delta", () 
   ];
   assert.deepEqual(syncTranscriptIds(delta, "a"), ["a:1", "a:2"]);
   assert.throws(() => syncTranscriptIds([], "a"), CheckFailed);
+});
+
+test("the sign-in card id matches its runtime-services owner", () => {
+  // Reference value from Python's uuid.uuid5(uuid.NAMESPACE_URL, name).
+  assert.equal(
+    browserCardId("bridge-fixture-1"),
+    "d7a590af-a491-5325-8e15-28b6c1715dcf",
+  );
+  const owner = fs.readFileSync(
+    new URL(
+      "../../../../runtime/packages/runtime-services/src/browser_cards.rs",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  const body =
+    /pub fn card_id\(bridge_id: &str\) -> String \{([\s\S]*?)\.to_string\(\)/.exec(
+      owner,
+    )?.[1];
+  assert.ok(body, "browser_cards::card_id is missing");
+  assert.match(body, /Uuid::new_v5\(\s*&uuid::Uuid::NAMESPACE_URL,/);
+  assert.match(body, /format!\("studio-browser-open:\{bridge_id\}"\)/);
 });
 
 test("only the exact marked run folder below the temporary root is removed", () => {
