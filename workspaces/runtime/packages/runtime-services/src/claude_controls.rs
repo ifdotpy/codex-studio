@@ -6,14 +6,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 /// Seconds for a dry-run, a history fork, and the SDK file restore.
 pub(crate) const FILE_RESTORE_TIMEOUT_SECONDS: u64 = 90;
-/// Claude session permission modes accepted by settings and child creation.
-pub(crate) const PERMISSION_MODES: &[&str] = &[
-    "default",
-    "acceptEdits",
-    "auto",
-    "plan",
-    "bypassPermissions",
-];
+pub(crate) use studio_runtime_schema::claude_permissions::PERMISSION_MODES;
 #[derive(Debug, thiserror::Error)]
 pub enum ControlError {
     #[error("Invalid Claude control record at {0}")]

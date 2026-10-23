@@ -767,7 +767,9 @@ pub fn decide(snapshot: CaptureSnapshot) -> Result<CaptureDecision, CaptureError
             }
             "turn/completed" => {
                 let error = &p["turn"]["error"];
-                let status = if studio_runtime_store::truthy(Some(error)) {
+                let status = if p["turn"]["status"] == "uncertain" {
+                    json!("uncertain")
+                } else if studio_runtime_store::truthy(Some(error)) {
                     json!("failed")
                 } else {
                     p["turn"].get("status").cloned().unwrap_or(json!("unknown"))

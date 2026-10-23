@@ -79,6 +79,39 @@ pub struct StoredRecord {
 pub struct WorkItemsRepository;
 
 impl WorkItemsRepository {
+    /// Read the validation errors that first reached this attempt's current count.
+    /// The counter identity selects the current attempt; the task fields fence its receipts.
+    pub fn legacy_submission_refusal(
+        connection: &Connection,
+        counter_id: &str,
+        work: &Value,
+        failed: i64,
+    ) -> StoreResult<Option<Value>> {
+        let record: Option<String> = connection
+            .query_row(
+                "SELECT json_extract(result, '$.submissionRefusal') FROM runtime_operation_receipts
+             WHERE rowid > (SELECT rowid FROM runtime_operation_receipts WHERE id=?1)
+               AND json_valid(result)
+               AND json_extract(result, '$.id')=?2
+               AND json_extract(result, '$.version')=?3
+               AND json_extract(result, '$.owner')=?4
+               AND json_extract(result, '$.submissionRefusal.failedSubmits')=?5
+             ORDER BY rowid ASC LIMIT 1",
+                params![
+                    counter_id,
+                    work["id"].as_str(),
+                    work["version"].as_i64(),
+                    work["owner"].as_str(),
+                    failed
+                ],
+                |row| row.get(0),
+            )
+            .optional()?;
+        record
+            .map(|text| serde_json::from_str(&text).map_err(StoreError::from))
+            .transpose()
+    }
+
     /// Read the active execution identity the Python writer would attach to a work result.
     /// The execution table is feature-created and therefore optional on older state.
     pub fn submission_identity(

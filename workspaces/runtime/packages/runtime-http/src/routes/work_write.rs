@@ -947,7 +947,7 @@ fn commit_error(error: WorkCommitError) -> ApiError {
     }
 }
 
-fn write_error(error: WorkWriteError) -> ApiError {
+pub(super) fn write_error(error: WorkWriteError) -> ApiError {
     match error {
         WorkWriteError::Event(error) => work_items::write_error(error),
         WorkWriteError::PreparationWorker => ApiError::internal(),

@@ -328,7 +328,7 @@ pub async fn recover_connection(
             }
             (
                 Some(native_state @ ("idle" | "notLoaded")),
-                Some("completed" | "failed" | "interrupted"),
+                Some("completed" | "failed" | "interrupted" | "uncertain"),
             ) => {
                 let Some(full_turn) = read.exact_turn(thread, turn_id).await? else {
                     return Ok(RecoveryEffectResult::plain(RecoveryOutcome::Unconfirmed));
@@ -453,7 +453,7 @@ fn state_name(state: &Value) -> Result<&str, HistoryError> {
 fn terminal(turn: &Value) -> bool {
     matches!(
         turn["status"].as_str(),
-        Some("completed" | "failed" | "interrupted")
+        Some("completed" | "failed" | "interrupted" | "uncertain")
     )
 }
 
