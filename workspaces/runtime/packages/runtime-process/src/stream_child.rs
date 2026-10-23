@@ -275,6 +275,8 @@ async fn run_child(
     mut cancel: watch::Receiver<bool>,
     lifetime: Duration,
 ) -> Result<ChildEvent, ChildError> {
+    // The owned group's ID, read before any wait can reap the leader.
+    let group = child.id();
     let mut stdin = child.stdin().take();
     let mut stdout = child.stdout().take().ok_or(ChildError::Cleanup)?;
     let mut stderr = child.stderr().take().ok_or(ChildError::Cleanup)?;
@@ -336,15 +338,24 @@ async fn run_child(
     }
     // Signal only the group created above. Never reconstruct ownership from a saved PID.
     // ESRCH simply means the owned group has already exited; wait still proves reaping.
-    if let Err(error) = child.start_kill()
-        && error.raw_os_error() != Some(3)
-    {
-        return Err(ChildError::Cleanup);
-    }
+    // Darwin can answer EPERM for a group whose exited member is not reaped yet,
+    // also after a clean exit; forgive that only once the reaped group is gone.
+    let killed = child.start_kill();
     let status = timeout(REAP_DEADLINE, child.wait())
         .await
         .map_err(|_| ChildError::Cleanup)?
         .map_err(|_| ChildError::Cleanup)?;
+    if let Err(error) = killed
+        && error.raw_os_error() != Some(3)
+        && !crate::owned_process_group::vanishes_after_reap(
+            group,
+            &error,
+            Instant::now() + REAP_DEADLINE,
+        )
+        .await
+    {
+        return Err(ChildError::Cleanup);
+    }
     // A descendant may retain either pipe after the leader exits. Require EOF
     // after group termination, within the same bounded cleanup contract.
     timeout(REAP_DEADLINE, async {

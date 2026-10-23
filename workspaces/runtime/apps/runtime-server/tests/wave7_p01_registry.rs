@@ -1763,6 +1763,10 @@ async fn registry_drains_strict_account_pages_after_one_global_wake() {
             .expect("registry retains the launcher");
         assert_eq!(account, format!("page-{index:06}"));
     }
+    // The pass stores a blocked start for each of 128 accounts before it reaches
+    // the tail, which takes 13 to 21 s in a debug build on a loaded host. No
+    // timer can open the tail instead: a retry pass begins at the first page
+    // again. So this wait is only the hang guard.
     let (account, request) = tokio::time::timeout(TEST_HANG_GUARD, writes.recv())
         .await
         .expect("strict account continuation reaches the eligible tail")
