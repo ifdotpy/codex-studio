@@ -503,7 +503,7 @@ impl TranscriptRepository {
             transaction.execute_cached(
                 "INSERT INTO runtime_item_fulltext(id,body) VALUES(?1,?2) \
                  ON CONFLICT(id) DO UPDATE SET body=excluded.body",
-                params![id, StoredTextValue::for_write(text)],
+                params![id, StoredTextValue::compressed(text)],
             )?;
         } else if has_fulltext {
             transaction.execute_cached("DELETE FROM runtime_item_fulltext WHERE id=?1", [id])?;
@@ -1462,6 +1462,59 @@ mod tests {
                     if id == "agent:long"
             ));
         }
+    }
+
+    #[test]
+    fn long_item_text_is_stored_compressed() {
+        let mut connection = Connection::open_in_memory().expect("in-memory database opens");
+        connection
+            .execute_batch(
+                "CREATE TABLE runtime_items(id TEXT PRIMARY KEY, agent TEXT NOT NULL, \
+                 record TEXT NOT NULL, created REAL NOT NULL);
+                 CREATE TABLE runtime_item_fulltext(id TEXT PRIMARY KEY, body TEXT NOT NULL);",
+            )
+            .expect("transcript tables create");
+        let transaction = connection.transaction().expect("transaction");
+        let text = "long \u{2713} ".repeat(4_000);
+        let record =
+            json!({"id":"agent:long","role":"assistant","text":"preview","truncated":true});
+        TranscriptRepository::put_item(
+            &transaction,
+            "agent:long",
+            "agent",
+            &record,
+            1.0,
+            &text,
+            false,
+        )
+        .expect("item writes");
+
+        let (kind, body): (String, rusqlite::types::Value) = transaction
+            .query_row(
+                "SELECT typeof(body),body FROM runtime_item_fulltext WHERE id='agent:long'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("body reads");
+        assert_eq!(kind, "blob", "a long item stores stored format 1");
+        let rusqlite::types::Value::Blob(body) = body else {
+            panic!("blob body");
+        };
+        assert_eq!(
+            crate::stored_text::decode_blob(&body).as_deref(),
+            Ok(text.as_str())
+        );
+        let item = super::TranscriptItem {
+            id: "agent:long".to_owned(),
+            agent: "agent".to_owned(),
+            record,
+        };
+        assert_eq!(
+            TranscriptRepository::full_text(&transaction, &item)
+                .expect("full text reads")
+                .as_deref(),
+            Some(text.as_str())
+        );
     }
 
     #[test]

@@ -1157,6 +1157,34 @@ function fastTierCommands(root) {
     },
     {
       item: { name: "studio-runtime-services", ecosystem: "cargo" },
+      label: "stored text compaction witnesses",
+      commands: [
+        [
+          "cargo",
+          [
+            "nextest",
+            "run",
+            "--locked",
+            "--no-tests",
+            "fail",
+            "--message-format",
+            "libtest-json-plus",
+            "-p",
+            "studio-runtime-services",
+            "--lib",
+            "-E",
+            nextestAnyOf(["test(stored_text_compaction::tests::)"]),
+          ],
+        ],
+      ],
+      options: {
+        selector: "stored_text_compaction::tests::",
+        reason:
+          "Check that the background pass converts every plain full-text body to its exact compressed form, waits while disk space is low, and that inflate restores plain text.",
+      },
+    },
+    {
+      item: { name: "studio-runtime-services", ecosystem: "cargo" },
       label: "transaction diagnostics ownership witnesses",
       commands: [
         [
@@ -1222,6 +1250,7 @@ function fastTierCommands(root) {
               "test(stored_text::tests::)",
               "test(repositories::transcript::tests::full_text_)",
               "test(/^stored_text_owner::/)",
+              "test(stored_text_compaction::tests::)",
             ]),
           ],
         ],
