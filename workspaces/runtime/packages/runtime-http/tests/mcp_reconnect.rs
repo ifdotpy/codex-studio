@@ -297,12 +297,9 @@ async fn mcp_reconnect_validates_the_mutation_contract_before_admission() {
             value
         },
     ] {
-        assert_eq!(
-            request(&app, "/api/mcp/reconnect", Some(invalid), true)
-                .await
-                .0,
-            422
-        );
+        let response = request(&app, "/api/mcp/reconnect", Some(invalid), true).await;
+        assert_eq!(response.0, 400, "{response:?}");
+        assert_eq!(response.1["error"], "Invalid request");
     }
     assert!(session.calls.lock().unwrap().is_empty());
 }
