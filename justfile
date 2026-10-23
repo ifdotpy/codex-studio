@@ -153,6 +153,10 @@ benchmark-client-interactions baseline output:
 test-browser-smoke:
     @node {{quote(facade)}} test-browser-smoke
 
+[doc("Check the main user scenarios on the app installed on this Mac, with its own test chats. See docs/testing.md, Installed scenario smoke.")]
+smoke-installed *args:
+    @node {{quote(justfile_directory() / "workspaces/tooling/apps/installed-smoke/smoke.mjs")}} "$@"
+
 [doc("Run the full browser project as a manual heavy check.")]
 test-heavy:
     @node {{quote(facade)}} test-heavy

@@ -223,3 +223,376 @@ async fn a_final_guest_state_expires_the_card_and_tells_the_chat_after_an_approv
         )]
     );
 }
+
+fn events(store: &studio_runtime_store::RuntimeStore) -> Vec<(String, String, String)> {
+    let connection = store.test_reader().expect("test step");
+    connection
+        .prepare("SELECT id,kind,text FROM runtime_events ORDER BY id")
+        .expect("test step")
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+        .expect("test step")
+        .collect::<Result<_, _>>()
+        .expect("test step")
+}
+
+#[tokio::test]
+async fn a_card_follows_the_request_deadline_and_tells_the_chat_when_nobody_answered() {
+    let (_dir, store) = store().await;
+    let stopped = "f".repeat(32);
+    let timed_out = "1".repeat(32);
+    let replaced = "2".repeat(32);
+    let redirect = json!({"host":"localhost","port":8000,"path":"/"});
+    let pending = |id: &str, seq: u64| item(id, VM_AGENT, KUBE, redirect.clone(), "pending", seq);
+    let mut moved = pending(&stopped, 4);
+    moved["expiresAt"] = json!(1201.0);
+    let ended =
+        |id: &str, state: &str, seq: u64| item(id, VM_AGENT, KUBE, redirect.clone(), state, seq);
+    let guest = Arc::new(WaitGuest {
+        batches: Mutex::new(VecDeque::from([
+            json!({"items":[pending(&stopped, 1), pending(&timed_out, 2), pending(&replaced, 3)], "next": 3}),
+            // The command still listens: the bridge moved the deadline.
+            json!({"items":[moved], "next": 4}),
+            json!({"items":[
+                ended(&stopped, "stale", 5), ended(&timed_out, "expired", 6),
+                ended(&replaced, "replaced", 7),
+            ], "next": 7}),
+            // A repeated final state changes nothing.
+            json!({"items":[ended(&stopped, "stale", 8)], "next": 8}),
+        ])),
+        calls: Mutex::new(Vec::new()),
+    });
+    let source = CardSource {
+        source: "vm",
+        guest,
+        forwarder: None,
+        http_providers: Default::default(),
+    };
+    poll_once(&store, &source, 0, 0, None)
+        .await
+        .expect("test step");
+    assert_eq!(
+        request(&store, &stopped).expect("card")["params"]["expiresAt"],
+        601.0
+    );
+    poll_once(&store, &source, 3, 0, None)
+        .await
+        .expect("test step");
+    assert_eq!(
+        request(&store, &stopped).expect("card")["params"]["expiresAt"],
+        1201.0,
+        "the card shows the moved deadline"
+    );
+    poll_once(&store, &source, 4, 0, None)
+        .await
+        .expect("test step");
+    poll_once(&store, &source, 7, 0, None)
+        .await
+        .expect("test step");
+    for (bridge, reason) in [
+        (&stopped, "stale"),
+        (&timed_out, "expired"),
+        (&replaced, "replaced"),
+    ] {
+        let card = request(&store, bridge).expect("card");
+        assert_eq!(
+            (card["status"].clone(), card["closeReason"].clone()),
+            (json!("expired"), json!(reason))
+        );
+    }
+    assert_eq!(
+        events(&store),
+        vec![
+            (
+                format!("browser-unanswered:{timed_out}"),
+                "browser_unanswered".to_owned(),
+                "Nobody answered the sign-in card for id.example.com in time, and Studio closed it. The command gets no sign-in result from this card. Do not wait for it: stop the command if it still waits, start the sign-in again when the person can answer, and tell the person in one short message.".to_owned()
+            ),
+            (
+                format!("browser-unanswered:{stopped}"),
+                "browser_unanswered".to_owned(),
+                "Nobody answered the sign-in card for id.example.com, and it closed because the sign-in command stopped waiting. The command got no sign-in result from this card. Do not wait for it: start the sign-in again when the person can answer, and tell the person in one short message.".to_owned()
+            ),
+        ],
+        "a replaced card gets no event: the chat gave a newer link"
+    );
+}
+
+#[tokio::test]
+async fn the_host_bridge_shows_a_card_for_a_vm_chat_command_that_runs_on_the_mac() {
+    let (_dir, store) = store().await;
+    let bridge = "3".repeat(32);
+    let redirect = json!({"host":"localhost","port":8000,"path":"/"});
+    let guest = Arc::new(WaitGuest {
+        batches: Mutex::new(VecDeque::from([json!({"items":[
+            item(&bridge, VM_AGENT, KUBE, redirect, "pending", 1),
+        ], "next": 1})])),
+        calls: Mutex::new(Vec::new()),
+    });
+    let source = CardSource {
+        source: "host",
+        guest: guest.clone(),
+        forwarder: None,
+        http_providers: Default::default(),
+    };
+    poll_once(&store, &source, 0, 0, None)
+        .await
+        .expect("test step");
+    let card = request(&store, &bridge).expect("a host_exec command of a VM chat gets a card");
+    assert_eq!(
+        (card["status"].clone(), card["params"]["source"].clone()),
+        (json!("pending"), json!("host"))
+    );
+    assert!(
+        guest
+            .calls
+            .lock()
+            .expect("test step")
+            .iter()
+            .all(|call| call.0 != "browser.close"),
+        "the host bridge keeps the request"
+    );
+}
+
+#[tokio::test]
+async fn a_card_whose_page_this_mac_opened_closes_as_answered_when_its_command_stops() {
+    let (_dir, store) = store().await;
+    let bridge = "4".repeat(32);
+    let redirect = json!({"host":"localhost","port":8000,"path":"/"});
+    let mut finished = item(&bridge, VM_AGENT, KUBE, redirect.clone(), "closed", 2);
+    finished["localOpen"] = json!(true);
+    finished["closeReason"] = json!("local");
+    let guest = Arc::new(WaitGuest {
+        batches: Mutex::new(VecDeque::from([
+            json!({"items":[item(&bridge, VM_AGENT, KUBE, redirect, "pending", 1)], "next": 1}),
+            json!({"items":[finished], "next": 2}),
+        ])),
+        calls: Mutex::new(Vec::new()),
+    });
+    let source = CardSource {
+        source: "host",
+        guest,
+        forwarder: None,
+        http_providers: Default::default(),
+    };
+    poll_once(&store, &source, 0, 0, None)
+        .await
+        .expect("test step");
+    poll_once(&store, &source, 1, 0, None)
+        .await
+        .expect("test step");
+    let card = request(&store, &bridge).expect("card");
+    assert_eq!(
+        (
+            card["status"].clone(),
+            card["answeredBy"].clone(),
+            card["closeReason"].clone()
+        ),
+        (json!("answered"), json!("browser"), json!("local"))
+    );
+    assert!(
+        events(&store).is_empty(),
+        "the browser of this Mac had the page, so the chat gets no unanswered event"
+    );
+}
+
+/// A backend restart expires every pending request, but a sign-in request lives in its
+/// bridge, which keeps it across the restart. The first poll after the restart finds the
+/// open request and gives the person the card again, also in the waiting phase of a phone
+/// sign-in. A card that a stopped chat expired stays expired.
+#[tokio::test]
+async fn a_card_comes_back_after_a_backend_restart_while_its_request_is_open() {
+    let (_dir, store) = store().await;
+    let open = "5".repeat(32);
+    let waiting = "6".repeat(32);
+    let ended = "7".repeat(32);
+    let redirect = json!({"host":"localhost","port":8000,"path":"/"});
+    let pending = |id: &str, seq: u64| item(id, VM_AGENT, KUBE, redirect.clone(), "pending", seq);
+    let mut approved = item(&waiting, VM_AGENT, KUBE, redirect.clone(), "approved", 5);
+    approved["lease"] = json!({"host":"localhost","port":8000,"path":"/","expiresAt": 900.0});
+    let guest = Arc::new(WaitGuest {
+        batches: Mutex::new(VecDeque::from([
+            json!({"items":[pending(&open, 1), pending(&waiting, 2), pending(&ended, 3)], "next": 3}),
+            // The first poll after the restart reads the whole queue again.
+            json!({"items":[
+                pending(&open, 1), approved,
+                item(&ended, VM_AGENT, KUBE, redirect.clone(), "stale", 6),
+            ], "next": 6}),
+        ])),
+        calls: Mutex::new(Vec::new()),
+    });
+    let source = CardSource {
+        source: "vm",
+        guest,
+        forwarder: None,
+        http_providers: Default::default(),
+    };
+    poll_once(&store, &source, 0, 0, None)
+        .await
+        .expect("test step");
+    // The person opened the second card on a phone: the waiting phase of a paste.
+    let key = card_id(&waiting);
+    store
+        .transaction_with(move |tx| {
+            let raw = studio_runtime_store::QuestionsWriteRepository::request(tx, &key)?
+                .expect("test step");
+            let mut record: Value = serde_json::from_str(&raw).expect("test step");
+            record["params"]["phase"] = json!("waiting");
+            record["params"]["waiting"] = json!({"expiresAt": 900.0});
+            studio_runtime_store::QuestionsWriteRepository::put_request(
+                tx,
+                &key,
+                &studio_runtime_store::python_json_utf8(&record),
+            )
+        })
+        .await
+        .expect("test step");
+    crate::monitor_runtime::recover_on_startup(&store, 50.0)
+        .await
+        .expect("startup recovery");
+    for bridge in [&open, &waiting, &ended] {
+        assert_eq!(request(&store, bridge).expect("card")["status"], "expired");
+    }
+    poll_once(&store, &source, 0, 0, None)
+        .await
+        .expect("test step");
+    let back = request(&store, &open).expect("card");
+    assert_eq!(
+        (back["status"].clone(), back.get("closeReason").cloned()),
+        (json!("pending"), None),
+        "the open request gets its card back"
+    );
+    let phone = request(&store, &waiting).expect("card");
+    assert_eq!(
+        (phone["status"].clone(), phone["params"]["phase"].clone()),
+        (json!("pending"), json!("waiting")),
+        "a phone sign-in keeps waiting for its pasted result"
+    );
+    assert_eq!(
+        request(&store, &ended).expect("card")["status"],
+        "expired",
+        "an ended request keeps its card closed"
+    );
+    assert_eq!(
+        events(&store)
+            .into_iter()
+            .map(|(id, kind, _)| (id, kind))
+            .collect::<Vec<_>>(),
+        vec![(
+            format!("browser-unanswered:{ended}"),
+            "browser_unanswered".to_owned()
+        )],
+        "the chat learns that nobody answered the ended request"
+    );
+}
+
+async fn seed_agent(store: &studio_runtime_store::RuntimeStore, id: &str) {
+    let id = id.to_owned();
+    store
+        .transaction_with(move |tx| {
+            tx.execute(
+                "INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",
+                [
+                    id.as_str(),
+                    &json!({"id":id,"rootId":id,"epoch":1,"status":"running","autoWake":true,
+                             "executionMode":"vm","layrProjectId":"p1"})
+                    .to_string(),
+                ],
+            )
+            .map_err(studio_runtime_store::StoreError::from)?;
+            Ok::<_, studio_runtime_store::StoreError>(())
+        })
+        .await
+        .expect("agent is seeded");
+}
+
+/// One card for one sign-in: a joined request of another chat gets no card of its own. The
+/// card names the waiting chats, and each joined chat learns when the sign-in ended on the
+/// card. A joined request that becomes the card gets its own card.
+#[tokio::test]
+async fn joined_requests_wait_on_one_card_and_hear_how_it_ended() {
+    let (_dir, store) = store().await;
+    seed_agent(&store, "second-agent").await;
+    seed_agent(&store, "third-agent").await;
+    let leader = "8".repeat(32);
+    let joined = "9".repeat(32);
+    let promoted = "a".repeat(32);
+    let redirect = json!({"host":"localhost","port":8000,"path":"/"});
+    let mut second = item(&joined, "second-agent", KUBE, redirect.clone(), "joined", 2);
+    second["joinedTo"] = json!(leader);
+    let mut third = item(
+        &promoted,
+        "third-agent",
+        KUBE,
+        redirect.clone(),
+        "joined",
+        3,
+    );
+    third["joinedTo"] = json!(leader);
+    let mut signed_in = second.clone();
+    signed_in["state"] = json!("closed");
+    signed_in["closeReason"] = json!(crate::browser_host::JOINED_SIGNED_IN_REASON);
+    signed_in["seq"] = json!(5);
+    let mut card = third.clone();
+    card["state"] = json!("pending");
+    card["joinedTo"] = Value::Null;
+    card["seq"] = json!(6);
+    let guest = Arc::new(WaitGuest {
+        batches: Mutex::new(VecDeque::from([
+            json!({"items":[
+                item(&leader, VM_AGENT, KUBE, redirect.clone(), "pending", 1), second, third,
+            ], "next": 3}),
+            json!({"items":[
+                item(&leader, VM_AGENT, KUBE, redirect.clone(), "expired", 4), signed_in, card,
+            ], "next": 6}),
+        ])),
+        calls: Mutex::new(Vec::new()),
+    });
+    let source = CardSource {
+        source: "host",
+        guest: guest.clone(),
+        forwarder: None,
+        http_providers: Default::default(),
+    };
+    poll_once(&store, &source, 0, 0, None)
+        .await
+        .expect("test step");
+    assert!(
+        request(&store, &joined).is_none(),
+        "a joined request has no card"
+    );
+    assert!(request(&store, &promoted).is_none());
+    assert_eq!(
+        request(&store, &leader).expect("card")["params"]["joined"],
+        json!(["second-agent", "third-agent"]),
+        "the card names the chats that wait on it"
+    );
+    poll_once(&store, &source, 3, 0, None)
+        .await
+        .expect("test step");
+    let own = request(&store, &promoted).expect("the oldest joined request becomes the card");
+    assert_eq!(
+        (own["status"].clone(), own["agent"].clone()),
+        (json!("pending"), json!("third-agent"))
+    );
+    let joined_events: Vec<(String, String, String)> = events(&store)
+        .into_iter()
+        .filter(|(id, _, _)| id.starts_with("browser-joined:"))
+        .collect();
+    assert_eq!(
+        joined_events,
+        vec![(
+            format!("browser-joined:{joined}"),
+            "browser_joined".to_owned(),
+            "The person signed in at id.example.com on the sign-in card of another chat. Your own sign-in command did not get that result. Stop it if it still waits, then run it again: the sign-in session is now active.".to_owned()
+        )]
+    );
+    assert!(
+        guest
+            .calls
+            .lock()
+            .expect("test step")
+            .iter()
+            .all(|call| call.0 != "browser.close"),
+        "joined requests are not refused"
+    );
+}

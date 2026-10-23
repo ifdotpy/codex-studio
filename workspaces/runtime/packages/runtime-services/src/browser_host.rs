@@ -53,6 +53,15 @@ pub const OPEN_NAME: &str = "open";
 const TTL_SECONDS: f64 = 600.0;
 /// A closed request stays in the queue this long, in seconds.
 const KEEP_SECONDS: f64 = 3600.0;
+/// A pending request whose command still listens gets a new deadline when its current one is
+/// at most this many seconds away (`EXTEND_BEFORE_SECONDS`, docs/vm-browser-bridge.md,
+/// "Card lifetime").
+const EXTEND_BEFORE_SECONDS: f64 = TTL_SECONDS / 2.0;
+/// The open limit of a listening request, in seconds from its creation. Its owner is
+/// `SIGN_IN_OPEN_LIMIT_SECONDS`; the final state at this bound must still be in the queue.
+const OPEN_LIMIT_SECONDS: f64 =
+    studio_runtime_schema::shared_values::SIGN_IN_OPEN_LIMIT_SECONDS as f64;
+const _: () = assert!(OPEN_LIMIT_SECONDS + TTL_SECONDS < KEEP_SECONDS);
 const LIMIT_WINDOW_SECONDS: f64 = 600.0;
 const LIMIT_COUNT: usize = 6;
 const CONNECTIONS_PER_UID: usize = 2;
@@ -65,7 +74,12 @@ const BODY_LIMIT: usize = 256 * 1024;
 const HEAD_LIMIT: usize = 64 * 1024;
 const MAX_WAIT_SECONDS: f64 = 20.0;
 const SENT_HEADERS: [&str; 3] = ["user-agent", "accept", "accept-language"];
-const OPEN_STATES: [&str; 2] = ["pending", "approved"];
+/// A request of another chat that waits on the open request of the same Linux user,
+/// sign-in host and client (`joinedTo`) instead of a card of its own.
+pub const JOINED: &str = "joined";
+/// The `closeReason` of a joined request whose sign-in finished on the card it waited on.
+pub const JOINED_SIGNED_IN_REASON: &str = "joined-signed-in";
+const OPEN_STATES: [&str; 3] = ["pending", "approved", JOINED];
 /// States after which the same link of a chat can queue again (`REOPEN_STATES`).
 const REOPEN_STATES: [&str; 3] = ["stale", "expired", "replaced"];
 const IPV4_REACH: [&str; 4] = ["127.0.0.1", "0.0.0.0", "::ffff:127.0.0.1", "::"];
@@ -193,20 +207,27 @@ pub fn parse_lsof_listeners(text: &str) -> Vec<Listener> {
     rows
 }
 
-/// The listeners of this host: /proc on Linux, `lsof` elsewhere.
-pub fn host_listeners() -> Vec<Listener> {
+/// The listeners of this host: /proc on Linux, `lsof` elsewhere. `None` when the
+/// probe failed, timed out or was cut short: the listeners are unknown, which is
+/// not the same as no listener.
+pub fn host_listeners() -> Option<Vec<Listener>> {
     if cfg!(target_os = "linux") {
         let mut rows = Vec::new();
         for name in ["tcp", "tcp6"] {
-            if let Ok(text) = std::fs::read_to_string(Path::new("/proc/net").join(name)) {
-                rows.extend(parse_proc_listeners(&text));
+            match std::fs::read_to_string(Path::new("/proc/net").join(name)) {
+                Ok(text) => rows.extend(parse_proc_listeners(&text)),
+                // A host without IPv6 has no tcp6 table.
+                Err(error) if name == "tcp6" && error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(_) => return None,
             }
         }
-        return rows;
+        return Some(rows);
     }
     // Bound the external listener probe even on a blocking-pool worker.
     const LISTENER_OUTPUT_LIMIT_BYTES: usize = 1024 * 1024;
-    const LISTENER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+    // `lsof` reads every process of the host. On a loaded Mac one probe took
+    // up to 1.7 s; a probe past this bound gives unknown listeners.
+    const LISTENER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
     let output = crate::bounded_child::run(crate::bounded_child::Request {
         program: std::ffi::OsStr::new("lsof"),
         git_directory: None,
@@ -218,10 +239,23 @@ pub fn host_listeners() -> Vec<Listener> {
         timeout: LISTENER_TIMEOUT,
     });
     match output {
-        Ok(output) if !output.stdout.truncated => {
-            parse_lsof_listeners(&String::from_utf8_lossy(&output.stdout.bytes))
-        }
-        _ => Vec::new(),
+        Ok(output) if !output.stdout.truncated => Some(parse_lsof_listeners(
+            &String::from_utf8_lossy(&output.stdout.bytes),
+        )),
+        _ => None,
+    }
+}
+
+/// The error code of a bridge request that sent nothing to the sign-in command,
+/// so a retry cannot repeat a delivery. `browser_answer` keeps the card open.
+pub const NOT_SENT_CODE: &str = studio_runtime_schema::shared_values::SIGN_IN_NOT_SENT_CODE;
+
+/// The answer when the listeners of this host are unknown. An open card stays
+/// open; only a known missing listener makes it stale.
+fn listeners_unknown() -> BridgeError {
+    BridgeError {
+        code: NOT_SENT_CODE,
+        message: "Studio could not read the listening ports of this computer. Try again".into(),
     }
 }
 
@@ -343,9 +377,11 @@ pub trait ChatLookup: Send + Sync {
     ) -> futures_util::future::BoxFuture<'a, Option<ChatContext>>;
 }
 
-/// The chat lookup of a runtime store: a native, not deleted chat whose ID or native
-/// `threadId` is the hint. Native agents of one user can act for each other, so the hint is
-/// not a security boundary; the approval card is the consent.
+/// The chat lookup of a runtime store: a not deleted chat whose ID or native `threadId` is the
+/// hint. A VM chat reaches this bridge only through a `host_exec` command, which runs on this
+/// Mac as this user (`host_exec_service`); its own guest commands use the guest bridge. Agents
+/// of one user can act for each other, so the hint is not a security boundary; the approval
+/// card is the consent.
 pub struct StoreChats {
     pub store: Arc<studio_runtime_store::RuntimeStore>,
 }
@@ -391,9 +427,7 @@ impl StoreChats {
             return None;
         };
         let agent: Value = serde_json::from_str(raw).ok()?;
-        if truthy(agent.get("deletedAt"))
-            || agent.get("executionMode").and_then(Value::as_str) == Some("vm")
-        {
+        if truthy(agent.get("deletedAt")) {
             return None;
         }
         Some(ChatContext {
@@ -475,7 +509,8 @@ fn now_seconds() -> f64 {
 }
 
 type Clock = Arc<dyn Fn() -> f64 + Send + Sync>;
-type Listeners = Arc<dyn Fn() -> Vec<Listener> + Send + Sync>;
+/// This host's listeners, or `None` when the probe failed (see [`host_listeners`]).
+type Listeners = Arc<dyn Fn() -> Option<Vec<Listener>> + Send + Sync>;
 
 struct Queue {
     seq: u64,
@@ -492,13 +527,24 @@ pub struct HostBridge {
     http_providers: BTreeSet<String>,
     clock: Clock,
     connections: Mutex<BTreeMap<u32, usize>>,
+    local_open: bool,
 }
 
-/// Options for tests: listener tables, test provider origins and a clock.
+/// The `closeReason` of a request whose command stopped listening after the launcher opened
+/// its page in the browser of this Mac (`HostBridgeOptions::local_open`). The card then
+/// closes as answered by that browser (`browser_cards::apply`).
+pub const LOCAL_CLOSE_REASON: &str = "local";
+
+/// Options of the bridge: listener tables, test provider origins, a clock, and the Mac fast
+/// path. `Default` is for tests and opens nothing; the server uses [`Self::for_this_host`].
 pub struct HostBridgeOptions {
     pub listeners: Listeners,
     pub http_providers: BTreeSet<String>,
     pub clock: Clock,
+    /// The launcher also opens each link in the browser of this Mac at once, as the tool would
+    /// without Studio, and the card stays for another window or a phone
+    /// (docs/vm-browser-bridge.md, "Native chats").
+    pub local_open: bool,
 }
 
 impl Default for HostBridgeOptions {
@@ -507,6 +553,18 @@ impl Default for HostBridgeOptions {
             listeners: Arc::new(host_listeners),
             http_providers: BTreeSet::new(),
             clock: Arc::new(now_seconds),
+            local_open: false,
+        }
+    }
+}
+
+impl HostBridgeOptions {
+    /// The server's options: a macOS host opens links in its own browser at once. A Linux
+    /// host has no person at a browser, and its `xdg-open` is this launcher.
+    pub fn for_this_host() -> Self {
+        Self {
+            local_open: cfg!(target_os = "macos"),
+            ..Self::default()
         }
     }
 }
@@ -569,7 +627,20 @@ impl HostBridge {
             http_providers: options.http_providers,
             clock: options.clock,
             connections: Mutex::new(BTreeMap::new()),
+            local_open: options.local_open,
         }))
+    }
+
+    /// This host's listeners from the blocking pool, or `None` when they are unknown.
+    async fn probe_listeners(&self) -> Option<Vec<Listener>> {
+        let listeners = Arc::clone(&self.listeners);
+        studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-services/browser_host",
+            move || listeners(),
+        )
+        .await
+        .ok()
+        .flatten()
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Queue> {
@@ -720,13 +791,7 @@ impl HostBridge {
         let final_link = match checked {
             Checked::StartPage { url, port } => {
                 start_url = json!(url);
-                let listeners = Arc::clone(&self.listeners);
-                let rows = studio_runtime_process::blocking_pool::spawn_blocking(
-                    "runtime-services/browser_host",
-                    move || listeners(),
-                )
-                .await
-                .unwrap_or_default();
+                let rows = self.probe_listeners().await.ok_or_else(listeners_unknown)?;
                 let address = connect_address(uid, port, &rows)?;
                 let after = url
                     .split_once("://")
@@ -780,26 +845,44 @@ impl HostBridge {
             Checked::Provider(provider) => provider,
         };
         if let Some(redirect) = &final_link.redirect {
-            let listeners = Arc::clone(&self.listeners);
-            let rows = studio_runtime_process::blocking_pool::spawn_blocking(
-                "runtime-services/browser_host",
-                move || listeners(),
-            )
-            .await
-            .unwrap_or_default();
+            let rows = self.probe_listeners().await.ok_or_else(listeners_unknown)?;
             connect_address(uid, redirect.port, &rows)?;
         }
         let mut queue = self.lock();
         if let Some(item) = Self::existing(&queue, &agent, &original, now) {
             return Ok(item);
         }
+        // One card for one sign-in: a link of another chat with the same Linux user, sign-in
+        // host and client waits on the open request (docs/vm-browser-bridge.md, "One card for
+        // the same sign-in"). A device code page has no client and stays on its own.
+        let leader = final_link.client_id.as_deref().and_then(|client| {
+            queue
+                .items
+                .values()
+                .filter(|item| {
+                    matches!(item["state"].as_str(), Some("pending" | "approved"))
+                        && item.get("agentId").and_then(Value::as_str) != Some(agent.as_str())
+                        && item.get("uid").and_then(Value::as_u64) == Some(u64::from(uid))
+                        && item.get("host").and_then(Value::as_str)
+                            == Some(final_link.host.as_str())
+                        && item.get("clientId").and_then(Value::as_str) == Some(client)
+                        && now <= item["expiresAt"].as_f64().unwrap_or(0.0)
+                })
+                .min_by(|left, right| {
+                    left["createdAt"]
+                        .as_f64()
+                        .unwrap_or(0.0)
+                        .total_cmp(&right["createdAt"].as_f64().unwrap_or(0.0))
+                })
+                .and_then(|item| item.get("id").cloned())
+        });
         // The latest link of a chat replaces its earlier pending link.
         let replaced: Vec<String> = queue
             .items
             .iter()
             .filter(|(_, item)| {
                 item.get("agentId").and_then(Value::as_str) == Some(agent.as_str())
-                    && item.get("state").and_then(Value::as_str) == Some("pending")
+                    && matches!(item["state"].as_str(), Some("pending" | JOINED))
             })
             .map(|(key, _)| key.clone())
             .collect();
@@ -819,6 +902,11 @@ impl HostBridge {
             "scope": final_link.scope, "state": "pending", "createdAt": now,
             "expiresAt": now + TTL_SECONDS, "relays": 0, "lease": null,
         });
+        let mut item = item;
+        if let Some(leader) = leader {
+            item["state"] = json!(JOINED);
+            item["joinedTo"] = leader;
+        }
         queue.items.insert(id.clone(), item);
         self.update(&mut queue, &id, json!({}));
         self.save(&mut queue);
@@ -901,13 +989,7 @@ impl HostBridge {
     }
 
     async fn answer(&self, params: &Value) -> Result<Value, BridgeError> {
-        let listeners = Arc::clone(&self.listeners);
-        let rows = studio_runtime_process::blocking_pool::spawn_blocking(
-            "runtime-services/browser_host",
-            move || listeners(),
-        )
-        .await
-        .unwrap_or_default();
+        let rows = self.probe_listeners().await;
         let mut queue = self.lock();
         let (id, state) = item_state(&queue, params)?;
         let item = queue.items[&id].clone();
@@ -942,6 +1024,7 @@ impl HostBridge {
         };
         let uid = item["uid"].as_u64().unwrap_or(u64::MAX) as u32;
         let port = redirect["port"].as_u64().unwrap_or(0) as u16;
+        let rows = rows.ok_or_else(listeners_unknown)?;
         if let Err(error) = connect_address(uid, port, &rows) {
             self.update(&mut queue, &id, json!({"state": "stale"}));
             self.save(&mut queue);
@@ -999,13 +1082,7 @@ impl HostBridge {
             )
         };
         let port = lease["port"].as_u64().unwrap_or(0) as u16;
-        let listeners = Arc::clone(&self.listeners);
-        let rows = studio_runtime_process::blocking_pool::spawn_blocking(
-            "runtime-services/browser_host",
-            move || listeners(),
-        )
-        .await
-        .unwrap_or_default();
+        let rows = self.probe_listeners().await.ok_or_else(listeners_unknown)?;
         let address = connect_address(uid, port, &rows)?;
         let host = lease["host"].as_str().unwrap_or("127.0.0.1");
         let host = if host == "::1" { "[::1]" } else { host };
@@ -1068,7 +1145,8 @@ impl HostBridge {
         }))
     }
 
-    /// Mark requests whose time ran out or whose tool stopped listening.
+    /// Mark requests whose time ran out or whose tool stopped listening. A pending request
+    /// whose tool still listens stays open up to `OPEN_LIMIT_SECONDS` (`listening_deadline`).
     pub async fn check(&self) {
         let needs_rows = {
             let queue = self.lock();
@@ -1077,16 +1155,11 @@ impl HostBridge {
                     && item.get("redirect").is_some_and(Value::is_object)
             })
         };
+        // `None`: the probe failed, so no card becomes stale in this pass.
         let rows = if needs_rows {
-            let listeners = Arc::clone(&self.listeners);
-            studio_runtime_process::blocking_pool::spawn_blocking(
-                "runtime-services/browser_host",
-                move || listeners(),
-            )
-            .await
-            .unwrap_or_default()
+            self.probe_listeners().await
         } else {
-            Vec::new()
+            Some(Vec::new())
         };
         let now = (self.clock)();
         let mut queue = self.lock();
@@ -1097,28 +1170,100 @@ impl HostBridge {
             if !OPEN_STATES.contains(&item["state"].as_str().unwrap_or_default()) {
                 continue;
             }
-            let expires = item
+            let mut expires = item
                 .get("lease")
                 .and_then(|lease| lease.get("expiresAt"))
                 .and_then(Value::as_f64)
                 .unwrap_or_else(|| item["expiresAt"].as_f64().unwrap_or(0.0));
+            // `None`: no loopback redirect, or the probe failed and the listener is unknown. An
+            // unknown listener neither makes the request stale nor moves its deadline: expiry by
+            // time still applies (`a_failed_listener_probe_keeps_an_open_card_and_answers_retryably`).
+            let listening = item
+                .get("redirect")
+                .filter(|value| value.is_object())
+                .zip(rows.as_ref())
+                .map(|(redirect, rows)| {
+                    let uid = item["uid"].as_u64().unwrap_or(u64::MAX) as u32;
+                    let port = redirect["port"].as_u64().unwrap_or(0) as u16;
+                    connect_address(uid, port, rows).is_ok()
+                });
+            if matches!(item["state"].as_str(), Some("pending" | JOINED))
+                && listening == Some(true)
+                && let Some(deadline) = listening_deadline(&item, now)
+            {
+                self.update(&mut queue, &key, json!({"expiresAt": deadline}));
+                changed = true;
+                expires = deadline;
+            }
             if now > expires {
                 self.update(&mut queue, &key, json!({"state": "expired"}));
                 changed = true;
-                continue;
-            }
-            if let Some(redirect) = item.get("redirect").filter(|value| value.is_object()) {
-                let uid = item["uid"].as_u64().unwrap_or(u64::MAX) as u32;
-                let port = redirect["port"].as_u64().unwrap_or(0) as u16;
-                if connect_address(uid, port, &rows).is_err() {
-                    self.update(&mut queue, &key, json!({"state": "stale"}));
-                    changed = true;
-                }
+            } else if listening == Some(false) {
+                // The browser of this Mac had the page: the command ended its sign-in there.
+                let fields = if item["state"] == "pending" && truthy(item.get("localOpen")) {
+                    json!({"state": "closed", "closeReason": LOCAL_CLOSE_REASON})
+                } else {
+                    json!({"state": "stale"})
+                };
+                self.update(&mut queue, &key, fields);
+                changed = true;
             }
         }
+        changed |= self.settle_joined(&mut queue);
         if changed {
             self.save(&mut queue);
         }
+    }
+
+    /// End the joined requests whose card ended: signed in when its sign-in finished, else the
+    /// oldest joined request becomes the card and the others wait on it. Returns whether
+    /// something changed.
+    fn settle_joined(&self, queue: &mut Queue) -> bool {
+        let mut changed = false;
+        let joined: Vec<(String, String, f64)> = queue
+            .items
+            .iter()
+            .filter(|(_, item)| item["state"] == JOINED)
+            .map(|(key, item)| {
+                (
+                    key.clone(),
+                    item["joinedTo"].as_str().unwrap_or_default().to_owned(),
+                    item["createdAt"].as_f64().unwrap_or(0.0),
+                )
+            })
+            .collect();
+        let mut leaders: BTreeMap<String, Vec<(f64, String)>> = BTreeMap::new();
+        for (key, leader, created) in joined {
+            leaders.entry(leader).or_default().push((created, key));
+        }
+        for (leader, mut waiting) in leaders {
+            let ended = queue.items.get(&leader).map(|card| {
+                let state = card["state"].as_str().unwrap_or_default();
+                (!OPEN_STATES.contains(&state), signed_in(card))
+            });
+            let (ended, signed) = ended.unwrap_or((true, false));
+            if !ended {
+                continue;
+            }
+            changed = true;
+            if signed {
+                for (_, key) in waiting {
+                    self.update(
+                        queue,
+                        &key,
+                        json!({"state": "closed", "closeReason": JOINED_SIGNED_IN_REASON}),
+                    );
+                }
+                continue;
+            }
+            waiting.sort_by(|left, right| left.0.total_cmp(&right.0));
+            let (_, card) = waiting.remove(0);
+            self.update(queue, &card, json!({"state": "pending", "joinedTo": null}));
+            for (_, key) in waiting {
+                self.update(queue, &key, json!({"joinedTo": card}));
+            }
+        }
+        changed
     }
 
     async fn launcher_client(self: Arc<Self>, stream: UnixStream) {
@@ -1177,6 +1322,7 @@ impl HostBridge {
         if !value.is_object() || value.get("v") != Some(&json!(1)) {
             return json!({"ok": false, "code": "invalid_request", "message": "Use protocol version 1"});
         }
+        // `open`: the launcher also opens the link in the browser of this Mac (`local_open`).
         match self
             .open_link(
                 uid,
@@ -1185,8 +1331,35 @@ impl HostBridge {
             )
             .await
         {
-            Ok(item) => json!({"ok": true, "id": item["id"], "host": item["host"]}),
-            Err(error) => json!({"ok": false, "code": error.code, "message": error.message}),
+            Ok(item) => {
+                // A joined link waits on a card whose page is already open: no second page.
+                let joined = item["state"] == JOINED;
+                if self.local_open && !joined {
+                    self.mark_local_open(&item);
+                }
+                json!({"ok": true, "id": item["id"], "host": item["host"],
+                       "open": self.local_open && !joined, "joined": joined})
+            }
+            Err(error) => {
+                json!({"ok": false, "code": error.code, "message": error.message, "open": self.local_open})
+            }
+        }
+    }
+
+    /// Note that the launcher opens this request's page in the browser of this Mac, so its
+    /// card closes as answered when the command stops listening (`check`).
+    fn mark_local_open(&self, item: &Value) {
+        let Some(id) = item.get("id").and_then(Value::as_str) else {
+            return;
+        };
+        let mut queue = self.lock();
+        let open = queue
+            .items
+            .get(id)
+            .is_some_and(|item| item["state"] == "pending" && !truthy(item.get("localOpen")));
+        if open {
+            self.update(&mut queue, id, json!({"localOpen": true}));
+            self.save(&mut queue);
         }
     }
 
@@ -1238,6 +1411,34 @@ impl HostBridge {
             tokio::time::timeout(Duration::from_secs(READ_SECONDS), writer.write_all(&bytes)).await,
         );
     }
+}
+
+/// Whether the sign-in of a request that ended finished: the command took a relayed result,
+/// the browser of this Mac had the page, a device page opened, or the person approved the
+/// card and its command then stopped listening.
+fn signed_in(item: &Value) -> bool {
+    match item["state"].as_str() {
+        Some("closed") => matches!(
+            item["closeReason"].as_str(),
+            Some("completed" | LOCAL_CLOSE_REASON)
+        ),
+        Some("opened") => true,
+        Some("stale") => item.get("lease").is_some_and(Value::is_object),
+        _ => false,
+    }
+}
+
+/// The new deadline of a pending request whose command still listens, or `None` to keep its
+/// deadline (`listening_deadline`): one request time from now, at most `OPEN_LIMIT_SECONDS`
+/// from its creation. The deadline moves when it is at most `EXTEND_BEFORE_SECONDS` away, so
+/// a listening request changes about once in five minutes, not at every check.
+fn listening_deadline(item: &Value, now: f64) -> Option<f64> {
+    let created = item.get("createdAt").and_then(Value::as_f64)?;
+    let expires = item.get("expiresAt").and_then(Value::as_f64)?;
+    let limit = created + OPEN_LIMIT_SECONDS;
+    let rolled = (now + TTL_SECONDS).min(limit);
+    (rolled > expires && (rolled - expires >= EXTEND_BEFORE_SECONDS || rolled >= limit))
+        .then_some(rolled)
 }
 
 fn item_state(queue: &Queue, params: &Value) -> Result<(String, String), BridgeError> {
@@ -1455,13 +1656,39 @@ pub fn shim_main(arguments: impl IntoIterator<Item = OsString>) -> Option<i32> {
         &links,
         socket.as_deref().unwrap_or(GUEST_SOCKET),
         session.as_deref(),
+        &open_on_this_mac,
     );
     eprintln!("{message}");
     Some(code)
 }
 
-/// The launcher's exchange, without process state, for tests.
-pub fn shim(links: &[String], socket: &str, session: Option<&str>) -> (i32, String) {
+/// Open one link in the default browser of this Mac with the system `open`, as a tool does
+/// without Studio. Only a bridge with `local_open` asks for it. Returns whether `open` ran
+/// and exited 0.
+fn open_on_this_mac(link: &str) -> bool {
+    const OPEN_TIMEOUT: Duration = Duration::from_secs(10);
+    const OPEN_OUTPUT_LIMIT_BYTES: usize = 64 * 1024;
+    crate::bounded_child::run(crate::bounded_child::Request {
+        program: std::ffi::OsStr::new("/usr/bin/open"),
+        git_directory: None,
+        args: &[link],
+        environment: &[],
+        input: None,
+        stdout_limit: OPEN_OUTPUT_LIMIT_BYTES,
+        stderr_limit: OPEN_OUTPUT_LIMIT_BYTES,
+        timeout: OPEN_TIMEOUT,
+    })
+    .is_ok()
+}
+
+/// The launcher's exchange, without process state, for tests. `open` opens a link in the
+/// browser of this Mac when the bridge asks for it.
+pub fn shim(
+    links: &[String],
+    socket: &str,
+    session: Option<&str>,
+    open: &dyn Fn(&str) -> bool,
+) -> (i32, String) {
     use std::io::{Read, Write};
     let [link] = links else {
         return (2, "studio-browser: give exactly one URL".into());
@@ -1502,18 +1729,43 @@ pub fn shim(links: &[String], socket: &str, session: Option<&str>) -> (i32, Stri
             );
         }
     };
+    let opened = reply.get("open") == Some(&Value::Bool(true)) && open(link);
     if reply.get("ok") != Some(&Value::Bool(true)) {
         let message = reply
             .get("message")
             .and_then(Value::as_str)
             .filter(|message| !message.is_empty())
             .unwrap_or("Studio refused the link");
+        if opened {
+            return (
+                0,
+                format!(
+                    "studio-browser: Opened the page in the browser of this Mac. Studio shows no sign-in card: {message}"
+                ),
+            );
+        }
         return (1, format!("studio-browser: {message}"));
     }
     let host = match reply.get("host") {
         Some(Value::String(host)) => host.clone(),
         _ => "None".into(),
     };
+    if reply.get("joined") == Some(&Value::Bool(true)) {
+        return (
+            0,
+            format!(
+                "studio-browser: Another chat already asks the person to sign in at {host}. This command waits on that card; Studio tells this chat when the sign-in ends."
+            ),
+        );
+    }
+    if opened {
+        return (
+            0,
+            format!(
+                "studio-browser: Opened the page in the browser of this Mac. Studio also shows the person a sign-in card for {host}, so the person can answer from another window or a phone."
+            ),
+        );
+    }
     (
         0,
         format!(
@@ -1521,6 +1773,18 @@ pub fn shim(links: &[String], socket: &str, session: Option<&str>) -> (i32, Stri
         ),
     )
 }
+
+#[cfg(test)]
+#[path = "browser_host_lifetime_tests.rs"]
+mod lifetime_tests;
+
+#[cfg(test)]
+#[path = "browser_host_local_open_tests.rs"]
+mod local_open_tests;
+
+#[cfg(test)]
+#[path = "browser_host_join_tests.rs"]
+mod join_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1597,16 +1861,118 @@ mod tests {
 
     #[test]
     fn launcher_refuses_a_wrong_argument_count() {
-        assert_eq!(shim(&[], "/nonexistent", None).0, 2);
+        let never = |_: &str| -> bool { panic!("nothing opens without a bridge") };
+        assert_eq!(shim(&[], "/nonexistent", None, &never).0, 2);
         assert_eq!(
             shim(
                 &["https://a.example/".into()],
                 "/nonexistent/open.sock",
-                None
+                None,
+                &never
             )
             .0,
             1
         );
+    }
+
+    struct NoChats;
+    impl ChatLookup for NoChats {
+        fn chat<'a>(
+            &'a self,
+            _session: &'a str,
+        ) -> futures_util::future::BoxFuture<'a, Option<ChatContext>> {
+            Box::pin(async { None })
+        }
+    }
+
+    /// A saved card with a loopback redirect in `state`.
+    fn saved_card(state: &str) -> Value {
+        json!({
+            "id": "card", "agentId": "agent", "uid": 501, "state": state,
+            "url": "https://id.example.com/authorize", "startUrl": null,
+            "redirect": {"host": "localhost", "port": 4242, "path": "/"},
+            "createdAt": 100.0, "expiresAt": 100.0 + TTL_SECONDS, "seq": 1
+        })
+    }
+
+    /// One saved card, read by a bridge whose listener probe fails. The clock
+    /// is in seconds.
+    fn bridge_with_failed_probe(
+        folder: &Path,
+        card: Value,
+        now: Arc<std::sync::atomic::AtomicU64>,
+    ) -> Arc<HostBridge> {
+        let directory = folder.join("browser");
+        std::fs::create_dir_all(&directory).expect("browser folder");
+        std::fs::write(
+            directory.join("requests.json"),
+            json!({"seq": 1, "items": {"card": card}}).to_string(),
+        )
+        .expect("saved queue");
+        let clock = Arc::clone(&now);
+        HostBridge::open(
+            folder,
+            Arc::new(NoChats),
+            HostBridgeOptions {
+                // The probe of a loaded host failed: lsof timed out.
+                listeners: Arc::new(|| None),
+                http_providers: BTreeSet::new(),
+                clock: Arc::new(move || {
+                    f64::from_bits(clock.load(std::sync::atomic::Ordering::SeqCst))
+                }),
+                local_open: false,
+            },
+        )
+        .expect("bridge")
+    }
+
+    #[tokio::test]
+    async fn a_failed_listener_probe_keeps_an_open_card_and_answers_retryably() {
+        let folder = tempfile::tempdir().expect("bridge folder");
+        let now = Arc::new(std::sync::atomic::AtomicU64::new(200.0_f64.to_bits()));
+        let bridge =
+            bridge_with_failed_probe(folder.path(), saved_card("pending"), Arc::clone(&now));
+        let state = |bridge: &HostBridge| bridge.lock().items["card"]["state"].clone();
+
+        bridge.check().await;
+        assert_eq!(
+            state(&bridge),
+            "pending",
+            "an unknown probe is not a stale card"
+        );
+        let answered = bridge
+            .answer(&json!({"id": "card", "decision": "approve"}))
+            .await
+            .expect_err("approval needs a known listener");
+        assert_eq!(answered.code, NOT_SENT_CODE, "{}", answered.message);
+        assert_eq!(state(&bridge), "pending", "the card stays open for a retry");
+
+        // Expiry by time still applies while the probe fails.
+        now.store(
+            (101.0 + TTL_SECONDS).to_bits(),
+            std::sync::atomic::Ordering::SeqCst,
+        );
+        bridge.check().await;
+        assert_eq!(state(&bridge), "expired");
+    }
+
+    #[tokio::test]
+    async fn a_failed_listener_probe_relays_nothing_and_says_so() {
+        let folder = tempfile::tempdir().expect("bridge folder");
+        let mut card = saved_card("approved");
+        card["lease"] = json!({
+            "host": "localhost", "port": 4242, "path": "/", "expiresAt": 100.0 + TTL_SECONDS
+        });
+        let now = Arc::new(std::sync::atomic::AtomicU64::new(200.0_f64.to_bits()));
+        let bridge = bridge_with_failed_probe(folder.path(), card, now);
+        let refused = bridge
+            .callback(&json!({"id": "card", "target": "/?code=fake-code&state=S1"}))
+            .await
+            .expect_err("a relay needs a known listener");
+        assert_eq!(refused.code, NOT_SENT_CODE, "{}", refused.message);
+        let item = bridge.lock().items["card"].clone();
+        assert_eq!(item["state"], "approved", "the forward stays open");
+        assert!(item.get("relays").is_none(), "nothing was relayed");
     }
 
     #[test]

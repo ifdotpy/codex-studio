@@ -394,12 +394,17 @@ impl Peer {
         gate: Option<oneshot::Receiver<()>>,
         cleanup_error: Option<String>,
     ) -> Self {
-        Self::identity_with_options(account, generation, gate, cleanup_error, false)
+        Self::identity_with_options(account, generation, gate, cleanup_error, false, false)
+    }
+    /// A supervised provider: its process outlives the worker's attachment,
+    /// and only `stop` ends it.
+    fn supervised() -> Self {
+        Self::identity_with_options("default", 1, None, None, false, true)
     }
     /// A peer whose `initialize` reaches the test as an ordinary write, so its
     /// reply arrives as a journal frame behind any earlier provider frames.
     fn initialized_by_journal(account: &str, generation: u64) -> Self {
-        Self::identity_with_options(account, generation, None, None, true)
+        Self::identity_with_options(account, generation, None, None, true, false)
     }
     fn identity_with_options(
         account: &str,
@@ -407,6 +412,7 @@ impl Peer {
         mut gate: Option<oneshot::Receiver<()>>,
         cleanup_error: Option<String>,
         journal_initialize: bool,
+        supervised: bool,
     ) -> Self {
         let generation = Generation(generation);
         MATRIX
@@ -416,8 +422,30 @@ impl Peer {
                     .store(generation.0, std::sync::atomic::Ordering::SeqCst)
             })
             .ok();
+        // `stop` ends the fake provider process; `attachment` ends the
+        // worker's attachment. A direct provider ends with its attachment; a
+        // supervised one outlives it.
         let stop = Shutdown::default();
+        let attachment = if supervised {
+            Shutdown::default()
+        } else {
+            stop.clone()
+        };
         let mut stopped = stop.subscribe();
+        if supervised {
+            // Either end stops the fake task.
+            let task_stop = Shutdown::default();
+            for source in [stop.clone(), attachment.clone()] {
+                let task_stop = task_stop.clone();
+                tokio::spawn(async move {
+                    let mut source = source.subscribe();
+                    Shutdown::cancelled(&mut source).await;
+                    task_stop.cancel();
+                });
+            }
+            stopped = task_stop.subscribe();
+        }
+        let provider_stopped = stop.subscribe();
         let (commands, mut inbox) = mpsc::channel::<AdapterCommand>(16);
         let (entries, journal) = mpsc::channel(PEER_JOURNAL_CAPACITY);
         let (out, writes) = mpsc::channel(16);
@@ -489,10 +517,11 @@ impl Peer {
                 result: Ok(()),
                 cleanup_error,
                 recovery_needed: None,
+                provider_retained: supervised && !*provider_stopped.borrow(),
             }
         });
         let factory = Arc::new(Factory(std::sync::Mutex::new(Some(
-            ProviderAttachment::from_task(commands, journal, observed, stop.clone(), task),
+            ProviderAttachment::from_task(commands, journal, observed, attachment, task),
         ))));
         Self {
             wire: studio_runtime_providers::ProviderKind::Codex.wire(),
@@ -1609,6 +1638,126 @@ async fn scenario_restart_after_submitted_before_written_recovers_unknown_withou
         "confirmed turn continues without resubmission"
     );
     worker.shutdown().await.unwrap();
+}
+
+/// The backend and its provider process stopped after a worker's first
+/// `turn/start` was submitted and before its answer arrived. Startup recovery
+/// holds that input until native history decides it. The first account worker of the new backend must read
+/// that history, then deliver the input once if the provider did not apply it,
+/// or keep the applied turn. The input must never stay held without a check,
+/// and must never be sent twice.
+#[tokio::test]
+async fn restart_held_first_input_is_reconciled_by_the_first_worker() {
+    for applied in [false, true] {
+        let state = State::new().await;
+        let agent = state.agent.clone();
+        let epoch = state.epoch;
+        state
+            .bridge
+            .run(move |store| async move {
+                let intent = store::claim(Arc::clone(&store), "default", &agent, epoch)
+                    .await?
+                    .unwrap();
+                let operation = format!("account:default:{}:turn/start", intent.attempt_id);
+                let request = RecoveredRequest {
+                    ticket: studio_runtime_providers::RequestTicket {
+                        id: RequestId::String(operation.clone()),
+                        generation: 1,
+                        method: Method::TurnStart,
+                    },
+                    operation_id: OperationId(operation.clone()),
+                    thread_id: intent.thread_id.clone(),
+                    lightweight: false,
+                    deadline_ms: 60_000,
+                    unknown: false,
+                    remote_id: None,
+                };
+                let prepared = preparation::prepare(
+                    Arc::clone(&store),
+                    &test_resources()?,
+                    &intent,
+                    Method::TurnStart,
+                    1,
+                )
+                .await?;
+                assert!(
+                    store::submitted(
+                        &store,
+                        Pending {
+                            thread: prepared.thread,
+                            compiled: prepared.compiled,
+                            intent: prepared.intent,
+                            method: "turn/start".into(),
+                            operation
+                        },
+                        "default",
+                        request,
+                        store::SubmissionEvidence {
+                            turn: None,
+                            submission: prepared.submission,
+                            guard: Some(prepared.guard),
+                            connection_id: "test-connection".into(),
+                            effect: None,
+                        },
+                    )
+                    .await?
+                );
+                Ok(())
+            })
+            .await
+            .unwrap();
+        // The new backend process recovers its scheduler before any worker starts.
+        crate::scheduler::recover_on_startup(&state.bridge.store)
+            .await
+            .unwrap();
+        assert_eq!(state.record().await["restartRecovery"]["stage"], "held");
+        assert_eq!(state.event_status("input").await, "uncertain");
+        let mut bridge = StoreBridge::new(state.bridge.store.clone()).await.unwrap();
+        bridge.faults = state.bridge.faults.clone();
+        // The provider process stopped with the backend: a new generation
+        // cannot answer the old request, so only native history decides.
+        let mut peer = Peer::identity("default", 2, None);
+        let mut worker = peer.worker(bridge).await;
+        let history = tokio::select! {
+            history = peer.write("thread/turns/list") => history,
+            () = worker_barrier(&worker) => {
+                panic!("applied {applied}: the first pass left the held input unchecked")
+            }
+        };
+        if applied {
+            peer.reply(
+                &history,
+                json!({"data":[{"id":"old-turn","threadId":"fake-thread-0","status":"inProgress",
+                    "items":[],"clientUserMessageId":"annotation:input"}]}),
+            )
+            .await;
+            worker_barrier(&worker).await;
+            assert_eq!(state.record().await["turnId"], "old-turn");
+        } else {
+            peer.reply(
+                &history,
+                json!({"data":[{
+                    "id":"rejected","threadId":"fake-thread-0","status":"failed",
+                    "items":[],"clientUserMessageId":"annotation:input","startOutcome":"not_applied"
+                }]}),
+            )
+            .await;
+            let thread = peer.write("thread/read").await;
+            peer.reply(
+                &thread,
+                json!({"thread":{"id":"fake-thread-0","status":{"type":"idle"}}}),
+            )
+            .await;
+            let start = peer.write_turn_start().await;
+            peer.accepted(&start).await;
+            assert_eq!(state.event_status("input").await, "delivered");
+        }
+        assert!(
+            peer.writes.try_recv().is_err(),
+            "applied {applied}: the first input is sent at most once"
+        );
+        worker.shutdown().await.unwrap();
+    }
 }
 
 /// Accepted callback records the account still owes an answer for.
@@ -6121,6 +6270,65 @@ async fn provider_exit_while_the_server_runs_is_a_disconnect_reported_once() {
         );
     }
     replacement.shutdown().await.unwrap();
+}
+
+/// A replaced account worker leaves the turn of its supervised provider
+/// live: the provider process keeps running under the supervisor, and the next
+/// worker attaches to the same generation. Before, every worker end marked the
+/// turn "Codex disconnected" and told the parent; the live state had 43 such
+/// notices in 21 and 22 October 2026, each with the provider process alive.
+#[tokio::test]
+async fn a_replaced_worker_keeps_the_live_turn_of_its_retained_provider() {
+    let state = State::new().await;
+    let parent = adopt_parent(&state).await;
+    let mut peer = Peer::supervised();
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    let start = state.start(&mut peer, &worker).await;
+    peer.accepted(&start).await;
+    worker_barrier(&worker).await;
+    // The registry replaces the worker; the provider process keeps running.
+    worker.shutdown().await.unwrap();
+    let record = state.record().await;
+    assert_eq!(record["status"], "running", "{record}");
+    assert!(record["error"].is_null(), "{record}");
+    assert_eq!(child_stop_notices(&state, &parent).await, 0);
+
+    // The next worker attaches to the same provider generation.
+    let mut next = Peer::supervised();
+    next.cursor = 2;
+    let mut replacement = next.worker(state.bridge.clone()).await;
+    worker_barrier(&replacement).await;
+    let record = state.record().await;
+    assert_eq!(record["status"], "running", "{record}");
+    assert_eq!(child_stop_notices(&state, &parent).await, 0);
+    while let Ok(wire) = next.writes.try_recv() {
+        assert_ne!(
+            wire.value["method"], "turn/start",
+            "the live turn is not resent"
+        );
+    }
+    next.completed().await;
+    assert_eq!(state.record().await["status"], "completed");
+    replacement.shutdown().await.unwrap();
+}
+
+/// The exit of a supervised provider process is still a disconnect.
+#[tokio::test]
+async fn a_supervised_provider_exit_is_still_a_disconnect() {
+    let state = State::new().await;
+    let parent = adopt_parent(&state).await;
+    let mut peer = Peer::supervised();
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    let start = state.start(&mut peer, &worker).await;
+    peer.accepted(&start).await;
+    provider_exits(&peer, &mut worker).await;
+    let record = state.record().await;
+    assert_eq!(record["status"], "interrupted");
+    assert_eq!(
+        record["error"],
+        studio_runtime_store::PROVIDER_DISCONNECTED_TURN_ERROR
+    );
+    assert_eq!(child_stop_notices(&state, &parent).await, 1);
 }
 
 #[tokio::test]

@@ -276,6 +276,7 @@ function MultiServerShell({
           void notifyDesktop({
             title,
             body: alert.body,
+            ...(alert.sound ? { sound: true } : {}),
             target: { ...alert.target, serverId: id },
           }).catch(() => {});
         else if (
@@ -285,6 +286,7 @@ function MultiServerShell({
           const notification = new Notification(title, {
             body: alert.body,
             tag: `${id}:${alert.id}`,
+            silent: !alert.sound,
           });
           notification.onclick = () => {
             notification.close();

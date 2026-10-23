@@ -11,7 +11,13 @@ import {
   Square,
   Terminal as TerminalIcon,
 } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import type { Terminal } from "@xterm/xterm";
 import { errorText, type GetResult, type PostBody } from "../api";
 import type { Agent, Snapshot } from "../types";
@@ -104,6 +110,14 @@ export default function TerminalDock({
       stop();
     };
   }, [load, watchResourceReads]);
+  // Page layout rules read this flag instead of #root:has(.terminal-dock).
+  useLayoutEffect(() => {
+    const root = document.documentElement;
+    root.dataset.terminalDock = opened ? "open" : "closed";
+    return () => {
+      delete root.dataset.terminalDock;
+    };
+  }, [opened]);
   useEffect(() => {
     if (!opened) setEndTarget(null);
     const update = () =>

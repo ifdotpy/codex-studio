@@ -216,3 +216,31 @@ it("cleans only the selected server when workspace ids overlap", async () => {
     expect(deleteDatabase).toHaveBeenCalledExactlyOnceWith(names[1]),
   );
 });
+
+it("deletes the legacy projection collection of the workspace database", async () => {
+  const workspace = "a".repeat(32),
+    current = "1".repeat(64);
+  const suffix = "server72656d6f7465";
+  // Projections moved to their own database. The workspace database keeps
+  // its drafts and outbox, and its old projections collection is not opened.
+  const legacy = `rxdb-dexie-studio${workspace}${suffix}--0--projections`;
+  const kept = [
+    `rxdb-dexie-studio${workspace}${suffix}--0--drafts`,
+    `rxdb-dexie-studio${workspace}${suffix}--0--outbox`,
+    `rxdb-dexie-studio${workspace}${suffix}--0--_rxdb_internal`,
+    `rxdb-dexie-studio${workspace}--0--projections`,
+    `rxdb-dexie-studio${workspace}server6f74686572--0--projections`,
+    `rxdb-dexie-studio${"b".repeat(32)}${suffix}--0--projections`,
+    `rxdb-dexie-${entityProjectionDatabaseName(workspace, current, suffix)}--0--projections`,
+  ];
+  const deleteDatabase = vi.fn(() => makeSuccessfulDeleteRequest());
+  stubProjectionLocks();
+  vi.stubGlobal("indexedDB", {
+    databases: async () => [legacy, ...kept].map((name) => ({ name })),
+    deleteDatabase,
+  });
+  deleteOtherEntityProjectionDatabases(workspace, current, suffix);
+  await vi.waitFor(() =>
+    expect(deleteDatabase).toHaveBeenCalledExactlyOnceWith(legacy),
+  );
+});

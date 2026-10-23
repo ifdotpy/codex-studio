@@ -70,6 +70,7 @@ async fn panic_after_take_after_mutation_and_with_outstanding_receipt_retains_ev
                 result: Ok(()),
                 cleanup_error: None,
                 recovery_needed: None,
+                provider_retained: false,
             }
         });
         let factory = Arc::new(Factory(std::sync::Mutex::new(Some(
@@ -203,6 +204,7 @@ async fn closure_panic_unknown_batch_does_not_return_unknown_twice() {
             result: Ok(()),
             cleanup_error: None,
             recovery_needed: None,
+            provider_retained: false,
         }
     });
     let factory = Arc::new(Factory(std::sync::Mutex::new(Some(

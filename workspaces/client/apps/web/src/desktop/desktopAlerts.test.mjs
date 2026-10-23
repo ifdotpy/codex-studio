@@ -1,5 +1,11 @@
 import assert from "node:assert/strict";
-import { alertsSince, desktopAlerts } from "./desktopAlerts.ts";
+import {
+  SIGN_IN_ALERT_GRACE_SECONDS,
+  SIGN_IN_REMINDER_SECONDS,
+  alertsSince,
+  desktopAlerts,
+  nextAlertChange,
+} from "./desktopAlerts.ts";
 
 import { it } from "vitest";
 
@@ -390,4 +396,91 @@ it("does not show a complaint from before the window started when its page arriv
   assert.equal(fresh(next), true);
   // A record without a time keeps the earlier rule.
   assert.equal(fresh({ ...old, at: undefined }), true);
+});
+
+const signIn = (fields = {}) => ({
+  id: "card-1",
+  method: "browser/open",
+  agent: "lead",
+  status: "pending",
+  createdAt: 1000,
+  params: {
+    bridgeId: "b1",
+    host: "id.example.com",
+    expiresAt: 1600,
+    source: "host",
+  },
+  ...fields,
+});
+
+it("alerts once with sound for a sign-in card that is still open after the grace", () => {
+  assert.equal(SIGN_IN_ALERT_GRACE_SECONDS, 10);
+  const ids = (now, request = signIn()) =>
+    desktopAlerts(snapshot([lead], [request]), now)
+      .map(({ id }) => id)
+      .filter((id) => id !== "completed:lead:turn-1");
+  // The browser of the Mac can answer the card within the grace: no alert yet.
+  assert.deepEqual(ids(1009.9), []);
+  assert.deepEqual(ids(1010), ["signin:card-1"]);
+  const [alert] = desktopAlerts(snapshot([lead], [signIn()]), 1010).filter(
+    ({ id }) => id === "signin:card-1",
+  );
+  assert.deepEqual(alert, {
+    id: "signin:card-1",
+    title: "Main: Sign-in needed",
+    body: "Sign in at id.example.com. Open the card in this chat.",
+    target: { agentId: "lead", section: "messages", itemId: "card-1" },
+    at: 1010,
+    sound: true,
+  });
+  // A card that someone answered, or that closed, gives no alert.
+  assert.deepEqual(ids(1010, signIn({ status: "answered" })), []);
+  assert.deepEqual(ids(1010, signIn({ status: "expired" })), []);
+});
+
+it("reminds once before a sign-in card closes, and not while a phone sign-in waits", () => {
+  assert.equal(SIGN_IN_REMINDER_SECONDS, 300);
+  const ids = (now, request = signIn()) =>
+    desktopAlerts(snapshot([lead], [request]), now)
+      .map(({ id }) => id)
+      .filter((id) => id.startsWith("signin"));
+  assert.deepEqual(ids(1299), ["signin:card-1"]);
+  assert.deepEqual(ids(1300), ["signin:card-1", "signin-reminder:card-1"]);
+  const reminder = desktopAlerts(snapshot([lead], [signIn()]), 1300).find(
+    ({ id }) => id === "signin-reminder:card-1",
+  );
+  assert.deepEqual(reminder, {
+    id: "signin-reminder:card-1",
+    title: "Main: Sign-in card closes soon",
+    body: "Sign in at id.example.com within 5 minutes, or the card closes.",
+    target: { agentId: "lead", section: "messages", itemId: "card-1" },
+    at: 1300,
+    sound: true,
+  });
+  // The person already opened the page on a phone: the card waits for the pasted result.
+  const waiting = signIn({
+    params: {
+      ...signIn().params,
+      phase: "waiting",
+      waiting: { expiresAt: 1600 },
+    },
+  });
+  assert.deepEqual(ids(1300, waiting), ["signin:card-1"]);
+  // A card whose deadline passed gives no reminder.
+  assert.deepEqual(ids(1601), ["signin:card-1"]);
+  // A card shorter than the grace plus the reminder lead gets only the first alert.
+  const short = signIn({ params: { ...signIn().params, expiresAt: 1200 } });
+  assert.deepEqual(ids(1100, short), ["signin:card-1"]);
+});
+
+it("names the next moment at which a sign-in alert becomes due", () => {
+  const data = snapshot([lead], [signIn()]);
+  assert.equal(nextAlertChange(data, 1005), 1010);
+  assert.equal(nextAlertChange(data, 1010), 1300);
+  assert.equal(nextAlertChange(data, 1300), null);
+  assert.equal(nextAlertChange(snapshot([lead], []), 1005), null);
+  assert.equal(
+    nextAlertChange(snapshot([lead], [signIn({ status: "answered" })]), 1005),
+    null,
+  );
 });

@@ -18,6 +18,7 @@ import {
   signInState,
   timeLeftLabel,
   verificationPage,
+  waitingChatsLabel,
 } from "./signInCardModel";
 import "./sign-in-card.css";
 
@@ -38,6 +39,7 @@ function useNow() {
 export default function SignInCard({
   details,
   agentName,
+  chatNames,
   serverName,
   sending,
   error,
@@ -46,6 +48,8 @@ export default function SignInCard({
 }: {
   details: BrowserOpenDetails;
   agentName: string;
+  /** Chat names by agent ID, for the chats that wait on this card. */
+  chatNames?: ReadonlyMap<string, string>;
   serverName?: string;
   sending: boolean;
   error: string;
@@ -57,6 +61,7 @@ export default function SignInCard({
   const flow = signInFlow(details);
   const state = signInState(details, sending);
   const timeLeft = timeLeftLabel(signInDeadline(details), now);
+  const waiting = waitingChatsLabel(details.joined, chatNames ?? new Map());
   // The pasted address stays in this component only: never in drafts or storage.
   const [address, setAddress] = useState("");
   const [copied, setCopied] = useState(false);
@@ -116,6 +121,7 @@ export default function SignInCard({
         <span className="sign-in-card-state">{SIGN_IN_STATE_LABEL[state]}</span>
       </header>
       <p className="sign-in-card-host">{details.host}</p>
+      {waiting && <p className="sign-in-card-joined">{waiting}</p>}
       <dl className="sign-in-card-rows">
         <div>
           <dt>Flow</dt>

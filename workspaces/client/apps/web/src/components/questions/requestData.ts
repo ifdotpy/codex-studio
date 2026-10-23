@@ -111,6 +111,8 @@ export type BrowserOpenDetails = {
   waitingExpiresAt?: number;
   /** A pasted result is on its way to the command. */
   pasteSent?: boolean;
+  /** Agent IDs of other chats that wait on this card (one card for one sign-in). */
+  joined?: string[];
 };
 
 const numberValue = (value: unknown): number | undefined =>
@@ -135,6 +137,11 @@ export function browserOpenDetails(
   const userCode = stringValue(params.userCode);
   const expiresAt = numberValue(params.expiresAt);
   const waitingExpiresAt = numberValue(objectValue(params.waiting).expiresAt);
+  const joined = Array.isArray(params.joined)
+    ? params.joined.filter(
+        (agent): agent is string => typeof agent === "string",
+      )
+    : [];
   return {
     host,
     url,
@@ -149,5 +156,6 @@ export function browserOpenDetails(
     ...(expiresAt !== undefined ? { expiresAt } : {}),
     ...(waitingExpiresAt !== undefined ? { waitingExpiresAt } : {}),
     ...(isJsonObject(params.paste) ? { pasteSent: true } : {}),
+    ...(joined.length ? { joined } : {}),
   };
 }

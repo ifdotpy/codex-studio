@@ -182,6 +182,9 @@
     "\"-C\\n/tmp/workspace\\nstatus\\n--porcelain=v1\\n-z\\n{}\\n\",",
     "\"/tmp/workspace\","
   ],
+  "workspaces/runtime/packages/runtime-services/tests/monitor_output_ui.rs": [
+    ".unwrap_or_else(|| \"/tmp\".into());"
+  ],
   "workspaces/runtime/packages/runtime-services/tests/provider_session_task.rs": [
     "launch: ProviderLaunchSpec::new(vec![\"fake\".into()], BTreeMap::new(), \"/tmp\".into()),"
   ],

@@ -3,7 +3,7 @@ import {
   normalizeDelivery,
 } from "../../generated/deliveryMoment";
 import type { Message } from "../../types";
-import type { OutgoingMessage } from "../../sync/send";
+import type { OutboxEntry, OutgoingMessage } from "../../sync/send";
 
 const deliveryLabels: Record<string, string> = {
   sending: "Sending…",
@@ -80,6 +80,32 @@ export function receiptMessage(item: Message, entry: OutgoingMessage) {
     item.id === key ||
     (!item.clientMessageId && item.id === `${key}:0`)
   );
+}
+
+/** Merge durable outbox entries with this tab's display copies of its sends. */
+export function mergeOutgoing(
+  outbox: OutboxEntry[],
+  local: Record<string, OutgoingMessage>,
+  observed: ReadonlySet<string>,
+) {
+  const stored = new Map(outbox.map((entry) => [entry.id, entry]));
+  const visibleSends = new Map(
+    outbox
+      .filter(
+        (entry) =>
+          entry.displayPending === true ||
+          (entry.displayPending !== false && entry.status !== "accepted"),
+      )
+      .map((entry) => [entry.id, entry as OutgoingMessage]),
+  );
+  // The outbox owns delivery state once it stores a message. A local copy
+  // shows only before that, or as "sending" while the stored entry is queued.
+  for (const entry of Object.values(local)) {
+    const owner = stored.get(entry.id);
+    if (!owner || (entry.status === "sending" && owner.status === "queued"))
+      visibleSends.set(entry.id, entry);
+  }
+  return [...visibleSends.values()].filter((entry) => !observed.has(entry.id));
 }
 
 export function outgoingTranscript(

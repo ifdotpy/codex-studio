@@ -122,6 +122,48 @@ impl RuleFiles for EditingFiles<'_> {
     }
 }
 
+/// Most stored rules are paused or completed, and an owner record can hold
+/// hundreds of kilobytes. A tick reads no owner for a rule that cannot change;
+/// once the rule is resumed, the next tick decides it again.
+#[tokio::test]
+async fn a_paused_rule_reads_no_owner_and_ticks_again_once_resumed() {
+    let state = seeded_state().await;
+    let store = RuntimeStore::open(Some(state.path()))
+        .await
+        .expect("rules store");
+    change(&store, json!({"status": "paused"})).await;
+    // Without its owner, a tick that read the owner would fail the batch.
+    let owner = store
+        .transaction(|tx| {
+            let owner = studio_runtime_store::AgentRepository::get(
+                tx,
+                &studio_runtime_store::AgentId::from("owner"),
+            )?
+            .expect("owner exists");
+            tx.execute("DELETE FROM runtime_agents WHERE id='owner'", [])?;
+            Ok(owner)
+        })
+        .await
+        .expect("remove owner");
+    let report = tick_batch(&store, 0, NOW, &LocalRuleFiles, &UnavailableMonitor)
+        .await
+        .expect("a paused rule reads no owner");
+    assert_eq!(report.changed, 0);
+    assert!(events(&store).is_empty());
+    store
+        .transaction(move |tx| studio_runtime_store::AgentRepository::put(tx, &owner))
+        .await
+        .expect("restore owner");
+    change(&store, json!({"status": "active"})).await;
+    tick_batch(&store, 0, NOW, &LocalRuleFiles, &UnavailableMonitor)
+        .await
+        .expect("the resumed rule ticks");
+    assert_eq!(
+        events(&store),
+        [("rule-wake:rule:1".to_owned(), "pending".to_owned())]
+    );
+}
+
 #[tokio::test]
 async fn tick_commit_restart_and_callback_failpoint_matrix() {
     // Fail before and after each durable table write in the no-command path.

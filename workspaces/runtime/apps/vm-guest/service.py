@@ -80,9 +80,12 @@ class Service:
         self.agent_locks = {}
         self.clients = 0
         self.processes = set()
+        # Workers (`worker`) also check the data disk floors (`upload.tree_space`), so they get
+        # the floors that the service was started with.
         self.environment = {key: value for key, value in os.environ.items()
                             if key in {"PATH", "LANG", "TZ", "TERM", "USER", "LOGNAME", "SHELL",
-                                       "SSL_CERT_FILE", "SSL_CERT_DIR"} or key.startswith("LC_")
+                                       "SSL_CERT_FILE", "SSL_CERT_DIR", "CODEX_WORKSPACE_MIN_FREE_BYTES",
+                                       "CODEX_WORKSPACE_AGENT_MIN_FREE_BYTES"} or key.startswith("LC_")
                             }
         self.environment.update(HOME=str(self.home))
 

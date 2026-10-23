@@ -2,9 +2,11 @@
 //! and 6). The Rust port of `codex_browser_bridge.Bridge.poll` and `apply`.
 //!
 //! One poll runs for each source: the guest service of the Linux VM on this Mac (`vm`) and
-//! the host bridge of native chats (`host`, `browser_host`). It long-polls `browser.wait`,
+//! the host bridge of commands on this server (`host`, `browser_host`). It long-polls `browser.wait`,
 //! writes one `browser/open` request for each new pending link, refuses links that no chat
-//! can own, and expires a pending card when its guest request ends.
+//! can own, keeps the card's deadline equal to the guest request's, and expires a pending
+//! card when its guest request ends. A card that nobody answered tells its chat
+//! (`unanswered_event`), so the agent does not wait for a result that cannot come.
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -26,6 +28,10 @@ pub const FINAL_STATES: [&str; 6] = [
 ];
 /// The waiting phase of a link that the person opened in paste mode (section 6.3).
 pub const WAITING: &str = "waiting";
+/// The `closeReason` of a card that startup recovery expired (`monitor_runtime`). The
+/// bridge keeps its request across the restart, so the poll reopens the card while that
+/// request is open, and tells the chat when it ended meanwhile without an answer.
+pub const RESTART_CLOSE_REASON: &str = "restart";
 const CLOSE_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// The chat event text of each final outcome (`OUTCOME_TEXT` of `codex_browser_bridge.py`).
@@ -45,6 +51,21 @@ fn outcome_text(outcome: &str) -> Option<&'static str> {
         }
         "expired" => {
             "The sign-in at {host} ended without a result: the request expired or the command stopped."
+        }
+        _ => return None,
+    })
+}
+
+/// The chat event text when a pending card ends before anyone answered it, by the guest state
+/// that ended its request (docs/vm-browser-bridge.md, section 2(b)). `replaced` has none: the
+/// chat gave a newer link.
+fn unanswered_text(state: &str) -> Option<&'static str> {
+    Some(match state {
+        "stale" => {
+            "Nobody answered the sign-in card for {host}, and it closed because the sign-in command stopped waiting. The command got no sign-in result from this card. Do not wait for it: start the sign-in again when the person can answer, and tell the person in one short message."
+        }
+        "expired" => {
+            "Nobody answered the sign-in card for {host} in time, and Studio closed it. The command gets no sign-in result from this card. Do not wait for it: stop the command if it still waits, start the sign-in again when the person can answer, and tell the person in one short message."
         }
         _ => return None,
     })
@@ -147,10 +168,114 @@ pub(crate) fn outcome_event(tx: &Transaction<'_>, record: &Value, now: f64) -> b
     }
 }
 
+/// Tell the chat that its pending card closed without an answer. Returns whether an event was
+/// queued. The event ID names the guest request, so a repeated final state queues nothing.
+fn unanswered_event(tx: &Transaction<'_>, record: &Value, state: &str, now: f64) -> bool {
+    let Some(text) = unanswered_text(state) else {
+        return false;
+    };
+    let Some(agent_id) = record.get("agent").and_then(Value::as_str) else {
+        return false;
+    };
+    let Ok(agent) = crate::event_write::checked_agent(tx, agent_id) else {
+        return false;
+    };
+    let params = &record["params"];
+    let bridge_id = python_text(params.get("bridgeId"));
+    match crate::event_write::enqueue_event(
+        tx,
+        &agent,
+        format!("browser-unanswered:{bridge_id}"),
+        "browser_unanswered",
+        text.replace("{host}", &python_text(params.get("host"))),
+        now,
+    ) {
+        Ok(queued) => queued,
+        Err(error) => {
+            eprintln!("browser unanswered event for {bridge_id} failed: {error}");
+            false
+        }
+    }
+}
+
+/// The chat event of a joined request whose sign-in finished on another chat's card.
+const JOINED_SIGNED_IN_TEXT: &str = "The person signed in at {host} on the sign-in card of another chat. Your own sign-in command did not get that result. Stop it if it still waits, then run it again: the sign-in session is now active.";
+
+/// Add a chat that waits on a card to the card's `params.joined`, or take it away.
+fn join_card(
+    tx: &Transaction<'_>,
+    leader: &str,
+    agent: &str,
+    waits: bool,
+) -> Result<(), BrowserCardError> {
+    let key = card_id(leader);
+    let Some(raw) = QuestionsWriteRepository::request(tx, &key)? else {
+        return Ok(());
+    };
+    let mut record: Value = serde_json::from_str(&raw).map_err(|_| BrowserCardError::Invalid)?;
+    if record.get("status").and_then(Value::as_str) != Some("pending") {
+        return Ok(());
+    }
+    let mut joined: Vec<String> = record
+        .pointer("/params/joined")
+        .and_then(Value::as_array)
+        .map(|agents| {
+            agents
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default();
+    let before = joined.clone();
+    joined.retain(|chat| chat != agent);
+    if waits {
+        joined.push(agent.to_owned());
+    }
+    if joined != before {
+        record["params"]["joined"] = json!(joined);
+        put_request(tx, &key, &record)?;
+    }
+    Ok(())
+}
+
+/// Tell a joined chat that the person signed in on the card that it waited on.
+fn joined_event(tx: &Transaction<'_>, item: &Value, now: f64) -> bool {
+    let Some(agent_id) = item.get("agentId").and_then(Value::as_str) else {
+        return false;
+    };
+    let Ok(agent) = crate::event_write::checked_agent(tx, agent_id) else {
+        return false;
+    };
+    let bridge_id = python_text(item.get("id"));
+    match crate::event_write::enqueue_event(
+        tx,
+        &agent,
+        format!("browser-joined:{bridge_id}"),
+        "browser_joined",
+        JOINED_SIGNED_IN_TEXT.replace("{host}", &python_text(item.get("host"))),
+        now,
+    ) {
+        Ok(queued) => queued,
+        Err(error) => {
+            eprintln!("browser joined event for {bridge_id} failed: {error}");
+            false
+        }
+    }
+}
+
+/// Whether startup recovery expired this card while nobody had answered it.
+fn restart_expired(record: &Value) -> bool {
+    record.get("status").and_then(Value::as_str) == Some("expired")
+        && record.get("closeReason").and_then(Value::as_str) == Some(RESTART_CLOSE_REASON)
+        && record.get("decision").is_none()
+}
+
 /// A bridge that the server polls.
 #[derive(Clone)]
 pub struct CardSource {
-    /// `vm`: links of VM chats from the guest. `host`: links of native chats of this server.
+    /// `vm`: links of VM chats from the guest. `host`: links of commands that run on this
+    /// server: native chats, and `host_exec` commands of VM chats.
     pub source: &'static str,
     pub guest: Arc<dyn GuestRpc>,
     /// The forwards that this server holds for the source's approvals.
@@ -183,13 +308,10 @@ fn refusal(
     if python_truthy(agent.get("deletedAt")) {
         return Ok(Some("The chat was deleted".into()));
     }
+    // The host bridge also serves a VM chat's `host_exec` command, which runs on this Mac.
     let vm = agent.get("executionMode").and_then(Value::as_str) == Some("vm");
-    if vm != (source.source == "vm") {
-        return Ok(Some(if source.source == "vm" {
-            "The chat is not an active VM chat".into()
-        } else {
-            "The chat is not a native chat".into()
-        }));
+    if source.source == "vm" && !vm {
+        return Ok(Some("The chat is not an active VM chat".into()));
     }
     if let Some(project) = agent
         .get("layrProjectId")
@@ -295,12 +417,54 @@ pub async fn apply(
                         }
                     }
                 }
+                // A request of another chat that waits on an open card (one card for one
+                // sign-in): no card of its own; the card names it.
+                None if state == crate::browser_host::JOINED => {
+                    applied.refused = refusal(tx, &source, &item)?;
+                    if applied.refused.is_none()
+                        && let (Some(leader), Some(agent)) = (
+                            item.get("joinedTo").and_then(Value::as_str),
+                            item.get("agentId").and_then(Value::as_str),
+                        )
+                    {
+                        join_card(tx, leader, agent, true)?;
+                    }
+                }
+                // A joined request ended: its chat hears a sign-in on the card it waited on.
+                None if finished => {
+                    if let (Some(leader), Some(agent)) = (
+                        item.get("joinedTo").and_then(Value::as_str),
+                        item.get("agentId").and_then(Value::as_str),
+                    ) {
+                        join_card(tx, leader, agent, false)?;
+                    }
+                    if item.get("closeReason").and_then(Value::as_str)
+                        == Some(crate::browser_host::JOINED_SIGNED_IN_REASON)
+                    {
+                        applied.event = joined_event(tx, &item, now);
+                    }
+                }
                 Some(raw) if finished => {
                     let mut record: Value =
                         serde_json::from_str(&raw).map_err(|_| BrowserCardError::Invalid)?;
                     // A pasted result in flight writes its own outcome (browser_answer).
                     let pasting = record.pointer("/params/paste").is_some_and(|mark| !mark.is_null());
-                    if record.get("status").and_then(Value::as_str) == Some("pending") && !pasting {
+                    let local = item.get("closeReason").and_then(Value::as_str)
+                        == Some(crate::browser_host::LOCAL_CLOSE_REASON);
+                    // A card that startup recovery expired ends as an open card does: the
+                    // request ended while the server was down, and nobody answered it.
+                    let pending = record.get("status").and_then(Value::as_str) == Some("pending")
+                        || restart_expired(&record);
+                    if pending && !pasting && local {
+                        // The browser of this Mac had the page and the command stopped
+                        // listening: it ended its sign-in there, and nobody waits for the card.
+                        record["status"] = json!("answered");
+                        record["answeredBy"] = json!("browser");
+                        record["answeredAt"] = json!(now);
+                        record["decision"] = json!("accept");
+                        record["closeReason"] = json!(crate::browser_host::LOCAL_CLOSE_REASON);
+                        put_request(tx, &key, &record)?;
+                    } else if pending && !pasting {
                         let waiting = record.pointer("/params/phase").and_then(Value::as_str) == Some(WAITING);
                         record["status"] = json!("expired");
                         record["closeReason"] = json!(state);
@@ -308,9 +472,39 @@ pub async fn apply(
                             record["params"]["outcome"] = json!("expired");
                         }
                         put_request(tx, &key, &record)?;
-                        if waiting {
-                            applied.event = outcome_event(tx, &record, now);
+                        applied.event = if waiting {
+                            outcome_event(tx, &record, now)
+                        } else {
+                            unanswered_event(tx, &record, &state, now)
+                        };
+                    }
+                }
+                // An open request whose card startup recovery expired gets its card back: the
+                // pending link, or the waiting phase of a phone sign-in.
+                Some(raw) if state == "pending" || state == "approved" => {
+                    let mut record: Value =
+                        serde_json::from_str(&raw).map_err(|_| BrowserCardError::Invalid)?;
+                    let waiting = record.pointer("/params/phase").and_then(Value::as_str) == Some(WAITING);
+                    let mut changed = false;
+                    if restart_expired(&record) && (state == "pending" || waiting) {
+                        record["status"] = json!("pending");
+                        if let Some(fields) = record.as_object_mut() {
+                            fields.remove("closeReason");
                         }
+                        changed = true;
+                    }
+                    // A listening command moved the deadline of its open request (`check`).
+                    let deadline = item.get("expiresAt").filter(|value| value.is_number());
+                    if state == "pending"
+                        && record.get("status").and_then(Value::as_str) == Some("pending")
+                        && let Some(deadline) = deadline
+                        && record.pointer("/params/expiresAt") != Some(deadline)
+                    {
+                        record["params"]["expiresAt"] = deadline.clone();
+                        changed = true;
+                    }
+                    if changed {
+                        put_request(tx, &key, &record)?;
                     }
                 }
                 _ => {}

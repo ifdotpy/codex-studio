@@ -20,6 +20,15 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Self {
+        Self::build(None)
+    }
+
+    /// A service whose commands send their sign-in links to the host bridge in `folder`.
+    fn with_browser_host(folder: &Path) -> Self {
+        Self::build(Some(folder.to_path_buf()))
+    }
+
+    fn build(browser_host: Option<PathBuf>) -> Self {
         let temp = tempfile::tempdir().unwrap();
         let root =
             studio_runtime_store::path_identity::CanonicalPath::existing_directory(temp.path())
@@ -30,8 +39,11 @@ impl Fixture {
         fs::write(state.join(TOKEN_FILE), TOKEN).unwrap();
         let line = root.join("line");
         fs::create_dir(&line).unwrap();
-        let service =
-            Arc::new(HostService::with_limits(&state, BUILD.into(), 2, DEFAULT_BUDGET).unwrap());
+        let service = Arc::new(
+            HostService::with_limits(&state, BUILD.into(), 2, DEFAULT_BUDGET)
+                .unwrap()
+                .with_browser_host(browser_host),
+        );
         Self {
             _temp: temp,
             root,
@@ -543,6 +555,52 @@ async fn a_command_streams_mapped_output_and_returns_its_changes_and_artifacts()
     assert_eq!(second["generation"], op["generation"]);
 }
 
+/// A VM chat's sign-in command on the Mac reaches the host bridge as that chat
+/// (docs/vm-browser-bridge.md, "Native chats"): `BROWSER` is the launcher, and the session
+/// is the calling agent. Without a launcher the command gets none of these names.
+#[tokio::test]
+async fn a_command_gets_the_browser_launcher_of_its_calling_chat() {
+    let script = "printf '%s|%s|%s' \"${BROWSER-unset}\" \"${STUDIO_BROWSER_SOCKET-unset}\" \"${STUDIO_BROWSER_SESSION-unset}\"";
+    let folder = tempfile::tempdir().unwrap();
+    let folder =
+        studio_runtime_store::path_identity::CanonicalPath::existing_directory(folder.path())
+            .unwrap()
+            .into_path_buf();
+    let browser_host = folder.join("browser-host");
+    fs::create_dir(&browser_host).unwrap();
+    let fixture = Fixture::with_browser_host(&browser_host);
+    fixture
+        .start("before", &["/bin/sh", "-c", script], 30.0)
+        .await;
+    let (_, output) = fixture.finish("before").await;
+    assert_eq!(output, "unset|unset|unset", "no launcher yet");
+    fixture
+        .call(
+            "release:before",
+            "release",
+            json!({"operationId": "before", "agentId": "agent", "collected": true}),
+        )
+        .await
+        .unwrap();
+    fs::write(
+        browser_host.join(crate::browser_environment::BROWSER_LAUNCHER),
+        "#!/bin/sh\n",
+    )
+    .unwrap();
+    fixture
+        .start("after", &["/bin/sh", "-c", script], 30.0)
+        .await;
+    let (_, output) = fixture.finish("after").await;
+    assert_eq!(
+        output,
+        format!(
+            "{}|{}|agent",
+            browser_host.join("studio-browser").display(),
+            browser_host.join("open.sock").display()
+        )
+    );
+}
+
 #[tokio::test]
 async fn the_mac_refuses_an_invalid_tree_id_and_a_changed_manifest() {
     let fixture = Fixture::new();
@@ -625,6 +683,56 @@ async fn cancel_and_timeout_stop_the_command_and_keep_its_changes() {
         .await;
     let (status, _) = fixture.finish("timeout").await;
     assert_eq!(status["reason"], "timeout");
+}
+
+/// A group signal after the leader is reaped could reach another group that
+/// reuses the ID. Every signal to a command's group comes before its leader is
+/// reaped, for a command that exits by itself and for one that is cancelled.
+#[tokio::test]
+async fn command_group_signals_come_before_the_leader_is_reaped() {
+    let fixture = Fixture::new();
+    fixture
+        .start("plain", &["/bin/sh", "-c", "exit 0"], 30.0)
+        .await;
+    let (status, _) = fixture.finish("plain").await;
+    assert_eq!(status["reason"], "exited");
+    fixture
+        .start(
+            "stopped",
+            &["/bin/sh", "-c", "touch started; exec sleep 30"],
+            60.0,
+        )
+        .await;
+    let slot = PathBuf::from(fixture.op_status("stopped")["slotPath"].as_str().unwrap());
+    for _ in 0..400 {
+        if slot.join("started").exists() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    fixture
+        .call(
+            "cancel-stopped",
+            "cancel",
+            json!({"operationId": "stopped", "agentId": "agent"}),
+        )
+        .await
+        .unwrap();
+    let (status, _) = fixture.finish("stopped").await;
+    assert_eq!(status["reason"], "cancelled");
+    let signals = super::command::LEADER_UNREAPED_AT_SIGNAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    for operation in ["plain", "stopped"] {
+        let pid = i32::try_from(fixture.op_status(operation)["pid"].as_i64().unwrap()).unwrap();
+        let seen = signals.get(&pid).cloned().unwrap_or_default();
+        assert!(!seen.is_empty(), "{operation}: the group is signalled");
+        assert!(
+            seen.iter().all(|unreaped| *unreaped),
+            "{operation}: a group signal went out after the leader was reaped: {seen:?}"
+        );
+    }
 }
 
 #[tokio::test]

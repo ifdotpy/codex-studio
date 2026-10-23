@@ -713,7 +713,7 @@ function fastTierCommands(root) {
     },
     {
       item: { name: "studio-runtime-services", ecosystem: "cargo" },
-      label: "host_exec tool and Mac service witnesses",
+      label: "VM tools, host_exec tool and Mac service witnesses",
       commands: [
         [
           "cargo",
@@ -729,7 +729,7 @@ function fastTierCommands(root) {
             "studio-runtime-services",
             "--lib",
             "-E",
-            "test(/^host_exec(_service)?::/)",
+            "test(/^(host_exec(_service)?|layr_read)::/) | test(/^thread_prepare::vm_catalog_tests::/) | test(/::context::tests::the_tools_topic_lists_the_tools_of_a_vm_agent$/) | test(/::a_vm_agent_on_an_old_thread_gets_the_current_catalog$/)",
           ],
         ],
         [
@@ -758,7 +758,7 @@ function fastTierCommands(root) {
     },
     {
       item: { name: "studio-runtime-services", ecosystem: "cargo" },
-      label: "Linux VM start witnesses",
+      label: "Linux VM start, watchdog and share mount witnesses",
       commands: [
         [
           "cargo",
@@ -774,7 +774,7 @@ function fastTierCommands(root) {
             "studio-runtime-services",
             "--lib",
             "-E",
-            "test(/^linux_vm_runtime::/)",
+            "test(/^linux_vm_(runtime|share)::/)",
           ],
         ],
         [
@@ -799,6 +799,68 @@ function fastTierCommands(root) {
           "VM start after a Mac restart, stops on purpose, restart limits and the helper session",
         reason:
           "Check that only a VM that the Mac restart stopped starts by itself, with a fake helper and guest, and that the helper runs in its own session.",
+      },
+    },
+    {
+      item: { name: "studio-runtime-services", ecosystem: "cargo" },
+      label: "retained provider disconnect witnesses",
+      commands: [
+        [
+          "cargo",
+          [
+            "nextest",
+            "run",
+            "--locked",
+            "--no-tests",
+            "fail",
+            "--message-format",
+            "libtest-json-plus",
+            "-p",
+            "studio-runtime-services",
+            "--lib",
+            "-E",
+            "test(/^account_worker::tests::(a_replaced_worker_keeps_the_live_turn_of_its_retained_provider|a_supervised_provider_exit_is_still_a_disconnect|provider_exit_while_the_server_runs_is_a_disconnect_reported_once)$/)",
+          ],
+        ],
+        [
+          "cargo",
+          [
+            "nextest",
+            "run",
+            "--locked",
+            "--no-tests",
+            "fail",
+            "--message-format",
+            "libtest-json-plus",
+            "-p",
+            "studio-runtime-store",
+            "--lib",
+            "-E",
+            "test(/::a_retained_host_provider_disconnects_only_the_vm_actors$/)",
+          ],
+        ],
+        [
+          "cargo",
+          [
+            "nextest",
+            "run",
+            "--locked",
+            "--no-tests",
+            "fail",
+            "--message-format",
+            "libtest-json-plus",
+            "-p",
+            "studio-runtime-process",
+            "-E",
+            "binary(integration) & test(/^provider_task::(a_cancelled_attachment_leaves_its_supervised_child_retained|terminal_eof_serves_already_queued_final_ack_before_completion)$/)",
+          ],
+        ],
+      ],
+      options: {
+        selector:
+          "account worker end with a supervised provider that outlives it",
+        reason:
+          "Check that a replaced worker leaves the live turn of a retained provider running and tells no parent, while a provider exit stays a disconnect.",
       },
     },
     {
@@ -841,6 +903,40 @@ function fastTierCommands(root) {
         selector: "bounded guest Mac sync reads",
         reason:
           "Read at most one chunk under the project lock and preserve file and link responses.",
+      },
+    },
+    {
+      // The runner owns the Python version, the supervisor binary, the short macOS
+      // temporary root that the guest's Unix sockets need, and the check that no process
+      // of the suite outlives it; its own test proves that check.
+      item: { name: "VM guest Python suite", ecosystem: "pnpm" },
+      label: "VM guest Python suite",
+      commands: [
+        ["cargo", ["build", "-p", "studio-process-supervisor", "--locked"]],
+        [
+          "node",
+          [
+            "--test",
+            path.join(
+              root,
+              "workspaces/runtime/apps/vm-guest/run-guest-suite.test.mjs",
+            ),
+          ],
+        ],
+        [
+          "node",
+          [
+            path.join(
+              root,
+              "workspaces/runtime/apps/vm-guest/run-guest-suite.mjs",
+            ),
+          ],
+        ],
+      ],
+      options: {
+        selector: "every guest unittest module",
+        reason:
+          "Keep the guest service, bridge, upload, project and update contracts that the VM runs.",
       },
     },
     {
@@ -1322,6 +1418,7 @@ function fastTierCommands(root) {
               "test(account_worker::tests::retained::automatic_recovery_)",
               "test(account_worker::tests::retained::startup_first_pass_reconciles_exact_history_without_replaying_unknown_input)",
               "test(account_worker::tests::retained::retained_actor_request_answer_after_same_generation_restart_is_recorded_once)",
+              "test(account_worker::tests::restart_held_first_input_is_reconciled_by_the_first_worker)",
             ]),
           ],
         ],

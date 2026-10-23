@@ -7,7 +7,7 @@ mod client;
 pub mod clock;
 pub mod operational_log;
 #[cfg(unix)]
-mod owned_process_group;
+pub mod owned_process_group;
 mod ports;
 mod protocol;
 #[cfg(unix)]

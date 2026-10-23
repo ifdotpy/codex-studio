@@ -31,8 +31,14 @@ fn text(value: &Value, limit: usize) -> Result<String, String> {
         .map(str::to_owned)
         .ok_or("Invalid notification.".into())
 }
-/// Accepts exactly the fields of the desktop bridge notification.
-pub fn validate(value: &Value) -> Result<(String, String, Value), String> {
+/// Accepts exactly the fields of the desktop bridge notification. `sound` (a sign-in card
+/// that waits for the person) plays the default sound; other notifications are silent.
+pub fn validate(value: &Value) -> Result<(String, String, Value, bool), String> {
+    let sound = match &value["sound"] {
+        Value::Null => false,
+        Value::Bool(sound) => *sound,
+        _ => return Err("Invalid notification.".into()),
+    };
     let target = &value["target"];
     let mut clean = json!({"agentId": text(&target["agentId"], 128)?, "section": "messages"});
     if target["section"] != "messages" {
@@ -48,6 +54,7 @@ pub fn validate(value: &Value) -> Result<(String, String, Value), String> {
         text(&value["title"], 256)?,
         text(&value["body"], 4096)?,
         clean,
+        sound,
     ))
 }
 
@@ -70,17 +77,17 @@ fn clicked(id: &str) {
 }
 
 pub async fn notify(value: &Value) -> Result<Value, String> {
-    let (title, body, target) = validate(value)?;
+    let (title, body, target, sound) = validate(value)?;
     if crate::platform::hidden_check() {
         return Ok(Value::Bool(false));
     }
     #[cfg(target_os = "macos")]
     {
-        mac::show(title, body, target).await
+        mac::show(title, body, target, sound).await
     }
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = (title, body, target);
+        let _ = (title, body, target, sound);
         Err("Desktop notifications require macOS.".into())
     }
 }
@@ -98,8 +105,8 @@ pub mod mac {
     use objc2_user_notifications::{
         UNAuthorizationOptions, UNMutableNotificationContent, UNNotification,
         UNNotificationDefaultActionIdentifier, UNNotificationPresentationOptions,
-        UNNotificationRequest, UNNotificationResponse, UNUserNotificationCenter,
-        UNUserNotificationCenterDelegate,
+        UNNotificationRequest, UNNotificationResponse, UNNotificationSound,
+        UNUserNotificationCenter, UNUserNotificationCenterDelegate,
     };
 
     define_class!(
@@ -163,7 +170,12 @@ pub mod mac {
         });
     }
 
-    pub async fn show(title: String, body: String, target: Value) -> Result<Value, String> {
+    pub async fn show(
+        title: String,
+        body: String,
+        target: Value,
+        sound: bool,
+    ) -> Result<Value, String> {
         if !bundled() {
             return Err("Notifications require the Codex Studio app bundle.".into());
         }
@@ -193,6 +205,9 @@ pub mod mac {
             let content = UNMutableNotificationContent::new();
             content.setTitle(&NSString::from_str(&title));
             content.setBody(&NSString::from_str(&body));
+            if sound {
+                content.setSound(Some(&UNNotificationSound::defaultSound()));
+            }
             let request = UNNotificationRequest::requestWithIdentifier_content_trigger(
                 &NSString::from_str(&id),
                 &content,
@@ -225,11 +240,21 @@ mod tests {
     use super::*;
     #[test]
     fn notification_fields_are_bounded_and_clicks_deliver_one_target() {
-        let (title, body, target) = validate(&json!({
+        let (title, body, target, sound) = validate(&json!({
             "title":"Ответ 🦀","body":"Готово","target":{"agentId":"a","section":"messages","itemId":"m","serverId":"remote"},"extra":1
         }))
         .unwrap();
         assert_eq!((title.as_str(), body.as_str()), ("Ответ 🦀", "Готово"));
+        assert!(
+            !sound,
+            "a notification is silent unless it asks for the sound"
+        );
+        let (_, _, _, sound) = validate(&json!({
+            "title":"Sign-in needed","body":"Sign in at id.example.com.","sound":true,
+            "target":{"agentId":"a","section":"messages"}
+        }))
+        .unwrap();
+        assert!(sound, "an open sign-in card plays the sound");
         assert_eq!(
             target,
             json!({"agentId":"a","section":"messages","itemId":"m","serverId":"remote"})
@@ -239,6 +264,7 @@ mod tests {
             json!({"title":"t","body":"b","target":{"agentId":"a","section":"files"}}),
             json!({"title":"t","body":"b","target":{"agentId":"a","section":"messages","itemId":5}}),
             json!({"title":"t".repeat(257),"body":"b","target":{"agentId":"a","section":"messages"}}),
+            json!({"title":"t","body":"b","sound":"yes","target":{"agentId":"a","section":"messages"}}),
         ] {
             assert!(validate(&bad).is_err(), "{bad}");
         }

@@ -953,7 +953,7 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
         Arc::new(studio_runtime_services::browser_host::StoreChats {
             store: Arc::clone(&store),
         }),
-        Default::default(),
+        studio_runtime_services::browser_host::HostBridgeOptions::for_this_host(),
         env::current_exe().ok().as_deref(),
     ) {
         Ok(service) => Some(service),

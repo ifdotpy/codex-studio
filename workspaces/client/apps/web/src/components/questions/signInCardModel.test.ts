@@ -11,7 +11,9 @@ import {
   signInState,
   timeLeftLabel,
   verificationPage,
+  waitingChatsLabel,
 } from "./signInCardModel";
+import { browserOpenDetails } from "./requestData";
 
 const redirect: BrowserOpenDetails = {
   host: "accounts.example.com",
@@ -114,5 +116,31 @@ describe("sign-in card model", () => {
     expect(verificationPage("https://d.example.com/?user_code=A")).toBe(
       "d.example.com",
     );
+  });
+});
+
+describe("chats that wait on one sign-in card", () => {
+  it("reads the waiting chats of the card and names them", () => {
+    const details = browserOpenDetails({
+      id: "card",
+      method: "browser/open",
+      agent: "lead",
+      status: "pending",
+      params: {
+        host: "id.example.com",
+        url: "https://id.example.com/authorize?client_id=c&state=s",
+        joined: ["worker-1", "worker-2", 7],
+      },
+    } as never);
+    expect(details?.joined).toEqual(["worker-1", "worker-2"]);
+    const names = new Map([["worker-1", "Infra"]]);
+    expect(waitingChatsLabel(details?.joined, names)).toBe(
+      "2 other chats wait on this sign-in: Infra and 1 more.",
+    );
+    expect(waitingChatsLabel(["worker-1"], names)).toBe(
+      "1 other chat waits on this sign-in: Infra.",
+    );
+    expect(waitingChatsLabel([], names)).toBeUndefined();
+    expect(waitingChatsLabel(undefined, names)).toBeUndefined();
   });
 });

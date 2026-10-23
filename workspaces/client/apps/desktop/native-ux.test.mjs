@@ -397,12 +397,28 @@ test("desktop native settings, notification and speech boundaries work with fixt
       target,
     });
     assert.deepEqual(f.events, [["notice"]]);
+    assert.equal(
+      f.notification().options.silent,
+      true,
+      "ordinary alerts are silent",
+    );
     f.notification().emit("click");
     assert.deepEqual(JSON.parse(JSON.stringify(f.events.slice(1))), [
       ["show"],
       ["focus"],
       ["codex-desktop-navigate", target],
     ]);
+    await f.invoke("notify", {
+      title: "Sign-in needed",
+      body: "Sign in at id.example.com. Open the card in this chat.",
+      sound: true,
+      target,
+    });
+    assert.equal(
+      f.notification().options.silent,
+      false,
+      "an open sign-in card plays the sound",
+    );
     assert.equal(await f.invoke("cancelTranscription", "unknown"), false);
     await assert.rejects(
       f.invoke("transcribeAudio", { id: "a", permit: "invalid" }),

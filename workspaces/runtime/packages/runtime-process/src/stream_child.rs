@@ -268,6 +268,12 @@ fn spawn_process(spec: ChildSpec) -> io::Result<Box<dyn ChildWrapper>> {
     Ok(child)
 }
 
+/// For each leader PID: whether the leader was still an unreaped child of this
+/// process when cleanup signalled its group.
+#[cfg(test)]
+static LEADER_UNREAPED_AT_SIGNAL: std::sync::Mutex<BTreeMap<u32, bool>> =
+    std::sync::Mutex::new(BTreeMap::new());
+
 async fn run_child(
     mut child: Box<dyn ChildWrapper>,
     mut input: mpsc::Receiver<WriteRequest>,
@@ -275,6 +281,8 @@ async fn run_child(
     mut cancel: watch::Receiver<bool>,
     lifetime: Duration,
 ) -> Result<ChildEvent, ChildError> {
+    // The owned group's ID, read before any wait can reap the leader.
+    let group = child.id();
     let mut stdin = child.stdin().take();
     let mut stdout = child.stdout().take().ok_or(ChildError::Cleanup)?;
     let mut stderr = child.stderr().take().ok_or(ChildError::Cleanup)?;
@@ -282,18 +290,28 @@ async fn run_child(
     let mut out = [0; OUTPUT_CHUNK_BYTES];
     let mut err = [0; OUTPUT_CHUNK_BYTES];
     let (mut out_open, mut err_open) = (true, true);
-    let mut exit = None;
+    // The leader's exit is observed without reaping it, so the group ID stays
+    // owned until cleanup has signalled the group (`owned_process_group`).
+    let leader_exit = async {
+        match group {
+            Some(pid) => crate::owned_process_group::exited_unreaped(pid).await,
+            None => Err(io::Error::other("the child has no process ID")),
+        }
+    };
+    tokio::pin!(leader_exit);
+    let mut exited = false;
+    let mut exit_unobserved = false;
     let mut reason = ExitReason::Completed;
     loop {
-        if !out_open && !err_open && exit.is_some() {
+        if !out_open && !err_open && exited {
             break;
         }
         let event = tokio::select! {
             biased;
             _ = cancel.changed() => { reason = ExitReason::Cancelled; break; }
             _ = tokio::time::sleep_until(deadline) => { reason = ExitReason::TimedOut; break; }
-            status = child.wait(), if exit.is_none() => {
-                match status { Ok(status) => exit = Some(status), Err(_) => { reason = ExitReason::IoFailure; break; } }
+            observed = &mut leader_exit, if !exited => {
+                match observed { Ok(()) => exited = true, Err(_) => { exit_unobserved = true; reason = ExitReason::IoFailure; break; } }
                 None
             }
             request = input.recv(), if stdin.is_some() => {
@@ -334,17 +352,36 @@ async fn run_child(
             }
         }
     }
-    // Signal only the group created above. Never reconstruct ownership from a saved PID.
-    // ESRCH simply means the owned group has already exited; wait still proves reaping.
-    if let Err(error) = child.start_kill()
-        && error.raw_os_error() != Some(3)
-    {
-        return Err(ChildError::Cleanup);
+    // Signal only the group created above, before its leader is reaped: an exited
+    // leader still pins the group ID. Never reconstruct ownership from a saved PID.
+    // If the exit could not be observed, the leader may already be reaped, so
+    // send nothing. ESRCH simply means the owned group has already exited; wait
+    // still proves reaping. Darwin answers EPERM for a group whose exited members
+    // are not reaped yet; forgive that only once the reaped group is gone.
+    #[cfg(test)]
+    if let Some(pid) = group {
+        let unreaped = crate::owned_process_group::exited_unreaped_now(pid).is_ok();
+        LEADER_UNREAPED_AT_SIGNAL
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(pid, unreaped);
     }
+    let killed = (!exit_unobserved).then(|| child.start_kill());
     let status = timeout(REAP_DEADLINE, child.wait())
         .await
         .map_err(|_| ChildError::Cleanup)?
         .map_err(|_| ChildError::Cleanup)?;
+    if let Some(Err(error)) = killed
+        && error.raw_os_error() != Some(3)
+        && !crate::owned_process_group::vanishes_after_reap(
+            group,
+            &error,
+            Instant::now() + REAP_DEADLINE,
+        )
+        .await
+    {
+        return Err(ChildError::Cleanup);
+    }
     // A descendant may retain either pipe after the leader exits. Require EOF
     // after group termination, within the same bounded cleanup contract.
     timeout(REAP_DEADLINE, async {
@@ -359,7 +396,7 @@ async fn run_child(
     .map_err(|_| ChildError::Cleanup)?
     .map_err(|_| ChildError::Cleanup)?;
     Ok(ChildEvent::Exited {
-        code: exit.unwrap_or(status).code(),
+        code: status.code(),
         reason,
     })
 }
@@ -435,6 +472,35 @@ mod tests {
             .await
             .expect("empty stdin closes successfully");
         child.close().await.expect("child closes successfully");
+    }
+
+    /// A group signal after the leader is reaped could reach another group that
+    /// reuses the ID. Cleanup must signal while the exited leader is unreaped.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cleanup_signals_the_group_before_it_reaps_the_exited_leader() {
+        let mut child = StreamChild::spawn(ChildSpec {
+            program: PathBuf::from("/bin/sh"),
+            args: vec!["-c".into(), "exit 0".into()],
+            cwd: std::env::current_dir().expect("test working directory is available"),
+            environment: BTreeMap::new(),
+            timeout: Duration::from_secs(10),
+            inherited_lease: None,
+        })
+        .await
+        .expect("child starts");
+        let pid = child.pid().expect("child PID");
+        while child.next_event().await.is_some() {}
+        child.close().await.expect("child closes successfully");
+        assert_eq!(
+            LEADER_UNREAPED_AT_SIGNAL
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .get(&pid)
+                .copied(),
+            Some(true),
+            "the group signal comes before the leader is reaped"
+        );
     }
 
     #[tokio::test(start_paused = true)]

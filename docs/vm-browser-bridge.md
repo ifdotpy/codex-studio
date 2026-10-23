@@ -96,7 +96,8 @@ approves every link.
 3. The forward port comes from `redirect_uri`. It is fixed (kubelogin 8000 or 18000) or random
    (AWS, az). Studio cannot change it, because the provider checks it and the token request
    repeats it.
-4. The tools wait 180 s (kubelogin) or 600 s (AWS). The card must expire when the tool stops.
+4. The tools wait 180 s (kubelogin) or 600 s (AWS). The card must expire when the tool stops,
+   and it must not expire while the tool still waits (section 2(b), "Card lifetime").
 5. A Mac forward must hold the port on every address the browser can use. It must never use
    `SO_REUSEADDR`.
 
@@ -195,10 +196,45 @@ its own `http` and `https` rule.
   device-code mode." Nothing binds and nothing opens. Decline works from every window.
 - Decline: the server calls `browser.answer` with `decline` and queues a message to the chat:
   "The person declined to open HOST in the browser. ..."
-- Expiry: the guest marks a request `stale` when its loopback listener goes away (it checks
-  every 5 s), `expired` after 10 minutes, and `replaced` by a newer link of the chat. The
-  server then marks a pending card `expired`. A backend restart and a stopped chat also
-  expire pending cards (the existing request rules).
+- Card lifetime: the guest checks every 5 s. It marks a request `stale` when its loopback
+  listener goes away and `replaced` by a newer link of the chat. A request lives 10 minutes
+  (`TTL_SECONDS`). While its command still listens, a pending request stays open: when its
+  deadline is at most 5 minutes away, the guest moves it to 10 minutes from now, but never
+  past `SIGN_IN_OPEN_LIMIT_SECONDS` (30 minutes, owner `runtime-schema/src/shared_values.rs`)
+  from its creation. Then it marks the request `expired`. A request without a loopback
+  redirect (a device code page) has no listener to check and expires after 10 minutes. The
+  card shows the moved deadline (`params.expiresAt`). The host bridge (`browser_host.rs`)
+  follows the same rules.
+- Unknown listeners: when the probe fails (the guest cannot read `/proc/net/tcp`, or `lsof`
+  on a Mac host fails or is slow), the listeners are unknown, not absent. No request becomes
+  `stale` and no deadline moves in that check; expiry by time still applies. A step that
+  needs a listener (a new link, an approval, a relay) refuses with the retryable code
+  `not_sent` (`SIGN_IN_NOT_SENT_CODE`, owner `runtime-schema/src/shared_values.rs`), sends
+  nothing to the command, and keeps the card open.
+- The server then marks a pending card `expired`. When nobody answered the card and the
+  request ended `stale` or `expired`, the server also queues one `browser_unanswered` event
+  to the chat. It says that the command gets no sign-in result from this card, that the agent
+  must not wait for it, and that it starts the sign-in again when the person can answer. A
+  `replaced` card gets no event, because the chat gave a newer link. A stopped chat also
+  expires its pending cards (the existing request rules).
+- One card for the same sign-in: a link of another chat with the same Linux user, sign-in
+  host and `client_id` as an open request (pending or approved) waits on that request: the
+  host bridge queues it as `joined` with `joinedTo`, shows no second card and opens no second
+  page on the Mac. The launcher says so to the command. The card names the waiting chats
+  (`params.joined`). Each command keeps its own sign-in request, because the provider binds the
+  result to that command (`state`, PKCE). When the card's sign-in finishes (a relayed result,
+  the browser of this Mac, a device page, or an approval after which the command stopped
+  listening), each joined request closes with `closeReason: "joined-signed-in"`, and its chat
+  gets one `browser_joined` event: stop the waiting command and run it again, because the
+  sign-in session is now active. When the card ends without a sign-in, the oldest joined
+  request becomes the card. A device code page has no client and never joins. A VM worker
+  has its own Linux user and session store, so its links never join those of another worker.
+- Backend restart: startup recovery expires every pending request; a sign-in card gets
+  `closeReason: "restart"`. The bridge keeps its request across the restart, and the first
+  poll after the restart reads the whole queue again. A card whose request is still open
+  comes back as `pending`, also in the waiting phase of a phone sign-in. A request that ended
+  meanwhile closes its card as an open card ends, with the `browser_unanswered` event when
+  nobody answered it.
 
 ### (c) Loopback forward
 
@@ -436,11 +472,24 @@ there opens on the Mac where the person works.
   Python. A Claude bridge reads `<bridge state>/studio-browser.json` and gives each session
   `BROWSER`, `STUDIO_BROWSER_SOCKET` and `STUDIO_BROWSER_SESSION` (its native thread ID). The
   bridge process keeps its own environment, so its launch identity does not change.
-- The chat is the agent whose ID or `threadId` is the session hint. It must not be a VM chat.
-  Native agents of one user can act for each other, so the hint is not a security boundary;
-  the approval card is the consent. Cards carry `source: "host"`.
+- The chat is the agent whose ID or `threadId` is the session hint. A VM chat reaches this
+  bridge only through a `host_exec` command, which runs on the Mac as the Studio user: the
+  `host_exec` service gives each command `BROWSER` (the launcher), `STUDIO_BROWSER_SOCKET` and
+  `STUDIO_BROWSER_SESSION` (the calling agent) when the launcher exists. Its guest commands
+  use the guest bridge. Agents of one user can act for each other, so the hint is not a
+  security boundary; the approval card is the consent. Cards carry `source: "host"`.
 - A window on the same server opens the link without a forward: the tool listens on that Mac.
 - Codex native chats get `BROWSER` through per-thread overrides (section 6.4).
+- Mac fast path: on a macOS host the bridge answers the launcher with `open: true`
+  (`HostBridgeOptions::for_this_host`). The launcher then also opens the link in the browser
+  of this Mac with `/usr/bin/open`, as the tool would without Studio. A sign-in whose
+  provider session is still active in that browser ends without a click. The card stays, so
+  the person can still answer from another window or a phone. When the command stops
+  listening after this open, the bridge closes the request with `closeReason: "local"`, and
+  the server marks the card `answered` by `browser`; the chat gets no `browser_unanswered`
+  event. Studio does not see whether the sign-in succeeded in that browser: the command's own
+  output tells it. A link that Studio refuses still opens there. A Linux host opens nothing:
+  nobody sits at its browser, and its `xdg-open` is the launcher itself.
 
 ### A window on another Mac
 
@@ -514,6 +563,14 @@ at phone width (one column, buttons in a row that wraps).
 - Actions before the approval: "Decline" and "Open in browser". A desktop that can hold the port
   opens with the forward. Every other window (a phone, a browser tab on another computer) opens
   in paste mode.
+- Alert: when a card is still pending 10 s after its creation (`SIGN_IN_ALERT_GRACE_SECONDS`,
+  owner `web/src/desktop/desktopAlerts.ts`), every Studio window shows one alert with sound:
+  "<chat>: Sign-in needed", "Sign in at <host>. Open the card in this chat." Windows on a
+  paired Mac show it too, through the alerts of their server frames. A card that the browser
+  of this Mac finishes within the grace gives no alert. One reminder with sound comes 5 minutes
+  before the card closes (`SIGN_IN_REMINDER_SECONDS`), but not while a phone sign-in waits for
+  its pasted result. Other alerts stay silent. A focused window with the card's chat open shows
+  no alert.
 - After an approval in paste mode the card stays in the chat: "Sign in on the page that opened.
   At the end the browser shows a page that does not load. Copy its address and paste it here."
   It has a text field, "Paste" (it reads the clipboard when the browser allows it), "Send to
@@ -525,8 +582,9 @@ at phone width (one column, buttons in a row that wraps).
   returned an error, the result is unknown, or the request ended without a result. The person
   and the agent both see it. After a paste the window says "Studio sent the sign-in result to
   the command. The chat shows how it ended."; an unknown or expired result is an error on the
-  card. A decline or a cancel adds the decline event. A request that expires before the
-  approval only closes its card, as before.
+  card. A decline or a cancel adds the decline event. A request that ends `stale` or
+  `expired` before the approval closes its card and adds the `browser_unanswered` event
+  (section 2(b)).
 
 ### 6.3 Protocol
 

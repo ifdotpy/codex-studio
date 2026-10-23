@@ -265,22 +265,27 @@ impl HostRuntime {
         // VM agents run Mac commands through the guest channel and the Mac
         // service, which this executable starts in its own session
         // (docs/host-exec.md).
-        let host_exec = match &program {
-            Ok(program) => Some(studio_runtime_services::host_exec::HostExecRuntime::new(
-                Arc::clone(&vm_guest),
-                Arc::new(
-                    studio_runtime_services::host_exec::RustHostExecService::new(
-                        program.clone(),
-                        vm_state_dir.clone(),
-                        studio_runtime_http::backend_build_identity,
+        let host_exec =
+            match &program {
+                Ok(program) => Some(studio_runtime_services::host_exec::HostExecRuntime::new(
+                    Arc::clone(&vm_guest),
+                    Arc::new(
+                        studio_runtime_services::host_exec::RustHostExecService::new(
+                            program.clone(),
+                            vm_state_dir.clone(),
+                            studio_runtime_http::backend_build_identity,
+                        )
+                        // Sign-in links of VM chats' Mac commands reach the host bridge.
+                        .with_browser_host(store.root().join(
+                            studio_runtime_services::browser_environment::BROWSER_HOST_FOLDER,
+                        )),
                     ),
-                ),
-            )),
-            Err(error) => {
-                eprintln!("host_exec is unavailable: the executable path is unknown: {error}");
-                None
-            }
-        };
+                )),
+                Err(error) => {
+                    eprintln!("host_exec is unavailable: the executable path is unknown: {error}");
+                    None
+                }
+            };
         // A created VM starts again when the Mac restarted under it, at startup
         // and for the first VM chat (docs/linux-vm-workspaces.md, "VM start").
         #[cfg(unix)]
@@ -293,6 +298,9 @@ impl HostRuntime {
             if let Some(host_exec) = &host_exec {
                 vm.attach_host_exec(Arc::clone(host_exec));
             }
+            vm.attach_chat_notices(Arc::new(
+                studio_runtime_services::linux_vm_runtime::StoreChatNotices::new(store.clone()),
+            ));
             vm
         });
         #[cfg(not(unix))]
@@ -310,6 +318,33 @@ impl HostRuntime {
                         eprintln!("linux-vm: automatic start at backend start failed: {error}")
                     }
                 }
+                // The watchdog: a failed guest (a kernel panic) restarts within
+                // the restart limits (docs/linux-vm-workspaces.md, "VM start").
+                let period = std::time::Duration::from_secs(
+                    studio_runtime_services::linux_vm_runtime::WATCHDOG_INTERVAL_SECONDS,
+                );
+                let mut checks =
+                    tokio::time::interval_at(tokio::time::Instant::now() + period, period);
+                checks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                loop {
+                    checks.tick().await;
+                    match vm.check().await {
+                        Ok(outcome)
+                            if matches!(
+                                outcome.as_str(),
+                                "absent"
+                                    | "unknown"
+                                    | "stopped"
+                                    | "running"
+                                    | "starting"
+                                    | "unresponsive"
+                                    | "busy"
+                                    | "limited"
+                            ) => {}
+                        Ok(outcome) => eprintln!("linux-vm: watchdog check: {outcome}"),
+                        Err(error) => eprintln!("linux-vm: watchdog check failed: {error}"),
+                    }
+                }
             });
         }
         resources.vm_provider_launch = Some(Arc::new(ServerVmProviderLaunchResolver {
@@ -324,6 +359,7 @@ impl HostRuntime {
         let preparation_resources = Arc::new(resources.clone());
         if let Some(managed_tool_runtime) = &managed_tool_runtime {
             managed_tool_runtime.set_preparation_resources(Arc::clone(&preparation_resources));
+            managed_tool_runtime.attach_layr_read(Arc::clone(&vm_guest));
             if let Some(host_exec) = host_exec {
                 managed_tool_runtime.attach_host_exec(host_exec);
             }
@@ -2559,6 +2595,7 @@ mod voice_composition_tests {
                     result: Ok(()),
                     cleanup_error: None,
                     recovery_needed: None,
+                    provider_retained: false,
                 }
             });
             Box::pin(async move {

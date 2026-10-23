@@ -52,11 +52,79 @@ fn layr_id(value: &str, lengths: std::ops::RangeInclusive<usize>) -> bool {
             .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
 }
 
+/// For each command leader PID: whether the leader was still an unreaped child
+/// of this process at each signal to its group.
+#[cfg(test)]
+pub(crate) static LEADER_UNREAPED_AT_SIGNAL: Mutex<std::collections::BTreeMap<i32, Vec<bool>>> =
+    Mutex::new(std::collections::BTreeMap::new());
+
+/// Signal the command's group unless its leader is reaped; a reaped leader
+/// answers like an ended group (ESRCH). The lock orders this with the reap.
+fn signal_group(child: &ChildHandle, signal: nix::sys::signal::Signal) -> nix::Result<()> {
+    let reaped = child
+        .reaped
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if *reaped {
+        return Err(nix::errno::Errno::ESRCH);
+    }
+    let pid = child.pid;
+    #[cfg(test)]
+    LEADER_UNREAPED_AT_SIGNAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .entry(pid)
+        .or_default()
+        .push(u32::try_from(pid).is_ok_and(|pid| {
+            studio_runtime_process::owned_process_group::exited_unreaped_now(pid).is_ok()
+        }));
+    nix::sys::signal::killpg(nix::unistd::Pid::from_raw(pid), signal)
+}
+
+/// Wait for the leader's exit without reaping it, end the other processes of
+/// its group while the exited leader still pins the group ID, then reap under
+/// the lock that every group signal holds (`owned_process_group`).
+async fn reap_command(
+    mut child: tokio::process::Child,
+    handle: ChildHandle,
+) -> std::io::Result<std::process::ExitStatus> {
+    let observed = match u32::try_from(handle.pid) {
+        Ok(pid) => studio_runtime_process::owned_process_group::exited_unreaped(pid).await,
+        Err(_) => Err(std::io::Error::from(std::io::ErrorKind::InvalidInput)),
+    };
+    if observed.is_err() {
+        // The leader may already be reaped elsewhere: send no more group signals.
+        *handle
+            .reaped
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = true;
+        return child.wait().await;
+    }
+    // Other processes of the command's group end with it.
+    signal_group(&handle, nix::sys::signal::Signal::SIGKILL).unwrap_or_default();
+    loop {
+        {
+            let mut reaped = handle
+                .reaped
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let status = child.try_wait();
+            if !matches!(status, Ok(None)) {
+                *reaped = true;
+            }
+            if let Some(status) = status? {
+                return Ok(status);
+            }
+        }
+        // The exit is observed, so the reap succeeds at once.
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+}
+
 /// Stop a command's process group: SIGTERM, then SIGKILL after the grace time.
 pub(crate) async fn terminate(child: &ChildHandle) {
-    use nix::sys::signal::{Signal, killpg};
-    let group = nix::unistd::Pid::from_raw(child.pid);
-    if killpg(group, Signal::SIGTERM) == Err(nix::errno::Errno::ESRCH) {
+    use nix::sys::signal::Signal;
+    if signal_group(child, Signal::SIGTERM) == Err(nix::errno::Errno::ESRCH) {
         return;
     }
     let mut exited = child.exited.clone();
@@ -67,7 +135,7 @@ pub(crate) async fn terminate(child: &ChildHandle) {
     .await
     .is_err()
     {
-        killpg(group, Signal::SIGKILL).unwrap_or_default();
+        signal_group(child, Signal::SIGKILL).unwrap_or_default();
         drop(exited.wait_for(|done| *done).await);
     }
 }
@@ -361,6 +429,32 @@ impl HostService {
             {
                 command.env(ENV_STATE, state);
             }
+            // A sign-in link of the command reaches the host bridge as its calling chat. The
+            // inherited environment must not name another chat's session.
+            let launcher = self
+                .browser_host
+                .as_ref()
+                .map(|folder| folder.join(crate::browser_environment::BROWSER_LAUNCHER))
+                .filter(|launcher| launcher.is_file());
+            match (&launcher, &self.browser_host) {
+                (Some(launcher), Some(folder)) => {
+                    command
+                        .env("BROWSER", launcher)
+                        .env(
+                            "STUDIO_BROWSER_SOCKET",
+                            folder.join(crate::browser_environment::BROWSER_OPEN_SOCKET),
+                        )
+                        .env("STUDIO_BROWSER_SESSION", text(op, "agentId"))
+                        // The launcher prefers a guest session name.
+                        .env_remove("LAYR_SESSION");
+                }
+                _ => {
+                    command
+                        .env_remove("BROWSER")
+                        .env_remove("STUDIO_BROWSER_SOCKET")
+                        .env_remove("STUDIO_BROWSER_SESSION");
+                }
+            }
             match op
                 .get("layrTree")
                 .and_then(Value::as_str)
@@ -378,12 +472,17 @@ impl HostService {
             let (stdout, stderr) = (child.stdout.take(), child.stderr.take());
             let (exited_sender, exited) = tokio::sync::watch::channel(false);
             let (status_sender, status) = tokio::sync::oneshot::channel();
+            let handle = ChildHandle {
+                pid,
+                exited,
+                reaped: Arc::new(Mutex::new(false)),
+            };
+            let reaper = handle.clone();
             tokio::spawn(async move {
-                let result = child.wait().await;
+                let result = reap_command(child, reaper).await;
                 drop(status_sender.send(result));
                 exited_sender.send_replace(true);
             });
-            let handle = ChildHandle { pid, exited };
             self.inner()
                 .children
                 .insert(identity.to_owned(), handle.clone());
@@ -435,12 +534,6 @@ impl HostService {
             }
             watchdog.abort();
             drop(watchdog.await);
-            // Other processes of the command's group end with it.
-            nix::sys::signal::killpg(
-                nix::unistd::Pid::from_raw(pid),
-                nix::sys::signal::Signal::SIGKILL,
-            )
-            .unwrap_or_default();
             let drained = tokio::time::timeout(Duration::from_secs(READERS_SECONDS), async {
                 let mut result = Ok(());
                 while let Some(joined) = readers.join_next().await {

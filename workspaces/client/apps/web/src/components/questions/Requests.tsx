@@ -482,6 +482,9 @@ function RequestCard({
           <SignInCard
             details={browserOpen}
             agentName={owner?.name || "Codex"}
+            chatNames={
+              new Map(agents.map((agent) => [agent.id, agent.name || ""]))
+            }
             serverName={services?.owner.alias || services?.owner.label}
             sending={sending}
             error={requestError}

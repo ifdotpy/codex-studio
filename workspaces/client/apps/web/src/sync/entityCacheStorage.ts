@@ -11,6 +11,11 @@ export function isProjectionDatabaseClosedError(error: unknown) {
   );
 }
 
+/** RxDB database of one workspace that holds its drafts and outbox. */
+export function workspaceDatabaseName(workspaceId: string, serverSuffix = "") {
+  return `studio${workspaceId}${serverSuffix}`;
+}
+
 export function entityProjectionDatabaseName(
   workspaceId: string,
   schemaHash: string,
@@ -116,7 +121,18 @@ export function deleteOtherEntityProjectionDatabases(
         const storagePrefix = `rxdb-dexie-${ENTITY_PROJECTION_DATABASE_PREFIX}`;
         const currentWorkspacePrefix = `${storagePrefix}${workspaceId}${serverSuffix}-`;
         const staleDatabases = new Map<string, string[]>();
+        // Projections moved out of the workspace database, which no longer
+        // opens its projections collection.
+        const workspaceDatabase = workspaceDatabaseName(
+          workspaceId,
+          serverSuffix,
+        );
+        const legacyProjections = `rxdb-dexie-${workspaceDatabase}--0--projections`;
         for (const { name } of databases) {
+          if (name === legacyProjections) {
+            staleDatabases.set(workspaceDatabase, [name]);
+            continue;
+          }
           if (!name?.startsWith(currentWorkspacePrefix)) continue;
           const suffix = name.slice(currentWorkspacePrefix.length);
           const match =

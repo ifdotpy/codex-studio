@@ -253,6 +253,12 @@ pub struct TaskExit {
     /// Some means socket cleanup finished but protocol cleanup did not. Persist
     /// this exact handle/generation and do not manufacture a successful close.
     pub recovery_needed: Option<InitializationRecovery>,
+    /// The provider process can still run after this attachment ended: a
+    /// supervised provider whose exit the attachment did not observe. Its
+    /// turns are not lost; the next attachment of the same generation
+    /// continues them. False when the provider ended with the attachment or
+    /// its end is unknown.
+    pub provider_retained: bool,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -319,11 +325,13 @@ impl ProviderAttachment {
                 result: Err(AdapterError::TaskFailed),
                 cleanup_error: Some(PROVIDER_CLEANUP_UNCONFIRMED.into()),
                 recovery_needed: self.status.borrow().initialization_recovery(),
+                provider_retained: false,
             }),
             None => TaskExit {
                 result: Err(AdapterError::TaskFailed),
                 cleanup_error: None,
                 recovery_needed: None,
+                provider_retained: false,
             },
         };
         self.task.take();

@@ -875,7 +875,8 @@ async function nativeAction(event, request) {
       const notification = new Notification({
         title: string(request.value?.title, 160),
         body: string(request.value?.body, 2000),
-        silent: true,
+        // Only an open sign-in card plays the sound (web desktopAlerts.ts).
+        silent: request.value?.sound !== true,
       });
       notification.on("click", () => {
         if (
