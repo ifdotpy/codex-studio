@@ -16,22 +16,6 @@
 }
 
 @media (min-width: 761px) {
-  .workspace-header,
-  .workspace-header:has(.execution-menu) {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto auto;
-    align-items: center;
-    column-gap: 8px;
-    row-gap: 0;
-    height: auto;
-    min-height: 0;
-    padding: 4px var(--chat-gutter);
-  }
-  .workspace-header #team-toggle {
-    grid-area: 1 / 2;
-    height: 30px;
-    min-width: 0;
-  }
   .workspace-shortcuts {
     flex-wrap: nowrap;
     overflow-x: auto;

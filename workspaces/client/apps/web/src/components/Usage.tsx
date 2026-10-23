@@ -567,17 +567,18 @@ export default function Usage({
             onClick={() => setContextOpen(!contextOpen)}
           >
             <span className="usage-metric-label">
-              Context <strong>{percent === null ? "—" : `${percent}%`}</strong>
+              Context{" "}
+              <strong>{percent === null ? "Unknown" : `${percent}%`}</strong>
             </span>
-            <Progress
-              className="usage-meter"
-              value={percent === null ? 0 : Math.min(100, Math.max(0, percent))}
-              color="gray"
-              aria-label="Context used"
-              aria-valuetext={
-                percent === null ? "No context data yet" : `${percent}% used`
-              }
-            />
+            {percent !== null && (
+              <Progress
+                className="usage-meter"
+                value={Math.min(100, Math.max(0, percent))}
+                color="gray"
+                aria-label="Context used"
+                aria-valuetext={`${percent}% used`}
+              />
+            )}
           </button>
         </Popover.Target>
         <Popover.Dropdown>
@@ -730,17 +731,15 @@ export default function Usage({
                       : `${formatPercent(remainingPercent)} left`}
                   </strong>
                 </span>
-                <Progress
-                  className="usage-meter"
-                  value={remainingPercent ?? 0}
-                  color={lowAccount ? "yellow" : "gray"}
-                  aria-label="Allowance remaining"
-                  aria-valuetext={
-                    remainingPercent === null
-                      ? "No allowance data yet"
-                      : `${formatPercent(remainingPercent)} remaining`
-                  }
-                />
+                {remainingPercent !== null && (
+                  <Progress
+                    className="usage-meter"
+                    value={remainingPercent}
+                    color={lowAccount ? "yellow" : "gray"}
+                    aria-label="Allowance remaining"
+                    aria-valuetext={`${formatPercent(remainingPercent)} remaining`}
+                  />
+                )}
                 {lowAccount && (
                   <span className="account-limits-warning">Low allowance</span>
                 )}
