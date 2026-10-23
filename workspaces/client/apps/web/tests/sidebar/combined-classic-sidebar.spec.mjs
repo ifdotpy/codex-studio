@@ -1,5 +1,69 @@
 import { test, expect } from "../playwright.mjs";
 import { fixture } from "../servers/multi-server-fixture.mjs";
+import { sidebarParityFixture } from "./sidebar-parity-fixture.mjs";
+
+test("the combined sidebar resizes, cancels, resets, and reports its effective width", async ({
+  page,
+  context,
+}) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const f = await sidebarParityFixture(context);
+  try {
+    const sidebar = await f.open(page);
+    const rail = sidebar.getByRole("separator", {
+      name: "Conversation sidebar width",
+    });
+    await expect(rail).toBeVisible();
+    const initial = await sidebar.evaluate(
+      (node) => node.getBoundingClientRect().width,
+    );
+    await rail.focus();
+    await rail.press("ArrowRight");
+    await expect
+      .poll(() =>
+        sidebar.evaluate((node) => node.getBoundingClientRect().width),
+      )
+      .toBeGreaterThan(initial);
+    const preferred = await sidebar.evaluate(
+      (node) => node.getBoundingClientRect().width,
+    );
+    await page.setViewportSize({ width: 880, height: 900 });
+    await expect
+      .poll(() =>
+        sidebar.evaluate((node) => node.getBoundingClientRect().width),
+      )
+      .toBeLessThan(preferred);
+    const bar = page.locator(".shell-terminal-bar");
+    await expect
+      .poll(async () => Math.round((await bar.boundingBox()).width))
+      .toBe(Math.round((await sidebar.boundingBox()).width));
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await expect
+      .poll(() =>
+        sidebar.evaluate((node) => node.getBoundingClientRect().width),
+      )
+      .toBe(preferred);
+    const box = await rail.boundingBox();
+    await page.mouse.move(box.x + box.width / 2, box.y + 80);
+    await page.mouse.down();
+    await page.mouse.move(box.x + 150, box.y + 80);
+    await page.keyboard.press("Escape");
+    await page.mouse.up();
+    await expect
+      .poll(() =>
+        sidebar.evaluate((node) => node.getBoundingClientRect().width),
+      )
+      .toBe(preferred);
+    await rail.press("Home");
+    await expect
+      .poll(() =>
+        sidebar.evaluate((node) => node.getBoundingClientRect().width),
+      )
+      .toBe(initial);
+  } finally {
+    await f.close();
+  }
+});
 
 for (const [theme, viewport] of [
   ["light", { width: 1440, height: 900 }],

@@ -1,0 +1,31 @@
+#sidebar.sidebar-frame {
+  position: relative;
+  flex-shrink: 0;
+  min-width: 0;
+}
+#sidebar.sidebar-frame[data-presentation="drawer"] {
+  width: 100%;
+  height: 100%;
+  flex-basis: auto;
+}
+.sidebar-drawer-body {
+  height: 100%;
+}
+.sidebar-resize-rail {
+  position: absolute;
+  inset-block: 0;
+  right: 0;
+  width: 8px;
+  cursor: col-resize;
+  touch-action: none;
+  user-select: none;
+  -webkit-app-region: no-drag;
+}
+.sidebar-resize-rail:hover,
+.sidebar-resize-rail:focus-visible {
+  background: var(--mantine-primary-color-light);
+}
+.sidebar-resize-rail:focus-visible {
+  outline: 2px solid var(--mantine-primary-color-filled);
+  outline-offset: -2px;
+}
