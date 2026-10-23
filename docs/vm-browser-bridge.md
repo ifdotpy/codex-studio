@@ -215,8 +215,14 @@ its own `http` and `https` rule.
   request ended `stale` or `expired`, the server also queues one `browser_unanswered` event
   to the chat. It says that the command gets no sign-in result from this card, that the agent
   must not wait for it, and that it starts the sign-in again when the person can answer. A
-  `replaced` card gets no event, because the chat gave a newer link. A backend restart and a
-  stopped chat also expire pending cards (the existing request rules).
+  `replaced` card gets no event, because the chat gave a newer link. A stopped chat also
+  expires its pending cards (the existing request rules).
+- Backend restart: startup recovery expires every pending request; a sign-in card gets
+  `closeReason: "restart"`. The bridge keeps its request across the restart, and the first
+  poll after the restart reads the whole queue again. A card whose request is still open
+  comes back as `pending`, also in the waiting phase of a phone sign-in. A request that ended
+  meanwhile closes its card as an open card ends, with the `browser_unanswered` event when
+  nobody answered it.
 
 ### (c) Loopback forward
 
