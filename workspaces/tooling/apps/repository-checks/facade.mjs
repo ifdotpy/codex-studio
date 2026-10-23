@@ -675,6 +675,7 @@ function nextestAnyOf(terms) {
 
 function fastTierCommands(root) {
   const packages = discover(root);
+  const bridge = packageTarget(packages, "studio-claude-bridge");
   const web = packageTarget(packages, "codex-agents-web");
   const tooling = packageTarget(packages, "codex-studio-tooling");
   const facade = path.join(
