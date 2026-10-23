@@ -1,3 +1,5 @@
+/* Owner of the custom column: ratio of the available conversation width.
+   Original layout remains owned by workspace-layout.css. */
 :root {
   --studio-content-width-ratio: 1;
 }
