@@ -38,7 +38,14 @@ function ProjectFixture({ light = false }: { light?: boolean }) {
   }, [light, setColorScheme]);
   return (
     <MantineProvider theme={theme} forceColorScheme={light ? "light" : "dark"}>
-      <div className="project-settings">
+      <div
+        className="project-settings"
+        style={{
+          maxWidth: "var(--studio-form-max)",
+          maxHeight: "calc(100dvh - var(--mantine-spacing-xl) * 2)",
+          overflow: "auto",
+        }}
+      >
         <SettingsSection title="Project organization">
           <ProjectNameForm project={project} saved={async () => {}} />
           <MoveChatForm
