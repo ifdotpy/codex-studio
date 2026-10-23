@@ -24,6 +24,9 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 sys.dont_write_bytecode = True
+if sys.version_info < (3, 11):
+    # The guest scan uses hashlib.file_digest, as the guest Python of the VM does.
+    raise SystemExit("host_exec_mac_contract.py needs Python 3.11 or newer first on PATH, not " + sys.version.split()[0])
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from host_exec import HostExec  # noqa: E402
 import host_exec_protocol  # noqa: E402
