@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { busy, type Agent } from "../../types";
+import { useVisualActivity } from "../../hooks/useVisualActivity";
 
 /** Renderer clock refresh interval, in milliseconds, for managed-command elapsed time. */
 const PROGRESS_CLOCK_INTERVAL_MS = 1000;
@@ -69,16 +70,18 @@ export function AgentProgress({
 
 /** Age of the current activity; terminal rows freeze at the last server update. */
 export function AgentElapsed({ agent }: { agent: Agent }) {
+  const [visualRef, visible] = useVisualActivity<HTMLSpanElement>();
   const [now, setNow] = useState(() => Date.now() / 1000);
   const active = busy.has(agent.status || "");
+  const ticking = active && visible;
   useEffect(() => {
-    if (!active) return;
+    if (!ticking) return;
     const timer = window.setInterval(
       () => setNow(Date.now() / 1000),
       PROGRESS_CLOCK_INTERVAL_MS,
     );
     return () => window.clearInterval(timer);
-  }, [active]);
+  }, [ticking]);
   const started =
     agent.commandProgress?.[0]?.startedAt ||
     agent.activity?.at ||
@@ -86,6 +89,7 @@ export function AgentElapsed({ agent }: { agent: Agent }) {
   if (started == null) return null;
   return (
     <span
+      ref={visualRef}
       className="worker-elapsed"
       aria-label="Elapsed time"
       title="Time since current activity started"

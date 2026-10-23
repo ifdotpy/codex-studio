@@ -215,7 +215,10 @@ const WorkerCardView = memo(function WorkerCardView({
                             ? DISK_FULL_WAIT_LABEL
                             : "Failed"
                           : agent.status === "running" && agent.inFlight
-                            ? "Working"
+                            ? statusLabel(
+                                agent.status,
+                                agent.activity?.phase || undefined,
+                              )
                             : statusLabel(
                                 agent.status ?? "",
                                 undefined,
@@ -246,13 +249,26 @@ const WorkerCardView = memo(function WorkerCardView({
         >
           <span className="worker-text">
             <span className="worker-name-line">
-              <strong>{agent.name}</strong>
-              <span className="worker-role">
-                {lead
-                  ? "Lead"
-                  : agent.role === "reviewer"
-                    ? "Reviewer"
-                    : "Worker"}
+              <strong title={agent.name || undefined}>{agent.name}</strong>
+              <span className="worker-meta">
+                <span className="worker-model-summary" title={meta}>
+                  <span className="worker-role">
+                    {lead
+                      ? "Lead"
+                      : agent.role === "reviewer"
+                        ? "Reviewer"
+                        : "Worker"}
+                  </span>
+
+                  <span className="worker-model-name">{modelName}</span>
+                  <span className="worker-effort">
+                    {effort.charAt(0).toUpperCase() + effort.slice(1)}
+                  </span>
+                  {connected.length > 1 && account && (
+                    <span>{accountDisplayName(account)}</span>
+                  )}
+                </span>
+                <TokenRate agent={agent} variant="worker" />
               </span>
               <AgentElapsed agent={agent} />
             </span>
@@ -264,33 +280,21 @@ const WorkerCardView = memo(function WorkerCardView({
               />
               <small>{statusText}</small>
             </span>
-            <span className="worker-activity" title={statusDetail}>
-              {statusText}
-            </span>
-            {agent.overview?.task && (
-              <span className="worker-task" title={agent.overview.task}>
-                {agent.overview.task}
+            <span className="worker-live-line">
+              <span
+                className="worker-activity"
+                title={errorSummary || statusDetail}
+              >
+                {statusText}
               </span>
-            )}
+              {agent.overview?.task && (
+                <span className="worker-task" title={agent.overview.task}>
+                  {agent.overview.task}
+                </span>
+              )}
+            </span>
             <AgentProgress agent={agent} />
             {agent.environment === "linux" && <small>Linux VM</small>}
-            <span className="worker-meta">
-              <span className="worker-model-summary" title={meta}>
-                <span>{modelName}</span>
-                <span>{effort.charAt(0).toUpperCase() + effort.slice(1)}</span>
-                {connected.length > 1 && account && (
-                  <span>{accountDisplayName(account)}</span>
-                )}
-              </span>
-              <TokenRate agent={agent} variant="worker" />
-            </span>
-            {Boolean(agent.error) && (
-              <span
-                className={stopReason ? "worker-stop-reason" : "worker-error"}
-              >
-                {stopReason || errorSummary}
-              </span>
-            )}
           </span>
         </UnstyledButton>
         {remove && (

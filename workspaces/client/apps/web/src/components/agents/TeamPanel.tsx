@@ -11,8 +11,9 @@ import {
   TeamModels,
   TeamSummary,
   workerState,
-  TEAM_PANEL_STATES,
+  teamDispatchGroups,
   workerDepth,
+  orderWorkerHierarchy,
 } from "./WorkerOverview";
 
 type Props = {
@@ -89,7 +90,7 @@ export default function TeamPanel({
   const failed = (a: Agent) =>
     workerState(a, answerIds, deferredIds) === "attention";
   const query = workerQuery.trim().toLowerCase();
-  const shown = workers.filter((a) =>
+  const shown = orderWorkerHierarchy(workers).filter((a) =>
     query
       ? `${a.name} ${a.status} ${a.role || ""} ${a.overview?.task || ""} ${a.overview?.result || ""}`
           .toLowerCase()
@@ -100,22 +101,7 @@ export default function TeamPanel({
           ? busy.has(a.status ?? "")
           : true,
   );
-  // The same states and names as the team summary; Finished stays collapsed below.
-  const panelState = (a: Agent) =>
-    a.inFlight && ["running", "starting"].includes(a.status ?? "")
-      ? workerState(a, answerIds, deferredIds) === "answer"
-        ? "answer"
-        : "working"
-      : workerState(a, answerIds, deferredIds);
-  const groups = TEAM_PANEL_STATES.filter(
-    ([state]) => state !== "completed",
-  ).map(([state, name]) => ({
-    name,
-    workers: shown.filter((a) => panelState(a) === state),
-  }));
-  const completed = shown.filter(
-    (a) => workerState(a, answerIds, deferredIds) === "completed",
-  );
+  const { groups, completed } = teamDispatchGroups(shown, indicators);
   const smallTeam = workers.length <= 3;
   const showTeamFilters = !smallTeam || !!workerQuery || workerFilter !== "all";
   return (
@@ -139,11 +125,7 @@ export default function TeamPanel({
             <X size={16} />
           </ActionIcon>
         </div>
-        <TeamSummary
-          workers={workers}
-          answers={answerIds}
-          deferred={deferredIds}
-        />
+        <TeamSummary workers={workers} indicators={indicators} />
         {/* The lead link is only useful from a worker chat. */}
         {lead && opened !== lead.id && (
           <Button

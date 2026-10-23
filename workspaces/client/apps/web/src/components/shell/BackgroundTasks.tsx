@@ -7,6 +7,7 @@ import ErrorDescription from "../ErrorDescription";
 import { displayError } from "../../errorPresentation";
 import {
   ActionIcon,
+  Badge,
   Button,
   Checkbox,
   Drawer,
@@ -42,7 +43,10 @@ import {
 } from "../../api";
 import type { paths } from "../../generated/api";
 import "./background-controls.css";
-import type { ChatIndicatorKind } from "../chat-status/chatStatusModel";
+import {
+  CHAT_INDICATOR_URGENCY,
+  type ChatIndicatorKind,
+} from "../chat-status/chatStatusModel";
 import type { Agent, JsonValue, Monitor, Request, Snapshot } from "../../types";
 import { useServerResourceReads } from "../../servers/ServerServicesContext";
 import { copyText } from "../../clipboard/clipboard";
@@ -334,7 +338,12 @@ export default function BackgroundTasks({
         .toLowerCase()
         .includes(query.toLowerCase()),
     )
-    .sort((a, b) => b.created - a.created);
+    .sort(
+      (a, b) =>
+        CHAT_INDICATOR_URGENCY.indexOf(backgroundTaskState(a)) -
+          CHAT_INDICATOR_URGENCY.indexOf(backgroundTaskState(b)) ||
+        b.created - a.created,
+    );
   const pendingFocus =
     opened &&
     initialFocus?.leadId === leadId &&
@@ -546,7 +555,7 @@ export default function BackgroundTasks({
         <div className="tasks-title">
           <Activity size={19} />
           <strong>Current activity</strong>
-          <Badge variant="light" color={active ? "indigo" : "gray"} size="sm">
+          <Badge variant="light" color="gray" size="sm">
             {active} active
           </Badge>
         </div>

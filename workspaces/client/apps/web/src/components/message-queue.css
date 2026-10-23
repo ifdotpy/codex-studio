@@ -65,7 +65,7 @@
 .message-queue-body {
   flex: 0 1 auto;
   min-height: 0;
-  max-height: min(34vh, var(--studio-team-size));
+  max-height: 34dvh;
   overflow-y: auto;
   overscroll-behavior: contain;
   scrollbar-width: thin;
@@ -132,7 +132,7 @@
   align-items: center;
   flex-wrap: wrap;
   justify-content: flex-end;
-  max-width: var(--studio-settings-nav-size);
+  max-width: max-content;
 }
 .message-queue-actions button {
   width: var(--studio-control-size);
@@ -186,8 +186,8 @@
   display: block;
   box-sizing: border-box;
   width: 100%;
-  min-height: calc(3 * var(--studio-control-size));
-  max-height: var(--studio-menu-min);
+  min-height: 3lh;
+  max-height: 12lh;
   resize: vertical;
   border: var(--studio-border-width) solid var(--line);
   border-radius: 0;
@@ -239,7 +239,7 @@
     margin-bottom: var(--mantine-spacing-xs);
   }
   .message-queue-body {
-    max-height: min(30dvh, var(--studio-team-size));
+    max-height: 30dvh;
   }
   .message-queue-row {
     flex-wrap: wrap;

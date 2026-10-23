@@ -102,7 +102,7 @@
 .team-overview [data-team-count="answer"] dd {
   color: var(--studio-state-answer);
 }
-.team-overview [data-team-count="attention"] dd {
+.team-overview [data-team-count="error"] dd {
   color: var(--studio-state-error);
 }
 #team .worker-entry {
@@ -149,6 +149,9 @@
   font-size: var(--studio-text-body);
   font-weight: 600;
   line-height: var(--mantine-line-height-sm);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .worker-role,
 .worker-elapsed {
@@ -169,7 +172,7 @@
 #team .worker-model-summary {
   display: flex;
   gap: var(--mantine-spacing-xs);
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   color: var(--muted);
   font-size: var(--studio-text-meta);
   line-height: var(--mantine-line-height-sm);
@@ -304,4 +307,42 @@
   .team-filters button {
     min-block-size: var(--studio-touch-target);
   }
+}
+
+/* One identity line; live state and the assigned task share the second line. */
+#team .worker-meta {
+  order: initial;
+  flex-shrink: 0;
+}
+#team .worker-effort {
+  display: none;
+}
+#team .worker-live-line {
+  display: flex;
+  gap: var(--mantine-spacing-xs);
+  min-width: 0;
+}
+#team .worker-activity {
+  flex-shrink: 0;
+  order: initial;
+  white-space: nowrap;
+  max-inline-size: 50%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+#team .worker-task {
+  flex: 1;
+  order: initial;
+}
+#team .worker-model-summary {
+  white-space: nowrap;
+}
+#team .worker-role {
+  font-size: inherit;
+}
+
+#team .worker-model-name {
+  max-inline-size: calc(2 * var(--studio-control-size));
+  overflow: hidden;
+  text-overflow: ellipsis;
 }

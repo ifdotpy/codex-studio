@@ -14,11 +14,11 @@ const lead: Agent = {
   source: "managed",
   status: "running",
   inFlight: true,
-  model: "gpt-6",
+  model: "gpt-6-astra",
   created: now - 195,
   activity: { phase: "thinking", at: now - 32 },
 };
-const workers: Agent[] = [
+const workerFixtures: Agent[] = [
   {
     id: "question",
     name: "Permissions review",
@@ -89,12 +89,13 @@ const workers: Agent[] = [
     name: `Completed review ${index + 1}`,
     status: "completed",
   })),
-].map((agent) => ({
+];
+const workers: Agent[] = workerFixtures.map((agent) => ({
   ...agent,
   source: "managed",
   rootId: lead.id,
   parentId: agent.parentId || lead.id,
-  model: agent.role === "reviewer" ? "claude-opus-4-6" : "gpt-6",
+  model: agent.role === "reviewer" ? "opus" : "gpt-6-luna",
   provider: agent.role === "reviewer" ? "claude" : "codex",
   created: now - 180,
   updated: now - 20,
@@ -159,7 +160,8 @@ export const Dispatch: Story = {
     return (
       <div
         style={{
-          height: "calc(100dvh - 2 * var(--mantine-spacing-lg))",
+          height: "100dvh",
+          margin: "calc(-1 * var(--mantine-spacing-lg))",
           display: "flex",
           justifyContent: "end",
           minWidth: 0,
@@ -180,7 +182,7 @@ export const Dispatch: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(
-      canvas.getByRole("complementary", { name: "Team", exact: true }),
+      canvas.getByRole("complementary", { name: "Team" }),
     ).toBeVisible();
     await expect(canvas.queryByText("Storage adapter")).not.toBeInTheDocument();
     await userEvent.click(canvas.getByText(/^Finished \(/));
@@ -192,6 +194,10 @@ export const Dispatch: Story = {
     await expect(
       canvas.getByText("Новые результаты проверки доступности интерфейса"),
     ).toBeVisible();
+    await userEvent.clear(
+      canvas.getByRole("searchbox", { name: "Find a subagent" }),
+    );
+    await userEvent.click(canvas.getByText(/^Finished \(/));
   },
 };
 export const AfUtils: Story = {
@@ -215,3 +221,6 @@ export const Attar: Story = {
     lead: { ...lead, name: "attar / Deployment preparation" },
   },
 };
+
+/** Screenshot fixture leaves interaction state untouched. */
+export const Overview: Story = { ...Dispatch, play: undefined };
