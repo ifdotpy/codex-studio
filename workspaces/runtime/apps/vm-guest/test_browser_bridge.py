@@ -19,10 +19,11 @@ import uuid
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from browser_bridge import (BridgeError, BrowserBridge, Listener, connect_address,  # noqa: E402
-                            parse_listeners)
+from browser_bridge import (CHECK_SECONDS, KEEP_SECONDS, TTL_SECONDS, BridgeError,  # noqa: E402
+                            BrowserBridge, Listener, connect_address, parse_listeners)
 from browser_policy import (USER_CODE_LIMIT, PolicyError, Provider, StartPage, classify, pasted,  # noqa: E402
                             provider, sign_in_links)
+from shared_values_generated import SIGN_IN_OPEN_LIMIT_SECONDS  # noqa: E402
 from test_browser_fakes import SHIM, FakeProvider, FakeTool, install_shim  # noqa: E402
 
 AGENT = str(uuid.uuid4())
@@ -378,6 +379,35 @@ class Bridge(unittest.IsolatedAsyncioTestCase):
             await self.bridge.call("browser.submit", {"agentId": AGENT, "url": "file:///etc/passwd"})
         self.assertEqual(scheme.exception.code, "invalid_url")
 
+    async def test_a_listening_command_keeps_its_request_open_up_to_the_open_limit(self) -> None:
+        # The final state of a request at the limit must still be in the queue for the server.
+        self.assertLess(SIGN_IN_OPEN_LIMIT_SECONDS + TTL_SECONDS, KEEP_SECONDS)
+        tool = self.tool("aws")
+        await self.launch(tool)
+        [item] = (await self.bridge.call("browser.wait", {"after": 0, "waitSeconds": 0}))["items"]
+        created, limit = item["createdAt"], item["createdAt"] + SIGN_IN_OPEN_LIMIT_SECONDS
+        # One check every 5 s, as the check loop runs.
+        while self.now <= limit:
+            await self.bridge.check()
+            current = self.bridge.items[item["id"]]
+            self.assertEqual(current["state"], "pending", self.now)
+            self.assertGreaterEqual(current["expiresAt"], self.now)
+            self.assertLessEqual(current["expiresAt"], limit)
+            if self.now == created + 2 * TTL_SECONDS:
+                # The person can still approve after the request time.
+                approved = await self.bridge.call("browser.answer", {"id": item["id"], "decision": "approve"})
+                self.assertEqual(approved["state"], "approved")
+                break
+            self.now += CHECK_SECONDS
+        self.assertEqual(self.now, created + 2 * TTL_SECONDS)
+        other = self.tool("aws")
+        await self.launch(other)
+        [second] = [row for row in (await self.bridge.call("browser.wait", {"after": 0, "waitSeconds": 0}))["items"]
+                    if row["id"] != item["id"]]
+        self.now = second["createdAt"] + SIGN_IN_OPEN_LIMIT_SECONDS + 1
+        await self.bridge.check()
+        self.assertEqual(self.bridge.items[second["id"]]["state"], "expired")
+
     async def test_decline_close_expiry_and_device_links(self) -> None:
         tool = self.tool("aws")
         await self.launch(tool)
@@ -398,7 +428,11 @@ class Bridge(unittest.IsolatedAsyncioTestCase):
         self.contexts[OTHER]["uid"] = UID
         await self.launch(aws, session=OTHER)
         last = (await self.bridge.call("browser.wait", {"after": 0, "waitSeconds": 0}))["items"][-1]
+        # The command still listens, so only the open limit ends its request.
         self.now += 601
+        await self.bridge.check()
+        self.assertEqual(self.bridge.items[last["id"]]["state"], "pending")
+        self.now = last["createdAt"] + SIGN_IN_OPEN_LIMIT_SECONDS + 1
         await self.bridge.check()
         self.assertEqual(self.bridge.items[last["id"]]["state"], "expired")
         self.assertEqual((await self.bridge.call("browser.close", {"id": last["id"]}))["state"], "expired")

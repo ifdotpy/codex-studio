@@ -307,7 +307,7 @@ fn api_types_tail() -> String {
 
 fn vm_guest_py() -> String {
     format!(
-        "# {HEADER}\nMAX_PROJECT_SECRET_VALUE_BYTES = {}\nPROJECT_SECRET_VALUE_LIMIT_LABEL = {}\nGUEST_UPDATE_KEY_PATH = {}\nGUEST_PAYLOAD_RECORD_PATH = {}\nGUEST_UPDATE_PART_BYTES = {}\nLINUX_VM_ROSETTA_TAG = {}\nLINUX_VM_PROVIDER_HANDLE_PREFIX = {}\n",
+        "# {HEADER}\nMAX_PROJECT_SECRET_VALUE_BYTES = {}\nPROJECT_SECRET_VALUE_LIMIT_LABEL = {}\nGUEST_UPDATE_KEY_PATH = {}\nGUEST_PAYLOAD_RECORD_PATH = {}\nGUEST_UPDATE_PART_BYTES = {}\nLINUX_VM_ROSETTA_TAG = {}\nLINUX_VM_PROVIDER_HANDLE_PREFIX = {}\nSIGN_IN_OPEN_LIMIT_SECONDS = {}\n",
         values::MAX_PROJECT_SECRET_VALUE_BYTES,
         json_string(values::PROJECT_SECRET_VALUE_LIMIT_LABEL),
         json_string(values::GUEST_UPDATE_KEY_PATH),
@@ -315,6 +315,7 @@ fn vm_guest_py() -> String {
         values::GUEST_UPDATE_PART_BYTES,
         json_string(values::LINUX_VM_ROSETTA_TAG),
         json_string(values::LINUX_VM_PROVIDER_HANDLE_PREFIX),
+        values::SIGN_IN_OPEN_LIMIT_SECONDS,
     )
 }
 
