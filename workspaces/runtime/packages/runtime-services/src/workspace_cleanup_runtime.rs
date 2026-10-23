@@ -2484,7 +2484,9 @@ mod tests {
     #[tokio::test]
     async fn archive_rechecks_submodule_after_saving_parent_ref() {
         let (_directory, store, repository, root) = submodule_fixture().await;
-        let identity = super::worktree_identity(&agent(&store)).expect("worktree identity");
+        let identity = super::worktree_identity(&agent(&store))
+            .expect("worktree identity reads")
+            .expect("owned worktree identity");
         super::save_worktree_archive_ref(&identity).expect("clean parent ref saves");
         std::fs::write(root.join("module/file.txt"), "late edit\n").expect("late edit writes");
         let error =
