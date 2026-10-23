@@ -601,8 +601,19 @@ mod tests {
         serde_json::from_value(record).expect("agent cost members")
     }
 
+    /// The skipped line count is one process-wide counter, and tests run in parallel
+    /// threads. Tests that assert on it hold this lock, so they cannot count each other.
+    static SKIPPED_LINE_COUNTER: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn hold_skipped_line_counter() -> std::sync::MutexGuard<'static, ()> {
+        SKIPPED_LINE_COUNTER
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     #[test]
     fn local_claude_session_usage_is_thread_scoped_deduplicated_and_uses_account_history() {
+        let _counter = hold_skipped_line_counter();
         let temp = tempdir().expect("temporary fixture directory");
         let state = temp.path().join("state");
         let current_profile = temp.path().join("current-claude");
@@ -743,6 +754,7 @@ mod tests {
     /// not an assistant response is not an error. A Studio state file of another shape fails.
     #[test]
     fn malformed_log_lines_are_skipped_and_counted_and_bad_state_files_fail() {
+        let _counter = hold_skipped_line_counter();
         let temp = tempdir().expect("temporary fixture directory");
         let state = temp.path().join("state");
         let profile = temp.path().join("claude");
