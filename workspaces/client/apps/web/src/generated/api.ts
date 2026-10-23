@@ -1172,6 +1172,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/mcp/reconnect": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Reconnect one MCP server in one agent session */
+    post: operations["mcp_reconnect_api_mcp_reconnect_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/messages": {
     parameters: {
       query?: never;
@@ -9043,6 +9060,8 @@ export interface components {
       managed: components["schemas"]["JsonValue"][];
       /** Mcp */
       mcp: components["schemas"]["JsonValue"][];
+      /** @default null */
+      mcpSession?: components["schemas"]["McpSessionBinding"] | null;
       /** Model */
       model: string;
       /** Nativeinventory */
@@ -14431,6 +14450,25 @@ export interface components {
        * @default null
        */
       stdinError?: null | string;
+    };
+    McpReconnectRequest: {
+      id: string;
+      name: string;
+      /** Format: uuid */
+      request_id: string;
+      session: components["schemas"]["McpSessionBinding"];
+    };
+    McpReconnectResponse: {
+      message: string;
+      /** @enum {string} */
+      status: "completed" | "failed" | "unknown";
+    };
+    McpSessionBinding: {
+      account: string;
+      connection: string;
+      epoch: number;
+      generation: number;
+      thread: string;
     };
     /** MessageHistory */
     MessageHistory: components["schemas"]["MessageRecord"][];
@@ -29704,6 +29742,8 @@ export interface operations {
     parameters: {
       query?: {
         agent?: string;
+        fresh?: boolean;
+        serversCursor?: string;
       };
       header?: never;
       path?: never;
@@ -32068,6 +32108,79 @@ export interface operations {
       500: components["responses"]["ApiError500"];
       /** @description Bad Gateway */
       502: components["responses"]["ApiError502"];
+      /** @description Service Unavailable */
+      503: components["responses"]["ApiError503"];
+    };
+  };
+  mcp_reconnect_api_mcp_reconnect_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["McpReconnectRequest"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
+          "Access-Control-Expose-Headers": components["headers"]["AccessControlExposeHeaders"];
+          "Cache-Control": components["headers"]["CacheControl"];
+          "Content-Encoding": components["headers"]["ContentEncoding"];
+          "Content-Length": components["headers"]["ContentLength"];
+          "Content-Security-Policy": components["headers"]["ContentSecurityPolicy"];
+          "Content-Type": components["headers"]["ContentType"];
+          ETag: components["headers"]["ETag"];
+          "Referrer-Policy": components["headers"]["ReferrerPolicy"];
+          "Server-Timing": components["headers"]["ServerTiming"];
+          Vary: components["headers"]["Vary"];
+          "X-Content-Type-Options": components["headers"]["XContentTypeOptions"];
+          "X-Studio-API-Schema": components["headers"]["StudioApiSchema"];
+          "X-Studio-Server": components["headers"]["StudioServer"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["McpReconnectResponse"];
+        };
+      };
+      /** @description Not Modified */
+      304: {
+        headers: {
+          "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
+          "Access-Control-Expose-Headers": components["headers"]["AccessControlExposeHeaders"];
+          "Cache-Control": components["headers"]["CacheControl"];
+          "Content-Encoding": components["headers"]["ContentEncoding"];
+          "Content-Length": components["headers"]["ContentLength"];
+          "Content-Security-Policy": components["headers"]["ContentSecurityPolicy"];
+          "Content-Type": components["headers"]["ContentType"];
+          ETag: components["headers"]["ETag"];
+          "Referrer-Policy": components["headers"]["ReferrerPolicy"];
+          "Server-Timing": components["headers"]["ServerTiming"];
+          Vary: components["headers"]["Vary"];
+          "X-Content-Type-Options": components["headers"]["XContentTypeOptions"];
+          "X-Studio-API-Schema": components["headers"]["StudioApiSchema"];
+          "X-Studio-Server": components["headers"]["StudioServer"];
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description Bad Request */
+      400: components["responses"]["ApiError400"];
+      /** @description Unauthorized */
+      401: components["responses"]["ApiError401"];
+      /** @description Forbidden */
+      403: components["responses"]["ApiError403"];
+      /** @description Not Found */
+      404: components["responses"]["ApiError404"];
+      /** @description Too Many Requests */
+      429: components["responses"]["ApiError429"];
+      /** @description Internal Server Error */
+      500: components["responses"]["ApiError500"];
       /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
