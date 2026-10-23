@@ -13,6 +13,7 @@
 //! | submitted; definite rejection                    | `pending` + `steerRejectedTurnId`      |
 //! | submitted; turn ends, bridge reports it unread   | `pending`, once                        |
 //! | submitted; turn ends without ack                 | `failed` unconfirmed, never resent     |
+//! | submitted or unconfirmed; written after the provider's reported turn end | `pending`, once |
 //! | unconfirmed; late ack / definite rejection       | `delivered` / `pending`                |
 //! | turn ended; rejection or not-sent returns input  | `pending`, idle agent `queued` to wake |
 //! | submitted; stop, then turn ends unread           | `cancelled`                            |
@@ -519,6 +520,66 @@ fn definite_rejection_after_unconfirmed_requeues_once() {
         "a repeated reply changes nothing"
     );
     assert!(acknowledge(&mut connection).is_none());
+}
+
+fn release_after_end(connection: &mut Connection, ended_at: f64) {
+    settle(connection, |tx| {
+        SchedulerRepository::release_steers_written_after_turn_end(tx, AGENT, TURN, ended_at)
+    });
+}
+
+#[test]
+fn steer_written_after_the_reported_turn_end_returns_once() {
+    let mut connection = database();
+    submit(&mut connection, "s1");
+    let submitted_at = connection
+        .query_row(
+            "SELECT json_extract(result,'$.submittedAt') FROM runtime_operation_receipts",
+            [],
+            |row| row.get::<_, f64>(0),
+        )
+        .expect("receipt reads");
+    // Written before the end, or too close to it to order the two clock reads.
+    for ended_at in [submitted_at + 60.0, submitted_at - 1.0, f64::NAN] {
+        release_after_end(&mut connection, ended_at);
+        assert_eq!(statuses(&connection), SENT, "ended at {ended_at}");
+    }
+    release_after_end(&mut connection, submitted_at - 60.0);
+    assert_eq!(statuses(&connection), QUEUED);
+    assert_eq!(open_receipts(&connection), 0);
+    terminal(&mut connection, &[]);
+    assert_eq!(statuses(&connection), QUEUED, "the turn end finds no steer");
+    assert!(acknowledge(&mut connection).is_none());
+}
+
+#[test]
+fn steer_unconfirmed_by_a_closed_transport_returns_when_written_after_the_end() {
+    let mut connection = database();
+    submit(&mut connection, "s1");
+    settle(&mut connection, |tx| {
+        SchedulerRepository::abandon_steers(tx, "acct", 8)
+    });
+    assert_eq!(statuses(&connection), UNCONFIRMED);
+    release_after_end(&mut connection, timestamp() - 60.0);
+    assert_eq!(statuses(&connection), QUEUED);
+    assert_eq!(open_receipts(&connection), 0);
+    // An input the user changed while it was unconfirmed keeps that change.
+    let mut connection = database();
+    submit(&mut connection, "s1");
+    settle(&mut connection, |tx| {
+        SchedulerRepository::abandon_steers(tx, "acct", 8)
+    });
+    connection
+        .execute(
+            "UPDATE runtime_events SET status='cancelled' WHERE id='u2'",
+            [],
+        )
+        .expect("user change writes");
+    release_after_end(&mut connection, timestamp() - 60.0);
+    assert_eq!(
+        statuses(&connection),
+        ["pending", "cancelled", "pending", "pending"]
+    );
 }
 
 fn reject(tx: &Transaction<'_>) -> bool {
