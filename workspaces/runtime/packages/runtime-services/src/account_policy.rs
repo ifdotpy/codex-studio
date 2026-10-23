@@ -394,6 +394,14 @@ pub(crate) fn project_registry_value(
             })?;
         row.insert("provider".into(), Value::String(provider.key().into()));
         known.insert(key.clone());
+        if provider.key() == "claude"
+            && let Some(organization) = crate::account_driver::claude_identity::organization(
+                row.get("_credentialIdentity").and_then(Value::as_str),
+                row.get("_organizationName").and_then(Value::as_str),
+            )
+        {
+            row.insert("organization".into(), organization);
+        }
         row.retain(|field, _| !field.starts_with('_'));
         if row.get("deleted") == Some(&Value::Bool(true)) {
             archived.push(Value::Object(row));

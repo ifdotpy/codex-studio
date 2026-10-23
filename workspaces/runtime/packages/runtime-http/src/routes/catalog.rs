@@ -64,6 +64,7 @@ async fn limits(
         .and_then(serde_json::Value::as_str)
         .filter(|value| !value.is_empty())
         .unwrap_or("default");
+    let agent_id = params.nonempty_str("agent").map(str::to_owned);
     let cached = params
         .typed_value("cached")
         .and_then(serde_json::Value::as_str)
@@ -90,9 +91,7 @@ async fn limits(
             }
             Err(error) => limit_error_snapshot(&state, account_key, &error.to_string())?,
         };
-        return serde_json::from_value(response)
-            .map(Json)
-            .map_err(|_| ApiError::internal());
+        return limits_response(&state, response, agent_id).await;
     }
     let account_policy = state
         .account_policy
@@ -105,16 +104,48 @@ async fn limits(
                 .get("error")
                 .is_some_and(|error| !error.is_null() && error != ""))
     {
-        let response = serde_json::from_value::<crate::generated::UsageLimitsResponse>(snapshot)
-            .map_err(|_| ApiError::internal())?;
-        return Ok(Json(response));
+        return limits_response(&state, snapshot, agent_id).await;
     }
     if snapshot.get("data").is_some_and(|data| !data.is_null()) {
-        return serde_json::from_value(snapshot)
-            .map(Json)
-            .map_err(|_| ApiError::internal());
+        return limits_response(&state, snapshot, agent_id).await;
     }
     let snapshot = limit_error_snapshot(&state, account_key, "Account limits could not be read.")?;
+    limits_response(&state, snapshot, agent_id).await
+}
+
+async fn limits_response(
+    state: &HttpState,
+    mut snapshot: serde_json::Value,
+    agent_id: Option<String>,
+) -> Result<Json<crate::generated::UsageLimitsResponse>, ApiError> {
+    if let Some(id) = agent_id {
+        let store = state.store.clone().ok_or_else(ApiError::internal)?;
+        let agent = store
+            .read_async("runtime-http/limits-eligibility", move |connection| {
+                studio_runtime_store::AgentRepository::get(connection, &id.as_str().into())
+            })
+            .await
+            .map_err(|_| ApiError::internal())?
+            .ok_or_else(|| ApiError::new(axum::http::StatusCode::NOT_FOUND, "Unknown agent"))?;
+        let agent = agent.into_value();
+        let account = agent
+            .get("accountKey")
+            .and_then(serde_json::Value::as_str)
+            .filter(|key| !key.is_empty())
+            .unwrap_or("default");
+        if snapshot["accountKey"].as_str() != Some(account) {
+            return Err(ApiError::new(
+                axum::http::StatusCode::BAD_REQUEST,
+                "Limits belong to another account",
+            ));
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|_| ApiError::internal())?
+            .as_secs_f64();
+        snapshot["eligibility"] =
+            studio_runtime_services::usage_resume::eligibility(&snapshot, &agent, now);
+    }
     serde_json::from_value(snapshot)
         .map(Json)
         .map_err(|_| ApiError::internal())

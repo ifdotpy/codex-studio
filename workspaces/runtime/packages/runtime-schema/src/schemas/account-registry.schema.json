@@ -161,6 +161,12 @@
           ],
           "title": "Status",
           "type": "string"
+        },
+        "_organizationName": {
+          "type": ["string", "null"]
+        },
+        "organizationMismatch": {
+          "$ref": "#/$defs/ClaudeOrganizationMismatch"
         }
       },
       "required": ["id", "home", "label", "source", "status"],
@@ -492,6 +498,32 @@
       },
       "required": ["accountKey", "label"],
       "title": "NameReceiptRecord",
+      "type": "object"
+    },
+    "ClaudeOrganization": {
+      "additionalProperties": false,
+      "properties": {
+        "idSuffix": {
+          "type": "string"
+        },
+        "name": {
+          "type": ["string", "null"]
+        }
+      },
+      "required": ["name", "idSuffix"],
+      "type": "object"
+    },
+    "ClaudeOrganizationMismatch": {
+      "additionalProperties": false,
+      "properties": {
+        "expected": {
+          "$ref": "#/$defs/ClaudeOrganization"
+        },
+        "observed": {
+          "$ref": "#/$defs/ClaudeOrganization"
+        }
+      },
+      "required": ["expected", "observed"],
       "type": "object"
     }
   },

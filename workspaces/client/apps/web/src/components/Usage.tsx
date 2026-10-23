@@ -9,7 +9,9 @@ import type { Agent, Json, JsonValue } from "../types";
 import { errorText, type GetResult } from "../api";
 import { useServerSessionCosts } from "../servers/ServerServicesContext";
 import { useRecoveredLimit } from "./useRecoveredLimit";
-import { limitRecovery } from "../usage/limitRecovery";
+import { useLimitEligibility } from "../usage/useLimitEligibility";
+import ModelLimitEligibility from "./ModelLimitEligibility";
+import { modelEligibility, limitRecovery } from "../usage/limitRecovery";
 import LimitRecoveryNotice from "./LimitRecoveryNotice";
 import { useServerResourceReads } from "../servers/ServerServicesContext";
 export { limitRecovery } from "../usage/limitRecovery";
@@ -476,8 +478,16 @@ export default function Usage({
     ? Math.round((contextTokens / contextWindow) * 100)
     : null;
   const buckets = readBuckets(limits, now);
-  const recovered = useRecoveredLimit(accountAgent, limits, now);
-  const recovery = recovered ? null : limitRecovery(accountAgent, limits, now);
+  const modelLimits = useLimitEligibility(
+    agent,
+    limits,
+    selectedAccountKey === fallbackKey,
+  );
+  const eligibility = modelEligibility(accountAgent, modelLimits);
+  const recovered = useRecoveredLimit(accountAgent, modelLimits, now);
+  const recovery = recovered
+    ? null
+    : limitRecovery(accountAgent, modelLimits, now);
   useEffect(() => {
     autoReloadedAccounts.current.clear();
   }, [agent.id]);
@@ -813,6 +823,9 @@ export default function Usage({
                     <small>{activeAccount?.key || fallbackKey}</small>
                   )}
               </div>
+              {selectedAccountKey === fallbackKey && !recovery?.eligibility && (
+                <ModelLimitEligibility eligibility={eligibility} now={now} />
+              )}
               {recovery && (
                 <LimitRecoveryNotice
                   key={JSON.stringify(recovery)}

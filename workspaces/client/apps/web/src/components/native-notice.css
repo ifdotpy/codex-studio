@@ -137,8 +137,8 @@
 
 .native-error.usage-limit {
   padding: 14px 16px;
-  border-color: var(--mantine-color-dark-4);
-  background: var(--mantine-color-dark-7);
+  border-color: var(--mantine-color-default-border);
+  background: var(--mantine-color-default);
   color: var(--mantine-color-text);
 }
 .native-error.usage-limit .account-limit-recovery.inline {
