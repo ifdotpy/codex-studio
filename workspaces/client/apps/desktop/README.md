@@ -126,7 +126,7 @@ installed before this change has no installer; install it once by hand.
 
 ## Native bridge
 
-`bridge.d.ts` defines `window.codexDesktop`. The bridge is available only in the workspace main frame.
+`bridge.d.ts` re-exports the shared declaration from `web/src/desktop.ts`, which defines `window.codexDesktop`. The bridge is available only in the workspace main frame.
 
 | Method                          | Result                                                                         |
 | ------------------------------- | ------------------------------------------------------------------------------ |
