@@ -259,3 +259,169 @@ async fn stop_after_worker_reattach_interrupts_the_turn_and_ends_its_commands() 
 async fn delete_after_worker_reattach_interrupts_the_turn_and_ends_its_commands() {
     ending_after_worker_reattach_ends_the_turn_work(Ending::Delete).await;
 }
+
+/// The production account session while no account worker is attached.
+fn detached_account_session(state: &State) -> Arc<AccountSessionRuntime> {
+    let home = state.root.join("codex-home");
+    std::fs::create_dir_all(&home).unwrap();
+    let registry_path = state.root.join("accounts/registry.json");
+    std::fs::create_dir_all(registry_path.parent().unwrap()).unwrap();
+    std::fs::write(
+        &registry_path,
+        serde_json::to_vec(&json!({
+            "version":1,
+            "defaultAccountKey":"default",
+            "accounts":{"default":{
+                "id":"default","home":home,"label":"Codex","source":"Codex CLI",
+                "accountId":"fixture-account","status":"signedOut"
+            }},
+            "logins":{},"deleteReceipts":{}
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    Arc::new(AccountSessionRuntime::new(
+        Arc::new(crate::account_driver::AccountDriver::open(&registry_path).unwrap()),
+        None,
+        tokio::runtime::Handle::current(),
+        state.root.join("accounts"),
+        home.clone(),
+        home,
+    ))
+}
+
+/// The owner ends the agent while its Studio connection is lost and no worker
+/// has reattached yet. The provider process keeps the turn and its command
+/// running. The worker that reattaches to that provider generation must end
+/// them once, and must not continue or restart the stopped agent.
+async fn ending_before_worker_reattach_ends_the_turn_work(ending: Ending) {
+    let state = State::new().await;
+    let mut first = Peer::new();
+    let mut first_worker = first.worker(state.bridge.clone()).await;
+    let start = state.start(&mut first, &first_worker).await;
+    first.accepted(&start).await;
+    let cursor = first
+        .frame(
+            json!({"method":"item/started","params":{"threadId":"fake-thread-0",
+            "turnId":"turn","item":{"id":"exec-1","type":"commandExecution",
+            "command":"cargo nextest run","status":"inProgress","processId":"42"}}}),
+        )
+        .await;
+    first.acknowledged(cursor).await;
+    first_worker.shutdown().await.unwrap();
+    state
+        .bridge
+        .run(|store| async move {
+            scheduler::lifecycle_transaction_with(&store, |tx| {
+                store::disconnect_provider_generation(tx, "default", 1)?;
+                Ok::<_, WorkerError>(())
+            })
+            .await
+        })
+        .await
+        .unwrap();
+    assert_eq!(state.record().await["status"], "interrupted");
+
+    // No worker is attached: the action commits without a provider request.
+    let ports = Arc::new(ProductionLifecyclePorts::new(
+        Arc::clone(&state.bridge.store),
+        Arc::new(tokio::sync::Notify::new()),
+        Arc::new(tokio::sync::Notify::new()),
+        detached_account_session(&state),
+        None,
+    ));
+    let target = state.agent.clone();
+    let action = match ending {
+        Ending::Stop => Action::Stop {
+            target,
+            descendants: false,
+            reason: None,
+            sender: None,
+            sender_epoch: None,
+        },
+        Ending::Delete => Action::Delete { target },
+    };
+    ports
+        .execute(&action, 20.0)
+        .await
+        .expect("the action commits");
+    let stopped = state.record().await;
+    assert_eq!(stopped["status"], "paused", "{stopped}");
+
+    // A worker reattaches to the same provider generation, where the turn runs.
+    // Its startup barrier must not count the first worker's finished pass.
+    let fresh_pass = || {
+        state
+            .bridge
+            .faults
+            .startup_recovery_done
+            .store(false, std::sync::atomic::Ordering::SeqCst)
+    };
+    fresh_pass();
+    let mut peer = Peer::new();
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    let interrupt = tokio::select! {
+        wire = peer.next_write() => wire,
+        () = worker_barrier(&worker) => panic!(
+            "the reattached worker left the stopped turn running: {}",
+            state.record().await["disconnectRecovery"]
+        ),
+    };
+    assert_eq!(
+        interrupt.value["method"], "turn/interrupt",
+        "{}",
+        interrupt.value
+    );
+    assert_eq!(
+        interrupt.value["params"],
+        json!({"threadId":"fake-thread-0","turnId":"turn"})
+    );
+    let _ignored = interrupt.receipt.send(CommandReceipt::Written {
+        remote_id: None,
+        duplicate: false,
+    });
+    peer.reply(&interrupt.value, json!({})).await;
+    let clean = peer.next_write().await;
+    assert_eq!(clean.value["method"], "thread/backgroundTerminals/clean");
+    assert_eq!(clean.value["params"], json!({"threadId":"fake-thread-0"}));
+    let _ignored = clean.receipt.send(CommandReceipt::Written {
+        remote_id: None,
+        duplicate: false,
+    });
+    peer.reply(&clean.value, json!({})).await;
+    worker_barrier(&worker).await;
+
+    let record = state.record().await;
+    assert_eq!(record["status"], "paused", "{record}");
+    assert!(
+        !studio_runtime_store::truthy(record.get("autoWake")),
+        "the stopped agent does not wake: {record}"
+    );
+    assert_eq!(
+        record["disconnectRecovery"]["stopInterrupt"]["outcome"], "accepted",
+        "{record}"
+    );
+    assert!(peer.writes.try_recv().is_err(), "each request is sent once");
+    worker.shutdown().await.unwrap();
+
+    // A later worker of the same generation finds the turn already ended.
+    fresh_pass();
+    let mut next = Peer::new();
+    let mut next_worker = next.worker(state.bridge.clone()).await;
+    worker_barrier(&next_worker).await;
+    assert!(
+        next.writes.try_recv().is_err(),
+        "an ended turn is not interrupted again"
+    );
+    next_worker.shutdown().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stop_before_worker_reattach_interrupts_the_turn_and_ends_its_commands() {
+    ending_before_worker_reattach_ends_the_turn_work(Ending::Stop).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn delete_before_worker_reattach_interrupts_the_turn_and_ends_its_commands() {
+    ending_before_worker_reattach_ends_the_turn_work(Ending::Delete).await;
+}

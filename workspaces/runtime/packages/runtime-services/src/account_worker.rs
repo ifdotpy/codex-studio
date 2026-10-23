@@ -44,6 +44,7 @@ pub(crate) mod restart_recovery;
 pub mod retained;
 pub mod retained_frame;
 mod steer;
+mod stopped_turns;
 pub(crate) mod store;
 mod submission;
 mod turn_preparation;
