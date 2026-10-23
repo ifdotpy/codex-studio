@@ -5,6 +5,7 @@ import "../src/style.css";
 import "../src/workspace-layout.css";
 import "../src/appearance.css";
 import "../src/studio-preferences.css";
+import "../src/design/state.css";
 import "../src/components/team-navigation.css";
 import "../src/components/chat-controls.css";
 import { theme } from "../src/theme";
