@@ -33,11 +33,15 @@
 .execution-menu .execution-model {
   font-weight: 500;
 }
-.execution-dropdown {
-  inline-size: min(
+:root {
+  /* Picker popover and sheet width: the shared picker size, viewport-bounded. */
+  --studio-execution-dropdown-size: min(
     calc(100vw - var(--mantine-spacing-lg)),
     var(--studio-model-picker-size)
   );
+}
+.execution-dropdown {
+  inline-size: var(--studio-execution-dropdown-size);
   display: grid;
   gap: var(--mantine-spacing-sm);
   max-width: calc(100vw - var(--mantine-spacing-lg));

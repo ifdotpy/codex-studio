@@ -1784,6 +1784,8 @@ function ExecutionMenu({
         zIndex={layerZIndex.popover}
         position="top-start"
         shadow="md"
+        // Mantine's default max-content width would override the picker token.
+        width="var(--studio-execution-dropdown-size)"
         middlewares={{ flip: true, shift: true, size: true }}
         closeOnEscape={false}
         returnFocus
