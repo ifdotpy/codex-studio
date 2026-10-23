@@ -69,8 +69,19 @@
 .model-unavailable-reason {
   margin-block-start: calc(var(--mantine-spacing-xs) / 2);
 }
+.model-family-group {
+  display: grid;
+  gap: var(--mantine-spacing-xs);
+}
+.model-family-group + .model-family-group {
+  margin-block-start: var(--mantine-spacing-sm);
+}
 .model-family-label {
-  margin-block-start: var(--mantine-spacing-xs);
+  display: block;
+  margin: 0;
+}
+.model-family-label + .model-options {
+  margin-block-start: 0;
 }
 .model-option-name {
   white-space: nowrap;

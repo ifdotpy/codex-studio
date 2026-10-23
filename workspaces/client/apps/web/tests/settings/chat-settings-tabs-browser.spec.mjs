@@ -92,6 +92,18 @@ function Fixture(){const[agent,setAgent]=useState(initial),[opened,setOpened]=us
     await expect(
       modal.getByRole("radio", { name: "Same as main agent", exact: true }),
     ).toBeVisible();
+    const automatic = modal.getByRole("radio", {
+      name: "Automatic",
+      exact: true,
+    });
+    await expect(automatic).toBeChecked();
+    await expect(modal.locator(".setup-account-automatic")).toContainText(
+      "Prefers a free slot, project order, then fewer active agents.",
+    );
+    await expect(modal.locator(".setup-account-automatic")).toHaveAttribute(
+      "data-checked",
+      "true",
+    );
     await modal
       .getByRole("radiogroup", {
         name: "Default subagent reasoning",
@@ -116,14 +128,16 @@ function Fixture(){const[agent,setAgent]=useState(initial),[opened,setOpened]=us
     await page.waitForFunction(() =>
       window.calls.some((call) => call.subagent_concurrency === 0),
     );
-    await modal.locator(".execution-accounts > summary").click();
+    await expect(
+      modal.getByRole("checkbox", { name: "Work 2", exact: true }),
+    ).toBeVisible();
     await modal.getByRole("checkbox", { name: "Work 2", exact: true }).click();
     await page.waitForFunction(() =>
       window.calls.some((call) =>
         call.excluded_account_keys?.includes("account-1"),
       ),
     );
-    await expect(modal.locator(".execution-accounts > summary")).toContainText(
+    await expect(modal.locator(".execution-accounts")).toContainText(
       "4 of 5 enabled",
     );
     await expect(
