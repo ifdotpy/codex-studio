@@ -12,6 +12,7 @@ import {
   Menu,
   TextInput,
   UnstyledButton,
+  VisuallyHidden,
 } from "@mantine/core";
 import {
   Archive,
@@ -31,7 +32,8 @@ import {
   type ChatIndicator,
 } from "./chat-status/chatStatusModel";
 import ChatStatus from "./agents/ChatStatus";
-import { AgentProgress } from "./agents/AgentProgress";
+import { relativeChatTime } from "./sidebar/fleet";
+import { DEFAULT_LOCAL_SERVER_ALIAS } from "../servers/serverAliases";
 import {
   ChatServerLine,
   offlineServerDescription,
@@ -61,8 +63,11 @@ type Bindings = HTMLAttributes<HTMLElement> & {
 type Props = {
   disabled?: boolean;
   row: Agent;
+  now?: number;
   selected: boolean;
   serverAlias: string;
+  defaultServerAlias?: string;
+  projectLabel?: string;
   indicator?: ChatIndicator;
   serverOffline?: boolean;
   renaming: boolean;
@@ -130,8 +135,11 @@ export default function SidebarRow(props: Props) {
   return (
     <SidebarRowView
       row={props.row}
+      now={props.now}
       selected={props.selected}
       serverAlias={props.serverAlias}
+      defaultServerAlias={props.defaultServerAlias}
+      projectLabel={props.projectLabel}
       indicator={indicator}
       serverOffline={props.serverOffline}
       renaming={props.renaming}
@@ -149,8 +157,11 @@ export default function SidebarRow(props: Props) {
 
 const SidebarRowView = memo(function SidebarRowView({
   row,
+  now,
   selected,
   serverAlias,
+  defaultServerAlias = DEFAULT_LOCAL_SERVER_ALIAS,
+  projectLabel,
   indicator,
   serverOffline = false,
   renaming,
@@ -168,6 +179,11 @@ const SidebarRowView = memo(function SidebarRowView({
   const offlineDescription = serverOffline
     ? offlineServerDescription(serverAlias)
     : undefined;
+  const timestamp = row.updated || row.created;
+  const activity = row.stall
+    ? `Waiting for lead: task ${row.stall.taskId} not submitted`
+    : row.commandProgress?.[0]?.stage;
+  const showServer = serverAlias !== defaultServerAlias || serverOffline;
   const chatRow = (
     <UnstyledButton
       {...bindingValues}
@@ -176,10 +192,12 @@ const SidebarRowView = memo(function SidebarRowView({
       aria-description={[
         "Drag onto a team to join it, or onto the project name to leave. Drop a team chat in the center of another lead chat to make it a subagent. Drag to an edge to reorder. Alt + Up or Down also works.",
         offlineDescription,
+        indicator?.label,
       ]
         .filter(Boolean)
         .join(" ")}
       className="chat-row"
+      data-studio-state={indicator?.kind || "none"}
       data-chat={row.id}
       onPointerEnter={() => actions.prepare()}
       onFocus={() => actions.prepare()}
@@ -188,27 +206,54 @@ const SidebarRowView = memo(function SidebarRowView({
       aria-current={selected}
     >
       <span className="row-copy">
-        <strong>
-          {a?.pinned && <Pin size={11} className="chat-pin" />}
-          {row.name ?? ""}
-        </strong>
-        <AgentProgress agent={row} />
-        <ChatServerLine
-          provider={a.provider || undefined}
-          alias={serverAlias}
-          offline={serverOffline}
-        />
+        <span className="fleet-chat-heading">
+          {projectLabel && (
+            <span className="fleet-chat-project" title={projectLabel}>
+              {projectLabel}
+            </span>
+          )}
+          <strong>
+            {a?.pinned && <Pin size={11} className="chat-pin" />}
+            {row.name ?? ""}
+          </strong>
+          {showServer && (
+            <ChatServerLine
+              provider={a.provider || undefined}
+              alias={serverAlias}
+              offline={serverOffline}
+            />
+          )}
+        </span>
+        {activity && (
+          <span
+            className="fleet-chat-activity"
+            title={row.commandProgress?.[0]?.lastOutputLine || activity}
+          >
+            {activity}
+          </span>
+        )}
       </span>
-      <ChatStatus
-        status={indicator}
-        provider={a.provider ?? undefined}
-        model={a.model ?? undefined}
-      />
+      {timestamp != null && Number.isFinite(timestamp) && (
+        <time
+          className="fleet-chat-time"
+          dateTime={new Date(timestamp * 1000).toISOString()}
+          title={new Date(timestamp * 1000).toLocaleString()}
+        >
+          {relativeChatTime(timestamp, now)}
+        </time>
+      )}
+      <VisuallyHidden>
+        <ChatStatus
+          status={indicator}
+          provider={a.provider ?? undefined}
+          model={a.model ?? undefined}
+        />
+      </VisuallyHidden>
     </UnstyledButton>
   );
   return (
     <div
-      className={`sidebar-row lead-row ${selected ? "selected" : ""}`}
+      className={`sidebar-row fleet-strip lead-row ${selected ? "selected" : ""}`}
       data-sidebar-item={row.id}
     >
       {chatRow}

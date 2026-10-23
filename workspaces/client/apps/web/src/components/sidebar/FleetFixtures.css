@@ -1,0 +1,20 @@
+/* The fixture hosts the real sidebar without the Storybook preview gutter. */
+body:has(.fleet-story) #storybook-root > div {
+  padding: 0 !important;
+}
+.fleet-story {
+  display: flex;
+  block-size: 100dvh;
+  background: var(--bg);
+}
+.fleet-story #sidebar {
+  display: flex;
+  block-size: 100%;
+  max-inline-size: 100%;
+}
+@media (max-width: 47.5em) {
+  .fleet-story #sidebar {
+    inline-size: 100%;
+    flex-basis: 100%;
+  }
+}

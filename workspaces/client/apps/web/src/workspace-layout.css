@@ -105,14 +105,6 @@
   #conversation .agent-phase {
     margin-block: 4px;
   }
-  #sidebar {
-    width: var(--studio-sidebar-width);
-    flex-basis: var(--studio-sidebar-width);
-    padding-inline: 16px;
-  }
-  .desktop-inset-titlebar .sidebar-header {
-    padding-inline: 0;
-  }
 }
 
 @container workspace (max-width: 660px) {

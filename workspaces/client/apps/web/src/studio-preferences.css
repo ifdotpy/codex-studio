@@ -16,27 +16,6 @@
   );
 }
 
-:root:not([data-studio-typography="original"]) #sidebar {
-  font-family: var(--studio-font-family);
-  font-size: var(--studio-sidebar-font-size);
-}
-
-:root:not([data-studio-typography="original"])
-  #sidebar
-  :is(
-    .chat-row,
-    .row-copy strong,
-    .row-copy small,
-    .row-meta,
-    #chat-search,
-    .sidebar-nav-button,
-    .sidebar-footer,
-    .load-more,
-    #open-complaints
-  ) {
-  font-size: var(--studio-sidebar-font-size);
-}
-
 :root:not([data-studio-typography="original"]) .workspace {
   font-family: var(--studio-font-family);
   font-size: var(--studio-main-font-size);
@@ -50,12 +29,6 @@
     select,
     button
   ) {
-  font-family: var(--studio-font-family);
-}
-
-:root:not([data-studio-typography="original"])
-  #sidebar
-  :is(button, input, textarea, select) {
   font-family: var(--studio-font-family);
 }
 
