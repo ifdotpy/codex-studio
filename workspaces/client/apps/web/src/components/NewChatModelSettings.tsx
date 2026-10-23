@@ -2,7 +2,7 @@ import { useServerServices } from "../servers/ServerServicesContext";
 import { createServerServices } from "../servers/serverServices";
 import { watchResourceReads } from "./watchResourceReads";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Button } from "@mantine/core";
+import { Button, Stack, Text } from "@mantine/core";
 import { errorText, type GetResult } from "../api";
 import type { Agent } from "../types";
 import { serverResourceScope, type StudioServer } from "../servers/registry";
@@ -26,7 +26,6 @@ type Props = {
   server?: StudioServer;
   projectId: string;
   path: string;
-  onOpenChange: (opened: boolean) => void;
   onChange: (settings: Omit<NewChatSettings, "workspaceMode"> | null) => void;
 };
 // The parent can pass a new object for the same server. Reads restart only for another
@@ -98,27 +97,7 @@ export default function NewChatModelSettings(props: Props) {
   );
 }
 
-function ModelDraft({
-  server,
-  projectId,
-  path,
-  onChange,
-  onOpenChange,
-}: Props) {
-  const openRoles = useRef({ orchestrator: false, worker: false });
-  const openCallbacks = useMemo(
-    () =>
-      Object.fromEntries(
-        (["orchestrator", "worker"] as const).map((role) => [
-          role,
-          (opened: boolean) => {
-            openRoles.current[role] = opened;
-            onOpenChange(Object.values(openRoles.current).some(Boolean));
-          },
-        ]),
-      ),
-    [onOpenChange],
-  );
+function ModelDraft({ server, projectId, path, onChange }: Props) {
   const [accounts, setAccounts] = useState<GetResult<"/api/accounts"> | null>(
     null,
   );
@@ -228,22 +207,28 @@ function ModelDraft({
     [],
   );
   return (
-    <div
-      className="empty-chat-settings new-chat-model-settings"
+    <Stack
+      gap="lg"
+      className="new-chat-model-settings"
       aria-label="Agent settings"
     >
       {(["orchestrator", "worker"] as const).map((role) => (
-        <div className="empty-chat-setting" key={role}>
-          <span>{role === "orchestrator" ? "Model" : "Workers"}</span>
+        <section
+          key={role}
+          aria-label={role === "orchestrator" ? "Lead model" : "Worker model"}
+        >
+          <Text fw={600} mb="xs">
+            {role === "orchestrator" ? "Lead" : "Workers"}
+          </Text>
           <ExecutionSettings
             agent={agent}
             catalog={catalog}
             accounts={accounts?.accounts || []}
             refresh={async () => {}}
+            presentation="panel"
             settingsRow
             showAccountSummary
             initialRole={role}
-            onOpenChange={openCallbacks[role]}
             onDraftChange={patch}
             onAccountChange={(key) => {
               setAccountKey(key);
@@ -252,7 +237,7 @@ function ModelDraft({
               );
             }}
           />
-        </div>
+        </section>
       ))}
       {(error || modelError) && (
         <div role="alert">
@@ -268,6 +253,6 @@ function ModelDraft({
           </Button>
         </div>
       )}
-    </div>
+    </Stack>
   );
 }
