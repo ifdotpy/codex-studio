@@ -28,9 +28,6 @@
 #chat-search {
   --input-bd-focus: var(--mantine-color-default-border);
 }
-.fleet-strip > .chat-row {
-  margin-inline-start: var(--studio-rail-size);
-}
 .sidebar-header,
 .sidebar-primary-actions,
 .projects-heading,
@@ -94,7 +91,9 @@
 #chat-search {
   font-size: var(--mantine-font-size-sm);
 }
+/* Chat rows reach closer to the sidebar edge than the header controls. */
 .chat-scroll {
+  margin-inline: calc(-0.625 * var(--mantine-spacing-md));
   flex: 1;
   min-block-size: 0;
   overflow-y: auto;
@@ -196,13 +195,13 @@
   overflow: visible;
 }
 .project-chats {
-  padding-inline-start: var(--studio-strip-indent);
+  padding-inline-start: calc(var(--studio-strip-indent) / 2);
 }
 .project-folder {
   margin-block: var(--mantine-spacing-xs);
 }
 .project-folder-chats {
-  padding-inline-start: var(--studio-strip-indent);
+  padding-inline-start: calc(var(--studio-strip-indent) / 2);
 }
 .sidebar-row {
   display: flex;
@@ -224,10 +223,14 @@
   flex: 1;
   inline-size: 100%;
   min-inline-size: 0;
-  min-block-size: var(--studio-strip-min-height);
+  /* Sidebar strips are 15% denser than the shared strip; phones keep the
+     touch target below. */
+  min-block-size: calc(0.85 * var(--studio-strip-min-height));
   gap: var(--mantine-spacing-xs);
-  padding: var(--mantine-spacing-xs) var(--mantine-spacing-xs)
-    var(--mantine-spacing-xs) var(--mantine-spacing-sm);
+  padding: calc(0.85 * var(--mantine-spacing-xs))
+    calc(0.85 * var(--mantine-spacing-xs))
+    calc(0.85 * var(--mantine-spacing-xs))
+    calc(0.85 * var(--mantine-spacing-sm));
   border-radius: 0;
   text-align: start;
 }
