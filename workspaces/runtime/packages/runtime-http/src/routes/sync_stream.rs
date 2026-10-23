@@ -190,6 +190,16 @@ async fn resource_content(state: HttpState, resource: Value) -> Option<Vec<u8>> 
         ResourceRef::AccountsResource(_) => {
             serde_json::to_vec(&super::catalog::accounts(State(state)).await.ok()?.0).ok()
         }
+        ResourceRef::LimitsResource(resource) => {
+            let snapshot = if let Some(port) = &state.account_session {
+                port.limits_snapshot(&resource.account_key).ok()?
+            } else {
+                state.account_policy.as_ref()?.limits(&resource.account_key)
+            };
+            let snapshot: crate::generated::UsageLimitsResponse =
+                serde_json::from_value(snapshot).ok()?;
+            serde_json::to_vec(&snapshot).ok()
+        }
         ResourceRef::DesktopResource(_) => {
             serde_json::to_vec(&super::desktop::get(State(state)).await.ok()?.0).ok()
         }
@@ -598,6 +608,97 @@ mod tests {
             env!("CARGO_MANIFEST_DIR"),
             "/../runtime-services/tests/support/token_rate_difference.rs"
         ));
+    }
+
+    #[tokio::test]
+    async fn limits_content_reads_only_cached_account_snapshots() {
+        use std::sync::Mutex;
+        use studio_runtime_services::account_policy::AccountPolicyState;
+        use studio_runtime_services::account_session_runtime::{
+            AccountSessionError, AccountSessionFuture, AccountSessionPort,
+        };
+
+        struct CachedLimits(Mutex<Value>);
+        impl AccountSessionPort for CachedLimits {
+            fn limits_snapshot(&self, account: &str) -> Result<Value, AccountSessionError> {
+                Ok(if account == "first" {
+                    self.0.lock().expect("snapshot").clone()
+                } else {
+                    json!({"accountKey":account,"data":null,"error":null,"at":null})
+                })
+            }
+
+            fn read_limits<'a>(&'a self, _: &'a str) -> AccountSessionFuture<'a, Value> {
+                panic!("content filtering must never read the provider, even with a cold cache")
+            }
+
+            fn refresh_limits<'a>(&'a self, _: &'a str) -> AccountSessionFuture<'a, ()> {
+                panic!("content filtering must never enqueue a native refresh")
+            }
+        }
+
+        let root = tempfile::tempdir().expect("isolated state");
+        let policy = AccountPolicyState::from_startup(
+            Some(br#"{"version":1,"defaultAccountKey":"first","accounts":{},"logins":{}}"#),
+            [],
+        )
+        .expect("policy");
+        let mut state = HttpState::new(
+            "token".into(),
+            "workspace".into(),
+            root.path().display().to_string(),
+            4321,
+            None,
+            None,
+            Some(Arc::new(policy)),
+        );
+        let resources = [
+            json!({"kind":"limits","accountKey":"first"}),
+            json!({"kind":"limits","accountKey":"second"}),
+        ];
+        let cold = resource_content(state.clone(), resources[0].clone())
+            .await
+            .expect("policy-only cold snapshot is filterable");
+        let port = Arc::new(CachedLimits(Mutex::new(
+            json!({"accountKey":"first","data":null,"error":null,"at":null}),
+        )));
+        state.account_session = Some(port.clone());
+        assert_eq!(
+            cold,
+            resource_content(state.clone(), resources[0].clone())
+                .await
+                .expect("session cold snapshot is filterable")
+        );
+        let notifications = &state.resource_notifications;
+        let initial = notifications
+            .changes_since_with_content(&resources, None, |resource| {
+                resource_content(state.clone(), resource)
+            })
+            .await
+            .expect("baseline");
+        assert_eq!(initial.resources, resources);
+        notifications.notify_store_commit(studio_runtime_store::ResourceChange::All);
+        let unchanged = notifications
+            .changes_since_with_content(&resources, Some(initial.cursor.revision), |resource| {
+                resource_content(state.clone(), resource)
+            })
+            .await
+            .expect("unrelated commit");
+        assert!(
+            unchanged.resources.is_empty(),
+            "cold limits do not cause client reads"
+        );
+        *port.0.lock().expect("snapshot") =
+            json!({"accountKey":"first","data":null,"error":"Unavailable","checkedAt":1.0});
+        notifications.notify_store_commit(studio_runtime_store::ResourceChange::All);
+        let changed = notifications
+            .changes_since_with_content(&resources, Some(unchanged.cursor.revision), |resource| {
+                resource_content(state.clone(), resource)
+            })
+            .await
+            .expect("changed cached snapshot");
+        assert_eq!(changed.resources, vec![resources[0].clone()]);
+        assert_eq!(changed.versions, vec![changed.cursor.revision]);
     }
 
     #[tokio::test]
