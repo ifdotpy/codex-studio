@@ -161,12 +161,24 @@ export const PopoverDark: Story = {
           element.clientHeight + 1,
         );
     }
+    const selectedName = () =>
+      canvasElement.ownerDocument.querySelector(
+        ".account-limits-detail-panel[data-active] .account-limits-selected-name strong",
+      );
+    await expect(selectedName()).toHaveTextContent("main@example.test");
+    await expect(selectedName()).toHaveAttribute("title", "main@example.test");
     const original = popover.getBoundingClientRect();
     await expect(canvas.getAllByRole("tab")).toHaveLength(3);
     await userEvent.click(
       canvas.getByText("Claude", { selector: ".setup-provider" }),
     );
     await expect(canvas.getAllByRole("tab")).toHaveLength(2);
+    await expect(selectedName()).toHaveTextContent("Claude code 2");
+    await expect(
+      canvasElement.ownerDocument.querySelector(
+        ".account-limits-detail-panel[data-active] .account-plan",
+      ),
+    ).toHaveTextContent("max");
     await expect(popover.getBoundingClientRect().height).toBe(original.height);
     await expect(popover.getBoundingClientRect().y).toBe(original.y);
     await expect(

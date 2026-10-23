@@ -1250,6 +1250,7 @@ export default function App({ active = true }: { active?: boolean }) {
           label: account?.label || key,
           email: account?.email,
           provider: account?.provider ?? undefined,
+          plan: account?.plan,
           accountId: account?.accountId,
           signedOut: !!account?.disconnected,
           limits,
