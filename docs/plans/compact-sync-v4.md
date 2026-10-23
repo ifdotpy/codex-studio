@@ -38,6 +38,9 @@ bounds the complete serialized SSE event in UTF-8 bytes including `event:`, `id:
 `SYNC_TRANSCRIPT_STREAM_MAX_BYTES`, and `SYNC_DRAFT_STREAM_MAX_BYTES`. A larger
 event carries revisions only, and the client pulls the interval over HTTP
 (Brotli JSON). The HTTP compression threshold is a separate contract.
+The limit applies to `resources` events only. `token-rates`, heartbeat,
+session, acknowledgement, and `api-schema` events are exempt; `token-rates` stays
+bounded by its schema `maxItems`.
 
 ### Stream compression
 
