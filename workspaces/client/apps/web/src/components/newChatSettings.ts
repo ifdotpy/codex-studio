@@ -30,7 +30,12 @@ export function settingsForNewChatRequest(
   accountWasChosen: boolean,
   model: string | undefined,
 ): NewChatSettingsDraft {
-  return { ...settings, account_key: accountKey, model };
+  const { account_key: _accountKey, ...requestSettings } = settings;
+  return {
+    ...requestSettings,
+    ...(accountWasChosen ? { account_key: accountKey } : {}),
+    model,
+  };
 }
 
 export function settingsForNewChatAccount(
