@@ -1,0 +1,26 @@
+/* Shared geometry owners. All lengths are rem, relative to the root text size. */
+:root {
+  /* Fine separators between groups, not decorative card outlines. */
+  --studio-border-width: 0.0625rem;
+  /* Desktop icon control edge; coarse pointers use the touch target below. */
+  --studio-control-size: 2rem;
+  /* Minimum standalone control target for a coarse pointer. */
+  --studio-touch-target: 2.75rem;
+  /* A title and optional live activity line on a dispatch strip. */
+  --studio-strip-min-height: 2.75rem;
+  /* One level of project or agent hierarchy. */
+  --studio-strip-indent: 0.75rem;
+  /* Team dock width when the conversation has room for a second column. */
+  --studio-team-size: 20rem;
+  /* Readable settings form column. */
+  --studio-form-max: 40rem;
+  /* Vertical settings section navigation. */
+  --studio-settings-nav-size: 12rem;
+  /* Messages room selector alongside the selected room. */
+  --studio-room-list-size: 16rem;
+  /* Minimum overlay menu width, constrained by the viewport on phones. */
+  --studio-menu-min: 13.75rem;
+  /* Compact context usage meter length and thickness. */
+  --studio-meter-width: 3rem;
+  --studio-meter-size: 0.1875rem;
+}

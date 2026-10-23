@@ -10,24 +10,25 @@
 
 :root,
 [data-mantine-color-scheme="dark"] {
-  --studio-state-working: #3fc1c3;
-  --studio-state-answer: #f0b43c;
+  --studio-state-working: var(--mantine-color-signal-4);
+  --studio-state-answer: var(--studio-warning);
   --studio-state-error: #f0776b;
   --studio-state-unread: #62c08e;
-  --studio-state-paused: #7c8796;
-  --studio-state-none: transparent;
+  --studio-state-paused: var(--mantine-color-dark-2);
+  --studio-state-none: var(--studio-state-paused);
 }
 
 [data-mantine-color-scheme="light"] {
-  --studio-state-working: #0e8c8f;
-  --studio-state-answer: #c98500;
-  --studio-state-error: #c73e32;
-  --studio-state-unread: #2f8a5b;
-  --studio-state-paused: #7c8796;
-  --studio-state-none: transparent;
+  --studio-state-working: var(--mantine-color-signal-7);
+  --studio-state-answer: var(--studio-warning);
+  --studio-state-error: #b52e25;
+  --studio-state-unread: #237448;
+  --studio-state-paused: #5b6675;
+  --studio-state-none: var(--studio-state-paused);
 }
 
-:root {
+:root,
+[data-mantine-color-scheme] {
   --studio-state-working-soft: color-mix(
     in srgb,
     var(--studio-state-working) 14%,
@@ -66,6 +67,9 @@
 }
 [data-studio-state="unread"] {
   --studio-state: var(--studio-state-unread);
+}
+[data-studio-state="none"] {
+  --studio-state: var(--studio-state-none);
 }
 [data-studio-state="paused"] {
   --studio-state: var(--studio-state-paused);
