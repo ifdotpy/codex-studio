@@ -185,8 +185,23 @@ export const Light: Story = {
 };
 export const Interactions: Story = {
   render: (props) => <FleetFixture {...props} scheme="dark" />,
-  play: async ({ canvasElement }) => {
+  play: async ({ canvasElement, args }) => {
     const page = within(canvasElement);
+    const lane = page.getByRole("region", { name: "Needs you" });
+    await expect(
+      [...lane.querySelectorAll(".chat-row")].map((row) =>
+        row.getAttribute("data-studio-state"),
+      ),
+    ).toEqual(["answer", "answer", "answer", "error", "error", "error"]);
+    await expect(
+      page.getAllByRole("img", { name: "1 working, 1 needs you, 1 failed" }),
+    ).toHaveLength(3);
+    await userEvent.click(
+      within(lane).getAllByRole("button", {
+        name: /Review deployment permissions/,
+      })[0],
+    );
+    await expect(args.open).toHaveBeenCalledWith("codex-studio-0");
     await expect(page.getByRole("navigation", { name: "Chats" })).toBeVisible();
     await userEvent.type(
       page.getByRole("searchbox", { name: "Filter projects and chats" }),

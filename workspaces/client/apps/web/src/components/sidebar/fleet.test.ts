@@ -153,6 +153,8 @@ describe("real fleet strip", () => {
     expect(html).toContain("Checking permissions");
     expect(html).not.toContain("Second command");
     expect(html).toContain('<time class="fleet-chat-time"');
+    expect(renderRow({ now: 160 })).toContain(">1m</time>");
+    expect(renderRow({ now: 220 })).toContain(">2m</time>");
     expect(html).toContain('aria-label="Unpin Chat answer"');
     expect(html).toContain('aria-label="Actions for Chat answer"');
     expect(html).not.toContain("chat-server-line");

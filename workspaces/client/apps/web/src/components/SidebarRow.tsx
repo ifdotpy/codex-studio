@@ -63,6 +63,7 @@ type Bindings = HTMLAttributes<HTMLElement> & {
 type Props = {
   disabled?: boolean;
   row: Agent;
+  now?: number;
   selected: boolean;
   serverAlias: string;
   defaultServerAlias?: string;
@@ -134,6 +135,7 @@ export default function SidebarRow(props: Props) {
   return (
     <SidebarRowView
       row={props.row}
+      now={props.now}
       selected={props.selected}
       serverAlias={props.serverAlias}
       defaultServerAlias={props.defaultServerAlias}
@@ -155,6 +157,7 @@ export default function SidebarRow(props: Props) {
 
 const SidebarRowView = memo(function SidebarRowView({
   row,
+  now,
   selected,
   serverAlias,
   defaultServerAlias = DEFAULT_LOCAL_SERVER_ALIAS,
@@ -236,7 +239,7 @@ const SidebarRowView = memo(function SidebarRowView({
           dateTime={new Date(timestamp * 1000).toISOString()}
           title={new Date(timestamp * 1000).toLocaleString()}
         >
-          {relativeChatTime(timestamp)}
+          {relativeChatTime(timestamp, now)}
         </time>
       )}
       <VisuallyHidden>

@@ -1,23 +1,23 @@
 import type { Agent } from "../../types";
-import type {
-  ChatIndicator,
-  ChatIndicatorKind,
+import {
+  CHAT_INDICATOR_URGENCY,
+  type ChatIndicator,
+  type ChatIndicatorKind,
 } from "../chat-status/chatStatusModel";
 
-/** Presentation order for the operator lane; operational state belongs to chatStatusModel. */
-const attentionOrder: readonly ChatIndicatorKind[] = ["answer", "error"];
 export function needsYou(
   chats: readonly Agent[],
   indicators: ReadonlyMap<string, ChatIndicator>,
 ) {
   return chats
-    .filter((chat) =>
-      attentionOrder.includes(indicators.get(chat.id)?.kind ?? "none"),
-    )
+    .filter((chat) => {
+      const kind = indicators.get(chat.id)?.kind;
+      return kind === "answer" || kind === "error";
+    })
     .sort(
       (a, b) =>
-        attentionOrder.indexOf(indicators.get(a.id)!.kind) -
-        attentionOrder.indexOf(indicators.get(b.id)!.kind),
+        CHAT_INDICATOR_URGENCY.indexOf(indicators.get(a.id)!.kind) -
+        CHAT_INDICATOR_URGENCY.indexOf(indicators.get(b.id)!.kind),
     );
 }
 
@@ -49,6 +49,9 @@ export function projectStateLabel(
     .filter(Boolean)
     .join(", ");
 }
+
+/** Refresh all fleet timestamps together, in milliseconds. */
+export const FLEET_CLOCK_INTERVAL_MS = 60_000;
 
 /** Durations in seconds for compact, tabular fleet timestamps. */
 const minuteSeconds = 60;

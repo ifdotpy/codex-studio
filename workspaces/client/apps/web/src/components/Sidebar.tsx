@@ -57,7 +57,11 @@ import {
 } from "./shell/messages/PeerTeams";
 
 import SidebarRow from "./SidebarRow";
-import { needsYou, projectStateCounts } from "./sidebar/fleet";
+import {
+  FLEET_CLOCK_INTERVAL_MS,
+  needsYou,
+  projectStateCounts,
+} from "./sidebar/fleet";
 import ProjectStateCounts from "./sidebar/ProjectStateCounts";
 import {
   activeLayrReadiness,
@@ -172,6 +176,14 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
   const { canPickDirectory, pickDirectory, revealPath } =
     useServerFileDialogs();
   const services = p.services;
+  const [now, setNow] = useState(() => Date.now() / 1000);
+  useEffect(() => {
+    const timer = window.setInterval(
+      () => setNow(Date.now() / 1000),
+      FLEET_CLOCK_INTERVAL_MS,
+    );
+    return () => window.clearInterval(timer);
+  }, []);
   const canEdit = (target: SidebarTarget) =>
     services.available?.(target) ?? true;
   /** Why an action on this target is disabled, or null when it is available. */
@@ -809,6 +821,7 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
     <SidebarRow
       key={row.id}
       row={row}
+      now={now}
       selected={p.opened === row.id}
       projectLabel={priority ? groupMap.get(row.cwd || "")?.name : undefined}
       defaultServerAlias={
