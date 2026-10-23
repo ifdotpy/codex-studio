@@ -69,6 +69,18 @@
   font-size: var(--studio-main-font-size);
 }
 
+:root:not([data-studio-typography="original"])
+  :is(
+    #sidebar code,
+    #conversation code,
+    #conversation pre,
+    #conversation kbd,
+    .xterm,
+    .xterm *
+  ) {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
 .studio-settings-panel {
   display: grid;
   gap: 22px;
@@ -332,16 +344,4 @@
   .studio-appearance-segments span {
     min-height: 44px;
   }
-}
-
-:root:not([data-studio-typography="original"])
-  :is(
-    #sidebar code,
-    #conversation code,
-    #conversation pre,
-    #conversation kbd,
-    .xterm,
-    .xterm *
-  ) {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }

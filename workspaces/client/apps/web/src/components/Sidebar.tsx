@@ -1313,17 +1313,17 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
           >
             <SquarePen size={16} />
           </ActionIcon>
+          {p.newSharedChat && (
+            <ActionIcon
+              className="sidebar-shared-chat"
+              aria-label="New shared chat"
+              title="New shared chat"
+              onClick={() => p.newSharedChat?.()}
+            >
+              <Users size={16} />
+            </ActionIcon>
+          )}
         </div>
-        {p.newSharedChat && (
-          <Button
-            className="sidebar-nav-button sidebar-shared-chat"
-            title="New shared chat"
-            leftSection={<Users size={15} />}
-            onClick={() => p.newSharedChat?.()}
-          >
-            New shared chat
-          </Button>
-        )}
       </div>
       <TextInput
         id="chat-search"
@@ -1477,6 +1477,7 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
                     "Drag to reorder. Alt + Up or Down also works.",
                   )}
                   className="project-tree-toggle"
+                  aria-label={group.name}
                   title={services.displayPath?.(group.path) || group.path}
                   aria-expanded={!closed}
                   onClick={() => toggleTree(projectTreeKey(group.path))}

@@ -1,9 +1,8 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { MantineProvider } from "@mantine/core";
-import { expect, fn, userEvent, within } from "storybook/test";
+import { useMantineColorScheme } from "@mantine/core";
+import { expect, fn, userEvent, waitFor, within } from "storybook/test";
 import Sidebar, { type SidebarProps } from "./Sidebar";
-import { theme } from "../theme";
 import type { Agent, Snapshot } from "../types";
 import { chatIndicators } from "./chat-status/chatStatusModel";
 import { createSidebarServices, type SidebarBackend } from "./sidebar/services";
@@ -152,19 +151,19 @@ function FleetFixture({
   ...props
 }: SidebarProps & { scheme: "light" | "dark" }) {
   const [opened, open] = useState(props.opened);
+  const { setColorScheme } = useMantineColorScheme();
+  useEffect(() => setColorScheme(scheme), [scheme, setColorScheme]);
   return (
-    <MantineProvider theme={theme} forceColorScheme={scheme}>
-      <div className="fleet-story">
-        <Sidebar
-          {...props}
-          opened={opened}
-          open={(id) => {
-            open(id);
-            props.open(id);
-          }}
-        />
-      </div>
-    </MantineProvider>
+    <div className="fleet-story">
+      <Sidebar
+        {...props}
+        opened={opened}
+        open={(id) => {
+          open(id);
+          props.open(id);
+        }}
+      />
+    </div>
   );
 }
 const meta = {
@@ -207,8 +206,27 @@ export const Interactions: Story = {
         name: "Actions for Review deployment permissions",
       })[0],
     );
+    const unread = await within(document.body).findByRole("menuitem", {
+      name: "Mark unread",
+    });
+    await waitFor(() => expect(unread).toBeVisible());
+    await expect(unread).toBeDisabled();
+  },
+};
+
+export const NoAttention: Story = {
+  args: {
+    indicators: new Map(
+      [...args.indicators].filter(
+        ([, indicator]) =>
+          indicator.kind !== "answer" && indicator.kind !== "error",
+      ),
+    ),
+  },
+  render: (props) => <FleetFixture {...props} scheme="light" />,
+  play: async ({ canvasElement }) => {
     await expect(
-      within(document.body).getByRole("menuitem", { name: "Mark unread" }),
-    ).toBeVisible();
+      within(canvasElement).queryByRole("region", { name: "Needs you" }),
+    ).not.toBeInTheDocument();
   },
 };

@@ -10,7 +10,7 @@
   padding: var(--mantine-spacing-md);
   color: var(--text);
   background: var(--sidebar);
-  border-inline-end: calc(var(--mantine-spacing-xs) / 8) solid var(--line);
+  border-inline-end: var(--studio-border-width) solid var(--line);
 }
 .sidebar-header,
 .sidebar-primary-actions,
@@ -144,6 +144,17 @@
 .project-tree-action {
   flex: none;
   color: var(--muted);
+  inline-size: 0;
+  min-inline-size: 0;
+  padding: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+.project-tree-heading:is(:hover, :focus-within, :has([aria-expanded="true"]))
+  > .project-tree-action {
+  inline-size: var(--studio-control-size);
+  opacity: 1;
+  pointer-events: auto;
 }
 .project-state-counts {
   display: inline-flex;
@@ -163,13 +174,13 @@
   overflow: visible;
 }
 .project-chats {
-  padding-inline-start: var(--mantine-spacing-xs);
+  padding-inline-start: var(--studio-strip-indent);
 }
 .project-folder {
   margin-block: var(--mantine-spacing-xs);
 }
 .project-folder-chats {
-  padding-inline-start: var(--mantine-spacing-sm);
+  padding-inline-start: var(--studio-strip-indent);
 }
 .sidebar-row {
   display: flex;
@@ -191,7 +202,7 @@
   flex: 1;
   inline-size: 100%;
   min-inline-size: 0;
-  min-block-size: calc(var(--mantine-spacing-xl) + var(--mantine-spacing-xs));
+  min-block-size: var(--studio-strip-min-height);
   gap: var(--mantine-spacing-xs);
   padding: var(--mantine-spacing-xs) var(--mantine-spacing-xs)
     var(--mantine-spacing-xs) var(--mantine-spacing-sm);
@@ -371,7 +382,7 @@
 }
 .project-layr-readiness[data-state="not_imported"]::before {
   background: transparent;
-  outline: calc(var(--mantine-spacing-xs) / 8) solid currentColor;
+  outline: var(--studio-border-width) solid currentColor;
 }
 .project-layr-readiness[data-vault]::before {
   display: none;
@@ -427,21 +438,31 @@
     padding-block: var(--mantine-spacing-md);
   }
   .chat-row {
-    min-block-size: calc(var(--mantine-spacing-xl) + var(--mantine-spacing-md));
+    min-block-size: var(--studio-touch-target);
   }
   .row-actions,
   .project-tree-action,
   .projects-heading .mantine-ActionIcon-root {
-    --ai-size: calc(var(--mantine-spacing-xl) + var(--mantine-spacing-md));
+    --ai-size: var(--studio-touch-target);
   }
   .row-pin-action,
   .sidebar-row:is(:hover, :focus-within) .row-pin-action {
     display: none;
   }
   .sidebar-nav-button {
-    min-block-size: calc(var(--mantine-spacing-xl) + var(--mantine-spacing-md));
+    min-block-size: var(--studio-touch-target);
   }
   #chat-search {
     font-size: var(--mantine-font-size-md);
+  }
+}
+
+@media (hover: none) {
+  .project-tree-heading > .project-tree-action,
+  .project-tree-heading:is(:hover, :focus-within, :has([aria-expanded="true"]))
+    > .project-tree-action {
+    inline-size: var(--studio-touch-target);
+    opacity: 1;
+    pointer-events: auto;
   }
 }
