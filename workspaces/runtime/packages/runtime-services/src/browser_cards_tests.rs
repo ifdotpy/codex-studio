@@ -245,7 +245,8 @@ async fn a_card_follows_the_request_deadline_and_tells_the_chat_when_nobody_answ
     let pending = |id: &str, seq: u64| item(id, VM_AGENT, KUBE, redirect.clone(), "pending", seq);
     let mut moved = pending(&stopped, 4);
     moved["expiresAt"] = json!(1201.0);
-    let ended = |id: &str, state: &str, seq: u64| item(id, VM_AGENT, KUBE, redirect.clone(), state, seq);
+    let ended =
+        |id: &str, state: &str, seq: u64| item(id, VM_AGENT, KUBE, redirect.clone(), state, seq);
     let guest = Arc::new(WaitGuest {
         batches: Mutex::new(VecDeque::from([
             json!({"items":[pending(&stopped, 1), pending(&timed_out, 2), pending(&replaced, 3)], "next": 3}),
@@ -269,7 +270,10 @@ async fn a_card_follows_the_request_deadline_and_tells_the_chat_when_nobody_answ
     poll_once(&store, &source, 0, 0, None)
         .await
         .expect("test step");
-    assert_eq!(request(&store, &stopped).expect("card")["params"]["expiresAt"], 601.0);
+    assert_eq!(
+        request(&store, &stopped).expect("card")["params"]["expiresAt"],
+        601.0
+    );
     poll_once(&store, &source, 3, 0, None)
         .await
         .expect("test step");
@@ -284,9 +288,16 @@ async fn a_card_follows_the_request_deadline_and_tells_the_chat_when_nobody_answ
     poll_once(&store, &source, 7, 0, None)
         .await
         .expect("test step");
-    for (bridge, reason) in [(&stopped, "stale"), (&timed_out, "expired"), (&replaced, "replaced")] {
+    for (bridge, reason) in [
+        (&stopped, "stale"),
+        (&timed_out, "expired"),
+        (&replaced, "replaced"),
+    ] {
         let card = request(&store, bridge).expect("card");
-        assert_eq!((card["status"].clone(), card["closeReason"].clone()), (json!("expired"), json!(reason)));
+        assert_eq!(
+            (card["status"].clone(), card["closeReason"].clone()),
+            (json!("expired"), json!(reason))
+        );
     }
     assert_eq!(
         events(&store),

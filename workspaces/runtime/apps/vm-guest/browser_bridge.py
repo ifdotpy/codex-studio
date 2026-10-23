@@ -25,9 +25,14 @@ from urllib.parse import parse_qs, urljoin, urlsplit
 import uuid
 
 from browser_policy import PolicyError, Provider, StartPage, classify, provider
+from shared_values_generated import SIGN_IN_OPEN_LIMIT_SECONDS
 
 SOCKET = Path("/run/codex-studio-browser/open.sock")
 TTL_SECONDS = 600
+# A pending request whose command still listens gets a new deadline when its current one is at
+# most this many seconds away: one request time from now, at most SIGN_IN_OPEN_LIMIT_SECONDS
+# from its creation (docs/vm-browser-bridge.md, "Card lifetime").
+EXTEND_BEFORE_SECONDS = TTL_SECONDS / 2
 KEEP_SECONDS = 3600
 LIMIT_WINDOW_SECONDS = 600
 LIMIT_COUNT = 6
@@ -172,6 +177,16 @@ def _clean_headers(headers: object) -> dict[str, str]:
         if isinstance(value, str) and len(value) <= 1024 and not any(ord(c) < 32 for c in value):
             result[name] = value
     return result
+
+
+def listening_deadline(item: dict[str, Any], now: float) -> float | None:
+    """The new deadline of a pending request whose command still listens, or None to keep it:
+    one request time from now, at most SIGN_IN_OPEN_LIMIT_SECONDS from its creation."""
+    limit = item["createdAt"] + SIGN_IN_OPEN_LIMIT_SECONDS
+    rolled = min(now + TTL_SECONDS, limit)
+    if rolled > item["expiresAt"] and (rolled - item["expiresAt"] >= EXTEND_BEFORE_SECONDS or rolled >= limit):
+        return rolled
+    return None
 
 
 class BrowserBridge:
@@ -456,25 +471,33 @@ class BrowserBridge:
                 "body": base64.b64encode(reply.body).decode(), "done": done}
 
     async def check(self) -> None:
-        """Mark requests whose time ran out or whose tool stopped listening."""
+        """Mark requests whose time ran out or whose tool stopped listening. A pending request
+        whose tool still listens stays open up to SIGN_IN_OPEN_LIMIT_SECONDS."""
         async with self.changed:
             now, rows, changed = self.clock(), None, False
             for item in self.items.values():
                 if item["state"] not in OPEN_STATES:
                     continue
                 expires = (item.get("lease") or {}).get("expiresAt", item["expiresAt"])
-                if now > expires:
-                    self._update(item, state="expired")
-                    changed = True
-                    continue
-                redirect = item.get("redirect")
+                redirect, listening = item.get("redirect"), None
                 if redirect is not None:
                     rows = self.listeners() if rows is None else rows
                     try:
                         connect_address(item["uid"], redirect["port"], rows)
+                        listening = True
                     except BridgeError:
-                        self._update(item, state="stale")
-                        changed = True
+                        listening = False
+                if item["state"] == "pending" and listening:
+                    deadline = listening_deadline(item, now)
+                    if deadline is not None:
+                        self._update(item, expiresAt=deadline)
+                        changed, expires = True, deadline
+                if now > expires:
+                    self._update(item, state="expired")
+                    changed = True
+                elif listening is False:
+                    self._update(item, state="stale")
+                    changed = True
             if changed:
                 self._save()
 

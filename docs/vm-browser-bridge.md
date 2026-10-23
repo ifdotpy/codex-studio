@@ -96,7 +96,8 @@ approves every link.
 3. The forward port comes from `redirect_uri`. It is fixed (kubelogin 8000 or 18000) or random
    (AWS, az). Studio cannot change it, because the provider checks it and the token request
    repeats it.
-4. The tools wait 180 s (kubelogin) or 600 s (AWS). The card must expire when the tool stops.
+4. The tools wait 180 s (kubelogin) or 600 s (AWS). The card must expire when the tool stops,
+   and it must not expire while the tool still waits (section 2(b), "Card lifetime").
 5. A Mac forward must hold the port on every address the browser can use. It must never use
    `SO_REUSEADDR`.
 
@@ -195,10 +196,21 @@ its own `http` and `https` rule.
   device-code mode." Nothing binds and nothing opens. Decline works from every window.
 - Decline: the server calls `browser.answer` with `decline` and queues a message to the chat:
   "The person declined to open HOST in the browser. ..."
-- Expiry: the guest marks a request `stale` when its loopback listener goes away (it checks
-  every 5 s), `expired` after 10 minutes, and `replaced` by a newer link of the chat. The
-  server then marks a pending card `expired`. A backend restart and a stopped chat also
-  expire pending cards (the existing request rules).
+- Card lifetime: the guest checks every 5 s. It marks a request `stale` when its loopback
+  listener goes away and `replaced` by a newer link of the chat. A request lives 10 minutes
+  (`TTL_SECONDS`). While its command still listens, a pending request stays open: when its
+  deadline is at most 5 minutes away, the guest moves it to 10 minutes from now, but never
+  past `SIGN_IN_OPEN_LIMIT_SECONDS` (30 minutes, owner `runtime-schema/src/shared_values.rs`)
+  from its creation. Then it marks the request `expired`. A request without a loopback
+  redirect (a device code page) has no listener to check and expires after 10 minutes. The
+  card shows the moved deadline (`params.expiresAt`). The host bridge (`browser_host.rs`)
+  follows the same rules.
+- The server then marks a pending card `expired`. When nobody answered the card and the
+  request ended `stale` or `expired`, the server also queues one `browser_unanswered` event
+  to the chat. It says that the command gets no sign-in result from this card, that the agent
+  must not wait for it, and that it starts the sign-in again when the person can answer. A
+  `replaced` card gets no event, because the chat gave a newer link. A backend restart and a
+  stopped chat also expire pending cards (the existing request rules).
 
 ### (c) Loopback forward
 
@@ -525,8 +537,9 @@ at phone width (one column, buttons in a row that wraps).
   returned an error, the result is unknown, or the request ended without a result. The person
   and the agent both see it. After a paste the window says "Studio sent the sign-in result to
   the command. The chat shows how it ended."; an unknown or expired result is an error on the
-  card. A decline or a cancel adds the decline event. A request that expires before the
-  approval only closes its card, as before.
+  card. A decline or a cancel adds the decline event. A request that ends `stale` or
+  `expired` before the approval closes its card and adds the `browser_unanswered` event
+  (section 2(b)).
 
 ### 6.3 Protocol
 

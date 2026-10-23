@@ -44,10 +44,8 @@ impl Fixture {
         let folder = tempfile::tempdir().expect("bridge folder");
         let directory = folder.path().join("browser");
         std::fs::create_dir_all(&directory).expect("browser folder");
-        let items: serde_json::Map<String, Value> = ids
-            .iter()
-            .map(|id| ((*id).to_owned(), saved(id)))
-            .collect();
+        let items: serde_json::Map<String, Value> =
+            ids.iter().map(|id| ((*id).to_owned(), saved(id))).collect();
         std::fs::write(
             directory.join("requests.json"),
             json!({"seq": 1, "items": items}).to_string(),
@@ -125,7 +123,10 @@ async fn the_person_can_approve_a_listening_request_after_the_request_time() {
     }
     let answer = fixture
         .bridge
-        .call("browser.answer", &json!({"id": "card", "decision": "approve"}))
+        .call(
+            "browser.answer",
+            &json!({"id": "card", "decision": "approve"}),
+        )
         .await
         .expect("the request is still open");
     assert_eq!(answer["state"], "approved");

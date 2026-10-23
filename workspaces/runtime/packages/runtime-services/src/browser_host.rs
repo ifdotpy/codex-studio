@@ -53,6 +53,15 @@ pub const OPEN_NAME: &str = "open";
 const TTL_SECONDS: f64 = 600.0;
 /// A closed request stays in the queue this long, in seconds.
 const KEEP_SECONDS: f64 = 3600.0;
+/// A pending request whose command still listens gets a new deadline when its current one is
+/// at most this many seconds away (`EXTEND_BEFORE_SECONDS`, docs/vm-browser-bridge.md,
+/// "Card lifetime").
+const EXTEND_BEFORE_SECONDS: f64 = TTL_SECONDS / 2.0;
+/// The open limit of a listening request, in seconds from its creation. Its owner is
+/// `SIGN_IN_OPEN_LIMIT_SECONDS`; the final state at this bound must still be in the queue.
+const OPEN_LIMIT_SECONDS: f64 =
+    studio_runtime_schema::shared_values::SIGN_IN_OPEN_LIMIT_SECONDS as f64;
+const _: () = assert!(OPEN_LIMIT_SECONDS + TTL_SECONDS < KEEP_SECONDS);
 const LIMIT_WINDOW_SECONDS: f64 = 600.0;
 const LIMIT_COUNT: usize = 6;
 const CONNECTIONS_PER_UID: usize = 2;
@@ -1078,7 +1087,8 @@ impl HostBridge {
         }))
     }
 
-    /// Mark requests whose time ran out or whose tool stopped listening.
+    /// Mark requests whose time ran out or whose tool stopped listening. A pending request
+    /// whose tool still listens stays open up to `OPEN_LIMIT_SECONDS` (`listening_deadline`).
     pub async fn check(&self) {
         let needs_rows = {
             let queue = self.lock();
@@ -1102,25 +1112,35 @@ impl HostBridge {
             if !OPEN_STATES.contains(&item["state"].as_str().unwrap_or_default()) {
                 continue;
             }
-            let expires = item
+            let mut expires = item
                 .get("lease")
                 .and_then(|lease| lease.get("expiresAt"))
                 .and_then(Value::as_f64)
                 .unwrap_or_else(|| item["expiresAt"].as_f64().unwrap_or(0.0));
+            let redirect = item.get("redirect").filter(|value| value.is_object());
+            // `None` with a redirect: the probe failed and the listener is unknown. An unknown
+            // listener is not a stopped command: it never makes the request stale, and it keeps
+            // the deadline moving up to the open limit, as a listening command does.
+            let listening = redirect.zip(rows.as_ref()).map(|(redirect, rows)| {
+                let uid = item["uid"].as_u64().unwrap_or(u64::MAX) as u32;
+                let port = redirect["port"].as_u64().unwrap_or(0) as u16;
+                connect_address(uid, port, rows).is_ok()
+            });
+            if item["state"] == "pending"
+                && redirect.is_some()
+                && listening != Some(false)
+                && let Some(deadline) = listening_deadline(&item, now)
+            {
+                self.update(&mut queue, &key, json!({"expiresAt": deadline}));
+                changed = true;
+                expires = deadline;
+            }
             if now > expires {
                 self.update(&mut queue, &key, json!({"state": "expired"}));
                 changed = true;
-                continue;
-            }
-            if let Some(redirect) = item.get("redirect").filter(|value| value.is_object())
-                && let Some(rows) = &rows
-            {
-                let uid = item["uid"].as_u64().unwrap_or(u64::MAX) as u32;
-                let port = redirect["port"].as_u64().unwrap_or(0) as u16;
-                if connect_address(uid, port, rows).is_err() {
-                    self.update(&mut queue, &key, json!({"state": "stale"}));
-                    changed = true;
-                }
+            } else if listening == Some(false) {
+                self.update(&mut queue, &key, json!({"state": "stale"}));
+                changed = true;
             }
         }
         if changed {
@@ -1245,6 +1265,19 @@ impl HostBridge {
             tokio::time::timeout(Duration::from_secs(READ_SECONDS), writer.write_all(&bytes)).await,
         );
     }
+}
+
+/// The new deadline of a pending request whose command still listens, or `None` to keep its
+/// deadline (`listening_deadline`): one request time from now, at most `OPEN_LIMIT_SECONDS`
+/// from its creation. The deadline moves when it is at most `EXTEND_BEFORE_SECONDS` away, so
+/// a listening request changes about once in five minutes, not at every check.
+fn listening_deadline(item: &Value, now: f64) -> Option<f64> {
+    let created = item.get("createdAt").and_then(Value::as_f64)?;
+    let expires = item.get("expiresAt").and_then(Value::as_f64)?;
+    let limit = created + OPEN_LIMIT_SECONDS;
+    let rolled = (now + TTL_SECONDS).min(limit);
+    (rolled > expires && (rolled - expires >= EXTEND_BEFORE_SECONDS || rolled >= limit))
+        .then_some(rolled)
 }
 
 fn item_state(queue: &Queue, params: &Value) -> Result<(String, String), BridgeError> {
