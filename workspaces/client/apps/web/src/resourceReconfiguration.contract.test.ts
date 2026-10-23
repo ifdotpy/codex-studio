@@ -1,5 +1,5 @@
 // Round-two review harness. Real sync/resourceEvents.ts and api.ts. The stream is
-// a model of scripts/studio_api/sync/resources/hub.py at head: every opened
+// a model of the resource notification hub: every opened
 // EventSource receives an "initial" baseline with per-resource revisions; publish_many
 // stores the hub counter; publish_entity_sequence stores the entity sequence for state.
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -106,6 +106,12 @@ class Source {
     name: string,
     listener: (event: MessageEvent<string>) => void,
   ) {
+    if (name === "session") {
+      listener({
+        data: JSON.stringify({ sessionId: "session-test" }),
+      } as MessageEvent<string>);
+      return;
+    }
     if (name === "api-schema") {
       listener({
         data: JSON.stringify({ hash: API_SCHEMA_HASH }),
@@ -173,12 +179,39 @@ async function setup(entitySequence = 0) {
   const posts: Deferred[] = [];
   vi.stubGlobal(
     "fetch",
-    vi.fn(
-      (_request: Request) =>
-        new Promise<Response>((resolve, reject) =>
-          posts.push({ resolve, reject }),
-        ),
-    ),
+    vi.fn(async (request: Request) => {
+      if (new URL(request.url).pathname === "/api/sync/subscriptions") {
+        const update = await request.json();
+        const source = live()[0];
+        if (!source)
+          return Response.json(
+            { error: "Unknown sync session" },
+            { status: 410 },
+          );
+        source.resources = source.resources.filter(
+          (resource) =>
+            !update.remove.some(
+              (removed: Ref) => keyOf(resource) === keyOf(removed),
+            ),
+        );
+        const added = update.add.filter(
+          (resource: Ref) => !source.subscribed(resource),
+        );
+        source.resources.push(...added);
+        queueMicrotask(() => {
+          source.emit("subscriptions", { gen: update.gen });
+          if (added.length)
+            source.emit("resources", Source.hub.event("initial", added));
+        });
+        return Response.json(
+          { gen: update.gen },
+          { headers: { "X-Studio-Api-Schema": API_SCHEMA_HASH } },
+        );
+      }
+      return new Promise<Response>((resolve, reject) =>
+        posts.push({ resolve, reject }),
+      );
+    }),
   );
   const api = await import("./api");
   api.setToken("test-token");
@@ -285,10 +318,9 @@ describe("round two: freshness with the real hub revision rules", () => {
     watch(accounts as never, () => a++);
     await tick();
     const base = a;
-    watch(costs as never, () => {}); // reconfigure: old stream closes at once
+    watch(costs as never, () => {});
     await tick(0);
-    hub.publishMany([accounts]); // committed before the new stream is registered
-    deliver(null);
+    deliver(hub.publishMany([accounts])); // The existing stream remains subscribed during the update.
     await tick();
     console.log(
       "F4",
@@ -303,11 +335,13 @@ describe("round two: freshness with the real hub revision rules", () => {
     watch(accounts as never, () => a++);
     await tick();
     const base = a;
-    live()[0]!.close();
+    const disconnected = live()[0]!;
+    disconnected.close();
+    disconnected.onerror?.();
     hub.publishMany([accounts]);
     hub.publishMany([accounts]);
     watch(costs as never, () => {});
-    await tick();
+    await tick(1000);
     console.log("F5", JSON.stringify({ base, after: a }));
     expect(a - base).toBe(1);
   });

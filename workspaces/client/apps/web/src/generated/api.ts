@@ -1972,6 +1972,26 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/sync/subscriptions": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Change live sync subscriptions
+     * @description Changes one open stream. HTTP 410 means the stream session expired; reopen with the full resource set and cursors. A lost response must recover by reopening, never retrying the diff. Resource bounds use MAX_SYNC_RESOURCE_COUNT and MAX_SYNC_RESOURCE_QUERY_BYTES from runtime-schema/src/shared_values.rs, as for the stream selector.
+     */
+    post: operations["sync_subscriptions_api_sync_subscriptions_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/task": {
     parameters: {
       query?: never;
@@ -23154,6 +23174,22 @@ export interface components {
       id: string;
       value: components["schemas"]["RuleEntityDto"];
     };
+    /** SyncSessionEvent */
+    SyncSessionEvent: {
+      sessionId: string;
+    };
+    /** SyncSubscriptionAck */
+    SyncSubscriptionAck: {
+      gen: number;
+    };
+    /** SyncSubscriptionRequest */
+    SyncSubscriptionRequest: {
+      add: components["schemas"]["ResourceRef"][];
+      gen: number;
+      remove: components["schemas"]["ResourceRef"][];
+      sessionId: string;
+      tokenRates?: boolean;
+    };
     /** SyncTaskEntityPayload */
     SyncTaskEntityPayload: {
       /**
@@ -35860,7 +35896,9 @@ export interface operations {
             | components["schemas"]["ApiSchemaEvent"]
             | components["schemas"]["ResourceChangeEvent"]
             | components["schemas"]["ResourceHeartbeatEvent"]
-            | components["schemas"]["ResourceTokenRatesEvent"];
+            | components["schemas"]["ResourceTokenRatesEvent"]
+            | components["schemas"]["SyncSessionEvent"]
+            | components["schemas"]["SyncSubscriptionAck"];
         };
       };
       /** @description Bad Request */
@@ -35873,6 +35911,43 @@ export interface operations {
       500: components["responses"]["ApiError500"];
       /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
+    };
+  };
+  sync_subscriptions_api_sync_subscriptions_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["SyncSubscriptionRequest"];
+      };
+    };
+    responses: {
+      /** @description Subscription change accepted; the SSE acknowledgement precedes added-resource initial data. */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["SyncSubscriptionAck"];
+        };
+      };
+      400: components["responses"]["ApiError400"];
+      403: components["responses"]["ApiError403"];
+      409: components["responses"]["ApiError409"];
+      /** @description Unknown or expired stream session */
+      410: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      500: components["responses"]["ApiError500"];
     };
   };
   task_detail_api_task_get: {

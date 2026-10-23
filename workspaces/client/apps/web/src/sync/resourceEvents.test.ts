@@ -40,6 +40,12 @@ class Source {
     name: string,
     listener: (event: MessageEvent<string>) => void,
   ) {
+    if (name === "session" && this.autoHandshake) {
+      listener({
+        data: JSON.stringify({ sessionId: "session-test" }),
+      } as MessageEvent<string>);
+      return;
+    }
     if (name === "api-schema" && this.autoHandshake) {
       this.schemaEmitted = true;
       listener({
@@ -100,6 +106,12 @@ class Channel {
 }
 
 const activeStops = new Set<() => void>();
+const subscriptionPosts: Array<{
+  gen: number;
+  add: unknown[];
+  remove: unknown[];
+  tokenRates?: boolean;
+}> = [];
 
 function trackStop(stop: () => void) {
   const trackedStop = () => {
@@ -111,6 +123,20 @@ function trackStop(stop: () => void) {
 }
 
 async function loadTransport() {
+  const api = await import("../api");
+  vi.spyOn(api, "post").mockImplementation(async (_path, body) => {
+    const update = body as {
+      gen: number;
+      add: unknown[];
+      remove: unknown[];
+      tokenRates?: boolean;
+    };
+    subscriptionPosts.push(update);
+    queueMicrotask(() =>
+      Source.instances.at(-1)?.emit("subscriptions", { gen: update.gen }),
+    );
+    return { gen: update.gen } as never;
+  });
   const transport = await import("./resourceEvents");
   return {
     ...transport,
@@ -213,6 +239,7 @@ describe("shared resource event transport", () => {
     vi.useRealTimers();
     vi.unstubAllGlobals();
     Source.instances = [];
+    subscriptionPosts.length = 0;
     Source.skipNextAutoHandshake = false;
     Channel.instances = [];
     syncDatabase.mockClear();
@@ -349,15 +376,16 @@ describe("shared resource event transport", () => {
       { kind: "accounts" },
       vi.fn(),
     );
-    await vi.waitFor(() => expect(Source.instances).toHaveLength(2));
-    expect(Source.instances[1]!.url).not.toBe(initialUrl);
+    await vi.waitFor(() => expect(subscriptionPosts).toHaveLength(1));
+    expect(subscriptionPosts[0]?.add).toEqual([{ kind: "accounts" }]);
     expect(Source.instances.filter((source) => !source.closed)).toHaveLength(1);
-    const latestUrl = Source.instances[1]!.url;
+    const latestUrl = Source.instances[0]!.url;
+    expect(latestUrl).toBe(initialUrl);
 
     await Promise.resolve();
     await Promise.resolve();
     expect(Source.instances.at(-1)!.url).toBe(latestUrl);
-    expect(Source.instances).toHaveLength(2);
+    expect(Source.instances).toHaveLength(1);
     stopAccountsAgain();
     stopAccounts();
     stopCosts();
@@ -1548,8 +1576,9 @@ describe("shared resource event transport", () => {
       terminal,
       terminalChanges,
     );
-    await vi.waitFor(() => expect(Source.instances).toHaveLength(2));
-    const replacement = Source.instances[1]!;
+    await vi.waitFor(() => expect(subscriptionPosts).toHaveLength(1));
+    expect(Source.instances).toHaveLength(1);
+    const replacement = Source.instances[0]!;
     expect(states.slice(2).every((state) => state === "live")).toBe(true);
     expect(states.at(-1)).toBe("live");
     replacement.emit("api-schema", { hash: API_SCHEMA_HASH });
@@ -1668,12 +1697,9 @@ describe("shared resource event transport", () => {
     Source.instances[0]!.emit("token-rates", currentSnapshot);
     expect(onTokenRates).toHaveBeenCalledWith(currentSnapshot);
     stopTokens();
-    await vi.waitFor(() => expect(Source.instances).toHaveLength(2));
-    expect(
-      new URL(Source.instances[1]!.url, "http://studio.test").searchParams.get(
-        "tokenRates",
-      ),
-    ).toBe("false");
+    await vi.waitFor(() => expect(subscriptionPosts).toHaveLength(1));
+    expect(subscriptionPosts[0]?.tokenRates).toBe(false);
+    expect(Source.instances).toHaveLength(1);
     stop();
     await vi.waitFor(() => expect(Source.instances[0]?.closed).toBe(true));
   });
@@ -1885,9 +1911,9 @@ describe("shared resource event transport", () => {
         },
       } as MessageEvent);
     peerInterest(true);
-    await vi.waitFor(() => expect(Source.instances).toHaveLength(2));
-    expect(Source.instances[0]!.closed).toBe(true);
-    expect(interest(Source.instances[1]!)).toBe("true");
+    await vi.waitFor(() => expect(subscriptionPosts).toHaveLength(1));
+    expect(Source.instances[0]!.closed).toBe(false);
+    expect(subscriptionPosts[0]?.tokenRates).toBe(true);
     const event = {
       protocol: 4,
       workspaceId,
@@ -1898,24 +1924,26 @@ describe("shared resource event transport", () => {
       records: [],
     };
     const beforeSnapshot = channel.messages.length;
-    Source.instances[1]!.emit("token-rates", event);
+    Source.instances[0]!.emit("token-rates", event);
     expect(channel.messages.slice(beforeSnapshot)).toContainEqual(
       expect.objectContaining({ kind: "token-rates", event }),
     );
     peerInterest(false);
-    await vi.waitFor(() => expect(Source.instances).toHaveLength(3));
-    expect(interest(Source.instances[2]!)).toBe("false");
+    await vi.waitFor(() => expect(subscriptionPosts).toHaveLength(2));
+    expect(subscriptionPosts[1]?.tokenRates).toBe(false);
     peerInterest(true);
-    await vi.waitFor(() => expect(Source.instances).toHaveLength(4));
+    await vi.waitFor(() => expect(subscriptionPosts).toHaveLength(3));
+    expect(subscriptionPosts[2]?.tokenRates).toBe(true);
+    expect(Source.instances).toHaveLength(1);
     visibility.hidden = true;
     for (const resume of resumeListeners) resume();
-    expect(Source.instances[3]!.closed).toBe(true);
+    expect(Source.instances[0]!.closed).toBe(true);
     visibility.hidden = false;
     for (const resume of resumeListeners) resume();
-    await vi.waitFor(() => expect(Source.instances).toHaveLength(5));
-    expect(interest(Source.instances[4]!)).toBe("true");
+    await vi.waitFor(() => expect(Source.instances).toHaveLength(2));
+    expect(interest(Source.instances[1]!)).toBe("true");
     const beforeTakeover = channel.messages.length;
-    Source.instances[4]!.emit("token-rates", { ...event, revision: 4 });
+    Source.instances[1]!.emit("token-rates", { ...event, revision: 4 });
     expect(channel.messages.slice(beforeTakeover)).toContainEqual(
       expect.objectContaining({
         kind: "token-rates",
@@ -2199,15 +2227,9 @@ describe("shared resource event transport", () => {
       },
     } as MessageEvent);
 
-    await vi.waitFor(() =>
-      expect(Source.instances).toHaveLength(
-        sourceCountBeforeLateSubscription + 1,
-      ),
-    );
-
-    expect(Source.instances).toHaveLength(
-      sourceCountBeforeLateSubscription + 1,
-    );
+    await vi.waitFor(() => expect(subscriptionPosts).toHaveLength(1));
+    expect(subscriptionPosts[0]?.add).toEqual([evictedRef]);
+    expect(Source.instances).toHaveLength(sourceCountBeforeLateSubscription);
     expect(
       ownerChannel.messages
         .slice(sentBeforeLateSubscription)

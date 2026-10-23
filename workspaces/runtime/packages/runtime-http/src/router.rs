@@ -147,6 +147,7 @@ pub struct HttpState {
     pub(crate) capabilities_cache: Arc<studio_runtime_services::catalog_reads::CapabilitiesCache>,
     pub(crate) resource_notifications:
         Arc<studio_runtime_services::resource_notify::ResourceNotifications>,
+    pub(crate) sync_sessions: Arc<routes::SyncSessions>,
     pub(crate) sync_changes: Arc<ChangeNotificationHub>,
     pub(crate) token_rates: Arc<TokenRateHub>,
     pub(crate) event_wake: Arc<Notify>,
@@ -284,6 +285,7 @@ impl HttpState {
             model_catalog,
             capabilities_cache: Arc::new(Default::default()),
             resource_notifications,
+            sync_sessions: Arc::new(Default::default()),
             sync_changes: Arc::clone(&sync_changes),
             token_rates: Arc::new(TokenRateHub::with_change_hub(Arc::clone(&sync_changes))),
             event_wake: Arc::new(Notify::new()),
