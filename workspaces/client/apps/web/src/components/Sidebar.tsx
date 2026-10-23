@@ -1278,7 +1278,7 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
           href={serverViewId ? location.pathname + location.search : "/"}
         >
           <span className="brand-name">
-            <strong>Fleet</strong>
+            <strong>LAYR</strong> <span>Studio</span>
           </span>
         </a>
         {p.settings && (
