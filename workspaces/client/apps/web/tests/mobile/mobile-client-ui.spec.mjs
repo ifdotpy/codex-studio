@@ -610,6 +610,7 @@ test("Mobile composer 320px setup renders the settled action row", async ({
         const rect = child.getBoundingClientRect();
         return {
           name: child.getAttribute("aria-label") || child.textContent.trim(),
+          timingHint: child.classList.contains("composer-timing"),
           width: rect.width,
           height: rect.height,
         };
@@ -618,9 +619,7 @@ test("Mobile composer 320px setup renders the settled action row", async ({
     assert.ok(rendered.length > 0, "Composer action row has rendered controls");
     assert.ok(
       rendered
-        .filter(
-          (item) => item.name !== "Send to current turn · Queue for next turn",
-        )
+        .filter((item) => !item.timingHint)
         .every((item) => item.width > 0 && item.height > 0),
       `Every action row child is laid out: ${JSON.stringify(rendered)}`,
     );

@@ -91,7 +91,6 @@
 }
 .conversation-worker-dots {
   display: flex;
-  gap: var(--mantine-spacing-xs);
   max-inline-size: 100%;
   gap: calc(var(--studio-dot-size) / 2);
   overflow: hidden;

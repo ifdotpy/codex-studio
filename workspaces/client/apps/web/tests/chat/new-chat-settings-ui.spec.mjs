@@ -4,7 +4,7 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-test("new chat chips open each role, save settings and disappear after send", async ({
+test("new chat controls open each role, save settings and move to the footer after send", async ({
   page,
 }) => {
   test.setTimeout(120000);
@@ -28,7 +28,6 @@ test("new chat chips open each role, save settings and disappear after send", as
     });
     await page.setViewportSize({ width: 1440, height: 900 });
     await page.goto(`http://127.0.0.1:${port}`);
-    await page.locator("#message").waitFor();
     await page
       .locator("[data-chat]")
       .filter({ hasText: "Release lead" })
@@ -49,9 +48,14 @@ test("new chat chips open each role, save settings and disappear after send", as
       .click();
     await startChat;
     const row = page.locator(
-      "#conversation > #composer + .empty-chat-settings",
+      ".conversation-start-execution .empty-chat-settings",
     );
     await expect(row).toBeVisible();
+    await expect(
+      page
+        .getByRole("navigation", { name: "Recent project chats" })
+        .getByRole("button", { name: /Release lead/ }),
+    ).toBeVisible();
     await expect(row.locator(".execution-menu")).toHaveCount(2);
     await expect(page.locator("#composer .execution-menu")).toHaveCount(0);
     await expect(page.locator(".empty-chat p")).toHaveCount(0);
@@ -67,8 +71,8 @@ test("new chat chips open each role, save settings and disappear after send", as
     await expect(workers).toContainText(/Luna 6 · High · .+/);
     const composerBounds = await page.locator("#composer").boundingBox();
     const rowBounds = await row.boundingBox();
-    expect(rowBounds.y).toBeGreaterThanOrEqual(
-      composerBounds.y + composerBounds.height,
+    expect(rowBounds.y + rowBounds.height).toBeLessThanOrEqual(
+      composerBounds.y,
     );
     await main.click();
     await expect(
@@ -128,7 +132,15 @@ test("new chat chips open each role, save settings and disappear after send", as
     await page.locator("#send").click();
     expect((await send).ok()).toBe(true);
     await expect(row).toHaveCount(0);
-    await expect(page.locator("#composer .execution-menu")).toHaveCount(1);
+    await expect(page.locator("#composer .execution-menu")).toHaveCount(0);
+    const footer = page.locator(".conversation-composer-footer");
+    await expect(
+      footer.getByRole("button", { name: "Main agent settings", exact: true }),
+    ).toBeVisible();
+    await expect(
+      footer.getByRole("button", { name: "Subagent defaults", exact: true }),
+    ).toBeVisible();
+    await expect(footer.locator(".execution-menu")).toHaveCount(2);
   } finally {
     fixture.kill("SIGTERM");
   }

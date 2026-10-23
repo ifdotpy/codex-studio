@@ -731,7 +731,10 @@ export default function Conversation(p: {
     !["running", "starting"].includes(agent?.status || "");
   const executionControls =
     p.agent?.source === "managed" ? (
-      <div className="empty-chat-settings" aria-label="Agent settings">
+      <div
+        className="empty-chat-settings composer-context-row"
+        aria-label="Agent settings"
+      >
         {(["orchestrator", "worker"] as const).map((role) => (
           <div className="empty-chat-setting" key={role}>
             <span>{role === "orchestrator" ? "Model" : "Workers"}</span>
