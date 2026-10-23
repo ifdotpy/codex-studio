@@ -1787,6 +1787,8 @@ export function createSyncClient(options: SyncClientOptions) {
     // downstream waits before cancelling the one active RxDB state.
     // Invariants: no pull sequence without a trigger; no outage trigger is lost;
     // at most one restart per minimum interval.
+    // Ordinary complete draft batches enter RxDB's master stream. Their accepted
+    // watermark proves continuity; RxDB owns durable checkpoints and conflicts.
     const failures = new Map<"pull" | "push" | "replication", unknown>();
     let stopped = false;
     let pushFailed = false;
@@ -1802,6 +1804,8 @@ export function createSyncClient(options: SyncClientOptions) {
     let restartTimer: ReturnType<typeof setTimeout> | undefined;
     let lastRestartAt = Number.NEGATIVE_INFINITY;
     let replicationGeneration = 0;
+    let draftEpoch: string | undefined;
+    let acceptedDraftSequence: number | undefined;
     const stopWaiters = new Set<() => void>();
     const advanceReplicationGeneration = () => ++replicationGeneration;
     const waitForStop = () => {
@@ -1984,6 +1988,10 @@ export function createSyncClient(options: SyncClientOptions) {
                 );
                 if (result.reset === true)
                   throw new Error("The server reset draft sync unexpectedly.");
+                acceptedDraftSequence = Math.max(
+                  acceptedDraftSequence ?? 0,
+                  result.checkpoint.seq,
+                );
                 pullContinues = result.documents.length >= batchSize;
                 return {
                   documents: result.documents,
@@ -2051,6 +2059,8 @@ export function createSyncClient(options: SyncClientOptions) {
                 ? "push"
                 : "replication";
           state(direction, error);
+          if (direction !== "push" && acceptedDraftSequence !== undefined)
+            triggerPull();
         }),
       ];
       replication = current;
@@ -2132,11 +2142,39 @@ export function createSyncClient(options: SyncClientOptions) {
       else replication.reSync();
     };
     const triggerPull = () => {
+      acceptedDraftSequence = undefined;
       pullTriggered = true;
       servePendingPull();
     };
-    const stopInvalidation = watchSyncInvalidations(() => {
-      triggerPull();
+    const stopInvalidation = watchSyncInvalidations((version) => {
+      const batch = version?.draftChanges;
+      if (version?.reason !== "change" || version.epoch !== draftEpoch) {
+        draftEpoch = version?.epoch;
+        triggerPull();
+        return;
+      }
+      if (
+        acceptedDraftSequence !== undefined &&
+        version.revision <= acceptedDraftSequence
+      )
+        return;
+      if (
+        !batch ||
+        acceptedDraftSequence === undefined ||
+        batch.after > acceptedDraftSequence ||
+        batch.through !== version.revision ||
+        batch.through <= batch.after ||
+        batch.documents.at(-1)?.seq !== batch.through
+      ) {
+        triggerPull();
+        return;
+      }
+      const after = acceptedDraftSequence;
+      replication.emitEvent({
+        documents: batch.documents.filter((row) => row.seq > after),
+        checkpoint: { seq: batch.through },
+      });
+      acceptedDraftSequence = batch.through;
     }, "drafts");
     const stopResume = onResume(() => {
       triggerPull();
