@@ -12,7 +12,7 @@ import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-test("390px composer shows the compact Codex or Claude model and reasoning", async ({
+test("390px composer keeps role symbols separate and accessible model names", async ({
   browser,
 }) => {
   test.setTimeout(90_000);
@@ -31,18 +31,16 @@ test("390px composer shows the compact Codex or Claude model and reasoning", asy
     const origin = `http://127.0.0.1:${port}`;
     const base = await readTestState(origin),
       contract = await readFixtureSyncContract(origin);
-    for (const { provider, model, name, family } of [
+    for (const { provider, model, name } of [
       {
         provider: "codex",
         model: "gpt-6-astra",
         name: "Astra 6",
-        family: "Astra",
       },
       {
         provider: "claude",
         model: "claude-opus-5-5",
         name: "Opus 5.5",
-        family: "Opus",
       },
     ])
       for (const scheme of ["light", "dark"]) {
@@ -64,7 +62,7 @@ test("390px composer shows the compact Codex or Claude model and reasoning", asy
           (agent) => agent.source === "managed",
         );
         const page = await browser.newPage({
-          // The compact trigger keeps the model name visible and may ellipsize reasoning.
+          // Touch phones show symbols only; their 44px targets leave no name room.
           viewport: { width: 390, height: 844 },
           colorScheme: scheme,
         });
@@ -109,42 +107,47 @@ test("390px composer shows the compact Codex or Claude model and reasoning", asy
             .first()
             .click();
           await expect(page.locator("#sidebar")).toBeHidden();
-          const trigger = page.locator("#composer .execution-menu");
+          const trigger = page.locator("#composer .execution-summary-trigger");
           await expect(trigger).toHaveAttribute(
             "aria-label",
-            "Main agent settings",
+            new RegExp(`Lead ${name} Medium`),
           );
-          const label = trigger.locator(".execution-selected");
-          await expect(label).toHaveText(`${name} · Medium`);
-          const geometry = await label.evaluate((node, name) => {
-            const range = document.createRange();
-            range.setStart(node.firstChild, 0);
-            range.setEnd(node.firstChild, name.length);
-            return {
-              text: node.innerText,
-              width: node.clientWidth,
-              modelWidth: range.getBoundingClientRect().width,
-              box: node.getBoundingClientRect().toJSON(),
-            };
-          }, name);
-          expect(
-            geometry.modelWidth,
-            `${provider} model name is untruncated`,
-          ).toBeLessThanOrEqual(geometry.width);
-          expect(geometry.text).toContain(family);
+          await expect(trigger).toHaveAttribute(
+            "title",
+            new RegExp(`Lead ${name} Medium`),
+          );
+          const label = trigger.locator('[data-role="lead"] .execution-model');
+          await expect(label).toBeHidden();
+          const geometry = await trigger
+            .locator(".execution-symbols")
+            .evaluateAll((nodes) =>
+              nodes.map((node) => node.getBoundingClientRect().toJSON()),
+            );
+          expect(geometry).toHaveLength(3);
           const triggerBox = await trigger.boundingBox();
-          expect(geometry.box.left).toBeGreaterThanOrEqual(triggerBox.x);
-          expect(geometry.box.right).toBeLessThanOrEqual(
-            triggerBox.x + triggerBox.width,
-          );
-          measurements.push({ provider, scheme, ...geometry });
+          for (const [index, box] of geometry.entries()) {
+            expect(box.left).toBeGreaterThanOrEqual(triggerBox.x);
+            expect(box.right).toBeLessThanOrEqual(
+              triggerBox.x + triggerBox.width,
+            );
+            if (index)
+              expect(box.left).toBeGreaterThanOrEqual(
+                geometry[index - 1].right,
+              );
+            expect(box.top).toBe(geometry[0].top);
+          }
+          await expect(
+            page.getByRole("button", { name: "Attach files", exact: true }),
+          ).toBeVisible();
+          measurements.push({ provider, scheme, geometry });
           await expect(page.locator("#toast")).toBeHidden({ timeout: 10_000 });
           await page.mouse.move(0, 0);
           await page.screenshot({
             path: join(evidence, `family-390-${provider}-${scheme}.png`),
           });
           await page.setViewportSize({ width: 1440, height: 900 });
-          expect(await label.innerText()).toBe(`${name} · Medium`);
+          await expect(label.locator(".execution-model-family")).toBeHidden();
+          expect(await label.innerText()).toBe(name);
         } finally {
           await page.context().close();
         }

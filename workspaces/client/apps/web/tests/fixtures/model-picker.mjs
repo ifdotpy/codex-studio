@@ -10,18 +10,20 @@ const isSelect = (picker) =>
 const listFor = async (picker) =>
   (await isSelect(picker))
     ? picker.locator("option")
-    : picker.getByRole("radio");
+    : picker.getByRole("option");
 export const openModelList = listFor;
 export async function closeModelList() {}
 export async function modelOptions(picker) {
   return (await listFor(picker)).evaluateAll((nodes) =>
-    nodes.map((node) => node.value),
+    nodes.map((node) => node.getAttribute("data-value") ?? node.value),
   );
 }
 export async function modelOptionDisabled(picker, value) {
-  return picker.locator(`[value="${value}"]`).isDisabled();
+  return picker
+    .locator(`[data-value="${value}"], option[value="${value}"]`)
+    .isDisabled();
 }
 export async function selectModel(picker, value) {
   if (await isSelect(picker)) await picker.selectOption(value);
-  else await picker.locator(`input[value="${value}"]`).click();
+  else await picker.locator(`[role="option"][data-value="${value}"]`).click();
 }

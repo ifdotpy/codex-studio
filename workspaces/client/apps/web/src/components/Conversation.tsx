@@ -110,8 +110,7 @@ import SelectionQuote, {
 } from "./conversation/transcript/SelectionQuote";
 import MessageActions from "./conversation/transcript/MessageActions";
 import { LiveAgentPhase } from "./agents/AgentPhase";
-import { UnifiedAgentSettings } from "./agents/UnifiedAgentSettings";
-import { useWorkerModels } from "./agents/WorkerModelPicker";
+import { ExecutionSummaryTrigger } from "./agents/ExecutionSummaryTrigger";
 import type { useAccounts } from "./Accounts";
 import ComposerAttachments, {
   MessageAttachments,
@@ -628,14 +627,6 @@ export default function Conversation(p: {
     !historical && !after,
   );
   const threadBlock = nativeThreadError(agent);
-  const [modelCommandRequest, setModelCommandRequest] = useState(0);
-  const modelCatalog = useWorkerModels(
-    p.agent?.accountKey || "default",
-    p.agent?.source === "managed",
-  );
-  useEffect(() => {
-    setModelCommandRequest(0);
-  }, [p.id, p.agent?.accountKey, p.syncWorkspaceId, p.data.stateDir]);
   const capacityRetry = agent ? currentCapacityRetry(agent) : null;
   const errorKind = nativeErrorKind(agent?.error);
   const failureKey = [
@@ -683,15 +674,14 @@ export default function Conversation(p: {
   const managed = agent?.source === "managed";
   const executionControls =
     p.agent?.source === "managed" ? (
-      <div className="composer-context-row" aria-label="Agent settings">
-        <UnifiedAgentSettings
-          state={p.accountsState}
-          notify={p.notify}
-          team={p.data.runtime?.agents || []}
+      <div
+        className="empty-chat-settings composer-context-row"
+        aria-label="Agent settings"
+      >
+        <ExecutionSummaryTrigger
           agent={p.agent}
-          catalog={modelCatalog}
-          refresh={p.refresh}
-          openRequest={modelCommandRequest}
+          team={p.data.runtime?.agents || []}
+          onOpen={p.onOpenChatSettings}
         />
       </div>
     ) : null;
@@ -800,7 +790,7 @@ export default function Conversation(p: {
         promptRecall.reset();
         input.current?.focus({ preventScroll: true });
         p.setDraft("");
-        setModelCommandRequest((value) => value + 1);
+        p.onOpenChatSettings();
       }
       return;
     }

@@ -1,3 +1,7 @@
+import {
+  isModelWhitelisted,
+  useModelWhitelist,
+} from "../models/modelWhitelist";
 import { useServerApi } from "../../servers/ServerServicesContext";
 import { SearchContent } from "./SearchOverlay";
 import { EmptyState, PanelHeader } from "../ui/primitives";
@@ -1029,8 +1033,21 @@ function Profiles(c: Context) {
   );
   // The profile model list comes from the selected lead's subagent catalog.
   const catalog = useWorkerModels(lead?.accountKey || "default", !!draft, true);
+  const allowedModels = useModelWhitelist();
   const profileModels = toModelOptions(catalog.models);
-  const draftModel = typeof draft?.model === "string" ? draft.model : "";
+  const eligibleModels = catalog.models.filter(
+    (model) => !model.hidden && isModelWhitelisted(model, allowedModels),
+  );
+  const defaultModel =
+    (eligibleModels.find((model) => model.isDefault) || eligibleModels[0])
+      ?.model || "";
+  const draftModel =
+    (typeof draft?.model === "string" ? draft.model : "") ||
+    (draft?.isNew ? defaultModel : "");
+  const validModel =
+    !!draftModel &&
+    (!draft?.isNew ||
+      eligibleModels.some((model) => model.model === draftModel));
   if (draftModel && !modelForValue(profileModels, draftModel))
     profileModels.unshift({
       value: draftModel,
@@ -1055,7 +1072,7 @@ function Profiles(c: Context) {
               isNew: true,
               name: "",
               role: "implementer",
-              model: "gpt-5.6-sol",
+              model: "",
               effort: "high",
               instructions: "",
             })
@@ -1125,6 +1142,7 @@ function Profiles(c: Context) {
             className="workspace-form"
             onSubmit={async (e) => {
               e.preventDefault();
+              if (!validModel) return;
               setBusy(true);
               try {
                 await c.run("/api/profiles", {
@@ -1171,6 +1189,7 @@ function Profiles(c: Context) {
             />
             {catalog.models.length ? (
               <ModelField
+                retainCurrent={!draft.isNew}
                 presentation="select"
                 label="Model"
                 value={draftModel}
@@ -1202,7 +1221,12 @@ function Profiles(c: Context) {
                 setDraft({ ...draft, instructions: e.target.value })
               }
             />
-            <Button variant="filled" type="submit" loading={busy}>
+            <Button
+              variant="filled"
+              type="submit"
+              loading={busy}
+              disabled={!validModel}
+            >
               Save profile
             </Button>
           </form>

@@ -45,8 +45,8 @@ test("Models whitelist filters every execution role and preserves the current mo
       .first()
       .click();
     const current = await page
-      .locator("#composer .execution-selected")
-      .innerText();
+      .locator("#composer .execution-summary-trigger")
+      .getAttribute("title");
     await page
       .getByRole("button", { name: "Studio settings", exact: true })
       .click();
@@ -82,24 +82,22 @@ test("Models whitelist filters every execution role and preserves the current mo
       }
     await page.keyboard.press("Escape");
     await expect(settings).toBeHidden();
-    await expect(page.locator("#composer .execution-selected")).toHaveText(
-      current,
-    );
-    await page
-      .getByRole("button", { name: "Main agent settings", exact: true })
-      .click();
+    await expect(
+      page.locator("#composer .execution-summary-trigger"),
+    ).toHaveAttribute("title", current);
+    await page.locator("#composer .execution-summary-trigger").click();
     const picker = page.getByRole("dialog", {
-      name: "Main agent settings",
+      name: "Chat settings",
       exact: true,
     });
     await expect(
       picker
         .getByLabel("Main agent model", { exact: true })
-        .getByRole("radio", { name: /Luna/ }),
+        .getByRole("option", { name: /Luna/ }),
     ).toHaveCount(0);
-    await picker.getByText("Worker", { exact: true }).click();
+    await picker.getByText("Workers", { exact: true }).click();
     const worker = page.getByRole("dialog", {
-      name: "Subagent defaults",
+      name: "Chat settings",
       exact: true,
     });
     const workerModel = worker.getByLabel("Default subagent model", {
@@ -107,18 +105,18 @@ test("Models whitelist filters every execution role and preserves the current mo
     });
     // An existing worker default remains visible, but cannot be selected anew.
     await expect(
-      workerModel.getByRole("radio", { name: /Luna/ }),
-    ).toBeChecked();
+      workerModel.getByRole("option", { name: /Luna/ }),
+    ).toHaveAttribute("aria-selected", "true");
     await expect(
-      workerModel.getByRole("radio", { name: /Luna/ }),
+      workerModel.getByRole("option", { name: /Luna/ }),
     ).toBeDisabled();
     await worker.getByText("Review", { exact: true }).click();
     await expect(
       page
         .getByLabel("Default review model", { exact: true })
-        .getByRole("radio", { name: /Luna/ }),
+        .getByRole("option", { name: /Luna/ }),
     ).toHaveCount(0);
-    await page.getByText("Orchestrator", { exact: true }).click();
+    await picker.getByText("Lead", { exact: true }).click();
     await page.keyboard.press("Escape");
     const openNewChat = async () => {
       await page
@@ -131,12 +129,12 @@ test("Models whitelist filters every execution role and preserves the current mo
     await expect(
       creation
         .getByLabel("Main agent model", { exact: true })
-        .getByRole("radio", { name: /Luna/ }),
+        .getByRole("option", { name: /Luna/ }),
     ).toHaveCount(0);
     await expect(
       creation
         .getByLabel("Default subagent model", { exact: true })
-        .getByRole("radio", { name: /Luna/ }),
+        .getByRole("option", { name: /Luna/ }),
     ).toHaveCount(0);
     await expect(
       creation.getByRole("button", { name: "Start chat", exact: true }),
@@ -147,19 +145,66 @@ test("Models whitelist filters every execution role and preserves the current mo
       .click();
     await settings.getByRole("tab", { name: "Models", exact: true }).click();
     await whitelist
+      .getByRole("checkbox", { name: "Sol 5.6", exact: true })
+      .uncheck();
+    await page.keyboard.press("Escape");
+    await page
+      .getByRole("button", { name: "Chat actions", exact: true })
+      .click();
+    await page.locator('[data-workspace-section="changes"]').click();
+    await page
+      .getByRole("navigation", { name: "Workspace sections" })
+      .getByRole("button", { name: "Profiles", exact: true })
+      .click();
+    await page
+      .getByRole("button", { name: "New profile", exact: true })
+      .click();
+    const profile = page.getByRole("dialog", {
+      name: "New subagent profile",
+      exact: true,
+    });
+    await expect(profile.getByLabel("Model", { exact: true })).toHaveValue(
+      "gpt-6-astra",
+    );
+    await expect(
+      profile
+        .getByLabel("Model", { exact: true })
+        .locator('option[value="gpt-5.6-sol"]'),
+    ).toHaveCount(0);
+    await profile
+      .getByRole("textbox", { name: /^Name/ })
+      .fill("Enabled model profile");
+    const savedProfile = page.waitForResponse(
+      (response) =>
+        response.url().endsWith("/api/profiles") &&
+        response.request().method() === "POST",
+    );
+    await profile
+      .getByRole("button", { name: "Save profile", exact: true })
+      .click();
+    expect((await savedProfile).request().postDataJSON().model).toBe(
+      "gpt-6-astra",
+    );
+    await page.locator(".workspace-drawer .mantine-Drawer-close").click();
+    await page
+      .getByRole("button", { name: "Studio settings", exact: true })
+      .click();
+    await settings.getByRole("tab", { name: "Models", exact: true }).click();
+    await whitelist
       .getByRole("button", { name: "Clear selection", exact: true })
       .click();
     await page.keyboard.press("Escape");
-    await page
-      .getByRole("button", { name: "Main agent settings", exact: true })
-      .click();
+    await page.locator("#composer .execution-summary-trigger").click();
     const retained = page.getByLabel("Main agent model", { exact: true });
-    await expect(retained.getByRole("radio")).toHaveCount(1);
-    await expect(retained.getByRole("radio")).toBeChecked();
-    await expect(retained.getByRole("radio")).toBeDisabled();
-    await expect(page.locator("#composer .execution-selected")).toHaveText(
-      current,
+    await expect(retained.getByRole("option")).toHaveCount(1);
+    await expect(retained.getByRole("option")).toHaveAttribute(
+      "aria-selected",
+      "true",
     );
+    await expect(retained.getByRole("option")).toBeDisabled();
+    await expect(
+      page.locator("#composer .execution-summary-trigger"),
+    ).toHaveAttribute("title", current);
     await page.keyboard.press("Escape");
     await openNewChat();
     await expect(

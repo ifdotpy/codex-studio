@@ -69,3 +69,30 @@ describe("model whitelist", () => {
     expect(calls).toBe(1);
   });
 });
+
+it("keeps catalog owners isolated even when their model IDs differ", () => {
+  writeModelWhitelist(["codex:local-only"], "local");
+  expect(readModelWhitelist("remote")).toBeNull();
+  expect(
+    whitelistedModelOptions(
+      models,
+      "gpt-6-astra",
+      readModelWhitelist("remote"),
+    ),
+  ).toEqual(models);
+  writeModelWhitelist([], "remote");
+  expect(readModelWhitelist("local")).toEqual(["codex:local-only"]);
+  writeModelWhitelist(null, "local");
+  writeModelWhitelist(null, "remote");
+});
+
+it("does not retain an excluded default for a new draft", () => {
+  expect(
+    whitelistedModelOptions(
+      models,
+      "gpt-6-astra",
+      [modelWhitelistKey(models[0])],
+      false,
+    ),
+  ).toEqual(models.slice(0, 2));
+});

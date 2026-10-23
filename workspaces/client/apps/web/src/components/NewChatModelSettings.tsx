@@ -8,7 +8,7 @@ import { Button, Stack, Text } from "@mantine/core";
 import { errorText, type GetResult } from "../api";
 import type { Agent } from "../types";
 import { serverResourceScope, type StudioServer } from "../servers/registry";
-import { ExecutionSettings } from "./agents/ExecutionSettings";
+import { ExecutionSettings, settingsFor } from "./agents/ExecutionSettings";
 import {
   ModelCatalogReader,
   useWorkerModels,
@@ -164,9 +164,7 @@ function ModelDraft({ server, projectId, path, onChange }: Props) {
       ? DEFAULT_CLAUDE_LEAD_EFFORT
       : undefined;
   const worker = settings.worker_defaults;
-  const workerModel = availableModels.some((row) => row.model === "gpt-6-luna")
-    ? "gpt-6-luna"
-    : (model ?? null);
+  const defaultWorker = settingsFor({}, true);
   const agent: Agent = {
     id: "new-chat-draft",
     name: "New chat",
@@ -180,8 +178,9 @@ function ModelDraft({ server, projectId, path, onChange }: Props) {
     fastMode: !!settings.fast_mode,
     daybreakEnabled: !!settings.daybreak_enabled,
     workerDefaults: {
-      model: worker?.model === undefined ? workerModel : worker.model,
-      effort: worker?.effort === undefined ? "high" : worker.effort,
+      model: worker?.model === undefined ? defaultWorker.model : worker.model,
+      effort:
+        worker?.effort === undefined ? defaultWorker.effort : worker.effort,
       fastMode: !!worker?.fast_mode,
       daybreakEnabled: !!worker?.daybreak_enabled,
       accountKey: worker?.account_key,
@@ -208,15 +207,6 @@ function ModelDraft({ server, projectId, path, onChange }: Props) {
             {
               ...settings,
               ...(defaultEffort ? { effort: defaultEffort } : {}),
-              ...(allowed !== null && !settings.worker_defaults
-                ? {
-                    worker_defaults: {
-                      model: workerModel,
-                      effort: "high",
-                      fast_mode: false,
-                    },
-                  }
-                : {}),
             },
             accountKey,
             settings.account_key !== undefined,
@@ -224,16 +214,7 @@ function ModelDraft({ server, projectId, path, onChange }: Props) {
           )
         : null,
     );
-  }, [
-    ready,
-    settings,
-    defaultEffort,
-    accountKey,
-    model,
-    workerModel,
-    allowed,
-    onChange,
-  ]);
+  }, [ready, settings, defaultEffort, accountKey, model, onChange]);
   const patch = useCallback(
     (value: Partial<import("../api").PostBody<"/api/conversation">>) => {
       const { id: _id, expected_account_key: _expected, ...values } = value;

@@ -140,6 +140,7 @@ function ParticipantFields({
         </Popover.Target>
         <Popover.Dropdown className="execution-dropdown shared-create-picker">
           <AgentSetupPicker
+            retainCurrentModel={false}
             role="orchestrator"
             roles={[]}
             onRole={() => {}}

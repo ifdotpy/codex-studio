@@ -14,11 +14,38 @@ const models = ["gpt-6-astra", "gpt-6-luna", "gpt-5.6-sol"].map((model) => ({
   ),
   serviceTiers: [{ id: "priority" }],
 }));
-async function setup(system = "Darwin", label = "Local", signed = false) {
+async function setup(
+  system = "Darwin",
+  label = "Local",
+  signed = false,
+  provider = "codex",
+) {
   const creations = [];
   const changes = [];
   const modelReads = [];
+  const claudeModels = [
+    {
+      ...models[0],
+      model: "claude-opus-5-5",
+      displayName: "Claude Opus 5.5",
+      provider: "claude",
+    },
+  ];
   const server = await fixture(label, signed, {
+    ...(provider === "claude"
+      ? {
+          accounts: [
+            {
+              id: "default",
+              label: "Claude",
+              provider: "claude",
+              status: "ready",
+              isDefault: true,
+            },
+            { id: "codex", label: "Codex", provider: "codex", status: "ready" },
+          ],
+        }
+      : {}),
     handle({ url, body, request, json, snapshot }) {
       if (url.pathname === "/api/projects") {
         json({ items: snapshot.runtime.projects });
@@ -26,7 +53,18 @@ async function setup(system = "Darwin", label = "Local", signed = false) {
       }
       if (url.pathname === "/api/models") {
         modelReads.push(Object.fromEntries(url.searchParams));
-        json({ data: label === "Remote" ? [models[2]] : models });
+        json({
+          data:
+            label === "Remote"
+              ? [models[2]]
+              : provider === "claude"
+                ? url.searchParams.has("workers")
+                  ? [...claudeModels, ...models]
+                  : url.searchParams.get("account_key") === "codex"
+                    ? models
+                    : claudeModels
+                : models,
+        });
         return true;
       }
       if (url.pathname === "/api/ui-summary") {
@@ -119,13 +157,13 @@ for (const [choice, badge] of [
         name: "Lead model",
         exact: true,
       });
-      await main.getByRole("radio", { name: /Sol/ }).click();
+      await main.getByRole("option", { name: /Sol/ }).click();
       await main.getByText("High", { exact: true }).click();
       const worker = dialog.getByRole("region", {
         name: "Worker model",
         exact: true,
       });
-      await worker.getByRole("radio", { name: /Astra/ }).click();
+      await worker.getByRole("option", { name: /Astra/ }).click();
       await worker.getByText("Low", { exact: true }).click();
       await expect(page.getByRole("dialog")).toHaveCount(1);
       expect(changes).toHaveLength(0);
@@ -201,13 +239,13 @@ for (const width of [320, 390, 1440])
           dialog.getByRole("radio", { name: "layr", exact: true }),
         ).toBeChecked();
         await expect(
-          dialog.getByRole("radiogroup", {
+          dialog.getByRole("listbox", {
             name: "Main agent model",
             exact: true,
           }),
         ).toBeVisible();
         await expect(
-          dialog.getByRole("radiogroup", {
+          dialog.getByRole("listbox", {
             name: "Default subagent model",
             exact: true,
           }),
@@ -294,6 +332,22 @@ test("a paired server uses its own platform and catalog", async ({
       },
     );
     await page.goto(local.server.origin + "/?studio-navigation=combined");
+    // A local exclusion must not hide the remote server's only model.
+    await page
+      .getByRole("button", { name: "Studio settings", exact: true })
+      .click();
+    const settings = page.getByRole("dialog", {
+      name: "Studio settings",
+      exact: true,
+    });
+    await settings.getByRole("tab", { name: "Models", exact: true }).click();
+    await expect(
+      settings.getByText("Models on This computer", { exact: true }),
+    ).toBeVisible();
+    await settings
+      .getByRole("checkbox", { name: "Sol 5.6", exact: true })
+      .uncheck();
+    await page.keyboard.press("Escape");
     // With two sources, the combined sidebar keys the logical project by its group.
     const group = page.locator("#sidebar .sidebar-project").filter({
       has: page.getByRole("button", {
@@ -313,8 +367,8 @@ test("a paired server uses its own platform and catalog", async ({
     await expect(dialog.getByText("Workspace", { exact: true })).toHaveCount(0);
     await expect(
       dialog
-        .getByRole("radiogroup", { name: "Main agent model", exact: true })
-        .getByRole("radio", { checked: true }),
+        .getByRole("listbox", { name: "Main agent model", exact: true })
+        .getByRole("option", { selected: true }),
     ).toHaveAccessibleName(/Sol/);
     await dialog
       .getByRole("button", { name: "Start chat", exact: true })
@@ -329,5 +383,49 @@ test("a paired server uses its own platform and catalog", async ({
   } finally {
     await local.server.close();
     await remote.server.close();
+  }
+});
+
+test("a filtered Claude lead keeps the server's Codex worker default without injecting settings", async ({
+  page,
+}) => {
+  const { server, creations } = await setup("Darwin", "Local", false, "claude");
+  try {
+    const dialog = await openNewChat(page, server);
+    await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+    await page
+      .getByRole("button", { name: "Studio settings", exact: true })
+      .click();
+    const settings = page.getByRole("dialog", {
+      name: "Studio settings",
+      exact: true,
+    });
+    await settings.getByRole("tab", { name: "Models", exact: true }).click();
+    await settings
+      .getByRole("checkbox", { name: "Sol 5.6", exact: true })
+      .uncheck();
+    await page.keyboard.press("Escape");
+    await page
+      .locator(".sidebar-nav")
+      .getByRole("button", { name: "New chat", exact: true })
+      .click();
+    await expect(
+      dialog
+        .getByRole("listbox", { name: "Main agent model", exact: true })
+        .getByRole("option", { selected: true }),
+    ).toHaveAccessibleName(/Opus 5.5/);
+    await expect(
+      dialog
+        .getByRole("listbox", { name: "Default subagent model", exact: true })
+        .getByRole("option", { selected: true }),
+    ).toHaveAccessibleName(/Luna 6/);
+    await dialog
+      .getByRole("button", { name: "Start chat", exact: true })
+      .click();
+    await expect.poll(() => creations.length).toBe(1);
+    expect(creations[0].model).toBe("claude-opus-5-5");
+    expect(creations[0]).not.toHaveProperty("worker_defaults");
+  } finally {
+    await server.close();
   }
 });

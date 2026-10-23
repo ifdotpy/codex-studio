@@ -129,6 +129,13 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
       });
       await page.setViewportSize({ width, height: 960 });
       await page.goto(origin);
+      // Phones intentionally start at the fresh board; choose the fixture chat.
+      if (width <= 760)
+        await page
+          .locator("[data-chat]")
+          .filter({ hasText: openedChat.name })
+          .first()
+          .click();
       await page.locator("#composer").waitFor();
       if (width > 760) await page.locator(".terminal-dock").waitFor();
       const chatStorageKey =
@@ -236,9 +243,8 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
         "#conversation-header-tools .prompt-history-toggle",
       );
       const hadPromptHistoryToggle = (await promptHistoryToggle.count()) > 0;
-      // 81bc27a5 introduced the phone layout swap: the empty-chat settings
-      // panel below the composer gives way to the context row inside it after
-      // the first message, so only this one position transition is expected.
+      // The inline role summary stays in the composer before and after the
+      // first message. Sending must preserve position and textarea focus.
       if (emptyPhoneStart)
         assert.equal(
           transcript.items.length,
@@ -357,8 +363,8 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
         ];
         assert.equal(
           positions.length,
-          2,
-          "390px first-send transition has exactly one layout change and no intermediate composer position",
+          1,
+          "390px first send keeps the inline composer at one position",
         );
         assert.equal(
           positions[0],
@@ -366,7 +372,7 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
           "390px transition starts at the empty-chat composer position",
         );
         assert.equal(
-          positions[1],
+          positions[0],
           Math.round(current["#composer"].y),
           "390px transition ends at the non-empty composer position",
         );
@@ -476,6 +482,8 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
         resolveQueueResponse = resolve;
       });
       await page.reload();
+      if (width <= 760)
+        await page.locator(`[data-chat="${openedChat.id}"]`).first().click();
       await page.locator("#composer").waitFor();
       await expect(page.locator("#conversation-title")).toContainText(
         openedChat.name,

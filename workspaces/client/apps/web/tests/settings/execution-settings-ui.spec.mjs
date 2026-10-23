@@ -272,21 +272,21 @@ test("execution settings ui", async ({ browser: _browser }) => {
       await rows.evaluateAll((nodes) =>
         nodes.map((node) => [
           node.getAttribute("data-value"),
-          node.labels[0].textContent,
-          node.labels[0].textContent.includes("(default)"),
+          node.textContent,
+          node.textContent.includes("recommended"),
         ]),
       ),
       [
         ["gpt-6-astra", "Astra 6", false],
+        ["gpt-5.6-sol", "Sol 5.6recommended", true],
         ["gpt-6-luna", "Luna 6", false],
-        ["gpt-5.6-sol", "Sol 5.6 (default)", true],
         ["gpt-5.6-luna", "Luna 5.6", false],
         ["test-slow", "Standard only", false],
       ],
     );
     await expect(
-      leadModel.locator(`input[type="radio"][data-value="${lead.model}"]`),
-    ).toBeChecked();
+      leadModel.locator(`[role="option"][data-value="${lead.model}"]`),
+    ).toHaveAttribute("aria-selected", "true");
     const listBox = leadModel;
     assert.ok(
       await listBox.evaluate(
@@ -298,8 +298,9 @@ test("execution settings ui", async ({ browser: _browser }) => {
       lead.id,
       (body) => typeof body.model === "string" && body.model !== lead.model,
     );
-    await leadModel.getByRole("radio", { checked: true }).focus();
+    await leadModel.getByRole("option", { selected: true }).focus();
     await page.keyboard.press("ArrowDown");
+    await page.keyboard.press("Enter");
     assert.ok(
       (await alternateModelSaved).ok(),
       "keyboard selection is acknowledged",
@@ -396,7 +397,7 @@ test("execution settings ui", async ({ browser: _browser }) => {
       '.execution-profile-body[data-role="review"]',
     );
     await expect(
-      reviewDialog.getByRole("radiogroup", {
+      reviewDialog.getByRole("listbox", {
         name: "Default review model",
         exact: true,
       }),
@@ -430,7 +431,7 @@ test("execution settings ui", async ({ browser: _browser }) => {
         await openModelList(defaultModel)
       )
         .first()
-        .evaluate((node) => node.labels[0].textContent),
+        .evaluate((node) => node.textContent),
       /^Same as main agent$/,
     );
     assert.equal(await modelValue(defaultModel), "gpt-6-luna");
