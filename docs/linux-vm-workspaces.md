@@ -274,7 +274,18 @@ not create or provision a VM.
   (`linux_vm_share.rs`; see [vm-layr.md](vm-layr.md), "Mac share"). A failed view keeps its
   reason in `mount-error.json`, and the VM keeps running.
 
-The Rust watchdog has no health or LAYR probes and posts no chat notice about a restart.
+- Each check of a running or unresponsive guest pings the guest service (any answer proves the
+  guest; a close without an answer within 10 seconds is a busy guest) and records the result in
+  `guest-health.json`. A guest that answered in this boot and then gave no answer for 180 seconds
+  over 3 probes is `unresponsive`: the status shows it and `watchdog.json` records an episode, but
+  the VM is never restarted for it. One answer ends the episode.
+- After a guest answer, the check asks `layr.health` at most once a minute. 3 failed answers over
+  120 seconds make a LAYR fault, which the status shows as `layrFault` while the VM stays
+  `running`. The Rust backend has no project LAYR chip, so only `linux-vm status` shows the fault.
+- Each VM chat with a live turn when an automatic restart stops a failed guest gets one notice in
+  its transcript about how the restart ended (`restarted`, `cancelled` or `failed`).
+- `linux-vm status` includes the `watchdog` summary: restarts in the last 24 hours, the last
+  restart, a held restart and the last unresponsive episode.
 
 ## Guest crash watchdog
 
