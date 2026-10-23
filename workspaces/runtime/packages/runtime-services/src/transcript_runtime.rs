@@ -62,14 +62,7 @@ pub async fn page_at_snapshot(
                 .open_read_only()
                 .map_err(|_| TranscriptError::Store)?;
             let value = project(transaction, &analytics, &agent, &request, now)?;
-            let revision = transaction
-                .query_row(
-                    "SELECT revision FROM runtime_transcript_revisions WHERE agent=?1",
-                    [&agent],
-                    |row| row.get::<_, i64>(0),
-                )
-                .optional()?
-                .unwrap_or(0);
+            let revision = TranscriptRepository::revision(transaction, &agent)?;
             Ok::<_, TranscriptError>((value, revision))
         })
         .await?;

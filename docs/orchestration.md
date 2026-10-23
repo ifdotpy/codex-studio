@@ -1,5 +1,15 @@
 # Managed Codex teams
 
+State updates follow this flow:
+
+1. Pull the initial state, then consume complete typed entity batches from the stream.
+2. The server merges changes using its [flush interval owner](../workspaces/runtime/packages/runtime-services/src/change_notifications.rs)
+   and reads full records and tombstones from one SQLite snapshot.
+3. Store the batch before advancing its checkpoint. Recover gaps, resets, reconnects,
+   failed storage, and batches outside the [shared limits](../workspaces/runtime/packages/runtime-schema/src/shared_values.rs) through pull.
+4. An open chat reads again only when its own stored conversation revision changes;
+   active transcript text still uses the existing pull path.
+
 Server command output follows this flow:
 
 1. Retain the first and last bytes within the command's output limit.

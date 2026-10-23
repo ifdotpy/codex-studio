@@ -90,6 +90,18 @@ pub struct TranscriptSearchKind<'a> {
 pub struct TranscriptRepository;
 
 impl TranscriptRepository {
+    /// Durable conversation content revision, independent of other agents.
+    pub fn revision(connection: &Connection, agent: &str) -> crate::StoreResult<i64> {
+        Ok(connection
+            .query_row_cached(
+                "SELECT revision FROM runtime_transcript_revisions WHERE agent=?1",
+                [agent],
+                |row| row.get(0),
+            )
+            .optional()?
+            .unwrap_or(0))
+    }
+
     /// Project an already checked transcript snapshot using the existing durable sync cursor.
     pub fn pull_payload(
         transaction: &Transaction<'_>,
@@ -121,16 +133,7 @@ impl TranscriptRepository {
             return Err(TranscriptStoreError::ActiveTurn);
         }
         let revision = if table_exists(transaction, "runtime_transcript_revisions")? {
-            Some(
-                transaction
-                    .query_row_cached(
-                        "SELECT revision FROM runtime_transcript_revisions WHERE agent=?1",
-                        [agent],
-                        |row| row.get::<_, i64>(0),
-                    )
-                    .optional()?
-                    .unwrap_or(0),
-            )
+            Some(Self::revision(transaction, agent)?)
         } else {
             None
         };
