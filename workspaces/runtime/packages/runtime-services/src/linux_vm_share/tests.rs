@@ -3,6 +3,7 @@
 use super::*;
 use std::sync::Mutex;
 
+#[cfg(target_os = "macos")]
 fn executable(path: &Path, text: &str) {
     use std::os::unix::fs::PermissionsExt;
     fs::write(path, text).unwrap();
@@ -11,6 +12,7 @@ fn executable(path: &Path, text: &str) {
 
 /// A stand-in for `mount_smbfs`: it asks for the password on its controlling
 /// terminal, as `mount_smbfs` does, and saves its arguments and the password.
+#[cfg(target_os = "macos")]
 const PROMPTING_MOUNT: &str = r#"#!/bin/sh
 out="$(dirname "$0")"
 printf '%s\n' "$@" > "$out/argv"
@@ -26,6 +28,7 @@ exit 77
 
 /// The password reaches `mount_smbfs` only on its controlling terminal: never
 /// in an argument, and never in the failure text.
+#[cfg(target_os = "macos")]
 #[test]
 fn the_password_is_typed_on_the_terminal_of_mount_smbfs() {
     let folder = tempfile::tempdir().unwrap();
