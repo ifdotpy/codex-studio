@@ -52464,6 +52464,74 @@
         "title": "SyncRuleEntityPayload",
         "type": "object"
       },
+      "SyncSessionEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "sessionId": {
+            "maxLength": 36,
+            "minLength": 36,
+            "type": "string"
+          }
+        },
+        "required": [
+          "sessionId"
+        ],
+        "title": "SyncSessionEvent",
+        "type": "object"
+      },
+      "SyncSubscriptionAck": {
+        "additionalProperties": false,
+        "properties": {
+          "gen": {
+            "maximum": 9007199254740991,
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "gen"
+        ],
+        "title": "SyncSubscriptionAck",
+        "type": "object"
+      },
+      "SyncSubscriptionRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "add": {
+            "items": {
+              "$ref": "#/components/schemas/ResourceRef"
+            },
+            "type": "array"
+          },
+          "gen": {
+            "maximum": 9007199254740991,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "remove": {
+            "items": {
+              "$ref": "#/components/schemas/ResourceRef"
+            },
+            "type": "array"
+          },
+          "sessionId": {
+            "maxLength": 36,
+            "minLength": 36,
+            "type": "string"
+          },
+          "tokenRates": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "sessionId",
+          "gen",
+          "add",
+          "remove"
+        ],
+        "title": "SyncSubscriptionRequest",
+        "type": "object"
+      },
       "SyncTaskEntityPayload": {
         "additionalProperties": false,
         "properties": {
@@ -78358,12 +78426,20 @@
                     },
                     {
                       "$ref": "#/components/schemas/ResourceTokenRatesEvent"
+                    },
+                    {
+                      "$ref": "#/components/schemas/SyncSessionEvent"
+                    },
+                    {
+                      "$ref": "#/components/schemas/SyncSubscriptionAck"
                     }
                   ],
                   "x-sse-events": {
                     "api-schema": "ApiSchemaEvent",
                     "heartbeat": "ResourceHeartbeatEvent",
                     "resources": "ResourceChangeEvent",
+                    "session": "SyncSessionEvent",
+                    "subscriptions": "SyncSubscriptionAck",
                     "token-rates": "ResourceTokenRatesEvent"
                   }
                 }
@@ -78416,6 +78492,57 @@
           }
         },
         "summary": "Sync Stream"
+      }
+    },
+    "/api/sync/subscriptions": {
+      "post": {
+        "description": "Changes one open stream. HTTP 410 means the stream session expired; reopen with the full resource set and cursors. A lost response must recover by reopening, never retrying the diff. Resource bounds use MAX_SYNC_RESOURCE_COUNT and MAX_SYNC_RESOURCE_QUERY_BYTES from runtime-schema/src/shared_values.rs, as for the stream selector.",
+        "operationId": "sync_subscriptions_api_sync_subscriptions_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SyncSubscriptionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SyncSubscriptionAck"
+                }
+              }
+            },
+            "description": "Subscription change accepted; the SSE acknowledgement precedes added-resource initial data."
+          },
+          "400": {
+            "$ref": "#/components/responses/ApiError400"
+          },
+          "403": {
+            "$ref": "#/components/responses/ApiError403"
+          },
+          "409": {
+            "$ref": "#/components/responses/ApiError409"
+          },
+          "410": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unknown or expired stream session"
+          },
+          "500": {
+            "$ref": "#/components/responses/ApiError500"
+          }
+        },
+        "summary": "Change live sync subscriptions"
       }
     },
     "/api/task": {
