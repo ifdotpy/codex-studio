@@ -33,4 +33,6 @@
      Inset rings stay inside scroll containers and clear the state rail. */
   --studio-focus-ring-width: 0.125rem;
   --studio-focus-ring-inset: 0.125rem;
+  /* Narrowest readable model name in a composer chip, in characters. */
+  --studio-composer-model-min: 6ch;
 }
