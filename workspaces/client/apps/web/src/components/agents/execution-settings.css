@@ -36,7 +36,7 @@
 .execution-dropdown {
   inline-size: min(
     calc(100vw - var(--mantine-spacing-lg)),
-    var(--studio-form-max)
+    var(--studio-model-picker-size)
   );
   display: grid;
   gap: var(--mantine-spacing-sm);
@@ -87,6 +87,7 @@
 }
 .execution-profile {
   min-width: 0;
+  inline-size: min(100%, var(--studio-model-picker-size));
 }
 .execution-profile .account-tiles {
   margin: 0;

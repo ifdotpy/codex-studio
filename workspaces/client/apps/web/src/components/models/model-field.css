@@ -1,3 +1,10 @@
+.model-field,
+.model-select,
+.effort-scale,
+.model-picker-role-switch {
+  inline-size: min(100%, var(--studio-model-picker-size));
+  max-inline-size: var(--studio-model-picker-size);
+}
 .model-select {
   min-width: 0;
   flex: 1;
@@ -46,12 +53,6 @@
   background: var(--mantine-primary-color-light);
 }
 .setup-model-name {
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.execution-profile .model-description {
-  margin-block-start: var(--mantine-spacing-xs);
-  white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }

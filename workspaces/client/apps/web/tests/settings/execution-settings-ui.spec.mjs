@@ -228,6 +228,35 @@ test("execution settings ui", async ({ browser: _browser }) => {
           await chatSettingsDialog
             .getByRole("tab", { name: new RegExp("^" + tab) })
             .click();
+          if (tab === "Models") {
+            await expect(chatSettingsDialog.getByRole("listbox")).toHaveCount(
+              1,
+            );
+            await expect(
+              chatSettingsDialog.getByText("Main agent model", { exact: true }),
+            ).toHaveCount(0);
+            await expect(
+              chatSettingsDialog.getByText("Main agent reasoning", {
+                exact: true,
+              }),
+            ).toHaveCount(0);
+            await expect(
+              chatSettingsDialog.locator(".model-description"),
+            ).toHaveCount(0);
+            if (width === 1440) {
+              const sizes = await chatSettingsDialog
+                .getByRole("listbox")
+                .evaluate((node) => {
+                  const root = getComputedStyle(document.documentElement);
+                  return [
+                    node.getBoundingClientRect().width,
+                    parseFloat(root.getPropertyValue("--studio-form-max")) *
+                      parseFloat(root.fontSize),
+                  ];
+                });
+              expect(sizes[0]).toBeCloseTo(sizes[1] * 0.65, 0);
+            }
+          }
           const geometry = await chatSettingsDialog.evaluate((node) => {
             const body = node.querySelector(".mantine-Modal-body");
             return {
@@ -248,6 +277,7 @@ test("execution settings ui", async ({ browser: _browser }) => {
           layoutMeasurements.push({ width, height, scheme, tab, ...geometry });
           if (screenshotDirectory)
             await page.screenshot({
+              animations: "disabled",
               path: join(
                 screenshotDirectory,
                 `tabs-chat-settings-${tab}-${width}-${scheme}.png`,

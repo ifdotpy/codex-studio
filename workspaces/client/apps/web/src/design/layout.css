@@ -18,6 +18,8 @@
   --studio-team-size: 20rem;
   /* Readable settings form column. */
   --studio-form-max: 40rem;
+  /* Model picker column: 65% of the previous desktop form width, in rem. */
+  --studio-model-picker-size: calc(var(--studio-form-max) * 0.65);
   /* Vertical settings section navigation. */
   --studio-settings-nav-size: 12rem;
   /* Messages room selector alongside the selected room. */

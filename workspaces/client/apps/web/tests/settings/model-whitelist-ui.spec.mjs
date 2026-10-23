@@ -131,6 +131,13 @@ test("Models whitelist filters every execution role and preserves the current mo
         .getByLabel("Main agent model", { exact: true })
         .getByRole("option", { name: /Luna/ }),
     ).toHaveCount(0);
+    await creation
+      .getByRole("radiogroup", { name: "Agent role", exact: true })
+      .getByText("Workers", { exact: true })
+      .click();
+    await expect(
+      creation.getByLabel("Default subagent model", { exact: true }),
+    ).toBeVisible();
     await expect(
       creation
         .getByLabel("Default subagent model", { exact: true })
