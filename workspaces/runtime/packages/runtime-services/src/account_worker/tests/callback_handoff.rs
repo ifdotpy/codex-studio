@@ -15,7 +15,7 @@ const EVENTS_BEHIND_HELD_ANSWER: u64 = crate::provider_session_task::MAX_UNSETTL
 const BURST: u64 = 100;
 
 fn request(id: &str) -> Value {
-    json!({"id":id,"method":"item/commandExecution/requestApproval","params":{}})
+    json!({"id":id,"method":"unknown/providerMethod","params":{}})
 }
 
 fn usage() -> Value {
@@ -167,7 +167,7 @@ async fn record_follows_the_answer_outcome_and_survives_journal_compaction() {
         (1, GENERATION, SCOPE)
     );
     assert_eq!(record.request_id, json!("one"));
-    assert_eq!(record.method, "item/commandExecution/requestApproval");
+    assert_eq!(record.method, "unknown/providerMethod");
     assert!(record.frame().is_ok());
     let store = &state.bridge.store;
     let operation = record.operation();

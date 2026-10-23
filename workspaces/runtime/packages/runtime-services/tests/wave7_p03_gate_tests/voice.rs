@@ -16,11 +16,7 @@ async fn count_rows(
 
 #[tokio::test]
 async fn event_persistence_failure_returns_error_and_rolls_back_voice_delivery() {
-    let fixture = support::Fixture::new(
-        "voice-persistence-failure",
-        crate::agents_create::prepared_python,
-    )
-    .await;
+    let fixture = support::Fixture::new("voice-persistence-failure").await;
     fixture
         .store
         .transaction(|tx| {
@@ -75,7 +71,7 @@ async fn event_persistence_failure_returns_error_and_rolls_back_voice_delivery()
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn voice_accepts_unrelated_operation_started_after_preparation() {
-    let fixture = support::Fixture::new("voice", crate::agents_create::prepared_python).await;
+    let fixture = support::Fixture::new("voice").await;
     fixture
         .store
         .transaction(|tx| {

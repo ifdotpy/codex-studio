@@ -368,28 +368,8 @@ impl CaptureSnapshot {
             ..CaptureRows::default()
         };
         if prepared.method == "thread/tokenUsage/updated" {
-            let mut id = usage_key(&meta, &prepared.params);
+            let id = usage_key(&meta, &prepared.params);
             rows.usage = Repo::read(db, CaptureTable::Usage, &id)?;
-            if rows.usage.is_none()
-                && prepared.params["usageSource"] != "claudeResponse"
-                && number(&prepared.params["tokenUsage"]["total"]["totalTokens"]).is_none()
-            {
-                let total = prepared.params["tokenUsage"]
-                    .get("total")
-                    .filter(|v| v.is_object())
-                    .cloned()
-                    .unwrap_or(json!({}));
-                rows.usage = Repo::usage_without_total(
-                    db,
-                    text(&meta["agentId"]),
-                    &meta["threadId"],
-                    &meta["turnId"],
-                    &total,
-                )?;
-                if let Some(row) = &rows.usage {
-                    id = text(&row["id"]).to_owned();
-                }
-            }
             let response = &prepared.params["responseId"];
             if studio_runtime_store::truthy(Some(response)) {
                 rows.exact_response =

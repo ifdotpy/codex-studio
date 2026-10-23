@@ -133,35 +133,6 @@ fn a_finished_python_restart_marker_does_not_interrupt_a_waiting_agent() {
 }
 
 #[test]
-fn a_running_python_turn_waits_for_history_reconciliation_without_a_hold() {
-    for attempt in [
-        // Agent a5fa7930: a Python attempt with its turn.
-        Some(python_attempt("live", Some("turn-live"), true)),
-        // Agent be102fa0: a supervisor-restored turn without an attempt.
-        None,
-    ] {
-        let mut connection = database();
-        let mut record = json!({
-            "status": "running", "autoWake": true, "inFlight": true, "turnId": "turn-live",
-            "turnEpoch": 0, "error": null
-        });
-        if let Some(attempt) = attempt {
-            record["startAttempt"] = attempt;
-        }
-        put(&connection, record);
-        restart_and_reconnect(&mut connection, 1);
-        let agent = stored(&connection);
-        assert_eq!(agent["status"], "interrupted");
-        assert_eq!(agent["error"], BACKEND_RESTARTED_TURN_ERROR);
-        assert_eq!(agent["restartRecovery"]["stage"], "pending");
-        assert_eq!(agent["restartRecovery"]["turnId"], "turn-live");
-        assert_eq!(agent["disconnectRecovery"]["source"], "restart");
-        assert!(agent.get("nativeFailureHold").is_none(), "{agent}");
-        assert!(agent.get("startOutcomeHold").is_none(), "{agent}");
-    }
-}
-
-#[test]
 fn a_held_restart_is_not_applied_again_after_the_user_sends_a_message() {
     let mut connection = database();
     // A Python input without a turn identity and without an unresolved event is
@@ -178,7 +149,10 @@ fn a_held_restart_is_not_applied_again_after_the_user_sends_a_message() {
     });
     let held = stored(&connection);
     assert_eq!(held["restartRecovery"]["stage"], "held");
-    assert_eq!(held["nativeFailureHold"], true);
+    assert_eq!(
+        held["restartRecovery"]["reason"],
+        "Native input submission has no confirmed turn identity."
+    );
     // The user's message clears the hold and queues the agent (coordination).
     let mut sent = held.clone();
     sent["autoWake"] = json!(true);
@@ -320,7 +294,11 @@ fn an_observed_turn_without_acceptance_stays_unknown_after_a_restart() {
             Some("ticket"),
             "Native input submission has no confirmed turn identity.",
         ),
-        (None, None, LEGACY_RECOVERY),
+        (
+            None,
+            None,
+            "Native input submission has no confirmed turn identity.",
+        ),
     ] {
         let mut connection = database();
         let mut attempt = json!({

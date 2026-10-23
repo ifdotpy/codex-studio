@@ -225,7 +225,17 @@ async fn a_waiting_start_survives_a_restart_and_starts_once() {
         } else {
             waiting.as_str()
         };
-        assert_eq!(input.to_string().matches(id).count(), 1, "{input}");
+        assert_eq!(
+            input
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|item| item["text"].as_str())
+                .map(|text| text.matches(id).count())
+                .sum::<usize>(),
+            1,
+            "{input}"
+        );
         wake_agent(&state, &worker, &waiting).await;
         worker_barrier(&worker).await;
         assert!(peer.writes.try_recv().is_err(), "the input started twice");

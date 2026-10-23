@@ -5,7 +5,10 @@
 //! monitor, or transfer (see `SchedulerRepository::idle_unload_thread_in_use`)
 //! and that this worker has no request for starts its idle clock; a thread
 //! idle for the `idleSessionUnloadMinutes` setting is unsubscribed after the
-//! provider confirms it is idle with no background terminal or queued input;
+//! provider confirms it is idle with no background terminal or queued input
+//! (a request in flight for that thread parks only that thread until the
+//! request finishes; requests for other threads, such as another agent's turn
+//! or a monitor command, never hold it);
 //! a finished managed worker (not a lead, not waiting, no open work) is due as
 //! soon as its turn settles, [`WORKER_UNLOAD_DELAY`], and so is a thread whose
 //! owner was deleted; deleting an owner re-evaluates its running clock at once.
@@ -54,8 +57,12 @@ const LOADED_PAGE_LIMIT: u64 = 100;
 const MAX_LOADED_PAGES: usize = 16;
 /// Background terminals requested per `thread/backgroundTerminals/list` page.
 const TERMINAL_PAGE_LIMIT: u64 = 100;
-/// `thread/read` statuses of a thread with no running turn.
-const IDLE_THREAD_STATUSES: [&str; 2] = ["idle", "notLoaded"];
+/// `thread/read` statuses of a thread with no running turn. A turn that ended
+/// with a provider error leaves the thread in `systemError` until its next
+/// turn; Codex unloads and resumes such a thread like an idle one (measured on
+/// codex 0.160.1, 2026-10-22), so a finished worker whose last turn failed
+/// must not keep its thread and MCP server processes loaded.
+const IDLE_THREAD_STATUSES: [&str; 3] = ["idle", "notLoaded", "systemError"];
 /// `thread/unsubscribe` statuses that leave this connection unsubscribed.
 const UNSUBSCRIBED_STATUSES: [&str; 3] = ["unsubscribed", "notSubscribed", "notLoaded"];
 
@@ -218,14 +225,6 @@ impl IdleClocks {
             .collect()
     }
 
-    fn take_blocked(&mut self, reason: IdleBlocker) -> BTreeSet<String> {
-        let threads = self.blocked_by(reason);
-        for thread in &threads {
-            self.blocked.remove(thread);
-        }
-        threads
-    }
-
     fn due_threads(&self, now: Instant, delay: Duration) -> BTreeSet<String> {
         self.threads
             .iter()
@@ -351,16 +350,22 @@ impl Worker {
             self.idle_deadline = None;
             return Ok(());
         };
-        let due = self.idle_clocks.due_threads(now, delay);
-        if !self.pending.is_empty() || !self.retained_requests.is_empty() {
-            for thread in &due {
-                self.idle_clocks.block(thread, IdleBlocker::Local);
-            }
-            if self.idle_clocks.process.is_some() {
-                self.idle_clocks.process_blocked = Some(IdleBlocker::Local);
-            }
-            self.idle_deadline = next_deadline(&self.idle_clocks, self.idle_delay);
-            return Ok(());
+        // A request in flight for a due thread may be starting a turn on it;
+        // that thread waits for its own request (`idle_local_work_completed`).
+        // A request for another thread or for no thread (another agent's turn,
+        // a monitor's `command/exec`) must not hold it: on a busy account one
+        // is almost always in flight, and a finished worker's thread gets no
+        // later event that would check it again. Live 2026-10-22: finished and
+        // deleted workers kept their threads, and each its MCP server
+        // processes, loaded for days. The process clock still waits for all
+        // local work (`idle_check_process`).
+        let (requested, due): (BTreeSet<String>, BTreeSet<String>) = self
+            .idle_clocks
+            .due_threads(now, delay)
+            .into_iter()
+            .partition(|thread| self.thread_requested(thread));
+        for thread in &requested {
+            self.idle_clocks.block(thread, IdleBlocker::Local);
         }
         self.idle_clocks.retry_at = None;
         self.idle_check_threads(now, delay, due).await
@@ -575,13 +580,24 @@ impl Worker {
     pub(super) async fn idle_local_work_completed(&mut self) -> Result<(), WorkerError> {
         if self.closing
             || self.session.status.borrow().initialization != InitializationStatus::Ready
-            || !self.provider_quiescent()
         {
             return Ok(());
         }
-        let blocked = self.idle_clocks.take_blocked(IdleBlocker::Local);
-        if blocked.is_empty() && self.idle_clocks.process_blocked != Some(IdleBlocker::Local) {
+        // A thread waits only for its own requests; the process waits until
+        // the worker holds no local work at all.
+        let blocked: BTreeSet<String> = self
+            .idle_clocks
+            .blocked_by(IdleBlocker::Local)
+            .into_iter()
+            .filter(|thread| !self.thread_requested(thread))
+            .collect();
+        let process = self.idle_clocks.process_blocked == Some(IdleBlocker::Local)
+            && self.provider_quiescent();
+        if blocked.is_empty() && !process {
             return Ok(());
+        }
+        for thread in &blocked {
+            self.idle_clocks.unblock(thread);
         }
         let Some(delay) = self.idle_delay else {
             return Ok(());
@@ -1123,8 +1139,8 @@ mod tests {
         clocks.block("thread", IdleBlocker::Local);
         assert_eq!(clocks.next_deadline(DELAY), None);
 
-        let local_blocked = clocks.take_blocked(IdleBlocker::Local);
-        for thread in local_blocked {
+        for thread in clocks.blocked_by(IdleBlocker::Local) {
+            clocks.unblock(&thread);
             clocks.eligibility_changed(&thread, true, completed, DELAY);
         }
         assert_eq!(

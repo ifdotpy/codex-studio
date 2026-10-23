@@ -137,11 +137,7 @@ more after 50 ms. Request identities, receipts and the lost-response rules do no
 
 ## Checks
 
-- `cargo test -p studio-peer-link`
-- `python3 -m unittest test_codex_peer_link` in `workspaces/runtime/apps/server/src` after
-  `cargo build --release -p studio-peer-link` (two link processes, fake backends: the Serve
-  headers, a 3 MiB answer, the answer limit, a refused key, a revoked key)
-- `python3 -m unittest test_codex_peer_updates` (the stream and its continuation by chunks)
-- `tests/multi-server-orchestration-contract.py` (the bundle stream, its continuation by chunks,
-  the delivery wake) and `tests/agent-move-signed-integration.py` (the history pull and its
-  continuation by chunks)
+Run `just test studio-peer-link` for the link process and
+`just check studio-runtime-services` for runtime integration checks. The former
+Python peer-link and update-stream harnesses were removed with the backend.
+See [testing](testing.md) for the current gates and evidence boundaries.

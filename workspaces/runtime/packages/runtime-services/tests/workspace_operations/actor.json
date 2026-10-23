@@ -1,0 +1,19 @@
+{
+  "id": "fixture",
+  "rootId": "fixture",
+  "name": "Workspace fixture",
+  "cwd": "/FROZEN_WORKSPACE_REPO",
+  "worktreeReady": true,
+  "autoWake": true,
+  "status": "idle",
+  "epoch": 1,
+  "accountKey": "default",
+  "inFlight": false,
+  "threadId": "thread",
+  "lastCompletedTurn": "turn",
+  "startAttempt": {
+    "id": "attempt"
+  },
+  "workspaceOperation": null,
+  "checkpointError": null
+}

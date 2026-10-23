@@ -153,6 +153,7 @@ define_methods! {
     CommandExecTerminate => "command/exec/terminate",
     ThreadBackgroundTerminalsList => "thread/backgroundTerminals/list",
     ThreadBackgroundTerminalsTerminate => "thread/backgroundTerminals/terminate",
+    ThreadBackgroundTerminalsClean => "thread/backgroundTerminals/clean",
     ThreadCommandExecutionBackground => "thread/commandExecution/background",
     ThreadQueueList => "thread/queue/list",
     ClaudeState => "claude/state",

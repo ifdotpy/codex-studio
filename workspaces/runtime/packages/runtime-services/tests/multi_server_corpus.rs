@@ -1,7 +1,6 @@
 #![allow(clippy::unwrap_used)]
 
 use crate::multi_server_fixtures as common;
-use crate::prepared_python_support;
 use common::*;
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -1552,13 +1551,10 @@ async fn python_authentication_outputs_match_complete_principal_and_writes() {
 }
 
 #[tokio::test]
-#[allow(clippy::disallowed_methods)]
-async fn python_and_rust_signatures_interoperate_for_multi_server_requests() {
+async fn frozen_python_signature_matches_rust_for_multi_server_requests() {
     use base64::Engine as _;
     use base64::engine::general_purpose::STANDARD;
     use ring::signature::{ED25519, Ed25519KeyPair, KeyPair, UnparsedPublicKey};
-    use std::path::PathBuf;
-    use std::process::Command;
     use studio_runtime_services::remote_transport::{
         MultiServerSigningInput, multi_server_signing_bytes, verify_signature,
     };
@@ -1602,35 +1598,18 @@ async fn python_and_rust_signatures_interoperate_for_multi_server_requests() {
         "-----BEGIN PUBLIC KEY-----\n{}\n-----END PUBLIC KEY-----\n",
         STANDARD.encode(spki)
     );
-    let python_input = json!({
-        "method":method, "target":target, "serverId":server_id,
-        "clientId":client_id, "timestamp":timestamp, "nonce":nonce,
-        "requestId":request_id, "body":STANDARD.encode(body),
-        "seed":STANDARD.encode(SEED), "rustSignature":rust_signature,
-        "publicKey":public_key,
-    });
-    let server_source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src");
-    let script =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/multi_server/interop_verify.py");
-    let mut command = Command::new(prepared_python_support::prepared_python(&server_source));
-    command
-        .arg(&script)
-        .arg(python_input.to_string())
-        .env("PYTHONDONTWRITEBYTECODE", "1");
-    let environment = prepared_python_support::IsolatedTestEnvironment::new();
-    environment.apply(&mut command);
-    let output = command.output().expect("run Python signature verifier");
-    assert!(
-        output.status.success(),
-        "Python rejected the Rust signature: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let python_result: Value =
-        serde_json::from_slice(&output.stdout).expect("Python signing and verification JSON");
-    assert_eq!(python_result["verified"], true);
-    let python_signature = python_result["pythonSignature"]
-        .as_str()
-        .expect("Python produced a request signature");
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct FrozenSignature {
+        python_signature: String,
+        verified: bool,
+    }
+    let expected: FrozenSignature =
+        serde_json::from_str(include_str!("multi_server/signature.json"))
+            .expect("frozen Python signature");
+    assert!(expected.verified);
+    assert_eq!(rust_signature, expected.python_signature);
+    let python_signature = &expected.python_signature;
     let python_wire = multi_server_signing_bytes(MultiServerSigningInput {
         method,
         target,
@@ -1985,6 +1964,7 @@ async fn only_typed_pre_effect_waiting_reopens_peer_input() {
 
 #[tokio::test]
 async fn multi_server_corpus_witness() {
+    assert_eq!(signing_identity().id(), "local-server");
     let (_root, store) = store().await;
     let snapshot =
         studio_runtime_services::multi_server::snapshot(&store, &fixture().data["identity"])

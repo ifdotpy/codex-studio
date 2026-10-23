@@ -77,25 +77,6 @@ operations ← store, providers, process ← services ← http ← runtime-serve
 
 Profile text uses Rust `trim()`; it intentionally does not emulate Python `str.strip()` for U+001C–U+001F.
 
-## Progress panel files
-
-The progress panel operations mirror the Python file checks: progress and agent
-directories must be ordinary directories
-(`workspaces/runtime/apps/server/src/codex_progress.py:22-57`); the progress
-file must be a regular file and is bounded and checked for a stable read
-(`workspaces/runtime/apps/server/src/codex_progress.py:115-149`); layout files
-are checked as regular files before and after opening
-(`workspaces/runtime/apps/server/src/codex_progress_layout.py:36-59`). Layout
-writes flush the temporary file and recheck the progress revision before
-replacement (`workspaces/runtime/apps/server/src/codex_progress_layout.py:203-231`).
-Agents check visibility with `studio-runtime-server progress-layout <PROGRESS.md> [--wait <seconds>]`
-(`progress_panel::layout_check`); the Python script is no longer launched.
-This Rust implementation uses ordinary path operations and does not use
-anchored `openat` access. On Windows, progress
-read and layout write report the named 501 dependency
-`resource-policy/windows-file-identity` until compatible file identity support
-is implemented.
-
 The workspace file service resolves relative paths under the agent's `cwd`.
 It also accepts absolute paths and follows symlinks without checking that the
 resolved file stays inside `cwd`, matching Python's existing
@@ -510,7 +491,8 @@ through. Python `Runtime.start` in `codex_runtime.py:7046` reads event metadata,
 message clocks, and unanswered complaints before appending context.
 `EfficiencyMixin.model_turn_context` in `codex_efficiency.py:715` records the
 context manifest after reading known context/epoch, root agent mode, role skill,
-progress-file guidance, plan, complaints and finished-worktree reminders.
+the progress-file retirement notice, plan, complaints and finished-worktree
+reminders.
 The registered `context_preparation_unported` class permits only those missing
 preparation fields and appended text; base text, input identity, links, search
 metadata, notices, terminal state and dispatch writes compare exactly.

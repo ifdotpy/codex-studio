@@ -24,6 +24,20 @@ export type NewChatSettings = Pick<
 
 export type NewChatSettingsDraft = Omit<NewChatSettings, "workspaceMode">;
 
+export function settingsForNewChatRequest(
+  settings: NewChatSettingsDraft,
+  accountKey: string,
+  accountWasChosen: boolean,
+  model: string | undefined,
+): NewChatSettingsDraft {
+  const { account_key: _accountKey, ...requestSettings } = settings;
+  return {
+    ...requestSettings,
+    ...(accountWasChosen ? { account_key: accountKey } : {}),
+    model,
+  };
+}
+
 export function settingsForNewChatAccount(
   settings: NewChatSettingsDraft,
   accountKey: string,

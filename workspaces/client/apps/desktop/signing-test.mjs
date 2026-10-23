@@ -17,7 +17,6 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { signApplication, signingIdentity } from "./signing.mjs";
 
 function privateUnlockContract() {
@@ -30,6 +29,7 @@ function privateUnlockContract() {
   const password = `synthetic "value"\\with ' space;$()`;
   let secret = password;
   let status = 0;
+  let stderr = "";
   let calls = 0;
   const keychain = `/fixture/Studio "safe"\\name.keychain-db`;
   fs.readFileSync = (filename, options) =>
@@ -54,7 +54,7 @@ function privateUnlockContract() {
         "\n",
     );
     assert.equal(JSON.stringify(args).includes(secret), false);
-    return { status, stdout: secret, stderr: secret };
+    return { status, stdout: secret, stderr };
   };
   childProcess.execFileSync = (command, args) => {
     assert.equal(command, "security");
@@ -64,13 +64,28 @@ function privateUnlockContract() {
   syncBuiltinESMExports();
   try {
     assert.equal(signingIdentity({}), identity);
-    status = 1;
+    status = 51;
+    stderr = `security: SecKeychainUnlock ${keychain}: The user name or passphrase you entered is not correct.\nunlock-keychain: returned -25293\n`;
     assert.throws(
       () => signingIdentity({}),
       (error) =>
         error.message ===
-          "Could not unlock the dedicated Studio signing keychain." &&
+          `Could not unlock the dedicated Studio signing keychain ${keychain}: The user name or passphrase you entered is not correct.` &&
         !String(error.stack).includes(password),
+    );
+    // A defensive redaction covers a message that echoes the password.
+    stderr = `security: unexpected ${password} and ${password.replace(/[\\"]/g, "\\$&")}\n`;
+    assert.throws(
+      () => signingIdentity({}),
+      (error) =>
+        error.message ===
+          `Could not unlock the dedicated Studio signing keychain ${keychain}: unexpected [redacted] and [redacted].` &&
+        !error.message.includes("synthetic"),
+    );
+    stderr = "";
+    assert.throws(
+      () => signingIdentity({}),
+      /security exited with status 51\.$/,
     );
     const previousCalls = calls;
     secret = "synthetic\nfind-generic-password";
@@ -101,9 +116,6 @@ if (process.argv.includes("--unlock-contract")) {
   const root = mkdtempSync(path.join(tmpdir(), "studio-signature-"));
   const app = path.join(root, "Probe.app");
   const scripts = path.join(app, "Contents/Resources/workspace/scripts");
-  const repositoryScripts = fileURLToPath(
-    new URL("../../../runtime/apps/server/src", import.meta.url),
-  );
   const guest = path.join(app, "Contents/Resources/workspace/vm/guest");
   const lease = path.join(scripts, ".studio-update.lock");
   try {
@@ -135,7 +147,7 @@ if (process.argv.includes("--unlock-contract")) {
         stdio: ["ignore", "pipe", "pipe"],
       });
       requirements.push(requirement.trim());
-      execFileSync(process.env.CODEX_AGENTS_PYTHON || "python3", [
+      execFileSync("python3", [
         "-c",
         "import sys; sys.dont_write_bytecode = False; sys.pycache_prefix = None; sys.path.insert(0, sys.argv[1]); import studio_signature_probe; assert studio_signature_probe.value == int(sys.argv[2])",
         scripts,
@@ -146,7 +158,7 @@ if (process.argv.includes("--unlock-contract")) {
         [],
         "imports cannot add unsigned cache files",
       );
-      execFileSync(process.env.CODEX_AGENTS_PYTHON || "python3", [
+      execFileSync("python3", [
         "-c",
         "import sys; sys.dont_write_bytecode = False; sys.pycache_prefix = None; sys.path.insert(0, sys.argv[1]); import studio_guest_probe",
         guest,
@@ -157,14 +169,6 @@ if (process.argv.includes("--unlock-contract")) {
         "imports from vm/guest cannot add unsigned cache files",
       );
       execFileSync("codesign", ["--verify", "--deep", "--strict", app]);
-      execFileSync(process.env.CODEX_AGENTS_PYTHON || "python3", [
-        "-B",
-        "-c",
-        "import sys; from types import SimpleNamespace; sys.path.insert(0, sys.argv[1]); from codex_live_updates import LiveUpdates; manager = LiveUpdates(SimpleNamespace(root=sys.argv[3], closed=False), scripts=sys.argv[2]); manager.tick(); manager.tick(); assert manager.status()['status'] == 'idle', manager.status()",
-        repositoryScripts,
-        scripts,
-        root,
-      ]);
       assert.equal(statSync(lease).ino, leaseInode);
       assert.equal(readFileSync(lease, "utf8"), expectedLease);
       execFileSync("codesign", ["--verify", "--deep", "--strict", app]);
@@ -176,7 +180,7 @@ if (process.argv.includes("--unlock-contract")) {
       "resource updates preserve the application identity",
     );
     console.log(
-      "PASS: stable certificate identity; Python imports and updater ticks preserve the resource seal and lease",
+      "PASS: stable certificate identity; helper imports preserve the resource seal and lease",
     );
   } finally {
     rmSync(root, { recursive: true, force: true });

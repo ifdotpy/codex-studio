@@ -36,9 +36,9 @@ export function AgentProgress({
         <span
           className="agent-stall"
           role="status"
-          title={`Task ${agent.stall.taskId} has not been submitted`}
+          title={`The worker finished its turn without submitting task ${agent.stall.taskId}. Its lead decides the next step.`}
         >
-          Stalled · task {agent.stall.taskId} unsubmitted
+          Waiting for lead · task {agent.stall.taskId} not submitted
         </span>
       )}
       {agent.commandProgress?.map((command) => (

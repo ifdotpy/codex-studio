@@ -1,0 +1,112 @@
+[
+  [
+    null,
+    {
+      "protocol": 3,
+      "workspaceId": "workspace",
+      "epoch": "epoch",
+      "revision": 2,
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "agent",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 1,
+          "outputTokens": 1
+        }
+      ]
+    },
+    {
+      "protocol": 3,
+      "workspaceId": "workspace",
+      "epoch": "epoch",
+      "revision": 3,
+      "reason": "change",
+      "resources": [
+        {
+          "kind": "accounts"
+        }
+      ],
+      "resourceVersions": [
+        {
+          "revision": 3
+        }
+      ]
+    },
+    {
+      "protocol": 3,
+      "workspaceId": "workspace",
+      "epoch": "epoch",
+      "revision": 5,
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "agent",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 2,
+          "outputTokens": 2
+        }
+      ]
+    },
+    {
+      "protocol": 3,
+      "workspaceId": "workspace",
+      "epoch": "epoch",
+      "revision": 5,
+      "reason": "change",
+      "resources": [
+        {
+          "kind": "queue",
+          "agentId": "agent"
+        }
+      ],
+      "resourceVersions": [
+        {
+          "revision": 4
+        }
+      ]
+    },
+    null
+  ],
+  [
+    {
+      "protocol": 3,
+      "workspaceId": "workspace",
+      "epoch": "epoch",
+      "revision": 4,
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "agent",
+          "turnId": "turn",
+          "active": true,
+          "estimated": false,
+          "rate": 3,
+          "outputTokens": 3
+        }
+      ]
+    },
+    {
+      "protocol": 3,
+      "workspaceId": "workspace",
+      "epoch": "epoch",
+      "revision": 4,
+      "reason": "change",
+      "resources": [
+        {
+          "kind": "accounts"
+        }
+      ],
+      "resourceVersions": [
+        {
+          "revision": 2
+        }
+      ]
+    },
+    null
+  ]
+]

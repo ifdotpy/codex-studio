@@ -1,6 +1,12 @@
 import { serverDatabaseSuffix } from "../servers/environment";
 
-import { MAX_SAFE_INTEGER } from "../generated/sharedValues";
+import {
+  MAX_SAFE_INTEGER,
+  SYNC_ENTITY_STREAM_MAX_DOCUMENTS,
+  SYNC_ENTITY_STREAM_MAX_BYTES,
+  SYNC_TRANSCRIPT_STREAM_MAX_ITEMS,
+  SYNC_TRANSCRIPT_STREAM_MAX_BYTES,
+} from "../generated/sharedValues";
 
 import { createRxDatabase, addRxPlugin } from "rxdb";
 
@@ -12,12 +18,13 @@ import { replicateRxCollection } from "rxdb/plugins/replication";
 
 import type { RxCollection, RxDocumentData } from "rxdb";
 
-import { draftConflictHandler } from "./conflicts";
+import { createDraftConflictHandler } from "./conflicts";
 
 import {
   applyEntityRows,
   emptyEntityProjection,
   type UiPreferenceProjection,
+  type EntityRow,
 } from "./entityProjection";
 
 import { observeEntityProjection } from "./entityProjectionObserver";
@@ -76,7 +83,7 @@ import { DRAFT_SYNC_TIMING_MS } from "./draftSyncTiming.mjs";
 
 import { API_SCHEMA_HASH } from "../generated/apiSchema";
 
-import { SYNC_ENTITY_SCOPE } from "../generated/api";
+import { SYNC_ENTITY_SCOPE, type components } from "../generated/api";
 
 import {
   canSerializeEntityProjectionWrites,
@@ -93,12 +100,7 @@ export { DRAFT_SYNC_TIMING_MS } from "./draftSyncTiming.mjs";
 
 addRxPlugin(RxDBLeaderElectionPlugin);
 
-export type SyncDocument = {
-  id: string;
-  payload: string;
-  seq: number;
-  _deleted?: boolean;
-};
+export type SyncDocument = EntityRow;
 
 export type SyncEntityPersisterProbe = {
   sequences: number[];
@@ -118,9 +120,12 @@ export {
 
 export type { ResourceRef } from "./resourceEvents";
 
+type TranscriptSyncPayload = components["schemas"]["TranscriptSyncPayload"];
+
 type TranscriptProjectionMeta = {
   format: 2;
-  metadata: Record<string, any>;
+  epoch?: string;
+  metadata: Omit<Partial<TranscriptPageData>, "items">;
   order: string[];
   itemRevisions: Record<string, string>;
 };
@@ -186,6 +191,7 @@ export function createSyncClient(options: SyncClientOptions) {
   const { getEntitySequenceCheckpoint, setEntitySequenceProjection } =
     options.sequences;
   const {
+    clearTranscript,
     cacheTranscriptValue,
     peekTranscript,
     patchTranscriptValue,
@@ -306,8 +312,9 @@ export function createSyncClient(options: SyncClientOptions) {
       storage: getRxStorageDexie(),
       multiInstance: true,
     });
+    const draftConflicts = createDraftConflictHandler();
     await db.addCollections({
-      drafts: { schema, conflictHandler: draftConflictHandler },
+      drafts: { schema, conflictHandler: draftConflicts.conflictHandler },
       outbox: { schema },
     });
     const currentProjectionDatabase = entityProjectionDatabaseName(
@@ -360,7 +367,7 @@ export function createSyncClient(options: SyncClientOptions) {
       if (doc.id.startsWith("transcript:") && doc.id.split(":").length === 2)
         void cacheStoredTranscript(db.projections, workspaceId, doc.id, doc);
     });
-    return { db, workspaceId, verifyWorkspace };
+    return { db, workspaceId, verifyWorkspace, draftConflicts };
   }
 
   function syncDatabase() {
@@ -554,11 +561,40 @@ export function createSyncClient(options: SyncClientOptions) {
     // Older browsers keep the existing pull path. Tab-local serialization cannot
     // protect a shared projection from another tab's reset.
     if (!canSerializeEntityProjectionWrites()) return;
-    const { workspaceId } = await syncDatabase();
+    const { db, workspaceId } = await syncDatabase();
     if (!isCurrent() || workspaceId !== event.workspaceId) return;
     for (const [index, entry] of event.resourceVersions.entries()) {
       if (!isCurrent()) return;
       const resource = entry.resource ?? event.resources[index];
+      if (resource?.kind === "transcript" && entry.transcriptChanges) {
+        const batch = entry.transcriptChanges;
+        if (
+          batch.through !== entry.revision ||
+          batch.after < 0 ||
+          batch.through <= batch.after ||
+          batch.delta.items.length + batch.delta.removed.length >
+            SYNC_TRANSCRIPT_STREAM_MAX_ITEMS ||
+          new TextEncoder().encode(JSON.stringify(batch)).length >
+            SYNC_TRANSCRIPT_STREAM_MAX_BYTES
+        )
+          throw new TypeError("Invalid stream transcript batch");
+        await persistTranscriptProjection(
+          db.projections,
+          `transcript:${resource.agentId}`,
+          {
+            id: `transcript:${resource.agentId}`,
+            payload: "",
+            seq: batch.through,
+            _deleted: false,
+          },
+          workspaceId,
+          batch.delta,
+          batch.after,
+          isCurrent,
+          event.epoch,
+        );
+        continue;
+      }
       const changes = entry.entityChanges;
       if (resource?.kind !== "state" || !changes || entry.entitySequenceReset)
         continue;
@@ -570,7 +606,7 @@ export function createSyncClient(options: SyncClientOptions) {
         changes.through !== entry.revision ||
         !Array.isArray(changes.documents) ||
         !changes.documents.length ||
-        changes.documents.length > 512 ||
+        changes.documents.length > SYNC_ENTITY_STREAM_MAX_DOCUMENTS ||
         changes.documents.some(
           (row) =>
             typeof row.id !== "string" ||
@@ -583,10 +619,8 @@ export function createSyncClient(options: SyncClientOptions) {
         ) ||
         Math.max(...changes.documents.map((row) => row.seq)) !==
           changes.through ||
-        changes.documents.reduce(
-          (size, row) => size + row.payload.length + row.id.length,
-          0,
-        ) > 262144
+        new TextEncoder().encode(JSON.stringify(changes)).length >
+          SYNC_ENTITY_STREAM_MAX_BYTES
       )
         throw new TypeError("Invalid stream entity batch");
       await persistEntityDocuments(
@@ -828,15 +862,25 @@ export function createSyncClient(options: SyncClientOptions) {
   const transcriptItemId = (scope: string, id: string) =>
     `transcript:item:${scope.slice("transcript:".length)}:${id}`;
 
-  function transcriptMetadata(value: Record<string, any>) {
-    const {
-      items: _items,
-      delta: _delta,
-      removed: _removed,
-      order: _order,
-      itemRevisions: _itemRevisions,
-      ...metadata
-    } = value;
+  function isTranscriptDelta(
+    value: TranscriptSyncPayload,
+  ): value is components["schemas"]["TranscriptStreamDelta"] {
+    return "delta" in value;
+  }
+
+  function transcriptMetadata(value: TranscriptSyncPayload) {
+    if (isTranscriptDelta(value)) {
+      const {
+        items: _items,
+        delta: _delta,
+        removed: _removed,
+        order: _order,
+        itemRevisions: _itemRevisions,
+        ...metadata
+      } = value;
+      return metadata;
+    }
+    const { items: _items, ...metadata } = value;
     return metadata;
   }
 
@@ -895,114 +939,154 @@ export function createSyncClient(options: SyncClientOptions) {
     collection: RxCollection<SyncDocument>,
     scope: string,
     document: SyncDocument & { _deleted?: boolean },
-    previous: SyncDocument | undefined,
     workspaceId: string,
+    incoming: TranscriptSyncPayload | null,
+    after?: number,
+    isCurrent: () => boolean = () => true,
+    epoch?: string,
   ) {
-    const id = scope.slice("transcript:".length);
-    const base = previous?.payload
-      ? readTranscriptMeta(previous.payload)
-      : null;
-    const incoming = document._deleted ? {} : JSON.parse(document.payload);
-    const oldOrder: string[] = base?.order || [];
-    const isDelta = !document._deleted && incoming.delta === true;
-    if (isDelta && !base)
-      throw new Error("Transcript delta has no local item base.");
+    return withEntityProjectionWrite(collection.database.name, async () => {
+      if (!isCurrent()) return;
+      const [previous] = await collection.storageInstance.findDocumentsById(
+        [scope],
+        true,
+      );
+      const base = previous?.payload
+        ? readTranscriptMeta(previous.payload)
+        : null;
+      const epochChanged =
+        base?.epoch !== undefined &&
+        epoch !== undefined &&
+        base.epoch !== epoch;
+      if (epochChanged && incoming !== null && isTranscriptDelta(incoming))
+        throw new Error("Transcript delta belongs to a different epoch.");
+      if (!epochChanged && previous && previous.seq >= document.seq && base)
+        return;
+      if (after !== undefined && previous?.seq !== after)
+        throw new Error("Transcript stream interval has no local base.");
+      const id = scope.slice("transcript:".length);
+      const oldOrder: string[] = base?.order || [];
+      const delta =
+        incoming !== null && isTranscriptDelta(incoming) ? incoming : null;
+      const isDelta = delta !== null;
+      if (isDelta && !base)
+        throw new Error("Transcript delta has no local item base.");
 
-    const changedItems = document._deleted
-      ? []
-      : (incoming.items || []).filter(
-          (item: any) => typeof item?.id === "string",
-        );
-    const removed: string[] = document._deleted
-      ? oldOrder
-      : isDelta
-        ? (incoming.removed || []).filter(
-            (key: unknown) => typeof key === "string",
-          )
-        : [];
-    const order = document._deleted
-      ? []
-      : Array.isArray(incoming.order)
-        ? incoming.order.filter((key: unknown) => typeof key === "string")
-        : isDelta
-          ? oldOrder
-              .filter((key) => !removed.includes(key))
-              .concat(
-                changedItems
-                  .map((item: any) => item.id)
-                  .filter((key: string) => !oldOrder.includes(key)),
-              )
-          : changedItems.map((item: any) => item.id);
-    if (!document._deleted && !isDelta)
-      removed.push(...oldOrder.filter((key) => !order.includes(key)));
-    const previousMetadata = base?.metadata || {};
-    const metadata = document._deleted
-      ? {}
-      : { ...previousMetadata, ...transcriptMetadata(incoming) };
-    const itemRevisions = document._deleted
-      ? {}
-      : { ...base?.itemRevisions, ...incoming.itemRevisions };
-    for (const itemId of removed) delete itemRevisions[itemId];
-    const nextMeta: TranscriptProjectionMeta = {
-      format: 2,
-      metadata,
-      order,
-      itemRevisions,
-    };
-    const rows: SyncDocument[] = changedItems.map((item: any) => ({
-      id: transcriptItemId(scope, item.id),
-      payload: JSON.stringify(item),
-      seq: document.seq,
-    }));
-    rows.push(
-      ...removed.map((itemId) => ({
-        id: transcriptItemId(scope, itemId),
-        payload: "{}",
+      const changedItems = incoming?.items ?? [];
+      const removed =
+        incoming === null ? [...oldOrder] : delta ? [...delta.removed] : [];
+      const order =
+        incoming === null
+          ? []
+          : delta?.order
+            ? delta.order
+            : isDelta
+              ? oldOrder
+                  .filter((key) => !removed.includes(key))
+                  .concat(
+                    changedItems
+                      .map((item) => item.id)
+                      .filter((key: string) => !oldOrder.includes(key)),
+                  )
+              : changedItems.map((item) => item.id);
+      if (!document._deleted && !isDelta)
+        removed.push(...oldOrder.filter((key) => !order.includes(key)));
+      const previousMetadata = isDelta ? base?.metadata || {} : {};
+      const metadata =
+        incoming === null
+          ? {}
+          : { ...previousMetadata, ...transcriptMetadata(incoming) };
+      const itemRevisions =
+        incoming === null
+          ? {}
+          : { ...base?.itemRevisions, ...delta?.itemRevisions };
+      for (const itemId of removed) delete itemRevisions[itemId];
+      const nextMeta: TranscriptProjectionMeta = {
+        format: 2,
+        epoch: epoch ?? base?.epoch,
+        metadata,
+        order,
+        itemRevisions,
+      };
+      const rows: SyncDocument[] = changedItems.map((item) => ({
+        id: transcriptItemId(scope, item.id),
+        payload: JSON.stringify(item),
         seq: document.seq,
-        _deleted: true,
-      })),
-    );
-    if (rows.length) await persistProjectionBatch(collection, rows);
-    const metaDocument: SyncDocument = {
-      id: scope,
-      payload: JSON.stringify(nextMeta),
-      seq: document.seq,
-      _deleted: document._deleted,
-    };
-    await persistProjection(
-      collection,
-      metaDocument,
-      !document._deleted && !isDelta && !!previous && !base,
-    );
-    if (!document._deleted && !isDelta) {
-      cacheTranscriptValue(
-        workspaceId,
-        id,
-        { ...metadata, items: changedItems },
-        document.seq,
-        document.payload.length * 2,
+      }));
+      rows.push(
+        ...removed.map((itemId) => ({
+          id: transcriptItemId(scope, itemId),
+          payload: "{}",
+          seq: document.seq,
+          _deleted: true,
+        })),
       );
-    } else if (!document._deleted) {
-      const cacheMetadata = transcriptMetadata(incoming);
-      const patched = patchTranscriptValue(
-        workspaceId,
-        id,
-        cacheMetadata,
-        document.seq,
-        changedItems,
-        removed,
-        Array.isArray(incoming.order) ? order : undefined,
-      );
-      if (!patched)
-        await cacheStoredTranscript(
-          collection,
-          workspaceId,
-          scope,
-          metaDocument,
+      if (epochChanged) {
+        clearTranscript(workspaceId, id);
+        const existing = await collection.storageInstance.findDocumentsById(
+          rows.map((row) => row.id),
+          true,
         );
-    } else {
-      cacheTranscriptValue(workspaceId, id, null, document.seq, 0);
-    }
+        const byId = new Map(existing.map((row) => [row.id, row]));
+        if (!isCurrent()) return;
+        await writeProjectionRows(
+          collection,
+          rows.map((row) => ({
+            previous: byId.get(row.id),
+            document: {
+              ...row,
+              _deleted: row._deleted === true,
+              _attachments: {},
+              _meta: { lwt: 1 },
+              _rev: "",
+            },
+          })),
+        );
+      } else if (rows.length)
+        await persistProjectionBatch(collection, rows, isCurrent);
+      if (!isCurrent()) return;
+      const metaDocument: SyncDocument = {
+        id: scope,
+        payload: JSON.stringify(nextMeta),
+        seq: document.seq,
+        _deleted: document._deleted,
+      };
+      await persistProjection(
+        collection,
+        metaDocument,
+        epochChanged || (!document._deleted && !isDelta && !!previous && !base),
+      );
+      if (!isCurrent()) return;
+      if (incoming !== null && !isDelta) {
+        cacheTranscriptValue(
+          workspaceId,
+          id,
+          { ...metadata, items: changedItems },
+          document.seq,
+          document.payload.length * 2,
+        );
+      } else if (incoming !== null) {
+        const cacheMetadata = transcriptMetadata(incoming);
+        const patched = patchTranscriptValue(
+          workspaceId,
+          id,
+          cacheMetadata,
+          document.seq,
+          changedItems,
+          removed,
+          delta?.order ? order : undefined,
+        );
+        if (!patched)
+          await cacheStoredTranscript(
+            collection,
+            workspaceId,
+            scope,
+            metaDocument,
+          );
+      } else {
+        cacheTranscriptValue(workspaceId, id, null, document.seq, 0);
+      }
+    });
   }
 
   const scopes = new Map<string, ProjectionState>();
@@ -1030,6 +1114,7 @@ export function createSyncClient(options: SyncClientOptions) {
       let pending: Promise<void> | undefined;
       let invalidated = false;
       let unversionedInvalidation = false;
+      let transcriptEpoch: string | undefined;
       let requiredEntitySequence: number | undefined;
       // Sequence zero is a valid initial baseline. Keep a sentinel until the
       // first pull establishes that the local projection already has that row.
@@ -1200,7 +1285,20 @@ export function createSyncClient(options: SyncClientOptions) {
               const hasTranscriptBase =
                 !scope.startsWith("transcript:") ||
                 (!!previous && !!readTranscriptMeta(previous.payload));
-              const after = hasTranscriptBase ? (previous?.seq ?? 0) : 0;
+              const cachedTranscriptEpoch =
+                previous && scope.startsWith("transcript:")
+                  ? readTranscriptMeta(previous.payload)?.epoch
+                  : undefined;
+              const after =
+                hasTranscriptBase &&
+                !(
+                  cachedTranscriptEpoch !== undefined &&
+                  transcriptEpoch !== undefined &&
+                  cachedTranscriptEpoch !== transcriptEpoch
+                )
+                  ? (previous?.seq ?? 0)
+                  : 0;
+              const pullTranscriptEpoch = transcriptEpoch;
               if (initialHigh !== undefined && previous?.payload) {
                 try {
                   initialHigh =
@@ -1317,10 +1415,12 @@ export function createSyncClient(options: SyncClientOptions) {
                 }
                 if (scope.startsWith("transcript:")) {
                   let transcriptDocument = document;
-                  if (!document._deleted) {
-                    const incoming = JSON.parse(document.payload);
+                  let incoming: TranscriptSyncPayload | null = document._deleted
+                    ? null
+                    : JSON.parse(document.payload);
+                  if (incoming !== null) {
                     if (
-                      incoming.delta &&
+                      isTranscriptDelta(incoming) &&
                       (!previous?.payload ||
                         !readTranscriptMeta(previous.payload))
                     ) {
@@ -1349,23 +1449,26 @@ export function createSyncClient(options: SyncClientOptions) {
                         throw new Error(
                           "Transcript delta has no local item base and the full pull returned no snapshot.",
                         );
-                      const fullPayload = JSON.parse(fullDocument.payload);
-                      if (
-                        fullPayload.delta === true ||
-                        !Array.isArray(fullPayload.items)
-                      )
+                      const fullPayload: TranscriptSyncPayload = JSON.parse(
+                        fullDocument.payload,
+                      );
+                      if (isTranscriptDelta(fullPayload))
                         throw new Error(
                           "Transcript delta has no local item base and the full pull returned an invalid snapshot.",
                         );
                       transcriptDocument = fullDocument;
+                      incoming = fullPayload;
                     }
                   }
                   await persistTranscriptProjection(
                     db.projections,
                     scope,
                     transcriptDocument,
-                    previous,
                     workspaceId,
+                    incoming,
+                    undefined,
+                    () => pullTranscriptEpoch === transcriptEpoch && !stopped,
+                    pullTranscriptEpoch,
                   );
                   continue;
                 }
@@ -1504,6 +1607,25 @@ export function createSyncClient(options: SyncClientOptions) {
         // A stream hint cannot authorize another read after a permanent rejection.
         // Explicit refresh still uses the normal workspace and HTTP checks.
         if (invalidationBlocked) return;
+        if (transcriptId && version) transcriptEpoch = version.epoch;
+        if (transcriptId && version?.transcriptSequence !== undefined) {
+          const through = version.transcriptSequence;
+          void db.projections.storageInstance
+            .findDocumentsById([scope], true)
+            .then(([row]) => {
+              const meta =
+                row && !row._deleted ? readTranscriptMeta(row.payload) : null;
+              if (
+                !row ||
+                !meta ||
+                row.seq < through ||
+                (meta.epoch !== undefined && meta.epoch !== version.epoch)
+              )
+                invalidate();
+            })
+            .catch(() => invalidate());
+          return;
+        }
         if (remoteScope === SYNC_ENTITY_SCOPE && version) {
           latestEntitySequence.observeEpoch(version.epoch);
           if (version.entitySequenceReset) {
@@ -1768,7 +1890,8 @@ export function createSyncClient(options: SyncClientOptions) {
       };
     } = {},
   ) {
-    const { db, workspaceId, verifyWorkspace } = await syncDatabase();
+    const { db, workspaceId, verifyWorkspace, draftConflicts } =
+      await syncDatabase();
     // State machine: each invalidation sets `pullTriggered`. The first admitted
     // page consumes that bit; a successful full page permits continuation via
     // `pullContinues`, without consuming any trigger that arrived meanwhile.
@@ -1781,6 +1904,8 @@ export function createSyncClient(options: SyncClientOptions) {
     // downstream waits before cancelling the one active RxDB state.
     // Invariants: no pull sequence without a trigger; no outage trigger is lost;
     // at most one restart per minimum interval.
+    // Ordinary complete draft batches enter RxDB's master stream. Their accepted
+    // watermark proves continuity; RxDB owns durable checkpoints and conflicts.
     const failures = new Map<"pull" | "push" | "replication", unknown>();
     let stopped = false;
     let pushFailed = false;
@@ -1796,6 +1921,8 @@ export function createSyncClient(options: SyncClientOptions) {
     let restartTimer: ReturnType<typeof setTimeout> | undefined;
     let lastRestartAt = Number.NEGATIVE_INFINITY;
     let replicationGeneration = 0;
+    let draftEpoch: string | undefined;
+    let acceptedDraftSequence: number | undefined;
     const stopWaiters = new Set<() => void>();
     const advanceReplicationGeneration = () => ++replicationGeneration;
     const waitForStop = () => {
@@ -1978,6 +2105,10 @@ export function createSyncClient(options: SyncClientOptions) {
                 );
                 if (result.reset === true)
                   throw new Error("The server reset draft sync unexpectedly.");
+                acceptedDraftSequence = Math.max(
+                  acceptedDraftSequence ?? 0,
+                  result.checkpoint.seq,
+                );
                 pullContinues = result.documents.length >= batchSize;
                 return {
                   documents: result.documents,
@@ -2019,11 +2150,13 @@ export function createSyncClient(options: SyncClientOptions) {
                   },
                 };
               });
-              return syncPost(
+              const conflicts = await syncPost(
                 "/api/sync/drafts",
                 { rows: requestRows },
                 { workspaceId },
               );
+              draftConflicts.acknowledge(rows, conflicts);
+              return conflicts;
             }),
           batchSize: 100,
         },
@@ -2045,6 +2178,8 @@ export function createSyncClient(options: SyncClientOptions) {
                 ? "push"
                 : "replication";
           state(direction, error);
+          if (direction !== "push" && acceptedDraftSequence !== undefined)
+            triggerPull();
         }),
       ];
       replication = current;
@@ -2126,11 +2261,39 @@ export function createSyncClient(options: SyncClientOptions) {
       else replication.reSync();
     };
     const triggerPull = () => {
+      acceptedDraftSequence = undefined;
       pullTriggered = true;
       servePendingPull();
     };
-    const stopInvalidation = watchSyncInvalidations(() => {
-      triggerPull();
+    const stopInvalidation = watchSyncInvalidations((version) => {
+      const batch = version?.draftChanges;
+      if (version?.reason !== "change" || version.epoch !== draftEpoch) {
+        draftEpoch = version?.epoch;
+        triggerPull();
+        return;
+      }
+      if (
+        acceptedDraftSequence !== undefined &&
+        version.revision <= acceptedDraftSequence
+      )
+        return;
+      if (
+        !batch ||
+        acceptedDraftSequence === undefined ||
+        batch.after > acceptedDraftSequence ||
+        batch.through !== version.revision ||
+        batch.through <= batch.after ||
+        batch.documents.at(-1)?.seq !== batch.through
+      ) {
+        triggerPull();
+        return;
+      }
+      const after = acceptedDraftSequence;
+      replication.emitEvent({
+        documents: batch.documents.filter((row) => row.seq > after),
+        checkpoint: { seq: batch.through },
+      });
+      acceptedDraftSequence = batch.through;
     }, "drafts");
     const stopResume = onResume(() => {
       triggerPull();

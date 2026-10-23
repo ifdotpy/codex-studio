@@ -134,11 +134,11 @@ export default memo(function RichPreview({
   );
   const diagramHeight = useMemo(() => {
     if (!svg) return 160;
-    const root = new DOMParser().parseFromString(
-      svg,
-      "image/svg+xml",
-    ).documentElement;
-    const height = Number(root.getAttribute("viewBox")?.split(/\s+/)[3]);
+    // Mermaid serializes HTML labels as HTML (<br>), which is not valid XML.
+    const root = new DOMParser()
+      .parseFromString(svg, "text/html")
+      .querySelector("svg");
+    const height = Number(root?.getAttribute("viewBox")?.split(/\s+/)[3]);
     return Number.isFinite(height)
       ? Math.max(120, Math.min(560, height + 40))
       : 310;

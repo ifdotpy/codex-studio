@@ -1,5 +1,5 @@
-use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use base64::Engine;
+use std::collections::BTreeMap;
 
 use serde_json::{Value, json};
 use studio_runtime_services::payload_blobs::{
@@ -9,34 +9,34 @@ use studio_runtime_services::safety_buffering::{
     SafetyDecision, SafetySnapshot, active, decide_action, decide_restart,
 };
 
-use crate::prepared_python_support as prepared_python;
-
-#[allow(clippy::disallowed_methods)]
 fn python_oracle() -> (Value, tempfile::TempDir) {
-    let package = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let tests = package.join("tests/turn_lifecycle");
-    let script = tests.join("payload_safety_oracle.py");
-    let cases = tests.join("payload_safety_cases.json");
-    let server = package.join("../../apps/server/src");
-    let state = tempfile::tempdir().expect("Python oracle state directory");
-    let output = Command::new(prepared_python::prepared_python(&server))
-        .arg(script)
-        .arg(cases)
-        .arg(server)
-        .arg(state.path())
-        .env("PYTHONPATH", package.join("../../apps/server/src"))
-        .env("PYTHONDONTWRITEBYTECODE", "1")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .expect("launch isolated Python payload oracle");
-    assert!(
-        output.status.success(),
-        "Python payload oracle failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    let state = tempfile::tempdir().expect("payload fixture directory");
+    let (expected, files) = if std::env::var("STUDIO_RUNTIME_CORPUS_FULL").as_deref() == Ok("1") {
+        (
+            include_str!("turn_lifecycle/payload_safety_expected-full.json"),
+            include_str!("turn_lifecycle/payload_safety_files-full.json"),
+        )
+    } else {
+        (
+            include_str!("turn_lifecycle/payload_safety_expected.json"),
+            include_str!("turn_lifecycle/payload_safety_files.json"),
+        )
+    };
+    let files: BTreeMap<String, String> =
+        serde_json::from_str(files).expect("frozen payload blobs");
+    for (name, bytes) in files {
+        let path = state.path().join(name);
+        std::fs::create_dir_all(path.parent().expect("blob parent")).expect("blob directory");
+        std::fs::write(
+            path,
+            base64::engine::general_purpose::STANDARD
+                .decode(bytes)
+                .expect("blob bytes"),
+        )
+        .expect("historical blob");
+    }
     (
-        serde_json::from_slice(&output.stdout).expect("parse Python payload oracle result"),
+        serde_json::from_str(expected).expect("frozen payload corpus"),
         state,
     )
 }

@@ -10,7 +10,7 @@ use studio_runtime_services::{
 };
 use studio_runtime_store::{AccountTransferRepository, RuntimeStore};
 const OP: &str = "41e0b552-0b0c-4c5c-9c37-2e7483cd05c9";
-async fn state() -> tempfile::TempDir {
+pub(crate) async fn state() -> tempfile::TempDir {
     let root = tempfile::tempdir().expect("isolated state");
     let path = root.path().display().to_string();
     let store = RuntimeStore::open(Some(root.path())).await.expect("open");

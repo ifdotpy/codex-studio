@@ -50,10 +50,7 @@ test("Ux Chat Ui", async ({
   const syncIdentity = syncIdentityFixture();
   const workspaceId = syncIdentity.workspaceId;
   const entry = join(temporary, "entry.tsx");
-  await writeFile(
-    entry,
-    `import "../../../../../workspaces/runtime/apps/server/tests/fixtures/ux-chat.tsx";`,
-  );
+  await writeFile(entry, `import "../tests/fixtures/ux-chat.tsx";`);
   let server;
   let vite;
   const syncStreams = new Set();
@@ -334,8 +331,6 @@ test("Ux Chat Ui", async ({
       }
       if (path === "/api/queue")
         return fulfillApi(route, { json: { items: [] } });
-      if (path === "/api/panel")
-        return fulfillApi(route, { json: { html: "", version: 0 } });
       return fulfillApi(route, { json: { ok: true } });
     });
     await page.goto(`http://127.0.0.1:${server.address().port}`);

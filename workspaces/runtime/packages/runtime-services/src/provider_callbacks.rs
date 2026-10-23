@@ -15,8 +15,9 @@ pub use crate::managed_child_create::{
 };
 pub(crate) use cards::answer_signature;
 pub use cards::{
-    AnswerAuthority, answer, answer_value, expire, pending_native_delete_context, prepare_delete,
-    prepare_user_answer, resolve,
+    AnswerAuthority, NATIVE_REQUEST_METHODS, NativeAdmission, admit_native, answer, answer_value,
+    expire, expire_ended_generations, interactive as is_native_request,
+    pending_native_delete_context, prepare_delete, prepare_user_answer, resolve,
 };
 pub use model::{
     CallbackContext, CallbackDecision, CallbackError, CallbackSnapshot, Reply, ReplyIdentity,

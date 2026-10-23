@@ -125,35 +125,6 @@ impl AnalyticsCaptureRepository {
         })
         .transpose()
     }
-    /// Legacy notices without totalTokens hashed Python object insertion order.
-    /// Match their actual counters before choosing a new canonical identity.
-    pub fn usage_without_total(
-        db: &Connection,
-        agent: &str,
-        thread: &Value,
-        turn: &Value,
-        total: &Value,
-    ) -> StoreResult<Option<Value>> {
-        let mut statement = db.prepare_cached("SELECT record FROM analytics_usage WHERE agent=? AND thread IS ? AND turn IS ? AND json_extract(record,'$.total.totalTokens') IS NULL AND json_extract(record,'$.usageSource') IS NOT 'claudeResponse' ORDER BY seq LIMIT 129")?;
-        let rows = statement
-            .query_map(params![agent, thread.as_str(), turn.as_str()], |r| {
-                r.get::<_, String>(0)
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
-        if rows.len() > 128 {
-            return Err(StoreError::SchemaValidation(
-                "analytics_usage/legacyCounterLookupLimit".into(),
-            ));
-        }
-        for raw in rows {
-            let value: Value = serde_json::from_str(&raw)?;
-            CaptureTable::Usage.validate(&value)?;
-            if &value["total"] == total {
-                return Ok(Some(value));
-            }
-        }
-        Ok(None)
-    }
     pub fn usage_response(
         db: &Connection,
         agent: &str,

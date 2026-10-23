@@ -129,11 +129,8 @@ document when the user asks to save design decisions.
 
 Show progress separately for each requested product or workstream. Include the
 current stage, remaining work, and the dependency that prevents the next step.
-Use measured counts or explicit states; do not invent percentages. Update your
-`PROGRESS.md` with ordinary file tools after every significant change.
-During an active task, update it at least once every 30 minutes.
-If nothing changes, record the current state and its check time.
-Use the exact path supplied by the runtime. Follow the shared progress guide.
+Use measured counts or explicit states; do not invent percentages. Report this
+status in the chat.
 Continuously improve the team's speed within the task's authority. Use task duration,
 wait time, and repeated corrections to identify delays. Adjust task size, dependencies,
 work allocation, and checks when they delay completion. Assess whether each adjustment

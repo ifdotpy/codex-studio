@@ -107,15 +107,15 @@ A stop marker does not prove a native stop. The stop receipt stays unknown until
 the worker has no active native turn or input.
 
 A server that lost its identity file gets a new server ID. Links, workers, and
-project aliases on its peers keep the old ID until the owner runs
-`replace_server` (see the multi-server contract). That operation moves the live
-routes to the new ID and closes queued requests to the old ID as `unknown`.
-It never resends them.
+project aliases on its peers keep the old ID and remain unavailable. The access
+snapshot reports identity warnings (see [lost server identities](multi-server.md#lost-server-identities)).
+The server does not offer an identity replacement action or resend requests to
+another identity.
 
 ## Checks
 
-Run `python3 workspaces/runtime/apps/server/src/codex_python.py --exec workspaces/runtime/apps/server/tests/multi-server-orchestration-contract.py`.
-The tests use two isolated SQLite runtimes and a fake paired transport. They
+The Python backend harness has been removed; use the current
+[testing commands](testing.md). Its historical tests used two isolated SQLite runtimes and a fake paired transport. They
 cover native tool calls, dropped replies, duplicates, offline queues, restart,
 home concurrency, task review, messages, stops, access checks, and Git fetch.
 These checks do not establish live Tailscale or live model behavior.

@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { SYNC_ENTITY_STREAM_MAX_BYTES } from "../generated/sharedValues";
 import {
   API_SCHEMA_HASH,
   API_SCHEMA_HASH_HEADER,
@@ -216,6 +217,120 @@ async function setup({ ready = true } = {}) {
 }
 
 describe("entity pull dispatch gate", () => {
+  it("applies a full streamed state batch before invalidation with zero new pulls", async () => {
+    const { client, rows, workspaceId, stop, entitySequence } = await setup();
+    mocks.pulls = [];
+    entitySequence
+      .getEntitySequenceCheckpoint("state:entities:v1", API_SCHEMA_HASH)
+      .observeEpoch("validity");
+    vi.stubGlobal("navigator", {
+      onLine: true,
+      locks: {
+        request: async (_name: string, write: () => Promise<unknown>) =>
+          write(),
+      },
+    });
+    await client.persistResourceEntityChanges(
+      {
+        protocol: 3,
+        workspaceId,
+        epoch: "validity",
+        revision: 2,
+        reason: "change",
+        resources: [{ kind: "state" }],
+        resourceVersions: [
+          {
+            revision: 101,
+            entityChanges: {
+              after: 100,
+              through: 101,
+              documents: [
+                {
+                  id: "entity:agent:streamed",
+                  seq: 101,
+                  payload: JSON.stringify({
+                    collection: "agent",
+                    id: "streamed",
+                    value: {
+                      id: "streamed",
+                      name: "Streamed",
+                      status: "idle",
+                      source: "managed",
+                    },
+                  }),
+                  _deleted: false,
+                },
+              ],
+            },
+          },
+        ],
+      },
+      () => true,
+    );
+    mocks.invalidate?.({ epoch: "validity", entitySequence: 101 });
+    await new Promise<void>((resolve) => queueMicrotask(resolve));
+    expect(rows.get("entity:agent:streamed")?.seq).toBe(101);
+    expect(rows.get("state:entities:checkpoint")?.seq).toBe(101);
+    expect(mocks.pulls).toHaveLength(0);
+    stop();
+  });
+
+  it("rejects a stream batch above the UTF-8 byte cap before storing or advancing", async () => {
+    const { client, rows, workspaceId, stop, entitySequence } = await setup();
+    vi.stubGlobal("navigator", {
+      onLine: true,
+      locks: {
+        request: async (_name: string, write: () => Promise<unknown>) =>
+          write(),
+      },
+    });
+    entitySequence
+      .getEntitySequenceCheckpoint("state:entities:v1", API_SCHEMA_HASH)
+      .observeEpoch("validity");
+    await expect(
+      client.persistResourceEntityChanges(
+        {
+          protocol: 3,
+          workspaceId,
+          epoch: "validity",
+          revision: 2,
+          reason: "change",
+          resources: [{ kind: "state" }],
+          resourceVersions: [
+            {
+              revision: 101,
+              entityChanges: {
+                after: 100,
+                through: 101,
+                documents: [
+                  {
+                    id: "entity:agent:oversize",
+                    seq: 101,
+                    payload: JSON.stringify({
+                      collection: "agent",
+                      id: "oversize",
+                      value: {
+                        id: "oversize",
+                        name: "é".repeat(SYNC_ENTITY_STREAM_MAX_BYTES / 2),
+                        status: "idle",
+                        source: "managed",
+                      },
+                    }),
+                    _deleted: false,
+                  },
+                ],
+              },
+            },
+          ],
+        },
+        () => true,
+      ),
+    ).rejects.toThrow("Invalid stream entity batch");
+    expect(rows.has("entity:agent:oversize")).toBe(false);
+    expect(rows.get("state:entities:checkpoint")?.seq).toBe(100);
+    stop();
+  });
+
   afterEach(() => {
     vi.resetModules();
     vi.restoreAllMocks();

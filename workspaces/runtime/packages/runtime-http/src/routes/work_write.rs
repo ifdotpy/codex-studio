@@ -316,24 +316,9 @@ async fn prepare_vm_accept(
     };
 
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
-    let agent_id = agent.to_owned();
-    let task_id = input.task_id.clone();
-    let expected_version = input.version;
-    let request = request_id.map(str::to_owned);
-    let request_signature = signature.to_owned();
-    let reason = input.reason.clone();
-    let preparation = prepare(
-        &store,
-        &agent_id,
-        &task_id,
-        expected_version,
-        request.as_deref(),
-        &request_signature,
-        &reason,
-        input.override_reason.as_deref(),
-    )
-    .await
-    .map_err(write_error)?;
+    let preparation = prepare(&store, agent, request_id, signature, input)
+        .await
+        .map_err(write_error)?;
     match preparation {
         VmAcceptPreparation::NotVm => {}
         VmAcceptPreparation::Merged(result_id) => input.merged_result_id = Some(result_id),
@@ -1384,7 +1369,7 @@ mod managed_work_port_tests {
         let refusal: Value = serde_json::from_str(&refused(
             port.act("worker", &args, "schema-gate-invalid").await,
         ))
-        .unwrap();
+        .expect("schema refusal parses");
         assert_eq!(refusal["errors"][0]["path"], "/count");
         let count = store
             .read_async("gate-test/schema", |db| {
@@ -1394,7 +1379,7 @@ mod managed_work_port_tests {
                 .map_err(studio_runtime_store::StoreError::from)
             })
             .await
-            .unwrap();
+            .expect("monitor count loads");
         assert_eq!(count, 0);
         let mut valid = args;
         valid["result"] = json!({"count":1});
@@ -1420,14 +1405,15 @@ mod managed_work_port_tests {
         let cwd = directory.path().to_string_lossy().into_owned();
         store
             .transaction(move |tx| {
-                let mut worker = AgentRepository::get(tx, &"worker".into())?.unwrap();
+                let mut worker =
+                    AgentRepository::get(tx, &"worker".into())?.expect("worker fixture exists");
                 worker.extra.insert("cwd".into(), json!(cwd));
                 worker.extra.insert("yoloMode".into(), json!(true));
                 AgentRepository::put(tx, &worker)?;
                 Ok(())
             })
             .await
-            .unwrap();
+            .expect("worker fixture updates");
         let port = managed_work_port(state, None);
         let default = written(
             port.act(
@@ -1456,7 +1442,10 @@ mod managed_work_port_tests {
             .await,
         );
         assert_eq!(created["gate"], default["defaultGate"]);
-        let task = created["id"].as_str().unwrap().to_owned();
+        let task = created["id"]
+            .as_str()
+            .expect("created task identity is text")
+            .to_owned();
         let submitted = written(
             port.act(
                 "worker",
@@ -1468,14 +1457,20 @@ mod managed_work_port_tests {
         );
         let id = submitted["results"][0]["gate"]["monitorId"]
             .as_str()
-            .unwrap()
+            .expect("gate monitor identity is text")
             .to_owned();
         let log_root = studio_runtime_services::monitor_output::log_root(store.root());
         store
             .transaction_with(move |tx| {
-                let monitor = studio_runtime_store::MonitorsRepository::get(tx, &id)?.unwrap();
+                let monitor = studio_runtime_store::MonitorsRepository::get(tx, &id)?
+                    .expect("gate monitor exists");
                 assert_eq!(
-                    std::path::Path::new(monitor.value()["log"].as_str().unwrap()).parent(),
+                    std::path::Path::new(
+                        monitor.value()["log"]
+                            .as_str()
+                            .expect("monitor log path is text")
+                    )
+                    .parent(),
                     Some(log_root.as_path())
                 );
                 assert_eq!(monitor.value()["timeout_ms"], 4321);
@@ -1490,7 +1485,7 @@ mod managed_work_port_tests {
                 )
             })
             .await
-            .unwrap();
+            .expect("monitor assertions complete");
         assert!(matches!(
             port.act(
                 "lead",
@@ -1515,14 +1510,15 @@ mod managed_work_port_tests {
         let cwd = directory.path().to_string_lossy().into_owned();
         store
             .transaction(move |tx| {
-                let mut lead = AgentRepository::get(tx, &"lead".into())?.unwrap();
+                let mut lead =
+                    AgentRepository::get(tx, &"lead".into())?.expect("lead fixture exists");
                 lead.extra.insert("cwd".into(), json!(cwd));
                 lead.extra.insert("yoloMode".into(), json!(true));
                 AgentRepository::put(tx, &lead)?;
                 Ok(())
             })
             .await
-            .unwrap();
+            .expect("lead fixture updates");
         let port = managed_work_port(state, None);
         let created = written(
             port.act(
@@ -1532,7 +1528,9 @@ mod managed_work_port_tests {
             )
             .await,
         );
-        let task = created["id"].as_str().unwrap();
+        let task = created["id"]
+            .as_str()
+            .expect("created task identity is text");
         let outcome=port.act("worker",&json!({"action":"submit","task_id":task,"result":"spoofed","checks":"none","revision":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}),"spoof-submit").await;
         assert!(
             matches!(outcome, WorkActionOutcome::Refused(message) if message.contains("Only the assigned worker"))
@@ -1543,9 +1541,14 @@ mod managed_work_port_tests {
                 studio_runtime_store::WorkItemsRepository::work_record(tx, &task)
             })
             .await
-            .unwrap()
-            .unwrap();
-        assert!(unchanged["results"].as_array().unwrap().is_empty());
+            .expect("task query succeeds")
+            .expect("created task exists");
+        assert!(
+            unchanged["results"]
+                .as_array()
+                .expect("task results are an array")
+                .is_empty()
+        );
     }
 
     #[tokio::test]
@@ -1562,7 +1565,10 @@ mod managed_work_port_tests {
             )
             .await,
         );
-        let task = created["id"].as_str().unwrap().to_owned();
+        let task = created["id"]
+            .as_str()
+            .expect("created task identity is text")
+            .to_owned();
         let submit = json!({"action":"submit", "task_id":task,
             "result":"done", "checks":"checked", "revision":"abc1234"});
         let outcome = port.act("worker", &submit, "auth-spoof-submit").await;
@@ -1577,9 +1583,14 @@ mod managed_work_port_tests {
                 studio_runtime_store::WorkItemsRepository::work_record(tx, &task_id)
             })
             .await
-            .unwrap()
-            .unwrap();
-        assert!(unchanged["results"].as_array().unwrap().is_empty());
+            .expect("task query succeeds")
+            .expect("created task exists");
+        assert!(
+            unchanged["results"]
+                .as_array()
+                .expect("task results are an array")
+                .is_empty()
+        );
         let submitted = written(port.act("lead", &submit, "auth-owner-submit").await);
         assert_eq!(submitted["results"][0]["agent"], "lead");
     }
@@ -1599,7 +1610,10 @@ mod managed_work_port_tests {
                 )
                 .await,
             );
-            let task = created["id"].as_str().unwrap().to_owned();
+            let task = created["id"]
+                .as_str()
+                .expect("created task identity is text")
+                .to_owned();
             let submitted = if action == "update" {
                 created
             } else {
@@ -1630,8 +1644,8 @@ mod managed_work_port_tests {
                     studio_runtime_store::WorkItemsRepository::work_record(tx, &task_id)
                 })
                 .await
-                .unwrap()
-                .unwrap();
+                .expect("task query succeeds")
+                .expect("created task exists");
             assert_eq!(unchanged["version"], submitted["version"], "{action}");
             assert_eq!(unchanged["status"], submitted["status"], "{action}");
             let allowed = written(
@@ -1658,17 +1672,20 @@ mod managed_work_port_tests {
             )
             .await,
         );
-        let creator_task = created["id"].as_str().unwrap().to_owned();
+        let creator_task = created["id"]
+            .as_str()
+            .expect("created task identity is text")
+            .to_owned();
         store
             .transaction(move |tx| {
                 let mut record =
                     studio_runtime_store::WorkItemsRepository::work_record(tx, &creator_task)?
-                        .unwrap();
+                        .expect("created task exists");
                 record["createdBy"] = json!("worker");
                 studio_runtime_store::WorkItemsRepository::update_work(tx, &creator_task, &record)
             })
             .await
-            .unwrap();
+            .expect("task creator updates");
         let cancelled = written(
             port.act(
                 "worker",
@@ -1708,7 +1725,7 @@ mod managed_work_port_tests {
             "agent":"worker", "id":"auth-user-accept"});
         let accepted = super::perform(state, None, args.clone(), None)
             .await
-            .unwrap();
+            .expect("gate override accepts");
         assert_eq!(accepted["status"], "accepted");
         let refused = port.act("worker", &args, "auth-user-accept").await;
         assert!(

@@ -8,8 +8,9 @@ existing local peer tools and rooms without federation traffic.
 
 1. Update and open Studio on both computers. Do not share or copy either
    computer's Studio state directory.
-2. Sign in to Tailscale on both computers. Set up private HTTPS with
-   `python3 workspaces/runtime/apps/server/src/codex-mobile.py` on each server. Tailscale Serve must be
+2. Sign in to Tailscale on both computers. Use the existing private HTTPS
+   configuration on each server. The removed mobile setup CLI has no replacement
+   in this change. Tailscale Serve must be
    reachable by the other computer. Device sharing between tailnets is
    supported when the invited device can reach the serving computer.
 3. Open **Messages**, then **Chat settings**, on both computers. Turn on
@@ -68,8 +69,9 @@ rooms.
 
 ## Troubleshooting
 
-- **Invitation creation asks for Tailscale Serve:** run
-  `python3 workspaces/runtime/apps/server/src/codex-mobile.py` on that server, then reload Chat settings.
+- **Invitation creation asks for Tailscale Serve:** verify the server
+  has an existing reachable Serve configuration, then reload Chat settings.
+  The former mobile setup CLI was removed with the Python backend.
 - **Connection unavailable:** confirm both servers have federation enabled,
   Tailscale is connected, and the displayed Serve origin is reachable. One-way
   reachability is enough if the reachable server remains online.

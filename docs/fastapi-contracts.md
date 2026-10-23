@@ -1,5 +1,9 @@
 # FastAPI boundary migration contract
 
+> Historical implementation record: Python backend paths and commands below
+> refer to the removed implementation. Use [testing](testing.md) and the
+> [CLI guide](cli.md) for current Rust commands.
+
 **Audience:** maintainers migrating the local Python HTTP boundary and renderer API.
 **Status:** implementation complete; isolated migration evidence verified; live startup against existing state remains unverified.
 

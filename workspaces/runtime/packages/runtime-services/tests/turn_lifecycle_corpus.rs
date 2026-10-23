@@ -1,126 +1,402 @@
-//! Both sides start from a committed Python-written database, never a Rust snapshot.
+//! Lifecycle transitions over captured legacy database rows and expectations.
 //! Submission uses the worker pipeline and production store::submitted, comparing
 //! the complete native method/params plus the extra Rust transport receipt.
-//! The oracle starts with a loaded thread: resume transport is covered by worker
+//! The fixture starts with a loaded thread: resume transport is covered by worker
 //! matrix scenario 0 (normal_turn_commits_transcript_before_ack_and_pending_event_waits_for_settlement).
 //! Fresh thread transport and authenticated manifest promotion are covered by
 //! scenario 16 (new_thread_freezes_settings_and_accepts_context); independent artifact
 //! creation is covered by scenario 17 (child_result_materializes_before_submission).
 //! SessionControl's actual wire/ACK and restart behavior remain worker tests.
-use crate::prepared_python_support as prepared_python;
 use serde_json::{Value, json};
-use std::ffi::{OsStr, OsString};
 use std::fs;
-use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::Arc;
 use studio_runtime_services::scheduler::{
     claim_intent, lifecycle_transaction, recover_on_startup, settle_terminal_attempt,
 };
 use studio_runtime_store::{RuntimeStore, SchedulerRepository, StoreError, TurnAttemptIdentity};
 
-const ORACLE_ENVIRONMENT_ALLOWLIST: &[&str] = &[
-    "PATH",
-    "LANG",
-    "LC_ALL",
-    "LC_CTYPE",
-    "LD_LIBRARY_PATH",
-    "DYLD_LIBRARY_PATH",
-    "SYSTEMROOT",
-    "WINDIR",
-];
-
-fn isolated_oracle_environment(
-    environment: impl IntoIterator<Item = (OsString, OsString)>,
-) -> Vec<(OsString, OsString)> {
-    environment
-        .into_iter()
-        .filter(|(name, _)| {
-            ORACLE_ENVIRONMENT_ALLOWLIST
-                .iter()
-                .any(|allowed| name == OsStr::new(allowed))
-        })
-        .collect()
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LifecycleFixture {
+    schemas: std::collections::BTreeMap<String, Vec<String>>,
+    cases: Vec<LifecycleCase>,
 }
-
-struct Oracle {
-    child: Child,
-    input: ChildStdin,
-    output: BufReader<ChildStdout>,
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LifecycleCase {
+    id: String,
+    expected: LifecycleExpectation,
+    databases: std::collections::BTreeMap<String, LifecycleDatabase>,
+    files: std::collections::BTreeMap<String, String>,
 }
-impl Oracle {
+#[derive(serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct LifecycleExpectation {
+    before: Value,
+    after: Value,
+    python_root: String,
+    python_error: Option<String>,
+    entry_result: Value,
+    native_request: Value,
+    tokens: std::collections::BTreeMap<String, String>,
+}
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LifecycleDatabase {
+    schema_key: String,
+    data: Vec<String>,
+}
+struct CapturedExpectations {
+    fixture: LifecycleFixture,
+    tokens: std::collections::BTreeMap<String, String>,
+}
+impl CapturedExpectations {
     fn new(root: &Path) -> Self {
-        let python = prepared_python::prepared_python(
-            &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
-        );
-        let mut child = Command::new(python)
-            .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/turn_lifecycle/oracle.py"))
-            .arg(root)
-            // The oracle constructs fixture Runtime state, never the live
-            // Studio agent's prompt, skills, or provider-home configuration.
-            // Its Python bootstrap installs disposable homes before imports.
-            .env_clear()
-            .envs(isolated_oracle_environment(std::env::vars_os()))
-            .env("TMPDIR", root)
-            .env("PYTHONDONTWRITEBYTECODE", "1")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .spawn()
-            .expect("Python oracle starts");
-        let input = child.stdin.take().expect("oracle stdin");
-        let output = BufReader::new(child.stdout.take().expect("oracle stdout"));
+        // Captured SQL and expected paths share this one disposable root.
+        let text = std::str::from_utf8(include_bytes!("turn_lifecycle/expected.json"))
+            .expect("fixture UTF8");
+        let root = serde_json::to_string(&root.to_string_lossy()).expect("JSON root");
+        let text = text.replace("${ROOT}", &root[1..root.len() - 1]);
         Self {
-            child,
-            input,
-            output,
+            fixture: crate::turn_fixtures::load(text.as_bytes()),
+            tokens: Default::default(),
         }
     }
     fn call(&mut self, value: Value) -> Value {
-        writeln!(self.input, "{value}").expect("oracle command");
-        self.input.flush().expect("oracle flush");
-        let mut line = String::new();
-        self.output.read_line(&mut line).expect("oracle response");
-        let response: Value = serde_json::from_str(&line).expect("oracle JSON response");
-        assert!(response.get("error").is_none(), "{}", response["error"]);
-        response["result"].clone()
-    }
-}
-
-#[test]
-fn oracle_environment_keeps_python_loader_path_and_strips_provider_homes() {
-    let filtered = isolated_oracle_environment([
-        ("PATH".into(), "/toolchain/bin".into()),
-        ("LD_LIBRARY_PATH".into(), "/toolchain/lib".into()),
-        ("CODEX_HOME".into(), "/live/codex".into()),
-        ("CLAUDE_CONFIG_DIR".into(), "/live/claude".into()),
-        ("OPENAI_API_KEY".into(), "secret".into()),
-    ]);
-    let filtered = filtered
-        .into_iter()
-        .collect::<std::collections::HashMap<_, _>>();
-
-    assert_eq!(
-        filtered.get(OsStr::new("PATH")),
-        Some(&OsString::from("/toolchain/bin"))
-    );
-    assert_eq!(
-        filtered.get(OsStr::new("LD_LIBRARY_PATH")),
-        Some(&OsString::from("/toolchain/lib"))
-    );
-    assert!(!filtered.contains_key(OsStr::new("CODEX_HOME")));
-    assert!(!filtered.contains_key(OsStr::new("CLAUDE_CONFIG_DIR")));
-    assert!(!filtered.contains_key(OsStr::new("OPENAI_API_KEY")));
-}
-impl Drop for Oracle {
-    fn drop(&mut self) {
-        let _ignored = writeln!(self.input, "{{\"command\":\"close\"}}");
-        let _ignored = self.input.flush();
-        if let Err(error) = self.child.wait() {
-            eprintln!("could not reap turn-lifecycle oracle: {error}");
+        #[derive(serde::Deserialize)]
+        #[serde(tag = "command", rename_all = "snake_case", deny_unknown_fields)]
+        enum Request {
+            Seed { rust: PathBuf, case: CaseIdentity },
+            Snapshot { root: PathBuf },
+            Normalize { value: SnapshotValue },
+        }
+        #[derive(serde::Deserialize)]
+        struct CaseIdentity {
+            id: String,
+        }
+        match serde_json::from_value(value).expect("typed lifecycle fixture request") {
+            Request::Seed { rust, case } => {
+                let captured = self
+                    .fixture
+                    .cases
+                    .iter()
+                    .find(|row| row.id == case.id)
+                    .expect("captured lifecycle case");
+                fs::create_dir_all(&rust).expect("case directory");
+                fs::create_dir_all(&captured.expected.python_root)
+                    .expect("captured workspace directory");
+                fs::create_dir_all(Path::new(&captured.expected.python_root).join("workspace"))
+                    .expect("captured shared workspace");
+                for (name, database) in &captured.databases {
+                    crate::turn_fixtures::write_database(
+                        &rust.join(name),
+                        &self.fixture.schemas[&database.schema_key],
+                        &database.data,
+                    );
+                }
+                for (name, text) in &captured.files {
+                    let path = rust.join(name);
+                    fs::create_dir_all(path.parent().expect("fixture parent"))
+                        .expect("fixture directory");
+                    fs::write(&path, text).expect("captured file");
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt;
+                        const FIXTURE_CREDENTIAL_DIRECTORY_MODE: u32 = 0o700;
+                        const FIXTURE_CREDENTIAL_FILE_MODE: u32 = 0o600;
+                        fs::set_permissions(
+                            path.parent().expect("credential directory"),
+                            fs::Permissions::from_mode(FIXTURE_CREDENTIAL_DIRECTORY_MODE),
+                        )
+                        .expect("private credential directory");
+                        fs::set_permissions(
+                            &path,
+                            fs::Permissions::from_mode(FIXTURE_CREDENTIAL_FILE_MODE),
+                        )
+                        .expect("private credential file");
+                    }
+                }
+                self.tokens = captured.expected.tokens.clone();
+                let mut expected = json!(captured.expected);
+                expected["before"] = rebind_expected_hashes(captured.expected.before.clone());
+                expected["after"] = rebind_expected_hashes(captured.expected.after.clone());
+                expected
+            }
+            Request::Snapshot { root } => snapshot(&root, &self.tokens),
+            Request::Normalize { value } => value.normalize("", &self.tokens),
         }
     }
+}
+
+#[derive(serde::Deserialize)]
+#[serde(untagged)]
+enum SnapshotValue {
+    Object(std::collections::BTreeMap<String, SnapshotValue>),
+    Array(Vec<SnapshotValue>),
+    Text(String),
+    Number(serde_json::Number),
+    Boolean(bool),
+    Null(()),
+}
+impl SnapshotValue {
+    fn normalize(&self, key: &str, tokens: &std::collections::BTreeMap<String, String>) -> Value {
+        const CLOCK_FIELDS: &[&str] = &[
+            "created",
+            "createdAt",
+            "created_at",
+            "finished",
+            "at",
+            "lastEvent",
+            "reconciledAt",
+            "updated",
+            "updatedAt",
+            "acceptedAt",
+            "enqueuedAt",
+            "dispatchPickedAt",
+            "observedAt",
+        ];
+        if CLOCK_FIELDS.contains(&key) {
+            let valid = match self {
+                Self::Number(n) => n.as_f64().is_some_and(|n| n.is_finite() && n >= 0.0),
+                Self::Text(t) => chrono::DateTime::parse_from_rfc3339(t).is_ok(),
+                _ => false,
+            };
+            if valid {
+                return json!("<time>");
+            }
+        }
+        if ["seq", "revision", "transcriptRevision"].contains(&key)
+            && matches!(self,Self::Number(n) if n.as_u64().is_some())
+        {
+            return json!("<revision>");
+        }
+        match self {
+            Self::Object(values) => Value::Object(
+                values
+                    .iter()
+                    .map(|(k, v)| {
+                        let value = if key == "versions" {
+                            match v {
+                                Self::Text(t) => json!(tokens.get(t).unwrap_or(t)),
+                                _ => v.normalize(k, tokens),
+                            }
+                        } else {
+                            v.normalize(k, tokens)
+                        };
+                        (k.clone(), value)
+                    })
+                    .collect(),
+            ),
+            Self::Array(values) => {
+                Value::Array(values.iter().map(|v| v.normalize("", tokens)).collect())
+            }
+            Self::Text(v) => json!(v),
+            Self::Number(v) => json!(v),
+            Self::Boolean(v) => json!(v),
+            Self::Null(()) => Value::Null,
+        }
+    }
+}
+fn normalize_snapshot(value: Value, tokens: &std::collections::BTreeMap<String, String>) -> Value {
+    serde_json::from_value::<SnapshotValue>(value)
+        .expect("snapshot value")
+        .normalize("", tokens)
+}
+fn rebind_expected_hashes(value: Value) -> Value {
+    #[derive(serde::Deserialize, serde::Serialize)]
+    struct Snapshot {
+        sync_entities: Vec<Entity>,
+        #[serde(flatten)]
+        other: std::collections::BTreeMap<String, Value>,
+    }
+    #[derive(serde::Deserialize, serde::Serialize)]
+    struct Entity {
+        payload: Value,
+        hash: String,
+        #[serde(flatten)]
+        other: std::collections::BTreeMap<String, Value>,
+    }
+    let mut snapshot: Snapshot = serde_json::from_value(value).expect("expected snapshot");
+    for row in &mut snapshot.sync_entities {
+        row.hash = studio_runtime_store::sha256_hex(
+            studio_runtime_store::python_json(&row.payload).as_bytes(),
+        );
+    }
+    json!(snapshot)
+}
+fn snapshot(root: &Path, tokens: &std::collections::BTreeMap<String, String>) -> Value {
+    use rusqlite::types::ValueRef;
+    let db = rusqlite::Connection::open(root.join("canvas.sqlite3")).expect("snapshot database");
+    let mut result = serde_json::Map::new();
+    for table in [
+        "runtime_agents",
+        "runtime_events",
+        "runtime_execution_runs",
+        "runtime_execution_attempts",
+        "runtime_execution_inputs",
+        "runtime_execution_effects",
+        "runtime_execution_nodes",
+        "runtime_completed_turns",
+        "runtime_event_meta",
+        "runtime_items",
+        "runtime_item_fulltext",
+        "runtime_context_manifests",
+        "runtime_context_reminders",
+        "runtime_budget",
+        "runtime_budget_usage",
+        "runtime_requests",
+        "runtime_tasks",
+        "runtime_complaints",
+        "runtime_operation_receipts",
+        "sync_entities",
+        "sync_documents",
+        "sync_versions",
+        "runtime_search_next_meta",
+        "runtime_search_rollout",
+    ] {
+        let mut info = db
+            .prepare(&format!("PRAGMA table_info(\"{table}\")"))
+            .expect("columns");
+        let columns: Vec<(String, i64)> = info
+            .query_map([], |row| Ok((row.get(1)?, row.get(5)?)))
+            .expect("column rows")
+            .collect::<Result<_, _>>()
+            .expect("column values");
+        if columns.is_empty() {
+            result.insert(table.into(), json!([]));
+            continue;
+        }
+        let mut keys: Vec<_> = columns.iter().filter(|(_, pk)| *pk > 0).collect();
+        keys.sort_by_key(|(_, pk)| *pk);
+        let selected = columns
+            .iter()
+            .map(|(name, _)| format!("\"{name}\""))
+            .collect::<Vec<_>>()
+            .join(",");
+        let order = if table == "runtime_items" {
+            "created,rowid"
+        } else {
+            "rowid"
+        };
+        let mut stmt = db
+            .prepare(&format!(
+                "SELECT {selected} FROM \"{table}\" ORDER BY {order}"
+            ))
+            .expect("snapshot query");
+        let mut rows: Vec<Value> = stmt
+            .query_map([], |row| {
+                let mut record = serde_json::Map::new();
+                for (index, (name, _)) in columns.iter().enumerate() {
+                    let value = match row.get_ref(index)? {
+                        ValueRef::Null => Value::Null,
+                        ValueRef::Integer(v) => json!(v),
+                        ValueRef::Real(v) => json!(v),
+                        ValueRef::Text(v) => {
+                            let text = std::str::from_utf8(v).expect("snapshot UTF8");
+                            if ["record", "payload", "result"].contains(&name.as_str()) {
+                                serde_json::from_str(text).expect("snapshot JSON")
+                            } else {
+                                json!(text)
+                            }
+                        }
+                        ValueRef::Blob(_) => panic!("unexpected snapshot blob"),
+                    };
+                    record.insert(name.clone(), value);
+                }
+                if table == "runtime_agents" {
+                    let id = record["id"].as_str().expect("agent id").to_owned();
+                    studio_runtime_store::agent_volatile::merge_if_agent(
+                        &db,
+                        table,
+                        &id,
+                        record.get_mut("record").expect("agent record"),
+                    )
+                    .expect("volatile fields");
+                }
+                Ok(Value::Object(record))
+            })
+            .expect("snapshot rows")
+            .collect::<Result<_, _>>()
+            .expect("snapshot values");
+        for row in &mut rows {
+            if table == "runtime_operation_receipts" {
+                let id = row["id"].as_str().expect("receipt id");
+                if id == "account-worker:account:default:attempt:turn/start:submitted" {
+                    assert_eq!(row["signature"], "submitted");
+                    assert_eq!(
+                        row["result"]["request"]["operation"],
+                        row["result"]["context"]["operation"]
+                    );
+                    assert_eq!(row["result"]["request"]["method"], "turn/start");
+                    row["result"] = json!("<validated-account-worker-submission>");
+                } else if id.starts_with("provider-submission:") {
+                    // Complete receipt signatures are asserted by the submission corpus.
+                    row["signature"] = json!("<validated-signature>");
+                }
+            }
+            if table == "sync_entities" {
+                let raw: String = db
+                    .query_row(
+                        "SELECT payload FROM sync_entities WHERE collection=?1 AND id=?2",
+                        rusqlite::params![
+                            row["collection"].as_str().expect("collection"),
+                            row["id"].as_str().expect("entity id")
+                        ],
+                        |r| r.get(0),
+                    )
+                    .expect("raw sync payload");
+                assert_eq!(
+                    row["hash"],
+                    studio_runtime_store::sha256_hex(raw.as_bytes())
+                );
+                let payload = normalize_snapshot(row["payload"].clone(), tokens);
+                row["hash"] = json!(studio_runtime_store::sha256_hex(
+                    studio_runtime_store::python_json(&payload).as_bytes()
+                ));
+            }
+            if table == "sync_versions" {
+                row["hash"] = json!("<revision>");
+            }
+            *row = normalize_snapshot(row.clone(), tokens);
+        }
+        if table != "runtime_items" {
+            rows.sort_by_key(|row| {
+                json!(
+                    keys.iter()
+                        .map(|(name, _)| row[name].clone())
+                        .collect::<Vec<_>>()
+                )
+                .to_string()
+            });
+        }
+        result.insert(table.into(), json!(rows));
+    }
+    let mut postings = db
+        .prepare("SELECT 1 FROM sqlite_master WHERE name='runtime_search_next'")
+        .expect("fts presence");
+    let exists = postings.exists([]).expect("fts existence");
+    let rows: Vec<Value> = if exists {
+        db.execute_batch("CREATE VIRTUAL TABLE temp.corpus_vocab USING fts5vocab(main,'runtime_search_next','instance')").expect("fts vocabulary");
+        let mut stmt = db
+            .prepare("SELECT term,doc,col,offset FROM corpus_vocab ORDER BY 1,2,3,4")
+            .expect("postings");
+        stmt.query_map([], |r| {
+            Ok(json!([
+                r.get::<_, String>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, i64>(3)?
+            ]))
+        })
+        .expect("postings rows")
+        .collect::<Result<_, _>>()
+        .expect("postings values")
+    } else {
+        vec![]
+    };
+    result.insert("runtime_search_next_postings".into(), json!(rows));
+    Value::Object(result)
 }
 struct State(PathBuf);
 impl Drop for State {
@@ -196,10 +472,9 @@ async fn apply(store: &Arc<RuntimeStore>, case: &Value) -> Result<Value, String>
                     .map_err(|error| error.to_string())?;
                 std::fs::write(path, content).map_err(|error| error.to_string())?;
             }
-            let mut resources = PreparationResources::bundled_at(
+            let resources = PreparationResources::bundled_at(
                 String::new(),
                 studio_runtime_services::model_catalog::ModelCatalogService::new(),
-                guidance_root.path().to_path_buf(),
                 guidance_root.path().to_path_buf(),
             )
             .map_err(|e| e.to_string())?;
@@ -208,10 +483,6 @@ async fn apply(store: &Arc<RuntimeStore>, case: &Value) -> Result<Value, String>
                 .values()
                 .all(|guidance| guidance.starts_with("fixture ")));
             assert!(resources.skills_root.starts_with(guidance_root.path()));
-            // The request-compilation witness has no progress-file behavior;
-            // keeping this empty prevents even a generated live progress path
-            // from entering the captured provider input.
-            resources.progress_template.clear();
             let prepared=prepare_turn_with_connection_id(Arc::clone(store),&resources,&intent,1,"fixture-connection").await.map_err(|e|e.to_string())?;
             let expected_provider_inputs = prepared.native_request()["params"]["input"].clone();
             if case["transition"] == "submission" {
@@ -448,6 +719,12 @@ fn unexpected_differences(diff: &[Value], case: &Value, python_root: &Path) -> V
 }
 #[test]
 fn fast_witnesses_cover_transitions_states_and_review_findings() {
+    // Tuple arrays must remain arrays rather than matching a text-repeat descriptor.
+    let expanded: Value = crate::turn_fixtures::load(r#"{"values":[{"text":"base","epoch":["thread",0]}],"root":[["thread",0],{"$repeat":"é","count":3},{"$base":0,"set":{"text":{"$concat":["a",{"$repeat":"b","count":2}]}}}]}"#.as_bytes());
+    assert_eq!(
+        expanded,
+        json!([["thread",0],"ééé",{"text":"abb","epoch":["thread",0]}])
+    );
     let cases: Vec<Value> =
         serde_json::from_str(include_str!("turn_lifecycle/cases.json")).expect("corpus");
     let notifications: Vec<Value> =
@@ -590,12 +867,19 @@ async fn python_written_turn_lifecycle_corpus() {
         .expect("resolved temporary folder");
     let root = State(scratch.join(format!("turn-corpus-{}", std::process::id())));
     fs::create_dir(&root.0).expect("unique corpus state");
-    let mut oracle = Oracle::new(&root.0);
+    let mut oracle = CapturedExpectations::new(&root.0);
     let registry: Value = serde_json::from_str(include_str!("turn_lifecycle/deviations.json"))
         .expect("central deviations");
     let mut report = vec![];
     let mut green = 0;
     for case in &cases {
+        #[derive(serde::Deserialize)]
+        struct SnapshotExpectation {
+            #[serde(default)]
+            unchanged: bool,
+        }
+        let expectation: SnapshotExpectation =
+            serde_json::from_value(case.clone()).expect("snapshot expectation");
         let id = case["id"].as_str().expect("case ID");
         for rule in case["expectedDifferences"].as_array().into_iter().flatten() {
             let class = rule["deviation"].as_str().expect("named deviation");
@@ -626,9 +910,7 @@ async fn python_written_turn_lifecycle_corpus() {
             }
         }
         let rust = root.0.join(id).join("rust");
-        let expected = oracle.call(
-            json!({"command":"seed","root":root.0.join(id).join("python"),"rust":rust,"case":case}),
-        );
+        let expected = oracle.call(json!({"command":"seed","rust":rust,"case":case}));
         let store = match RuntimeStore::open(Some(&rust)).await {
             Ok(store) => Arc::new(store),
             Err(error) => {
@@ -832,6 +1114,8 @@ async fn python_written_turn_lifecycle_corpus() {
                 );
             }
             &expected["before"]
+        } else if expectation.unchanged {
+            &expected["before"]
         } else {
             &expected["after"]
         };
@@ -873,28 +1157,5 @@ async fn python_written_turn_lifecycle_corpus() {
         "{green} green / {} red; field differences: {}",
         cases.len() - green,
         report_path.display()
-    );
-}
-
-#[test]
-#[allow(clippy::disallowed_methods)]
-fn oracle_guard_refuses_synthetic_provider_home_access() {
-    let python = prepared_python::prepared_python(
-        &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
-    );
-    let output = Command::new(python)
-        .arg("-B")
-        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/turn_lifecycle/oracle.py"))
-        .arg("--guard-test")
-        .output()
-        .expect("guard subprocess");
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert_eq!(
-        String::from_utf8_lossy(&output.stdout).trim(),
-        "guard refused synthetic provider-home content and metadata access"
     );
 }

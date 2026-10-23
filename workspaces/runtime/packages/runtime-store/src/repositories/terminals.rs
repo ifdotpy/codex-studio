@@ -60,9 +60,6 @@ impl TerminalsRepository {
         limit: usize,
     ) -> StoreResult<(String, i64)> {
         if !text.is_empty() {
-            if !row.output.is_empty() && Self::archive_start(transaction, id)?.is_none() {
-                Self::append_output(transaction, id, row.offset, &row.output)?;
-            }
             Self::append_output(
                 transaction,
                 id,

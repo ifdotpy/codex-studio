@@ -28,17 +28,8 @@ export const releaseManifestVersion = 1;
 export const releaseCargoPackages = Object.freeze([
   ...runtimeBinaries.map((entry) => entry.package),
   "studio-diagnostics",
-  "studio-operations-python",
   "studio-peer-link",
 ]);
-
-export function operationsLibraryName(platform = process.platform) {
-  return platform === "darwin"
-    ? "libstudio_operations_native.dylib"
-    : platform === "win32"
-      ? "studio_operations_native.dll"
-      : "libstudio_operations_native.so";
-}
 
 // File names below `<directory>/release/` that the manifest must list.
 export function releaseArtifacts(platform = process.platform) {
@@ -46,7 +37,6 @@ export function releaseArtifacts(platform = process.platform) {
     ...runtimeBinaries.map(({ binary }) => runtimeBinaryName(binary, platform)),
     "codex-diagnostics",
     "studio-peer-link",
-    operationsLibraryName(platform),
   ];
 }
 

@@ -57,11 +57,8 @@ replaces the value of a name that exists. Studio never shows a stored value.
 From a terminal on the Mac, with the Studio Python from the installed app scripts and the VM
 running:
 
-```sh
-python3 codex_project_secrets.py list PROJECT_FOLDER
-python3 codex_project_secrets.py set PROJECT_FOLDER NAME
-python3 codex_project_secrets.py remove PROJECT_FOLDER NAME
-```
+The former Python backend command has been removed. See [testing](testing.md)
+for current Rust checks.
 
 `set` reads the value from stdin. At a terminal it asks for the value and does not show it.
 The command never takes a value as an argument. `set` and `remove` print an operation ID.
@@ -75,10 +72,8 @@ On the Mac, `/Users/igor/Projects/SAP/.envrc` sources `.codex-keychain.envrc`. T
 The VM has no `security` command, so the variable is empty there. Copy the value from the
 keychain into the project secrets once:
 
-```sh
-security find-generic-password -w -a zulip-apeiro-showroom -s codex-zulip-apeiro-showroom-api-key \
-  | python3 codex_project_secrets.py set /Users/igor/Projects/SAP ZULIP_APEIRO_SHOWROOM_API_KEY
-```
+The former Python backend command has been removed. See [testing](testing.md)
+for current Rust checks.
 
 The command removes the final newline of the input. New SAP agents in the VM then start with
 `ZULIP_APEIRO_SHOWROOM_API_KEY` in their environment.

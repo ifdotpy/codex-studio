@@ -1,0 +1,3044 @@
+[
+  {
+    "name": "client-field",
+    "history_case": true,
+    "agent": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 0,
+      "status": "starting",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": null,
+      "inFlight": true,
+      "autoWake": true,
+      "error": "turn/start response timed out; outcome unknown",
+      "startAttempt": {
+        "id": "attempt",
+        "epoch": 0,
+        "accountKey": "default",
+        "threadId": "thread",
+        "events": ["event"],
+        "submitted": true,
+        "executionOutcome": "unknown",
+        "connectionId": "connection",
+        "created": 999.0,
+        "supervisorIdentity": {
+          "stateDir": "/fixture/supervisor",
+          "handle": "child",
+          "generation": 1
+        }
+      }
+    },
+    "replies": [
+      {
+        "data": [
+          {
+            "id": "turn",
+            "status": "inProgress",
+            "items": [],
+            "clientUserMessageId": "event"
+          }
+        ],
+        "nextCursor": null
+      }
+    ],
+    "result": {
+      "status": "reconciled",
+      "turnId": "turn",
+      "outcome": "inProgress"
+    },
+    "accepted": {
+      "id": "turn",
+      "status": "inProgress",
+      "items": [],
+      "clientUserMessageId": "event"
+    },
+    "failed": false,
+    "calls": [
+      {
+        "method": "thread/turns/list",
+        "params": {
+          "threadId": "thread",
+          "limit": 10,
+          "sortDirection": "desc",
+          "itemsView": "full"
+        }
+      }
+    ],
+    "after": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 0,
+      "status": "starting",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": null,
+      "inFlight": true,
+      "autoWake": true,
+      "error": "turn/start response timed out; outcome unknown",
+      "startAttempt": {
+        "id": "attempt",
+        "epoch": 0,
+        "accountKey": "default",
+        "threadId": "thread",
+        "events": ["event"],
+        "submitted": true,
+        "executionOutcome": "unknown",
+        "connectionId": "connection",
+        "created": 999.0,
+        "supervisorIdentity": {
+          "stateDir": "/fixture/supervisor",
+          "handle": "child",
+          "generation": 1
+        }
+      }
+    },
+    "events": [["event", "agent", 0, "uncertain", null, "unknown"]],
+    "stopped": [],
+    "observation": {
+      "scope": {
+        "account": "default",
+        "connection": "connection",
+        "generation": 1
+      },
+      "at": 1000.0,
+      "supervisor": {
+        "state_dir": "/fixture/supervisor",
+        "handle": "child",
+        "generation": 1
+      },
+      "quiet": true,
+      "journal_drained": true,
+      "account_reserved": false,
+      "tools_refreshing": false,
+      "preparation_pending": false,
+      "completed_turn": null
+    },
+    "state": {
+      "type": "idle",
+      "activeFlags": []
+    }
+  },
+  {
+    "name": "item-client",
+    "history_case": true,
+    "agent": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 0,
+      "status": "starting",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": null,
+      "inFlight": true,
+      "autoWake": true,
+      "error": "turn/start response timed out; outcome unknown",
+      "startAttempt": {
+        "id": "attempt",
+        "epoch": 0,
+        "accountKey": "default",
+        "threadId": "thread",
+        "events": ["event"],
+        "submitted": true,
+        "executionOutcome": "unknown",
+        "connectionId": "connection",
+        "created": 999.0,
+        "supervisorIdentity": {
+          "stateDir": "/fixture/supervisor",
+          "handle": "child",
+          "generation": 1
+        }
+      }
+    },
+    "replies": [
+      {
+        "data": [
+          {
+            "id": "turn",
+            "status": "inProgress",
+            "items": [
+              {
+                "type": "userMessage",
+                "clientId": "event"
+              }
+            ]
+          }
+        ],
+        "nextCursor": null
+      }
+    ],
+    "result": {
+      "status": "reconciled",
+      "turnId": "turn",
+      "outcome": "inProgress"
+    },
+    "accepted": {
+      "id": "turn",
+      "status": "inProgress",
+      "items": [
+        {
+          "type": "userMessage",
+          "clientId": "event"
+        }
+      ]
+    },
+    "failed": false,
+    "calls": [
+      {
+        "method": "thread/turns/list",
+        "params": {
+          "threadId": "thread",
+          "limit": 10,
+          "sortDirection": "desc",
+          "itemsView": "full"
+        }
+      }
+    ],
+    "after": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 0,
+      "status": "starting",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": null,
+      "inFlight": true,
+      "autoWake": true,
+      "error": "turn/start response timed out; outcome unknown",
+      "startAttempt": {
+        "id": "attempt",
+        "epoch": 0,
+        "accountKey": "default",
+        "threadId": "thread",
+        "events": ["event"],
+        "submitted": true,
+        "executionOutcome": "unknown",
+        "connectionId": "connection",
+        "created": 999.0,
+        "supervisorIdentity": {
+          "stateDir": "/fixture/supervisor",
+          "handle": "child",
+          "generation": 1
+        }
+      }
+    },
+    "events": [["event", "agent", 0, "uncertain", null, "unknown"]],
+    "stopped": [],
+    "observation": {
+      "scope": {
+        "account": "default",
+        "connection": "connection",
+        "generation": 1
+      },
+      "at": 1000.0,
+      "supervisor": {
+        "state_dir": "/fixture/supervisor",
+        "handle": "child",
+        "generation": 1
+      },
+      "quiet": true,
+      "journal_drained": true,
+      "account_reserved": false,
+      "tools_refreshing": false,
+      "preparation_pending": false,
+      "completed_turn": null
+    },
+    "state": {
+      "type": "idle",
+      "activeFlags": []
+    }
+  },
+  {
+    "name": "client-no-items",
+    "history_case": true,
+    "agent": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 0,
+      "status": "starting",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": null,
+      "inFlight": true,
+      "autoWake": true,
+      "error": "turn/start response timed out; outcome unknown",
+      "startAttempt": {
+        "id": "attempt",
+        "epoch": 0,
+        "accountKey": "default",
+        "threadId": "thread",
+        "events": ["event"],
+        "submitted": true,
+        "executionOutcome": "unknown",
+        "connectionId": "connection",
+        "created": 999.0,
+        "supervisorIdentity": {
+          "stateDir": "/fixture/supervisor",
+          "handle": "child",
+          "generation": 1
+        }
+      }
+    },
+    "replies": [
+      {
+        "data": [
+          {
+            "id": "turn",
+            "status": "inProgress",
+            "clientUserMessageId": "event"
+          }
+        ],
+        "nextCursor": null
+      }
+    ],
+    "result": {
+      "status": "reconciled",
+      "turnId": "turn",
+      "outcome": "inProgress"
+    },
+    "accepted": {
+      "id": "turn",
+      "status": "inProgress",
+      "clientUserMessageId": "event"
+    },
+    "failed": false,
+    "calls": [
+      {
+        "method": "thread/turns/list",
+        "params": {
+          "threadId": "thread",
+          "limit": 10,
+          "sortDirection": "desc",
+          "itemsView": "full"
+        }
+      }
+    ],
+    "after": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 0,
+      "status": "starting",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": null,
+      "inFlight": true,
+      "autoWake": true,
+      "error": "turn/start response timed out; outcome unknown",
+      "startAttempt": {
+        "id": "attempt",
+        "epoch": 0,
+        "accountKey": "default",
+        "threadId": "thread",
+        "events": ["event"],
+        "submitted": true,
+        "executionOutcome": "unknown",
+        "connectionId": "connection",
+        "created": 999.0,
+        "supervisorIdentity": {
+          "stateDir": "/fixture/supervisor",
+          "handle": "child",
+          "generation": 1
+        }
+      }
+    },
+    "events": [["event", "agent", 0, "uncertain", null, "unknown"]],
+    "stopped": [],
+    "observation": {
+      "scope": {
+        "account": "default",
+        "connection": "connection",
+        "generation": 1
+      },
+      "at": 1000.0,
+      "supervisor": {
+        "state_dir": "/fixture/supervisor",
+        "handle": "child",
+        "generation": 1
+      },
+      "quiet": true,
+      "journal_drained": true,
+      "account_reserved": false,
+      "tools_refreshing": false,
+      "preparation_pending": false,
+      "completed_turn": null
+    },
+    "state": {
+      "type": "idle",
+      "activeFlags": []
+    }
+  },
+  {
+    "name": "later-page",
+    "history_case": true,
+    "agent": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 0,
+      "status": "starting",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": null,
+      "inFlight": true,
+      "autoWake": true,
+      "error": "turn/start response timed out; outcome unknown",
+      "startAttempt": {
+        "id": "attempt",
+        "epoch": 0,
+        "accountKey": "default",
+        "threadId": "thread",
+        "events": ["event"],
+        "submitted": true,
+        "executionOutcome": "unknown",
+        "connectionId": "connection",
+        "created": 999.0,
+        "supervisorIdentity": {
+          "stateDir": "/fixture/supervisor",
+          "handle": "child",
+          "generation": 1
+        }
+      }
+    },
+    "replies": [
+      {
+        "data": [],
+        "nextCursor": "next"
+      },
+      {
+        "data": [
+          {
+            "id": "turn",
+            "status": "inProgress",
+            "items": [],
+            "clientUserMessageId": "event"
+          }
+        ],
+        "nextCursor": null
+      }
+    ],
+    "result": {
+      "status": "reconciled",
+      "turnId": "turn",
+      "outcome": "inProgress"
+    },
+    "accepted": {
+      "id": "turn",
+      "status": "inProgress",
+      "items": [],
+      "clientUserMessageId": "event"
+    },
+    "failed": false,
+    "calls": [
+      {
+        "method": "thread/turns/list",
+        "params": {
+          "threadId": "thread",
+          "limit": 10,
+          "sortDirection": "desc",
+          "itemsView": "full"
+        }
+      },
+      {
+        "method": "thread/turns/list",
+        "params": {
+          "threadId": "thread",
+          "limit": 10,
+          "sortDirection": "desc",
+          "itemsView": "full",
+          "cursor": "next"
+        }
+      }
+    ],
+    "after": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 0,
+      "status": "starting",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": null,
+      "inFlight": true,
+      "autoWake": true,
+      "error": "turn/start response timed out; outcome unknown",
+      "startAttempt": {
+        "id": "attempt",
+        "epoch": 0,
+        "accountKey": "default",
+        "threadId": "thread",
+        "events": ["event"],
+        "submitted": true,
+        "executionOutcome": "unknown",
+        "connectionId": "connection",
+        "created": 999.0,
+        "supervisorIdentity": {
+          "stateDir": "/fixture/supervisor",
+          "handle": "child",
+          "generation": 1
+        }
+      }
+    },
+    "events": [["event", "agent", 0, "uncertain", null, "unknown"]],
+    "stopped": [],
+    "observation": {
+      "scope": {
+        "account": "default",
+        "connection": "connection",
+        "generation": 1
+      },
+      "at": 1000.0,
+      "supervisor": {
+        "state_dir": "/fixture/supervisor",
+        "handle": "child",
+        "generation": 1
+      },
+      "quiet": true,
+      "journal_drained": true,
+      "account_reserved": false,
+      "tools_refreshing": false,
+      "preparation_pending": false,
+      "completed_turn": null
+    },
+    "state": {
+      "type": "idle",
+      "activeFlags": []
+    }
+  },
+  {
+    "name": "identical-page-duplicate",
+    "history_case": true,
+    "agent": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 0,
+      "status": "starting",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": null,
+      "inFlight": true,
+      "autoWake": true,
+      "error": "turn/start response timed out; outcome unknown",
+      "startAttempt": {
+        "id": "attempt",
+        "epoch": 0,
+        "accountKey": "default",
+        "threadId": "thread",
+        "events": ["event"],
+        "submitted": true,
+        "executionOutcome": "unknown",
+        "connectionId": "connection",
+        "created": 999.0,
+        "supervisorIdentity": {
+          "stateDir": "/fixture/supervisor",
+          "handle": "child",
+          "generation": 1
+        }
+      }
+    },
+    "replies": [
+      {
+        "data": [
+          {
+            "id": "turn",
+            "status": "inProgress",
+            "items": [],
+            "clientUserMessageId": "event"
+          }
+        ],
+        "nextCursor": "next"
+      },
+      {
+        "data": [
+          {
+            "id": "turn",
+            "status": "inProgress",
+            "items": [],
+            "clientUserMessageId": "event"
+          }
+        ],
+        "nextCursor": null
+      }
+    ],
+    "result": {
+      "status": "reconciled",
+      "turnId": "turn",
+      "outcome": "inProgress"
+    },
+    "accepted": {
+      "id": "turn",
+      "status": "inProgress",
+      "items": [],
+      "clientUserMessageId": "event"
+    },
+    "failed": false,
+    "calls": [
+      {
+        "method": "thread/turns/list",
+        "params": {
+          "threadId": "thread",
+          "limit": 10,
+          "sortDirection": "desc",
+          "itemsView": "full"
+        }
+      },
+      {
+        "method": "thread/turns/list",
+        "params": {
+          "threadId": "thread",
+          "limit": 10,
+          "sortDirection": "desc",
+          "itemsView": "full",
+          "cursor": "next"
+        }
+      }
+    ],
+    "after": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 0,
+      "status": "starting",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": null,
+      "inFlight": true,
+      "autoWake": true,
+      "error": "turn/start response timed out; outcome unknown",
+      "startAttempt": {
+        "id": "attempt",
+        "epoch": 0,
+        "accountKey": "default",
+        "threadId": "thread",
+        "events": ["event"],
+        "submitted": true,
+        "executionOutcome": "unknown",
+        "connectionId": "connection",
+        "created": 999.0,
+        "supervisorIdentity": {
+          "stateDir": "/fixture/supervisor",
+          "handle": "child",
+          "generation": 1
+        }
+      }
+    },
+    "events": [["event", "agent", 0, "uncertain", null, "unknown"]],
+    "stopped": [],
+    "observation": {
+      "scope": {
+        "account": "default",
+        "connection": "connection",
+        "generation": 1
+      },
+      "at": 1000.0,
+      "supervisor": {
+        "state_dir": "/fixture/supervisor",
+        "handle": "child",
+        "generation": 1
+      },
+      "quiet": true,
+      "journal_drained": true,
+      "account_reserved": false,
+      "tools_refreshing": false,
+      "preparation_pending": false,
+      "completed_turn": null
+    },
+    "state": {
+      "type": "idle",
+      "activeFlags": []
+    }
+  },
+  {
+    "name": "same-page-duplicate",
+    "history_case": true,
+    "agent": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 0,
+      "status": "starting",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": null,
+      "inFlight": true,
+      "autoWake": true,
+      "error": "turn/start response timed out; outcome unknown",
+      "startAttempt": {
+        "id": "attempt",
+        "epoch": 0,
+        "accountKey": "default",
+        "threadId": "thread",
+        "events": ["event"],
+        "submitted": true,
+        "executionOutcome": "unknown",
+        "connectionId": "connection",
+        "created": 999.0,
+        "supervisorIdentity": {
+          "stateDir": "/fixture/supervisor",
+          "handle": "child",
+          "generation": 1
+        }
+      }
+    },
+    "replies": [
+      {
+        "data": [
+          {
+            "id": "turn",
+            "status": "inProgress",
+            "items": [],
+            "clientUserMessageId": "event"
+          },
+          {
+            "id": "turn",
+            "status": "inProgress",
+            "items": [],
+            "clientUserMessageId": "event"
+          }
+        ],
+        "nextCursor": null
+      }
+    ],
+    "result": {
+      "status": "unconfirmed",
+      "error": "Native history has conflicting start receipts"
+    },
+    "accepted": null,
+    "failed": true,
+    "calls": [
+      {
+        "method": "thread/turns/list",
+        "params": {
+          "threadId": "thread",
+          "limit": 10,
+          "sortDirection": "desc",
+          "itemsView": "full"
+        }
+      }
+    ],
+    "after": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 0,
+      "status": "starting",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": null,
+      "inFlight": true,
+      "autoWake": true,
+      "error": "turn/start response timed out; outcome unknown",
+      "startAttempt": {
+        "id": "attempt",
+        "epoch": 0,
+        "accountKey": "default",
+        "threadId": "thread",
+        "events": ["event"],
+        "submitted": true,
+        "executionOutcome": "unknown",
+        "connectionId": "connection",
+        "created": 999.0,
+        "supervisorIdentity": {
+          "stateDir": "/fixture/supervisor",
+          "handle": "child",
+          "generation": 1
+        }
+      }
+    },
+    "events": [["event", "agent", 0, "uncertain", null, "unknown"]],
+    "stopped": [],
+    "observation": {
+      "scope": {
+        "account": "default",
+        "connection": "connection",
+        "generation": 1
+      },
+      "at": 1000.0,
+      "supervisor": {
+        "state_dir": "/fixture/supervisor",
+        "handle": "child",
+        "generation": 1
+      },
+      "quiet": true,
+      "journal_drained": true,
+      "account_reserved": false,
+      "tools_refreshing": false,
+      "preparation_pending": false,
+      "completed_turn": null
+    },
+    "state": {
+      "type": "idle",
+      "activeFlags": []
+    }
+  },
+  {
+    "name": "changed-duplicate",
+    "history_case": true,
+    "agent": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 0,
+      "status": "starting",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": null,
+      "inFlight": true,
+      "autoWake": true,
+      "error": "turn/start response timed out; outcome unknown",
+      "startAttempt": {
+        "id": "attempt",
+        "epoch": 0,
+        "accountKey": "default",
+        "threadId": "thread",
+        "events": ["event"],
+        "submitted": true,
+        "executionOutcome": "unknown",
+        "connectionId": "connection",
+        "created": 999.0,
+        "supervisorIdentity": {
+          "stateDir": "/fixture/supervisor",
+          "handle": "child",
+          "generation": 1
+        }
+      }
+    },
+    "replies": [
+      {
+        "data": [
+          {
+            "id": "turn",
+            "status": "inProgress",
+            "items": [],
+            "clientUserMessageId": "event"
+          }
+        ],
+        "nextCursor": "next"
+      },
+      {
+        "data": [
+          {
+            "id": "turn",
+            "status": "inProgress",
+            "items": [],
+            "clientUserMessageId": "event",
+            "extra": "changed"
+          }
+        ],
+        "nextCursor": null
+      }
+    ],
+    "result": {
+      "status": "unconfirmed",
+      "error": "Native history changed the exact start receipt"
+    },
+    "accepted": null,
+    "failed": true,
+    "calls": [
+      {
+        "method": "thread/turns/list",
+        "params": {
+          "threadId": "thread",
+          "limit": 10,
+          "sortDirection": "desc",
+          "itemsView": "full"
+        }
+      },
+      {
+        "method": "thread/turns/list",
+        "params": {
+          "threadId": "thread",
+          "limit": 10,
+          "sortDirection": "desc",
+          "itemsView": "full",
+          "cursor": "next"
+        }
+      }
+    ],
+    "after": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 0,
+      "status": "starting",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": null,
+      "inFlight": true,
+      "autoWake": true,
+      "error": "turn/start response timed out; outcome unknown",
+      "startAttempt": {
+        "id": "attempt",
+        "epoch": 0,
+        "accountKey": "default",
+        "threadId": "thread",
+        "events": ["event"],
+        "submitted": true,
+        "executionOutcome": "unknown",
+        "connectionId": "connection",
+        "created": 999.0,
+        "supervisorIdentity": {
+          "stateDir": "/fixture/supervisor",
+          "handle": "child",
+          "generation": 1
+        }
+      }
+    },
+    "events": [["event", "agent", 0, "uncertain", null, "unknown"]],
+    "stopped": [],
+    "observation": {
+      "scope": {
+        "account": "default",
+        "connection": "connection",
+        "generation": 1
+      },
+      "at": 1000.0,
+      "supervisor": {
+        "state_dir": "/fixture/supervisor",
+        "handle": "child",
+        "generation": 1
+      },
+      "quiet": true,
+      "journal_drained": true,
+      "account_reserved": false,
+      "tools_refreshing": false,
+      "preparation_pending": false,
+      "completed_turn": null
+    },
+    "state": {
+      "type": "idle",
+      "activeFlags": []
+    }
+  },
+  {
+    "name": "conflicting-id",
+    "history_case": true,
+    "agent": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 0,
+      "status": "starting",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": null,
+      "inFlight": true,
+      "autoWake": true,
+      "error": "turn/start response timed out; outcome unknown",
+      "startAttempt": {
+        "id": "attempt",
+        "epoch": 0,
+        "accountKey": "default",
+        "threadId": "thread",
+        "events": ["event"],
+        "submitted": true,
+        "executionOutcome": "unknown",
+        "connectionId": "connection",
+        "created": 999.0,
+        "supervisorIdentity": {
+          "stateDir": "/fixture/supervisor",
+          "handle": "child",
+          "generation": 1
+        }
+      }
+    },
+    "replies": [
+      {
+        "data": [
+          {
+            "id": "turn",
+            "status": "inProgress",
+            "items": [],
+            "clientUserMessageId": "event"
+          }
+        ],
+        "nextCursor": "next"
+      },
+      {
+        "data": [
+          {
+            "id": "other",
+            "status": "inProgress",
+            "items": [],
+            "clientUserMessageId": "event"
+          }
+        ],
+        "nextCursor": null
+      }
+    ],
+    "result": {
+      "status": "unconfirmed",
+      "error": "Native history has conflicting start receipts"
+    },
+    "accepted": null,
+    "failed": true,
+    "calls": [
+      {
+        "method": "thread/turns/list",
+        "params": {
+          "threadId": "thread",
+          "limit": 10,
+          "sortDirection": "desc",
+          "itemsView": "full"
+        }
+      },
+      {
+        "method": "thread/turns/list",
+        "params": {
+          "threadId": "thread",
+          "limit": 10,
+          "sortDirection": "desc",
+          "itemsView": "full",
+          "cursor": "next"
+        }
+      }
+    ],
+    "after": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 0,
+      "status": "starting",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": null,
+      "inFlight": true,
+      "autoWake": true,
+      "error": "turn/start response timed out; outcome unknown",
+      "startAttempt": {
+        "id": "attempt",
+        "epoch": 0,
+        "accountKey": "default",
+        "threadId": "thread",
+        "events": ["event"],
+        "submitted": true,
+        "executionOutcome": "unknown",
+        "connectionId": "connection",
+        "created": 999.0,
+        "supervisorIdentity": {
+          "stateDir": "/fixture/supervisor",
+          "handle": "child",
+          "generation": 1
+        }
+      }
+    },
+    "events": [["event", "agent", 0, "uncertain", null, "unknown"]],
+    "stopped": [],
+    "observation": {
+      "scope": {
+        "account": "default",
+        "connection": "connection",
+        "generation": 1
+      },
+      "at": 1000.0,
+      "supervisor": {
+        "state_dir": "/fixture/supervisor",
+        "handle": "child",
+        "generation": 1
+      },
+      "quiet": true,
+      "journal_drained": true,
+      "account_reserved": false,
+      "tools_refreshing": false,
+      "preparation_pending": false,
+      "completed_turn": null
+    },
+    "state": {
+      "type": "idle",
+      "activeFlags": []
+    }
+  },
+  {
+    "name": "cursor-cycle",
+    "history_case": true,
+    "agent": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 0,
+      "status": "starting",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": null,
+      "inFlight": true,
+      "autoWake": true,
+      "error": "turn/start response timed out; outcome unknown",
+      "startAttempt": {
+        "id": "attempt",
+        "epoch": 0,
+        "accountKey": "default",
+        "threadId": "thread",
+        "events": ["event"],
+        "submitted": true,
+        "executionOutcome": "unknown",
+        "connectionId": "connection",
+        "created": 999.0,
+        "supervisorIdentity": {
+          "stateDir": "/fixture/supervisor",
+          "handle": "child",
+          "generation": 1
+        }
+      }
+    },
+    "replies": [
+      {
+        "data": [],
+        "nextCursor": "same"
+      },
+      {
+        "data": [],
+        "nextCursor": "same"
+      }
+    ],
+    "result": {
+      "status": "unconfirmed",
+      "error": "Native start history repeated its page cursor"
+    },
+    "accepted": null,
+    "failed": true,
+    "calls": [
+      {
+        "method": "thread/turns/list",
+        "params": {
+          "threadId": "thread",
+          "limit": 10,
+          "sortDirection": "desc",
+          "itemsView": "full"
+        }
+      },
+      {
+        "method": "thread/turns/list",
+        "params": {
+          "threadId": "thread",
+          "limit": 10,
+          "sortDirection": "desc",
+          "itemsView": "full",
+          "cursor": "same"
+        }
+      }
+    ],
+    "after": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 0,
+      "status": "starting",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": null,
+      "inFlight": true,
+      "autoWake": true,
+      "error": "turn/start response timed out; outcome unknown",
+      "startAttempt": {
+        "id": "attempt",
+        "epoch": 0,
+        "accountKey": "default",
+        "threadId": "thread",
+        "events": ["event"],
+        "submitted": true,
+        "executionOutcome": "unknown",
+        "connectionId": "connection",
+        "created": 999.0,
+        "supervisorIdentity": {
+          "stateDir": "/fixture/supervisor",
+          "handle": "child",
+          "generation": 1
+        }
+      }
+    },
+    "events": [["event", "agent", 0, "uncertain", null, "unknown"]],
+    "stopped": [],
+    "observation": {
+      "scope": {
+        "account": "default",
+        "connection": "connection",
+        "generation": 1
+      },
+      "at": 1000.0,
+      "supervisor": {
+        "state_dir": "/fixture/supervisor",
+        "handle": "child",
+        "generation": 1
+      },
+      "quiet": true,
+      "journal_drained": true,
+      "account_reserved": false,
+      "tools_refreshing": false,
+      "preparation_pending": false,
+      "completed_turn": null
+    },
+    "state": {
+      "type": "idle",
+      "activeFlags": []
+    }
+  },
+  {
+    "name": "complete-absence",
+    "history_case": true,
+    "agent": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 0,
+      "status": "starting",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": null,
+      "inFlight": true,
+      "autoWake": true,
+      "error": "turn/start response timed out; outcome unknown",
+      "startAttempt": {
+        "id": "attempt",
+        "epoch": 0,
+        "accountKey": "default",
+        "threadId": "thread",
+        "events": ["event"],
+        "submitted": true,
+        "executionOutcome": "unknown",
+        "connectionId": "connection",
+        "created": 999.0,
+        "supervisorIdentity": {
+          "stateDir": "/fixture/supervisor",
+          "handle": "child",
+          "generation": 1
+        }
+      }
+    },
+    "replies": [
+      {
+        "data": [],
+        "nextCursor": "next"
+      },
+      {
+        "data": [],
+        "nextCursor": null
+      }
+    ],
+    "result": {
+      "status": "unconfirmed"
+    },
+    "accepted": null,
+    "failed": false,
+    "calls": [
+      {
+        "method": "thread/turns/list",
+        "params": {
+          "threadId": "thread",
+          "limit": 10,
+          "sortDirection": "desc",
+          "itemsView": "full"
+        }
+      },
+      {
+        "method": "thread/turns/list",
+        "params": {
+          "threadId": "thread",
+          "limit": 10,
+          "sortDirection": "desc",
+          "itemsView": "full",
+          "cursor": "next"
+        }
+      }
+    ],
+    "after": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 0,
+      "status": "starting",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": null,
+      "inFlight": true,
+      "autoWake": true,
+      "error": "turn/start response timed out; outcome unknown",
+      "startAttempt": {
+        "id": "attempt",
+        "epoch": 0,
+        "accountKey": "default",
+        "threadId": "thread",
+        "events": ["event"],
+        "submitted": true,
+        "executionOutcome": "unknown",
+        "connectionId": "connection",
+        "created": 999.0,
+        "supervisorIdentity": {
+          "stateDir": "/fixture/supervisor",
+          "handle": "child",
+          "generation": 1
+        }
+      }
+    },
+    "events": [["event", "agent", 0, "uncertain", null, "unknown"]],
+    "stopped": [],
+    "observation": {
+      "scope": {
+        "account": "default",
+        "connection": "connection",
+        "generation": 1
+      },
+      "at": 1000.0,
+      "supervisor": {
+        "state_dir": "/fixture/supervisor",
+        "handle": "child",
+        "generation": 1
+      },
+      "quiet": true,
+      "journal_drained": true,
+      "account_reserved": false,
+      "tools_refreshing": false,
+      "preparation_pending": false,
+      "completed_turn": null
+    },
+    "state": {
+      "type": "idle",
+      "activeFlags": []
+    }
+  },
+  {
+    "name": "turn-preparing",
+    "history_case": true,
+    "agent": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 0,
+      "status": "starting",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": null,
+      "inFlight": true,
+      "autoWake": true,
+      "error": "turn/start response timed out; outcome unknown",
+      "startAttempt": {
+        "id": "attempt",
+        "epoch": 0,
+        "accountKey": "default",
+        "threadId": "thread",
+        "events": ["event"],
+        "submitted": true,
+        "executionOutcome": "unknown",
+        "connectionId": "connection",
+        "created": 999.0,
+        "supervisorIdentity": {
+          "stateDir": "/fixture/supervisor",
+          "handle": "child",
+          "generation": 1
+        }
+      }
+    },
+    "replies": [
+      {
+        "data": [
+          {
+            "id": "turn",
+            "status": "inProgress",
+            "items": [],
+            "clientUserMessageId": "event",
+            "startOutcome": "preparing"
+          }
+        ],
+        "nextCursor": null
+      }
+    ],
+    "result": {
+      "status": "unconfirmed"
+    },
+    "accepted": null,
+    "failed": false,
+    "calls": [
+      {
+        "method": "thread/turns/list",
+        "params": {
+          "threadId": "thread",
+          "limit": 10,
+          "sortDirection": "desc",
+          "itemsView": "full"
+        }
+      }
+    ],
+    "after": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 0,
+      "status": "starting",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": null,
+      "inFlight": true,
+      "autoWake": true,
+      "error": "turn/start response timed out; outcome unknown",
+      "startAttempt": {
+        "id": "attempt",
+        "epoch": 0,
+        "accountKey": "default",
+        "threadId": "thread",
+        "events": ["event"],
+        "submitted": true,
+        "executionOutcome": "unknown",
+        "connectionId": "connection",
+        "created": 999.0,
+        "supervisorIdentity": {
+          "stateDir": "/fixture/supervisor",
+          "handle": "child",
+          "generation": 1
+        }
+      }
+    },
+    "events": [["event", "agent", 0, "uncertain", null, "unknown"]],
+    "stopped": [],
+    "observation": {
+      "scope": {
+        "account": "default",
+        "connection": "connection",
+        "generation": 1
+      },
+      "at": 1000.0,
+      "supervisor": {
+        "state_dir": "/fixture/supervisor",
+        "handle": "child",
+        "generation": 1
+      },
+      "quiet": true,
+      "journal_drained": true,
+      "account_reserved": false,
+      "tools_refreshing": false,
+      "preparation_pending": false,
+      "completed_turn": null
+    },
+    "state": {
+      "type": "idle",
+      "activeFlags": []
+    }
+  },
+  {
+    "name": "item-preparing",
+    "history_case": true,
+    "agent": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 0,
+      "status": "starting",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": null,
+      "inFlight": true,
+      "autoWake": true,
+      "error": "turn/start response timed out; outcome unknown",
+      "startAttempt": {
+        "id": "attempt",
+        "epoch": 0,
+        "accountKey": "default",
+        "threadId": "thread",
+        "events": ["event"],
+        "submitted": true,
+        "executionOutcome": "unknown",
+        "connectionId": "connection",
+        "created": 999.0,
+        "supervisorIdentity": {
+          "stateDir": "/fixture/supervisor",
+          "handle": "child",
+          "generation": 1
+        }
+      }
+    },
+    "replies": [
+      {
+        "data": [
+          {
+            "id": "turn",
+            "status": "inProgress",
+            "items": [
+              {
+                "type": "userMessage",
+                "clientId": "event",
+                "deliveryStatus": "preparing"
+              }
+            ]
+          }
+        ],
+        "nextCursor": null
+      }
+    ],
+    "result": {
+      "status": "unconfirmed"
+    },
+    "accepted": null,
+    "failed": false,
+    "calls": [
+      {
+        "method": "thread/turns/list",
+        "params": {
+          "threadId": "thread",
+          "limit": 10,
+          "sortDirection": "desc",
+          "itemsView": "full"
+        }
+      }
+    ],
+    "after": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 0,
+      "status": "starting",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": null,
+      "inFlight": true,
+      "autoWake": true,
+      "error": "turn/start response timed out; outcome unknown",
+      "startAttempt": {
+        "id": "attempt",
+        "epoch": 0,
+        "accountKey": "default",
+        "threadId": "thread",
+        "events": ["event"],
+        "submitted": true,
+        "executionOutcome": "unknown",
+        "connectionId": "connection",
+        "created": 999.0,
+        "supervisorIdentity": {
+          "stateDir": "/fixture/supervisor",
+          "handle": "child",
+          "generation": 1
+        }
+      }
+    },
+    "events": [["event", "agent", 0, "uncertain", null, "unknown"]],
+    "stopped": [],
+    "observation": {
+      "scope": {
+        "account": "default",
+        "connection": "connection",
+        "generation": 1
+      },
+      "at": 1000.0,
+      "supervisor": {
+        "state_dir": "/fixture/supervisor",
+        "handle": "child",
+        "generation": 1
+      },
+      "quiet": true,
+      "journal_drained": true,
+      "account_reserved": false,
+      "tools_refreshing": false,
+      "preparation_pending": false,
+      "completed_turn": null
+    },
+    "state": {
+      "type": "idle",
+      "activeFlags": []
+    }
+  },
+  {
+    "name": "turn-not_applied",
+    "history_case": true,
+    "agent": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 0,
+      "status": "starting",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": null,
+      "inFlight": true,
+      "autoWake": true,
+      "error": "turn/start response timed out; outcome unknown",
+      "startAttempt": {
+        "id": "attempt",
+        "epoch": 0,
+        "accountKey": "default",
+        "threadId": "thread",
+        "events": ["event"],
+        "submitted": true,
+        "executionOutcome": "unknown",
+        "connectionId": "connection",
+        "created": 999.0,
+        "supervisorIdentity": {
+          "stateDir": "/fixture/supervisor",
+          "handle": "child",
+          "generation": 1
+        }
+      }
+    },
+    "replies": [
+      {
+        "data": [
+          {
+            "id": "turn",
+            "status": "inProgress",
+            "items": [],
+            "clientUserMessageId": "event",
+            "startOutcome": "not_applied"
+          }
+        ],
+        "nextCursor": null
+      }
+    ],
+    "result": {
+      "status": "unconfirmed"
+    },
+    "accepted": null,
+    "failed": false,
+    "calls": [
+      {
+        "method": "thread/turns/list",
+        "params": {
+          "threadId": "thread",
+          "limit": 10,
+          "sortDirection": "desc",
+          "itemsView": "full"
+        }
+      }
+    ],
+    "after": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 0,
+      "status": "starting",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": null,
+      "inFlight": true,
+      "autoWake": true,
+      "error": "turn/start response timed out; outcome unknown",
+      "startAttempt": {
+        "id": "attempt",
+        "epoch": 0,
+        "accountKey": "default",
+        "threadId": "thread",
+        "events": ["event"],
+        "submitted": true,
+        "executionOutcome": "unknown",
+        "connectionId": "connection",
+        "created": 999.0,
+        "supervisorIdentity": {
+          "stateDir": "/fixture/supervisor",
+          "handle": "child",
+          "generation": 1
+        }
+      }
+    },
+    "events": [["event", "agent", 0, "uncertain", null, "unknown"]],
+    "stopped": [],
+    "observation": {
+      "scope": {
+        "account": "default",
+        "connection": "connection",
+        "generation": 1
+      },
+      "at": 1000.0,
+      "supervisor": {
+        "state_dir": "/fixture/supervisor",
+        "handle": "child",
+        "generation": 1
+      },
+      "quiet": true,
+      "journal_drained": true,
+      "account_reserved": false,
+      "tools_refreshing": false,
+      "preparation_pending": false,
+      "completed_turn": null
+    },
+    "state": {
+      "type": "idle",
+      "activeFlags": []
+    }
+  },
+  {
+    "name": "item-not_applied",
+    "history_case": true,
+    "agent": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 0,
+      "status": "starting",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": null,
+      "inFlight": true,
+      "autoWake": true,
+      "error": "turn/start response timed out; outcome unknown",
+      "startAttempt": {
+        "id": "attempt",
+        "epoch": 0,
+        "accountKey": "default",
+        "threadId": "thread",
+        "events": ["event"],
+        "submitted": true,
+        "executionOutcome": "unknown",
+        "connectionId": "connection",
+        "created": 999.0,
+        "supervisorIdentity": {
+          "stateDir": "/fixture/supervisor",
+          "handle": "child",
+          "generation": 1
+        }
+      }
+    },
+    "replies": [
+      {
+        "data": [
+          {
+            "id": "turn",
+            "status": "inProgress",
+            "items": [
+              {
+                "type": "userMessage",
+                "clientId": "event",
+                "deliveryStatus": "not_applied"
+              }
+            ]
+          }
+        ],
+        "nextCursor": null
+      }
+    ],
+    "result": {
+      "status": "unconfirmed"
+    },
+    "accepted": null,
+    "failed": false,
+    "calls": [
+      {
+        "method": "thread/turns/list",
+        "params": {
+          "threadId": "thread",
+          "limit": 10,
+          "sortDirection": "desc",
+          "itemsView": "full"
+        }
+      }
+    ],
+    "after": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 0,
+      "status": "starting",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": null,
+      "inFlight": true,
+      "autoWake": true,
+      "error": "turn/start response timed out; outcome unknown",
+      "startAttempt": {
+        "id": "attempt",
+        "epoch": 0,
+        "accountKey": "default",
+        "threadId": "thread",
+        "events": ["event"],
+        "submitted": true,
+        "executionOutcome": "unknown",
+        "connectionId": "connection",
+        "created": 999.0,
+        "supervisorIdentity": {
+          "stateDir": "/fixture/supervisor",
+          "handle": "child",
+          "generation": 1
+        }
+      }
+    },
+    "events": [["event", "agent", 0, "uncertain", null, "unknown"]],
+    "stopped": [],
+    "observation": {
+      "scope": {
+        "account": "default",
+        "connection": "connection",
+        "generation": 1
+      },
+      "at": 1000.0,
+      "supervisor": {
+        "state_dir": "/fixture/supervisor",
+        "handle": "child",
+        "generation": 1
+      },
+      "quiet": true,
+      "journal_drained": true,
+      "account_reserved": false,
+      "tools_refreshing": false,
+      "preparation_pending": false,
+      "completed_turn": null
+    },
+    "state": {
+      "type": "idle",
+      "activeFlags": []
+    }
+  },
+  {
+    "name": "missing-turn-id",
+    "history_case": true,
+    "agent": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 0,
+      "status": "starting",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": null,
+      "inFlight": true,
+      "autoWake": true,
+      "error": "turn/start response timed out; outcome unknown",
+      "startAttempt": {
+        "id": "attempt",
+        "epoch": 0,
+        "accountKey": "default",
+        "threadId": "thread",
+        "events": ["event"],
+        "submitted": true,
+        "executionOutcome": "unknown",
+        "connectionId": "connection",
+        "created": 999.0,
+        "supervisorIdentity": {
+          "stateDir": "/fixture/supervisor",
+          "handle": "child",
+          "generation": 1
+        }
+      }
+    },
+    "replies": [
+      {
+        "data": [
+          {
+            "id": "",
+            "status": "inProgress",
+            "items": [],
+            "clientUserMessageId": "event"
+          }
+        ],
+        "nextCursor": null
+      }
+    ],
+    "result": {
+      "status": "unconfirmed",
+      "error": "The native start receipt has no turn identity"
+    },
+    "accepted": null,
+    "failed": true,
+    "calls": [
+      {
+        "method": "thread/turns/list",
+        "params": {
+          "threadId": "thread",
+          "limit": 10,
+          "sortDirection": "desc",
+          "itemsView": "full"
+        }
+      }
+    ],
+    "after": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 0,
+      "status": "starting",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": null,
+      "inFlight": true,
+      "autoWake": true,
+      "error": "turn/start response timed out; outcome unknown",
+      "startAttempt": {
+        "id": "attempt",
+        "epoch": 0,
+        "accountKey": "default",
+        "threadId": "thread",
+        "events": ["event"],
+        "submitted": true,
+        "executionOutcome": "unknown",
+        "connectionId": "connection",
+        "created": 999.0,
+        "supervisorIdentity": {
+          "stateDir": "/fixture/supervisor",
+          "handle": "child",
+          "generation": 1
+        }
+      }
+    },
+    "events": [["event", "agent", 0, "uncertain", null, "unknown"]],
+    "stopped": [],
+    "observation": {
+      "scope": {
+        "account": "default",
+        "connection": "connection",
+        "generation": 1
+      },
+      "at": 1000.0,
+      "supervisor": {
+        "state_dir": "/fixture/supervisor",
+        "handle": "child",
+        "generation": 1
+      },
+      "quiet": true,
+      "journal_drained": true,
+      "account_reserved": false,
+      "tools_refreshing": false,
+      "preparation_pending": false,
+      "completed_turn": null
+    },
+    "state": {
+      "type": "idle",
+      "activeFlags": []
+    }
+  },
+  {
+    "name": "wrong-client",
+    "history_case": true,
+    "agent": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 0,
+      "status": "starting",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": null,
+      "inFlight": true,
+      "autoWake": true,
+      "error": "turn/start response timed out; outcome unknown",
+      "startAttempt": {
+        "id": "attempt",
+        "epoch": 0,
+        "accountKey": "default",
+        "threadId": "thread",
+        "events": ["event"],
+        "submitted": true,
+        "executionOutcome": "unknown",
+        "connectionId": "connection",
+        "created": 999.0,
+        "supervisorIdentity": {
+          "stateDir": "/fixture/supervisor",
+          "handle": "child",
+          "generation": 1
+        }
+      }
+    },
+    "replies": [
+      {
+        "data": [
+          {
+            "id": "turn",
+            "status": "inProgress",
+            "items": [],
+            "clientUserMessageId": "different"
+          }
+        ],
+        "nextCursor": null
+      }
+    ],
+    "result": {
+      "status": "unconfirmed"
+    },
+    "accepted": null,
+    "failed": false,
+    "calls": [
+      {
+        "method": "thread/turns/list",
+        "params": {
+          "threadId": "thread",
+          "limit": 10,
+          "sortDirection": "desc",
+          "itemsView": "full"
+        }
+      }
+    ],
+    "after": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 0,
+      "status": "starting",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": null,
+      "inFlight": true,
+      "autoWake": true,
+      "error": "turn/start response timed out; outcome unknown",
+      "startAttempt": {
+        "id": "attempt",
+        "epoch": 0,
+        "accountKey": "default",
+        "threadId": "thread",
+        "events": ["event"],
+        "submitted": true,
+        "executionOutcome": "unknown",
+        "connectionId": "connection",
+        "created": 999.0,
+        "supervisorIdentity": {
+          "stateDir": "/fixture/supervisor",
+          "handle": "child",
+          "generation": 1
+        }
+      }
+    },
+    "events": [["event", "agent", 0, "uncertain", null, "unknown"]],
+    "stopped": [],
+    "observation": {
+      "scope": {
+        "account": "default",
+        "connection": "connection",
+        "generation": 1
+      },
+      "at": 1000.0,
+      "supervisor": {
+        "state_dir": "/fixture/supervisor",
+        "handle": "child",
+        "generation": 1
+      },
+      "quiet": true,
+      "journal_drained": true,
+      "account_reserved": false,
+      "tools_refreshing": false,
+      "preparation_pending": false,
+      "completed_turn": null
+    },
+    "state": {
+      "type": "idle",
+      "activeFlags": []
+    }
+  },
+  {
+    "name": "direct-client-with-filtered-item",
+    "history_case": true,
+    "agent": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 0,
+      "status": "starting",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": null,
+      "inFlight": true,
+      "autoWake": true,
+      "error": "turn/start response timed out; outcome unknown",
+      "startAttempt": {
+        "id": "attempt",
+        "epoch": 0,
+        "accountKey": "default",
+        "threadId": "thread",
+        "events": ["event"],
+        "submitted": true,
+        "executionOutcome": "unknown",
+        "connectionId": "connection",
+        "created": 999.0,
+        "supervisorIdentity": {
+          "stateDir": "/fixture/supervisor",
+          "handle": "child",
+          "generation": 1
+        }
+      }
+    },
+    "replies": [
+      {
+        "data": [
+          {
+            "id": "turn",
+            "status": "inProgress",
+            "items": [
+              {
+                "type": "userMessage",
+                "clientId": "event",
+                "deliveryStatus": "not_applied"
+              }
+            ],
+            "clientUserMessageId": "event"
+          }
+        ],
+        "nextCursor": null
+      }
+    ],
+    "result": {
+      "status": "reconciled",
+      "turnId": "turn",
+      "outcome": "inProgress"
+    },
+    "accepted": {
+      "id": "turn",
+      "status": "inProgress",
+      "items": [
+        {
+          "type": "userMessage",
+          "clientId": "event",
+          "deliveryStatus": "not_applied"
+        }
+      ],
+      "clientUserMessageId": "event"
+    },
+    "failed": false,
+    "calls": [
+      {
+        "method": "thread/turns/list",
+        "params": {
+          "threadId": "thread",
+          "limit": 10,
+          "sortDirection": "desc",
+          "itemsView": "full"
+        }
+      }
+    ],
+    "after": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 0,
+      "status": "starting",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": null,
+      "inFlight": true,
+      "autoWake": true,
+      "error": "turn/start response timed out; outcome unknown",
+      "startAttempt": {
+        "id": "attempt",
+        "epoch": 0,
+        "accountKey": "default",
+        "threadId": "thread",
+        "events": ["event"],
+        "submitted": true,
+        "executionOutcome": "unknown",
+        "connectionId": "connection",
+        "created": 999.0,
+        "supervisorIdentity": {
+          "stateDir": "/fixture/supervisor",
+          "handle": "child",
+          "generation": 1
+        }
+      }
+    },
+    "events": [["event", "agent", 0, "uncertain", null, "unknown"]],
+    "stopped": [],
+    "observation": {
+      "scope": {
+        "account": "default",
+        "connection": "connection",
+        "generation": 1
+      },
+      "at": 1000.0,
+      "supervisor": {
+        "state_dir": "/fixture/supervisor",
+        "handle": "child",
+        "generation": 1
+      },
+      "quiet": true,
+      "journal_drained": true,
+      "account_reserved": false,
+      "tools_refreshing": false,
+      "preparation_pending": false,
+      "completed_turn": null
+    },
+    "state": {
+      "type": "idle",
+      "activeFlags": []
+    }
+  },
+  {
+    "name": "restore",
+    "history_case": false,
+    "agent": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 0,
+      "status": "starting",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": null,
+      "inFlight": true,
+      "autoWake": true,
+      "error": "turn/start response timed out; outcome unknown",
+      "startAttempt": {
+        "id": "attempt",
+        "epoch": 0,
+        "accountKey": "default",
+        "threadId": "thread",
+        "events": ["event"],
+        "submitted": true,
+        "executionOutcome": "unknown",
+        "connectionId": "connection",
+        "created": 0,
+        "supervisorIdentity": {
+          "stateDir": "/fixture/supervisor",
+          "handle": "child",
+          "generation": 1
+        }
+      }
+    },
+    "replies": [
+      {
+        "data": [],
+        "nextCursor": null
+      }
+    ],
+    "result": {
+      "status": "input_restored"
+    },
+    "accepted": null,
+    "failed": false,
+    "calls": [
+      {
+        "method": "thread/turns/list",
+        "params": {
+          "threadId": "thread",
+          "limit": 10,
+          "sortDirection": "desc",
+          "itemsView": "full"
+        }
+      },
+      {
+        "method": "thread/read",
+        "params": {
+          "threadId": "thread",
+          "includeTurns": false
+        }
+      },
+      {
+        "method": "thread/read",
+        "params": {
+          "threadId": "thread",
+          "includeTurns": false
+        }
+      }
+    ],
+    "after": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 0,
+      "status": "queued",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": null,
+      "inFlight": false,
+      "autoWake": true,
+      "error": null,
+      "activity": null,
+      "activeTools": [],
+      "turnRecovery": {
+        "at": 1000.0,
+        "turnId": null,
+        "outcome": "input_absent",
+        "source": "replaced_native_child",
+        "attemptId": "attempt"
+      }
+    },
+    "events": [["event", "agent", 0, "pending", null, null]],
+    "stopped": [],
+    "observation": {
+      "scope": {
+        "account": "default",
+        "connection": "new",
+        "generation": 2
+      },
+      "at": 1000.0,
+      "supervisor": {
+        "state_dir": "/fixture/supervisor",
+        "handle": "child",
+        "generation": 2
+      },
+      "quiet": true,
+      "journal_drained": true,
+      "account_reserved": false,
+      "tools_refreshing": false,
+      "preparation_pending": false,
+      "completed_turn": null
+    },
+    "state": {
+      "type": "idle",
+      "activeFlags": []
+    }
+  },
+  {
+    "name": "waiting",
+    "history_case": false,
+    "agent": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 0,
+      "status": "starting",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": null,
+      "inFlight": true,
+      "autoWake": true,
+      "error": "turn/start response timed out; outcome unknown",
+      "startAttempt": {
+        "id": "attempt",
+        "epoch": 0,
+        "accountKey": "default",
+        "threadId": "thread",
+        "events": ["event"],
+        "submitted": true,
+        "executionOutcome": "unknown",
+        "connectionId": "connection",
+        "created": 401,
+        "supervisorIdentity": {
+          "stateDir": "/fixture/supervisor",
+          "handle": "child",
+          "generation": 1
+        }
+      }
+    },
+    "replies": [
+      {
+        "data": [],
+        "nextCursor": null
+      }
+    ],
+    "result": {
+      "status": "unconfirmed"
+    },
+    "accepted": null,
+    "failed": false,
+    "calls": [
+      {
+        "method": "thread/turns/list",
+        "params": {
+          "threadId": "thread",
+          "limit": 10,
+          "sortDirection": "desc",
+          "itemsView": "full"
+        }
+      }
+    ],
+    "after": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 0,
+      "status": "starting",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": null,
+      "inFlight": true,
+      "autoWake": true,
+      "error": "turn/start response timed out; outcome unknown",
+      "startAttempt": {
+        "id": "attempt",
+        "epoch": 0,
+        "accountKey": "default",
+        "threadId": "thread",
+        "events": ["event"],
+        "submitted": true,
+        "executionOutcome": "unknown",
+        "connectionId": "connection",
+        "created": 401,
+        "supervisorIdentity": {
+          "stateDir": "/fixture/supervisor",
+          "handle": "child",
+          "generation": 1
+        }
+      }
+    },
+    "events": [["event", "agent", 0, "uncertain", null, "unknown"]],
+    "stopped": [],
+    "observation": {
+      "scope": {
+        "account": "default",
+        "connection": "connection",
+        "generation": 1
+      },
+      "at": 1000.0,
+      "supervisor": {
+        "state_dir": "/fixture/supervisor",
+        "handle": "child",
+        "generation": 1
+      },
+      "quiet": true,
+      "journal_drained": true,
+      "account_reserved": false,
+      "tools_refreshing": false,
+      "preparation_pending": false,
+      "completed_turn": null
+    },
+    "state": {
+      "type": "idle",
+      "activeFlags": []
+    }
+  },
+  {
+    "name": "hold-boundary",
+    "history_case": false,
+    "agent": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 0,
+      "status": "starting",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": null,
+      "inFlight": true,
+      "autoWake": true,
+      "error": "turn/start response timed out; outcome unknown",
+      "startAttempt": {
+        "id": "attempt",
+        "epoch": 0,
+        "accountKey": "default",
+        "threadId": "thread",
+        "events": ["event"],
+        "submitted": true,
+        "executionOutcome": "unknown",
+        "connectionId": "connection",
+        "created": 400,
+        "supervisorIdentity": {
+          "stateDir": "/fixture/supervisor",
+          "handle": "child",
+          "generation": 1
+        }
+      }
+    },
+    "replies": [
+      {
+        "data": [],
+        "nextCursor": null
+      }
+    ],
+    "result": {
+      "status": "held",
+      "at": 1000.0
+    },
+    "accepted": null,
+    "failed": false,
+    "calls": [
+      {
+        "method": "thread/turns/list",
+        "params": {
+          "threadId": "thread",
+          "limit": 10,
+          "sortDirection": "desc",
+          "itemsView": "full"
+        }
+      },
+      {
+        "method": "thread/read",
+        "params": {
+          "threadId": "thread",
+          "includeTurns": false
+        }
+      },
+      {
+        "method": "thread/read",
+        "params": {
+          "threadId": "thread",
+          "includeTurns": false
+        }
+      }
+    ],
+    "after": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 0,
+      "status": "interrupted",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": null,
+      "inFlight": false,
+      "autoWake": true,
+      "error": "Start outcome unknown. Studio checked native history at 1970-01-01 00:16:40 UTC. The original request can still finish. Recover this worker before new input.",
+      "startAttempt": {
+        "id": "attempt",
+        "epoch": 0,
+        "accountKey": "default",
+        "threadId": "thread",
+        "events": ["event"],
+        "submitted": true,
+        "executionOutcome": "unknown",
+        "connectionId": "connection",
+        "created": 400,
+        "supervisorIdentity": {
+          "stateDir": "/fixture/supervisor",
+          "handle": "child",
+          "generation": 1
+        }
+      },
+      "activity": null,
+      "activeTools": [],
+      "startOutcomeHold": {
+        "stage": "held",
+        "at": 1000.0,
+        "attemptId": "attempt",
+        "threadId": "thread",
+        "connectionId": "connection",
+        "evidence": "complete_history_absent_idle_twice_journal_drained"
+      }
+    },
+    "events": [["event", "agent", 0, "uncertain", null, "unknown"]],
+    "stopped": [
+      {
+        "status": "interrupted",
+        "reason": "Start outcome unknown. Studio checked native history at 1970-01-01 00:16:40 UTC. The original request can still finish. Recover this worker before new input.",
+        "id": "start-unknown:attempt"
+      }
+    ],
+    "observation": {
+      "scope": {
+        "account": "default",
+        "connection": "connection",
+        "generation": 1
+      },
+      "at": 1000.0,
+      "supervisor": {
+        "state_dir": "/fixture/supervisor",
+        "handle": "child",
+        "generation": 1
+      },
+      "quiet": true,
+      "journal_drained": true,
+      "account_reserved": false,
+      "tools_refreshing": false,
+      "preparation_pending": false,
+      "completed_turn": null
+    },
+    "state": {
+      "type": "idle",
+      "activeFlags": []
+    }
+  },
+  {
+    "name": "hold",
+    "history_case": false,
+    "agent": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 0,
+      "status": "starting",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": null,
+      "inFlight": true,
+      "autoWake": true,
+      "error": "turn/start response timed out; outcome unknown",
+      "startAttempt": {
+        "id": "attempt",
+        "epoch": 0,
+        "accountKey": "default",
+        "threadId": "thread",
+        "events": ["event"],
+        "submitted": true,
+        "executionOutcome": "unknown",
+        "connectionId": "connection",
+        "created": 0,
+        "supervisorIdentity": {
+          "stateDir": "/fixture/supervisor",
+          "handle": "child",
+          "generation": 1
+        }
+      }
+    },
+    "replies": [
+      {
+        "data": [],
+        "nextCursor": null
+      }
+    ],
+    "result": {
+      "status": "held",
+      "at": 1000.0
+    },
+    "accepted": null,
+    "failed": false,
+    "calls": [
+      {
+        "method": "thread/turns/list",
+        "params": {
+          "threadId": "thread",
+          "limit": 10,
+          "sortDirection": "desc",
+          "itemsView": "full"
+        }
+      },
+      {
+        "method": "thread/read",
+        "params": {
+          "threadId": "thread",
+          "includeTurns": false
+        }
+      },
+      {
+        "method": "thread/read",
+        "params": {
+          "threadId": "thread",
+          "includeTurns": false
+        }
+      }
+    ],
+    "after": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 0,
+      "status": "interrupted",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": null,
+      "inFlight": false,
+      "autoWake": true,
+      "error": "Start outcome unknown. Studio checked native history at 1970-01-01 00:16:40 UTC. The original request can still finish. Recover this worker before new input.",
+      "startAttempt": {
+        "id": "attempt",
+        "epoch": 0,
+        "accountKey": "default",
+        "threadId": "thread",
+        "events": ["event"],
+        "submitted": true,
+        "executionOutcome": "unknown",
+        "connectionId": "connection",
+        "created": 0,
+        "supervisorIdentity": {
+          "stateDir": "/fixture/supervisor",
+          "handle": "child",
+          "generation": 1
+        }
+      },
+      "activity": null,
+      "activeTools": [],
+      "startOutcomeHold": {
+        "stage": "held",
+        "at": 1000.0,
+        "attemptId": "attempt",
+        "threadId": "thread",
+        "connectionId": "connection",
+        "evidence": "complete_history_absent_idle_twice_journal_drained"
+      }
+    },
+    "events": [["event", "agent", 0, "uncertain", null, "unknown"]],
+    "stopped": [
+      {
+        "status": "interrupted",
+        "reason": "Start outcome unknown. Studio checked native history at 1970-01-01 00:16:40 UTC. The original request can still finish. Recover this worker before new input.",
+        "id": "start-unknown:attempt"
+      }
+    ],
+    "observation": {
+      "scope": {
+        "account": "default",
+        "connection": "connection",
+        "generation": 1
+      },
+      "at": 1000.0,
+      "supervisor": {
+        "state_dir": "/fixture/supervisor",
+        "handle": "child",
+        "generation": 1
+      },
+      "quiet": true,
+      "journal_drained": true,
+      "account_reserved": false,
+      "tools_refreshing": false,
+      "preparation_pending": false,
+      "completed_turn": null
+    },
+    "state": {
+      "type": "idle",
+      "activeFlags": []
+    }
+  },
+  {
+    "name": "journal-pending",
+    "history_case": false,
+    "agent": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 0,
+      "status": "starting",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": null,
+      "inFlight": true,
+      "autoWake": true,
+      "error": "turn/start response timed out; outcome unknown",
+      "startAttempt": {
+        "id": "attempt",
+        "epoch": 0,
+        "accountKey": "default",
+        "threadId": "thread",
+        "events": ["event"],
+        "submitted": true,
+        "executionOutcome": "unknown",
+        "connectionId": "connection",
+        "created": 0,
+        "supervisorIdentity": {
+          "stateDir": "/fixture/supervisor",
+          "handle": "child",
+          "generation": 1
+        }
+      }
+    },
+    "replies": [
+      {
+        "data": [],
+        "nextCursor": null
+      }
+    ],
+    "result": {
+      "status": "unconfirmed"
+    },
+    "accepted": null,
+    "failed": false,
+    "calls": [
+      {
+        "method": "thread/turns/list",
+        "params": {
+          "threadId": "thread",
+          "limit": 10,
+          "sortDirection": "desc",
+          "itemsView": "full"
+        }
+      }
+    ],
+    "after": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 0,
+      "status": "starting",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": null,
+      "inFlight": true,
+      "autoWake": true,
+      "error": "turn/start response timed out; outcome unknown",
+      "startAttempt": {
+        "id": "attempt",
+        "epoch": 0,
+        "accountKey": "default",
+        "threadId": "thread",
+        "events": ["event"],
+        "submitted": true,
+        "executionOutcome": "unknown",
+        "connectionId": "connection",
+        "created": 0,
+        "supervisorIdentity": {
+          "stateDir": "/fixture/supervisor",
+          "handle": "child",
+          "generation": 1
+        }
+      }
+    },
+    "events": [["event", "agent", 0, "uncertain", null, "unknown"]],
+    "stopped": [],
+    "observation": {
+      "scope": {
+        "account": "default",
+        "connection": "connection",
+        "generation": 1
+      },
+      "at": 1000.0,
+      "supervisor": {
+        "state_dir": "/fixture/supervisor",
+        "handle": "child",
+        "generation": 1
+      },
+      "quiet": true,
+      "journal_drained": false,
+      "account_reserved": false,
+      "tools_refreshing": false,
+      "preparation_pending": false,
+      "completed_turn": null
+    },
+    "state": {
+      "type": "idle",
+      "activeFlags": []
+    }
+  },
+  {
+    "name": "active",
+    "history_case": false,
+    "agent": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 0,
+      "status": "starting",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": null,
+      "inFlight": true,
+      "autoWake": true,
+      "error": "turn/start response timed out; outcome unknown",
+      "startAttempt": {
+        "id": "attempt",
+        "epoch": 0,
+        "accountKey": "default",
+        "threadId": "thread",
+        "events": ["event"],
+        "submitted": true,
+        "executionOutcome": "unknown",
+        "connectionId": "connection",
+        "created": 0,
+        "supervisorIdentity": {
+          "stateDir": "/fixture/supervisor",
+          "handle": "child",
+          "generation": 1
+        }
+      }
+    },
+    "replies": [
+      {
+        "data": [],
+        "nextCursor": null
+      }
+    ],
+    "result": {
+      "status": "unconfirmed"
+    },
+    "accepted": null,
+    "failed": false,
+    "calls": [
+      {
+        "method": "thread/turns/list",
+        "params": {
+          "threadId": "thread",
+          "limit": 10,
+          "sortDirection": "desc",
+          "itemsView": "full"
+        }
+      },
+      {
+        "method": "thread/read",
+        "params": {
+          "threadId": "thread",
+          "includeTurns": false
+        }
+      }
+    ],
+    "after": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 0,
+      "status": "starting",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": null,
+      "inFlight": true,
+      "autoWake": true,
+      "error": "turn/start response timed out; outcome unknown",
+      "startAttempt": {
+        "id": "attempt",
+        "epoch": 0,
+        "accountKey": "default",
+        "threadId": "thread",
+        "events": ["event"],
+        "submitted": true,
+        "executionOutcome": "unknown",
+        "connectionId": "connection",
+        "created": 0,
+        "supervisorIdentity": {
+          "stateDir": "/fixture/supervisor",
+          "handle": "child",
+          "generation": 1
+        }
+      }
+    },
+    "events": [["event", "agent", 0, "uncertain", null, "unknown"]],
+    "stopped": [],
+    "observation": {
+      "scope": {
+        "account": "default",
+        "connection": "connection",
+        "generation": 1
+      },
+      "at": 1000.0,
+      "supervisor": {
+        "state_dir": "/fixture/supervisor",
+        "handle": "child",
+        "generation": 1
+      },
+      "quiet": true,
+      "journal_drained": true,
+      "account_reserved": false,
+      "tools_refreshing": false,
+      "preparation_pending": false,
+      "completed_turn": null
+    },
+    "state": {
+      "type": "active",
+      "activeFlags": []
+    }
+  },
+  {
+    "name": "active-flags",
+    "history_case": false,
+    "agent": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 0,
+      "status": "starting",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": null,
+      "inFlight": true,
+      "autoWake": true,
+      "error": "turn/start response timed out; outcome unknown",
+      "startAttempt": {
+        "id": "attempt",
+        "epoch": 0,
+        "accountKey": "default",
+        "threadId": "thread",
+        "events": ["event"],
+        "submitted": true,
+        "executionOutcome": "unknown",
+        "connectionId": "connection",
+        "created": 0,
+        "supervisorIdentity": {
+          "stateDir": "/fixture/supervisor",
+          "handle": "child",
+          "generation": 1
+        }
+      }
+    },
+    "replies": [
+      {
+        "data": [],
+        "nextCursor": null
+      }
+    ],
+    "result": {
+      "status": "unconfirmed"
+    },
+    "accepted": null,
+    "failed": false,
+    "calls": [
+      {
+        "method": "thread/turns/list",
+        "params": {
+          "threadId": "thread",
+          "limit": 10,
+          "sortDirection": "desc",
+          "itemsView": "full"
+        }
+      },
+      {
+        "method": "thread/read",
+        "params": {
+          "threadId": "thread",
+          "includeTurns": false
+        }
+      }
+    ],
+    "after": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 0,
+      "status": "starting",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": null,
+      "inFlight": true,
+      "autoWake": true,
+      "error": "turn/start response timed out; outcome unknown",
+      "startAttempt": {
+        "id": "attempt",
+        "epoch": 0,
+        "accountKey": "default",
+        "threadId": "thread",
+        "events": ["event"],
+        "submitted": true,
+        "executionOutcome": "unknown",
+        "connectionId": "connection",
+        "created": 0,
+        "supervisorIdentity": {
+          "stateDir": "/fixture/supervisor",
+          "handle": "child",
+          "generation": 1
+        }
+      }
+    },
+    "events": [["event", "agent", 0, "uncertain", null, "unknown"]],
+    "stopped": [],
+    "observation": {
+      "scope": {
+        "account": "default",
+        "connection": "connection",
+        "generation": 1
+      },
+      "at": 1000.0,
+      "supervisor": {
+        "state_dir": "/fixture/supervisor",
+        "handle": "child",
+        "generation": 1
+      },
+      "quiet": true,
+      "journal_drained": true,
+      "account_reserved": false,
+      "tools_refreshing": false,
+      "preparation_pending": false,
+      "completed_turn": null
+    },
+    "state": {
+      "type": "idle",
+      "activeFlags": ["executing"]
+    }
+  },
+  {
+    "name": "foreign-child",
+    "history_case": false,
+    "agent": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 0,
+      "status": "starting",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": null,
+      "inFlight": true,
+      "autoWake": true,
+      "error": "turn/start response timed out; outcome unknown",
+      "startAttempt": {
+        "id": "attempt",
+        "epoch": 0,
+        "accountKey": "default",
+        "threadId": "thread",
+        "events": ["event"],
+        "submitted": true,
+        "executionOutcome": "unknown",
+        "connectionId": "connection",
+        "created": 0,
+        "supervisorIdentity": {
+          "stateDir": "/fixture/supervisor",
+          "handle": "child",
+          "generation": 1
+        }
+      }
+    },
+    "replies": [
+      {
+        "data": [],
+        "nextCursor": null
+      }
+    ],
+    "result": {
+      "status": "unconfirmed"
+    },
+    "accepted": null,
+    "failed": false,
+    "calls": [],
+    "after": {
+      "id": "agent",
+      "rootId": "agent",
+      "epoch": 0,
+      "status": "starting",
+      "accountKey": "default",
+      "threadId": "thread",
+      "turnId": null,
+      "inFlight": true,
+      "autoWake": true,
+      "error": "turn/start response timed out; outcome unknown",
+      "startAttempt": {
+        "id": "attempt",
+        "epoch": 0,
+        "accountKey": "default",
+        "threadId": "thread",
+        "events": ["event"],
+        "submitted": true,
+        "executionOutcome": "unknown",
+        "connectionId": "connection",
+        "created": 0,
+        "supervisorIdentity": {
+          "stateDir": "/fixture/supervisor",
+          "handle": "child",
+          "generation": 1
+        }
+      }
+    },
+    "events": [["event", "agent", 0, "uncertain", null, "unknown"]],
+    "stopped": [],
+    "observation": {
+      "scope": {
+        "account": "default",
+        "connection": "new",
+        "generation": 2
+      },
+      "at": 1000.0,
+      "supervisor": {
+        "state_dir": "/fixture/supervisor",
+        "handle": "foreign",
+        "generation": 2
+      },
+      "quiet": true,
+      "journal_drained": true,
+      "account_reserved": false,
+      "tools_refreshing": false,
+      "preparation_pending": false,
+      "completed_turn": null
+    },
+    "state": {
+      "type": "idle",
+      "activeFlags": []
+    }
+  }
+]

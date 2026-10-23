@@ -1,0 +1,182 @@
+[
+  {
+    "name": "canonical",
+    "payload": {
+      "id": "phone:chat",
+      "device": "phone",
+      "session": "chat",
+      "text": "x",
+      "updated": 7
+    },
+    "push": true,
+    "updated": 7
+  },
+  {
+    "name": "audit_fraction",
+    "payload": {
+      "id": "phone:chat",
+      "device": "phone",
+      "session": "chat",
+      "text": "x",
+      "updated": 1.5
+    },
+    "push": false,
+    "updated": 1
+  },
+  {
+    "name": "missing_updated",
+    "payload": {
+      "id": "phone:chat",
+      "device": "phone",
+      "session": "chat",
+      "text": "x"
+    },
+    "push": false,
+    "updated": 0
+  },
+  {
+    "name": "null_updated",
+    "payload": {
+      "id": "phone:chat",
+      "device": "phone",
+      "session": "chat",
+      "text": "x",
+      "updated": null
+    },
+    "push": false,
+    "updated": 0
+  },
+  {
+    "name": "legacy_missing_id",
+    "payload": {
+      "device": "phone",
+      "session": "chat",
+      "text": "x",
+      "updated": 3
+    },
+    "push": false,
+    "updated": 3
+  },
+  {
+    "name": "safe_max",
+    "payload": {
+      "id": "phone:chat",
+      "device": "phone",
+      "session": "chat",
+      "text": "x",
+      "updated": 9007199254740991
+    },
+    "push": true,
+    "updated": 9007199254740991
+  },
+  {
+    "name": "unsafe",
+    "payload": {
+      "id": "phone:chat",
+      "device": "phone",
+      "session": "chat",
+      "text": "x",
+      "updated": 9007199254740992
+    },
+    "push": false,
+    "updated": null
+  },
+  {
+    "name": "negative",
+    "payload": {
+      "id": "phone:chat",
+      "device": "phone",
+      "session": "chat",
+      "text": "x",
+      "updated": -1
+    },
+    "push": false,
+    "updated": null
+  },
+  {
+    "name": "wrong_type",
+    "payload": {
+      "id": "phone:chat",
+      "device": "phone",
+      "session": "chat",
+      "text": "x",
+      "updated": "1"
+    },
+    "push": false,
+    "updated": null
+  },
+  {
+    "name": "seen_unsafe",
+    "payload": {
+      "id": "phone:chat",
+      "device": "phone",
+      "session": "chat",
+      "text": "x",
+      "updated": 1,
+      "seen": {
+        "other": 9007199254740992
+      }
+    },
+    "push": false,
+    "updated": null
+  },
+  {
+    "name": "extension",
+    "payload": {
+      "id": "phone:chat",
+      "device": "phone",
+      "session": "chat",
+      "text": "x",
+      "updated": 2,
+      "metadata": {
+        "kept": true
+      }
+    },
+    "push": true,
+    "updated": 2
+  },
+  {
+    "name": "extension_missing_updated",
+    "payload": {
+      "id": "phone:chat",
+      "device": "phone",
+      "session": "chat",
+      "text": "x",
+      "metadata": {
+        "kept": true
+      }
+    },
+    "push": false,
+    "updated": 0
+  },
+  {
+    "name": "extension_null_updated",
+    "payload": {
+      "id": "phone:chat",
+      "device": "phone",
+      "session": "chat",
+      "text": "x",
+      "metadata": {
+        "kept": true
+      },
+      "updated": null
+    },
+    "push": false,
+    "updated": 0
+  },
+  {
+    "name": "extension_fractional_updated",
+    "payload": {
+      "id": "phone:chat",
+      "device": "phone",
+      "session": "chat",
+      "text": "x",
+      "metadata": {
+        "kept": true
+      },
+      "updated": 1.5
+    },
+    "push": false,
+    "updated": 1
+  }
+]

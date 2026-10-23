@@ -61,18 +61,12 @@ pub(crate) fn accept_thread(
         return Ok(Err(ThreadRejection::SubmissionReceipt));
     }
     let mut record = agent(tx, &context.intent.agent_id)?.value();
-    let progress_directory = match &attempt.snapshot.workspace {
-        thread::WorkspaceReadiness::Ready { progress_directory } => progress_directory.clone(),
-        _ => None,
-    };
-    let filesystem = ThreadFilesystemInputs { progress_directory };
     let mut current = thread_snapshot(
         tx,
         resources,
         &record,
         &ticket.generation.to_string(),
         root,
-        &filesystem,
         None,
     )?;
     align_receipt_cwd(&mut current, &attempt.snapshot, resources);

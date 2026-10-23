@@ -1,10 +1,5 @@
 //! Durable terminal state and the narrow AppServer session boundary.
 
-#[cfg(test)]
-#[allow(clippy::duplicate_mod)]
-#[path = "../tests/support/prepared_python.rs"]
-mod prepared_python_test_support;
-
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex, Weak};
@@ -185,25 +180,8 @@ pub async fn history_output(
                 .ok_or(TerminalError::UnknownTerminal)
         })
         .await?;
-    let record = current.record;
-    let archive_id = id.to_owned();
-    let row = store
-        .transaction(move |transaction| {
-            let row = TerminalsRepository::get(transaction, &archive_id)?
-                .ok_or_else(|| StoreError::SchemaMismatch("unknown terminal".into()))?;
-            if !row.output.is_empty()
-                && TerminalsRepository::archive_start(transaction, &archive_id)?.is_none()
-            {
-                TerminalsRepository::append_output(
-                    transaction,
-                    &archive_id,
-                    row.offset,
-                    &row.output,
-                )?;
-            }
-            Ok(row)
-        })
-        .await?;
+    let record = current.record.clone();
+    let row = current;
     let terminal_id = id.to_owned();
     let (start, available, cursor, chunks) = store
         .read_async("runtime-services/terminal_driver", move |connection| {
@@ -1046,16 +1024,16 @@ fn new_id() -> Result<String, TerminalError> {
 mod tests {
     use std::collections::{BTreeMap, VecDeque};
     use std::path::{Path, PathBuf};
-    use std::process::Command;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::{Arc, Barrier, Mutex};
 
     use super::{
         INPUT_LIMIT, OUTPUT_LIMIT, SessionError, TerminalCreate, TerminalDriver, TerminalError,
         TerminalEvent, TerminalNotification, TerminalOutcome, TerminalSession, decode_utf8,
-        history_output, new_id, now_seconds, output, receipt_signature, size, terminal_title,
+        history_output, new_id, output, receipt_signature, size, terminal_title,
     };
     use serde_json::Value;
+    use studio_runtime_store::path_identity::CanonicalPath;
     use studio_runtime_store::{
         AgentId, AgentRecord, AgentRepository, AgentStatus, RuntimeStore, TerminalRecord,
         TerminalsRepository,
@@ -1150,62 +1128,6 @@ mod tests {
             .tempdir_in(&tmpfs)
             .expect("test state root");
         let root = directory.path().to_path_buf();
-        let snapshot: Value = serde_json::from_str(include_str!(
-            "../../runtime-store/src/runtime-state-schema.json"
-        ))
-        .expect("schema fixture");
-        for name in ["canvas.sqlite3", "analytics.sqlite3"] {
-            let path = root.join(name);
-            let connection = rusqlite::Connection::open(path).expect("test database");
-            connection
-                .execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;")
-                .expect("database pragmas");
-            let mut statements = snapshot[name]["sqlite_master"]
-                .as_array()
-                .expect("schema entries")
-                .iter()
-                .filter_map(|entry| {
-                    Some((
-                        entry["type"].as_str()?,
-                        entry["name"].as_str()?,
-                        entry["sql"].as_str()?,
-                    ))
-                })
-                .collect::<Vec<_>>();
-            statements.sort_by_key(|(kind, _, _)| match *kind {
-                "table" => 0,
-                "index" => 1,
-                "view" => 2,
-                _ => 3,
-            });
-            for (_, name, sql) in statements {
-                let exists: bool = connection
-                    .query_row(
-                        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name=?1)",
-                        [name],
-                        |row| row.get(0),
-                    )
-                    .expect("schema lookup");
-                if !exists {
-                    connection.execute_batch(sql).expect("schema statement");
-                }
-            }
-        }
-        let server_source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src");
-        let output = Command::new(super::prepared_python_test_support::prepared_python(&server_source))
-            .arg("-c")
-            .arg("import pathlib, sys; sys.path.insert(0, sys.argv[2]); from codex_canvas import Canvas; from codex_terminals import TerminalManager; root = pathlib.Path(sys.argv[1]); Canvas(root); TerminalManager(root)")
-            .arg(&root)
-            .arg(&server_source)
-            .env("PYTHONPATH", &server_source)
-            .env("PYTHONDONTWRITEBYTECODE", "1")
-            .output()
-            .expect("Canvas schema bootstrap starts");
-        assert!(
-            output.status.success(),
-            "Canvas schema bootstrap succeeds: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
         let store = Arc::new(
             RuntimeStore::open(Some(&root))
                 .await
@@ -1568,6 +1490,7 @@ mod tests {
 
     #[tokio::test]
     async fn driver_truncates_retained_output_but_keeps_archived_cursor_history() {
+        const ARCHIVE_PAGE_LIMIT_CHARS: i64 = 7;
         let state = test_state().await;
         let driver = test_driver(&state, FakeSession::default());
         let id = create(&driver, &state.root).await["id"]
@@ -1591,12 +1514,26 @@ mod tests {
         );
         assert_eq!(current["offset"], (OUTPUT_LIMIT + 4) as i64);
         assert_eq!(current["truncated"], true);
-        let history = history_output(state.store.as_ref().expect("store").clone(), &id, 0, 7)
-            .await
-            .expect("history");
+        let history = history_output(
+            state.store.as_ref().expect("store").clone(),
+            &id,
+            0,
+            ARCHIVE_PAGE_LIMIT_CHARS,
+        )
+        .await
+        .expect("history");
         assert_eq!(history["text"], "xxxxxxx");
-        assert_eq!(history["offset"], 7);
+        assert_eq!(history["offset"], ARCHIVE_PAGE_LIMIT_CHARS);
         assert_eq!(history["hasMore"], true);
+        let tail = history_output(
+            state.store.as_ref().expect("store").clone(),
+            &id,
+            OUTPUT_LIMIT as i64,
+            ARCHIVE_PAGE_LIMIT_CHARS,
+        )
+        .await
+        .expect("history at retained output boundary");
+        assert_eq!(tail["text"], "xxxx");
     }
 
     #[tokio::test]
@@ -2773,8 +2710,6 @@ mod tests {
 
     #[tokio::test]
     async fn python_terminal_action_differential_compares_all_returns_and_rows() {
-        use crate::agents_create;
-
         // Python's manager advances its clock once while recovering the seeded running row.
         ACTION_CLOCK_TICK.store(1, Ordering::SeqCst);
 
@@ -2843,44 +2778,27 @@ mod tests {
         }
 
         let state = test_state().await;
-        let test_state_root = std::env::var_os("CS_TERMINAL_TEST_STATE_DIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(std::env::temp_dir);
-        std::fs::create_dir_all(&test_state_root).expect("tmpfs test state directory");
-        let rust_directory = tempfile::Builder::new()
-            .prefix("terminal-action-rust-")
-            .tempdir_in(&test_state_root)
-            .expect("Rust action corpus root");
-        let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src");
-        let python = agents_create::prepared_python(&source);
-        let script =
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/terminal_actions_oracle.py");
-        let output = Command::new(python)
-            .arg(script)
-            .arg(&source)
-            .arg(&state.root)
-            .arg(rust_directory.path())
-            .env_clear()
-            .env("HOME", rust_directory.path().join("home"))
-            .env("PATH", "/usr/bin:/bin")
-            .env("TMPDIR", &test_state_root)
-            .env("PYTHONDONTWRITEBYTECODE", "1")
-            .output()
-            .expect("run real Python terminal actions");
-        assert!(
-            output.status.success(),
-            "Python terminal action oracle failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        let oracle: Value = serde_json::from_slice(&output.stdout).expect("action oracle JSON");
-        let python_actions = oracle["actions"].as_array().expect("Python actions");
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct ActionCase {
+            action: String,
+            result: Value,
+            error: Option<String>,
+            tables: Value,
+        }
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct ActionCorpus {
+            actions: Vec<ActionCase>,
+            #[serde(rename = "wire")]
+            _wire: Vec<Value>,
+        }
+        let oracle: ActionCorpus =
+            serde_json::from_str(include_str!("../tests/terminal_action_corpus.json"))
+                .expect("frozen terminal actions");
+        let python_actions = &oracle.actions;
         assert_eq!(python_actions.len(), 7);
-
-        let store = Arc::new(
-            RuntimeStore::open(Some(rust_directory.path()))
-                .await
-                .expect("open Python-written pre-state"),
-        );
+        let store = state.store.as_ref().expect("store").clone();
         let driver = TerminalDriver::with_sources(
             store.clone(),
             FakeSession::default(),
@@ -2908,7 +2826,7 @@ mod tests {
             .as_str()
             .expect("Rust terminal ID")
             .to_owned();
-        assert_eq!(rust_id, python_actions[0]["result"]["id"]);
+        assert_eq!(rust_id, python_actions[0].result["id"]);
 
         let mut rust_results = vec![(create_result, None::<String>)];
         let mut rust_tables = vec![snapshot(&store)];
@@ -2948,67 +2866,43 @@ mod tests {
         rust_results.push((Value::Null, Some("receipt_conflict".to_owned())));
         rust_tables.push(snapshot(&store));
 
+        // Terminals record the canonical cwd (macOS `/var` is `/private/var`).
+        let root = CanonicalPath::existing(&state.root)
+            .expect("canonical terminal cwd")
+            .into_path_buf();
         for (index, (python, (rust, rust_error))) in
             python_actions.iter().zip(rust_results.iter()).enumerate()
         {
-            let mut expected_result = python["result"].clone();
+            let mut expected_result = python.result.clone();
             let mut actual_result = rust.clone();
-            normalize(&mut expected_result, &state.root);
-            normalize(&mut actual_result, &state.root);
+            normalize(&mut expected_result, &root);
+            normalize(&mut actual_result, &root);
             if let Some(error) = rust_error {
-                assert_eq!(python["error"].as_str(), Some(error.as_str()));
+                assert_eq!(python.error.as_deref(), Some(error.as_str()));
                 assert_eq!(actual_result, expected_result, "rejected action return");
             } else {
                 assert_eq!(
                     actual_result, expected_result,
                     "complete return for Python action {}",
-                    python["action"]
+                    python.action
                 );
             }
 
-            let mut expected_tables = python["tables"].clone();
+            let mut expected_tables = python.tables.clone();
             let mut actual_tables = rust_tables[index].clone();
-            normalize(&mut expected_tables, &state.root);
-            normalize(&mut actual_tables, &state.root);
+            normalize(&mut expected_tables, &root);
+            normalize(&mut actual_tables, &root);
             assert_eq!(
                 actual_tables, expected_tables,
                 "stored rows after action {} (index {index})",
-                python["action"]
+                python.action
             );
         }
     }
 
     #[tokio::test]
-    async fn driver_seeds_python_legacy_output_and_refuses_bad_history_without_writes() {
+    async fn driver_refuses_bad_history_without_writes() {
         let state = test_state().await;
-        let driver = test_driver(&state, FakeSession::default());
-        let id = "legacy-terminal";
-        let now = now_seconds();
-        let record = TerminalRecord::from_value(serde_json::json!({"id":id,"agent":"agent","title":"old","cwd":"/tmp","status":"exited","created":now,"updated":now,"exitCode":0}))
-            .expect("terminal record");
-        let transaction_id = id.to_owned();
-        state
-            .store
-            .as_ref()
-            .expect("store")
-            .transaction(move |tx| {
-                TerminalsRepository::put(tx, &transaction_id, &record, "legacy", 9)
-            })
-            .await
-            .expect("legacy row");
-        driver
-            .apply_notification(TerminalNotification {
-                terminal_id: id.into(),
-                sequence: 1,
-                event: TerminalEvent::Output(b" delta".to_vec()),
-            })
-            .await
-            .expect("append delta");
-        let history = history_output(state.store.as_ref().expect("store").clone(), id, 9, 32)
-            .await
-            .expect("history");
-        assert_eq!(history["text"], "legacy delta");
-
         let bad = "invalid-record";
         let transaction_bad = bad.to_owned();
         state

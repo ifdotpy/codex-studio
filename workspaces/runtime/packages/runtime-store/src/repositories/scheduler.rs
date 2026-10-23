@@ -14,7 +14,7 @@ use crate::{
 pub type AccountWakePage = BTreeMap<String, Vec<(String, i64, Option<String>)>>;
 
 /// Persisted turn errors for a provider disconnect, a backend restart, and an
-/// unknown Linux VM provider outcome. `codex_shared_values.py` owns the texts.
+/// unknown Linux VM provider outcome, owned by runtime-schema shared values.
 pub use studio_runtime_schema::shared_values::{
     BACKEND_RESTARTED_TURN_ERROR, PROVIDER_DISCONNECTED_TURN_ERROR,
     VM_PROVIDER_DISCONNECTED_TURN_ERROR,
@@ -105,6 +105,7 @@ pub struct SchedulerRepository;
 
 mod idle_unload;
 mod lifecycle;
+pub use lifecycle::START_RETURN_LIMIT;
 mod selection;
 mod steer;
 use lifecycle::*;

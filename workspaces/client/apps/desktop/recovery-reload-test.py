@@ -33,6 +33,7 @@ class RecoveryReload(unittest.TestCase):
             config.write_text(json.dumps({
                 "version": 1, "enabled": True, "stateDir": str(state), "port": free_port(),
                 "python": sys.executable, "codex": "/usr/bin/true", "resources": str(root / "missing"),
+                "runtimeServer": str(root / "missing/studio-runtime-server"),
                 "supervisorEnabled": False}))
             agent = subprocess.Popen([sys.executable, "-B", str(app / "recover_backend.py"), "--config", str(config)],
                                      stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)

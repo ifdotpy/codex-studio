@@ -428,9 +428,16 @@ pub(super) fn resolved(
     let mut pending = false;
     for record in records {
         let mut record = record.value().clone();
+        // A card names its provider generation: the Rust account worker stores
+        // it under `supervisor`; Python named the connection after it.
+        let same_generation = record
+            .pointer("/supervisor/generation")
+            .and_then(Value::as_u64)
+            == Some(generation)
+            || record["connectionId"] == format!("connection-{generation}");
         if record["rpcId"] == params["requestId"]
             && record.get("accountKey").unwrap_or(&json!("default")) == account
-            && record["connectionId"] == format!("connection-{generation}")
+            && same_generation
             && record["params"]["threadId"] == params["threadId"]
             && matches!(
                 record["status"].as_str(),

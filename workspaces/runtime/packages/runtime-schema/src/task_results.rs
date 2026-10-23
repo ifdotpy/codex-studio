@@ -198,7 +198,7 @@ mod tests {
         }
         assert!(
             compile(&json!({"description":"x".repeat(MAX_RESULT_SCHEMA_BYTES)}))
-                .unwrap_err()
+                .expect_err("oversized schema must fail")
                 .contains("bytes")
         );
     }
@@ -214,32 +214,34 @@ mod tests {
         let schema =
             json!({"type":"object","properties":{"count":{"type":"integer"}},"required":["count"]});
         assert_eq!(
-            validate_result(&json!({"type":"string"}), &json!("hello")).unwrap(),
+            validate_result(&json!({"type":"string"}), &json!("hello"))
+                .expect("valid string result"),
             json!("hello")
         );
         assert!(compile(&json!(true)).is_ok());
         assert!(compile(&json!(false)).is_ok());
         assert_eq!(
-            validate_result(&json!(true), &Value::Null).unwrap(),
+            validate_result(&json!(true), &Value::Null).expect("unrestricted schema accepts null"),
             Value::Null
         );
         assert!(validate_result(&json!(false), &Value::Null).is_err());
         assert_eq!(
-            validate_result(&schema, &json!({"count":3})).unwrap(),
+            validate_result(&schema, &json!({"count":3})).expect("valid object result"),
             json!({"count":3})
         );
         assert_eq!(
-            validate_result(&schema, &json!("{\"count\":3}")).unwrap(),
+            validate_result(&schema, &json!("{\"count\":3}")).expect("valid JSON object string"),
             json!({"count":3})
         );
         assert_eq!(
-            validate_result(&schema, &json!({"count":"bad"})).unwrap_err()[0]["path"],
+            validate_result(&schema, &json!({"count":"bad"})).expect_err("invalid count must fail")
+                [0]["path"],
             "/count"
         );
         assert!(
-            validate_result(&schema, &json!("not JSON")).unwrap_err()[0]["message"]
+            validate_result(&schema, &json!("not JSON")).expect_err("invalid JSON must fail")[0]["message"]
                 .as_str()
-                .unwrap()
+                .expect("validation message is text")
                 .contains("valid JSON")
         );
     }

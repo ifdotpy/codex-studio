@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -6,7 +6,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use serde::Serialize;
 use serde_json::{Value, json};
 
-use super::{Ring, try_with_state};
+use super::{LOCK_SAMPLE_LIMIT, Ring, quantiles, try_with_state};
 
 const SLOW_TRANSACTION: Duration = Duration::from_secs(1);
 const ACTIVE_LIMIT: usize = 256;
@@ -68,6 +68,12 @@ struct SqliteState {
     writer_admission: StoreAdmissionSamples,
     wal_checkpoint_by_database: BTreeMap<DatabaseKind, Value>,
     transaction_count: u64,
+    total_wait_ns: u128,
+    total_hold_ns: u128,
+    wait_ns: Ring,
+    hold_ns: Ring,
+    /// Transactions and total hold time per source call site, bounded by source sites.
+    by_origin: HashMap<(&'static str, u32), (u64, u128)>,
     long_transactions: u64,
     lock_error_snapshot: u64,
     write_waits: u64,
@@ -101,6 +107,11 @@ impl Default for SqliteState {
             writer_admission: StoreAdmissionSamples::default(),
             wal_checkpoint_by_database: BTreeMap::new(),
             transaction_count: 0,
+            total_wait_ns: 0,
+            total_hold_ns: 0,
+            wait_ns: Ring::new(LOCK_SAMPLE_LIMIT),
+            hold_ns: Ring::new(LOCK_SAMPLE_LIMIT),
+            by_origin: HashMap::new(),
             long_transactions: 0,
             lock_error_snapshot: 0,
             write_waits: 0,
@@ -114,9 +125,9 @@ impl Default for SqliteState {
     }
 }
 
-/// Observe one serialized store transaction for the SQLite contention view.
+/// Record both writer-lock and SQLite views under the sole transaction collector mutex.
 /// `wait` includes the writer actor queue; `hold` is the SQLite job alone.
-pub fn record_store_transaction(
+pub fn record_store_writer_transaction(
     wait: Duration,
     hold: Duration,
     origin: &'static std::panic::Location<'static>,
@@ -135,14 +146,27 @@ fn record_store_transaction_in_state(
     let wait_ms = wait.as_secs_f64() * 1000.0;
     let hold_ms = hold.as_secs_f64() * 1000.0;
     state.transaction_count = state.transaction_count.saturating_add(1);
+    state.total_wait_ns = state.total_wait_ns.saturating_add(wait.as_nanos());
+    state.total_hold_ns = state.total_hold_ns.saturating_add(hold.as_nanos());
+    let site = state
+        .by_origin
+        .entry((origin.file(), origin.line()))
+        .or_default();
+    site.0 = site.0.saturating_add(1);
+    site.1 = site.1.saturating_add(hold.as_nanos());
+    state
+        .wait_ns
+        .record(wait.as_nanos().min(u128::from(u64::MAX)) as u64);
+    state
+        .hold_ns
+        .record(hold.as_nanos().min(u128::from(u64::MAX)) as u64);
+
     state.long_transactions = state
         .long_transactions
         .saturating_add(u64::from(hold_ms >= LONG_TRANSACTION_MS));
     if wait_ms >= WRITE_WAIT_MS {
         state.write_waits = state.write_waits.saturating_add(1);
         state.write_wait_ms += wait_ms;
-    }
-    if wait_ms >= WRITE_WAIT_MS {
         state
             .write_wait_durations_ns
             .record(wait.as_nanos().min(u128::from(u64::MAX)) as u64);
@@ -180,6 +204,69 @@ fn record_store_transaction_in_state(
         });
         push_history(state, entry);
     }
+}
+
+/// Return the store writer series using the existing Python diagnostics keys.
+/// These values do not claim to measure a Python `Runtime.lock` or bridge permit.
+pub fn runtime_lock_operations() -> Vec<Value> {
+    let mut result = Vec::new();
+    let _ = try_with_state(state(), |state| {
+        result = runtime_lock_operations_from_state(state);
+    });
+    result
+}
+
+fn runtime_lock_operations_from_state(state: &SqliteState) -> Vec<Value> {
+    let mut result = Vec::new();
+
+    if state.transaction_count == 0 {
+        return result;
+    }
+    let (_, waits) = state.wait_ns.snapshot();
+    let (_, holds) = state.hold_ns.snapshot();
+    let mut origins: Vec<_> = state.by_origin.iter().collect();
+    origins.sort_by_key(|(_, (count, _))| std::cmp::Reverse(*count));
+    let origins: Vec<Value> = origins
+        .into_iter()
+        .map(|((file, line), (count, hold_ns))| {
+            json!({
+                "origin": format!("{file}:{line}"),
+                "count": count,
+                "totalHoldMs": *hold_ns as f64 / 1_000_000.0,
+            })
+        })
+        .collect();
+    result.push(json!({
+        "callSite": "runtime_store.writer_transaction",
+        "origins": origins,
+        "count": state.transaction_count,
+        "totalWaitMs": state.total_wait_ns as f64 / 1_000_000.0,
+        "totalHoldMs": state.total_hold_ns as f64 / 1_000_000.0,
+        "waitMs": quantiles(&waits, true, 1_000_000.0),
+        "holdMs": quantiles(&holds, true, 1_000_000.0),
+    }));
+    result
+}
+
+/// Passive samples matching the legacy route shape. Rust has no interpreter
+/// lock holder to probe; holder is therefore always null.
+pub fn runtime_lock_samples() -> Vec<Value> {
+    let mut result = Vec::new();
+    let _ = try_with_state(state(), |state| {
+        result = runtime_lock_samples_from_state(state);
+    });
+    result
+}
+
+fn runtime_lock_samples_from_state(state: &SqliteState) -> Vec<Value> {
+    let (_, waits) = state.wait_ns.snapshot();
+    waits
+        .into_iter()
+        .rev()
+        .take(5)
+        .rev()
+        .map(|wait| json!({"waitMs": wait as f64 / 1_000_000.0, "holder": Value::Null}))
+        .collect()
 }
 
 /// Accept one rusqlite profile event without retaining its SQL text.
@@ -632,6 +719,119 @@ fn native_thread_id() -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn writer_transaction_views_preserve_all_statistics() {
+        let mut state = SqliteState::default();
+        assert!(runtime_lock_operations_from_state(&state).is_empty());
+        assert!(runtime_lock_samples_from_state(&state).is_empty());
+        let first = std::panic::Location::caller();
+        let second = std::panic::Location::caller();
+        for (index, (wait_us, hold_ms)) in [
+            (0, 1),
+            (500, 2),
+            (1000, 100),
+            (2000, 200),
+            (4000, 300),
+            (8000, 400),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            record_store_transaction_in_state(
+                &mut state,
+                Duration::from_micros(wait_us),
+                Duration::from_millis(hold_ms),
+                if index < 4 { first } else { second },
+            );
+        }
+        assert_eq!(
+            runtime_lock_operations_from_state(&state),
+            vec![json!({
+                "callSite": "runtime_store.writer_transaction",
+                "count": 6, "totalWaitMs": 15.5, "totalHoldMs": 1003.0,
+                "origins": [
+                    {"origin": format!("{}:{}", first.file(), first.line()), "count": 4, "totalHoldMs": 303.0},
+                    {"origin": format!("{}:{}", second.file(), second.line()), "count": 2, "totalHoldMs": 700.0}
+                ],
+                "waitMs": {"samples": 6, "p50": 1.0, "p95": 4.0, "p99": 4.0, "max": 8.0},
+                "holdMs": {"samples": 6, "p50": 100.0, "p95": 300.0, "p99": 300.0, "max": 400.0}
+            })]
+        );
+        assert_eq!(
+            runtime_lock_samples_from_state(&state),
+            [0.5, 1.0, 2.0, 4.0, 8.0]
+                .map(|wait| json!({"waitMs": wait, "holder": null}))
+                .to_vec()
+        );
+        let contention = sqlite_contention_from_state(&state, 0);
+        let mut transaction = json!({
+            "transactions": 6, "longTransactions": 4, "writeWaits": 4,
+            "writeWaitMs": 15.0, "lockErrors": 0, "longestTransactionMs": 400.0,
+            "p50TransactionMs": 100.0, "p95TransactionMs": 300.0,
+            "p99TransactionMs": 300.0, "sites": {}
+        });
+        let site = transaction.clone();
+        transaction["sites"] = json!({"runtime_store.writer_transaction": site});
+        assert_eq!(contention["transaction"], transaction);
+        assert_eq!(
+            contention["writeWait"],
+            json!({
+                "transactions": 0, "longTransactions": 0, "writeWaits": 4,
+                "writeWaitMs": 15.0, "lockErrors": 0, "longestTransactionMs": 8.0,
+                "p50TransactionMs": 2.0, "p95TransactionMs": 4.0,
+                "p99TransactionMs": 4.0, "sites": {}
+            })
+        );
+    }
+
+    #[test]
+    fn writer_transaction_views_preserve_distinct_sample_windows() {
+        let mut state = SqliteState::default();
+        for index in 0..=LOCK_SAMPLE_LIMIT {
+            record_store_transaction_in_state(
+                &mut state,
+                Duration::from_micros(index as u64),
+                Duration::from_millis(index as u64),
+                std::panic::Location::caller(),
+            );
+        }
+        let operations = runtime_lock_operations_from_state(&state);
+        assert_eq!(operations[0]["count"], LOCK_SAMPLE_LIMIT + 1);
+        assert_eq!(operations[0]["waitMs"]["samples"], LOCK_SAMPLE_LIMIT);
+        assert_eq!(operations[0]["holdMs"]["samples"], LOCK_SAMPLE_LIMIT);
+        assert_eq!(state.wait_ns.snapshot().1.first(), Some(&1000));
+        let (_, durations) = state.transaction_durations_ns.snapshot();
+        assert_eq!(durations.len(), HISTORY_LIMIT);
+        assert_eq!(
+            durations.first(),
+            Some(&((LOCK_SAMPLE_LIMIT + 1 - HISTORY_LIMIT) as u64 * 1_000_000))
+        );
+        assert_eq!(
+            sqlite_contention_from_state(&state, 0)["transaction"]["writeWaits"],
+            0
+        );
+    }
+
+    #[test]
+    fn writer_transactions_are_counted_per_call_site() {
+        let first = std::panic::Location::caller();
+        record_store_writer_transaction(Duration::ZERO, Duration::from_millis(2), first);
+        record_store_writer_transaction(Duration::ZERO, Duration::from_millis(2), first);
+        let operations = runtime_lock_operations();
+        let writer = operations
+            .iter()
+            .find(|entry| entry["callSite"] == "runtime_store.writer_transaction")
+            .expect("writer operation");
+        let origin = format!("{}:{}", first.file(), first.line());
+        let site = writer["origins"]
+            .as_array()
+            .expect("origins")
+            .iter()
+            .find(|site| site["origin"] == origin)
+            .expect("call site entry");
+        assert!(site["count"].as_u64().is_some_and(|count| count >= 2));
+    }
 
     #[test]
     fn transaction_record_contains_only_closed_metadata() {

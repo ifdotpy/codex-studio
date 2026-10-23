@@ -17,6 +17,59 @@ pub(super) struct PendingFrame {
     reply: oneshot::Sender<Result<WriteOutcome, PortError>>,
 }
 impl RetainedSessionPort {
+    /// Whether this live session is the provider process that sent the
+    /// callback of `context`: the same account and provider generation. A
+    /// replacement worker attaches to that same process with a new connection
+    /// id (a backend restart in supervisor mode), and the process still waits
+    /// for the answer, so the connection id is not part of the match. Another
+    /// generation is another process that never sent the request.
+    pub fn serves_callback(&self, context: &crate::provider_callbacks::CallbackContext) -> bool {
+        self.is_live()
+            && self.scope.account == context.account
+            && self.scope.generation == context.generation
+    }
+
+    /// Write one committed callback reply on this session and return its
+    /// typed transport receipt. `CallbackRuntime` commits Submitted first.
+    pub async fn deliver_callback_reply(
+        &self,
+        reply: &crate::provider_callbacks::Reply,
+        deadline: std::time::Duration,
+    ) -> Result<crate::callback_runtime::ReplyReceipt, crate::provider_callbacks::CallbackError>
+    {
+        use crate::callback_runtime::{ReplyOutcome, ReplyReceipt};
+        let identity = reply.identity.clone();
+        if !self.serves_callback(&identity.context) {
+            return Ok(ReplyReceipt {
+                identity,
+                outcome: ReplyOutcome::NotSent,
+            });
+        }
+        let outcome = self
+            .submit_committed_frame(
+                self.scope(),
+                identity.operation_id(),
+                reply.frame(),
+                std::time::Instant::now() + deadline,
+            )
+            .await;
+        let outcome = match outcome {
+            Ok(WriteOutcome::Written) => ReplyOutcome::Written,
+            Ok(WriteOutcome::NotSent) => ReplyOutcome::NotSent,
+            Ok(WriteOutcome::Unknown) | Err(PortError::Unknown) => ReplyOutcome::Unknown,
+            Err(PortError::Identity | PortError::NotSent | PortError::Deadline) => {
+                ReplyOutcome::NotSent
+            }
+            Err(PortError::Capacity) => {
+                return Err(crate::provider_callbacks::CallbackError::Invalid(
+                    "Callback response queue is full",
+                ));
+            }
+            Err(_) => return Err(crate::provider_callbacks::CallbackError::Unknown),
+        };
+        Ok(ReplyReceipt { identity, outcome })
+    }
+
     /// The canonical callback owner must commit Submitted before this call.
     /// Repeated operation identities return the saved receipt and never resend.
     pub async fn submit_committed_frame(

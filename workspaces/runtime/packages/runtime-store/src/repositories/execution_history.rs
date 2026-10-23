@@ -134,6 +134,28 @@ impl ExecutionHistoryRepository {
         }
         Ok(())
     }
+    /// Mark an attempt whose input batch returned to the queue before the
+    /// provider received it (see `SchedulerRepository::return_unstarted_input`).
+    pub fn mark_start_return(tx: &Transaction<'_>, id: &str) -> StoreResult<()> {
+        let changed = tx.execute(
+            "UPDATE runtime_execution_attempts SET record=json_set(record,'$.startReturned',json('true')) WHERE id=?1",
+            [id],
+        )?;
+        if changed != 1 {
+            return Err(Self::invalid("runtime_execution_attempts", id));
+        }
+        Ok(())
+    }
+    /// Attempts of the run of attempt `id` whose input batch already returned
+    /// to the queue before the provider received it. Unit: attempts.
+    pub fn start_returns(tx: &Transaction<'_>, id: &str) -> StoreResult<usize> {
+        let count = tx.query_row(
+            "SELECT COUNT(*) FROM runtime_execution_attempts WHERE run=(SELECT run FROM runtime_execution_attempts WHERE id=?1) AND json_extract(record,'$.startReturned')=1",
+            [id],
+            |row| row.get::<_, i64>(0),
+        )?;
+        usize::try_from(count).map_err(|_| Self::invalid("runtime_execution_attempts", id))
+    }
     pub fn save_claim(
         tx: &Transaction<'_>,
         id: &str,

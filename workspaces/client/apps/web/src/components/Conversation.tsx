@@ -119,7 +119,6 @@ import SelectionQuote, {
 } from "./conversation/transcript/SelectionQuote";
 import MessageActions from "./conversation/transcript/MessageActions";
 import { LiveAgentPhase } from "./agents/AgentPhase";
-import AgentPanel from "./agents/AgentPanel";
 import { UnifiedAgentSettings } from "./agents/UnifiedAgentSettings";
 import type { useAccounts } from "./Accounts";
 import { useWorkerModels } from "./agents/WorkerModelPicker";
@@ -1757,13 +1756,6 @@ export default function Conversation(p: {
         </p>
       ) : (
         <>
-          {managed && !p.legacy && agent && agent.isLead === true && (
-            <AgentPanel
-              key={`${p.data.stateDir}:${agent.id}`}
-              agentId={agent.id}
-              stateDir={p.data.stateDir}
-            />
-          )}
           {managed && (
             <>
               {Boolean(messageQueue.pending) && !messageQueue.busy && (

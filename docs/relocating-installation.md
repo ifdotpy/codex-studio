@@ -20,13 +20,13 @@ run the installer once from the relocated checkout to replace any old dangling
 command links:
 
 ```sh
-python3 workspaces/runtime/apps/server/src/install-cli.py
+just install
 ```
 
 The installer replaces links into this checkout's former root `scripts/`
 directory and keeps unrelated files and links intact. New supervisor units
 should reference
-`workspaces/runtime/apps/server/src/codex-supervisor`. Confirm launcher paths
+the installed Rust `codex-process-supervisor` binary. Confirm launcher paths
 and service configuration on the target platform before changing them; this
 guide does not verify a live service installation.
 

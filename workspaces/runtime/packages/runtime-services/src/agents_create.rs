@@ -639,14 +639,6 @@ fn rename(
     Ok(result)
 }
 
-// Kept until lane A4 strips the n-z callers.
-#[cfg(test)]
-#[allow(clippy::duplicate_mod)]
-#[path = "../tests/support/prepared_python.rs"]
-mod prepared_python_test_support;
-#[cfg(test)]
-pub(crate) use prepared_python_test_support::prepared_python;
-
 #[cfg(test)]
 mod tests {
     use super::{create_agent, ensure_project, replay_agent};

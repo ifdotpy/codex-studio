@@ -35,14 +35,15 @@ use studio_runtime_services::{
     thread_prepare::{CatalogSnapshot, CatalogSource},
 };
 use studio_runtime_store::RuntimeStore;
-use studio_runtime_store::path_identity::CanonicalPath;
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
 
 const REQUEST_TIMEOUT_MS: u64 = 60_000;
 const HOST_RUNTIME_SHUTDOWN_WAIT: Duration = Duration::from_secs(5);
-const SERVER_SOURCE_RELATIVE: &str = "workspaces/runtime/apps/server/src";
 const CLAUDE_BRIDGE_RELATIVE: &str = "workspaces/providers/apps/claude-bridge";
+/// Where `native/linux-vm/build.mjs` writes the helper in a source checkout.
+const LINUX_VM_HELPER_RELATIVE: &str =
+    "workspaces/client/apps/desktop/native/linux-vm/studio-linux-vm";
 
 /// Installed root shared by host-side runtime components.
 #[derive(Clone, Debug)]
@@ -52,22 +53,27 @@ impl InstallRoot {
     pub(crate) fn workspace_root(&self) -> &Path {
         &self.0
     }
-    fn server_source(&self) -> PathBuf {
-        let packaged = self.0.join("scripts");
-        if packaged.join("claude_bridge").join("bridge.mjs").is_file() {
-            packaged
-        } else {
-            self.0.join(SERVER_SOURCE_RELATIVE)
+    /// The native Linux VM helper: `CODEX_LINUX_VM_HELPER`, the packaged
+    /// `Resources/studio-linux-vm`, or the build in a source checkout.
+    pub(crate) fn linux_vm_helper(&self) -> PathBuf {
+        if let Some(helper) =
+            env::var_os("CODEX_LINUX_VM_HELPER").filter(|helper| !helper.is_empty())
+        {
+            return PathBuf::from(helper);
+        }
+        let packaged = self
+            .0
+            .parent()
+            .map(|resources| resources.join("studio-linux-vm"));
+        match packaged {
+            Some(packaged) if packaged.is_file() => packaged,
+            _ => self.0.join(LINUX_VM_HELPER_RELATIVE),
         }
     }
-
     pub(crate) fn claude_bridge_dir(&self) -> PathBuf {
-        let server_source = self.server_source();
-        if server_source
-            .file_name()
-            .is_some_and(|name| name == "scripts")
-        {
-            server_source.join("claude_bridge")
+        let packaged = self.0.join("scripts/claude_bridge");
+        if packaged.join("bridge.mjs").is_file() {
+            packaged
         } else {
             self.0.join(CLAUDE_BRIDGE_RELATIVE)
         }
@@ -108,7 +114,9 @@ fn resolve_install_root_from_executable(
     #[cfg(debug_assertions)]
     {
         let source_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../..");
-        let source_root = CanonicalPath::existing(&source_root).map_err(|_| located())?;
+        let source_root =
+            studio_runtime_store::path_identity::CanonicalPath::existing(&source_root)
+                .map_err(|_| located())?;
         if is_root(&source_root) {
             return Ok(InstallRoot(source_root.to_path_buf()));
         }
@@ -236,18 +244,10 @@ impl HostRuntime {
         let install_root = resolve_install_root()?;
         let catalog = state.model_catalog_handle();
         let resource_root = install_root.workspace_root().to_owned();
-        let server_source = install_root.server_source();
         *state = state.clone().with_vault_host_command();
         let mut resources = studio_runtime_process::blocking_pool::spawn_blocking(
             "runtime-server/host_runtime",
-            move || {
-                PreparationResources::bundled_at(
-                    String::new(),
-                    catalog,
-                    resource_root,
-                    server_source,
-                )
-            },
+            move || PreparationResources::bundled_at(String::new(), catalog, resource_root),
         )
         .await
         .map_err(|_| WorkerError::TaskFailed)??;
@@ -260,17 +260,73 @@ impl HostRuntime {
             studio_runtime_services::linux_vm_guest::UnixGuestRpc::for_runtime_state(store.root()),
         );
         resources.guest_rpc = Some(Arc::clone(&vm_guest));
+        let vm_state_dir = studio_runtime_services::vault::linux_vm_state_dir(store.root());
+        let program = std::env::current_exe();
+        // VM agents run Mac commands through the guest channel and the Mac
+        // service, which this executable starts in its own session
+        // (docs/host-exec.md).
+        let host_exec = match &program {
+            Ok(program) => Some(studio_runtime_services::host_exec::HostExecRuntime::new(
+                Arc::clone(&vm_guest),
+                Arc::new(
+                    studio_runtime_services::host_exec::RustHostExecService::new(
+                        program.clone(),
+                        vm_state_dir.clone(),
+                        studio_runtime_http::backend_build_identity,
+                    ),
+                ),
+            )),
+            Err(error) => {
+                eprintln!("host_exec is unavailable: the executable path is unknown: {error}");
+                None
+            }
+        };
+        // A created VM starts again when the Mac restarted under it, at startup
+        // and for the first VM chat (docs/linux-vm-workspaces.md, "VM start").
+        #[cfg(unix)]
+        let vm_runtime = program.as_ref().ok().map(|program| {
+            let vm = studio_runtime_services::linux_vm_runtime::VmRuntime::production(
+                vm_state_dir.clone(),
+                install_root.linux_vm_helper(),
+                program.clone(),
+            );
+            if let Some(host_exec) = &host_exec {
+                vm.attach_host_exec(Arc::clone(host_exec));
+            }
+            vm
+        });
+        #[cfg(not(unix))]
+        let vm_runtime = None;
+        #[cfg(target_os = "macos")]
+        if let Some(vm) = vm_runtime.clone() {
+            tokio::spawn(async move {
+                match vm.resume().await {
+                    Ok(outcome) if matches!(outcome.as_str(), "absent" | "stopped" | "running") => {
+                    }
+                    Ok(outcome) => {
+                        eprintln!("linux-vm: automatic start at backend start: {outcome}")
+                    }
+                    Err(error) => {
+                        eprintln!("linux-vm: automatic start at backend start failed: {error}")
+                    }
+                }
+            });
+        }
         resources.vm_provider_launch = Some(Arc::new(ServerVmProviderLaunchResolver {
             accounts: accounts.clone(),
             account_session: state.account_session.clone(),
             store: store.clone(),
-            guest: vm_guest,
+            guest: Arc::clone(&vm_guest),
             claude_bridge_dir: claude_bridge_dir.clone(),
+            vm: vm_runtime,
         }));
         let resources = resources.with_account_session(state.account_session.clone());
         let preparation_resources = Arc::new(resources.clone());
         if let Some(managed_tool_runtime) = &managed_tool_runtime {
             managed_tool_runtime.set_preparation_resources(Arc::clone(&preparation_resources));
+            if let Some(host_exec) = host_exec {
+                managed_tool_runtime.attach_host_exec(host_exec);
+            }
         }
         let callback_runtime = Arc::new(
             studio_runtime_services::callback_runtime::CallbackRuntime::new(
@@ -479,6 +535,11 @@ struct ServerVmProviderLaunchResolver {
     store: Arc<RuntimeStore>,
     guest: Arc<dyn studio_runtime_services::linux_vm_guest::GuestRpc>,
     claude_bridge_dir: PathBuf,
+    /// Starts a stopped VM by the automatic rule before a VM chat uses the guest.
+    #[cfg(unix)]
+    vm: Option<Arc<studio_runtime_services::linux_vm_runtime::VmRuntime>>,
+    #[cfg(not(unix))]
+    vm: Option<()>,
 }
 
 const CODEX_ACCESS_REFRESH_WINDOW_SECONDS: f64 = 300.0;
@@ -503,6 +564,17 @@ impl studio_runtime_services::account_worker::preparation::VmProviderLaunchResol
         request: studio_runtime_services::account_worker::preparation::VmProviderLaunchRequest,
     ) -> studio_runtime_services::account_worker::preparation::VmProviderLaunchFuture<'_> {
         Box::pin(async move {
+            #[cfg(unix)]
+            if let Some(vm) = &self.vm {
+                vm.ensure_for_chat().await.map_err(|error| {
+                    WorkerError::PreparationPending(
+                        studio_runtime_services::account_worker::PreparationBlock::new(
+                            studio_runtime_services::account_start_gate::StartWaitReason::ProviderSession,
+                            format!("vm-start/{error}"),
+                        ),
+                    )
+                })?;
+            }
             let accounts = self.accounts.clone();
             let account_session = self.account_session.clone();
             let claude_bridge_dir = self.claude_bridge_dir.clone();
@@ -2017,14 +2089,12 @@ mod install_root_tests {
     use studio_runtime_store::RuntimeStore;
 
     #[test]
-    fn bridge_and_server_source_match_install_layout_in_both_modes() {
+    fn bridge_matches_install_layout_in_both_modes() {
         let source_checkout = studio_runtime_store::path_identity::CanonicalPath::existing(
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../.."),
         )
         .unwrap();
-        let python_source = source_checkout.join("workspaces/runtime/apps/server/src");
         let source_layout = InstallRoot(source_checkout.clone().to_path_buf());
-        assert_eq!(source_layout.server_source(), python_source);
         assert_eq!(
             source_layout.claude_bridge_dir(),
             source_checkout.join(CLAUDE_BRIDGE_RELATIVE)
@@ -2037,7 +2107,6 @@ mod install_root_tests {
         fs::create_dir_all(&packaged_bridge).unwrap();
         fs::write(packaged_bridge.join("bridge.mjs"), "").unwrap();
         let packaged_layout = InstallRoot(packaged_root);
-        assert_eq!(packaged_layout.server_source(), packaged_scripts);
         assert_eq!(
             packaged_layout.claude_bridge_dir(),
             packaged_scripts.join("claude_bridge")
@@ -2512,7 +2581,6 @@ mod voice_composition_tests {
         let bridge = StoreBridge::new(store.clone()).await.unwrap();
         let resources = PreparationResources {
             instructions: String::new(),
-            progress_template: String::new(),
             thread_config: Default::default(),
             tools: Vec::new(),
             legacy_tools: Vec::new(),
@@ -2522,7 +2590,6 @@ mod voice_composition_tests {
             account_home: String::new(),
             shared_home: String::new(),
             filesystem_inputs: None,
-            server_source_root: directory.to_path_buf(),
             claude_account_pin: serde_json::Value::Null,
             account_driver: None,
             account_session: None,

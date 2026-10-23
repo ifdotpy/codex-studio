@@ -20,7 +20,7 @@ from project_env import wrap
 from shared_values_generated import LINUX_VM_PROVIDER_HANDLE_PREFIX
 
 READ_METHODS = {"agent.context", "line.status", "line.evidence", "layr.provider.list",
-                "layr.provider.rpc", "agent.progress", "layr.file.stat", "layr.file.read"}
+                "layr.provider.rpc", "layr.file.stat", "layr.file.read"}
 METHODS = READ_METHODS | {"line.bind", "line.branch", "line.save", "line.merge", "line.remove", "agent.release",
                           "layr.provider.start", "layr.provider.stop", "layr.credentials.sync", "layr.exec",
                           "handoff.ensure"}
@@ -359,20 +359,10 @@ class AgentHandlers:
                      "subpath": subpath, "readOnly": readonly, **user, **extra}
             atomic_json(record, value)
             context = self.context(params["agentId"])
-            if method == "line.bind":
-                setup = "from pathlib import Path; import sys; p=Path(sys.argv[1]); p.mkdir(parents=True,exist_ok=True,mode=0o700); f=p/'PROGRESS.md'; f.touch(mode=0o600,exist_ok=True)"
-                await self.command(user["home"], ["python3", "-c", setup,
-                    str(Path(user["home"]) / ".studio/progress" / params["agentId"])], user=user)
             return {**context, "stateId": await self.head(context)}
         context = self.context(params["agentId"])
         if method == "agent.context":
             return context
-        if method == "agent.progress":
-            path = Path(context["home"]) / ".studio/progress" / context["agentId"] / "PROGRESS.md"
-            code = "import os,stat,sys,json; p=sys.argv[1]; f=os.open(p,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK); s=os.fstat(f); assert stat.S_ISREG(s.st_mode) and s.st_size<=131072; b=os.read(f,131073); assert len(b)<=131072; print(json.dumps(dict(markdown=b.decode(),revision=str(s.st_mtime_ns)+':'+str(s.st_size),updated=s.st_mtime,exists=True)))"
-            output = await self.command(context["home"], ["python3", "-c", code, str(path)], user=context)
-            return {"id": context["agentId"], "agent": context["agentId"], "format": "markdown",
-                    "path": str(path), "error": None, **json.loads(output)}
         if method == "line.status":
             return {**context, "stateId": await self.head(context)}
         if method == "line.evidence":

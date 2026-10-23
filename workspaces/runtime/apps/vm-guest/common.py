@@ -19,14 +19,10 @@ MAX_INPUT = 1024 * 1024
 MAX_OUTPUT = 64 * 1024 * 1024
 
 
-def runtime_source_dir() -> Path:
-    """Resolve checkout modules on the host and the stable install path in a VM."""
-    guest_file = Path(__file__).resolve()
-    for parent in guest_file.parents:
-        source = parent / "workspaces/runtime/apps/server/src"
-        if (source / "codex_process_supervisor.py").is_file():
-            return source
-    return guest_file.parent.parent.parent / "scripts"
+def supervisor_binary() -> str:
+    """Use the installed Rust supervisor or the explicit build selected by contract tests."""
+    return os.environ.get('STUDIO_SUPERVISOR_BINARY') or str(
+        Path(__file__).resolve().parents[2] / 'bin' / 'codex-process-supervisor')
 
 
 class GuestError(Exception):

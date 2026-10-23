@@ -8,7 +8,7 @@ mod connection;
 mod initialize;
 mod provider_kind;
 mod session;
-pub mod supervisor_v1;
+pub mod supervisor_protocol;
 
 pub use callback_queue_limit::CALLBACK_QUEUE_LIMIT;
 pub use codec::{

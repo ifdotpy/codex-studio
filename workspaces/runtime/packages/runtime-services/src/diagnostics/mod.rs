@@ -37,7 +37,6 @@ use std::time::Instant;
 mod allocator;
 mod host;
 mod http;
-mod locks;
 mod sqlite;
 mod startup;
 mod store;
@@ -101,13 +100,13 @@ pub(crate) async fn measure_runtime_stage_async<T>(
 pub use allocator::log_on_demand_memory_snapshot;
 pub use host::{current_process_id, process_kind, system_snapshot};
 pub use http::{http_request_metrics, record_http_request};
-pub use locks::{record_store_writer_transaction, runtime_lock_operations, runtime_lock_samples};
 use sqlite::record_sqlite_lock_error_snapshot;
 pub use sqlite::{
     DatabaseKind, SqliteStatement, TransactionOutcome, TransactionTrace, begin_sqlite_transaction,
     finish_sqlite_transaction, record_commit_profile, record_sqlite_profile,
-    record_store_admission, record_store_waiter_occupancy, record_wal_checkpoint,
-    sqlite_contention, sqlite_history,
+    record_store_admission, record_store_waiter_occupancy, record_store_writer_transaction,
+    record_wal_checkpoint, runtime_lock_operations, runtime_lock_samples, sqlite_contention,
+    sqlite_history,
 };
 pub use startup::{StartupMemoryMark, mark_startup_memory, startup_memory_marks};
 pub use store::{durable_input_pending, execution_ledger, migration_status};
@@ -291,7 +290,14 @@ fn quantiles(values: &[u64], include_p99: bool, divisor: f64) -> serde_json::Val
     summary
 }
 
+#[cfg(test)]
+thread_local! {
+    static STATE_LOCK_ATTEMPTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 fn try_with_state<T>(state: &std::sync::Mutex<T>, f: impl FnOnce(&mut T)) -> bool {
+    #[cfg(test)]
+    STATE_LOCK_ATTEMPTS.update(|count| count + 1);
     match state.try_lock() {
         Ok(mut guard) => {
             f(&mut guard);
@@ -308,6 +314,19 @@ fn try_with_state<T>(state: &std::sync::Mutex<T>, f: impl FnOnce(&mut T)) -> boo
 #[cfg(test)]
 mod tests {
     use super::{Ring, measure_runtime_stage, measure_runtime_stage_async, write_diagnostic_line};
+
+    #[test]
+    fn writer_transaction_acquires_one_diagnostics_lock() {
+        super::STATE_LOCK_ATTEMPTS.set(0);
+        super::observe_store_event(
+            studio_runtime_store::StoreDiagnosticsEvent::WriterTransaction {
+                wait: std::time::Duration::from_micros(500),
+                hold: std::time::Duration::from_millis(2),
+                origin: std::panic::Location::caller(),
+            },
+        );
+        assert_eq!(super::STATE_LOCK_ATTEMPTS.get(), 1);
+    }
 
     #[test]
     fn diagnostic_line_preserves_content_and_ignores_failed_sinks() {

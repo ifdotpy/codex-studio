@@ -5,13 +5,13 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, value::RawValue};
 use strum::Display;
-pub use studio_runtime_providers::supervisor_v1::NativeId;
+pub use studio_runtime_providers::supervisor_protocol::NativeId;
 
-pub const SUPERVISOR_PROTOCOL_V2: u64 = 2;
+pub use studio_runtime_providers::supervisor_protocol::SUPERVISOR_PROTOCOL_V2;
 pub const SUPERVISOR_NEXT_BATCH_MAX_EVENTS: usize = 64;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SupervisorHandshakeV2 {
     pub protocol: u64,
     pub state_dir: PathBuf,
@@ -30,6 +30,7 @@ fn is_false(value: &bool) -> bool {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SupervisorHandshakeV2Result {
+    #[serde(default)]
     pub ok: bool,
     pub protocol: Option<u64>,
     pub error: Option<String>,

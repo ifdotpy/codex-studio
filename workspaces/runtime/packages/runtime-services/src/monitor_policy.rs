@@ -900,7 +900,10 @@ pub const MONITOR_REATTACH_WINDOW_SECONDS: f64 = 600.0;
 pub struct ReattachProof {
     pub operation: Operation,
     pub operation_id: String,
-    pub native_id: u64,
+    /// The provider's request id when its operation status proved the command.
+    /// `None` when the proof is Studio's retained request, which the provider
+    /// process of the same generation still owes an answer.
+    pub native_id: Option<u64>,
     pub current_connection: String,
 }
 

@@ -1,9 +1,5 @@
-#[allow(clippy::duplicate_mod)]
-#[path = "../support/prepared_python.rs"]
-mod prepared_python_support;
 use super::*;
-use std::io::{BufRead, BufReader, Write};
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::process::Command;
 use studio_runtime_store::path_identity::CanonicalPath;
 use studio_runtime_store::{AgentRecord, AgentRepository};
 
@@ -32,9 +28,6 @@ struct Fixture {
 }
 impl Fixture {
     async fn new() -> Self {
-        Self::with_python(false).await
-    }
-    async fn with_python(python: bool) -> Self {
         let root = tempfile::Builder::new()
             .prefix("cs-workspace-")
             .tempdir_in(fixture_parent())
@@ -60,22 +53,14 @@ impl Fixture {
         );
         let state = root.path().join("state");
         std::fs::create_dir(&state).expect("state");
-        let id = if python {
-            let actor = oracle(
-                root.path(),
-                json!({"command":"seed","root":state,"cwd":repo.join("project"),"codexHome":root.path().join("codex")}),
-            );
-            actor["id"].as_str().expect("actor id").to_owned()
-        } else {
-            seed_schema(&state, &repo.join("project"));
-            "workspace-fixture".to_owned()
-        };
+        seed_schema(&state, &repo.join("project"));
+        let id = "workspace-fixture".to_owned();
         let store = std::sync::Arc::new(
             RuntimeStore::open(Some(&state))
                 .await
-                .expect("open Python state"),
+                .expect("open fixture state"),
         );
-        if !python {
+        {
             store.transaction(|tx| { tx.execute("INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) VALUES('workspace-input','workspace-fixture','user','fixture','pending',1,0)",[])?; Ok(()) }).await.expect("queued event");
         }
         Self {
@@ -248,99 +233,6 @@ fn command(cwd: &Path, args: &[&str]) -> String {
     );
     String::from_utf8(output.stdout).expect("UTF-8 Git")
 }
-struct OracleWorker {
-    _root: tempfile::TempDir,
-    child: Child,
-    stdin: ChildStdin,
-    stdout: BufReader<ChildStdout>,
-}
-
-impl OracleWorker {
-    fn start() -> Self {
-        let root = tempfile::Builder::new()
-            .prefix("workspace-oracle-worker-")
-            .tempdir_in(fixture_parent())
-            .expect("oracle worker root");
-        for name in ["home", "codex", "claude"] {
-            std::fs::create_dir_all(root.path().join(name)).expect("isolated worker home");
-        }
-        let python = prepared_python_support::prepared_python(
-            &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
-        );
-        let script = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/turn_lifecycle/workspace_ready_oracle.py");
-        let mut child = Command::new(python)
-            .arg("-B")
-            .arg(script)
-            .env("TMPDIR", root.path())
-            .env("HOME", root.path().join("home"))
-            .env("CODEX_HOME", root.path().join("codex"))
-            .env("CLAUDE_CONFIG_DIR", root.path().join("claude"))
-            .env("CODEX_BIN", "/bin/false")
-            .env("STUDIO_CLAUDE_BIN", "/bin/false")
-            .env("PATH", "/usr/local/bin:/usr/bin:/bin")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .spawn()
-            .expect("oracle worker starts");
-        let stdin = child.stdin.take().expect("oracle worker stdin");
-        let stdout = BufReader::new(child.stdout.take().expect("oracle worker stdout"));
-        Self {
-            _root: root,
-            child,
-            stdin,
-            stdout,
-        }
-    }
-
-    fn request(&mut self, request: Value) -> Value {
-        writeln!(
-            self.stdin,
-            "{}",
-            serde_json::to_string(&request).expect("serialize oracle request")
-        )
-        .expect("send oracle case");
-        self.stdin.flush().expect("flush oracle case");
-        let mut response = String::new();
-        let bytes = self
-            .stdout
-            .read_line(&mut response)
-            .expect("read oracle response");
-        assert!(
-            bytes > 0,
-            "oracle worker closed stdout: {:?}",
-            self.child.try_wait().expect("check oracle worker status")
-        );
-        serde_json::from_str(&response).expect("oracle JSON")
-    }
-}
-
-impl Drop for OracleWorker {
-    fn drop(&mut self) {
-        if let Err(error) = self.child.kill() {
-            assert_eq!(
-                error.kind(),
-                std::io::ErrorKind::InvalidInput,
-                "stop oracle worker"
-            );
-        }
-        self.child
-            .wait()
-            .expect("reap oracle worker before removing its state");
-    }
-}
-
-fn oracle(root: &Path, mut request: Value) -> Value {
-    for name in ["home", "codex", "claude"] {
-        std::fs::create_dir_all(root.join(name)).expect("isolated home");
-    }
-    if request["command"] == "seed" {
-        request["codexHome"] = json!(root.join("codex"));
-    }
-    OracleWorker::start().request(request)
-}
-
 #[cfg(not(target_os = "macos"))]
 #[tokio::test]
 async fn image_readiness_refuses_with_python_message_without_workspace_writes() {
@@ -665,95 +557,6 @@ async fn common_git_directory_serialization_defers_without_starting_another_effe
     );
     let other = repository_lock(&fixture.root.path().join("other-repo")).expect("independent key");
     assert!(other.try_lock().is_ok());
-}
-
-#[tokio::test]
-async fn workspace_gate_matches_guarded_python_witnesses() {
-    gate_corpus(false);
-}
-
-#[test]
-#[ignore = "full runtime corpus: just test-rust-runtime-corpora"]
-fn workspace_gate_full_python_corpus() {
-    gate_corpus(true);
-}
-
-#[tokio::test]
-#[ignore = "full runtime corpus: real Python writer bootstrap"]
-async fn workspace_reads_real_python_written_state() {
-    let fixture = Fixture::with_python(true).await;
-    compare_publication_with_python(&fixture, true).await;
-    compare_publication_with_python(&Fixture::with_python(true).await, false).await;
-}
-
-fn gate_corpus(full: bool) {
-    let root = tempfile::Builder::new()
-        .prefix("workspace-oracle-")
-        .tempdir_in(fixture_parent())
-        .expect("temp");
-    let mut cases: Value =
-        serde_json::from_str(include_str!("../turn_lifecycle/workspace_ready_cases.json"))
-            .expect("corpus");
-    if !full {
-        let all = cases.as_array().expect("cases");
-        cases = json!([all[0], all[14], all[21], all[42], all[49], all[56]]);
-    }
-    for case in cases.as_array_mut().expect("cases") {
-        for a in case["agents"].as_array_mut().expect("agents") {
-            a["cwd"] = json!(root.path().join(a["cwd"].as_str().expect("relative")));
-        }
-        case["actor"]["cwd"] = json!(
-            root.path()
-                .join(case["actor"]["cwd"].as_str().expect("relative"))
-        );
-    }
-    let results = oracle(root.path(), json!({"command":"blockers","cases":cases}));
-    for (case, python) in cases
-        .as_array()
-        .expect("cases")
-        .iter()
-        .zip(results.as_array().expect("results"))
-    {
-        let record = json!({"id":"target","epoch":0,"cwd":case["actor"]["cwd"],"autoWake":true});
-        let actor: WorkspaceActor = serde_json::from_value(record.clone()).expect("actor");
-        let cwd = PathBuf::from(case["actor"]["cwd"].as_str().expect("cwd"));
-        let reservations = case["agents"]
-            .as_array()
-            .expect("agents")
-            .iter()
-            .filter_map(|a| {
-                let operation = a.get("workspaceOperation")?.as_str()?;
-                let id = a.get("workspaceReservationId").and_then(Value::as_str);
-                let op = case["operations"]
-                    .as_array()
-                    .expect("ops")
-                    .iter()
-                    .find(|o| o["id"].as_str() == id);
-                Some(Reservation {
-                    agent: a["id"].as_str().expect("id").into(),
-                    cwd: PathBuf::from(a["cwd"].as_str().expect("cwd")),
-                    operation: operation.into(),
-                    id: id.map(str::to_owned),
-                    phase: op.and_then(|o| o["phase"].as_str()).map(str::to_owned),
-                })
-            })
-            .collect::<Vec<_>>();
-        let decision = decide_workspace(
-            &actor,
-            &record,
-            Some(&cwd),
-            &reservations,
-            None,
-            false,
-            &GitObservation::default(),
-        );
-        assert_eq!(
-            matches!(decision, WorkspaceDecision::Ready { .. }),
-            python.as_array().expect("blockers").is_empty(),
-            "{}",
-            case["name"]
-        );
-    }
 }
 
 #[tokio::test]
@@ -1411,16 +1214,7 @@ async fn compare_publication_with_python(fixture: &Fixture, has_parent: bool) {
         .patch("lastCompletedTurn", json!("previous-turn"))
         .await;
     fixture.patch("threadId", json!("previous-thread")).await;
-    let before = fixture.actor();
     let plan = fixture.plan().identity;
-    let tree = command(&fixture.repo, &["rev-parse", "HEAD^{tree}"])
-        .trim()
-        .to_owned();
-    let python = oracle(
-        fixture.root.path(),
-        json!({"command":"publication", "repo":fixture.repo,
-        "actor":before, "items":items,"parent":parent,"tree":tree,"commit":plan.base_commit}),
-    );
     assert!(matches!(
         prepare(std::sync::Arc::clone(&fixture.store), fixture.id.clone())
             .await
@@ -1428,16 +1222,9 @@ async fn compare_publication_with_python(fixture: &Fixture, has_parent: bool) {
         WorkspaceDecision::Ready { .. }
     ));
     let actor = fixture.actor();
-    for field in [
-        "cwd",
-        "branch",
-        "worktreeReady",
-        "worktreePreparation",
-        "threadId",
-        "lastCompletedTurn",
-    ] {
-        assert_eq!(actor[field], python["actor"][field], "published {field}");
-    }
+    assert_eq!(actor["worktreeReady"], true);
+    assert_eq!(actor["threadId"], "previous-thread");
+    assert_eq!(actor["lastCompletedTurn"], "previous-turn");
     let checkpoint = CheckpointsRepository::checkpoint(
         &fixture.store.test_reader().expect("read"),
         actor["checkpointHistoryHead"].as_str().expect("id"),
@@ -1445,24 +1232,6 @@ async fn compare_publication_with_python(fixture: &Fixture, has_parent: bool) {
     .expect("checkpoint")
     .expect("saved")
     .record;
-    for field in [
-        "agent",
-        "rootId",
-        "label",
-        "tree",
-        "commit",
-        "threadId",
-        "turnId",
-        "cwd",
-        "historyParent",
-        "historyDelta",
-        "historyBoundary",
-    ] {
-        assert_eq!(
-            checkpoint[field], python["checkpoint"][field],
-            "checkpoint {field}"
-        );
-    }
     assert_eq!(
         checkpoint["historyDelta"],
         if has_parent {
@@ -1623,20 +1392,33 @@ async fn public_probe(fixture: Fixture, action: &str, expectation: &str) -> Fixt
     } = fixture;
     let bin = root.path().join("bin");
     std::fs::create_dir(&bin).expect("wrapper directory");
+    let node = Command::new("node")
+        .args(["-p", "process.execPath"])
+        .output()
+        .expect("resolve Node for the isolated Git probe");
+    assert!(node.status.success());
+    let node = String::from_utf8(node.stdout).expect("Node path");
     let script = format!(
-        r#"#!/usr/bin/env python3
-import os, pathlib, sqlite3, subprocess, sys
-root = pathlib.Path(os.environ["WORKSPACE_PROBE_ROOT"])
-repo = root / "repo"
-args = sys.argv[1:]
-result = subprocess.run(["/usr/bin/git", *args], capture_output=True)
-marker = root / "probe-executed"
-refs = subprocess.run(["/usr/bin/git", "-C", str(repo), "for-each-ref", "--format=%(refname)", "refs/codex-agents/checkpoints/"], capture_output=True).stdout.decode().splitlines()
+        r#"#!{}
+const fs = require('node:fs');
+const path = require('node:path');
+const {{spawnSync}} = require('node:child_process');
+const {{DatabaseSync}} = require('node:sqlite');
+const root = process.env.WORKSPACE_PROBE_ROOT;
+const repo = path.join(root, 'repo');
+const args = process.argv.slice(2);
+const result = spawnSync('/usr/bin/git', args);
+if (result.error) throw result.error;
+const marker = path.join(root, 'probe-executed');
+const observation = spawnSync('/usr/bin/git', ['-C', repo, 'for-each-ref', '--format=%(refname)', 'refs/codex-agents/checkpoints/'], {{encoding:'utf8'}});
+if (observation.error) throw observation.error;
+const refs = observation.stdout.trim().split('\n').filter(Boolean);
 {action}
-sys.stdout.buffer.write(result.stdout)
-sys.stderr.buffer.write(result.stderr)
-sys.exit(result.returncode)
-"#
+process.stdout.write(result.stdout);
+process.stderr.write(result.stderr);
+process.exitCode = result.status;
+"#,
+        node.trim()
     );
     std::fs::write(bin.join("git"), script).expect("wrapper");
     std::fs::set_permissions(bin.join("git"), std::fs::Permissions::from_mode(0o755))
@@ -1731,12 +1513,12 @@ async fn final_git_observation_does_not_hold_store_writer() {
     let fixture = public_probe(
         Fixture::new().await,
         r#"
-if refs and 'diff' in args and '--cached' in args and not marker.exists():
-    with sqlite3.connect(root / 'state/canvas.sqlite3', timeout=0.1) as db:
-        db.execute('BEGIN IMMEDIATE')
-        db.execute('CREATE TABLE fixture_writer_probe (value TEXT)')
-        db.execute("INSERT INTO fixture_writer_probe VALUES ('concurrent write')")
-    marker.write_text('writer was available')
+if (refs.length && args.includes('diff') && args.includes('--cached') && !fs.existsSync(marker)) {
+    const db = new DatabaseSync(path.join(root, 'state/canvas.sqlite3'), {timeout:100});
+    try { db.exec(`BEGIN IMMEDIATE; CREATE TABLE fixture_writer_probe (value TEXT); INSERT INTO fixture_writer_probe VALUES ('concurrent write'); COMMIT;`); }
+    finally { db.close(); }
+    fs.writeFileSync(marker, 'writer was available');
+}
 "#,
         "ready",
     )
@@ -1753,10 +1535,11 @@ async fn public_adapter_refuses_escape_after_final_git_observation() {
     let fixture = public_probe(
         Fixture::new().await,
         r#"
-if refs and 'diff' in args and '--cached' in args and not marker.exists():
-    (repo / '.worktrees').rename(root / 'outside')
-    (repo / '.worktrees').symlink_to(root / 'outside', target_is_directory=True)
-    marker.write_text('escaped')
+if (refs.length && args.includes('diff') && args.includes('--cached') && !fs.existsSync(marker)) {
+    fs.renameSync(path.join(repo, '.worktrees'), path.join(root, 'outside'));
+    fs.symlinkSync(path.join(root, 'outside'), path.join(repo, '.worktrees'), 'dir');
+    fs.writeFileSync(marker, 'escaped');
+}
 "#,
         "recovery",
     )
@@ -1802,9 +1585,12 @@ async fn exact_checkpoint_replay_atomically_rejects_ref_changed_after_read() {
     let fixture = public_probe(
         fixture,
         r#"
-if 'for-each-ref' in args and any(a.startswith('refs/codex-agents/checkpoints/') for a in args) and result.stdout.strip() and not marker.exists():
-    subprocess.run(['/usr/bin/git', '-C', str(repo), 'update-ref', refs[0], (root / 'other-oid').read_text()], check=True)
-    marker.write_text('ref changed after read')
+if (args.includes('for-each-ref') && args.some(a => a.startsWith('refs/codex-agents/checkpoints/')) && result.stdout.toString().trim() && !fs.existsSync(marker)) {
+    const update = spawnSync('/usr/bin/git', ['-C', repo, 'update-ref', refs[0], fs.readFileSync(path.join(root, 'other-oid'), 'utf8')]);
+    if (update.error) throw update.error;
+    if (update.status !== 0) throw new Error(update.stderr.toString());
+    fs.writeFileSync(marker, 'ref changed after read');
+}
 "#,
         "ref-conflict",
     ).await;

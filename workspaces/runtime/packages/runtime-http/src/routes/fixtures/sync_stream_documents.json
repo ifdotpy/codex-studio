@@ -1,0 +1,72 @@
+[
+  {
+    "resources": {
+      "protocol": 3,
+      "workspaceId": "workspace",
+      "epoch": "epoch",
+      "revision": 0,
+      "reason": "initial",
+      "resources": [
+        {
+          "kind": "accounts"
+        },
+        {
+          "kind": "session-cost",
+          "agentId": "agent"
+        }
+      ],
+      "resourceVersions": [
+        {
+          "revision": 0
+        },
+        {
+          "revision": 0
+        }
+      ]
+    },
+    "rates": {
+      "protocol": 3,
+      "workspaceId": "workspace",
+      "epoch": "epoch",
+      "revision": 0,
+      "records": []
+    }
+  },
+  {
+    "resources": {
+      "protocol": 3,
+      "workspaceId": "workspace",
+      "epoch": "epoch",
+      "revision": 0,
+      "reason": "reconnect",
+      "resources": [
+        {
+          "kind": "state"
+        }
+      ],
+      "resourceVersions": [
+        {
+          "revision": 42,
+          "entitySequenceReset": false
+        }
+      ]
+    },
+    "rates": {
+      "protocol": 3,
+      "workspaceId": "workspace",
+      "epoch": "epoch",
+      "revision": 0,
+      "records": [
+        {
+          "agentId": "agent",
+          "rootId": "lead",
+          "turnId": "turn",
+          "active": false,
+          "estimated": true,
+          "rate": 1.25,
+          "outputTokens": 400
+        }
+      ]
+    }
+  }
+]

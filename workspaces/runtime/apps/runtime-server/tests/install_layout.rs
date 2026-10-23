@@ -1,13 +1,11 @@
 #![cfg(unix)]
 #![allow(clippy::unwrap_used)]
 
-use crate::prepared_python_support as prepared_python;
-
 use std::{
     fs,
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
-    process::{Command as StdCommand, Stdio},
+    process::Stdio,
     time::Duration,
 };
 use studio_runtime_store::path_identity::CanonicalPath;
@@ -50,12 +48,10 @@ async fn startup_stderr(child: &mut tokio::process::Child) -> String {
 
 #[tokio::test]
 #[allow(clippy::disallowed_methods)]
-async fn installed_binary_uses_python_from_prefix_without_a_source_tree() {
+async fn installed_binary_starts_without_python_or_a_source_tree() {
     let startup_trace_owner = format!("const STARTUP_TRACE_ENV: &str = \"{STARTUP_TRACE_ENV}\";");
     assert!(include_str!("../src/main.rs").contains(&startup_trace_owner));
     let prefix_guard = tempdir().unwrap();
-    // Python resolves its module path, so its layout names the macOS
-    // temporary folder through /private/var, not the /var link.
     let prefix = CanonicalPath::existing(prefix_guard.path()).unwrap();
     let workspace = prefix.join("workspace");
     let binary_dir = workspace.join("bin");
@@ -68,28 +64,16 @@ async fn installed_binary_uses_python_from_prefix_without_a_source_tree() {
     fs::create_dir_all(&bridge).unwrap();
     fs::create_dir_all(&home).unwrap();
     fs::create_dir_all(&state).unwrap();
-    let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../server/src");
-    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/wave7_p01_fixture.py");
-    let prepared = prepared_python::prepared_python(&source);
-    let fixture_result = StdCommand::new(&prepared)
-        .arg("-B")
-        .arg(fixture)
-        .arg(&state)
-        .arg("dispatch")
-        .output()
+    let store = studio_runtime_store::RuntimeStore::open(Some(&state))
+        .await
         .unwrap();
-    assert!(
-        fixture_result.status.success(),
-        "{}",
-        String::from_utf8_lossy(&fixture_result.stderr)
-    );
-    let system_python = std::env::split_paths(&std::env::var_os("PATH").unwrap())
-        .map(|directory| directory.join("python3"))
-        .find(|path| path.is_file())
-        .expect("python3 is available in the build environment");
-    for name in ["codex_python.py", "codex_layout.py", "codex_cache_paths.py"] {
-        fs::copy(source.join(name), scripts.join(name)).unwrap();
-    }
+    crate::fixture_support::seed(
+        &store,
+        &state,
+        crate::fixture_support::FixtureKind::Dispatch,
+    )
+    .await;
+    drop(store);
     let skills = workspace.join(".agents/skills");
     for name in [
         "codex-orchestrator/SKILL.md",
@@ -108,17 +92,9 @@ async fn installed_binary_uses_python_from_prefix_without_a_source_tree() {
         )
         .unwrap();
     }
-    fs::copy(
-        source.join("../../../../../requirements.txt"),
-        workspace.join("requirements.txt"),
-    )
-    .unwrap();
     fs::write(
         binary_dir.join("python3"),
-        format!(
-            "#!{}\nimport pathlib, sys\npathlib.Path(__file__).with_name('python-invoked').write_text('unexpected')\nsys.exit(97)\n",
-            system_python.display()
-        ),
+        "#!/bin/sh\nprintf unexpected > \"${0%/*}/python-invoked\"\nexit 97\n",
     )
     .unwrap();
     fs::set_permissions(
@@ -135,26 +111,7 @@ async fn installed_binary_uses_python_from_prefix_without_a_source_tree() {
             .exists()
     );
 
-    // Seed an isolated managed-cache layout with the already prepared venv.
-    // The server must discover it without invoking the poisoned PATH Python.
-    let cache = prefix.join("prepared-cache");
-    let managed = StdCommand::new(&prepared)
-        .args(["-c", "from pathlib import Path; from codex_python import managed_python; import sys; print(managed_python(Path(sys.argv[1])))"])
-        .arg(&scripts)
-        .env("PYTHONPATH", &scripts)
-        .env("XDG_CACHE_HOME", &cache)
-        .output()
-        .unwrap();
-    assert!(
-        managed.status.success(),
-        "{}",
-        String::from_utf8_lossy(&managed.stderr)
-    );
-    let managed = PathBuf::from(String::from_utf8(managed.stdout).unwrap().trim());
-    let managed_venv = managed.parent().unwrap().parent().unwrap();
-    fs::create_dir_all(managed_venv.parent().unwrap()).unwrap();
-    std::os::unix::fs::symlink(prepared.parent().unwrap().parent().unwrap(), managed_venv).unwrap();
-
+    let cache = prefix.join("cache");
     let mut child = Command::new(binary)
         .args(["--port", "0"])
         .current_dir(&prefix)
@@ -162,16 +119,7 @@ async fn installed_binary_uses_python_from_prefix_without_a_source_tree() {
         .env("HOME", &home)
         .env(STARTUP_TRACE_ENV, "1")
         .env("XDG_CACHE_HOME", &cache)
-        .env(
-            "PATH",
-            std::env::join_paths([
-                binary_dir.as_path(),
-                system_python.parent().unwrap(),
-                Path::new("/usr/bin"),
-                Path::new("/bin"),
-            ])
-            .unwrap(),
-        )
+        .env("PATH", &binary_dir)
         .env("XDG_STATE_HOME", prefix.join("xdg-state"))
         .env("TMPDIR", &prefix)
         .env("CODEX_AGENTS_STATE_DIR", &state)
@@ -210,57 +158,6 @@ async fn installed_binary_uses_python_from_prefix_without_a_source_tree() {
     assert!(state.join("canvas.sqlite3").exists());
     assert!(Path::new(&home).is_dir());
     assert!(!binary_dir.join("python-invoked").exists());
-    let python_layout = StdCommand::new(&system_python)
-        .args([
-            "-c",
-            "from codex_layout import REPOSITORY_ROOT, CLAUDE_BRIDGE_ROOT; print(f'{REPOSITORY_ROOT}\\n{CLAUDE_BRIDGE_ROOT}')",
-        ])
-        .env("PYTHONPATH", &scripts)
-        .output()
-        .unwrap();
-    assert!(
-        python_layout.status.success(),
-        "{}",
-        String::from_utf8_lossy(&python_layout.stderr)
-    );
-    assert_eq!(
-        String::from_utf8(python_layout.stdout).unwrap().trim(),
-        format!("{}\n{}", workspace.display(), bridge.display())
-    );
-
-    // Exercise the source-checkout fallback too: Python's layout module points
-    // at the providers bridge in a checkout, while installed packages use the
-    // scripts/claude_bridge copy above.
-    let source = CanonicalPath::existing(&source).unwrap();
-    let source_workspace = source
-        .ancestors()
-        .nth(5)
-        .expect("source checkout root")
-        .to_path_buf();
-    let source_bridge = source_workspace.join("workspaces/providers/apps/claude-bridge");
-    let source_layout = StdCommand::new(&system_python)
-        .args([
-            "-c",
-            "from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT, CLAUDE_BRIDGE_ROOT; print(f'{REPOSITORY_ROOT}\\n{SERVER_SOURCE_ROOT}\\n{CLAUDE_BRIDGE_ROOT}')",
-        ])
-        .env("PYTHONPATH", &source)
-        .output()
-        .unwrap();
-    assert!(
-        source_layout.status.success(),
-        "{}",
-        String::from_utf8_lossy(&source_layout.stderr)
-    );
-    assert_eq!(
-        String::from_utf8(source_layout.stdout).unwrap().trim(),
-        format!(
-            "{}\n{}\n{}",
-            source_workspace.display(),
-            source.display(),
-            source_bridge.display()
-        )
-    );
-
     let source_binary = PathBuf::from(env!("CARGO_BIN_EXE_studio-runtime-server"));
     let mut source_child = Command::new(source_binary)
         .args(["--port", "0"])
@@ -268,16 +165,7 @@ async fn installed_binary_uses_python_from_prefix_without_a_source_tree() {
         .env_clear()
         .env("HOME", &home)
         .env("XDG_CACHE_HOME", &cache)
-        .env(
-            "PATH",
-            std::env::join_paths([
-                binary_dir.as_path(),
-                system_python.parent().unwrap(),
-                Path::new("/usr/bin"),
-                Path::new("/bin"),
-            ])
-            .unwrap(),
-        )
+        .env("PATH", &binary_dir)
         .env("XDG_STATE_HOME", prefix.join("source-xdg-state"))
         .env("TMPDIR", &prefix)
         .env("CODEX_AGENTS_STATE_DIR", &state)

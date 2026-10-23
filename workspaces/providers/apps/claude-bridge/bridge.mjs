@@ -42,7 +42,6 @@ import { createHash, randomUUID } from "node:crypto";
 import { createInterface } from "node:readline";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { stripVTControlCharacters } from "node:util";
 import { createCommandTransport, commandMethods } from "./commands.mjs";
 
@@ -65,7 +64,7 @@ import { createCatalogCache, loadCatalog } from "./catalog-cache.mjs";
 import {
   declaredTimeoutMs,
   durationText,
-  findStall,
+  watchStalls,
   recordedInputIds,
   stallLimits,
   stallMessage,
@@ -100,22 +99,6 @@ import {
   canonicalJson,
 } from "./move-external.mjs";
 
-// The hash of this bridge's own sources. The server retires an idle bridge whose sources an
-// update replaced on disk (codex_claude_controls.retire_idle_bridge), since a running bridge
-// keeps the code it started with.
-const bridgeBuild = (async () => {
-  const folder = path.dirname(fileURLToPath(import.meta.url));
-  const names = (await fs.readdir(folder))
-    .filter((name) => name.endsWith(".mjs") && !name.endsWith(".test.mjs"))
-    .sort();
-  const hash = createHash("sha256");
-  for (const name of names) {
-    hash.update(name + "\n");
-    hash.update(await fs.readFile(path.join(folder, name)));
-    hash.update("\n");
-  }
-  return hash.digest("hex");
-})();
 const externalConfigs = new Map();
 
 const providerOptions = JSON.parse(process.env.STUDIO_CLAUDE_OPTIONS || "{}");
@@ -315,6 +298,7 @@ const studioWaits = new Map();
 function studioWait(threadId) {
   if (!threadId) return () => {};
   studioWaits.set(threadId, (studioWaits.get(threadId) || 0) + 1);
+  armStallWatch();
   let open = true;
   return () => {
     if (!open) return;
@@ -329,6 +313,7 @@ function studioWait(threadId) {
     active.lastEventAt = now;
     for (const clock of active.toolClocks.values())
       clock.startedAt = Math.max(clock.startedAt, now);
+    armStallWatch();
   };
 }
 const request = (method, params, signal, onSent) =>
@@ -1023,6 +1008,8 @@ async function finishTurn(s, active, result, error) {
   if (active.turn !== turn || finishingTurns.has(turn)) return;
   let finished;
   finishingTurns.set(turn, new Promise((resolve) => (finished = resolve)));
+  active.toolClocks.clear();
+  armStallWatch();
   if (
     (error?.preparationTimedOut === true ||
       error?.claudeAccountValidationFailed === true ||
@@ -1031,12 +1018,15 @@ async function finishTurn(s, active, result, error) {
     turn.items[0]?.type === "userMessage" &&
     typeof turn.clientUserMessageId === "string" &&
     turn.clientUserMessageId.length > 0 &&
-    active.input.values.some(
-      (input) =>
-        input.studioInputIdentity === turn.clientUserMessageId &&
-        input.uuid === turn.items[0].nativeId &&
-        input.session_id === (s.nativeId || s.id),
-    )
+    // Stop can withdraw the initial input before preparation fails. Its
+    // cancellation receipt preserves the proof that Claude did not read it.
+    (turn.items[0].deliveryStatus === "cancelled" ||
+      active.input.values.some(
+        (input) =>
+          input.studioInputIdentity === turn.clientUserMessageId &&
+          input.uuid === turn.items[0].nativeId &&
+          input.session_id === (s.nativeId || s.id),
+      ))
   ) {
     // InputQueue removes the message before yielding it to the SDK.
     turn.startOutcome = "not_applied";
@@ -1198,7 +1188,6 @@ async function finishTurn(s, active, result, error) {
     finished();
   }
   active.turn = null;
-  active.toolClocks.clear();
   if (stall) {
     active.stall = null;
     stall.ended();
@@ -1346,29 +1335,7 @@ async function recoverStall(s, active, found) {
     new Error("Claude did not stop after Studio closed it"),
   );
 }
-const stallSweep = setInterval(
-  () => {
-    const now = Date.now();
-    for (const [id, active] of queries) {
-      if (
-        !active.turn ||
-        active.stall ||
-        !active.session ||
-        studioWaits.get(id)
-      )
-        continue;
-      const found = findStall(
-        active.toolClocks,
-        now,
-        active.lastEventAt,
-        limits,
-      );
-      if (found) void recoverStall(active.session, active, found);
-    }
-  },
-  Math.max(50, Math.min(5_000, limits.graceMs / 4)),
-);
-stallSweep.unref();
+const armStallWatch = watchStalls(queries, studioWaits, limits, recoverStall);
 async function startSession(s, active, p) {
   const initial = active.turn;
   const startedAt = Date.now();
@@ -1570,6 +1537,7 @@ async function startSession(s, active, p) {
       const room = stdoutRoom();
       if (room) await room;
       active.lastEventAt = Date.now();
+      armStallWatch();
       if (m.type === "system" && m.subtype === "init") {
         s.started = true;
         s.claudeVersion = m.claude_code_version;
@@ -1973,6 +1941,7 @@ async function startSession(s, active, p) {
             startedAt: Date.now(),
             timeoutMs: declaredTimeoutMs(b),
           });
+          armStallWatch();
           turn.items.push(item);
           turnEvent(s, turn, "item/started", item, tokenRateUsage);
           if (b.name === "TodoWrite")
@@ -1992,6 +1961,7 @@ async function startSession(s, active, p) {
           (b) => b.type === "tool_result",
         )) {
           active.toolClocks.delete(b.tool_use_id);
+          armStallWatch();
           const old = active.tools.get(b.tool_use_id);
           if (!old) continue;
           const text =
@@ -2058,6 +2028,7 @@ async function startSession(s, active, p) {
     active.q?.close();
     if (queries.get(s.id) === active) {
       queries.delete(s.id);
+      armStallWatch();
       catalogCache.activityChanged();
       void sessionStore.evict(s.id);
     }
@@ -2072,7 +2043,10 @@ function deadQuery(error) {
 function discardQuery(s, active) {
   active.input.close();
   active.q?.close();
-  if (queries.get(s.id) === active) queries.delete(s.id);
+  if (queries.get(s.id) === active) {
+    queries.delete(s.id);
+    armStallWatch();
+  }
   catalogCache.activityChanged();
 }
 function newActive(turn) {
@@ -2149,7 +2123,6 @@ async function handle(method, p) {
       platform: process.platform,
       capabilities: {
         claudeVersion: 23,
-        claudeBuild: await bridgeBuild,
         passiveAccountRead: true,
         activityRead: true,
       },
@@ -2315,6 +2288,7 @@ async function handle(method, p) {
     active?.input.close();
     active?.q?.close();
     queries.delete(p.session.id);
+    armStallWatch();
     await publishNative(
       p.path,
       nativeDestination(s.nativeId || s.id, p.cwd),
@@ -2378,6 +2352,7 @@ async function handle(method, p) {
     active?.input.close();
     active?.q?.close();
     queries.delete(s.id);
+    armStallWatch();
     catalogCache.activityChanged();
     s.claude = p.settings;
     await persist(s);
@@ -2391,6 +2366,7 @@ async function handle(method, p) {
     active?.input.close();
     active?.q?.close();
     queries.delete(s.id);
+    armStallWatch();
     catalogCache.activityChanged();
     return rollbackSession(s, p, {
       persist,
@@ -2504,6 +2480,7 @@ async function handle(method, p) {
         active?.input.close();
         active?.q?.close();
         queries.delete(s.id);
+        armStallWatch();
         catalogCache.activityChanged();
         Object.assign(
           s,
@@ -2545,6 +2522,7 @@ async function handle(method, p) {
     active?.input.close();
     active?.q?.close();
     queries.delete(p.threadId);
+    armStallWatch();
     if (active) studioUnloaded.add(p.threadId);
     catalogCache.activityChanged();
     await sessionStore.evict(p.threadId);
@@ -2913,7 +2891,8 @@ async function handle(method, p) {
       throw new Error("The interrupt belongs to a different Claude turn");
     const s = sessions.get(p.threadId);
     active.turn.interrupted = true;
-    if (active.reservingInput) {
+    const reservingInput = active.reservingInput;
+    if (reservingInput) {
       // An interrupt can race the durable pre-input receipt. Invalidate only
       // that reservation so the queued background work and query stay open.
       active.turn = null;
@@ -2937,7 +2916,9 @@ async function handle(method, p) {
           }
         : undefined,
     );
-    await persistLive(s);
+    // The pending start owns the reservation's durable rejection. Do not
+    // wait for its blocked save before the caller can observe the interrupt.
+    if (!reservingInput) await persistLive(s);
     const failure = results.find((result) => result.status === "rejected");
     if (failure?.status === "rejected")
       throw Object.assign(

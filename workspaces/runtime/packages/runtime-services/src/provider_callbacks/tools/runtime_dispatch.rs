@@ -408,6 +408,9 @@ pub(crate) struct LatePorts {
     >,
     /// The browser bridges that take `orchestration_sign_in` links.
     pub(crate) sign_in: std::sync::Arc<std::sync::OnceLock<crate::sign_in::SignInSources>>,
+    /// The VM guest channel and Mac service of `host_exec`.
+    pub(crate) host_exec:
+        std::sync::Arc<std::sync::OnceLock<std::sync::Arc<crate::host_exec::HostExecRuntime>>>,
 }
 
 /// The dependency that a remote worker's forwarded tool names until the host
@@ -704,6 +707,21 @@ pub(super) async fn dispatch(
                 WorkActionOutcome::Unknown(message) => unknown(json!(message), Vec::new()),
             }
         }
+        crate::host_exec::TOOL => {
+            let Some(runtime) = ports.late.host_exec.get() else {
+                return Ok(Some(not_sent(Error::Unavailable(
+                    crate::host_exec::DEPENDENCY,
+                ))));
+            };
+            crate::host_exec::run(
+                std::sync::Arc::clone(&store),
+                actor,
+                args,
+                request_id,
+                runtime,
+            )
+            .await
+        }
         "orchestration_agent_manage" if super::services::manage::lifecycle_action(args) => {
             return lifecycle_management(store, actor, args, now)
                 .await
@@ -736,6 +754,8 @@ enum LifecycleRequest {
     ArchiveFinished {
         #[serde(default, rename = "request_id")]
         _request_id: Option<String>,
+        #[serde(default = "crate::agent_management_store::finished_archive_reason")]
+        reason: String,
         #[serde(default)]
         unassign_work: bool,
     },
@@ -746,6 +766,7 @@ enum LifecycleCommand {
     Finished {
         actor: String,
         epoch: i64,
+        reason: String,
         unassign_work: bool,
     },
 }
@@ -808,13 +829,16 @@ async fn lifecycle_management(
                             target: agent_id,
                         })
                     }
-                    LifecycleRequest::ArchiveFinished { unassign_work, .. } => {
-                        LifecycleCommand::Finished {
-                            actor: actor_id,
-                            epoch,
-                            unassign_work,
-                        }
-                    }
+                    LifecycleRequest::ArchiveFinished {
+                        reason,
+                        unassign_work,
+                        ..
+                    } => LifecycleCommand::Finished {
+                        actor: actor_id,
+                        epoch,
+                        reason,
+                        unassign_work,
+                    },
                 })
             },
         )
@@ -832,11 +856,13 @@ async fn lifecycle_management(
         LifecycleCommand::Finished {
             actor,
             epoch,
+            reason,
             unassign_work,
         } => crate::agent_management_store::archive_finished(
             store,
             &actor,
             epoch,
+            &reason,
             unassign_work,
             now,
         )

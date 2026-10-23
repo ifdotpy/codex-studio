@@ -92,10 +92,6 @@ pub fn limits_snapshots(connection: &Connection) -> StoreResult<LimitsRead> {
     }
     let mut snapshots = Vec::new();
     let mut diagnostics = Vec::new();
-    let has_default_map_entry = value
-        .get("rateLimitsByAccount")
-        .and_then(Value::as_object)
-        .is_some_and(|map| map.contains_key("default"));
     if let Some(map) = value.get("rateLimitsByAccount").and_then(Value::as_object) {
         for (key, snapshot) in map {
             match validate_account_limits(snapshot) {
@@ -113,25 +109,6 @@ pub fn limits_snapshots(connection: &Connection) -> StoreResult<LimitsRead> {
                 }),
                 Ok(None) => snapshots.push((key.clone(), snapshot.clone())),
             }
-        }
-    }
-    if !has_default_map_entry
-        && let Some(legacy) = value.get("rateLimits").filter(|value| value.is_object())
-    {
-        match validate_account_limits(legacy) {
-            Ok(Some((pointer, keyword))) => diagnostics.push(LimitsReadDiagnostic {
-                workspace_row: "workspace/current",
-                account_key: "default".to_owned(),
-                pointer,
-                keyword,
-            }),
-            Err(()) => diagnostics.push(LimitsReadDiagnostic {
-                workspace_row: "workspace/current",
-                account_key: "default".to_owned(),
-                pointer: "/".to_owned(),
-                keyword: "schemaCompile".to_owned(),
-            }),
-            Ok(None) => snapshots.push(("default".to_owned(), legacy.clone())),
         }
     }
     Ok(LimitsRead {
@@ -234,14 +211,26 @@ mod tests {
     }
 
     #[test]
-    fn reads_valid_account_map_and_legacy_default() {
+    fn account_limits_ignore_python_single_account_fallback() {
+        let db = database(&json!({"value":{"rateLimits":{
+            "accountKey":"default","at":1.0,"data":{"status":"ready"}
+        }}}));
+        let read = limits_snapshots(&db).expect("read current account map");
+        assert!(
+            read.snapshots.is_empty(),
+            "only rateLimitsByAccount restores accounts"
+        );
+    }
+
+    #[test]
+    fn reads_valid_account_map() {
         let alpha = json!({"accountKey":"alpha","at":1.0,"data":{"status":"ready"}});
         let db = database(
             &json!({"value":{"rateLimitsByAccount":{"alpha":alpha},"rateLimits":{"accountKey":"default","at":null,"data":{"status":"ready"}}}}),
         );
         let restored = limits_snapshots(&db).expect("read");
         assert!(restored.snapshots.contains(&("alpha".to_owned(), alpha)));
-        assert!(restored.snapshots.iter().any(|(key, _)| key == "default"));
+        assert!(!restored.snapshots.iter().any(|(key, _)| key == "default"));
         assert!(!restored.snapshots.iter().any(|(key, _)| key == "missing"));
     }
 
@@ -291,7 +280,7 @@ mod tests {
     }
 
     #[test]
-    fn invalid_mapped_default_suppresses_legacy_and_reports_diagnostic() {
+    fn invalid_mapped_default_reports_diagnostic() {
         let payload = json!({"value": {
             "rateLimitsByAccount": {"default": {
                 "accountKey":"default", "at":1.0,

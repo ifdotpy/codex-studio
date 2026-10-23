@@ -3,7 +3,7 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
-import { delimiter, dirname, join, resolve, sep } from "node:path";
+import { join, resolve, sep } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import {
@@ -65,35 +65,10 @@ const fixtureProcessGroupRegistry = join(
   playwrightScratch.root,
   "fixture-process-groups",
 );
-const repositoryScriptsDirectory = resolve(
-  dirname(fileURLToPath(import.meta.url)),
-  "../../../../../workspaces/runtime/apps/server/src",
-);
 process.once("exit", () => {
   for (const cacheDir of fixtureViteCaches)
     rmSync(cacheDir, { recursive: true, force: true });
 });
-// Playwright global setup resolves this once through the server source tree
-// before any test runs and places the selected interpreter in the environment.
-export function getFixturePythonCommand() {
-  const command =
-    process.env.CODEX_AGENTS_PYTHON ||
-    process.env.PYTHON_BIN ||
-    process.env.PYTHON;
-  if (!command)
-    throw new Error(
-      "Playwright fixture Python was not resolved; check the configured global setup.",
-    );
-  return command;
-}
-
-function isPythonCommand(command) {
-  return (
-    typeof command === "string" &&
-    /^(?:.*[/\\])?python(?:\d+(?:\.\d+)*)?$/.test(command)
-  );
-}
-
 const generatedApiSchema = readFileSync(
   new URL("../src/generated/apiSchema.ts", import.meta.url),
   "utf8",
@@ -765,33 +740,22 @@ export function spawnFixture(command, args, options) {
         },
       }),
     );
-  const child = spawn(
-    isPythonCommand(command) ? getFixturePythonCommand() : command,
-    args,
-    {
-      ...options,
-      detached: process.platform !== "win32",
-      env: {
-        ...process.env,
-        ...options?.env,
-        TMPDIR: playwrightScratch.root,
-        TMP: playwrightScratch.root,
-        TEMP: playwrightScratch.root,
-        HOME: home,
-        CODEX_HOME: codexHome,
-        CLAUDE_CONFIG_DIR: claudeConfigDir,
-        XDG_STATE_HOME: state,
-        XDG_CACHE_HOME: cache,
-        PYTHONPATH: [
-          repositoryScriptsDirectory,
-          options?.env?.PYTHONPATH,
-          process.env.PYTHONPATH,
-        ]
-          .filter(Boolean)
-          .join(delimiter),
-      },
+  const child = spawn(command, args, {
+    ...options,
+    detached: process.platform !== "win32",
+    env: {
+      ...process.env,
+      ...options?.env,
+      TMPDIR: playwrightScratch.root,
+      TMP: playwrightScratch.root,
+      TEMP: playwrightScratch.root,
+      HOME: home,
+      CODEX_HOME: codexHome,
+      CLAUDE_CONFIG_DIR: claudeConfigDir,
+      XDG_STATE_HOME: state,
+      XDG_CACHE_HOME: cache,
     },
-  );
+  });
   const childKill = child.kill.bind(child);
   child.kill = (signal) =>
     signalFixtureProcessGroup(child, signal) || childKill(signal);
@@ -1661,9 +1625,8 @@ export function handleEntitySyncFixtureRequest(request, response, fixture) {
     const rates = {
       epoch,
       protocol: RESOURCE_STREAM_PROTOCOL,
-      rates: {},
+      records: [],
       revision,
-      teams: {},
       workspaceId: identity.workspaceId,
     };
     writeFrame("token-rates", rates);

@@ -12,11 +12,11 @@ configuration is owned by the desktop launcher and server environment; package
 commands are owned by [`package.json`](package.json). Focused check:
 `pnpm --filter codex-agents-desktop run test`.
 
-The Electron app opens the existing React workspace. The Python backend owns agents, terminals, monitors, and the SQLite database. Closing the app leaves that backend active.
+The Electron app opens the existing React workspace. The Rust backend owns agents, terminals, monitors, and the SQLite database. Closing the app leaves that backend active.
 
 ## Start
 
-Requirements: macOS on Apple silicon, Node.js 22.15 or later, Python 3.11 or later, and the installed Codex CLI with its existing sign-in.
+Requirements: macOS on Apple silicon, Node.js 22.15 or later, Rust, Python 3.11 or later for the recovery helpers, and the installed Codex CLI with its existing sign-in.
 
 Install dependencies once from the repository root with `pnpm install --frozen-lockfile`.
 Run package commands from this directory:
@@ -27,7 +27,7 @@ pnpm run dev
 
 `dev` builds the web app and starts Electron. Use `pnpm run start` after a web build. Use `pnpm run start:hidden` for a check without a visible window.
 
-The app attaches to a compatible backend at `http://127.0.0.1:4620`. Otherwise, it starts the bundled Python backend as a detached process. A backend identity endpoint checks the protocol and canonical state directory before the app loads the page. The runtime file lock prevents two servers from owning the same database. An incompatible service causes a visible error. The app does not stop that service or choose another database.
+The app attaches to a compatible backend at `http://127.0.0.1:4620`. Otherwise, it starts the bundled Rust backend as a detached process. A backend identity endpoint checks the protocol and canonical state directory before the app loads the page. The runtime file lock prevents two servers from owning the same database. An incompatible service causes a visible error. The app does not stop that service or choose another database.
 
 The default state remains `~/.local/state/codex-agents`. Existing chats remain there. Browser local storage, including canvas positions, belongs to each browser profile. Electron uses its own profile; it does not copy Chrome local storage.
 The profile remains at `~/Library/Application Support/Codex Agents` after the
@@ -43,7 +43,7 @@ in `Info.plist` also stays: Electron finds its helper apps as
 (`bundle-name.mjs`) writes the shown name into localized `InfoPlist.strings`,
 so the menu bar, the About panel, the Dock and Finder show LAYR Studio.
 
-The launcher checks `PATH`, `/opt/homebrew/bin`, `/usr/local/bin`, and `/usr/bin`. It skips Python versions below 3.11. Set `CODEX_AGENTS_PYTHON` or `CODEX_BIN` to an absolute executable path when needed. It does not run a login shell. `CODEX_AGENTS_STATE_DIR`, `XDG_STATE_HOME`, and `CODEX_HOME` retain the backend meanings. `CODEX_DESKTOP_PORT` and `CODEX_DESKTOP_PROFILE` support isolated tests.
+The launcher checks `PATH`, `/opt/homebrew/bin`, `/usr/local/bin`, and `/usr/bin`. Set `CODEX_BIN` to an absolute Codex executable path when needed. `CODEX_RUNTIME_SERVER` selects an absolute Rust runtime executable; otherwise the launcher uses the packaged binary or a local Cargo build. It does not run a login shell. `CODEX_AGENTS_STATE_DIR`, `XDG_STATE_HOME`, and `CODEX_HOME` retain the backend meanings. `CODEX_DESKTOP_PORT` and `CODEX_DESKTOP_PROFILE` support isolated tests.
 
 Backend logs and its PID remain in `canvas.log` and `canvas.pid` under the state directory. Quitting Electron does not stop agents. Use the workspace controls to stop a specific agent or terminal.
 
@@ -59,8 +59,9 @@ pnpm run package
 
 The command creates `dist/Codex Studio-darwin-arm64/Codex Studio.app`. Set
 `CODEX_DESKTOP_PACKAGE_OUT=/tmp/codex-studio-package` to build outside the
-checkout. The package includes Electron, Python source files, role skills, and
-the compiled web assets. Python and Codex remain installed prerequisites. The
+checkout. The package includes Electron, the Rust runtime and process supervisor,
+Python recovery helpers, role skills, and the compiled web assets. Python for
+those helpers and Codex remain installed prerequisites. The
 package uses no checkout paths at runtime. It uses a persistent local signing
 certificate and is not notarized. This build is for local use.
 
@@ -70,14 +71,11 @@ commit, build them once with `just build-release-binaries` and set
 SHA-256 manifest and refuses anything else. See the
 [native package cycle](../native/README.md#package-cycle).
 
-Configure `CODEX_STUDIO_SIGNING_IDENTITY` with the certificate fingerprint from
-`security find-identity -p codesigning`. Alternatively, save
-`{"identity":"CERTIFICATE_FINGERPRINT"}` in `~/.config/codex-studio/signing.json`.
-For a dedicated keychain, add `keychain` and `passwordFile` paths to the JSON config.
-Keep the password file private (mode `0600`). The build unlocks only that keychain.
-An environment override can specify `CODEX_STUDIO_SIGNING_KEYCHAIN`; unlock it before the build.
-The build refuses ad hoc signing because it changes the application identity
-that macOS uses for saved permissions. Keep the same certificate for updates.
+Signing needs a persistent certificate. Follow the
+[signing setup](../native/README.md#signing-setup) and run `just signing-check`
+before you package. The build refuses ad hoc signing because it changes the
+application identity that macOS uses for saved permissions. Keep the same
+certificate for updates.
 After changing installed resources, run `node workspaces/client/apps/desktop/signing.mjs /path/to/Codex\ Studio.app`.
 Do not replace this signature with `codesign --sign -`.
 The signer makes the bundled Python cache directory read-only. This prevents
@@ -128,7 +126,7 @@ installed before this change has no installer; install it once by hand.
 
 ## Native bridge
 
-`bridge.d.ts` defines `window.codexDesktop`. The bridge is available only in the workspace main frame.
+`bridge.d.ts` re-exports the shared declaration from `web/src/desktop.ts`, which defines `window.codexDesktop`. The bridge is available only in the workspace main frame.
 
 | Method                          | Result                                                                         |
 | ------------------------------- | ------------------------------------------------------------------------------ |
@@ -153,7 +151,7 @@ TMPDIR=/tmp pnpm run test:package
 
 `test:package` requires a current package. It starts that exact `.app`, verifies its bundled backend path, and checks backend survival after app exit. On macOS, the short temporary path keeps the backend's Unix socket path within the platform limit.
 
-The source suite starts the real Python backend with an isolated database. It races two launchers, checks attachment and state ownership, runs hidden Electron windows, checks native access and navigation boundaries, and confirms that the backend survives app exit. It does not start a model request. Test windows remain hidden; input uses the renderer protocol, not operating-system input.
+The native source suite starts the Rust backend with an isolated database. It races two launchers, checks attachment and state ownership, runs hidden Electron windows, checks native access and navigation boundaries, and confirms that the backend survives app exit. It does not start a model request. Test windows remain hidden; input uses the renderer protocol, not operating-system input.
 
 ## Recoverable dictation
 

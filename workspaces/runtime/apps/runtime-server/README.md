@@ -102,3 +102,33 @@ parsed in memory and is never logged. The HTTP response and runtime state are
 unchanged, and no periodic memory sampling is started. The reported
 allocator-used estimate is not an exact count of live allocations; process RSS
 also includes memory outside GNU libc's allocator.
+
+## Command and user service installation
+
+`just install` builds the Rust server, process supervisor, and diagnostics CLI,
+then links them into `~/.local/bin` (`--bin-dir DIRECTORY` overrides it).
+`codex-canvas` launches the Rust server. The installer preflights every new
+link, refuses unrelated executables, and removes and reports only this
+checkout's obsolete Python command links. Repeating it is safe.
+
+`studio-runtime-server service install [--state DIRECTORY]` writes the user
+service configuration and enables startup without starting or restarting a
+service. `service status` reads the user manager; `service uninstall` disables
+startup and removes the matching configuration, leaving running work alone.
+A differing existing configuration is an error: resolve it at an idle boundary.
+These commands never open or create runtime state. Existing state paths are
+canonicalized so symlinks retain the same state identity.
+
+[`service-layout.json`](service-layout.json) owns the unit name, default TCP
+port, release binary path, and default HOME-relative release/state paths.
+Both the Rust CLI and [`deliver.sh`](deliver.sh) consume it. Set
+`CODEX_STUDIO_SERVER_ROOT` to choose a different release root. On Linux the
+base unit starts `current/bin/studio-runtime-server` under that root;
+`just deliver-server` owns release selection, restart, and rollback. Install
+this base unit before the first delivery. On macOS the CLI writes a LaunchAgent
+and enables its label; bootstrap it explicitly at an idle boundary after
+placing the release at `current`. It never unloads an existing job.
+
+Focused witness: `cargo test -p studio-runtime-server --test integration operator_cli::`.
+Tests use temporary HOME/XDG directories, poisoned Python configuration, and
+fake service managers. They never address the host service.

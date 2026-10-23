@@ -1,80 +1,28 @@
 #![allow(clippy::unwrap_used, dead_code)]
-use crate::prepared_python_support as prepared_python;
+#[path = "../recovery/frozen.rs"]
+pub(crate) mod frozen;
+
 use serde_json::{Value, json};
-use std::{
-    path::PathBuf,
-    process::{Command, Stdio},
-    sync::{Arc, Mutex, OnceLock},
-};
+use std::sync::{Arc, Mutex, OnceLock};
 use studio_runtime_providers::{Frame, Method, RequestFrame, RequestId};
 use studio_runtime_services::{callback_runtime::*, provider_callbacks::*};
 use studio_runtime_store::RuntimeStore;
-struct Template {
-    value: Value,
-    files: [Vec<u8>; 3],
-    identity_permissions: std::fs::Permissions,
-}
-
 pub fn template() -> &'static Value {
-    &cached_template().value
-}
-
-// This synchronous test cache is built before any HTTP request.
-#[allow(clippy::disallowed_methods)]
-fn cached_template() -> &'static Template {
-    static VALUE: OnceLock<Template> = OnceLock::new();
+    static VALUE: OnceLock<Value> = OnceLock::new();
     VALUE.get_or_init(|| {
-        let root = prepared_python::disposable_state_dir();
-        let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src");
-        let script =
-            source.join("../../../packages/runtime-services/tests/wave7_p04_callback/oracle.py");
-        let case_name = std::thread::current()
-            .name()
-            .unwrap_or("callback fixture")
-            .to_owned();
-        let mut command = Command::new(prepared_python::prepared_python(&source));
-        command.arg(&script).arg(root.path()).stdin(Stdio::null());
-        let output = prepared_python::output_with_timeout(
-            &mut command,
-            &script,
-            prepared_python::PYTHON_ORACLE_TIMEOUT,
-        )
-        .unwrap_or_else(|error| panic!("{case_name}: callback Python oracle: {error}"));
-        assert!(
-            output.status.success(),
-            "{case_name}: callback Python oracle exited unsuccessfully: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        let value: Value = serde_json::from_slice(&output.stdout).unwrap();
-        let directory = PathBuf::from(value["template"].as_str().unwrap());
-        let files = [
-            "canvas.sqlite3",
-            "analytics.sqlite3",
-            "multi-server/identity.json",
-        ]
-        .map(|name| std::fs::read(directory.join(name)).unwrap());
-        let identity_permissions = std::fs::metadata(directory.join("multi-server/identity.json"))
-            .unwrap()
-            .permissions();
-        Template {
-            value,
-            files,
-            identity_permissions,
-        }
+        serde_json::from_str(include_str!("expected.json")).expect("frozen callback expectations")
     })
 }
-#[allow(clippy::disallowed_methods)]
+
 pub async fn fixture() -> (tempfile::TempDir, Arc<RuntimeStore>, CallbackContext) {
-    let cached = cached_template();
-    let data = &cached.value;
+    let data = template();
     let root = tempfile::tempdir().unwrap();
-    for (name, bytes) in ["canvas.sqlite3", "analytics.sqlite3"]
-        .into_iter()
-        .zip(&cached.files)
-    {
-        std::fs::write(root.path().join(name), bytes).unwrap();
-    }
-    // Public projections bind the same generated fixture server identity.
+    frozen::state(
+        root.path(),
+        include_str!("canvas.sqlite3.sql"),
+        include_str!("analytics.sqlite3.sql"),
+    );
+    // Public projections bind the same frozen fixture server identity.
     std::fs::create_dir(root.path().join("multi-server")).unwrap();
     #[cfg(unix)]
     {
@@ -85,16 +33,13 @@ pub async fn fixture() -> (tempfile::TempDir, Arc<RuntimeStore>, CallbackContext
         )
         .unwrap();
     }
-    std::fs::write(
-        root.path().join("multi-server/identity.json"),
-        &cached.files[2],
-    )
-    .unwrap();
-    std::fs::set_permissions(
-        root.path().join("multi-server/identity.json"),
-        cached.identity_permissions.clone(),
-    )
-    .unwrap();
+    let identity = root.path().join("multi-server/identity.json");
+    std::fs::write(&identity, include_str!("identity.json")).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&identity, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
     let store = Arc::new(RuntimeStore::open(Some(root.path())).await.unwrap());
     let context = CallbackContext {
         agent: data["agents"][0]["id"].as_str().unwrap().into(),
@@ -350,11 +295,40 @@ pub fn assert_writes(before: &Value, store: &RuntimeStore, expected: &Value) {
     }
 }
 
+pub async fn seed_admission(store: &RuntimeStore, before: &Value) {
+    // Current Rust cards always carry a durable admission receipt. Keep the
+    // frozen failure corpus focused on answer delivery rather than Python cutover.
+    let context = CallbackContext {
+        agent: before["agent"].as_str().unwrap().into(),
+        account: before["accountKey"].as_str().unwrap().into(),
+        connection: before["connectionId"].as_str().unwrap().into(),
+        generation: before["supervisor"]["generation"].as_u64().unwrap(),
+        epoch: before["epoch"].as_u64().unwrap(),
+        thread: before["params"]["threadId"].as_str().unwrap().into(),
+        turn: before["params"]["turnId"]
+            .as_str()
+            .unwrap_or_default()
+            .into(),
+    };
+    let identity = ReplyIdentity {
+        context,
+        rpc_id: serde_json::from_value(before["rpcId"].clone()).unwrap(),
+        attempt: String::new(),
+    };
+    let admission_key = format!("{}card", identity.operation_id());
+    let admission = json!({"identity":identity,"card":before["id"],"journalCursor":1});
+    store.transaction(move |tx| {
+        tx.execute("INSERT OR REPLACE INTO runtime_operation_receipts(id,signature,result) VALUES(?1,'provider-callback',?2)", rusqlite::params![admission_key, admission.to_string()])?;
+        Ok(())
+    }).await.unwrap();
+}
+
 /// Import the exact Python-observed before rows for each logical write. The
 /// template contains all corpus identities; each case restores its own baseline.
 pub async fn seed_case(store: &RuntimeStore, case: &Value) {
     put_actor(store, &case["actor"]).await;
     card(store, &case["before"]).await;
+    seed_admission(store, &case["before"]).await;
     let case = case.clone();
     store
         .transaction_with::<_, studio_runtime_store::StoreError>(move |tx| {

@@ -1,27 +1,24 @@
 # Runtime workspace
 
-Owns the Studio backend, command entry points, VM guest service, and runtime
-prompts. The server owns SQLite and orchestration; the renderer accesses it over
-HTTP, and native privileges stay in the isolated Electron main process.
+## Change contract
 
-Queue revision values are opaque server-local tokens; clients compare snapshots only within the same server.
+Owns the Rust backend, process supervisor, VM guest service, and runtime prompts.
+The server owns SQLite and orchestration; the renderer accesses it over HTTP.
+Native privileges stay in the isolated desktop host. Queue revisions are opaque
+server-local tokens and must only be compared within the same server.
 
-## Apps and navigation
+## Apps and packages
 
-- [`apps/server/`](apps/server/): Python backend and command entry points; see
-  its [Change Contract](apps/server/README.md) and [source guide](apps/server/src/README.md).
-- [`apps/server/tests/`](apps/server/tests): server, protocol, and provider
-  contract tests; suite discovery is owned by the [server runner](apps/server/src/test-server.py).
-- [`apps/server/prompts/`](apps/server/prompts): model-facing runtime prompts.
-- [`apps/vm-guest/`](apps/vm-guest): Linux guest service and provisioning; see
-  its [operator guide](apps/vm-guest/README.md).
+- [`apps/runtime-server/`](apps/runtime-server/): Rust HTTP server and operator CLI.
+- [`apps/vm-guest/`](apps/vm-guest/): retained Linux guest service and provisioning.
+- [`packages/runtime-services/`](packages/runtime-services/): runtime operations and integration tests.
+- [`packages/runtime-store/`](packages/runtime-store/): SQLite state ownership.
+- [`packages/runtime-schema/`](packages/runtime-schema/): generated API and state contracts.
 
-There are no runtime packages yet. The server app consumes provider integrations
-through their app interfaces. Shared packages must not import apps or acquire
-runtime state without a real caller and a focused test.
+Use `just packages` to discover manifest-owned packages. For one hypothesis,
+use `just test studio-runtime-services <test-name>`; for package checks, use
+`just check studio-runtime-services`. `just test-plan` prints the native command
+without executing it. See [testing](../../docs/testing.md) for the local gates.
 
-For one hypothesis, use `just test server <suite-filter>`; for a server change,
-use `just check server`. `just test-plan server <suite-filter>` prints the
-runner's exact filter command without execution. The root [`justfile`](../../justfile) is the discoverable
-entry point; the Python runner owns suite discovery and filtering. The pre-PR
-server/client gate is documented in [docs/testing.md](../../docs/testing.md).
+The guest service and desktop helpers retain Python. The removed Python backend,
+Linux VM host provisioner, and Python oracle runners have no compatibility aliases.

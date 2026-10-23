@@ -66,17 +66,73 @@ export function stallLimits(env = process.env) {
 // { startedAt, timeoutMs }; `lastEventAt` is the time of the newest message
 // from the CLI. All times are epoch milliseconds.
 export function findStall(clocks, now, lastEventAt, limits) {
-  const silentMs = Math.max(0, now - lastEventAt);
   for (const [id, clock] of clocks) {
-    const elapsedMs = Math.max(0, now - clock.startedAt);
-    const stalled =
-      clock.timeoutMs == null
-        ? silentMs >= limits.silenceMs
-        : elapsedMs >= clock.timeoutMs + limits.graceMs &&
-          silentMs >= limits.graceMs;
-    if (stalled) return { id, ...clock, elapsedMs, silentMs };
+    if (now >= stallDeadline(clock, lastEventAt, limits))
+      return {
+        id,
+        ...clock,
+        elapsedMs: Math.max(0, now - clock.startedAt),
+        silentMs: Math.max(0, now - lastEventAt),
+      };
   }
   return null;
+}
+
+// Epoch milliseconds when both the tool budget and required silence expire.
+function stallDeadline(clock, lastEventAt, limits) {
+  return clock.timeoutMs == null
+    ? lastEventAt + limits.silenceMs
+    : Math.max(
+        clock.startedAt + clock.timeoutMs + limits.graceMs,
+        lastEventAt + limits.graceMs,
+      );
+}
+
+// Node's largest supported timer delay, in milliseconds.
+const MAX_STALL_TIMER_DELAY_MS = 2_147_483_647;
+
+// One timer for the nearest unfinished tool call; Studio-owned waits and idle
+// queries have no deadline. The bridge rearms after changing their state.
+export function watchStalls(queries, studioWaits, limits, recoverStall) {
+  let timer;
+  let armedAt = Infinity;
+  const eligible = (id, active) =>
+    active.turn && !active.stall && active.session && !studioWaits.get(id);
+  function arm() {
+    let nearest = Infinity;
+    for (const [id, active] of queries) {
+      if (!eligible(id, active)) continue;
+      for (const clock of active.toolClocks.values())
+        nearest = Math.min(
+          nearest,
+          stallDeadline(clock, active.lastEventAt, limits),
+        );
+    }
+    if (nearest === armedAt) return;
+    clearTimeout(timer);
+    armedAt = nearest;
+    if (nearest === Infinity) return;
+    timer = setTimeout(
+      () => {
+        armedAt = Infinity;
+        const now = Date.now();
+        for (const [id, active] of queries) {
+          if (!eligible(id, active)) continue;
+          const found = findStall(
+            active.toolClocks,
+            now,
+            active.lastEventAt,
+            limits,
+          );
+          if (found) void recoverStall(active.session, active, found);
+        }
+        arm();
+      },
+      Math.min(MAX_STALL_TIMER_DELAY_MS, Math.max(0, nearest - Date.now())),
+    );
+    timer.unref();
+  }
+  return arm;
 }
 
 const count = (value, unit) => value + " " + unit + (value === 1 ? "" : "s");
