@@ -159,7 +159,6 @@ export default function ClaudeProfile({
           {saved && <p role="status">Claude profile saved.</p>}
           <Button
             variant="filled"
-            color="indigo"
             type="submit"
             loading={busy}
             disabled={!label.trim() || busy}

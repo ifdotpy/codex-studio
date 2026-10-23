@@ -30,7 +30,12 @@ export const theme = createTheme({
   // Mantine's component resolver chooses text using the light primary shade.
   // The generated contrast variable follows both primaryShade schemes.
   variantColorResolver: (input) => {
-    const colors = defaultVariantColorsResolver(input);
+    // Uncolored filled actions use Signal; the default subtle action stays neutral.
+    const colors = defaultVariantColorsResolver(
+      input.variant === "subtle" && input.color === input.theme.primaryColor
+        ? { ...input, color: "gray" }
+        : input,
+    );
     return input.variant === "filled" &&
       input.color === input.theme.primaryColor
       ? { ...colors, color: "var(--mantine-primary-color-contrast)" }
@@ -82,7 +87,7 @@ export const theme = createTheme({
         label: { textBoxTrim: "none", height: "auto", lineHeight: 1.4 },
         inner: { transform: "none", transition: "opacity 100ms ease" },
       },
-      defaultProps: { size: "sm", variant: "subtle", color: "gray", fw: 500 },
+      defaultProps: { size: "sm", variant: "subtle", fw: 500 },
     }),
     ActionIcon: ActionIcon.extend({
       defaultProps: {

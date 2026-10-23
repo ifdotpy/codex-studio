@@ -471,7 +471,6 @@ export default function ServerAccountsPanel({
               Cancel
             </Button>
             <Button
-              color="indigo"
               disabled={!provider || !selected}
               onClick={() => {
                 if (!selected || !provider) return;

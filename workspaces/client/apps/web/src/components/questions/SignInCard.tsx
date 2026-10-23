@@ -186,12 +186,7 @@ export default function SignInCard({
             >
               Decline
             </Button>
-            <Button
-              variant="filled"
-              color="indigo"
-              disabled={sending}
-              onClick={() => open()}
-            >
+            <Button variant="filled" disabled={sending} onClick={() => open()}>
               {flow === "device" ? "Open page" : "Open in browser"}
             </Button>
           </div>
@@ -244,7 +239,6 @@ export default function SignInCard({
             <Button
               type="submit"
               variant="filled"
-              color="indigo"
               disabled={state === "sending" || !pasteBody(address)}
               loading={sending}
             >

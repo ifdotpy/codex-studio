@@ -1,4 +1,8 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
+import { Button } from "@mantine/core";
+import QuestionCard from "../components/questions/QuestionCard";
+import Requests from "../components/questions/Requests";
+import SignInCard from "../components/questions/SignInCard";
 import { expect } from "storybook/test";
 import { NativeError, NativeNotice } from "../components/NativeNotice";
 import type { Agent, Message } from "../types";
@@ -95,4 +99,107 @@ export const NoticesLight: Story = {
 export const NoticesDark: Story = {
   globals: { colorScheme: "dark" },
   play: ({ canvasElement }) => verifyNotices(canvasElement),
+};
+
+function PrimaryAudit() {
+  const requests = [
+    {
+      id: "audit-question",
+      agent: "audit-lead",
+      method: "agent/asyncQuestion",
+      status: "pending" as const,
+      createdAt: 1,
+      params: {
+        questions: [
+          {
+            id: "scope",
+            question: "Which files should I review?",
+            options: [{ label: "One file" }, { label: "All files" }],
+          },
+        ],
+      },
+    },
+  ];
+  return (
+    <main className="foundation-sheet">
+      <span
+        data-audit-primary
+        style={{ background: "var(--mantine-primary-color-filled)" }}
+      >
+        Primary color
+      </span>
+      <QuestionCard
+        card={{
+          source: "message",
+          state: "waiting",
+          asynchronous: true,
+          requestId: "audit-question",
+          questions: [
+            {
+              id: "scope",
+              question: "Which scope?",
+              options: [],
+              multiSelect: false,
+              isSecret: false,
+            },
+          ],
+        }}
+        onAnswer={() => {}}
+      />
+      <Requests
+        requests={requests}
+        allRequests={requests}
+        scope="semantic-audit"
+        agents={[{ id: "audit-lead", name: "Release lead" }]}
+        refresh={async () => {}}
+        notify={() => {}}
+      />
+      <SignInCard
+        details={{
+          host: "example.com",
+          url: "https://example.com/device",
+          userCode: "ABCD-1234",
+        }}
+        agentName="Release lead"
+        sending={false}
+        error=""
+        post={async () => true}
+        notify={() => {}}
+      />
+      <Button variant="filled">Create project</Button>
+      <Button data-audit-quiet>Cancel</Button>
+    </main>
+  );
+}
+async function verifyPrimary(canvasElement: HTMLElement) {
+  const expected = getComputedStyle(
+    canvasElement.querySelector("[data-audit-primary]")!,
+  ).backgroundColor;
+  const actions = canvasElement.querySelectorAll(
+    '[data-variant="filled"]:not(:disabled)',
+  );
+  expect(actions.length).toBeGreaterThanOrEqual(4);
+  for (const action of actions) {
+    expect(
+      getComputedStyle(action).backgroundColor,
+      action.textContent || "Primary action",
+    ).toBe(expected);
+    expect(
+      computedContrast(action).ratio,
+      action.textContent || "Primary action",
+    ).toBeGreaterThanOrEqual(4.5);
+  }
+  expect(
+    getComputedStyle(canvasElement.querySelector("[data-audit-quiet]")!).color,
+  ).not.toBe(expected);
+}
+export const PrimaryLight: Story = {
+  render: () => <PrimaryAudit />,
+  globals: { colorScheme: "light" },
+  play: ({ canvasElement }) => verifyPrimary(canvasElement),
+};
+export const PrimaryDark: Story = {
+  render: () => <PrimaryAudit />,
+  globals: { colorScheme: "dark" },
+  play: ({ canvasElement }) => verifyPrimary(canvasElement),
 };

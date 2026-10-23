@@ -197,7 +197,6 @@ export default function ProjectServerCards({
         <Button onClick={onCancel}>Cancel</Button>
         <Button
           variant="filled"
-          color="indigo"
           disabled={
             !location ||
             !models ||

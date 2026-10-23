@@ -396,7 +396,6 @@ export default function SharedChatCreate({
       <div className="shared-create-footer">
         <Button
           variant="filled"
-          color="indigo"
           aria-label={attempt ? undefined : "Create"}
           type="submit"
           loading={pending}
