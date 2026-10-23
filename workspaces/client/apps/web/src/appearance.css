@@ -290,6 +290,7 @@
 @media (pointer: coarse) {
   :root {
     --studio-action-size: var(--studio-touch-target);
+    --studio-voice-control-size: var(--studio-touch-target);
   }
   .mantine-Button-root {
     --button-height-xs: var(--studio-touch-target);

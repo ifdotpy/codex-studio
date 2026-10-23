@@ -21,3 +21,10 @@ test("touch sizing uses Mantine variables without stretching NumberInput stepper
   expect(appearance.includes("--input-height:")).toBe(true);
   expect(appearance.includes("--button-height:")).toBe(true);
 });
+
+test("voice surfaces follow the active scheme instead of hard-coded dark colors", () => {
+  const voice = css("../components/realtime-voice.css");
+  expect(/#[\da-f]{3,8}\b|--mantine-color-dark-/i.test(voice)).toBe(false);
+  expect(voice.includes("var(--surface)")).toBe(true);
+  expect(voice.includes("var(--text)")).toBe(true);
+});
