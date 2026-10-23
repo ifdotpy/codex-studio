@@ -13,6 +13,7 @@ import signal
 import socket
 import stat
 import sqlite3
+import subprocess
 import sys
 import tarfile
 import tempfile
@@ -101,12 +102,23 @@ class GuestTests(unittest.IsolatedAsyncioTestCase):
                     os.kill(record["pid"], signal.SIGTERM)
                 except ProcessLookupError:
                     pass
+        # Stop every process that this test started, also when its own stop failed: a
+        # supervisor left running outlives the suite. A process that did not end in time
+        # fails the test after it is stopped.
+        lingering = []
         for instance in self.instances:
             processes = list(instance.processes)
             if instance.native.process is not None:
+                if instance.native.process.poll() is None:
+                    instance.native.process.terminate()
                 processes.append(instance.native.process)
             for process in processes:
-                await asyncio.to_thread(process.wait, timeout=5)
+                try:
+                    await asyncio.to_thread(process.wait, timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    await asyncio.to_thread(process.wait, timeout=5)
+                    lingering.append(process.args)
         self.service.close()
         await asyncio.sleep(0.1)
         self.temp.cleanup()
@@ -114,6 +126,7 @@ class GuestTests(unittest.IsolatedAsyncioTestCase):
             os.environ.pop("CODEX_WORKSPACE_MIN_FREE_BYTES", None)
         else:
             os.environ["CODEX_WORKSPACE_MIN_FREE_BYTES"] = self.old_floor
+        self.assertEqual(lingering, [], "a process of the test did not end after its stop")
 
     async def call(self, method, params=None, identity=None):
         self.next_id += 1

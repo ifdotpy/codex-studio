@@ -843,12 +843,23 @@ function fastTierCommands(root) {
       },
     },
     {
-      // The runner owns the Python version, the supervisor binary and the short macOS
-      // temporary root that the guest's Unix sockets need.
+      // The runner owns the Python version, the supervisor binary, the short macOS
+      // temporary root that the guest's Unix sockets need, and the check that no process
+      // of the suite outlives it; its own test proves that check.
       item: { name: "VM guest Python suite", ecosystem: "pnpm" },
       label: "VM guest Python suite",
       commands: [
         ["cargo", ["build", "-p", "studio-process-supervisor", "--locked"]],
+        [
+          "node",
+          [
+            "--test",
+            path.join(
+              root,
+              "workspaces/runtime/apps/vm-guest/run-guest-suite.test.mjs",
+            ),
+          ],
+        ],
         [
           "node",
           [

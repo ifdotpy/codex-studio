@@ -76,6 +76,7 @@ test("short and comprehensive recipes preserve their owned test boundaries", () 
   );
   assert.match(fast.command, /test:unit:fast/);
   assert.match(fast.command, /vm-guest\/run-guest-suite\.mjs/);
+  assert.match(fast.command, /vm-guest\/run-guest-suite\.test\.mjs/);
   // The provider reaping witnesses are Linux only and run only on Linux.
   const linux = process.platform === "linux";
   assert.equal(
