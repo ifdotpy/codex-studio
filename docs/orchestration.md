@@ -1592,8 +1592,10 @@ change with both options. Cross-machine Claude cache reuse remains unverified.
 4. A connected stream asks the resource notification owner about its subscribed keys.
 5. After a coalesced wake, the owner reads each affected projection once per revision, shared across streams.
 6. A resource version advances when its content digest changes; unchanged content causes no client re-read.
-7. Unknown, unavailable, evicted, or racing projections retain the safe refresh.
-8. Initial connections still receive every subscribed resource; publication receipts and retry identities stay unchanged.
+7. A publication during a projection read stays pending at the sampled cursor, even when the digest is unchanged.
+8. Limits use the cached per-account snapshot without starting provider reads or refreshes; explicit refresh keeps its existing path.
+9. Unknown, unavailable, or evicted projections retain the safe refresh.
+10. Initial connections still receive every subscribed resource; publication receipts and retry identities stay unchanged.
 
 Progress contract generation follows this flow:
 

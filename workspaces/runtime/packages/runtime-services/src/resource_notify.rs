@@ -241,7 +241,7 @@ impl ResourceNotifications {
     }
 
     /// Compare only subscribed invalidation candidates with their served content.
-    /// Uncomputable or racing reads retain the original safe refresh. The bounded
+    /// Uncomputable reads retain the original safe refresh. The bounded
     /// cache shares computations across streams; no publication does projection work.
     pub async fn changes_since_with_content<F, Fut>(
         &self,
@@ -272,18 +272,9 @@ impl ResourceNotifications {
                 let digest = read(resource.clone())
                     .await
                     .map(|bytes| Sha256::digest(&bytes).into());
-                // Only a publication affecting this resource makes its read
-                // uncertain. Token and unrelated-resource publications do not.
-                let latest =
-                    self.changes_since(std::slice::from_ref(resource), Some(view.cursor.revision))?;
-                if latest.cursor.closed {
+                if self.changes.snapshot().closed {
                     view.cursor.closed = true;
                     return Ok(view);
-                }
-                if !latest.resources.is_empty() {
-                    selected.push(resource.clone());
-                    versions.push(*version);
-                    continue;
                 }
                 let revision = existing
                     .filter(|index| digest.is_some() && content[*index].digest == digest)
@@ -297,6 +288,8 @@ impl ResourceNotifications {
                 content.push_back(ContentVersion {
                     key,
                     digest,
+                    // Cover only the sampled candidate, so a publication during
+                    // the read is checked again even when this digest is equal.
                     checked_revision: *version,
                     revision,
                 });
@@ -430,6 +423,46 @@ mod tests {
             .await
             .expect("second subscriber");
         assert!(second.resources.is_empty());
+    }
+
+    #[tokio::test]
+    async fn equal_racing_content_keeps_version_and_checks_the_pending_change() {
+        let hub = Arc::new(ChangeNotificationHub::new());
+        let notifications = ResourceNotifications::new(hub.clone());
+        let resources = [json!({"kind":"accounts"})];
+        let initial = notifications
+            .changes_since_with_content(&resources, None, |_| async { Some(vec![0]) })
+            .await
+            .expect("initial");
+        hub.notify_one();
+        let raced = notifications
+            .changes_since_with_content(&resources, Some(initial.cursor.revision), |_| {
+                // The projection completed before the raced commit changes its content.
+                hub.notify_one();
+                std::future::ready(Some(vec![0]))
+            })
+            .await
+            .expect("equal raced projection");
+        assert!(
+            raced.resources.is_empty(),
+            "equal content must keep its version"
+        );
+        assert_eq!(raced.cursor.revision, 1, "the raced commit remains pending");
+        let changed = notifications
+            .changes_since_with_content(&resources, Some(raced.cursor.revision), |_| async {
+                Some(vec![1])
+            })
+            .await
+            .expect("raced commit now has changed content");
+        assert_eq!(changed.resources, resources);
+        assert_eq!(changed.versions, vec![2]);
+        let shared = notifications
+            .changes_since_with_content(&resources, Some(initial.cursor.revision), |_| async {
+                panic!("the second subscriber must share the checked digest")
+            })
+            .await
+            .expect("second subscriber");
+        assert_eq!(shared.versions, changed.versions);
     }
 
     #[tokio::test]
