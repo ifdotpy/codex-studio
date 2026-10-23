@@ -86,3 +86,28 @@ it("keeps parents before their children without losing orphaned or cyclic rows",
   const ordered = orderWorkerHierarchy(agents).map((agent) => agent.id);
   assert.deepEqual(ordered, ["other", "parent", "child", "cycle-a", "cycle-b"]);
 });
+
+it("filters the same canonical lanes counted by the summary, including queued work", async () => {
+  const { filterTeamWorkers } = await import("./WorkerOverview.tsx");
+  const rows = [
+    { id: "queued", status: "queued" },
+    { id: "running", status: "running", inFlight: true },
+    { id: "error", status: "failed" },
+    { id: "paused", status: "paused" },
+    { id: "done", status: "completed" },
+  ];
+  const indicators = new Map([
+    ["queued", { kind: "working", label: "Queued" }],
+    ["running", { kind: "working", label: "Working" }],
+    ["error", { kind: "error", label: "Failed" }],
+    ["paused", { kind: "paused", label: "Stopped" }],
+    ["done", { kind: "unread", label: "New result" }],
+  ]);
+  const ids = (filter) =>
+    filterTeamWorkers(rows, indicators, filter).map((a) => a.id);
+  assert.deepEqual(ids("active"), ["queued", "running"]);
+  assert.deepEqual(ids("attention"), ["error"]);
+  assert.deepEqual(ids("paused"), ["paused"]);
+  assert.deepEqual(ids("completed"), ["done"]);
+  assert.strictEqual(filterTeamWorkers(rows, indicators, "all"), rows);
+});

@@ -136,7 +136,8 @@ test("team-navigation-ui", async ({ page: fixturePage }) => {
         exact: true,
       }),
     ).toHaveCount(0, { timeout: 2000 });
-    const selectLead = () => page.locator(`[data-chat="${lead.id}"]`).click();
+    const selectLead = () =>
+      page.locator(`.project-chats [data-chat="${lead.id}"]`).click();
     await selectLead();
     assert.equal(
       await page.locator("#team-toggle").getAttribute("aria-expanded"),
@@ -259,7 +260,7 @@ test("team-navigation-ui", async ({ page: fixturePage }) => {
         .getByRole("region", { name, exact: true })
         .locator("[data-worker]")
         .evaluateAll((nodes) => nodes.map((node) => node.dataset.worker));
-    await expect.poll(() => groupIds("Need you")).toEqual([worker(2).id]);
+    await expect.poll(() => groupIds("Needs you")).toEqual([worker(2).id]);
     assert.deepEqual(
       (await groupIds("Failed")).sort(),
       [worker(3).id, worker(7).id].sort(),
@@ -285,7 +286,7 @@ test("team-navigation-ui", async ({ page: fixturePage }) => {
         .evaluateAll((nodes) =>
           nodes.map((node) => node.getAttribute("aria-label")),
         ),
-      ["Need you", "Failed", "Working", "Stopped"],
+      ["Needs you", "Failed", "Working", "Stopped"],
     );
     assert.equal(
       await row(2).evaluate((node) =>
@@ -328,7 +329,17 @@ test("team-navigation-ui", async ({ page: fixturePage }) => {
       "true",
     );
     await team.getByRole("button", { name: "Active", exact: true }).click();
-    assert.equal(await team.locator("[data-worker]").count(), 5);
+    assert.deepEqual(
+      (
+        await team
+          .locator("[data-worker]")
+          .evaluateAll((nodes) => nodes.map((node) => node.dataset.worker))
+      ).sort(),
+      [0, 1, 5, 6, ...Array.from({ length: 18 }, (_, index) => index + 8)]
+        .map((n) => worker(n).id)
+        .sort(),
+      "Active filters the same canonical Working lane counted by the summary",
+    );
     assert.equal(await row(3).count(), 0, "interrupted workers are not active");
     await team.getByRole("button", { name: "All", exact: true }).click();
     await row(2).click();
@@ -481,10 +492,7 @@ test("team-navigation-ui", async ({ page: fixturePage }) => {
       );
       await row(39).click();
       await team.waitFor({ state: "hidden" });
-      assert.equal(
-        await page.locator("#conversation-title").innerText(),
-        "Worker 39",
-      );
+      await expect(page.locator("#conversation-title")).toHaveText("Worker 39");
       assert.ok(
         await page.locator("#back-lead").evaluate((n) => {
           const r = n.getBoundingClientRect();
