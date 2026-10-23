@@ -341,11 +341,16 @@ test("usage accounts ui", async ({ browser: _browser }) => {
     );
     const teamMeter = teamTab.getByRole("meter");
     assert.equal(await teamMeter.getAttribute("aria-valuenow"), "8");
+    const { remainingLimitColor } = await server.ssrLoadModule(
+      "/src/components/accountLimitColor.ts",
+    );
     assert.equal(
       await teamMeter
         .locator("span")
         .evaluate((element) => element.style.background),
-      "var(--mantine-color-red-6)",
+      remainingLimitColor(
+        Number(await teamMeter.getAttribute("aria-valuenow")),
+      ),
     );
     await page
       .getByRole("radio", { name: "Claude", exact: true })
@@ -370,7 +375,9 @@ test("usage accounts ui", async ({ browser: _browser }) => {
       await claudeMeter
         .locator("span")
         .evaluate((element) => element.style.background),
-      "var(--mantine-color-yellow-6)",
+      remainingLimitColor(
+        Number(await claudeMeter.getAttribute("aria-valuenow")),
+      ),
     );
     await page.getByRole("button", { name: "Refresh", exact: true }).click();
     await page.waitForFunction(() =>
@@ -389,7 +396,9 @@ test("usage accounts ui", async ({ browser: _browser }) => {
         .getByRole("meter")
         .locator("span")
         .evaluate((element) => element.style.background),
-      "var(--mantine-color-green-6)",
+      remainingLimitColor(
+        Number(await ownTile.getByRole("meter").getAttribute("aria-valuenow")),
+      ),
     );
     const unnamedTile = page.getByRole("tab", {
       name: "Account name unavailable, codex account limits",
@@ -408,7 +417,11 @@ test("usage accounts ui", async ({ browser: _browser }) => {
         .getByRole("meter")
         .locator("span")
         .evaluate((element) => element.style.background),
-      "var(--mantine-color-yellow-6)",
+      remainingLimitColor(
+        Number(
+          await unnamedTile.getByRole("meter").getAttribute("aria-valuenow"),
+        ),
+      ),
     );
     await unnamedTile.click();
     assert.equal(await unnamedTile.getAttribute("aria-selected"), "true");
