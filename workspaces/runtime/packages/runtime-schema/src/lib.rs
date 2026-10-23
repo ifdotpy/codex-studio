@@ -6,6 +6,7 @@ pub mod agent_progress;
 pub mod api_schema;
 pub mod contracts;
 pub mod delivery;
+pub mod desktop;
 pub mod federation_limits;
 pub mod multi_server_protocol;
 pub mod shared_values;

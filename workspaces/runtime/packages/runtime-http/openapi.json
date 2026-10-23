@@ -25105,55 +25105,31 @@
       },
       "DiskSpaceStatus": {
         "additionalProperties": false,
+        "description": "The visible disk notice returned by `/api/desktop`.",
         "properties": {
-          "freeBytes": {
-            "anyOf": [
-              {
-                "maximum": 9007199254740991,
-                "minimum": 0,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Freebytes"
-          },
           "level": {
-            "anyOf": [
-              {
-                "enum": [
-                  "warning",
-                  "critical",
-                  "full"
-                ],
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
+            "enum": [
+              "warning",
+              "critical",
+              "full",
+              null
             ],
-            "description": "Set when the free space of the state volume is below the warning or the critical threshold. full: the disk is full; Studio starts no new turn and holds agents until space returns.",
-            "title": "Level"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "message": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "title": "Message"
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
           "level",
-          "freeBytes",
           "message"
         ],
-        "title": "DiskSpaceStatus",
         "type": "object"
       },
       "DraftChangeBatch": {

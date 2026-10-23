@@ -3,6 +3,7 @@ use axum::extract::State;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::io::{self, Read};
+use studio_runtime_schema::desktop::DiskSpaceStatus;
 
 use crate::router::HttpState;
 
@@ -21,7 +22,11 @@ pub(crate) async fn get(
 ) -> Result<Json<Value>, crate::error::ApiError> {
     let status = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-http/desktop-status",
-        move || status(&state),
+        move || {
+            let disk_space =
+                studio_runtime_services::disk_space::status(std::path::Path::new(&state.state_dir));
+            status(&state, disk_space)
+        },
     )
     .await
     .map_err(|_| crate::error::ApiError::internal())?;
@@ -107,7 +112,7 @@ fn backend_build() -> String {
         .clone()
 }
 
-fn status(state: &HttpState) -> Value {
+fn status(state: &HttpState, disk_space: DiskSpaceStatus) -> Value {
     let supervisor = state
         .diagnostics_supervisor
         .as_ref()
@@ -141,9 +146,7 @@ fn status(state: &HttpState) -> Value {
         "supervisorFallback": supervisor.as_ref().is_some_and(|snapshot| snapshot.fallback),
         "supervisorNotice": supervisor.and_then(|snapshot| snapshot.notice),
         "stateDir": state.state_dir, "linuxVm": null,
-        "diskSpace": studio_runtime_services::disk_space::status(
-            std::path::Path::new(&state.state_dir),
-        )
+        "diskSpace": disk_space
     })
 }
 inventory::submit! {
@@ -302,6 +305,139 @@ mod tests {
         > {
             Box::pin(async { Ok(()) })
         }
+    }
+
+    #[tokio::test]
+    async fn desktop_content_ignores_healthy_disk_writes_but_delivers_visible_changes() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        use std::time::Duration;
+        use studio_runtime_schema::desktop::DiskSpaceLevel;
+        use studio_runtime_schema::shared_values::{
+            DISK_FULL_ENTER_FREE_BYTES, DISK_SPACE_CRITICAL_FREE_BYTES,
+            DISK_SPACE_WARNING_FREE_BYTES,
+        };
+        use studio_runtime_services::diagnostics::{
+            SupervisorDiagnosticsPort, SupervisorDiagnosticsSnapshot,
+        };
+        use studio_runtime_services::disk_space::DiskGate;
+
+        struct SupervisorNotice;
+        impl SupervisorDiagnosticsPort for SupervisorNotice {
+            fn snapshot(&self) -> SupervisorDiagnosticsSnapshot {
+                SupervisorDiagnosticsSnapshot {
+                    mode: false,
+                    fallback: true,
+                    notice: Some("Supervisor stopped.".into()),
+                    health: None,
+                }
+            }
+        }
+
+        // Advance beyond the gate's sample cache without waiting or filling a disk.
+        const SAMPLE_STEP: Duration = Duration::from_secs(2);
+        let root = tempfile::tempdir().expect("isolated state");
+        let mut state = crate::router::HttpState::new(
+            "fixture-token".into(),
+            "fixture".into(),
+            root.path().display().to_string(),
+            49171,
+            None,
+            None,
+            None,
+        );
+        let free = Arc::new(AtomicU64::new(DISK_SPACE_WARNING_FREE_BYTES));
+        let gate = DiskGate::with_sampler(root.path().into(), {
+            let free = free.clone();
+            Arc::new(move |_| Some(free.load(Ordering::SeqCst)))
+        });
+        let notifications = state.resource_notifications.clone();
+        let resources = [serde_json::json!({"kind":"desktop"})];
+        let first =
+            serde_json::to_vec(&super::status(&state, gate.status())).expect("served desktop");
+        let baseline = notifications
+            .changes_since_with_content(&resources, None, |_| {
+                std::future::ready(Some(first.clone()))
+            })
+            .await
+            .expect("baseline");
+        let mut cursor = baseline.cursor.revision;
+        let start = Instant::now();
+        for (index, (bytes, expected_level)) in [
+            (DISK_SPACE_WARNING_FREE_BYTES + 1, None),
+            (
+                DISK_SPACE_WARNING_FREE_BYTES - 1,
+                Some(DiskSpaceLevel::Warning),
+            ),
+            (
+                DISK_SPACE_CRITICAL_FREE_BYTES - 1,
+                Some(DiskSpaceLevel::Critical),
+            ),
+            (DISK_FULL_ENTER_FREE_BYTES - 1, Some(DiskSpaceLevel::Full)),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            free.store(bytes, Ordering::SeqCst);
+            assert_eq!(
+                gate.full_free_bytes_at(start + SAMPLE_STEP * (index as u32 + 1)),
+                (expected_level == Some(DiskSpaceLevel::Full)).then_some(bytes),
+                "admission retains the exact free bytes"
+            );
+            let disk = gate.status();
+            assert_eq!(disk.level, expected_level);
+            let content = serde_json::to_vec(&super::status(&state, disk)).expect("served desktop");
+            if expected_level.is_none() {
+                assert_eq!(content, first, "the entire served identity stays stable");
+            }
+            notifications.notify_store_commit(studio_runtime_store::ResourceChange::All);
+            let changed = notifications
+                .changes_since_with_content(&resources, Some(cursor), |_| {
+                    std::future::ready(Some(content.clone()))
+                })
+                .await
+                .expect("desktop content filter");
+            assert_eq!(
+                changed.resources.len(),
+                usize::from(expected_level.is_some()),
+                "healthy writes cause no second read; threshold transitions still deliver"
+            );
+            cursor = changed.cursor.revision;
+        }
+
+        let monitor = ProviderVersionMonitor::start(
+            Arc::new(FixtureStore),
+            None,
+            root.path().join("provider-cache.json"),
+            Arc::new(Probe {
+                production: SystemVersionProbe,
+            }),
+            Arc::new(Fetch),
+            Arc::new(FixtureClock),
+        )
+        .await
+        .expect("isolated provider monitor");
+        assert!(monitor.wait_until_checked(Duration::from_secs(5)).await);
+        state = state.with_provider_versions(monitor.clone());
+        for state in [
+            state.clone(),
+            state.with_diagnostics_supervisor(Arc::new(SupervisorNotice)),
+        ] {
+            notifications.notify_store_commit(studio_runtime_store::ResourceChange::All);
+            let changed = notifications
+                .changes_since_with_content(&resources, Some(cursor), |_| {
+                    std::future::ready(
+                        serde_json::to_vec(&super::status(&state, gate.status())).ok(),
+                    )
+                })
+                .await
+                .expect("visible desktop change");
+            assert_eq!(
+                changed.resources, resources,
+                "provider and supervisor changes still deliver"
+            );
+            cursor = changed.cursor.revision;
+        }
+        monitor.shutdown().await;
     }
 
     #[tokio::test]

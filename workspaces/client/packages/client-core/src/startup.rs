@@ -553,7 +553,7 @@ setTimeout(() => process.exit(0), fixtureLifetimeMs);
             ] {
                 let (mut stream, _) = listener.accept().await.unwrap();
                 read_http(&mut stream).await;
-                reply(&mut stream, &serde_json::json!({"application":"codex-agents", "protocol":1, "backendKind":"rust", "pid":std::process::id(), "stateDir":"/expected", "backendBuild":build}).to_string()).await;
+                reply(&mut stream, &serde_json::json!({"application":"codex-agents", "protocol":1, "backendKind":"rust", "pid":std::process::id(), "stateDir":"/expected", "backendBuild":build, "diskSpace":{"level":null,"message":null}}).to_string()).await;
             }
         });
         for valid in [false, false, true] {

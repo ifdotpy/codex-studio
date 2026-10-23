@@ -588,7 +588,10 @@ fn api_types(root: &Path, document: &Value, argument: &str) -> Result<String, St
 /// Render every contract file. `with_api_types` also runs Node for web types.
 pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String> {
     let mut openapi = read_json(root, OPENAPI_PATH)?;
-    for (name, schema) in crate::agent_progress::schemas() {
+    for (name, schema) in crate::agent_progress::schemas()
+        .into_iter()
+        .chain(crate::desktop::schemas())
+    {
         *openapi
             .pointer_mut(&format!("/components/schemas/{name}"))
             .ok_or_else(|| format!("OpenAPI is missing Rust-owned {name}"))? = schema;

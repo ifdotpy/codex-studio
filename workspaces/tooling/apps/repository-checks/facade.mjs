@@ -1678,6 +1678,66 @@ function fastTierCommands(root) {
       options: { script: "test:unit:fast" },
     },
     {
+      item: { name: "desktop disk status", ecosystem: "cargo" },
+      label: "Desktop content identity and native attach witnesses",
+      commands: [
+        [
+          "cargo",
+          [
+            "nextest",
+            "run",
+            "--locked",
+            "--no-tests",
+            "fail",
+            "--message-format",
+            "libtest-json-plus",
+            "-p",
+            "studio-runtime-http",
+            "-p",
+            "studio-client-core",
+            "--lib",
+            "-E",
+            nextestAnyOf([
+              "test(desktop_content_ignores_healthy_disk_writes_but_delivers_visible_changes)",
+              "test(desktop_http_)",
+              "test(existing_backend_must_supply_a_valid_build_identity)",
+            ]),
+          ],
+        ],
+      ],
+      options: {
+        selector: "desktop disk projection, content filtering and Rust attach",
+        reason:
+          "Healthy disk writes must not cause renderer reads; visible changes and native identity checks remain live.",
+      },
+    },
+    {
+      item: web,
+      label: "Desktop notice reader witnesses",
+      commands: [
+        [
+          "pnpm",
+          [
+            "--filter",
+            "codex-agents-web",
+            "exec",
+            "vitest",
+            "run",
+            "--config",
+            "vitest.unit.config.ts",
+            "src/components/SupervisorRecoveryNotice.test.ts",
+            "src/components/desktopNotices.test.ts",
+            "src/components/watchResourceReads.test.ts",
+          ],
+        ],
+      ],
+      options: {
+        selector: "mounted desktop reader and retained disk notices",
+        reason:
+          "Read a stable baseline once and retain the full-disk notice across failed reads.",
+      },
+    },
+    {
       item: { name: "studio-runtime-http", ecosystem: "cargo" },
       label: "Primary state stream and conversation revision witnesses",
       commands: [

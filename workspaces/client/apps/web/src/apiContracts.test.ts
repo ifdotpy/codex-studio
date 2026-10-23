@@ -25,6 +25,11 @@ type Equal<Actual, Expected> =
 type Assert<Condition extends true> = Condition;
 type NotNever<Value> = [Value] extends [never] ? false : true;
 
+const desktopDiskStatusHasOnlyRenderedFields: Assert<
+  Equal<keyof components["schemas"]["DiskSpaceStatus"], "level" | "message">
+> = true;
+void desktopDiskStatusHasOnlyRenderedFields;
+
 // The transcript producer has no string-valued unavailable reasons.
 const transcriptUnavailableIsNull: Assert<
   Equal<
