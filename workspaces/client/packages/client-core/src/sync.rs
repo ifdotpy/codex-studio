@@ -80,27 +80,6 @@ pub async fn open(backend: &Backend, sender: &StoreSender) -> Result<Value, Comm
     }
 }
 
-fn mapped_checkpoints()
--> &'static std::sync::Mutex<std::collections::HashMap<(String, String), u64>> {
-    static VALUE: std::sync::OnceLock<
-        std::sync::Mutex<std::collections::HashMap<(String, String), u64>>,
-    > = std::sync::OnceLock::new();
-    VALUE.get_or_init(Default::default)
-}
-fn mapped_after(workspace: &str, remote: &str) -> u64 {
-    mapped_checkpoints()
-        .lock()
-        .ok()
-        .and_then(|m| m.get(&(workspace.into(), remote.into())).copied())
-        .unwrap_or(0)
-}
-fn record_mapped(workspace: &str, remote: &str, seq: u64) {
-    if let Ok(mut m) = mapped_checkpoints().lock() {
-        let e = m.entry((workspace.into(), remote.into())).or_default();
-        *e = (*e).max(seq);
-    }
-}
-
 fn merge_transcript_delta(previous: &Value, incoming: &Value) -> Result<String, CommandError> {
     let base: Value = serde_json::from_str(previous["payload"].as_str().unwrap_or(""))
         .map_err(|e| error("invalid_projection", e))?;
@@ -196,21 +175,12 @@ pub async fn pull(
         ));
     }
     if scope == "state" {
-        match pull_entities(backend, sender, workspace).await {
-            Ok(value) => return Ok(value),
-            Err(failure)
-                if current["chatState"] == true
-                    && failure.status.is_some_and(|s| s == 400 || s == 404) =>
-            {
-                return pull_legacy(backend, sender, workspace, scope).await;
-            }
-            Err(failure) => return Err(failure),
-        }
+        return pull_entities(backend, sender, workspace).await;
     }
-    pull_legacy(backend, sender, workspace, scope).await
+    pull_document(backend, sender, workspace, scope).await
 }
 
-async fn pull_legacy(
+async fn pull_document(
     backend: &Backend,
     sender: &StoreSender,
     workspace: &str,
@@ -223,11 +193,6 @@ async fn pull_legacy(
             "The server workspace changed. Reload to synchronize.",
         ));
     }
-    let remote = if scope == "state" && current["chatState"] == true {
-        "state:chat"
-    } else {
-        scope
-    };
     let previous = state(
         sender,
         "projection.get",
@@ -235,15 +200,11 @@ async fn pull_legacy(
     )
     .await
     .map_err(|e| error("storage_error", e))?;
-    let after = if remote != scope {
-        mapped_after(workspace, remote)
-    } else {
-        previous["seq"].as_u64().unwrap_or(0)
-    };
+    let after = previous["seq"].as_u64().unwrap_or(0);
     let url = reqwest::Url::parse_with_params(
         "http://127.0.0.1/api/sync/pull",
         &[
-            ("scope", remote.to_owned()),
+            ("scope", scope.to_owned()),
             ("after", after.to_string()),
             ("limit", "100".into()),
         ],
@@ -262,7 +223,7 @@ async fn pull_legacy(
     for raw in docs {
         let mut doc: Document =
             serde_json::from_value(raw.clone()).map_err(|e| error("invalid_projection", e))?;
-        if doc.id != remote {
+        if doc.id != scope {
             return Err(error(
                 "invalid_projection",
                 "The server returned a different projection scope.",
@@ -284,7 +245,6 @@ async fn pull_legacy(
                 doc.payload = merge_transcript_delta(&previous, &incoming)?;
             }
         }
-        doc.id = scope.into();
         state(
             sender,
             "projection.put",
@@ -292,11 +252,6 @@ async fn pull_legacy(
         )
         .await
         .map_err(|e| error("storage_error", e))?;
-    }
-    if remote != scope
-        && let Some(seq) = result["checkpoint"]["seq"].as_u64()
-    {
-        record_mapped(workspace, remote, seq);
     }
     state(
         sender,
@@ -307,60 +262,19 @@ async fn pull_legacy(
     .map_err(|e| error("storage_error", e))
 }
 
-fn validate_entity(doc: &Document) -> Result<(), CommandError> {
-    if !doc.id.starts_with("entity:") {
-        return Err(error(
-            "invalid_projection",
-            "The server returned a non-entity document.",
-        ));
-    }
-    if !doc.deleted {
-        let payload: Value =
-            serde_json::from_str(&doc.payload).map_err(|e| error("invalid_projection", e))?;
-        let (collection, id) = doc
-            .id
-            .strip_prefix("entity:")
-            .unwrap()
-            .split_once(':')
-            .ok_or_else(|| error("invalid_projection", "The entity identity is invalid."))?;
-        if payload["collection"] != collection
-            || payload["id"] != id
-            || payload.get("value").is_none()
-        {
-            return Err(error(
-                "invalid_projection",
-                "The entity payload does not match its identity.",
-            ));
-        }
-    }
-    Ok(())
-}
-
-async fn put_entity_document(
+async fn put_entity_change(
     sender: &StoreSender,
     workspace: &str,
-    doc: &Document,
+    change: &Value,
 ) -> Result<bool, CommandError> {
-    let scope = doc.id.as_str();
-    let previous = state(
+    state(
         sender,
-        "projection.get",
-        json!({"workspace":workspace,"scope":scope}),
+        "projection.putEntity",
+        json!({"workspace":workspace,"change":change}),
     )
     .await
-    .map_err(|e| error("storage_error", e))?;
-    let advances = previous.is_null() || doc.seq > previous["seq"].as_u64().unwrap_or(0);
-    let stored = state(
-        sender,
-        "projection.put",
-        json!({"workspace":workspace,"scope":scope,"document":doc}),
-    )
-    .await
-    .map_err(|e| error("storage_error", e))?;
-    Ok(advances
-        && stored["seq"] == doc.seq
-        && stored["payload"] == doc.payload
-        && stored["_deleted"] == doc.deleted)
+    .map(|changed| changed == true)
+    .map_err(|e| error("invalid_projection", e))
 }
 
 async fn pull_entities(
@@ -455,15 +369,8 @@ async fn pull_entities(
             .await
             .map_err(|e| error("storage_error", e))?;
         }
-        let docs: Vec<Document> = rows
-            .iter()
-            .map(|row| {
-                serde_json::from_value(row.clone()).map_err(|e| error("invalid_projection", e))
-            })
-            .collect::<Result<_, _>>()?;
-        for doc in &docs {
-            validate_entity(doc)?;
-            stored_entity |= put_entity_document(sender, workspace, doc).await?;
+        for change in rows {
+            stored_entity |= put_entity_change(sender, workspace, change).await?;
         }
         let next = result["checkpoint"]["seq"].as_u64().ok_or_else(|| {
             error(
@@ -471,7 +378,7 @@ async fn pull_entities(
                 "The server returned an invalid entity checkpoint.",
             )
         })?;
-        if next < after || (!docs.is_empty() && next == after) {
+        if next < after || (!rows.is_empty() && next == after) {
             return Err(error(
                 "invalid_projection",
                 "The entity checkpoint did not advance.",
@@ -497,7 +404,7 @@ async fn pull_entities(
                 "The server returned no entity sequence bound.",
             )
         })?;
-        if docs.len() < 500 || after >= max {
+        if rows.len() < 500 || after >= max {
             break;
         }
     }
@@ -567,18 +474,16 @@ async fn entity_snapshot(
     let mut seq = 0;
     for doc in rows.as_array().into_iter().flatten() {
         seq = seq.max(doc["seq"].as_u64().unwrap_or(0));
-        if doc["_deleted"] == true {
+        if doc["op"] == "delete" {
             continue;
         }
-        let payload: Value = serde_json::from_str(doc["payload"].as_str().unwrap_or(""))
-            .map_err(|e| error("invalid_projection", e))?;
-        if let (Some(c), Some(id), Some(value)) = (
-            payload["collection"].as_str(),
-            payload["id"].as_str(),
-            payload.get("value"),
+        if let (Some(collection), Some(id), Some(value)) = (
+            doc["collection"].as_str(),
+            doc["id"].as_str(),
+            doc.get("value"),
         ) {
             collections
-                .entry(c.into())
+                .entry(collection.into())
                 .or_default()
                 .insert(id.into(), value.clone());
         }
@@ -683,11 +588,8 @@ async fn apply_entities(
         return Err(error("invalid_workspace", "Invalid workspace identity."));
     }
     let mut stored_entity = false;
-    for value in values {
-        let doc: Document =
-            serde_json::from_value(value.clone()).map_err(|e| error("invalid_projection", e))?;
-        validate_entity(&doc)?;
-        stored_entity |= put_entity_document(sender, workspace, &doc).await?;
+    for change in values {
+        stored_entity |= put_entity_change(sender, workspace, change).await?;
     }
     if stored_entity {
         materialize_state(sender, workspace).await
@@ -746,14 +648,6 @@ mod tests {
     };
     use tokio::{io::AsyncWriteExt, net::TcpListener, sync::mpsc};
     #[test]
-    fn mapped_checkpoint_is_monotonic() {
-        assert_eq!(mapped_after("w-test", "state:chat"), 0);
-        record_mapped("w-test", "state:chat", 42);
-        record_mapped("w-test", "state:chat", 7);
-        assert_eq!(mapped_after("w-test", "state:chat"), 42);
-        assert_eq!(mapped_after("w-other", "state:chat"), 0);
-    }
-    #[test]
     fn transcript_delta_merges_items_revisions_metadata_and_order() {
         let base = json!({"payload":json!({"items":[{"id":"a","v":1},{"id":"b","v":2}],"itemRevisions":{"a":1,"b":1},"title":"old"}).to_string()});
         let delta = json!({"items":[{"id":"a","v":3},{"id":"c","v":4}],"itemRevisions":{"a":2,"c":1},"removed":["b"],"order":["c","a"],"delta":true,"title":"new"});
@@ -785,6 +679,82 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn entity_v4_batch_applies_structured_upserts_and_deletes_once() {
+        let workspace = "b".repeat(32);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let backend = Backend::new(&format!("http://{}", listener.local_addr().unwrap())).unwrap();
+        let server_workspace = workspace.clone();
+        let server = tokio::spawn(async move {
+            for _ in 0..3 {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let (headers, _) = crate::backend::tests::read_http(&mut stream).await;
+                assert!(headers.starts_with("GET /api/sync/identity"));
+                let body = json!({"workspaceId":server_workspace,"chatState":true}).to_string();
+                stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).as_bytes()).await.unwrap();
+            }
+        });
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("client.sqlite3");
+        let (sender, mut receive) = mpsc::channel::<crate::delivery::StoreCommand>(32);
+        let state_puts = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::clone(&state_puts);
+        let worker = tokio::spawn(async move {
+            let mut store = crate::store::Store::open(&path).unwrap();
+            while let Some((request, reply)) = receive.recv().await {
+                if request.method == "projection.put" && request.params["scope"] == "state" {
+                    observed.fetch_add(1, Ordering::SeqCst);
+                }
+                let _ = reply.send(store.dispatch(request));
+            }
+            drop(directory);
+        });
+        let apply = |documents: Value| Request {
+            id: "apply".into(),
+            method: "sync.applyEntities".into(),
+            params: json!({"workspace":workspace,"documents":documents}),
+        };
+        let task = json!({"op":"upsert","collection":"task","id":"one","seq":10,"value":{"id":"one","status":"running"}});
+        let other = json!({"op":"upsert","collection":"task","id":"two","seq":11,"value":{"id":"two","status":"running"}});
+        let first = dispatch(&backend, &sender, apply(json!([task, other]))).await;
+        assert!(first.error.is_none(), "{:?}", first.error);
+        let snapshot: Value =
+            serde_json::from_str(first.result.unwrap()["payload"].as_str().unwrap()).unwrap();
+        assert_eq!(snapshot["runtime"]["tasks"].as_array().unwrap().len(), 2);
+        assert_eq!(state_puts.load(Ordering::SeqCst), 1);
+        let removed = dispatch(
+            &backend,
+            &sender,
+            apply(json!([
+                {"op":"delete","collection":"task","id":"one","seq":12},
+                {"op":"delete","collection":"task","id":"two","seq":13}
+            ])),
+        )
+        .await;
+        assert!(removed.error.is_none(), "{:?}", removed.error);
+        let removed = removed.result.unwrap();
+        let snapshot: Value = serde_json::from_str(removed["payload"].as_str().unwrap()).unwrap();
+        assert!(snapshot["runtime"]["tasks"].as_array().unwrap().is_empty());
+        assert_eq!(state_puts.load(Ordering::SeqCst), 2);
+        let stale = dispatch(&backend, &sender, apply(json!([task]))).await;
+        assert_eq!(stale.result, Some(removed));
+        assert_eq!(state_puts.load(Ordering::SeqCst), 2);
+        let checkpoint = state(
+            &sender,
+            "projection.get",
+            json!({"workspace":workspace,"scope":"state:entities:checkpoint"}),
+        )
+        .await
+        .unwrap();
+        assert!(
+            checkpoint.is_null(),
+            "notifications cannot advance the pull cursor"
+        );
+        drop(sender);
+        worker.await.unwrap();
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
     async fn entity_pull_paginates_and_materializes_the_browser_snapshot() {
         let workspace = "a".repeat(32);
         let mut entities = Vec::new();
@@ -799,7 +769,7 @@ mod tests {
             json!({"collection":"task","id":"task-1","value":{"id":"task-1","status":"running"}}),
         ]);
         let docs: Vec<Value> = entities.iter().enumerate().map(|(index, entity)| {
-            json!({"id":format!("entity:{}:{}",entity["collection"].as_str().unwrap(),entity["id"].as_str().unwrap()),"payload":entity.to_string(),"seq":index+1,"_deleted":false})
+            json!({"op":"upsert","collection":entity["collection"],"id":entity["id"],"value":entity["value"],"seq":index+1})
         }).collect();
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let origin = format!("http://{}", listener.local_addr().unwrap());
@@ -904,14 +874,9 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(checkpoint["seq"], 704);
-        let tombstone = Document {
-            id: "entity:task:task-1".into(),
-            payload: "{}".into(),
-            seq: 705,
-            deleted: true,
-        };
+        let tombstone = json!({"op":"delete","collection":"task","id":"task-1","seq":705});
         assert!(
-            put_entity_document(&sender, &workspace, &tombstone)
+            put_entity_change(&sender, &workspace, &tombstone)
                 .await
                 .unwrap()
         );

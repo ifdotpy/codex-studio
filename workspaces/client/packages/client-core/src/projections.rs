@@ -1,8 +1,9 @@
 //! Durable server projections. Sequence numbers include deletion tombstones.
 use crate::protocol::{Request, Response};
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use studio_client_domain::MAX_SAFE_INTEGER;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Document {
@@ -13,14 +14,61 @@ pub struct Document {
     pub deleted: bool,
 }
 
+// Local entity cache format, independent of the server's sync protocol version.
+const ENTITY_CACHE_VERSION: i64 = 4;
+// Largest local projection key, measured in UTF-8 bytes.
+const MAX_PROJECTION_SCOPE_BYTES: usize = 512;
+
 pub fn initialize(connection: &Connection) -> rusqlite::Result<()> {
-    connection.execute_batch("CREATE TABLE IF NOT EXISTS client_projections (
+    let transaction = Transaction::new_unchecked(connection, TransactionBehavior::Immediate)?;
+    transaction.execute_batch("CREATE TABLE IF NOT EXISTS client_projections (
         workspace TEXT NOT NULL, scope TEXT NOT NULL, document TEXT NOT NULL,
         seq INTEGER NOT NULL, PRIMARY KEY(workspace,scope));
-        CREATE TABLE IF NOT EXISTS client_identity (singleton INTEGER PRIMARY KEY CHECK(singleton=1), value TEXT NOT NULL);")
+        CREATE TABLE IF NOT EXISTS client_identity (singleton INTEGER PRIMARY KEY CHECK(singleton=1), value TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS client_projection_cache_version (
+            singleton INTEGER PRIMARY KEY CHECK(singleton=1), version INTEGER NOT NULL);")?;
+    let version: Option<i64> = transaction
+        .query_row(
+            "SELECT version FROM client_projection_cache_version WHERE singleton=1",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if version != Some(ENTITY_CACHE_VERSION) {
+        // Derived state and its cursors must be cleared together, for every workspace.
+        // Keep transcripts, identity, drafts, receipts and other durable local data.
+        transaction.execute("DELETE FROM client_projections WHERE scope LIKE 'entity:%' OR scope LIKE 'state:entities:%' OR scope='state'", [])?;
+        transaction.execute("INSERT INTO client_projection_cache_version VALUES(1,?1) ON CONFLICT(singleton) DO UPDATE SET version=excluded.version", [ENTITY_CACHE_VERSION])?;
+    }
+    transaction.commit()
 }
 
-fn get(connection: &Connection, workspace: &str, scope: &str) -> Result<Option<Document>, String> {
+fn entity_scope(change: &Value) -> Result<String, String> {
+    let collection = change["collection"]
+        .as_str()
+        .ok_or("Missing entity collection.")?;
+    let id = change["id"].as_str().ok_or("Missing entity identity.")?;
+    let seq = change["seq"].as_u64().ok_or("Missing entity sequence.")?;
+    if collection.is_empty()
+        || collection.contains(':')
+        || id.is_empty()
+        || seq > MAX_SAFE_INTEGER as u64
+    {
+        return Err("Invalid entity identity or sequence.".into());
+    }
+    match change["op"].as_str() {
+        Some("upsert") if change["value"].is_object() => {}
+        Some("delete") if change.get("value").is_none() => {}
+        _ => return Err("Invalid entity change operation or value.".into()),
+    }
+    let scope = format!("entity:{collection}:{id}");
+    if scope.len() > MAX_PROJECTION_SCOPE_BYTES {
+        return Err("Invalid projection identity.".into());
+    }
+    Ok(scope)
+}
+
+fn get(connection: &Connection, workspace: &str, scope: &str) -> Result<Option<Value>, String> {
     let encoded: Option<String> = connection
         .query_row(
             "SELECT document FROM client_projections WHERE workspace=?1 AND scope=?2",
@@ -34,7 +82,7 @@ fn get(connection: &Connection, workspace: &str, scope: &str) -> Result<Option<D
         .transpose()
 }
 
-fn entities(connection: &Connection, workspace: &str) -> Result<Vec<Document>, String> {
+fn entities(connection: &Connection, workspace: &str) -> Result<Vec<Value>, String> {
     let mut statement = connection
         .prepare("SELECT document FROM client_projections WHERE workspace=?1 AND scope LIKE 'entity:%' ORDER BY scope")
         .map_err(|e| e.to_string())?;
@@ -98,24 +146,36 @@ fn execute(connection: &Connection, request: &Request) -> Result<Value, String> 
     let workspace = request.params["workspace"]
         .as_str()
         .ok_or("Missing workspace identity.")?;
+    if !valid_workspace(workspace) {
+        return Err("Invalid projection identity.".into());
+    }
+    if request.method == "projection.putEntity" {
+        let change = &request.params["change"];
+        let scope = entity_scope(change)?;
+        let seq = change["seq"].as_u64().ok_or("Missing entity sequence.")?;
+        let changed = connection
+            .execute(
+                "INSERT INTO client_projections(workspace,scope,document,seq) VALUES(?1,?2,?3,?4)
+            ON CONFLICT(workspace,scope) DO UPDATE SET document=excluded.document,seq=excluded.seq
+            WHERE excluded.seq>client_projections.seq",
+                params![workspace, scope, change.to_string(), seq as i64],
+            )
+            .map_err(|error| error.to_string())?;
+        return Ok(Value::Bool(changed != 0));
+    }
     let scope = request.params["scope"]
         .as_str()
         .ok_or("Missing projection scope.")?;
-    if !valid_workspace(workspace) || scope.is_empty() || scope.len() > 512 {
+    if scope.is_empty() || scope.len() > MAX_PROJECTION_SCOPE_BYTES {
         return Err("Invalid projection identity.".into());
     }
     match request.method.as_str() {
-        "projection.entities" => Ok(
-            serde_json::to_value(entities(connection, workspace)?).map_err(|e| e.to_string())?
-        ),
-        "projection.get" => {
-            Ok(serde_json::to_value(get(connection, workspace, scope)?)
-                .map_err(|e| e.to_string())?)
-        }
+        "projection.entities" => Ok(Value::Array(entities(connection, workspace)?)),
+        "projection.get" => Ok(get(connection, workspace, scope)?.unwrap_or(Value::Null)),
         "projection.put" => {
             let document: Document = serde_json::from_value(request.params["document"].clone())
                 .map_err(|e| e.to_string())?;
-            if document.id != scope || document.seq > 9_007_199_254_740_991 {
+            if document.id != scope || document.seq > MAX_SAFE_INTEGER as u64 {
                 return Err("Invalid projection document.".into());
             }
             if !document.deleted {
@@ -142,6 +202,165 @@ pub fn dispatch(connection: &Connection, request: &Request) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn entity_v4_upsert_delete_and_stale_replay_survive_restart() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("client.sqlite3");
+        let workspace = "a".repeat(32);
+        let put = |change: Value| Request {
+            id: "entity".into(),
+            method: "projection.putEntity".into(),
+            params: json!({"workspace":workspace,"change":change}),
+        };
+        let upsert = json!({"op":"upsert","collection":"agent","id":"one","seq":10,"value":{"id":"one","name":"First"}});
+        let deleted = json!({"op":"delete","collection":"agent","id":"one","seq":12});
+        {
+            let mut store = crate::store::Store::open(&path).unwrap();
+            let applied = store.dispatch(put(upsert.clone()));
+            assert!(applied.error.is_none(), "{:?}", applied.error);
+            assert_eq!(applied.result, Some(json!(true)));
+            assert_eq!(
+                store.dispatch(put(upsert.clone())).result,
+                Some(json!(false))
+            );
+            assert_eq!(
+                store.dispatch(put(deleted.clone())).result,
+                Some(json!(true))
+            );
+        }
+        let mut store = crate::store::Store::open(&path).unwrap();
+        let mut stale = upsert.clone();
+        stale["seq"] = json!(11);
+        assert_eq!(store.dispatch(put(stale)).result, Some(json!(false)));
+        let read = store.dispatch(Request {
+            id: "read".into(),
+            method: "projection.get".into(),
+            params: json!({"workspace":workspace,"scope":"entity:agent:one"}),
+        });
+        assert_eq!(read.result, Some(deleted));
+        let mut fresh = upsert;
+        fresh["seq"] = json!(13);
+        assert_eq!(store.dispatch(put(fresh.clone())).result, Some(json!(true)));
+        let rows = store.dispatch(Request {
+            id: "read".into(),
+            method: "projection.entities".into(),
+            params: json!({"workspace":workspace,"scope":"entity:*"}),
+        });
+        assert_eq!(rows.result, Some(json!([fresh])));
+    }
+
+    #[test]
+    fn entity_v4_rejects_legacy_and_malformed_changes_without_writing() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut store =
+            crate::store::Store::open(&directory.path().join("client.sqlite3")).unwrap();
+        let workspace = "c".repeat(32);
+        for change in [
+            json!({"id":"entity:agent:one","seq":1,"payload":"{}"}),
+            json!({"op":"upsert","collection":"agent","id":"one","seq":1,"value":"{}"}),
+            json!({"op":"delete","collection":"agent","id":"one","seq":1,"value":{}}),
+            json!({"op":"replace","collection":"agent","id":"one","seq":1,"value":{}}),
+            json!({"op":"delete","collection":"agent","id":"","seq":1}),
+            json!({"op":"delete","collection":"agent","id":"one","seq":MAX_SAFE_INTEGER as u64 + 1}),
+        ] {
+            let response = store.dispatch(Request {
+                id: "invalid".into(),
+                method: "projection.putEntity".into(),
+                params: json!({"workspace":workspace,"change":change}),
+            });
+            assert!(
+                response.error.is_some(),
+                "accepted invalid change: {change}"
+            );
+        }
+        let rows = store.dispatch(Request {
+            id: "read".into(),
+            method: "projection.entities".into(),
+            params: json!({"workspace":workspace,"scope":"entity:*"}),
+        });
+        assert_eq!(rows.result, Some(json!([])));
+    }
+
+    #[test]
+    fn entity_v4_discards_old_cache_and_cursors_but_preserves_other_local_data() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("client.sqlite3");
+        let workspace = "a".repeat(32);
+        {
+            let mut store = crate::store::Store::open(&path).unwrap();
+            for scope in [
+                "entity:agent:one",
+                "state",
+                "state:entities:checkpoint",
+                "state:entities:initial",
+                "state:entities:ready",
+                "transcript:one",
+            ] {
+                let result = store.dispatch(Request {
+                    id: "seed".into(), method: "projection.put".into(),
+                    params: json!({"workspace":workspace,"scope":scope,"document":{"id":scope,"seq":99,"payload":"{}"}}),
+                });
+                assert!(result.error.is_none());
+            }
+            assert!(
+                store
+                    .dispatch(Request {
+                        id: "identity".into(),
+                        method: "identity.set".into(),
+                        params: json!({"workspaceId":workspace,"chatState":true}),
+                    })
+                    .error
+                    .is_none()
+            );
+            // An unversioned database is the format shipped before entity v4.
+            store
+                .connection
+                .execute_batch("DROP TABLE IF EXISTS client_projection_cache_version")
+                .unwrap();
+        }
+        let mut store = crate::store::Store::open(&path).unwrap();
+        for scope in [
+            "entity:agent:one",
+            "state",
+            "state:entities:checkpoint",
+            "state:entities:initial",
+            "state:entities:ready",
+        ] {
+            let result = store.dispatch(Request {
+                id: "read".into(),
+                method: "projection.get".into(),
+                params: json!({"workspace":workspace,"scope":scope}),
+            });
+            assert_eq!(
+                result.result,
+                Some(Value::Null),
+                "old cache retained: {scope}"
+            );
+        }
+        assert!(
+            store
+                .dispatch(Request {
+                    id: "read".into(),
+                    method: "projection.get".into(),
+                    params: json!({"workspace":workspace,"scope":"transcript:one"}),
+                })
+                .result
+                .unwrap()
+                .is_object()
+        );
+        assert_eq!(
+            store
+                .dispatch(Request {
+                    id: "identity".into(),
+                    method: "identity.get".into(),
+                    params: Value::Null,
+                })
+                .result
+                .unwrap()["workspaceId"],
+            workspace
+        );
+    }
+
     #[test]
     fn workspace_rebind_is_rejected_without_changing_durable_identity() {
         let directory = tempfile::tempdir().unwrap();
