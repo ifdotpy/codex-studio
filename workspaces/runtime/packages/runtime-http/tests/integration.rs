@@ -8,6 +8,7 @@ mod process_controls;
 mod project_preparation;
 mod recovery_http;
 mod remote_access_origin;
+mod studio_errors;
 mod voice_provider;
 mod wave7_p04_callback_http;
 mod wave7_p10_lifecycle_http;

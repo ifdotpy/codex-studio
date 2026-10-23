@@ -57,6 +57,7 @@ import {
 } from "./shell/messages/PeerTeams";
 
 import SidebarRow from "./SidebarRow";
+import { StudioErrorsButton } from "./StudioErrors";
 import {
   activeLayrReadiness,
   describeWithLayrReadiness,
@@ -1315,6 +1316,7 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
             New shared chat
           </Button>
         )}
+        <StudioErrorsButton open={p.open} />
       </div>
       <TextInput
         id="chat-search"

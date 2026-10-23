@@ -42,6 +42,7 @@ mod queue_write;
 mod recovery;
 mod rules;
 mod session;
+mod studio_errors;
 mod sync;
 mod sync_delta;
 mod sync_documents;

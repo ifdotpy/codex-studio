@@ -369,7 +369,7 @@ mod tests {
             epoch: 4,
             attempt_id: "attempt".into(),
         };
-        let reason = Some("Provider thread resume outcome is unknown; input remains pending.");
+        let reason = Some(studio_runtime_schema::shared_values::PROVIDER_RESUME_UNKNOWN_ERROR);
         let transaction = connection.transaction().expect("claim transaction begins");
         SchedulerRepository::claim(&transaction, "agent", 4, "attempt", 10.0, 2)
             .expect("claim executes");

@@ -1836,6 +1836,40 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/studio-errors": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Studio Errors Read */
+    get: operations["studio_errors_read_api_studio_errors_get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/studio-errors/dismiss": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Studio Errors Dismiss */
+    post: operations["studio_errors_dismiss_api_studio_errors_dismiss_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/sync/drafts": {
     parameters: {
       query?: never;
@@ -22384,6 +22418,85 @@ export interface components {
       /** Waitingfor */
       waitingFor?: components["schemas"]["JsonValue"][] | null;
     };
+    /**
+     * StudioError
+     * @description One agent work item that ended because of a Studio error, not because of the agent's own work.
+     */
+    StudioError: {
+      /**
+       * Action
+       * @description resume runs connection recovery for the agent; check opens the agent for the owner.
+       * @enum {string}
+       */
+      action: "resume" | "check";
+      /** Agentid */
+      agentId: string;
+      /** Agentname */
+      agentName: string;
+      /**
+       * At
+       * @description Unix seconds of the failure.
+       */
+      at: number;
+      /**
+       * Detail
+       * @description The stored error.
+       */
+      detail: string;
+      /**
+       * Eventid
+       * @default null
+       */
+      eventId?: string | null;
+      /**
+       * Id
+       * @description Row identity; dismissing it hides this row only.
+       */
+      id: string;
+      /**
+       * Kind
+       * @enum {string}
+       */
+      kind:
+        | "monitor_outcome_lost"
+        | "monitor_not_recorded"
+        | "input_not_sent"
+        | "input_unconfirmed"
+        | "input_uncertain"
+        | "input_stuck"
+        | "turn_disconnected"
+        | "workspace_failed";
+      /**
+       * Monitorid
+       * @default null
+       */
+      monitorId?: string | null;
+      /**
+       * Reason
+       * @description The reason in plain words.
+       */
+      reason: string;
+      /**
+       * Subject
+       * @description The command or the start of the message.
+       */
+      subject: string;
+    };
+    /** StudioErrorsResponse */
+    StudioErrorsResponse: {
+      /**
+       * Syncentities
+       * @default null
+       */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /**
+       * Syncentitiesafter
+       * @default null
+       */
+      _syncEntitiesAfter?: number | null;
+      /** Items */
+      items: components["schemas"]["StudioError"][];
+    };
     /** SummaryAccount */
     SummaryAccount: {
       /**
@@ -35228,6 +35341,114 @@ export interface operations {
       403: components["responses"]["ApiError403"];
       /** @description Not Found */
       404: components["responses"]["ApiError404"];
+      /** @description Request Timeout */
+      408: components["responses"]["ApiError408"];
+      /** @description Conflict */
+      409: components["responses"]["ApiError409"];
+      /** @description Gone */
+      410: components["responses"]["ApiError410"];
+      /** @description Content Too Large */
+      413: components["responses"]["ApiError413"];
+      /** @description Unsupported Media Type */
+      415: components["responses"]["ApiError415"];
+      /** @description Upgrade Required */
+      426: components["responses"]["ApiError426"];
+      /** @description Too Many Requests */
+      429: components["responses"]["ApiError429"];
+      /** @description Internal Server Error */
+      500: components["responses"]["ApiError500"];
+      /** @description Bad Gateway */
+      502: components["responses"]["ApiError502"];
+      /** @description Service Unavailable */
+      503: components["responses"]["ApiError503"];
+    };
+  };
+  studio_errors_read_api_studio_errors_get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
+          "Access-Control-Expose-Headers": components["headers"]["AccessControlExposeHeaders"];
+          "Cache-Control": components["headers"]["CacheControl"];
+          "Content-Encoding": components["headers"]["ContentEncoding"];
+          "Content-Length": components["headers"]["ContentLength"];
+          "Content-Security-Policy": components["headers"]["ContentSecurityPolicy"];
+          "Content-Type": components["headers"]["ContentType"];
+          "Referrer-Policy": components["headers"]["ReferrerPolicy"];
+          "Server-Timing": components["headers"]["ServerTiming"];
+          Vary: components["headers"]["Vary"];
+          "X-Content-Type-Options": components["headers"]["XContentTypeOptions"];
+          "X-Studio-API-Schema": components["headers"]["StudioApiSchema"];
+          "X-Studio-Server": components["headers"]["StudioServer"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["StudioErrorsResponse"];
+        };
+      };
+      /** @description Bad Request */
+      400: components["responses"]["ApiError400"];
+      /** @description Unauthorized */
+      401: components["responses"]["ApiError401"];
+      /** @description Forbidden */
+      403: components["responses"]["ApiError403"];
+      /** @description Too Many Requests */
+      429: components["responses"]["ApiError429"];
+      /** @description Internal Server Error */
+      500: components["responses"]["ApiError500"];
+      /** @description Service Unavailable */
+      503: components["responses"]["ApiError503"];
+    };
+  };
+  studio_errors_dismiss_api_studio_errors_dismiss_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["IdRequest"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
+          "Access-Control-Expose-Headers": components["headers"]["AccessControlExposeHeaders"];
+          "Cache-Control": components["headers"]["CacheControl"];
+          "Content-Encoding": components["headers"]["ContentEncoding"];
+          "Content-Length": components["headers"]["ContentLength"];
+          "Content-Security-Policy": components["headers"]["ContentSecurityPolicy"];
+          "Content-Type": components["headers"]["ContentType"];
+          "Referrer-Policy": components["headers"]["ReferrerPolicy"];
+          "Server-Timing": components["headers"]["ServerTiming"];
+          Vary: components["headers"]["Vary"];
+          "X-Content-Type-Options": components["headers"]["XContentTypeOptions"];
+          "X-Studio-API-Schema": components["headers"]["StudioApiSchema"];
+          "X-Studio-Server": components["headers"]["StudioServer"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["StudioErrorsResponse"];
+        };
+      };
+      /** @description Bad Request */
+      400: components["responses"]["ApiError400"];
+      /** @description Unauthorized */
+      401: components["responses"]["ApiError401"];
+      /** @description Forbidden */
+      403: components["responses"]["ApiError403"];
       /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
       /** @description Conflict */

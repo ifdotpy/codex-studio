@@ -1470,7 +1470,7 @@ fn uncertain(
             TurnStart::Unknown
         } else {
             TurnStart::Blocked {
-                reason: "Provider thread resume outcome is unknown; input remains pending.".into(),
+                reason: studio_runtime_schema::shared_values::PROVIDER_RESUME_UNKNOWN_ERROR.into(),
             }
         };
         SchedulerRepository::settle_start_outcome(

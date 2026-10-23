@@ -1174,7 +1174,9 @@ pub fn create_in_transaction(
         return Ok(previous.value().clone());
     }
     if actor.epoch != epoch || actor.extra.get("autoWake") != Some(&json!(true)) {
-        return Err(MonitorError::Refused("The agent turn was stopped"));
+        return Err(MonitorError::Refused(
+            studio_runtime_schema::shared_values::MONITOR_OWNER_STOPPED_ERROR,
+        ));
     }
     workspace.check(tx, &actor)?;
     if repository::active_count(tx)? >= 64 {

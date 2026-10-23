@@ -1,5 +1,9 @@
 use super::*;
 use crate::CachedSql;
+use studio_runtime_schema::shared_values::{
+    PROVIDER_START_NOT_SENT_ERROR as NOT_SENT_ERROR,
+    PROVIDER_START_UNKNOWN_ERROR as UNKNOWN_START_ERROR,
+};
 
 impl SchedulerRepository {
     /// Unknown delivery is never replayed; a proven unsent request restores only its own batch.
@@ -1750,8 +1754,6 @@ impl SchedulerRepository {
 pub(super) fn acceptance_input(agent: &str, epoch: i64, turn: &str) -> Value {
     json!({"agent":agent,"epoch":epoch,"accepted":turn})
 }
-const UNKNOWN_START_ERROR: &str = "turn/start response timed out; outcome unknown";
-const NOT_SENT_ERROR: &str = "Provider did not send turn/start";
 /// Input batches of one execution run that
 /// [`SchedulerRepository::return_unstarted_input`] returns to the queue before
 /// the provider received them. Unit: returned attempts. The next such start of
