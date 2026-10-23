@@ -1,0 +1,79 @@
+/* The document and each portal reserve their own physical safe edges once. */
+:root {
+  --viewport-safe-top: var(
+    --mobile-safe-area-top,
+    env(safe-area-inset-top, 0px)
+  );
+  --viewport-safe-bottom: var(
+    --mobile-safe-area-bottom,
+    env(safe-area-inset-bottom, 0px)
+  );
+  --viewport-surface-top: calc(
+    var(--mobile-viewport-top, 0px) + var(--viewport-safe-top)
+  );
+  --viewport-surface-height: calc(
+    var(--mobile-viewport-height, 100dvh) - var(--viewport-safe-top) -
+      var(--viewport-safe-bottom)
+  );
+}
+
+body {
+  background: var(--surface);
+}
+
+html body #root {
+  box-sizing: border-box;
+  min-width: 0;
+  min-height: 0;
+  height: var(--mobile-viewport-height, 100dvh);
+  padding-top: var(--viewport-safe-top);
+  padding-right: env(safe-area-inset-right, 0px);
+  padding-bottom: var(--viewport-safe-bottom);
+  padding-left: env(safe-area-inset-left, 0px);
+}
+
+html[data-viewport-surface],
+html[data-viewport-surface] body {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
+html[data-viewport-surface] body #root {
+  position: fixed;
+  top: var(--mobile-viewport-top, 0px);
+  left: 0;
+  width: 100%;
+}
+
+/* Portal containers do not inherit the root's padding. */
+html body .mantine-Drawer-inner,
+html body .mantine-Modal-inner {
+  top: var(--viewport-surface-top);
+  bottom: auto;
+  left: env(safe-area-inset-left, 0px);
+  right: env(safe-area-inset-right, 0px);
+  width: auto;
+  height: var(--viewport-surface-height);
+}
+
+html body .mantine-Modal-content {
+  max-height: calc(var(--viewport-surface-height) - var(--modal-y-offset) * 2);
+}
+
+html body .mantine-Modal-root[data-full-screen] .mantine-Modal-content {
+  height: 100%;
+  max-height: 100%;
+}
+
+/* The inset supplies the space below the last visible control. */
+html[data-viewport-surface] .usage-footer {
+  margin-bottom: 0;
+}
+
+.mantine-Drawer-content #sidebar,
+.mantine-Drawer-content #team {
+  height: 100%;
+  max-height: 100%;
+}
