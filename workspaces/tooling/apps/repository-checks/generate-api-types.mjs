@@ -67,13 +67,20 @@ function entityAliases(document) {
 }
 
 const input = process.argv[2];
-if (!input) throw new Error("usage: generate-api-types.mjs <openapi.json>");
-const document = JSON.parse(readFileSync(input, "utf8"));
+if (!input)
+  throw new Error(
+    "usage: generate-api-types.mjs <openapi.json | - | --rust-owned>",
+  );
+const rustOwned = input === "--rust-owned";
+const fromStdin = rustOwned || input === "-";
+const document = JSON.parse(readFileSync(fromStdin ? 0 : input, "utf8"));
 const temp = mkdtempSync(join(tmpdir(), "studio-api-types-"));
 try {
   const output = join(temp, "api.ts");
+  const schemaInput = fromStdin ? join(temp, "openapi.json") : input;
+  if (fromStdin) writeFileSync(schemaInput, JSON.stringify(document));
   run("openapi-typescript", [
-    input,
+    schemaInput,
     "--output",
     output,
     "--alphabetize",
@@ -87,7 +94,14 @@ try {
   }
   writeFileSync(
     output,
-    `${normalizeRecursiveJsonValue(generated)}\n\n${JSON_VALUE_ALIAS}${entityAliases(document)}\n`,
+    rustOwned
+      ? `${generated}\n${Object.keys(document.components.schemas)
+          .sort()
+          .map(
+            (name) => `export type ${name} = components["schemas"]["${name}"];`,
+          )
+          .join("\n")}\n`
+      : `${normalizeRecursiveJsonValue(generated)}\n\n${JSON_VALUE_ALIAS}${entityAliases(document)}\n`,
   );
   run("oxfmt", ["--write", `--config=${join(ROOT, ".oxfmtrc.json")}`, output]);
   process.stdout.write(readFileSync(output, "utf8"));

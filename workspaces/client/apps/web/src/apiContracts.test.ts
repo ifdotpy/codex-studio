@@ -236,3 +236,49 @@ type AccountProvider =
 const accountProvider: Assert<Equal<AccountProvider, "codex" | "claude">> =
   true;
 void accountProvider;
+
+// Draft wire properties come from the Rust owner, including required updated.
+type DraftContract = import("./generated/rustOwned").DraftVersion;
+const draftContract: DraftContract = {
+  id: "phone:chat",
+  session: "chat",
+  device: "phone",
+  text: "x",
+  updated: 1,
+};
+// @ts-expect-error A new draft must carry its version timestamp.
+const missingDraftTimestamp: DraftContract = {
+  id: "phone:chat",
+  session: "chat",
+  device: "phone",
+  text: "x",
+};
+void draftContract;
+void missingDraftTimestamp;
+
+// Both Markdown transports consume the serialized Rust parser output.
+import type {
+  MarkdownBlock,
+  MarkdownNode,
+  MarkdownTree,
+} from "./generated/rustOwned";
+const markdownNode: MarkdownNode = {
+  text: "Hello.",
+  sentences: [{ text: "Hello.", index: 0 }],
+};
+const markdownTree: MarkdownTree = { nodes: [markdownNode], length: 6 };
+const markdownBlocks: MarkdownBlock[] = [
+  markdownTree,
+  { kind: "mermaid", source: "graph TD; A-->B" },
+];
+// @ts-expect-error Rich Markdown blocks have a closed set of kinds.
+const invalidMarkdownBlock: MarkdownBlock = { kind: "script", source: "run()" };
+const markdownParserContract: Assert<
+  Equal<
+    Awaited<ReturnType<typeof import("./wasm/client").parseMarkdown>>,
+    MarkdownBlock[]
+  >
+> = true;
+void markdownBlocks;
+void invalidMarkdownBlock;
+void markdownParserContract;

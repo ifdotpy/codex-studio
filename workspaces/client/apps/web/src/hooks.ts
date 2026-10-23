@@ -218,13 +218,15 @@ export function useSnapshot(
       const request = ++generation.current;
       try {
         const session = await refreshSession();
-        if (request !== generation.current) return;
-        sessionToken.current = session.token;
-        setData((old) =>
-          old && old.token !== session.token
-            ? { ...old, token: session.token }
-            : old,
-        );
+        if (request !== generation.current && !onProjection) return;
+        if (request === generation.current) {
+          sessionToken.current = session.token;
+          setData((old) =>
+            old && old.token !== session.token
+              ? { ...old, token: session.token }
+              : old,
+          );
+        }
         if (!credentialsOnly) {
           let projectionWorkspaceId = "";
           const projection = await refreshProjection({
@@ -232,9 +234,11 @@ export function useSnapshot(
               projectionWorkspaceId = id;
             },
           });
+          // A mutation readback owns its result even when another refresh wins
+          // the render generation. Its caller verifies the workspace identity.
+          onProjection?.(projection, projectionWorkspaceId);
           if (request !== generation.current) return;
           setData({ ...projection, token: session.token });
-          onProjection?.(projection, projectionWorkspaceId);
         }
         if (request !== generation.current) return;
         credentialFailures.current = 0;
