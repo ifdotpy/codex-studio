@@ -156,7 +156,13 @@ mod tests {
             Some(0),
             1,
         );
-        assert_eq!(value["_syncEntities"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            value["_syncEntities"]
+                .as_array()
+                .expect("test fixture")
+                .len(),
+            1
+        );
         assert_eq!(value["_syncEntities"][0]["seq"], 4);
         assert_eq!(value["_syncEntities"][0]["op"], "delete");
     }
@@ -173,7 +179,9 @@ mod tests {
             }
         }).collect();
         for row in &rows {
-            let payload: Value = serde_json::from_str(row.payload.as_deref().unwrap()).unwrap();
+            let payload: Value =
+                serde_json::from_str(row.payload.as_deref().expect("test fixture"))
+                    .expect("test fixture");
             assert!(
                 studio_runtime_schema::validate_sync_entity_payload_strict(
                     &row.collection,
@@ -181,18 +189,20 @@ mod tests {
                     row.deleted,
                     &payload
                 )
-                .unwrap()
+                .expect("test fixture")
             );
         }
         let old: Vec<_> = rows.iter().map(|row| json!({"id":format!("entity:{}:{}",row.collection,row.id),"seq":row.sequence,"payload":row.payload,"_deleted":row.deleted})).collect();
-        let old_bytes = serde_json::to_vec(&old).unwrap().len();
+        let old_bytes = serde_json::to_vec(&old).expect("test fixture").len();
         let new = attach(json!({}), rows, Some(0), 500);
-        let new_bytes = serde_json::to_vec(&new["_syncEntities"]).unwrap().len();
+        let new_bytes = serde_json::to_vec(&new["_syncEntities"])
+            .expect("test fixture")
+            .len();
         assert!(new_bytes < old_bytes);
         assert!(
             new["_syncEntities"]
                 .as_array()
-                .unwrap()
+                .expect("test fixture")
                 .iter()
                 .all(|row| row["value"].is_object() && row.get("payload").is_none())
         );
