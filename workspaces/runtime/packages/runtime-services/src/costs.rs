@@ -216,7 +216,6 @@ fn session_cost_inner(
 
 // Session identifier and state-file byte caps for local cost scans.
 const MAX_SESSION_ID_BYTES: usize = 100;
-const MAX_SESSION_STATE_BYTES: u64 = 16 * 1024 * 1024;
 
 /// One assistant response of a Claude session log.
 #[derive(Clone, Debug)]
@@ -382,6 +381,20 @@ struct SessionState {
     control_requests: BTreeMap<String, ControlRequest>,
 }
 
+/// A saved session file: the bridge snapshot `{format, sequence, session}`, or the
+/// earlier file that is the session object itself.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SessionFile {
+    format: Option<String>,
+    session: Option<SessionState>,
+    native_id: Option<String>,
+    #[serde(default)]
+    history_branches: Vec<NativeIdOf>,
+    #[serde(default)]
+    control_requests: BTreeMap<String, ControlRequest>,
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct NativeIdOf {
@@ -396,12 +409,25 @@ struct ControlRequest {
 }
 
 /// The valid native ids of one session state file; `Err` when the file does not decode.
+/// The file holds every turn, so it is read as a stream: the turns are skipped, not kept.
 fn read_session_native_ids(path: &Path) -> Option<Result<Vec<String>, ()>> {
-    if fs::metadata(path).ok()?.len() > MAX_SESSION_STATE_BYTES {
+    let file = File::open(path).ok()?;
+    let Ok(saved) =
+        serde_json::from_reader::<_, SessionFile>(BufReader::with_capacity(1 << 16, file))
+    else {
         return Some(Err(()));
-    }
-    let Ok(state) = serde_json::from_slice::<SessionState>(&fs::read(path).ok()?) else {
-        return Some(Err(()));
+    };
+    let state = match saved.format {
+        Some(format) if format == claude_session_format() => match saved.session {
+            Some(session) => session,
+            None => return Some(Err(())),
+        },
+        Some(_) => return Some(Err(())),
+        None => SessionState {
+            native_id: saved.native_id,
+            history_branches: saved.history_branches,
+            control_requests: saved.control_requests,
+        },
     };
     let ids = std::iter::once(state.native_id)
         .chain(
