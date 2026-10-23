@@ -1,4 +1,5 @@
 .multi-server-shell {
+  position: relative;
   display: flex;
   width: 100%;
   height: 100%;
@@ -349,24 +350,25 @@ html[data-server-view] .workspace {
     z-index: 2;
   }
   .multi-server-shell[data-shell-terminal="closed"] > #sidebar {
-    height: calc(100% - var(--layout-terminal-closed-bar));
+    height: calc(100% - var(--shell-terminal-height));
   }
   .multi-server-shell[data-shell-terminal="open"] > #sidebar {
     height: calc(100% - var(--shell-terminal-height));
   }
   .multi-server-shell[data-shell-terminal="open"] > .server-views {
-    position: fixed;
-    inset: 0;
+    position: absolute;
+    inset: 0 0 var(--shell-terminal-height) 0;
+    padding-left: var(--shell-sidebar-width);
     z-index: 1;
   }
   .multi-server-shell[data-shell-terminal="closed"] .shell-terminal-bar {
-    position: fixed;
+    position: absolute;
     left: 0;
     bottom: 0;
     z-index: 3;
     box-sizing: border-box;
     width: var(--shell-sidebar-width);
-    height: var(--layout-terminal-closed-bar);
+    height: var(--shell-terminal-height);
     display: flex;
     align-items: center;
     gap: 8px;
