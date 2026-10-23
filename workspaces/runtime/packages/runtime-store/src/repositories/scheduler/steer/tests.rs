@@ -1003,6 +1003,7 @@ fn stop_receipt_cancels_the_initial_prompt_in_pending_dispatch() {
     });
     assert_eq!(status(&connection, "initial").0, "cancelled");
     assert_eq!(statuses(&connection), QUEUED);
+}
 
 /// SQLite virtual machine steps of one steer acknowledgement of the fixture
 /// input `u1`, after `history` delivered events of another agent. The state
