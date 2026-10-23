@@ -866,10 +866,14 @@ async fn drained_notification_effects_use_committed_state_without_resetting_enti
     );
     sink.token_rates.settled().await;
     assert!(snapshots.has_changed().expect("token-rate hub stays open"));
-    let value = snapshots.borrow_and_update();
-    assert_eq!(value.to_value()["rates"]["agent"]["active"], true);
+    let value = snapshots.borrow_and_update().to_value();
+    let record = value["records"]
+        .as_array()
+        .and_then(|records| records.iter().find(|record| record["agentId"] == "agent"))
+        .expect("token-rate record for the agent");
+    assert_eq!(record["active"], true);
     assert!(
-        value.to_value()["rates"]["agent"]["outputTokens"]
+        record["outputTokens"]
             .as_f64()
             .is_some_and(|tokens| tokens > 0.0)
     );
