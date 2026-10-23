@@ -70,9 +70,6 @@ export function ExecutionSummaryTrigger({
         true,
       )
     : null;
-  const count = team.filter(
-    (row) => row.rootId === root.id && row.id !== root.id && !row.deletedAt,
-  ).length;
   const entries = [
     {
       role: "lead",
@@ -136,9 +133,6 @@ export function ExecutionSummaryTrigger({
                   Same as caller
                 </span>
               </>
-            )}
-            {role === "worker" && (
-              <small className="execution-worker-count">{count}</small>
             )}
           </span>
         ))}
