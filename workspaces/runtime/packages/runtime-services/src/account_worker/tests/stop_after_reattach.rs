@@ -313,7 +313,7 @@ async fn ending_before_worker_reattach_ends_the_turn_work(ending: Ending) {
         .bridge
         .run(|store| async move {
             scheduler::lifecycle_transaction_with(&store, |tx| {
-                store::disconnect_provider_generation(tx, "default", 1)?;
+                store::disconnect_provider_generation(tx, "default", 1, false)?;
                 Ok::<_, WorkerError>(())
             })
             .await
