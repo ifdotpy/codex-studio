@@ -7,6 +7,7 @@ import {
 import { errorText } from "../api";
 import { executeSidebarRequest, serializeSidebarError } from "./sidebarRpc";
 import { desktopAlerts } from "../desktop/desktopAlerts";
+import { useAlertClock } from "../hooks/useAlertClock";
 import { useEffect, useRef } from "react";
 import { serverViewId, serverParentOrigin } from "./environment";
 import { publishServerAliases } from "./serverAliases";
@@ -33,6 +34,8 @@ export function useServerFrame(
   const { get, saved } = useServerApi();
   const { watchResourceConnection } = useServerResources();
 
+  // Sign-in alerts become due without a record change (desktopAlerts.ts).
+  const now = useAlertClock(data);
   const handler = useRef(run);
   handler.current = run;
   const latest = useRef({ data, opened, error, unread, creating });
@@ -78,13 +81,22 @@ export function useServerFrame(
           opened,
           error,
           unread,
-          data ? desktopAlerts(data) : [],
+          data ? desktopAlerts(data, now) : [],
           saved,
         ),
         creating,
       },
     });
-  }, [screen, data, opened, error, [...unread].join(":"), creating, saved]);
+  }, [
+    screen,
+    data,
+    opened,
+    error,
+    [...unread].join(":"),
+    creating,
+    saved,
+    now,
+  ]);
   useEffect(() => {
     screen?.publish({
       kind: "studio-server-accounts",
@@ -261,7 +273,7 @@ export function useServerFrame(
               opened,
               error,
               unread,
-              data ? desktopAlerts(data) : [],
+              data ? desktopAlerts(data, now) : [],
             ),
             creating,
           },
@@ -291,7 +303,7 @@ export function useServerFrame(
       window.removeEventListener(preferenceEvent, preferencesChanged);
       window.removeEventListener("storage", preferencesChanged);
     };
-  }, [data, opened, error, [...unread].join(":"), creating]);
+  }, [data, opened, error, [...unread].join(":"), creating, now]);
   useEffect(() => {
     if (screen || !serverViewId || window.parent === window) return;
     const safeAccounts = accounts.map((account) => ({

@@ -5,6 +5,7 @@ import {
 import { isServerView } from "../servers/environment";
 import { useEffect, useRef } from "react";
 import { alertsSince, desktopAlerts } from "../desktop/desktopAlerts";
+import { useAlertClock } from "./useAlertClock";
 import type { Snapshot } from "../types";
 
 export function useDesktopNotifications(
@@ -12,6 +13,7 @@ export function useDesktopNotifications(
   opened: string | null,
   enabled = true,
 ) {
+  const now = useAlertClock(enabled ? data : null);
   const state = useRef({
     scope: "",
     initialized: false,
@@ -33,7 +35,7 @@ export function useDesktopNotifications(
     const current = state.current;
     // Before the first pull ends, missing records would make old alerts look new later.
     if (!current.initialized && data.entitiesComplete === false) return;
-    const alerts = desktopAlerts(data);
+    const alerts = desktopAlerts(data, now);
     const added = alerts
       .filter((alert) => !current.seen.has(alert.id))
       .filter(alertsSince(current.started));
@@ -83,6 +85,7 @@ export function useDesktopNotifications(
         const native = new Notification(alert.title, {
           body: alert.body,
           tag: id,
+          silent: !alert.sound,
         });
         native.onclick = () => {
           native.close();
@@ -93,5 +96,5 @@ export function useDesktopNotifications(
         };
       }
     }
-  }, [data, opened, enabled]);
+  }, [data, opened, enabled, now]);
 }
