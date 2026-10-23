@@ -91,9 +91,11 @@
 #chat-search {
   font-size: var(--mantine-font-size-sm);
 }
-/* Chat rows reach closer to the sidebar edge than the header controls. */
+/* Chat rows reach closer to the sidebar edge than the header controls;
+   headings inside the list stay aligned with the sidebar header. */
 .chat-scroll {
-  margin-inline: calc(-0.625 * var(--mantine-spacing-md));
+  --fleet-list-outset: calc(0.625 * var(--mantine-spacing-md));
+  margin-inline: calc(-1 * var(--fleet-list-outset));
   flex: 1;
   min-block-size: 0;
   overflow-y: auto;
@@ -130,6 +132,11 @@
 }
 .sidebar-project {
   margin-block-end: var(--mantine-spacing-md);
+}
+.projects-heading,
+.fleet-lane-heading,
+.project-tree-heading {
+  padding-inline-start: var(--fleet-list-outset);
 }
 .project-tree-heading {
   position: relative;
