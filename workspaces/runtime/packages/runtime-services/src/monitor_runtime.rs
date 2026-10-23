@@ -103,6 +103,12 @@ fn recover_requests(tx: &Transaction<'_>) -> Result<usize, MonitorError> {
                 if !retained_question(tx, &value)? && !retained_monitor_approval(tx, &value)? =>
             {
                 value["status"] = json!("expired");
+                // A sign-in request lives in its bridge across the restart; the card poll gives
+                // the card back while that request is open (`browser_cards::apply`).
+                if value.get("method").and_then(Value::as_str) == Some(crate::browser_cards::METHOD)
+                {
+                    value["closeReason"] = json!(crate::browser_cards::RESTART_CLOSE_REASON);
+                }
             }
             _ => continue,
         }

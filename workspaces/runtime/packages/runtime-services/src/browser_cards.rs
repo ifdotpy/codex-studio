@@ -28,6 +28,10 @@ pub const FINAL_STATES: [&str; 6] = [
 ];
 /// The waiting phase of a link that the person opened in paste mode (section 6.3).
 pub const WAITING: &str = "waiting";
+/// The `closeReason` of a card that startup recovery expired (`monitor_runtime`). The
+/// bridge keeps its request across the restart, so the poll reopens the card while that
+/// request is open, and tells the chat when it ended meanwhile without an answer.
+pub const RESTART_CLOSE_REASON: &str = "restart";
 const CLOSE_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// The chat event text of each final outcome (`OUTCOME_TEXT` of `codex_browser_bridge.py`).
@@ -194,6 +198,13 @@ fn unanswered_event(tx: &Transaction<'_>, record: &Value, state: &str, now: f64)
     }
 }
 
+/// Whether startup recovery expired this card while nobody had answered it.
+fn restart_expired(record: &Value) -> bool {
+    record.get("status").and_then(Value::as_str) == Some("expired")
+        && record.get("closeReason").and_then(Value::as_str) == Some(RESTART_CLOSE_REASON)
+        && record.get("decision").is_none()
+}
+
 /// A bridge that the server polls.
 #[derive(Clone)]
 pub struct CardSource {
@@ -347,7 +358,10 @@ pub async fn apply(
                     let pasting = record.pointer("/params/paste").is_some_and(|mark| !mark.is_null());
                     let local = item.get("closeReason").and_then(Value::as_str)
                         == Some(crate::browser_host::LOCAL_CLOSE_REASON);
-                    let pending = record.get("status").and_then(Value::as_str) == Some("pending");
+                    // A card that startup recovery expired ends as an open card does: the
+                    // request ended while the server was down, and nobody answered it.
+                    let pending = record.get("status").and_then(Value::as_str) == Some("pending")
+                        || restart_expired(&record);
                     if pending && !pasting && local {
                         // The browser of this Mac had the page and the command stopped
                         // listening: it ended its sign-in there, and nobody waits for the card.
@@ -372,16 +386,31 @@ pub async fn apply(
                         };
                     }
                 }
-                // A listening command moved the deadline of its open request (`check`).
-                Some(raw) if state == "pending" => {
+                // An open request whose card startup recovery expired gets its card back: the
+                // pending link, or the waiting phase of a phone sign-in.
+                Some(raw) if state == "pending" || state == "approved" => {
                     let mut record: Value =
                         serde_json::from_str(&raw).map_err(|_| BrowserCardError::Invalid)?;
+                    let waiting = record.pointer("/params/phase").and_then(Value::as_str) == Some(WAITING);
+                    let mut changed = false;
+                    if restart_expired(&record) && (state == "pending" || waiting) {
+                        record["status"] = json!("pending");
+                        if let Some(fields) = record.as_object_mut() {
+                            fields.remove("closeReason");
+                        }
+                        changed = true;
+                    }
+                    // A listening command moved the deadline of its open request (`check`).
                     let deadline = item.get("expiresAt").filter(|value| value.is_number());
-                    if record.get("status").and_then(Value::as_str) == Some("pending")
+                    if state == "pending"
+                        && record.get("status").and_then(Value::as_str) == Some("pending")
                         && let Some(deadline) = deadline
                         && record.pointer("/params/expiresAt") != Some(deadline)
                     {
                         record["params"]["expiresAt"] = deadline.clone();
+                        changed = true;
+                    }
+                    if changed {
                         put_request(tx, &key, &record)?;
                     }
                 }
