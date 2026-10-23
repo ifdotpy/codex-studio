@@ -117,6 +117,154 @@ describe("entity pull reset wiring", () => {
     mocks.invalidation = undefined;
   });
 
+  it("reads a stored transcript only when the cache stays behind its own write", async () => {
+    const workspaceId = "6".repeat(32);
+    const rows = new Map<string, Record<string, unknown>>();
+    rows.set("transcript:agent", {
+      id: "transcript:agent",
+      seq: 1,
+      payload: JSON.stringify({
+        format: 2,
+        epoch: "epoch",
+        metadata: { truncated: false },
+        order: ["first", "second", "tool"],
+        itemRevisions: {},
+      }),
+    });
+    for (const [id, item] of [
+      ["first", { id: "first", role: "user" }],
+      ["second", { id: "second", role: "assistant" }],
+      ["tool", { id: "tool", toolStatus: "running" }],
+    ] as const)
+      rows.set(`transcript:item:agent:${id}`, {
+        id: `transcript:item:agent:${id}`,
+        seq: 1,
+        payload: JSON.stringify(item),
+      });
+    // RxDB delivers change events to collection subscribers during the write.
+    const listeners: ((event: { documentData: unknown }) => void)[] = [];
+    const storageInstance = {
+      findDocumentsById: vi.fn(async (ids: string[]) =>
+        ids.flatMap((id) => (rows.has(id) ? [rows.get(id)!] : [])),
+      ),
+      bulkWrite: vi.fn(
+        async (writes: { document: Record<string, unknown> }[]) => {
+          for (const { document } of writes) {
+            rows.set(String(document.id), document);
+            for (const listener of listeners)
+              listener({ documentData: document });
+          }
+          return { error: [] };
+        },
+      ),
+    };
+    const projections = {
+      database: { name: "transcript-test" },
+      storageInstance,
+      $: {
+        subscribe: vi.fn(
+          (listener: (event: { documentData: unknown }) => void) => {
+            listeners.push(listener);
+            return { unsubscribe: vi.fn() };
+          },
+        ),
+      },
+    };
+    mocks.createRxDatabase
+      .mockResolvedValueOnce({ addCollections: vi.fn(async () => ({})) })
+      .mockResolvedValueOnce({
+        addCollections: vi.fn(async () => ({ projections })),
+      });
+    mocks.syncGet.mockResolvedValue({ workspaceId });
+    vi.stubGlobal("window", { addEventListener: vi.fn() });
+    vi.stubGlobal("navigator", {
+      onLine: true,
+      locks: {
+        request: (_key: string, callback: () => Promise<unknown>) => callback(),
+      },
+    });
+    const client = await import("./client");
+    const cache = await import("./transcriptCache");
+    const stored = [
+      { id: "first", role: "user" },
+      { id: "second", role: "assistant" },
+    ];
+    cache.cacheTranscriptValue(
+      workspaceId,
+      "agent",
+      {
+        truncated: false,
+        items: [...stored, { id: "tool", toolStatus: "running" }],
+      },
+      1,
+    );
+    const event = (
+      after: number,
+      items: Record<string, unknown>[],
+    ): ResourceChangeEvent => ({
+      protocol: 3,
+      workspaceId,
+      epoch: "epoch",
+      revision: after + 1,
+      reason: "change",
+      resources: [{ kind: "transcript", agentId: "agent" }],
+      resourceVersions: [
+        {
+          revision: after + 1,
+          transcriptChanges: {
+            after,
+            through: after + 1,
+            delta: {
+              delta: true,
+              items: items as never,
+              removed: [],
+              itemRevisions: {},
+              truncated: false,
+            },
+          },
+        },
+      ],
+    });
+    const fullReads = () =>
+      storageInstance.findDocumentsById.mock.calls.filter(
+        ([ids]) =>
+          ids.length === 3 &&
+          ids.every((id) => id.startsWith("transcript:item:agent:")),
+      ).length;
+    const settle = async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      for (let turn = 0; turn < 10; turn++) await Promise.resolve();
+    };
+
+    // The writer patches its own cache entry, so no full read is needed.
+    await client.persistResourceEntityChanges(
+      event(1, [{ id: "tool", toolStatus: "completed" }]),
+      () => true,
+    );
+    await settle();
+    expect(fullReads()).toBe(0);
+    expect(cache.peekTranscript(workspaceId, "agent")).toEqual({
+      seq: 2,
+      payload: {
+        truncated: false,
+        items: [...stored, { id: "tool", toolStatus: "completed" }],
+      },
+    });
+
+    // A write that stops before its cache update is still read back once.
+    await client.persistResourceEntityChanges(
+      event(2, [{ id: "tool", toolStatus: "failed" }]),
+      () => rows.get("transcript:agent")?.seq !== 3,
+    );
+    await settle();
+    expect(fullReads()).toBe(1);
+    expect(cache.peekTranscript(workspaceId, "agent")?.seq).toBe(3);
+    expect(cache.peekTranscript(workspaceId, "agent")?.payload.items).toEqual([
+      ...stored,
+      { id: "tool", toolStatus: "failed" },
+    ]);
+  });
+
   it("starts stale-cache cleanup only after matching schema confirmation", async () => {
     const workspaceId = "c".repeat(32);
     mocks.syncGet.mockResolvedValue({ workspaceId });
