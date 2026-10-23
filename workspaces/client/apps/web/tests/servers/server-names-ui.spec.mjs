@@ -51,6 +51,21 @@ test("server cards rename all four names and retain aliases after reload", async
     let dialog = await settings(page);
     for (const remote of remotes)
       await expect.poll(() => remote.pairs.length).toBe(1);
+    for (const summary of await dialog
+      .locator(".server-settings-edit > summary")
+      .all())
+      await summary.click();
+    const stripWidths = await dialog
+      .locator("[data-settings-server]")
+      .evaluateAll((rows) =>
+        rows.map((row) => ({
+          strip: row.getBoundingClientRect().width,
+          list: row.parentElement.getBoundingClientRect().width,
+        })),
+      );
+    expect(stripWidths).toHaveLength(4);
+    for (const { strip, list } of stripWidths)
+      expect(strip).toBeGreaterThanOrEqual(list * 0.95);
     const aliases = await dialog
       .getByRole("textbox", { name: "Server alias", exact: true })
       .evaluateAll((inputs) => inputs.map((input) => input.value));
@@ -65,12 +80,10 @@ test("server cards rename all four names and retain aliases after reload", async
       await card
         .getByRole("textbox", { name: "Server name", exact: true })
         .fill(name);
-      await card
-        .getByRole("button", { name: "Save name", exact: true })
-        .click();
+      await card.getByRole("button", { name: "Save", exact: true }).click();
       await expect(card.getByRole("heading", { level: 3 })).toContainText(name);
       await expect(
-        card.getByRole("button", { name: "Save name", exact: true }),
+        card.getByRole("button", { name: "Save", exact: true }),
       ).toBeDisabled();
     }
     expect(
@@ -86,7 +99,7 @@ test("server cards rename all four names and retain aliases after reload", async
     await card
       .getByRole("textbox", { name: "Server name", exact: true })
       .fill("bad\u202ename");
-    await card.getByRole("button", { name: "Save name", exact: true }).click();
+    await card.getByRole("button", { name: "Save", exact: true }).click();
     await expect(card).toContainText(
       "Use 1 to 80 visible characters without outer spaces.",
     );
@@ -113,12 +126,11 @@ test("server cards rename all four names and retain aliases after reload", async
       await expect(dialog).toContainText(name);
     const longName = "A".repeat(80);
     const longCard = dialog.locator("[data-settings-server=local]");
+    await longCard.locator(".server-settings-edit > summary").click();
     await longCard
       .getByRole("textbox", { name: "Server name", exact: true })
       .fill(longName);
-    await longCard
-      .getByRole("button", { name: "Save name", exact: true })
-      .click();
+    await longCard.getByRole("button", { name: "Save", exact: true }).click();
     await expect(longCard.getByRole("heading", { level: 3 })).toContainText(
       longName,
     );
@@ -191,10 +203,11 @@ test("a UI-only client renames through its signed credential and retries the sam
       .getByRole("button", { name: "Pair server", exact: true })
       .click();
     const card = dialog.locator("[data-settings-server=remote]");
+    await card.locator(".server-settings-edit > summary").click();
     await card
       .getByRole("textbox", { name: "Server name", exact: true })
       .fill("Igor MBP");
-    await card.getByRole("button", { name: "Save name", exact: true }).click();
+    await card.getByRole("button", { name: "Save", exact: true }).click();
     await expect(
       dialog.getByRole("button", { name: "Retry saved request", exact: true }),
     ).toBeVisible();

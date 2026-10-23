@@ -1,0 +1,194 @@
+.server-settings [aria-label="Discovered Studio servers"] .ui-row-control {
+  width: auto;
+}
+.server-settings
+  [aria-label="Discovered Studio servers"]
+  .ui-row-control:empty {
+  display: none;
+}
+.server-settings {
+  width: 100%;
+  max-width: var(--studio-form-max);
+}
+.server-card-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--mantine-spacing-md);
+}
+.server-settings-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--mantine-spacing-xs);
+  min-width: 0;
+  padding: var(--mantine-spacing-xs) var(--mantine-spacing-md);
+  border-bottom: var(--studio-border-width) solid var(--line);
+}
+.server-settings-card-header {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: var(--mantine-spacing-xs);
+  flex-wrap: wrap;
+  min-width: 0;
+}
+.server-settings-card-header > div:first-child {
+  display: flex;
+  align-items: center;
+  gap: var(--mantine-spacing-xs);
+  flex: 1;
+  flex-wrap: nowrap;
+  min-width: 0;
+}
+.server-settings-card-header h3 {
+  margin: 0;
+  font-size: var(--studio-text-body);
+  font-weight: 600;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.server-settings-seen,
+.server-settings-status {
+  white-space: nowrap;
+  flex: none;
+  color: var(--muted);
+  font-size: var(--studio-text-meta);
+}
+.server-settings-status {
+  white-space: nowrap;
+  flex: none;
+  color: var(--studio-state);
+}
+.server-settings-card .server-settings-alias {
+  flex: none;
+  text-transform: none;
+  font-weight: 500;
+  background: transparent;
+  color: var(--muted);
+  border-color: var(--line);
+}
+.server-settings-seen {
+  margin-inline-start: auto;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.server-settings-card .server-settings-facts {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: var(--mantine-spacing-xs) var(--mantine-spacing-md);
+}
+.server-settings-facts > .mantine-DataList-item {
+  min-width: 0;
+}
+.server-settings-facts .mantine-DataList-itemValue {
+  display: flex;
+  align-items: center;
+  gap: var(--mantine-spacing-xs);
+  min-width: 0;
+  max-width: 100%;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.server-settings-system {
+  color: var(--muted);
+  flex: none;
+}
+.server-settings-address {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.server-settings-host button {
+  flex: none;
+}
+.server-settings-actions {
+  grid-column: 2;
+  grid-row: 3;
+}
+.server-settings-card > .server-settings-edit {
+  display: contents;
+}
+.server-settings-card > .server-settings-edit > summary {
+  grid-column: 1;
+  grid-row: 3;
+}
+.server-settings-card > .server-settings-edit > form {
+  grid-column: 1 / -1;
+  grid-row: 4;
+}
+.server-settings-edit summary {
+  width: fit-content;
+  cursor: pointer;
+  color: var(--muted);
+  font-size: var(--studio-text-meta);
+  min-height: var(--studio-control-size);
+  align-content: center;
+}
+.server-settings-edit[open] > summary {
+  margin-bottom: var(--mantine-spacing-sm);
+}
+.server-settings-edit form {
+  display: grid;
+  justify-items: start;
+  gap: var(--mantine-spacing-sm);
+}
+.server-settings-edit-fields {
+  display: grid;
+  align-items: end;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+  gap: var(--mantine-spacing-sm);
+  width: 100%;
+}
+.server-settings-edit-fields > div {
+  min-width: 0;
+}
+.server-settings-edit-fields small {
+  color: var(--studio-state-unread);
+  font-size: var(--studio-text-meta);
+}
+.server-settings-pairing form {
+  display: grid;
+  gap: var(--mantine-spacing-sm);
+}
+/* Phone server facts use two columns; the long address spans both. */
+@media (max-width: 47.5rem) {
+  .server-settings-seen-label {
+    position: absolute;
+    inline-size: var(--studio-border-width);
+    block-size: var(--studio-border-width);
+    overflow: hidden;
+    clip-path: inset(50%);
+  }
+  .server-settings-card {
+    padding-inline: var(--mantine-spacing-sm);
+  }
+  .server-settings-card .server-settings-facts {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .server-settings-host {
+    grid-column: 1 / -1;
+  }
+  .server-settings-account-counts {
+    flex-wrap: wrap;
+  }
+  .server-settings-actions {
+    flex-basis: 100%;
+    justify-content: flex-start;
+  }
+  .server-settings-edit summary {
+    min-height: var(--studio-touch-target);
+  }
+  .server-settings-edit-fields {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* At the smallest phone width, seen time gets its own right-aligned line. */
+@media (max-width: 22.5rem) {
+  .server-settings-seen {
+    flex-basis: 100%;
+    text-align: right;
+  }
+}
