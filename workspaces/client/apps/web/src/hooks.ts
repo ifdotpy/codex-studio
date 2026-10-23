@@ -9,6 +9,8 @@ import {
   boundTranscriptPage,
   boundTranscriptItems,
   trimTranscriptPageCache,
+  mergeTranscript,
+  updateLiveTranscriptPage,
 } from "./transcriptPageBounds";
 import {
   useCallback,
@@ -465,14 +467,6 @@ type RoomPage = {
   anchorId?: string;
 };
 
-function mergeTranscript(earlier: Message[], later: Message[]): Message[] {
-  return [
-    ...new Map([...earlier, ...later].map((item) => [item.id, item])).values(),
-  ].sort(
-    (a, b) => Number(a.at ?? a.created ?? 0) - Number(b.at ?? b.created ?? 0),
-  );
-}
-
 export function useMessages(
   id: string | null,
   kind: "agent" | "room" | "legacy",
@@ -596,34 +590,7 @@ export function useMessages(
       }
       if (page) {
         page.latest = d;
-        if (page.focused) {
-          const present = new Set(page.items.map((item) => item.id));
-          page.items = mergeTranscript(
-            page.items,
-            liveItems.filter((item) => present.has(item.id)),
-          );
-        } else if (!d.truncated) {
-          page.items = liveItems;
-          page.before = null;
-        } else {
-          // A live snapshot is authoritative for its current time range, including removed queue rows.
-          const firstAt = Math.min(
-            ...liveItems.map((item) =>
-              Number(item.at ?? item.created ?? Infinity),
-            ),
-          );
-          const present = new Set(liveItems.map((item) => item.id));
-          page.items = mergeTranscript(
-            page.items.filter(
-              (item) =>
-                present.has(item.id) ||
-                (!item.pending &&
-                  item.materialized !== false &&
-                  Number(item.at ?? item.created ?? 0) < firstAt),
-            ),
-            liveItems,
-          );
-        }
+        updateLiveTranscriptPage(page, liveItems, d);
         const bounded = boundTranscriptItems(
           page.items,
           (item) => {

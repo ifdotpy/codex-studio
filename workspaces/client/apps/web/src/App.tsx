@@ -1,3 +1,4 @@
+import TeamBudget from "./components/agents/TeamBudget";
 import { DeliveryMoment } from "./generated/deliveryMoment";
 import { useScreenEnvironment } from "./servers/ScreenContext";
 import {
@@ -2549,6 +2550,7 @@ export default function App({ active = true }: { active?: boolean }) {
             <X size={16} />
           </ActionIcon>
         </div>
+        {lead && <TeamBudget key={lead.id} lead={lead} members={workers} />}
         <TeamSummary
           workers={workers}
           answers={answerIds}
@@ -2781,7 +2783,7 @@ export default function App({ active = true }: { active?: boolean }) {
               <Settings2 size={18} />
             </ActionIcon>
           )}
-          {!!workers.length && (
+          {!!lead && (
             <Button
               leftSection={<Users size={16} />}
               id="team-toggle"
@@ -2888,7 +2890,7 @@ export default function App({ active = true }: { active?: boolean }) {
                 >
                   Chat settings
                 </Menu.Item>
-                {!!workers.length && (
+                {!!lead && (
                   <Menu.Item
                     id="chat-actions-team"
                     aria-label="Team"
@@ -3223,7 +3225,7 @@ export default function App({ active = true }: { active?: boolean }) {
           )}
         </UIErrorBoundary>
       </main>
-      {!!workers.length &&
+      {!!lead &&
         (narrowTeam ? (
           <Drawer
             opened={teamOpen}

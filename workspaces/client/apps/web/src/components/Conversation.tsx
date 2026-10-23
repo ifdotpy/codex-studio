@@ -103,6 +103,7 @@ import PromptInput from "./prompt-composer/PromptInput";
 import { reportPromptComposerRender } from "./prompt-composer/renderProbe";
 import Requests from "./questions/Requests";
 import MessageDate from "./conversation/transcript/MessageDate";
+import ClaudeRepairNotice from "./ClaudeRepairNotice";
 import TurnHistory from "./conversation/transcript/TurnHistory";
 import {
   resetHistoryWindowAnchor,
@@ -962,6 +963,17 @@ export default function Conversation(p: {
   });
   const branch = useMessageAction(
     async (message: Message, draft?: { before: boolean; text: string }) => {
+      if (
+        items.some(
+          (item) =>
+            item.turnId === message.turnId && item.turnStatus === "uncertain",
+        )
+      ) {
+        p.notify(
+          "The turn outcome is unconfirmed. Review the saved evidence before you continue.",
+        );
+        return;
+      }
       if (branchLock.current) return;
       const agentId = p.id;
       if (!agentId) return;
@@ -1067,10 +1079,16 @@ export default function Conversation(p: {
     (!!agent?.canSend || !!p.legacy || !p.id);
   const lastAssistantByTurn = useMemo(() => {
     const last = new Map<string, string>();
+    const unconfirmed = new Set(
+      items
+        .filter((item) => item.turnStatus === "uncertain")
+        .map((item) => item.turnId),
+    );
     for (const item of items)
       if (
         item.role === "assistant" &&
         item.turnId &&
+        !unconfirmed.has(item.turnId) &&
         !isEmptyAssistantMessage(item)
       )
         last.set(item.turnId, item.id);
@@ -1335,6 +1353,7 @@ export default function Conversation(p: {
           managed &&
           m.role === "user" &&
           m.turnId &&
+          m.turnStatus !== "uncertain" &&
           (!m.deliveryStatus || m.deliveryStatus === "accepted")
             ? () => void editMessage(m)
             : undefined
@@ -1348,6 +1367,7 @@ export default function Conversation(p: {
           m.role === "assistant" &&
           m.turnId &&
           m.turnId !== agent?.turnId &&
+          m.turnStatus !== "uncertain" &&
           lastAssistantByTurn.get(m.turnId) === m.id
             ? () => void branch(m)
             : undefined
@@ -1375,29 +1395,34 @@ export default function Conversation(p: {
   );
   const transcript = useMemo(
     () => (
-      <TurnHistory
-        key={`${p.data.stateDir}:${p.id}`}
-        items={transcriptItems}
-        scrollContainer={scroll}
-        rememberScroll={remember}
-        hasRecentScrollInput={hasRecentScrollInput}
-        agent={managed && !p.room ? agent : undefined}
-        currentTurn={agent?.turnId || undefined}
-        enabled={managed && !p.room}
-        storageKey={`studio-turns:${p.data.stateDir}:${p.id}`}
-        renderMessage={(item) =>
-          item.nativeNotice ? (
-            isNonBlockingWarning(item) ? null : (
-              <NativeNotice key={item.id} item={item} planType={planType} />
+      <>
+        {managed && !p.room && agent?.provider === "claude" && (
+          <ClaudeRepairNotice agent={agent} />
+        )}
+        <TurnHistory
+          key={`${p.data.stateDir}:${p.id}`}
+          items={transcriptItems}
+          scrollContainer={scroll}
+          rememberScroll={remember}
+          hasRecentScrollInput={hasRecentScrollInput}
+          agent={managed && !p.room ? agent : undefined}
+          currentTurn={agent?.turnId || undefined}
+          enabled={managed && !p.room}
+          storageKey={`studio-turns:${p.data.stateDir}:${p.id}`}
+          renderMessage={(item) =>
+            item.nativeNotice ? (
+              isNonBlockingWarning(item) ? null : (
+                <NativeNotice key={item.id} item={item} planType={planType} />
+              )
+            ) : (
+              renderMessage(item)
             )
-          ) : (
-            renderMessage(item)
-          )
-        }
-        agentId={managed ? agent?.id : undefined}
-        onJump={jumpToPrompt}
-        requests={pendingQuestions}
-      />
+          }
+          agentId={managed ? agent?.id : undefined}
+          onJump={jumpToPrompt}
+          requests={pendingQuestions}
+        />
+      </>
     ),
     [
       items,

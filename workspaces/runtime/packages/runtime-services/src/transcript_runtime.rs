@@ -229,7 +229,7 @@ pub(crate) fn project(
     ) && truthy(actor.get("autoWake"));
     let failed_turns = items
         .iter()
-        .filter(|i| i["turnStatus"] == "failed")
+        .filter(|i| matches!(i["turnStatus"].as_str(), Some("failed" | "uncertain")))
         .filter_map(|i| {
             i["turnId"]
                 .as_str()
@@ -252,7 +252,9 @@ pub(crate) fn project(
                 {
                     return Err(invalid("analytics_turns", &identity));
                 }
-                if record["status"] == "failed" && truthy(record.get("error")) {
+                if matches!(record["status"].as_str(), Some("failed" | "uncertain"))
+                    && truthy(record.get("error"))
+                {
                     turn_errors.insert(turn.clone(), record["error"].clone());
                 }
             }
@@ -275,7 +277,12 @@ pub(crate) fn project(
             .as_str()
             .filter(|v| failed_turns.contains(*v))
         {
-            item["turnError"] = turn_errors.get(turn).cloned().unwrap_or(Value::Null);
+            // Recovery can save the native reason before analytics catches up.
+            if let Some(error) = turn_errors.get(turn) {
+                item["turnError"] = error.clone();
+            } else if item["turnError"].is_null() && actor["nativeTurnError"]["turnId"] == turn {
+                item["turnError"] = actor["nativeTurnError"]["error"].clone();
+            }
             item["turnErrorResolved"] = json!(true);
         }
         // Inline receipts are projected within the snapshot. Local blobs are

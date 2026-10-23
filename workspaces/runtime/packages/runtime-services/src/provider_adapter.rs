@@ -559,6 +559,7 @@ fn claude_launch(
         account_id: Some(account_id.to_owned()),
         email: Some(email.to_owned()),
         plan: text("plan").map(str::to_owned),
+        organization_name: None,
         credential_identity: Some(credential_identity.to_owned()),
         error: None,
         error_kind: None,

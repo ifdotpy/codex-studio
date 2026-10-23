@@ -1,3 +1,4 @@
+import ClaudeOrganization from "./ClaudeOrganization";
 import { useServerApi } from "../servers/ServerServicesContext";
 import { Button, NumberInput, Stack, Textarea, TextInput } from "@mantine/core";
 import { useRef, useState } from "react";
@@ -96,6 +97,7 @@ export default function ClaudeProfile({
               : "Sign in to this Claude Code configuration with your subscription before you add it."}
           </small>
           {account && <strong>{account.email || account.label}</strong>}
+          <ClaudeOrganization account={account} />
           {!account && (
             <TextInput
               label="Profile name"

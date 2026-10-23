@@ -315,63 +315,6 @@ struct Draft {
     workspace_admission: Box<dyn crate::monitor_runtime::WorkspaceAdmission + Send + Sync>,
 }
 
-/// Resolve permissions from the current rows inside the child commit transaction.
-/// Only the permission mode transfers; other Claude settings belong to the child.
-fn inherit_claude_permissions(
-    child: &mut Value,
-    parent: &Value,
-    root: &Value,
-    spec: &Value,
-) -> Result<(), crate::managed_host_tools::Error> {
-    use crate::managed_host_tools::Error;
-    if child["provider"] != "claude" {
-        if spec.get("permission_mode").is_some() {
-            return Err(Error::Invalid("permission_mode requires a Claude child"));
-        }
-        return Ok(());
-    }
-    let requested = spec
-        .get("permission_mode")
-        .map(|value| {
-            value
-                .as_str()
-                .filter(|mode| crate::claude_controls::PERMISSION_MODES.contains(mode))
-                .ok_or(Error::Invalid("Invalid Claude permission_mode"))
-        })
-        .transpose()?;
-    let inherited = if parent["provider"] == "claude" {
-        match parent.pointer("/claudeOptions/permissionMode") {
-            Some(value) => value
-                .as_str()
-                .filter(|mode| crate::claude_controls::PERMISSION_MODES.contains(mode))
-                .ok_or(Error::Invalid("Invalid parent Claude permission mode"))?,
-            None if parent["yoloMode"] == true => "bypassPermissions",
-            None => "default",
-        }
-    } else if root
-        .get("yoloMode")
-        .and_then(Value::as_bool)
-        .unwrap_or(true)
-    {
-        // Preserve the existing Codex-to-Claude root yolo mapping.
-        "bypassPermissions"
-    } else {
-        "default"
-    };
-    let mode = if child["role"] == "reviewer" {
-        "plan"
-    } else {
-        match requested {
-            Some("bypassPermissions") if inherited != "bypassPermissions" => inherited,
-            Some(mode) => mode,
-            None => inherited,
-        }
-    };
-    child["claudeOptions"] = json!({"permissionMode": mode});
-    child["yoloMode"] = json!(mode == "bypassPermissions");
-    Ok(())
-}
-
 /// Create a local host batch using the P02 typed draft and recheck contract.
 /// `request_id` is the callback's durable operation identity, so child ids and
 /// initial-event ids remain stable across retries.
@@ -979,7 +922,7 @@ pub(crate) async fn spawn_agents(
                 children.push(project_child(&saved.value(), draft.task_id.as_deref(), draft.worktree));
                 continue;
             }
-            inherit_claude_permissions(&mut draft.record, &current_parent, &current_root.value(), &draft.intent)?;
+            crate::child_permissions::inherit_claude_permissions(&mut draft.record, &current_parent, &current_root.value(), &draft.intent).map_err(crate::managed_host_tools::Error::Invalid)?;
             let mut text = draft.prompt.clone();
             if draft.workspace != "image"
                 && let Some(error) = draft

@@ -1,3 +1,4 @@
+import ClaudeOrganization from "./ClaudeOrganization";
 import {
   useServerApi,
   useServerResources,
@@ -1171,6 +1172,7 @@ export default function Accounts({
                                 </Menu.Dropdown>
                               </Menu>
                             </div>
+                            <ClaudeOrganization account={account} />
                             {account.email && (
                               <small className="account-email">
                                 {account.email}

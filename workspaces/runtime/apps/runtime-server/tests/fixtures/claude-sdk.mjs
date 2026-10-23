@@ -211,6 +211,7 @@ export function query({ prompt, options }) {
       turnAbort?.abort();
     },
     async *[Symbol.asyncIterator]() {
+      let transcriptPrefix = [];
       let pendingPrompt = prompt
         .next()
         .then((result) => ({ kind: "prompt", result }));
@@ -260,10 +261,29 @@ export function query({ prompt, options }) {
           )
         )
           throw new Error("Native input requires UUID");
+        if (options.systemPrompt)
+          fs.appendFileSync(
+            options.cwd + "/.sdk-inputs",
+            JSON.stringify(input.value) + "\n",
+          );
         let text = input.value.message.content[0].text;
+        yield { type: "user", isReplay: true, uuid: input.value.uuid };
+        // SDK shouldQuery:false appends context for the next querying message;
+        // its receipt must not generate or complete an assistant turn.
+        if (input.value.shouldQuery === false) {
+          transcriptPrefix.push(text);
+          yield {
+            type: "result",
+            subtype: "success",
+            num_turns: 0,
+            user_message_uuid: input.value.uuid,
+          };
+          continue;
+        }
+        text = [...transcriptPrefix, text].join("\n\n");
+        transcriptPrefix = [];
         turnAbort = new AbortController();
         const turnSignal = turnAbort.signal;
-        yield { type: "user", isReplay: true, uuid: input.value.uuid };
         yield { type: "system", subtype: "init" };
         if (text === "steer-race") {
           await raceStarted;

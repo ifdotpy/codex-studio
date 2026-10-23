@@ -20,6 +20,18 @@ import {
 const commitA = "a".repeat(40);
 const commitB = "b".repeat(40);
 
+test("desktop packaging uses the manifest-owned Electron version", async () => {
+  const source = await readFile(
+    new URL("../../../../client/apps/desktop/package.mjs", import.meta.url),
+    "utf8",
+  );
+  assert.doesNotMatch(
+    source,
+    /\belectronVersion\s*:/,
+    "@electron/packager must infer Electron from desktop/package.json; an explicit override can ship a different runtime than the installed dependency",
+  );
+});
+
 async function fakeRelease(commit = commitA) {
   const directory = await mkdtemp(path.join(os.tmpdir(), "release-binaries-"));
   await mkdir(path.join(directory, "release"));

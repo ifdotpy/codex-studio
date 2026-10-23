@@ -889,7 +889,7 @@ fn with_boundary(router: Router<HttpState>, state: HttpState) -> Router {
                 .no_deflate()
                 .no_zstd()
                 .quality(CompressionLevel::Precise(HTTP_BROTLI_QUALITY))
-                .compress_when(SizeAbove::new(MIN_JSON_COMPRESSION_BYTES).and(
+                .compress_when(SizeAbove::new(u64::from(MIN_JSON_COMPRESSION_BYTES)).and(
                     |_, _, headers: &axum::http::HeaderMap, _: &axum::http::Extensions| {
                         headers
                             .get(axum::http::header::CONTENT_TYPE)

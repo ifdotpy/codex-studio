@@ -24,6 +24,11 @@ pub(crate) fn routes() -> RouteGroup {
     RouteGroup::new(vec![
         get("/api/changes", OperationStatus::Implemented, changes),
         get("/api/task", OperationStatus::Implemented, task_detail),
+        get(
+            "/api/task/output",
+            OperationStatus::Implemented,
+            task_output,
+        ),
         get("/api/workspace", OperationStatus::Implemented, workspace),
         get(
             "/api/workspace/tasks",
@@ -512,6 +517,40 @@ async fn task_detail(
         })
         .await?;
     Ok(Json(task))
+}
+
+async fn task_output(
+    query: QueryParams,
+    State(state): State<HttpState>,
+) -> Result<Json<Value>, ApiError> {
+    let id = query
+        .nonempty_str("id")
+        .ok_or_else(invalid_request)?
+        .to_owned();
+    let owner = query
+        .nonempty_str("agent")
+        .ok_or_else(invalid_request)?
+        .to_owned();
+    let store = state.store.clone().ok_or_else(ApiError::internal)?;
+    let (task, agent) = store
+        .read_async("task-output/owner", move |connection| {
+            let task = WorkspaceViewsRepository::task(connection, &id)?
+                .filter(|task| task["agent"] == owner)
+                .ok_or_else(invalid_request)?;
+            let agent =
+                WorkspaceViewsRepository::agent(connection, &owner)?.ok_or_else(invalid_request)?;
+            Ok::<_, ApiError>((task, agent.value().clone()))
+        })
+        .await?;
+    let owner = agent["id"].as_str().ok_or_else(invalid_request)?.to_owned();
+    let value =
+        studio_runtime_process::blocking_pool::spawn_blocking("task-output/read", move || {
+            studio_runtime_services::task_output::read(&task, &agent, &owner)
+        })
+        .await
+        .map_err(|_| ApiError::internal())?
+        .map_err(|message| ApiError::new(StatusCode::BAD_REQUEST, message))?;
+    Ok(Json(value))
 }
 
 async fn workspace_tasks(
