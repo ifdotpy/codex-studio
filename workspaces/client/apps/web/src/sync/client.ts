@@ -1,6 +1,10 @@
 import { serverDatabaseSuffix } from "../servers/environment";
 
-import { MAX_SAFE_INTEGER } from "../generated/sharedValues";
+import {
+  MAX_SAFE_INTEGER,
+  SYNC_ENTITY_STREAM_MAX_DOCUMENTS,
+  SYNC_ENTITY_STREAM_MAX_BYTES,
+} from "../generated/sharedValues";
 
 import { createRxDatabase, addRxPlugin } from "rxdb";
 
@@ -570,7 +574,7 @@ export function createSyncClient(options: SyncClientOptions) {
         changes.through !== entry.revision ||
         !Array.isArray(changes.documents) ||
         !changes.documents.length ||
-        changes.documents.length > 512 ||
+        changes.documents.length > SYNC_ENTITY_STREAM_MAX_DOCUMENTS ||
         changes.documents.some(
           (row) =>
             typeof row.id !== "string" ||
@@ -583,10 +587,8 @@ export function createSyncClient(options: SyncClientOptions) {
         ) ||
         Math.max(...changes.documents.map((row) => row.seq)) !==
           changes.through ||
-        changes.documents.reduce(
-          (size, row) => size + row.payload.length + row.id.length,
-          0,
-        ) > 262144
+        new TextEncoder().encode(JSON.stringify(changes)).length >
+          SYNC_ENTITY_STREAM_MAX_BYTES
       )
         throw new TypeError("Invalid stream entity batch");
       await persistEntityDocuments(

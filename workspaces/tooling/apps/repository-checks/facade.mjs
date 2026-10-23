@@ -1548,6 +1548,62 @@ function fastTierCommands(root) {
       options: { script: "test:unit:fast" },
     },
     {
+      item: { name: "studio-runtime-http", ecosystem: "cargo" },
+      label: "Primary state stream and conversation revision witnesses",
+      commands: [
+        [
+          "cargo",
+          [
+            "nextest",
+            "run",
+            "--locked",
+            "--no-tests",
+            "fail",
+            "--message-format",
+            "libtest-json-plus",
+            "-p",
+            "studio-runtime-http",
+            "--lib",
+            "-E",
+            "test(routes::sync_stream::tests::state_stream_) | test(unchanged_open_chat_ignores_unrelated_agent_commits)",
+          ],
+        ],
+      ],
+      options: {
+        selector:
+          "typed complete stream intervals, bounded flush and per-chat content revision",
+        reason:
+          "Deliver state without extra pulls while retaining gap recovery and unchanged-chat suppression.",
+      },
+    },
+    {
+      item: web,
+      label: "State stream persistence and recovery witnesses",
+      commands: [
+        [
+          "pnpm",
+          [
+            "--filter",
+            "codex-agents-web",
+            "exec",
+            "vitest",
+            "run",
+            "--config",
+            "vitest.unit.config.ts",
+            "src/sync/client.dispatchGate.test.ts",
+            "src/sync/client.entityReset.test.ts",
+            "src/sync/resourceEntityDelivery.test.ts",
+          ],
+        ],
+      ],
+      options: {
+        selector:
+          "persist stream data before dispatch and retain pull recovery",
+        reason:
+          "A complete state batch advances the durable projection with no new pull; storage failures, gaps, reconnects and epochs still reconcile.",
+      },
+    },
+    {
       item: web,
       label: "UI preference projection ownership witnesses",
       commands: [
