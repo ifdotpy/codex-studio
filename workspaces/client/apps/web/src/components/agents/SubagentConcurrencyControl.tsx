@@ -14,8 +14,7 @@ import "./subagent-concurrency-control.css";
 const DEFAULT_CONCURRENCY = DEFAULT_SUBAGENT_CONCURRENCY;
 const MIN_CONCURRENCY = MIN_SUBAGENT_CONCURRENCY;
 const MAX_CONCURRENCY = MAX_SUBAGENT_CONCURRENCY;
-const CONCURRENCY_HELP =
-  "0 disables subagents. The lead does not count. Extra work waits in the queue.";
+const CONCURRENCY_HELP = "0 = lead only; extra work queues.";
 const UNSUPPORTED_HELP =
   "Update the backend to enable numeric subagent parallelism. Saved changes are retained until then.";
 const CONCURRENCY_SCHEMA_VERSION = 2;
@@ -404,7 +403,7 @@ function ScopedConcurrencyControl({
             setError("");
           }}
         />
-        {!compact && (
+        {!compact && draft !== confirmed?.concurrency && (
           <Button
             type="submit"
             className="agent-mode-apply"

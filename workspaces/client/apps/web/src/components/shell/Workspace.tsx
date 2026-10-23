@@ -43,7 +43,11 @@ import {
 import type { Agent, Json, JsonValue, Snapshot } from "../../types";
 import { useFormDraft } from "../useFormDraft";
 import { ModelField } from "../models/ModelField";
-import { modelDisplayName, toModelOptions } from "../models/modelOption";
+import {
+  modelDisplayName,
+  modelForValue,
+  toModelOptions,
+} from "../models/modelOption";
 import { useWorkerModels } from "../agents/WorkerModelPicker";
 import { useServerResourceReads } from "../../servers/ServerServicesContext";
 import TeamChats from "./messages/TeamChats";
@@ -1028,7 +1032,7 @@ function Profiles(c: Context) {
   const catalog = useWorkerModels(lead?.accountKey || "default", !!draft, true);
   const profileModels = toModelOptions(catalog.models);
   const draftModel = typeof draft?.model === "string" ? draft.model : "";
-  if (draftModel && !profileModels.some((row) => row.value === draftModel))
+  if (draftModel && !modelForValue(profileModels, draftModel))
     profileModels.unshift({
       value: draftModel,
       label: modelDisplayName(draftModel),

@@ -2,6 +2,7 @@ import { NativeSelect, Radio, Stack } from "@mantine/core";
 import {
   INHERITED_MODEL,
   modelOptionLabel,
+  modelForValue,
   type ModelOption,
 } from "./modelOption";
 import "./model-field.css";
@@ -25,15 +26,16 @@ export function ModelField({
   id,
   disabled,
 }: Props) {
+  const selected = modelForValue(options, value);
+  const selectedValue = selected?.value ?? value;
   if (presentation === "select") {
-    const selected = options.find((option) => option.value === value);
     return (
       <NativeSelect
         id={id}
         label={label}
         size="sm"
-        value={value}
-        data-value={value}
+        value={selectedValue}
+        data-value={selectedValue}
         disabled={disabled}
         description={selected?.disabledReason || selected?.description}
         onChange={(event) => onChange(event.currentTarget.value)}
@@ -62,10 +64,10 @@ export function ModelField({
     <Radio.Group
       id={id}
       label={label}
-      value={value}
+      value={selectedValue}
       onChange={onChange}
       size="sm"
-      data-value={value}
+      data-value={selectedValue}
       disabled={disabled || undefined}
     >
       <Stack gap={0} className="model-options">

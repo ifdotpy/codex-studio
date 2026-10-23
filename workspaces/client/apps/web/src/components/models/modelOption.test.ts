@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   INHERITED_MODEL,
   modelDisplayName,
+  modelForValue,
   modelOptionLabel,
   toModelOptions,
 } from "./modelOption";
@@ -92,5 +93,51 @@ describe("toModelOptions", () => {
     expect(modelOptionLabel(options[0])).toBe("Astra 6 (default, current)");
     expect(modelOptionLabel(options[1])).toBe("Opus 4.6");
     expect(INHERITED_MODEL).toBe("__model_default__");
+  });
+});
+
+it("selects the non-default Claude alias for a stored resolved model id", () => {
+  const catalog = [
+    {
+      model: "default",
+      displayName: "Claude · Default (recommended)",
+      provider: "claude",
+      isDefault: true,
+      resolvedModel: "claude-opus-5-5",
+    },
+    {
+      model: "opus",
+      displayName: "Claude · Opus 5.5",
+      provider: "claude",
+      resolvedModel: "claude-opus-5-5",
+    },
+  ];
+  const options = toModelOptions(catalog, { currentValue: "claude-opus-5-5" });
+  expect(
+    options
+      .filter((option) => option.badges.includes("current"))
+      .map((option) => option.value),
+  ).toEqual(["opus"]);
+});
+
+describe("modelForValue", () => {
+  const rows = [
+    { model: "default", isDefault: true, resolvedModel: "claude-opus-5-5" },
+    { model: "opus", resolvedModel: "claude-opus-5-5" },
+  ];
+  it("prefers exact alias values and explicit resolved rows", () => {
+    expect(modelForValue(rows, "default")).toBe(rows[0]);
+    expect(modelForValue(rows, "opus")).toBe(rows[1]);
+    expect(modelForValue(rows, "claude-opus-5-5")).toBe(rows[1]);
+    expect(modelForValue(toModelOptions(rows), "claude-opus-5-5")?.value).toBe(
+      "opus",
+    );
+  });
+  it("preserves default-only catalogs, inherited and unknown values", () => {
+    expect(modelForValue(rows.slice(0, 1), "claude-opus-5-5")).toBe(rows[0]);
+    expect(modelForValue(rows, "missing")).toBeUndefined();
+    expect(
+      modelForValue([{ value: INHERITED_MODEL }], INHERITED_MODEL)?.value,
+    ).toBe(INHERITED_MODEL);
   });
 });

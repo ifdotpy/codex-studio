@@ -208,7 +208,7 @@ test("subagent concurrency ui", async ({ browser: _browser }) => {
     const helpId = await input.getAttribute("aria-describedby");
     assert.equal(
       await page.locator(`#${helpId}`).textContent(),
-      "0 disables subagents. The lead does not count. Extra work waits in the queue.",
+      "0 = lead only; extra work queues.",
     );
     await input.fill("64");
     await control.getByRole("button", { name: "Apply", exact: true }).click();

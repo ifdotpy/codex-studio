@@ -12,7 +12,7 @@ import {
 } from "../fixtures/setup-controls.mjs";
 // Production client with an isolated runtime. No model service or user state.
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -159,11 +159,10 @@ test("execution settings ui", async ({ browser: _browser }) => {
         await page
           .getByRole("button", { name: "Chat settings", exact: true })
           .click();
-      await expect(settings.getByRole("heading", { level: 3 })).toHaveText([
-        "Agents",
-        "Team",
-        "Access",
-      ]);
+      for (const name of ["Agents", "Team", "Access"])
+        await expect(
+          settings.getByRole("region", { name, exact: true }),
+        ).toBeVisible();
       const role = name === "Subagent defaults" ? "worker" : "orchestrator";
       const disclosure = settings.locator(`details[data-role="${role}"]`);
       if (!(await disclosure.getAttribute("open"))) {
@@ -188,6 +187,8 @@ test("execution settings ui", async ({ browser: _browser }) => {
       exact: true,
     });
     const applyLimit = chatSettingsDialog.locator(".agent-mode-apply");
+    await expect(applyLimit).toHaveCount(0);
+    await parallelInput.fill(String(lead.concurrency + 1));
     await applyLimit.scrollIntoViewIfNeeded();
     const inputBox = await parallelInput.boundingBox();
     const applyBox = await applyLimit.boundingBox();
@@ -195,6 +196,8 @@ test("execution settings ui", async ({ browser: _browser }) => {
     expect(
       Math.abs(applyBox.y + applyBox.height - inputBox.y - inputBox.height),
     ).toBeLessThan(1);
+    await parallelInput.fill(String(lead.concurrency));
+    await expect(applyLimit).toHaveCount(0);
     for (const summary of await chatSettingsDialog
       .locator(".execution-disclosure > summary, .execution-accounts > summary")
       .all()) {
@@ -205,58 +208,84 @@ test("execution settings ui", async ({ browser: _browser }) => {
         summary.locator(".execution-disclosure-chevron"),
       ).toHaveCount(1);
     }
-    if (process.env.EXECUTION_POLISH_SCREENSHOTS) {
-      await mkdir(process.env.EXECUTION_POLISH_SCREENSHOTS, {
-        recursive: true,
-      });
-      for (const width of [1440, 390])
-        for (const scheme of ["light", "dark"]) {
-          await page.setViewportSize({ width, height: 960 });
-          await page.emulateMedia({ colorScheme: scheme });
-          await expect(page.locator("html")).toHaveAttribute(
-            "data-mantine-color-scheme",
-            scheme,
+    const screenshotDirectory = process.env.EXECUTION_COMPACT_SCREENSHOTS;
+    if (screenshotDirectory)
+      await mkdir(screenshotDirectory, { recursive: true });
+    const layoutMeasurements = [];
+    for (const [width, height] of [
+      [1440, 900],
+      [390, 844],
+    ]) {
+      for (const scheme of ["light", "dark"]) {
+        await page.setViewportSize({ width, height });
+        await page.emulateMedia({ colorScheme: scheme });
+        await expect(page.locator("html")).toHaveAttribute(
+          "data-mantine-color-scheme",
+          scheme,
+        );
+        for (const opened of await chatSettingsDialog
+          .locator("details[open]")
+          .all())
+          await opened.locator(":scope > summary").click();
+        await chatSettingsDialog.evaluate((node) => {
+          for (let el = node; el; el = el.parentElement) el.scrollTop = 0;
+        });
+        const geometry = await chatSettingsDialog.evaluate((node) => {
+          const body = node.querySelector(".mantine-Modal-body");
+          return {
+            dialogContent: node.scrollHeight,
+            dialogHeight: node.clientHeight,
+            bodyContent: body.scrollHeight,
+            bodyHeight: body.clientHeight,
+          };
+        });
+        expect(
+          geometry.dialogContent,
+          JSON.stringify({ width, height, scheme, ...geometry }),
+        ).toBeLessThanOrEqual(geometry.dialogHeight);
+        expect(geometry.bodyContent).toBeLessThanOrEqual(geometry.bodyHeight);
+        layoutMeasurements.push({ width, height, scheme, ...geometry });
+        if (screenshotDirectory)
+          await page.screenshot({
+            path: join(
+              screenshotDirectory,
+              `compact-chat-settings-collapsed-${width}-${scheme}.png`,
+            ),
+          });
+        await chatSettingsDialog
+          .locator('details[data-role="orchestrator"] > summary')
+          .click();
+        const expanded = await chatSettingsDialog.evaluate((node) => {
+          const body = node.querySelector(".mantine-Modal-body");
+          return {
+            dialogContent: node.scrollHeight,
+            dialogHeight: node.clientHeight,
+            bodyContent: body.scrollHeight,
+            bodyHeight: body.clientHeight,
+            bodyOverflow: getComputedStyle(body).overflowY,
+          };
+        });
+        expect(expanded.dialogContent).toBeLessThanOrEqual(
+          expanded.dialogHeight,
+        );
+        expect(expanded.bodyOverflow).toBe("auto");
+        if (screenshotDirectory) {
+          await page.screenshot({
+            path: join(
+              screenshotDirectory,
+              `compact-chat-settings-lead-${width}-${scheme}.png`,
+            ),
+          });
+          await writeFile(
+            join(screenshotDirectory, "compact-layout-measurements.json"),
+            JSON.stringify(layoutMeasurements, null, 2),
           );
-          for (const opened of await chatSettingsDialog
-            .locator("details[open]")
-            .all())
-            await opened.locator(":scope > summary").click();
-          for (const scene of ["overview", "worker", "accounts"]) {
-            if (scene === "worker")
-              await chatSettingsDialog
-                .locator('details[data-role="worker"] > summary')
-                .click();
-            if (scene === "accounts") {
-              await chatSettingsDialog
-                .locator('details[data-role="worker"] > summary')
-                .click();
-              await chatSettingsDialog
-                .locator(".execution-accounts > summary")
-                .click();
-              await chatSettingsDialog
-                .locator(".execution-accounts")
-                .scrollIntoViewIfNeeded();
-            } else
-              await chatSettingsDialog.evaluate((node) => {
-                for (let el = node; el; el = el.parentElement) el.scrollTop = 0;
-              });
-            expect(
-              await chatSettingsDialog.evaluate(
-                (node) => node.scrollWidth <= node.clientWidth,
-              ),
-            ).toBe(true);
-            await page.screenshot({
-              path: join(
-                process.env.EXECUTION_POLISH_SCREENSHOTS,
-                `polish-chat-settings-${scene}-${width}-${scheme}.png`,
-              ),
-            });
-          }
         }
-      await page.setViewportSize({ width: 1440, height: 960 });
-      await page.emulateMedia({ colorScheme: "light" });
-      await openSettings("Main agent settings");
+      }
     }
+    await page.setViewportSize({ width: 1440, height: 960 });
+    await page.emulateMedia({ colorScheme: "light" });
+    await openSettings("Main agent settings");
     // Model rows use short names, one recommendation tag, and a selected state.
     const leadModel = page.getByLabel("Main agent model", { exact: true });
     assert.equal(await modelValue(leadModel), lead.model);
@@ -394,11 +423,7 @@ test("execution settings ui", async ({ browser: _browser }) => {
     });
     assert.equal(await delegationDepth.inputValue(), "1");
     assert.equal(
-      await page
-        .getByText(
-          "Lowering blocks new delegation immediately. Existing descendants keep running.",
-        )
-        .isVisible(),
+      await page.getByText("Existing workers keep their depth.").isVisible(),
       true,
     );
     const nestedDelegationSaved = settingsResponse(

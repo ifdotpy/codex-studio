@@ -3,6 +3,7 @@ export const INHERITED_MODEL = "__model_default__";
 
 export type ModelOption = {
   value: string;
+  resolvedModel?: string;
   label: string;
   provider: string;
   description?: string;
@@ -18,6 +19,30 @@ type CatalogModel = {
   isDefault?: boolean;
   resolvedModel?: string;
 };
+
+/** Match stored IDs to catalog or option values; explicit aliases beat default aliases. */
+export function modelForValue<
+  T extends {
+    model?: string;
+    value?: string;
+    resolvedModel?: string;
+    isDefault?: boolean;
+    badges?: string[];
+  },
+>(rows: T[], value?: string | null): T | undefined {
+  if (!value) return undefined;
+  return (
+    rows.find((row) => (row.model ?? row.value) === value) ??
+    rows.find(
+      (row) =>
+        row.resolvedModel === value &&
+        (row.model ?? row.value) !== "default" &&
+        !row.isDefault &&
+        !row.badges?.includes("default"),
+    ) ??
+    rows.find((row) => row.resolvedModel === value)
+  );
+}
 
 /** Shared model name for setup, compact selection, summaries and worker cards. */
 export function modelDisplayName(
@@ -73,14 +98,16 @@ export function toModelOptions<T extends CatalogModel>(
     disabledReason?: (model: T) => string | undefined;
   } = {},
 ): ModelOption[] {
+  const selected = modelForValue(models, currentValue);
   return models.map((row) => ({
     value: row.model,
+    ...(row.resolvedModel ? { resolvedModel: row.resolvedModel } : {}),
     label: modelDisplayName(row),
     provider: row.provider || provider,
     description: row.description || undefined,
     badges: [
       ...(row.isDefault ? ["default"] : []),
-      ...(row.model === currentValue ? ["current"] : []),
+      ...(row === selected ? ["current"] : []),
     ],
     disabledReason: disabledReason?.(row),
   }));

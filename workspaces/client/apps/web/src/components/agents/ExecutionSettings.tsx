@@ -36,6 +36,7 @@ import { layerZIndex } from "../../theme";
 import {
   INHERITED_MODEL as DEFAULT,
   modelDisplayName,
+  modelForValue,
   toModelOptions,
   type ModelOption,
 } from "../models/modelOption";
@@ -69,9 +70,7 @@ type SettingsAgent = Pick<
 >;
 const title = (value: string) => value.charAt(0).toUpperCase() + value.slice(1);
 const infoFor = (catalog: Catalog, model: string) =>
-  catalog.models.find(
-    (row) => row.model === model || row.resolvedModel === model,
-  );
+  modelForValue(catalog.models, model);
 /** Name a model row; a default alias shows the model it resolves to. */
 const displayModel = (catalog: Catalog, model: string) => {
   const info = infoFor(catalog, model);
@@ -550,7 +549,7 @@ function ScopedExecutionSettings({
         : `Unavailable in ${modeLabel.toLowerCase()} mode.`,
     });
   }
-  if (!modelOptions.some((row) => row.value === (current.model || DEFAULT)))
+  if (!modelForValue(modelOptions, current.model || DEFAULT))
     modelOptions.unshift({
       value: current.model || DEFAULT,
       label: modelDisplayName(selectedModel),
@@ -564,9 +563,7 @@ function ScopedExecutionSettings({
       !isDaybreakAlias(row.model) &&
       supportsDaybreakMode(row, false),
   );
-  const reviewInfo = reviewModels.find(
-    (row) => row.model === reviewCurrent.model,
-  );
+  const reviewInfo = modelForValue(reviewModels, reviewCurrent.model);
   const reviewOptions: ModelOption[] = [
     {
       value: DEFAULT,
@@ -577,10 +574,7 @@ function ScopedExecutionSettings({
     },
     ...toModelOptions(reviewModels),
   ];
-  if (
-    reviewCurrent.model &&
-    !reviewOptions.some((row) => row.value === reviewCurrent.model)
-  )
+  if (reviewCurrent.model && !modelForValue(reviewOptions, reviewCurrent.model))
     reviewOptions.push({
       value: reviewCurrent.model,
       label: modelDisplayName(reviewCurrent.model),
@@ -685,11 +679,7 @@ function ScopedExecutionSettings({
         supportsDaybreakMode(row, false),
     );
     const wanted = current.model;
-    const kept =
-      wanted &&
-      usable.find(
-        (row) => row.model === wanted || row.resolvedModel === wanted,
-      );
+    const kept = modelForValue(usable, wanted);
     const model = kept
       ? wanted
       : target
@@ -699,9 +689,7 @@ function ScopedExecutionSettings({
       setError("This account offers no model for subagents.");
       return;
     }
-    const row = usable.find(
-      (item) => item.model === (model || agent.model || ""),
-    );
+    const row = modelForValue(usable, model || agent.model);
     const effort = row?.supportedReasoningEfforts?.some(
       (item) => item.reasoningEffort === current.effort,
     )
@@ -1067,11 +1055,13 @@ function ScopedExecutionSettings({
       },
     });
   };
+  const selectedOptions = role === "review" ? reviewOptions : modelOptions;
+  const storedPickerModel =
+    (role === "review" ? reviewCurrent.model : current.model) || DEFAULT;
   const pickerModel = crossProvider
     ? ""
-    : role === "review"
-      ? reviewCurrent.model || DEFAULT
-      : current.model || DEFAULT;
+    : modelForValue(selectedOptions, storedPickerModel)?.value ||
+      storedPickerModel;
   const crossOptions = toModelOptions(
     allWorkerModels.models.filter(
       (row) =>
@@ -1097,6 +1087,8 @@ function ScopedExecutionSettings({
               (role === "worker" && leadProvider === pickerProvider)
             );
           const model = infoFor(catalog, row.value);
+          if (!model)
+            return !!row.disabledReason && row.provider === pickerProvider;
           return (
             !!model &&
             !model.hidden &&
@@ -1146,8 +1138,10 @@ function ScopedExecutionSettings({
     teamDefaults && agent.isLead && !onDraftChange ? (
       <NativeSelect
         label="Delegation depth"
+        className="execution-delegation"
         value={String(current.delegation_depth)}
-        description="Lowering blocks new delegation immediately. Existing descendants keep running."
+        description="Existing workers keep their depth."
+        title="Lowering blocks new delegation immediately. Existing descendants keep running."
         data={[
           { value: "1", label: "Lead only (1)" },
           { value: "2", label: "One nested level (2)" },
@@ -1340,12 +1334,12 @@ function ScopedExecutionSettings({
   const permissions =
     agent.isLead && agent.provider !== "claude" ? (
       settingsRow ? (
-        <Stack gap="xs">
+        <div className="execution-setting">
           <Text size="sm" fw={500}>
             Permissions
           </Text>
           <SegmentedControl
-            fullWidth
+            className="execution-setting-control"
             aria-label="Full access without approval"
             value={
               (pendingYolo?.value ?? agent.yoloMode === true) ? "full" : "ask"
@@ -1357,7 +1351,7 @@ function ScopedExecutionSettings({
             ]}
             onChange={(value) => void changeYolo(value === "full")}
           />
-          <Text size="xs" c="dimmed">
+          <Text size="xs" c="dimmed" className="execution-setting-description">
             {permissionsActive
               ? "Available when this turn ends."
               : !("yoloMode" in agent)
@@ -1369,7 +1363,7 @@ function ScopedExecutionSettings({
               {error}
             </p>
           )}
-        </Stack>
+        </div>
       ) : (
         <SettingsSection title="Permissions">
           <p>Applies to the whole team.</p>
@@ -1410,6 +1404,8 @@ function ScopedExecutionSettings({
         ? current
         : settingsFor(agent, true);
   const summaryReview = role === "review" ? reviewCurrent : reviewStored;
+  // Native reviews inherit the invoking Codex actor, which may be a child of this lead.
+  const inheritedReview = summaryRole === "review" && !summaryReview.model;
   const summaryModel =
     summaryRole === "review"
       ? summaryReview.model || mainModel
@@ -1454,7 +1450,7 @@ function ScopedExecutionSettings({
       : "";
   const summaryContent = (
     <>
-      <ProviderMark provider={summaryProvider} />
+      {!inheritedReview && <ProviderMark provider={summaryProvider} />}
       <span className="execution-role">
         {summaryRole === "worker"
           ? "Workers"
@@ -1465,9 +1461,11 @@ function ScopedExecutionSettings({
               : "Agent"}
       </span>
       <span className="execution-model">
-        {displayModel(summaryCatalog, summaryModel)}
+        {inheritedReview
+          ? "Same as caller"
+          : displayModel(summaryCatalog, summaryModel)}
       </span>
-      {summaryEffort && (
+      {!inheritedReview && summaryEffort && (
         <span className="execution-effort">{title(summaryEffort)}</span>
       )}
       {summaryAccountName && (
