@@ -23,18 +23,21 @@
   display: flex;
   flex: 0 0 auto;
   align-items: center;
-  height: var(--studio-action-size);
-  margin-right: calc(var(--mantine-spacing-xs) / 5);
+  height: 26px;
+  margin-right: 2px;
+}
+.usage-footer .account-limits-group .account-limits-toggle {
+  margin-left: 0;
 }
 .account-limits-dot-target {
   display: grid;
   place-items: center;
-  flex: 0 0 var(--mantine-spacing-sm);
-  width: var(--mantine-spacing-sm);
-  height: var(--studio-action-size);
+  flex: 0 0 12px;
+  width: 12px;
+  height: 26px;
   padding: 0;
   border: 0;
-  border-radius: calc(var(--mantine-spacing-xs) * 0.4);
+  border-radius: 4px;
   background: transparent;
   cursor: pointer;
 }
@@ -42,31 +45,31 @@
   outline: none;
 }
 .account-limits-dot-target:focus-visible .account-limits-dot {
-  outline: calc(var(--mantine-spacing-xs) / 5) solid var(--muted);
-  outline-offset: calc(var(--mantine-spacing-xs) / 5);
+  outline: 2px solid var(--muted);
+  outline-offset: 2px;
 }
 .account-limits-dot {
-  width: var(--mantine-spacing-xs);
-  height: var(--mantine-spacing-xs);
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
-  background: var(--studio-state-paused);
+  background: light-dark(#8b909a, #858b96);
 }
 .account-limits-dot[data-color="green"] {
-  background: var(--studio-state-unread);
+  background: light-dark(#34866d, #67ad91);
 }
 .account-limits-dot[data-color="yellow"] {
-  background: var(--studio-state-answer);
+  background: light-dark(#a67c21, #d5ad52);
 }
 .account-limits-dot[data-color="red"] {
-  background: var(--studio-state-error);
+  background: light-dark(#b35151, #cc7777);
 }
 .account-limits-dot[data-current] {
-  outline: var(--studio-border-width) solid var(--muted);
-  outline-offset: calc(var(--mantine-spacing-xs) / 5);
+  outline: 1px solid var(--muted);
+  outline-offset: 2px;
 }
 .account-limits-dot-tooltip {
   white-space: pre-line;
-  font-size: var(--studio-text-meta);
+  font-size: 11px;
 }
 .account-limits-popover {
   padding: 0;
@@ -514,39 +517,32 @@
   display: none;
 }
 .context-use {
-  display: grid;
   order: -1;
-  gap: var(--studio-meter-size);
   min-width: 0;
-  padding: 0;
   min-height: var(--studio-control-size);
+  padding: 0;
   border: 0;
+  border-radius: 4px;
   background: transparent;
   color: var(--muted);
-  font-size: var(--studio-text-meta);
-  text-align: left;
-}
-.usage-metric-label {
-  display: flex;
-  align-items: baseline;
-  gap: var(--mantine-spacing-xs);
+  font: inherit;
   white-space: nowrap;
+  cursor: pointer;
 }
-.usage-metric-label strong {
-  margin-left: auto;
+.context-use:hover {
   color: var(--text);
-  font-weight: 500;
-  font-variant-numeric: tabular-nums;
 }
-.usage-meter {
-  height: var(--studio-meter-size);
-  width: 100%;
-  min-width: var(--studio-meter-width);
+.context-use:focus-visible {
+  outline: 2px solid var(--mantine-primary-color-filled);
+  outline-offset: 4px;
 }
 .account-limits-summary {
-  display: grid;
-  gap: var(--studio-meter-size);
+  display: block;
   min-width: 0;
+  white-space: nowrap;
+}
+.account-limits-summary > span + span {
+  margin-left: 7px;
 }
 .account-limits-toggle {
   height: auto;
@@ -561,32 +557,21 @@
   gap: var(--mantine-spacing-xs);
 }
 
-.usage-context-icon {
-  align-self: center;
-  flex: none;
-}
 @container conversation-footer (max-width: 47.5em) {
   .usage-footer {
     gap: var(--mantine-spacing-xs);
   }
   .usage-footer .token-rate,
-  .usage-context-label,
-  .usage-footer .usage-meter,
-  .account-limits-label {
+  .account-limits-summary .account-limits-warning {
     display: none;
   }
   .context-use,
   .account-limits-toggle {
     min-height: var(--mantine-spacing-lg);
   }
-  .usage-metric-label {
-    align-items: center;
-    gap: calc(var(--mantine-spacing-xs) / 2);
-  }
   .account-limits-dots,
   .account-limits-dot-target {
-    height: var(--mantine-spacing-lg);
-    min-height: var(--mantine-spacing-lg);
+    height: var(--studio-secondary-touch-target);
   }
 }
 .session-cost-compact-label {
@@ -720,9 +705,6 @@
   text-transform: capitalize;
 }
 
-.account-limits-compact-dot {
-  display: none;
-}
 @media (pointer: coarse) {
   .usage-footer .context-use,
   .usage-footer .account-limits-toggle,
@@ -739,24 +721,5 @@
   }
   .account-limits-group {
     gap: var(--mantine-spacing-xs);
-  }
-  .account-limits-dot-target {
-    flex-basis: var(--studio-secondary-touch-target);
-    width: var(--studio-secondary-touch-target);
-    min-width: var(--studio-secondary-touch-target);
-    height: var(--studio-secondary-touch-target);
-    min-height: var(--studio-secondary-touch-target);
-  }
-  @container conversation-footer (max-width: 47.5em) {
-    .account-limits-dots,
-    .account-limits-gauge {
-      display: none;
-    }
-    .account-limits-compact-dot {
-      display: block;
-    }
-    .usage-footer .account-limits-toggle {
-      min-width: var(--studio-touch-target);
-    }
   }
 }

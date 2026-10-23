@@ -59,15 +59,12 @@ test("desktop conversation header keeps title and actions on one row", async ({
         JSON.stringify(geometry),
       ).toBeGreaterThanOrEqual(geometry[index - 1].right);
     }
-    await expect(page.locator("#conversation-status")).toHaveCSS(
-      "box-shadow",
-      "none",
-    );
+    await expect(page.locator("#conversation-status")).toHaveCount(0);
     const context = page.getByRole("button", {
       name: "Chat context",
       exact: true,
     });
-    await expect(context).toContainText("Unknown");
+    await expect(context).toHaveText("Context");
     await expect(context.getByRole("progressbar")).toHaveCount(0);
     await page.screenshot({
       path: test.info().outputPath("real-header-1440.png"),

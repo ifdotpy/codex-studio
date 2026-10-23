@@ -9,7 +9,6 @@ import {
   ExternalLink,
   Gauge,
   RefreshCw,
-  CircleGauge,
   CircleDollarSign,
 } from "lucide-react";
 import type { Agent, Json, JsonValue } from "../types";
@@ -451,13 +450,6 @@ export default function Usage({
   const percent = known
     ? Math.round((contextTokens / contextWindow) * 100)
     : null;
-  const buckets = readBuckets(limits, now);
-  const remainingWindows = buckets
-    .flatMap((bucket) => bucket.windows)
-    .filter((window) => !window.expired && window.remaining !== null);
-  const remainingPercent = remainingWindows.length
-    ? Math.min(...remainingWindows.map((window) => window.remaining!))
-    : null;
   const recovered = useRecoveredLimit(accountAgent, limits, now);
   const selectedRecovery = recovered
     ? null
@@ -556,24 +548,7 @@ export default function Usage({
             aria-expanded={contextOpen}
             onClick={() => setContextOpen(!contextOpen)}
           >
-            <span className="usage-metric-label">
-              <CircleGauge
-                className="usage-context-icon"
-                size={13}
-                aria-hidden="true"
-              />
-              <span className="usage-context-label">Context</span>
-              <strong>{percent === null ? "Unknown" : `${percent}%`}</strong>
-            </span>
-            {percent !== null && (
-              <Progress
-                className="usage-meter"
-                value={Math.min(100, Math.max(0, percent))}
-                color="gray"
-                aria-label="Context used"
-                aria-valuetext={`${percent}% used`}
-              />
-            )}
+            {percent === null ? "Context" : `Context ${percent}%`}
           </button>
         </Popover.Target>
         <Popover.Dropdown>
@@ -716,38 +691,11 @@ export default function Usage({
                     : undefined
               }
               onClick={() => changeOpened(!limitsOpened)}
-              leftSection={
-                <>
-                  <Gauge className="account-limits-gauge" size={13} />
-                  <span
-                    className="account-limits-dot account-limits-compact-dot"
-                    aria-hidden="true"
-                    data-color={
-                      weeklyRunway(limits, now, activeAccount?.signedOut).color
-                    }
-                  />
-                </>
-              }
+              leftSection={<Gauge size={13} />}
               rightSection={<ChevronUp size={12} />}
             >
               <span className="account-limits-summary">
-                <span className="usage-metric-label">
-                  <span className="account-limits-label">Limits</span>
-                  <strong>
-                    {remainingPercent === null
-                      ? "—"
-                      : `${formatPercent(remainingPercent)} left`}
-                  </strong>
-                </span>
-                {remainingPercent !== null && (
-                  <Progress
-                    className="usage-meter"
-                    value={remainingPercent}
-                    color={lowAccount ? "yellow" : "gray"}
-                    aria-label="Allowance remaining"
-                    aria-valuetext={`${formatPercent(remainingPercent)} remaining`}
-                  />
-                )}
+                <span className="account-limits-label">Limits</span>
                 {lowAccount && (
                   <span className="account-limits-warning">Low allowance</span>
                 )}

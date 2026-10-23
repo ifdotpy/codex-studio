@@ -88,11 +88,7 @@ test("conversation header stays compact and usage facts remain visible", async (
           await expect(page.locator("#conversation-title")).toHaveText(
             "Release lead",
           );
-          // Opening a completed chat commits read state and loads its transcript
-          // independently of the cost request. Measure the post-open header.
-          await expect(
-            page.locator("#conversation-status"),
-          ).toHaveAccessibleName("Read");
+          await expect(page.locator("#conversation-status")).toHaveCount(0);
           await expect(page.locator("#messages")).toContainText(
             "Review the release",
           );
@@ -140,24 +136,7 @@ test("conversation header stays compact and usage facts remain visible", async (
             return {
               header: rect(".simple-workspace-header"),
               title: rect("#conversation-title"),
-              status: rect("#conversation-status"),
               server: rect(".conversation-server"),
-              statusLabel: (() => {
-                const label = document.querySelector(
-                  ".conversation-status-label",
-                );
-                return {
-                  visible: !!label?.getClientRects().length,
-                  width: label?.parentElement.clientWidth,
-                  scrollWidth: label?.parentElement.scrollWidth,
-                  dotWidth: document
-                    .querySelector(".conversation-status-dot")
-                    .getBoundingClientRect().width,
-                  accessible: document
-                    .querySelector("#conversation-status")
-                    .getAttribute("aria-label"),
-                };
-              })(),
               footer: rect(".usage-footer"),
               estimate: rect(".session-cost-summary"),
               dots: rect(".account-limits-dots"),
@@ -182,7 +161,31 @@ test("conversation header stays compact and usage facts remain visible", async (
           await page.screenshot({
             path: join(evidence, `chrome-${width}-${scheme}.png`),
           });
+          await page.locator(".simple-workspace-header").screenshot({
+            path: join(evidence, `header-${width}-${scheme}.png`),
+          });
+          await page.locator(".usage-footer").screenshot({
+            path: join(evidence, `footer-${width}-${scheme}.png`),
+          });
           assertGeometry(result);
+          const accountDot = page.locator(
+            '.account-limits-dot-target[aria-current="true"]',
+          );
+          await accountDot.focus();
+          await page.keyboard.press("Enter");
+          await expect(
+            page.getByRole("region", { name: "Account limits details" }),
+          ).toBeVisible();
+          await expect(accountDot).toHaveAttribute("aria-expanded", "true");
+          await page.keyboard.press("Escape");
+          await expect(page.locator(".account-limits-popover")).toBeHidden();
+          await page
+            .getByRole("button", { name: "Chat context", exact: true })
+            .click();
+          await expect(
+            page.getByText("No context data yet.", { exact: true }),
+          ).toBeVisible();
+          await page.keyboard.press("Escape");
         } catch (error) {
           const failure = join(evidence, `failed-${width}-${scheme}.png`);
           await page.screenshot({ path: failure }).catch(() => {});
@@ -214,24 +217,10 @@ function assertGeometry(r) {
   expect(r.header.height, JSON.stringify(r)).toBeLessThanOrEqual(45);
   expect(r.teamStrip).toBe(false);
   expect(r.server.width).toBeGreaterThan(0);
-  expect(r.server.left).toBeGreaterThanOrEqual(r.status.right);
-  expect(r.statusLabel.accessible).toBeTruthy();
-  if (r.statusLabel.visible)
-    expect(r.statusLabel.scrollWidth, JSON.stringify(r)).toBeLessThanOrEqual(
-      r.statusLabel.width + 1,
-    );
-  else expect(r.statusLabel.dotWidth).toBeGreaterThan(0);
-  expect(
-    Math.abs(
-      r.title.top + r.title.height / 2 - r.status.top - r.status.height / 2,
-    ),
-  ).toBeLessThanOrEqual(1);
+  expect(r.server.left).toBeGreaterThanOrEqual(r.title.right);
   expect(r.limits.width).toBeGreaterThan(0);
-  if (r.width < 760) expect(r.dots.width).toBe(0);
-  else {
-    expect(r.dots.width).toBeGreaterThan(0);
-    expect(r.dots.height).toBeGreaterThan(0);
-  }
+  expect(r.dots.width).toBeGreaterThan(0);
+  expect(r.dots.height).toBeGreaterThan(0);
   expect(r.estimate.width).toBeGreaterThan(0);
   const centers = r.controls.map((e) => e.top + e.height / 2);
   expect(
