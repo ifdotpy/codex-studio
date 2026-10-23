@@ -223,3 +223,96 @@ async fn a_final_guest_state_expires_the_card_and_tells_the_chat_after_an_approv
         )]
     );
 }
+
+fn events(store: &studio_runtime_store::RuntimeStore) -> Vec<(String, String, String)> {
+    let connection = store.test_reader().expect("test step");
+    connection
+        .prepare("SELECT id,kind,text FROM runtime_events ORDER BY id")
+        .expect("test step")
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+        .expect("test step")
+        .collect::<Result<_, _>>()
+        .expect("test step")
+}
+
+#[tokio::test]
+async fn a_card_follows_the_request_deadline_and_tells_the_chat_when_nobody_answered() {
+    let (_dir, store) = store().await;
+    let stopped = "f".repeat(32);
+    let timed_out = "1".repeat(32);
+    let replaced = "2".repeat(32);
+    let redirect = json!({"host":"localhost","port":8000,"path":"/"});
+    let pending = |id: &str, seq: u64| item(id, VM_AGENT, KUBE, redirect.clone(), "pending", seq);
+    let mut moved = pending(&stopped, 4);
+    moved["expiresAt"] = json!(1201.0);
+    let ended =
+        |id: &str, state: &str, seq: u64| item(id, VM_AGENT, KUBE, redirect.clone(), state, seq);
+    let guest = Arc::new(WaitGuest {
+        batches: Mutex::new(VecDeque::from([
+            json!({"items":[pending(&stopped, 1), pending(&timed_out, 2), pending(&replaced, 3)], "next": 3}),
+            // The command still listens: the bridge moved the deadline.
+            json!({"items":[moved], "next": 4}),
+            json!({"items":[
+                ended(&stopped, "stale", 5), ended(&timed_out, "expired", 6),
+                ended(&replaced, "replaced", 7),
+            ], "next": 7}),
+            // A repeated final state changes nothing.
+            json!({"items":[ended(&stopped, "stale", 8)], "next": 8}),
+        ])),
+        calls: Mutex::new(Vec::new()),
+    });
+    let source = CardSource {
+        source: "vm",
+        guest,
+        forwarder: None,
+        http_providers: Default::default(),
+    };
+    poll_once(&store, &source, 0, 0, None)
+        .await
+        .expect("test step");
+    assert_eq!(
+        request(&store, &stopped).expect("card")["params"]["expiresAt"],
+        601.0
+    );
+    poll_once(&store, &source, 3, 0, None)
+        .await
+        .expect("test step");
+    assert_eq!(
+        request(&store, &stopped).expect("card")["params"]["expiresAt"],
+        1201.0,
+        "the card shows the moved deadline"
+    );
+    poll_once(&store, &source, 4, 0, None)
+        .await
+        .expect("test step");
+    poll_once(&store, &source, 7, 0, None)
+        .await
+        .expect("test step");
+    for (bridge, reason) in [
+        (&stopped, "stale"),
+        (&timed_out, "expired"),
+        (&replaced, "replaced"),
+    ] {
+        let card = request(&store, bridge).expect("card");
+        assert_eq!(
+            (card["status"].clone(), card["closeReason"].clone()),
+            (json!("expired"), json!(reason))
+        );
+    }
+    assert_eq!(
+        events(&store),
+        vec![
+            (
+                format!("browser-unanswered:{timed_out}"),
+                "browser_unanswered".to_owned(),
+                "Nobody answered the sign-in card for id.example.com in time, and Studio closed it. The command gets no sign-in result from this card. Do not wait for it: stop the command if it still waits, start the sign-in again when the person can answer, and tell the person in one short message.".to_owned()
+            ),
+            (
+                format!("browser-unanswered:{stopped}"),
+                "browser_unanswered".to_owned(),
+                "Nobody answered the sign-in card for id.example.com, and it closed because the sign-in command stopped waiting. The command got no sign-in result from this card. Do not wait for it: start the sign-in again when the person can answer, and tell the person in one short message.".to_owned()
+            ),
+        ],
+        "a replaced card gets no event: the chat gave a newer link"
+    );
+}

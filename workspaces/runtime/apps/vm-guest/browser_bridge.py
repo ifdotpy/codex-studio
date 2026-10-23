@@ -25,9 +25,14 @@ from urllib.parse import parse_qs, urljoin, urlsplit
 import uuid
 
 from browser_policy import PolicyError, Provider, StartPage, classify, provider
+from shared_values_generated import SIGN_IN_NOT_SENT_CODE, SIGN_IN_OPEN_LIMIT_SECONDS
 
 SOCKET = Path("/run/codex-studio-browser/open.sock")
 TTL_SECONDS = 600
+# A pending request whose command still listens gets a new deadline when its current one is at
+# most this many seconds away: one request time from now, at most SIGN_IN_OPEN_LIMIT_SECONDS
+# from its creation (docs/vm-browser-bridge.md, "Card lifetime").
+EXTEND_BEFORE_SECONDS = TTL_SECONDS / 2
 KEEP_SECONDS = 3600
 LIMIT_WINDOW_SECONDS = 600
 LIMIT_COUNT = 6
@@ -94,13 +99,28 @@ def parse_listeners(text: str) -> list[Listener]:
     return rows
 
 
-def proc_listeners(root: Path = Path("/proc/net")) -> list[Listener]:
+def proc_listeners(root: Path = Path("/proc/net")) -> list[Listener] | None:
+    """The listeners of the guest, or None when /proc could not be read: the listeners are
+    unknown, which is not the same as no listener."""
     rows: list[Listener] = []
     for name in ("tcp", "tcp6"):
         try:
             rows += parse_listeners((root / name).read_text())
+        except FileNotFoundError:
+            if name == "tcp":
+                return None
+            # A guest without IPv6 has no tcp6 table.
         except OSError:
-            continue
+            return None
+    return rows
+
+
+def known(rows: list[Listener] | None) -> list[Listener]:
+    """The listeners for a step that must not guess: unknown listeners refuse with a
+    retryable error, and the request stays open."""
+    if rows is None:
+        raise BridgeError(SIGN_IN_NOT_SENT_CODE,
+                          "Studio could not read the listening ports of this computer. Try again")
     return rows
 
 
@@ -174,9 +194,19 @@ def _clean_headers(headers: object) -> dict[str, str]:
     return result
 
 
+def listening_deadline(item: dict[str, Any], now: float) -> float | None:
+    """The new deadline of a pending request whose command still listens, or None to keep it:
+    one request time from now, at most SIGN_IN_OPEN_LIMIT_SECONDS from its creation."""
+    limit = item["createdAt"] + SIGN_IN_OPEN_LIMIT_SECONDS
+    rolled = min(now + TTL_SECONDS, limit)
+    if rolled > item["expiresAt"] and (rolled - item["expiresAt"] >= EXTEND_BEFORE_SECONDS or rolled >= limit):
+        return rolled
+    return None
+
+
 class BrowserBridge:
     def __init__(self, state: Path, context: Context, *,
-                 listeners: Callable[[], list[Listener]] = proc_listeners,
+                 listeners: Callable[[], list[Listener] | None] = proc_listeners,
                  http_providers: frozenset[str] = frozenset(),
                  clock: Callable[[], float] = time.time):
         self.context, self.listeners, self.http_providers, self.clock = context, listeners, http_providers, clock
@@ -309,7 +339,7 @@ class BrowserBridge:
         if isinstance(checked, StartPage):
             start_url = checked.url
             parts = urlsplit(checked.url)
-            address = connect_address(uid, checked.port, self.listeners())
+            address = connect_address(uid, checked.port, known(self.listeners()))
             target = (parts.path or "/") + ("?" + parts.query if parts.query else "")
             reply = await asyncio.to_thread(fetch, address, checked.port, target,
                                             {"Host": parts.netloc, "Accept": "text/html"},
@@ -321,7 +351,7 @@ class BrowserBridge:
         else:
             final = checked
         if final.redirect is not None:
-            connect_address(uid, final.redirect.port, self.listeners())
+            connect_address(uid, final.redirect.port, known(self.listeners()))
         async with self.changed:
             existing = self._existing(agent, url, now)
             if existing is not None:
@@ -415,8 +445,9 @@ class BrowserBridge:
             self._update(item, state="opened")
             self._save()
             return {"state": "opened", "lease": None}
+        rows = known(self.listeners())
         try:
-            connect_address(item["uid"], redirect["port"], self.listeners())
+            connect_address(item["uid"], redirect["port"], rows)
         except BridgeError as error:
             self._update(item, state="stale")
             self._save()
@@ -439,7 +470,7 @@ class BrowserBridge:
                 or (parts.path or "/") != lease["path"] or len(target) > 8192:
             raise BridgeError("invalid_params", "Only the sign-in redirect path can pass")
         port = int(lease["port"])
-        address = connect_address(item["uid"], port, self.listeners())
+        address = connect_address(item["uid"], port, known(self.listeners()))
         host = ("[::1]" if lease["host"] == "::1" else lease["host"]) + ":" + str(port)
         headers = {"Host": host, **_clean_headers(params.get("headers")), "Connection": "close"}
         async with self.changed:
@@ -456,25 +487,37 @@ class BrowserBridge:
                 "body": base64.b64encode(reply.body).decode(), "done": done}
 
     async def check(self) -> None:
-        """Mark requests whose time ran out or whose tool stopped listening."""
+        """Mark requests whose time ran out or whose tool stopped listening. A pending request
+        whose tool still listens stays open up to SIGN_IN_OPEN_LIMIT_SECONDS."""
         async with self.changed:
-            now, rows, changed = self.clock(), None, False
+            now, rows, probed, changed = self.clock(), None, False, False
             for item in self.items.values():
                 if item["state"] not in OPEN_STATES:
                     continue
                 expires = (item.get("lease") or {}).get("expiresAt", item["expiresAt"])
+                # None: no loopback redirect, or unknown listeners (the probe failed). Unknown
+                # listeners neither make a request stale nor move its deadline.
+                redirect, listening = item.get("redirect"), None
+                if redirect is not None:
+                    if not probed:
+                        rows, probed = self.listeners(), True
+                    if rows is not None:
+                        try:
+                            connect_address(item["uid"], redirect["port"], rows)
+                            listening = True
+                        except BridgeError:
+                            listening = False
+                if item["state"] == "pending" and listening:
+                    deadline = listening_deadline(item, now)
+                    if deadline is not None:
+                        self._update(item, expiresAt=deadline)
+                        changed, expires = True, deadline
                 if now > expires:
                     self._update(item, state="expired")
                     changed = True
-                    continue
-                redirect = item.get("redirect")
-                if redirect is not None:
-                    rows = self.listeners() if rows is None else rows
-                    try:
-                        connect_address(item["uid"], redirect["port"], rows)
-                    except BridgeError:
-                        self._update(item, state="stale")
-                        changed = True
+                elif listening is False:
+                    self._update(item, state="stale")
+                    changed = True
             if changed:
                 self._save()
 

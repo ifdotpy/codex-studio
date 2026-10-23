@@ -4,7 +4,9 @@
 //! One poll runs for each source: the guest service of the Linux VM on this Mac (`vm`) and
 //! the host bridge of native chats (`host`, `browser_host`). It long-polls `browser.wait`,
 //! writes one `browser/open` request for each new pending link, refuses links that no chat
-//! can own, and expires a pending card when its guest request ends.
+//! can own, keeps the card's deadline equal to the guest request's, and expires a pending
+//! card when its guest request ends. A card that nobody answered tells its chat
+//! (`unanswered_event`), so the agent does not wait for a result that cannot come.
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -45,6 +47,21 @@ fn outcome_text(outcome: &str) -> Option<&'static str> {
         }
         "expired" => {
             "The sign-in at {host} ended without a result: the request expired or the command stopped."
+        }
+        _ => return None,
+    })
+}
+
+/// The chat event text when a pending card ends before anyone answered it, by the guest state
+/// that ended its request (docs/vm-browser-bridge.md, section 2(b)). `replaced` has none: the
+/// chat gave a newer link.
+fn unanswered_text(state: &str) -> Option<&'static str> {
+    Some(match state {
+        "stale" => {
+            "Nobody answered the sign-in card for {host}, and it closed because the sign-in command stopped waiting. The command got no sign-in result from this card. Do not wait for it: start the sign-in again when the person can answer, and tell the person in one short message."
+        }
+        "expired" => {
+            "Nobody answered the sign-in card for {host} in time, and Studio closed it. The command gets no sign-in result from this card. Do not wait for it: stop the command if it still waits, start the sign-in again when the person can answer, and tell the person in one short message."
         }
         _ => return None,
     })
@@ -142,6 +159,36 @@ pub(crate) fn outcome_event(tx: &Transaction<'_>, record: &Value, now: f64) -> b
         Ok(_) => true,
         Err(error) => {
             eprintln!("browser outcome event for {bridge_id} failed: {error}");
+            false
+        }
+    }
+}
+
+/// Tell the chat that its pending card closed without an answer. Returns whether an event was
+/// queued. The event ID names the guest request, so a repeated final state queues nothing.
+fn unanswered_event(tx: &Transaction<'_>, record: &Value, state: &str, now: f64) -> bool {
+    let Some(text) = unanswered_text(state) else {
+        return false;
+    };
+    let Some(agent_id) = record.get("agent").and_then(Value::as_str) else {
+        return false;
+    };
+    let Ok(agent) = crate::event_write::checked_agent(tx, agent_id) else {
+        return false;
+    };
+    let params = &record["params"];
+    let bridge_id = python_text(params.get("bridgeId"));
+    match crate::event_write::enqueue_event(
+        tx,
+        &agent,
+        format!("browser-unanswered:{bridge_id}"),
+        "browser_unanswered",
+        text.replace("{host}", &python_text(params.get("host"))),
+        now,
+    ) {
+        Ok(queued) => queued,
+        Err(error) => {
+            eprintln!("browser unanswered event for {bridge_id} failed: {error}");
             false
         }
     }
@@ -308,9 +355,24 @@ pub async fn apply(
                             record["params"]["outcome"] = json!("expired");
                         }
                         put_request(tx, &key, &record)?;
-                        if waiting {
-                            applied.event = outcome_event(tx, &record, now);
-                        }
+                        applied.event = if waiting {
+                            outcome_event(tx, &record, now)
+                        } else {
+                            unanswered_event(tx, &record, &state, now)
+                        };
+                    }
+                }
+                // A listening command moved the deadline of its open request (`check`).
+                Some(raw) if state == "pending" => {
+                    let mut record: Value =
+                        serde_json::from_str(&raw).map_err(|_| BrowserCardError::Invalid)?;
+                    let deadline = item.get("expiresAt").filter(|value| value.is_number());
+                    if record.get("status").and_then(Value::as_str) == Some("pending")
+                        && let Some(deadline) = deadline
+                        && record.pointer("/params/expiresAt") != Some(deadline)
+                    {
+                        record["params"]["expiresAt"] = deadline.clone();
+                        put_request(tx, &key, &record)?;
                     }
                 }
                 _ => {}
