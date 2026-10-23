@@ -463,6 +463,46 @@ mod tests {
         assert_eq!(store.committed_change_generation(), generation);
     }
 
+    /// The owner keeps all history: a retention tick never shortens task
+    /// output, whatever the task's age, status or position in its agent.
+    #[tokio::test]
+    async fn pass_keeps_the_full_output_of_old_finished_tasks() {
+        const SEVEN_DAYS: f64 = 7.0 * 24.0 * 60.0 * 60.0;
+        const NEWEST_PER_AGENT: usize = 100;
+        let (_directory, store) = store().await;
+        let tail = long_tail();
+        let mut tasks = ["completed", "failed", "interrupted"]
+            .into_iter()
+            .map(|status| {
+                json!({"id":format!("old-{status}"),"agent":"a","status":status,
+                    "created":NOW - SEVEN_DAYS - 1_000.0,"tail":tail})
+            })
+            .collect::<Vec<_>>();
+        // Newer tasks put the old ones outside agent "a"'s newest tasks.
+        for index in 0..NEWEST_PER_AGENT {
+            tasks.push(
+                json!({"id":format!("a-new-{index:03}"),"agent":"a","status":"completed",
+                "created":NOW - 100.0 + index as f64,"tail":"x"}),
+            );
+        }
+        insert_tasks(&store, tasks).await;
+        let generation = store.committed_change_generation();
+
+        run_pass(&store, NOW).await.expect("retention pass");
+
+        for id in ["old-completed", "old-failed", "old-interrupted"] {
+            let kept = task(&store, id).await;
+            assert_eq!(kept["tail"], json!(tail), "{id} keeps its full tail");
+            assert!(kept.get("outputPreviewOnly").is_none(), "{id}");
+            assert!(kept.get("outputTruncated").is_none(), "{id}");
+        }
+        assert_eq!(
+            store.committed_change_generation(),
+            generation,
+            "a pass without tombstones to prune writes nothing"
+        );
+    }
+
     #[tokio::test]
     async fn idle_pass_on_fresh_state_writes_nothing() {
         let (_directory, store) = store().await;
