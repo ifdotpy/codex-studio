@@ -6,6 +6,7 @@ import type { ChatIndicator } from "../chat-status/chatStatusModel";
 import type { PreviewTarget } from "../FilePreview";
 import UIErrorBoundary from "../UIErrorBoundary";
 import WorkerCard from "./WorkerCard";
+import Disclosure from "../ui/Disclosure";
 import {
   TeamModels,
   TeamSummary,
@@ -121,8 +122,11 @@ export default function TeamPanel({
           </ActionIcon>
         </div>
         {lead && (lead.overview?.result || lead.overview?.resultFile) && (
-          <details className="team-lead-report">
-            <summary>Main agent report</summary>
+          <Disclosure
+            className="team-lead-report"
+            summary="Main agent report"
+            chevron
+          >
             {lead.overview.result && <p>{lead.overview.result}</p>}
             {lead.overview.resultTruncated && (
               <Button
@@ -150,7 +154,7 @@ export default function TeamPanel({
                 Open main agent submitted result
               </Button>
             )}
-          </details>
+          </Disclosure>
         )}
         <TeamSummary
           workers={workers}
@@ -213,24 +217,26 @@ export default function TeamPanel({
             ) : null,
           )}
           {!!completed.length && (
-            <details
+            <Disclosure
               className="worker-group"
               open={!!query || completedOpen}
-              onToggle={(event) => {
-                if (!query) setCompletedOpen(event.currentTarget.open);
+              onChange={(open) => {
+                if (!query) setCompletedOpen(open);
               }}
-            >
-              <summary aria-label={`Finished (${completed.length})`}>
+              ariaLabel={`Finished (${completed.length})`}
+              chevron
+              summary={
                 <TeamGroupLabel
                   kind="completed"
                   label="Finished"
                   count={completed.length}
                 />
-              </summary>
-              {/* A collapsed group keeps its rows out of the DOM; the summary
+              }
+            >
+              {/* A collapsed group keeps its rows out of the DOM; the control
                   and the team overview still count them. */}
               {(!!query || completedOpen) && completed.map(worker)}
-            </details>
+            </Disclosure>
           )}
           {!shown.length && (
             <p className="team-empty" role="status">

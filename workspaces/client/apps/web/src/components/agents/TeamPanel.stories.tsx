@@ -1,6 +1,6 @@
 import { useState } from "react";
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { expect, fn, userEvent, within } from "storybook/test";
+import { expect, fn, userEvent, waitFor, within } from "storybook/test";
 import type { Agent, Snapshot } from "../../types";
 import { chatIndicators } from "../chat-status/chatStatusModel";
 import TeamPanel from "./TeamPanel";
@@ -228,12 +228,12 @@ export const Dispatch: Story = {
       canvasElement.querySelector('[data-worker="running"]'),
     ).toBeVisible();
     const progress = canvasElement.querySelector(".worker-command-details")!;
-    await expect(progress).not.toHaveAttribute("open");
-    await userEvent.click(progress.querySelector("summary")!);
+    await expect(progress).not.toHaveAttribute("data-expanded");
+    await userEvent.click(progress.querySelector(".disclosure-control")!);
     await expect(
       within(progress as HTMLElement).getByText("Checking TypeScript exports"),
     ).toBeVisible();
-    await userEvent.click(progress.querySelector("summary")!);
+    await userEvent.click(progress.querySelector(".disclosure-control")!);
     await expect(canvas.queryByText("Storage adapter")).not.toBeInTheDocument();
     await userEvent.click(canvas.getByLabelText("Finished (14)"));
     await expect(canvas.getByText("Storage adapter")).toBeVisible();
@@ -338,9 +338,9 @@ export const ImplicitLead: Story = {
     );
     await expect(args.open).toHaveBeenLastCalledWith("lead");
     await userEvent.click(canvas.getByText("Main agent report"));
-    await expect(
-      canvas.getByText("Release verification passed."),
-    ).toBeVisible();
+    await waitFor(() =>
+      expect(canvas.getByText("Release verification passed.")).toBeVisible(),
+    );
     await userEvent.click(
       canvas.getByRole("button", { name: "Continue in main chat" }),
     );
@@ -374,7 +374,7 @@ export const SharedGutter: Story = {
       ".team-summary-filters",
       ".mantine-TextInput-root",
       ".team-status-group h3",
-      ".worker-group > summary",
+      ".worker-group > .disclosure-control",
       ".worker-entry:not([data-has-parent])",
     ]) {
       for (const element of panel.querySelectorAll(selector)) {
