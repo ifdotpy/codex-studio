@@ -137,7 +137,7 @@ test("chat prefetch ui @performance", async ({ browser }) => {
               response.write(apiSchemaHandshakeSse());
               response.write(
                 `retry: 100\nevent: resources\ndata: ${JSON.stringify({
-                  protocol: 3,
+                  protocol: 4,
                   workspaceId,
                   epoch: "prefetch-epoch",
                   revision: notificationRevision,
@@ -162,7 +162,7 @@ test("chat prefetch ui @performance", async ({ browser }) => {
     const streamOrigin = `http://127.0.0.1:${server.httpServer.address().port}`;
     heartbeatTimer = setInterval(() => {
       const heartbeat = `event: heartbeat\ndata: ${JSON.stringify({
-        protocol: 3,
+        protocol: 4,
         workspaceId,
         epoch: "prefetch-epoch",
         revision: notificationRevision,
@@ -427,7 +427,7 @@ test("chat prefetch ui @performance", async ({ browser }) => {
         })),
       });
       const data = `event: resources\ndata: ${JSON.stringify({
-        protocol: 3,
+        protocol: 4,
         workspaceId,
         epoch: "prefetch-epoch",
         revision: notificationRevision,

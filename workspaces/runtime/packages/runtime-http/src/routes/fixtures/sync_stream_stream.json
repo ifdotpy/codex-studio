@@ -2,7 +2,7 @@
   [
     null,
     {
-      "protocol": 3,
+      "protocol": 4,
       "workspaceId": "workspace",
       "epoch": "epoch",
       "revision": 2,
@@ -19,7 +19,7 @@
       ]
     },
     {
-      "protocol": 3,
+      "protocol": 4,
       "workspaceId": "workspace",
       "epoch": "epoch",
       "revision": 3,
@@ -36,7 +36,7 @@
       ]
     },
     {
-      "protocol": 3,
+      "protocol": 4,
       "workspaceId": "workspace",
       "epoch": "epoch",
       "revision": 5,
@@ -53,7 +53,7 @@
       ]
     },
     {
-      "protocol": 3,
+      "protocol": 4,
       "workspaceId": "workspace",
       "epoch": "epoch",
       "revision": 5,
@@ -74,7 +74,7 @@
   ],
   [
     {
-      "protocol": 3,
+      "protocol": 4,
       "workspaceId": "workspace",
       "epoch": "epoch",
       "revision": 4,
@@ -91,7 +91,7 @@
       ]
     },
     {
-      "protocol": 3,
+      "protocol": 4,
       "workspaceId": "workspace",
       "epoch": "epoch",
       "revision": 4,

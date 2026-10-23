@@ -118,17 +118,8 @@ pub fn with_entity_delta(
     const LIMIT: usize = studio_runtime_schema::shared_values::SYNC_ENTITY_PAGE_LIMIT as usize;
     let rows = SyncDocumentsRepository::entities_after(connection, after, (LIMIT + 1) as i64)?;
     if !rows.is_empty() {
-        result["_syncEntities"] = Value::Array(
-            rows.iter()
-                .take(LIMIT)
-                .map(|row| {
-                    serde_json::json!({
-                        "id": format!("entity:{}:{}", row.collection, row.id), "seq": row.sequence,
-                        "payload": row.payload, "_deleted": row.deleted
-                    })
-                })
-                .collect(),
-        );
+        result["_syncEntities"] =
+            Value::Array(rows.iter().take(LIMIT).filter_map(entity_change).collect());
         if rows.len() <= LIMIT
             && SyncDocumentsRepository::entity_tombstone_floor(connection)? <= after
         {
@@ -136,4 +127,37 @@ pub fn with_entity_delta(
         }
     }
     Ok(result)
+}
+
+/// Normalize a historical stored entity envelope without serializing it again.
+/// Pull, stream, and every mutation envelope share this read boundary.
+pub fn entity_payload(row: &studio_runtime_store::EntityRow) -> Option<Value> {
+    let mut payload: Value = serde_json::from_str(row.payload.as_deref()?).ok()?;
+    if !matches!(
+        studio_runtime_schema::normalize_sync_entity_payload(
+            &row.collection,
+            &row.id,
+            row.deleted,
+            &mut payload
+        ),
+        Ok(None)
+    ) {
+        return None;
+    }
+    Some(payload)
+}
+
+/// Reuse the parsed envelope map when a mutation response is already a Value.
+pub fn entity_change(row: &studio_runtime_store::EntityRow) -> Option<Value> {
+    let mut payload = entity_payload(row)?;
+    let object = payload.as_object_mut()?;
+    if row.deleted {
+        object.remove("value");
+    }
+    object.insert(
+        "op".to_owned(),
+        Value::String(if row.deleted { "delete" } else { "upsert" }.to_owned()),
+    );
+    object.insert("seq".to_owned(), Value::from(row.sequence));
+    Some(payload)
 }

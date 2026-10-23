@@ -60,7 +60,7 @@ test("Sync recovery browser", async ({
         nextStreamResourceEvent = false;
         streamRevision++;
         body = protocol3SseEvent("resources", {
-          protocol: 3,
+          protocol: 4,
           workspaceId,
           epoch: "recovery-fixture",
           revision: streamRevision,
@@ -90,17 +90,14 @@ test("Sync recovery browser", async ({
                 ? []
                 : [
                     {
-                      id: "entity:workspace:current",
+                      op: "upsert",
+                      collection: "workspace",
+                      id: "current",
+                      value: {
+                        stateDir: "fixture-workspace",
+                        marker: "replicated",
+                      },
                       seq: 1,
-                      payload: JSON.stringify({
-                        collection: "workspace",
-                        id: "current",
-                        value: {
-                          stateDir: "fixture-workspace",
-                          marker: "replicated",
-                        },
-                      }),
-                      _deleted: false,
                     },
                   ],
               checkpoint: { seq: 1 },

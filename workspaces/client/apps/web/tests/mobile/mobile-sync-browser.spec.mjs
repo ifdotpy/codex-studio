@@ -37,7 +37,7 @@ test("mobile sync browser", async ({ page }) => {
             const resources = JSON.parse(query.get("resources") || "[]");
             response.write(
               protocol3SseEvent("resources", {
-                protocol: 3,
+                protocol: 4,
                 workspaceId,
                 epoch: "fixture-epoch",
                 revision,
@@ -185,7 +185,7 @@ test("mobile sync browser", async ({ page }) => {
         const resources = streamResources.get(stream) || [];
         stream.write(
           protocol3SseEvent("resources", {
-            protocol: 3,
+            protocol: 4,
             workspaceId,
             epoch: "fixture-epoch",
             reason: "change",

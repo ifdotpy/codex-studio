@@ -356,7 +356,12 @@ type LocalContractAssertions = [
     >
   >,
   Assert<Equal<LocalSyncRow, ProjectionSyncRow>>,
-  Assert<Equal<Required<LocalSyncRow>, components["schemas"]["SyncDocument"]>>,
+  Assert<
+    Equal<
+      Required<Omit<LocalSyncRow, "entity">>,
+      components["schemas"]["SyncDocument"]
+    >
+  >,
 ];
 const localContractAssertions: LocalContractAssertions = [
   true,
@@ -368,3 +373,20 @@ const localContractAssertions: LocalContractAssertions = [
   true,
 ];
 void localContractAssertions;
+
+// Entity room DTOs contain fixed radio identities; API responses retain tuples.
+type TupleResponse = ApiSuccessBodyFor<{
+  responses: {
+    200: {
+      content: {
+        "application/json": {
+          identity: [string | null, number | null, number];
+        };
+      };
+    };
+  };
+}>;
+const tupleResponsePreserved: Assert<
+  Equal<TupleResponse["identity"], [string | null, number | null, number]>
+> = true;
+void tupleResponsePreserved;

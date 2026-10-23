@@ -7,7 +7,7 @@ use std::error::Error;
 use std::fs;
 use std::path::PathBuf;
 
-use openapi_to_rust::analysis::SchemaType;
+use openapi_to_rust::analysis::{ObjectAdditionalProperties, SchemaType};
 use openapi_to_rust::{CodeGenerator, GeneratorConfig, SchemaAnalyzer};
 fn main() -> Result<(), Box<dyn Error>> {
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR")?);
@@ -56,6 +56,45 @@ fn main() -> Result<(), Box<dyn Error>> {
         rust_type: "studio_runtime_schema::DeliveryMoment".to_owned(),
         serde_with: Some("studio_runtime_schema::delivery::compatibility".to_owned()),
     };
+    // Normalization already validates each collection DTO. Keep its parsed value
+    // in place rather than deserialize it into a second owned object tree. The
+    // OpenAPI oneOf still generates the fully typed TypeScript discriminated union.
+    let SchemaType::Object {
+        properties: payload_properties,
+        ..
+    } = &analysis
+        .schemas
+        .get("SyncAgentEntityPayload")
+        .ok_or("missing entity payload schema")?
+        .schema_type
+    else {
+        return Err("entity payload schema must be an object".into());
+    };
+    let mut value_property = payload_properties
+        .get("value")
+        .ok_or("missing entity value")?
+        .clone();
+    value_property.schema_type = SchemaType::Primitive {
+        rust_type: "serde_json::Value".to_owned(),
+        serde_with: None,
+    };
+    let SchemaType::Object {
+        properties,
+        variant,
+        additional_properties,
+        ..
+    } = &mut analysis
+        .schemas
+        .get_mut("SyncEntity")
+        .ok_or("missing sync entity schema")?
+        .schema_type
+    else {
+        return Err("sync entity schema must be an object".into());
+    };
+    *variant = None;
+    // unevaluatedProperties:false closes the complete schema after its oneOf.
+    *additional_properties = ObjectAdditionalProperties::Denied;
+    properties.insert("value".to_owned(), value_property);
     let config = GeneratorConfig {
         spec_path: spec_path.clone(),
         output_dir: output_dir.clone(),

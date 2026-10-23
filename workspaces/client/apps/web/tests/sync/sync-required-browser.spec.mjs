@@ -235,7 +235,7 @@ test("draft bootstrap retries pause and recover on explicit activity", async ({
         res.write(apiSchemaHandshakeSse());
         res.write(
           `event: resources\ndata: ${JSON.stringify({
-            protocol: 3,
+            protocol: 4,
             workspaceId,
             epoch: "draft-bootstrap",
             revision: 0,

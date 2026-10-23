@@ -31,7 +31,7 @@ test("sync-read-retry-browser", async ({ page: fixturePage }) => {
       revision++;
       stream.response.write(
         `event: resources\ndata: ${JSON.stringify({
-          protocol: 3,
+          protocol: 4,
           workspaceId,
           epoch: "fixture-epoch",
           revision,
@@ -69,7 +69,7 @@ test("sync-read-retry-browser", async ({ page: fixturePage }) => {
         const resources = JSON.parse(url.searchParams.get("resources") || "[]");
         res.write(
           `event: resources\ndata: ${JSON.stringify({
-            protocol: 3,
+            protocol: 4,
             workspaceId,
             epoch: "fixture-epoch",
             revision: 0,

@@ -284,7 +284,12 @@ test("mutation projections propagate between pages sharing one browser context @
               entityIds.map(async (id) => {
                 const row = await db.projections.findOne(id).exec();
                 return row
-                  ? { id: row.id, seq: row.seq, payload: row.payload }
+                  ? {
+                      id: row.id,
+                      seq: row.seq,
+                      payload: row.payload,
+                      entity: row.entity,
+                    }
                   : null;
               }),
             );
@@ -296,7 +301,7 @@ test("mutation projections propagate between pages sharing one browser context @
               rows: stored,
             };
           },
-          body._syncEntities.map((row) => row.id),
+          body._syncEntities.map((row) => `entity:${row.collection}:${row.id}`),
         );
         assert.match(
           storedResponseRows.databaseName,
@@ -305,10 +310,11 @@ test("mutation projections propagate between pages sharing one browser context @
         );
         assert.deepEqual(
           storedResponseRows.rows,
-          body._syncEntities.map(({ id, seq, payload }) => ({
-            id,
+          body._syncEntities.map(({ collection, id, seq, op, value }) => ({
+            id: `entity:${collection}:${id}`,
             seq,
-            payload,
+            payload: "",
+            entity: op === "upsert" ? { collection, id, value } : undefined,
           })),
           "already-covered checkpoint is backed by the mutation response rows in the per-hash projection database",
         );
@@ -318,7 +324,11 @@ test("mutation projections propagate between pages sharing one browser context @
               pull.documents?.some(
                 (row) =>
                   row.seq === responseRow.seq &&
-                  row.payload === responseRow.payload,
+                  row.collection === responseRow.collection &&
+                  row.id === responseRow.id &&
+                  row.op === responseRow.op &&
+                  JSON.stringify(row.value) ===
+                    JSON.stringify(responseRow.value),
               ),
             )
               ? [{ tab, ordinal, after: pull.after }]

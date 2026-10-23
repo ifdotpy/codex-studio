@@ -41,6 +41,8 @@ import {
   registerSyncEntityPersister,
 } from "../api";
 
+import type { SyncEntityPayload } from "../generated/api";
+
 import type { Snapshot, TranscriptPageData } from "../types";
 
 import {
@@ -91,6 +93,7 @@ import {
 } from "./entityProjectionWrites";
 
 import {
+  ENTITY_PROJECTION_CACHE_VERSION,
   deleteOtherEntityProjectionDatabases,
   entityProjectionDatabaseName,
   holdEntityProjectionDatabaseLock,
@@ -101,6 +104,20 @@ export { DRAFT_SYNC_TIMING_MS } from "./draftSyncTiming.mjs";
 addRxPlugin(RxDBLeaderElectionPlugin);
 
 export type SyncDocument = EntityRow;
+
+/** Derive the local primary key once; entities remain structured in IndexedDB. */
+export function entityCacheRow(
+  change: components["schemas"]["SyncEntity"],
+): EntityRow {
+  const { op, seq, ...entity } = change;
+  return {
+    id: `entity:${change.collection}:${change.id}`,
+    seq,
+    payload: "",
+    _deleted: op === "delete",
+    ...(op === "upsert" ? { entity: entity as SyncEntityPayload } : {}),
+  };
+}
 
 export type SyncEntityPersisterProbe = {
   sequences: number[];
@@ -332,7 +349,16 @@ export function createSyncClient(options: SyncClientOptions) {
     });
     const { projections } = await projectionDb.addCollections({
       projections: {
-        schema,
+        // The schema-hashed database starts empty after a wire change.
+        autoMigrate: false,
+        schema: {
+          ...schema,
+          version: ENTITY_PROJECTION_CACHE_VERSION,
+          properties: {
+            ...schema.properties,
+            entity: { type: "object", additionalProperties: true },
+          },
+        },
         conflictHandler: {
           isEqual: (a: SyncDocument, b: SyncDocument, context: string) =>
             // RxDB checks the pulled master against the current local row here.
@@ -379,7 +405,7 @@ export function createSyncClient(options: SyncClientOptions) {
 
   async function persistEntityDocuments(
     targetWorkspaceId: string,
-    documents: SyncDocument[],
+    documents: components["schemas"]["SyncEntity"][],
     syncEntitiesAfter: number | null | undefined,
     isPersistenceCurrent: () => boolean,
     streamEpoch?: string,
@@ -440,7 +466,7 @@ export function createSyncClient(options: SyncClientOptions) {
 
   async function persistEntityDocumentsUnlocked(
     targetWorkspaceId: string,
-    documents: SyncDocument[],
+    documents: components["schemas"]["SyncEntity"][],
     syncEntitiesAfter: number | null | undefined,
     isPersistenceCurrent: () => boolean,
   ) {
@@ -455,9 +481,7 @@ export function createSyncClient(options: SyncClientOptions) {
       API_SCHEMA_HASH,
     );
     const resetVersion = checkpoint.resetVersion;
-    const entities = documents.filter((document) =>
-      document.id.startsWith("entity:"),
-    );
+    const entities = documents.map(entityCacheRow);
     let checkpointAdvanced = false;
     let checkpointBefore = 0;
     let checkpointAfter = 0;
@@ -610,12 +634,15 @@ export function createSyncClient(options: SyncClientOptions) {
         changes.documents.some(
           (row) =>
             typeof row.id !== "string" ||
-            !row.id.startsWith("entity:") ||
-            typeof row.payload !== "string" ||
+            typeof row.collection !== "string" ||
+            (row.op !== "upsert" && row.op !== "delete") ||
+            (row.op === "upsert" &&
+              (!row.value ||
+                typeof row.value !== "object" ||
+                Array.isArray(row.value))) ||
             !Number.isSafeInteger(row.seq) ||
             row.seq <= changes.after ||
-            row.seq > changes.through ||
-            typeof row._deleted !== "boolean",
+            row.seq > changes.through,
         ) ||
         Math.max(...changes.documents.map((row) => row.seq)) !==
           changes.through ||
@@ -1400,19 +1427,20 @@ export function createSyncClient(options: SyncClientOptions) {
               if (remoteScope === SYNC_ENTITY_SCOPE && result.maxSeq == null)
                 throw new Error("The server omitted the sync sequence limit.");
               const entityBatch: SyncDocument[] = [];
-              for (const document of result.documents) {
-                if (
-                  remoteScope === SYNC_ENTITY_SCOPE
-                    ? !document.id.startsWith("entity:")
-                    : document.id !== remoteScope
-                )
+              for (const wireDocument of result.documents) {
+                if (remoteScope === SYNC_ENTITY_SCOPE) {
+                  if (!("op" in wireDocument))
+                    throw new Error(
+                      "The server returned an invalid entity change.",
+                    );
+                  entityBatch.push(entityCacheRow(wireDocument));
+                  continue;
+                }
+                if ("op" in wireDocument || wireDocument.id !== remoteScope)
                   throw new Error(
                     "The server returned an invalid projection document.",
                   );
-                if (remoteScope === SYNC_ENTITY_SCOPE) {
-                  entityBatch.push(document);
-                  continue;
-                }
+                const document = wireDocument;
                 if (scope.startsWith("transcript:")) {
                   let transcriptDocument = document;
                   let incoming: TranscriptSyncPayload | null = document._deleted
@@ -1443,9 +1471,10 @@ export function createSyncClient(options: SyncClientOptions) {
                           "The server reset transcript sync unexpectedly.",
                         );
                       const fullDocument = full.documents.find(
-                        (row) => row.id === scope && !row._deleted,
+                        (row) =>
+                          !("op" in row) && row.id === scope && !row._deleted,
                       );
-                      if (!fullDocument)
+                      if (!fullDocument || "op" in fullDocument)
                         throw new Error(
                           "Transcript delta has no local item base and the full pull returned no snapshot.",
                         );
@@ -2110,10 +2139,17 @@ export function createSyncClient(options: SyncClientOptions) {
                   result.checkpoint.seq,
                 );
                 pullContinues = result.documents.length >= batchSize;
-                return {
-                  documents: result.documents,
-                  checkpoint: result.checkpoint,
-                };
+                const documents = result.documents;
+                if (
+                  !documents.every(
+                    (
+                      document,
+                    ): document is components["schemas"]["SyncDocument"] =>
+                      "payload" in document,
+                  )
+                )
+                  throw new TypeError("Expected a draft document");
+                return { documents, checkpoint: result.checkpoint };
               });
             } finally {
               if (failures.has("pull")) pullContinues = false;

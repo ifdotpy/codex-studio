@@ -86,6 +86,7 @@ vi.mock("./resourceEvents", () => ({
 }));
 vi.mock("./resume", () => ({ onResume: vi.fn(() => () => {}) }));
 vi.mock("./entityCacheStorage", () => ({
+  ENTITY_PROJECTION_CACHE_VERSION: 1,
   deleteOtherEntityProjectionDatabases: mocks.deleteOtherCaches,
   holdEntityProjectionDatabaseLock: mocks.holdProjectionDatabaseLock,
   entityProjectionDatabaseName: (workspace: string, hash: string) =>
@@ -347,7 +348,7 @@ describe("entity pull reset wiring", () => {
       });
       const client = await import("./client");
       const event: ResourceChangeEvent = {
-        protocol: 3,
+        protocol: 4,
         workspaceId,
         epoch: "epoch",
         revision: 2,
@@ -667,14 +668,11 @@ describe("entity pull reset wiring", () => {
             workspaceId,
             documents: [
               {
-                id: `entity:agent:${id}`,
-                payload: JSON.stringify({
-                  collection: "agent",
-                  id,
-                  value: { id, isLead: true, cwd: "/" },
-                }),
-                seq,
-                _deleted: false,
+                op: "upsert",
+                collection: "agent",
+                id,
+                value: { id, isLead: true, cwd: "/" },
+                seq: seq,
               },
             ],
             checkpoint: { seq },

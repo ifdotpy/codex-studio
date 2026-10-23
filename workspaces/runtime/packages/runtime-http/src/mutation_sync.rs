@@ -1,4 +1,4 @@
-//! Adds Python's sync entity range to successful object-shaped mutation replies.
+//! Adds the sync entity range to successful object-shaped mutation replies.
 
 use axum::body::{Body, Bytes};
 use axum::extract::State;
@@ -6,7 +6,9 @@ use axum::http::{Method, Request, StatusCode, header, response::Parts};
 use axum::middleware::Next;
 use axum::response::Response;
 use futures_util::StreamExt;
-use serde_json::{Map, Value, json};
+#[cfg(test)]
+use serde_json::json;
+use serde_json::{Map, Value};
 use std::future::Future;
 use studio_runtime_store::{EntityRow, RuntimeStore, SyncDocumentsRepository, Transaction};
 
@@ -309,12 +311,7 @@ fn splice_envelope(
 }
 
 fn entity_value(row: &EntityRow) -> Option<Value> {
-    Some(json!({
-        "id": format!("entity:{}:{}", row.collection, row.id),
-        "seq": row.sequence,
-        "payload": row.payload.as_ref()?,
-        "_deleted": row.deleted,
-    }))
+    studio_runtime_services::sync_documents::entity_change(row)
 }
 
 fn read_entity_delta(

@@ -42,7 +42,7 @@ test("Realtime voice ux", async ({ context }, testInfo) => {
           const writeResourceEvent = (stream, reason) => {
             revision++;
             stream.res.write(
-              `event: resources\ndata: ${JSON.stringify({ protocol: 3, workspaceId, epoch, revision, reason, resources: stream.resources })}\n\n`,
+              `event: resources\ndata: ${JSON.stringify({ protocol: 4, workspaceId, epoch, revision, reason, resources: stream.resources })}\n\n`,
             );
           };
           s.middlewares.use("/audit/resource-change", (req, res) => {
@@ -78,7 +78,7 @@ test("Realtime voice ux", async ({ context }, testInfo) => {
             writeResourceEvent(stream, "initial");
             const heartbeat = setInterval(() => {
               res.write(
-                `event: heartbeat\ndata: ${JSON.stringify({ protocol: 3, workspaceId, epoch, revision })}\n\n`,
+                `event: heartbeat\ndata: ${JSON.stringify({ protocol: 4, workspaceId, epoch, revision })}\n\n`,
               );
             }, 1000);
             res.on("close", () => {

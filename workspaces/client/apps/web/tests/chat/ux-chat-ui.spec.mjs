@@ -63,7 +63,7 @@ test("Ux Chat Ui", async ({
       stream.write(
         `event: resources\ndata: ${JSON.stringify({
           epoch: "ux-chat-epoch",
-          protocol: 3,
+          protocol: 4,
           reason: "change",
           resources: [resource],
           resourceVersions: [],
@@ -112,7 +112,7 @@ test("Ux Chat Ui", async ({
           response.write(
             `event: resources\ndata: ${JSON.stringify({
               epoch: "ux-chat-epoch",
-              protocol: 3,
+              protocol: 4,
               reason: "initial",
               resources,
               resourceVersions: [],

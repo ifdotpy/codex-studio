@@ -71,12 +71,13 @@ test("entity observer applies RxDB changes across tabs and resets before publica
     await page.evaluate(async () => {
       window.entityRow = (id, seq, name = id) => ({
         id: `entity:agent:${id}`,
-        seq,
-        payload: JSON.stringify({
+        payload: "",
+        entity: {
           collection: "agent",
           id,
           value: { id, name },
-        }),
+        },
+        seq: seq,
       });
       await window.putRows([
         ...Array.from({ length: 2000 }, (_, index) =>
@@ -155,11 +156,12 @@ test("entity observer applies RxDB changes across tabs and resets before publica
       window.putRows([
         {
           id: "entity:agent:0",
-          payload: JSON.stringify({
+          payload: "",
+          entity: {
             collection: "agent",
             id: "0",
             value: { id: "0", name: "other tab" },
-          }),
+          },
           seq: 3000,
         },
       ]),

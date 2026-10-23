@@ -9,8 +9,9 @@ import {
 
 const row = (id: string, seq: number, name = id): EntityRow => ({
   id: `entity:agent:${id}`,
-  seq,
-  payload: JSON.stringify({ collection: "agent", id, value: { id, name } }),
+  payload: "",
+  entity: { collection: "agent", id, value: { id, name } },
+  seq: seq,
 });
 const marker = (payload = "ready", seq = 1): EntityRow => ({
   id: "state:entities:ready",
@@ -140,14 +141,15 @@ it("publishes initial and changed preference rows through the projection observe
   const preference = (scope: "user" | "server", seq: number, name: string) =>
     ({
       id: `entity:uiPreferences:${scope}`,
-      seq,
-      payload: JSON.stringify({
+      payload: "",
+      entity: {
         collection: "uiPreferences",
         id: scope,
         value: {
           fields: { [name]: { value: name, timestamp: seq, writer: "w" } },
         },
-      }),
+      },
+      seq: seq,
     }) satisfies EntityRow;
   const input = source([preference("user", 1, "initial")]);
   const acceptPreferences = vi.fn();

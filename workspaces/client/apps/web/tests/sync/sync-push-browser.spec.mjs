@@ -44,7 +44,7 @@ test("Sync push", async ({ context: testContext }) => {
         res.write(
           apiSchemaHandshakeSse(
             protocol3SseEvent("resources", {
-              protocol: 3,
+              protocol: 4,
               workspaceId,
               epoch: "fixture-epoch",
               revision,
@@ -62,18 +62,15 @@ test("Sync push", async ({ context: testContext }) => {
       } else if (url.pathname === "/api/sync/pull") {
         pulls++;
         const row = {
-          id: "entity:agent:lead",
-          seq: revision,
-          _deleted: false,
-          payload: JSON.stringify({
-            collection: "agent",
+          op: "upsert",
+          collection: "agent",
+          id: "lead",
+          value: {
             id: "lead",
-            value: {
-              id: "lead",
-              name: revision === 1 ? "Initial lead" : "Pushed lead",
-              status: "running",
-            },
-          }),
+            name: revision === 1 ? "Initial lead" : "Pushed lead",
+            status: "running",
+          },
+          seq: revision,
         };
         json({
           workspaceId,
@@ -113,7 +110,7 @@ test("Sync push", async ({ context: testContext }) => {
     for (const [res, resources] of streams)
       res.write(
         protocol3SseEvent("resources", {
-          protocol: 3,
+          protocol: 4,
           workspaceId,
           epoch: "fixture-epoch",
           revision: 2,

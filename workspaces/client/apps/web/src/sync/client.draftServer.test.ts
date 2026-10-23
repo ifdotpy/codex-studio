@@ -1,5 +1,6 @@
 import { afterEach, expect, it, vi } from "vitest";
 import type { RxDatabase } from "rxdb";
+import { SYNC_PROTOCOL_VERSION } from "../generated/api";
 import type { ResourceChangeEvent, ResourceVersion } from "./resourceEvents";
 
 const mocks = vi.hoisted(() => ({
@@ -163,7 +164,7 @@ it
     const { db } = await client.syncDatabase();
     const controller = new AbortController();
     const query = new URLSearchParams({
-      protocol: "3",
+      protocol: String(SYNC_PROTOCOL_VERSION),
       resources: JSON.stringify([{ kind: "drafts" }]),
     });
     const response = await fetch(`${origin}/api/sync/stream?${query}`, {

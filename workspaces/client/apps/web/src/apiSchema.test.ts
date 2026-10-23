@@ -281,13 +281,11 @@ it("does not return mismatched pull rows or persist mismatched mutation entities
           workspaceId: "a".repeat(32),
           documents: [
             {
-              id: "entity:agent:a",
+              op: "upsert",
+              collection: "agent",
+              id: "a",
+              value: null,
               seq: 1,
-              payload: JSON.stringify({
-                collection: "agent",
-                id: "a",
-                value: null,
-              }),
             },
           ],
           checkpoint: { seq: 1 },

@@ -30,7 +30,7 @@ test("draft pull waits for a real trigger without blocking push recovery", async
         continue;
       stream.response.write(
         `event: resources\ndata: ${JSON.stringify({
-          protocol: 3,
+          protocol: 4,
           workspaceId,
           epoch: "drafts-epoch",
           revision,
@@ -66,7 +66,7 @@ test("draft pull waits for a real trigger without blocking push recovery", async
         res.write(apiSchemaHandshakeSse());
         res.write(
           `event: resources\ndata: ${JSON.stringify({
-            protocol: 3,
+            protocol: 4,
             workspaceId,
             epoch: "drafts-epoch",
             revision,

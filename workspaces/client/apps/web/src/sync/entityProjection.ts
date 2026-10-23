@@ -28,12 +28,13 @@ export type UiPreferenceProjection = Partial<
   Record<UiPreferenceScope, UiPreferencesDto>
 >;
 
-/** Local new rows may omit the wire tombstone flag until storage fills it. */
+/** Local cache rows retain structured entities; storage fills the tombstone flag. */
 export type EntityRow = Omit<
   components["schemas"]["SyncDocument"],
   "_deleted"
 > & {
   _deleted?: components["schemas"]["SyncDocument"]["_deleted"];
+  entity?: SyncEntityPayload;
 };
 
 type EntityCollection = SyncEntityPayload["collection"];
@@ -111,13 +112,7 @@ function emptyEntityValues(): EntityValues {
  * Shape validation remains necessary because a mismatched server response or
  * storage corruption can still damage a row before it reaches the cache.
  */
-function parseEntityPayload(payload: string): SyncEntityPayload | null {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(payload);
-  } catch {
-    return null;
-  }
+function parseEntityPayload(parsed: unknown): SyncEntityPayload | null {
   if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed))
     return null;
   const candidate = parsed as Record<string, unknown>;
@@ -255,7 +250,11 @@ function retainTombstone(
  * arrives. Passing ready=false retains changes for one later publication. */
 export function applyEntityChanges(
   state: EntityProjection,
-  rows: Iterable<EntityRow>,
+  rows: Iterable<
+    Readonly<Pick<EntityRow, "id" | "seq" | "_deleted">> & {
+      readonly entity?: unknown;
+    }
+  >,
   ready: boolean,
 ): Snapshot | null {
   const changed = state.changed;
@@ -284,7 +283,7 @@ export function applyEntityChanges(
       });
       continue;
     }
-    const payload = parseEntityPayload(row.payload);
+    const payload = parseEntityPayload(row.entity);
     if (!payload) {
       if (state.invalidReportedSeq.get(row.id) !== row.seq) {
         state.invalidReportedSeq.set(row.id, row.seq);

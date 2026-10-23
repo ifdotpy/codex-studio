@@ -232,7 +232,7 @@ describe("entity pull dispatch gate", () => {
     });
     await client.persistResourceEntityChanges(
       {
-        protocol: 3,
+        protocol: 4,
         workspaceId,
         epoch: "validity",
         revision: 2,
@@ -246,19 +246,16 @@ describe("entity pull dispatch gate", () => {
               through: 101,
               documents: [
                 {
-                  id: "entity:agent:streamed",
-                  seq: 101,
-                  payload: JSON.stringify({
-                    collection: "agent",
+                  op: "upsert",
+                  collection: "agent",
+                  id: "streamed",
+                  value: {
                     id: "streamed",
-                    value: {
-                      id: "streamed",
-                      name: "Streamed",
-                      status: "idle",
-                      source: "managed",
-                    },
-                  }),
-                  _deleted: false,
+                    name: "Streamed",
+                    status: "idle",
+                    source: "managed",
+                  },
+                  seq: 101,
                 },
               ],
             },
@@ -290,7 +287,7 @@ describe("entity pull dispatch gate", () => {
     await expect(
       client.persistResourceEntityChanges(
         {
-          protocol: 3,
+          protocol: 4,
           workspaceId,
           epoch: "validity",
           revision: 2,
@@ -304,19 +301,16 @@ describe("entity pull dispatch gate", () => {
                 through: 101,
                 documents: [
                   {
-                    id: "entity:agent:oversize",
-                    seq: 101,
-                    payload: JSON.stringify({
-                      collection: "agent",
+                    op: "upsert",
+                    collection: "agent",
+                    id: "oversize",
+                    value: {
                       id: "oversize",
-                      value: {
-                        id: "oversize",
-                        name: "é".repeat(SYNC_ENTITY_STREAM_MAX_BYTES / 2),
-                        status: "idle",
-                        source: "managed",
-                      },
-                    }),
-                    _deleted: false,
+                      name: "é".repeat(SYNC_ENTITY_STREAM_MAX_BYTES / 2),
+                      status: "idle",
+                      source: "managed",
+                    },
+                    seq: 101,
                   },
                 ],
               },
@@ -348,10 +342,11 @@ describe("entity pull dispatch gate", () => {
   const installMutationResponse = () => {
     const documents = [
       {
-        id: "entity:agent:created",
-        payload: JSON.stringify({ id: "created", value: { name: "new" } }),
+        op: "upsert",
+        collection: "agent",
+        id: "created",
+        value: { id: "created", name: "new" },
         seq: 101,
-        _deleted: false,
       },
     ];
     mocks.mutationResponse = {
@@ -557,7 +552,13 @@ describe("entity pull dispatch gate", () => {
       entered = resolve;
     });
     storageInstance.bulkWrite.mockImplementation(async (writes) => {
-      if (writes.some(({ document }) => document.id === documents[0]?.id)) {
+      if (
+        writes.some(
+          ({ document }) =>
+            document.id ===
+            `entity:${documents[0]?.collection}:${documents[0]?.id}`,
+        )
+      ) {
         entered();
         await hold;
       }
@@ -580,7 +581,9 @@ describe("entity pull dispatch gate", () => {
     release();
     await post;
     expect(pulls).toEqual([]);
-    expect(rows.get(documents[0]!.id)).toMatchObject({ seq: 101 });
+    expect(
+      rows.get(`entity:${documents[0]!.collection}:${documents[0]!.id}`),
+    ).toMatchObject({ seq: 101 });
     expect(checkpoint.value).toBe(101);
     stop();
   });
@@ -603,7 +606,13 @@ describe("entity pull dispatch gate", () => {
         entered = resolve;
       });
       storageInstance.bulkWrite.mockImplementation(async (writes) => {
-        if (writes.some(({ document }) => document.id === documents[0]?.id)) {
+        if (
+          writes.some(
+            ({ document }) =>
+              document.id ===
+              `entity:${documents[0]?.collection}:${documents[0]?.id}`,
+          )
+        ) {
           entered();
           await hold;
         }
@@ -648,7 +657,13 @@ describe("entity pull dispatch gate", () => {
       entered = resolve;
     });
     storageInstance.bulkWrite.mockImplementation(async (writes) => {
-      if (writes.some(({ document }) => document.id === documents[0]?.id)) {
+      if (
+        writes.some(
+          ({ document }) =>
+            document.id ===
+            `entity:${documents[0]?.collection}:${documents[0]?.id}`,
+        )
+      ) {
         entered();
         await hold;
       }
@@ -737,11 +752,21 @@ describe("entity pull dispatch gate", () => {
       const documents =
         after === 100
           ? Array.from({ length: 500 }, (_, index) => ({
-              id: `entity:agent:${index}`,
-              payload: "{}",
+              op: "upsert",
+              collection: "agent",
+              id: String(index),
+              value: { id: String(index) },
               seq: 101 + index,
             }))
-          : [{ id: "entity:agent:last", payload: "{}", seq: 601 }];
+          : [
+              {
+                op: "upsert",
+                collection: "agent",
+                id: "last",
+                value: { id: "last" },
+                seq: 601,
+              },
+            ];
       const checkpoint = after === 100 ? 600 : 601;
       return {
         workspaceId: "e".repeat(32),

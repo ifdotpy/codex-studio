@@ -47,7 +47,7 @@ test("usage accounts ui", async ({ browser: _browser }) => {
   const writeResources = (stream, reason, resources = stream.resources) => {
     if (reason !== "initial") revision++;
     const event = {
-      protocol: 3,
+      protocol: 4,
       workspaceId,
       epoch,
       revision,
@@ -62,7 +62,7 @@ test("usage accounts ui", async ({ browser: _browser }) => {
     );
   };
   const writeHeartbeat = (stream) => {
-    const event = { protocol: 3, workspaceId, epoch, revision };
+    const event = { protocol: 4, workspaceId, epoch, revision };
     assert.ok(Number.isFinite(event.revision));
     stream.response.write(
       `event: heartbeat\ndata: ${JSON.stringify(event)}\n\n`,

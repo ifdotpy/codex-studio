@@ -245,16 +245,13 @@ describe("OpenAPI transport facade", () => {
     vi.stubGlobal("window", events);
     const documents = [
       {
-        id: "entity:workspace:current",
+        op: "upsert",
+        collection: "workspace",
+        id: "current",
+        value: {
+          sidebarOrder: { revision: 1, groups: { projects: ["c", "a"] } },
+        },
         seq: 5,
-        payload: JSON.stringify({
-          collection: "workspace",
-          id: "current",
-          value: {
-            sidebarOrder: { revision: 1, groups: { projects: ["c", "a"] } },
-          },
-        }),
-        _deleted: false,
       },
     ];
     vi.stubGlobal(
@@ -407,14 +404,11 @@ describe("OpenAPI transport facade", () => {
     checkpoint.assign(20);
     const documents = [
       {
-        id: "entity:workspace:current",
+        op: "upsert",
+        collection: "workspace",
+        id: "current",
+        value: {},
         seq: 22,
-        payload: JSON.stringify({
-          collection: "workspace",
-          id: "current",
-          value: {},
-        }),
-        _deleted: false,
       },
     ];
     vi.stubGlobal(

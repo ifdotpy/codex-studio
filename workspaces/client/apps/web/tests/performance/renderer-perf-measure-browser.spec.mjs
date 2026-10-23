@@ -37,18 +37,18 @@ test(
                   const id = String(index);
                   const value = { id, name: "Entity " + index, detail: "x".repeat(32) };
                   return { id: "entity:" + collection + ":" + id, seq: index + 1,
-                    payload: JSON.stringify({ collection, id, value }) };
+                    payload: "", entity: { collection, id, value } };
                 });
                 const emissionAt = (seq) => {
                   const emission = rows.slice();
                   emission[1044] = { ...rows[1044], seq,
-                    payload: JSON.stringify({ collection: "agent", id: "1044", value: { id: "1044", name: "Changed" } }) };
+                    payload: "", entity: { collection: "agent", id: "1044", value: { id: "1044", name: "Changed" } } };
                   return emission;
                 };
                 const buildFull = (emission) => {
                   const full = new Map();
                   for (const row of emission) {
-                    const entity = JSON.parse(row.payload);
+                    const entity = row.entity;
                     let collection = full.get(entity.collection);
                     if (!collection) full.set(entity.collection, collection = new Map());
                     collection.set(entity.id, entity.value);

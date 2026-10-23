@@ -7,7 +7,7 @@ function frame(
   reason: ResourceChangeEvent["reason"] = "change",
 ) {
   return {
-    protocol: 3,
+    protocol: 4,
     workspaceId: "a".repeat(32),
     epoch: "one",
     revision,
@@ -21,10 +21,11 @@ function frame(
           through: revision,
           documents: [
             {
-              id: "entity:agent:one",
+              op: "upsert",
+              collection: "agent",
+              id: "one",
               seq: revision,
-              payload: "{}",
-              _deleted: false,
+              value: { id: "one" },
             },
           ],
         },

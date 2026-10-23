@@ -102,25 +102,22 @@ test("team-navigation-ui", async ({ page: fixturePage }) => {
       }
       if (!answerRequestPresent) {
         data.documents.push({
-          id: "entity:request:team-navigation-answer",
-          seq: ++sequence,
-          _deleted: false,
-          payload: JSON.stringify({
-            collection: "request",
+          op: "upsert",
+          collection: "request",
+          id: "team-navigation-answer",
+          value: {
             id: "team-navigation-answer",
-            value: {
-              id: "team-navigation-answer",
-              method: "agent/asyncQuestion",
-              agent: worker(2).id,
-              epoch: initial.runtime.agents.find(
-                (agent) => agent.id === worker(2).id,
-              ).epoch,
-              status: "pending",
-              params: {
-                questions: [{ id: "scope", question: "Which scope?" }],
-              },
+            method: "agent/asyncQuestion",
+            agent: worker(2).id,
+            epoch: initial.runtime.agents.find(
+              (agent) => agent.id === worker(2).id,
+            ).epoch,
+            status: "pending",
+            params: {
+              questions: [{ id: "scope", question: "Which scope?" }],
             },
-          }),
+          },
+          seq: ++sequence,
         });
       }
       data.documents.sort((left, right) => left.seq - right.seq);

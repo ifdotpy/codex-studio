@@ -9,7 +9,7 @@ const mocks = vi.hoisted(() => ({
   persist: undefined as
     | ((
         workspaceId: string,
-        documents: Array<{ id: string; seq: number; payload: string }>,
+        documents: import("../generated/api").components["schemas"]["SyncEntity"][],
         after: number | null | undefined,
         current: () => boolean,
       ) => Promise<void>)
@@ -125,7 +125,15 @@ describe("registered mutation entity persister", () => {
     setEntitySequenceProjection(workspaceId, API_SCHEMA_HASH).assign(9);
     await mocks.persist?.(
       workspaceId,
-      [{ id: "entity:agent:chat", payload: "{}", seq: 12 }],
+      [
+        {
+          op: "upsert",
+          collection: "agent",
+          id: "chat",
+          value: { id: "chat" },
+          seq: 12,
+        },
+      ],
       10,
       () => true,
     );

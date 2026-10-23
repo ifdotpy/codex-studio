@@ -109,7 +109,7 @@ async function fixture(page) {
         contentType: "text/event-stream",
         body: apiSchemaHandshakeSse(
           protocol3SseEvent("resources", {
-            protocol: 3,
+            protocol: 4,
             workspaceId: "a".repeat(32),
             epoch: "cards",
             revision: 1,

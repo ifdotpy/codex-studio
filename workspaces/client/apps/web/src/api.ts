@@ -698,9 +698,7 @@ export function createApiScope(options: ApiScopeOptions) {
       typeof window === "undefined"
     )
       return undefined;
-    const entities = rows.filter((document) =>
-      document.id.startsWith("entity:"),
-    );
+    const entities = rows;
     if (entities.length === 0) return undefined;
     const through = Math.max(...entities.map((document) => document.seq));
     const checkpoint = getEntitySequenceCheckpointForWorkspace(
