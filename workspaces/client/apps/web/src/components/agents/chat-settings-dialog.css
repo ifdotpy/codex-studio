@@ -158,12 +158,11 @@
     minmax(min(100%, calc(var(--mantine-spacing-xl) * 9)), 1fr)
   );
   column-gap: var(--mantine-spacing-md);
+  row-gap: calc(var(--mantine-spacing-xs) / 2);
 }
 .eligibility-account {
   min-width: 0;
   padding-block: calc(var(--mantine-spacing-xs) / 2);
-  border-bottom: var(--studio-border-width) solid
-    var(--mantine-color-default-border);
 }
 .eligibility-account .mantine-Checkbox-body {
   align-items: center;
