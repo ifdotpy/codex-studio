@@ -36,6 +36,20 @@ test("conversation controls fit the measured column and large text", async ({
     await page.goto(
       `http://127.0.0.1:${port}/?studio-server=local&studio-navigation=classic`,
     );
+    try {
+      await expect(
+        page
+          .locator("#sidebar [data-chat]")
+          .filter({ hasText: "Release lead" }),
+      ).toBeVisible({ timeout: 15_000 });
+    } catch (error) {
+      await test.info().attach("startup-body", {
+        body: await page.locator("body").innerText(),
+        contentType: "text/plain",
+      });
+      await page.screenshot({ path: "/tmp/responsive-startup.png" });
+      throw error;
+    }
     await page
       .locator("#sidebar [data-chat]")
       .filter({ hasText: "Release lead" })
