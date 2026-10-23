@@ -471,3 +471,8 @@
 .account-transfer-chip[data-blocked] {
   color: light-dark(var(--mantine-color-red-7), var(--mantine-color-red-5));
 }
+
+.claude-organization {
+  display: block;
+  overflow-wrap: anywhere;
+}

@@ -88,6 +88,7 @@ pub struct AuthMetadata {
     pub account_id: Option<String>,
     pub email: Option<String>,
     pub plan: Option<String>,
+    pub organization_name: Option<String>,
     pub credential_identity: Option<String>,
     pub error: Option<&'static str>,
     pub error_kind: Option<&'static str>,
@@ -100,6 +101,7 @@ impl AuthMetadata {
             account_id: None,
             email: None,
             plan: None,
+            organization_name: None,
             credential_identity: None,
             error: None,
             error_kind: None,
@@ -402,6 +404,7 @@ fn codex_metadata_from_value(auth: &Value) -> Result<AuthMetadata, ()> {
         account_id,
         email,
         plan,
+        organization_name: None,
         credential_identity,
         error: None,
         error_kind: None,
@@ -685,6 +688,7 @@ struct ClaudeStatusOutput {
     email: Option<String>,
     subscription_type: Option<String>,
     organization_uuid: Option<String>,
+    organization_name: Option<String>,
     account_uuid: Option<String>,
 }
 
@@ -735,6 +739,10 @@ impl<'de> Deserialize<'de> for ClaudeStatusOutput {
                             value.organization_uuid =
                                 lenient_value(map.next_value::<Lenient<String>>()?);
                         }
+                        "orgName" | "organizationName" => {
+                            value.organization_name =
+                                lenient_value(map.next_value::<Lenient<String>>()?);
+                        }
                         "accountUuid" => {
                             value.account_uuid =
                                 lenient_value(map.next_value::<Lenient<String>>()?);
@@ -783,6 +791,9 @@ pub(crate) fn parse_claude_status_with_outcome(
             account_id: Some(account_id.clone()),
             email: Some(email.to_owned()),
             plan: value.subscription_type.filter(|plan| !plan.is_empty()),
+            organization_name: value
+                .organization_name
+                .filter(|name| !name.trim().is_empty()),
             credential_identity: Some(claude_identity::identity(
                 email,
                 value.organization_uuid.as_deref(),
@@ -2905,6 +2916,17 @@ fn apply_metadata(row: &mut serde_json::Map<String, Value>, metadata: &AuthMetad
     {
         row.insert("status".into(), Value::String("changed".into()));
         row.insert("error".into(), Value::String(CHANGED_ERROR.into()));
+        row.remove("organizationMismatch");
+        if row.get("provider").and_then(Value::as_str) == Some("claude")
+            && let Some(mismatch) = claude_identity::organization_mismatch(
+                expected_credential.as_deref(),
+                row.get("_organizationName").and_then(Value::as_str),
+                metadata.credential_identity.as_deref(),
+                metadata.organization_name.as_deref(),
+            )
+        {
+            row.insert("organizationMismatch".into(), mismatch);
+        }
         return;
     }
     if metadata.status == AuthStatus::Ready
@@ -2949,7 +2971,9 @@ fn apply_metadata(row: &mut serde_json::Map<String, Value>, metadata: &AuthMetad
         );
         return;
     }
+    row.remove("organizationMismatch");
     let fields = [
+        ("_organizationName", metadata.organization_name.as_ref()),
         ("accountId", metadata.account_id.as_ref()),
         ("_credentialIdentity", metadata.credential_identity.as_ref()),
         ("email", metadata.email.as_ref()),
@@ -3380,6 +3404,7 @@ exit 0
             account_id: account_id.map(str::to_owned),
             email: Some("fixture@example.invalid".into()),
             plan: Some("plus".into()),
+            organization_name: None,
             credential_identity: identity.map(str::to_owned),
             error: None,
             error_kind: None,
@@ -3439,6 +3464,7 @@ exit 0
             account_id: None,
             email: None,
             plan: None,
+            organization_name: None,
             credential_identity: None,
             error: Some(AUTH_ERROR),
             error_kind: Some("keychain"),
@@ -3494,6 +3520,7 @@ exit 0
             account_id: Some("claude:fixture@example.invalid".into()),
             email: Some("fixture@example.invalid".into()),
             plan: Some("max".into()),
+            organization_name: None,
             credential_identity: Some("claude:fixture@example.invalid".into()),
             error: None,
             error_kind: None,
@@ -4413,6 +4440,7 @@ exit 0
                 account_id: auth.get("accountId").and_then(Value::as_str).map(str::to_owned),
                 email: auth.get("email").and_then(Value::as_str).map(str::to_owned),
                 plan: auth.get("plan").and_then(Value::as_str).map(str::to_owned),
+                organization_name: None,
                 credential_identity: auth.get("_credentialIdentity").and_then(Value::as_str).map(str::to_owned),
                 error: auth.get("error").and_then(Value::as_str).map(|_| AUTH_ERROR),
                 error_kind: None,

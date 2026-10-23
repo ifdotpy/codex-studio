@@ -1,3 +1,4 @@
+import ModelLimitEligibility from "./ModelLimitEligibility";
 import { useServerApi } from "../servers/ServerServicesContext";
 import { localDateTime } from "../local-time";
 import { useState } from "react";
@@ -75,6 +76,12 @@ export default function LimitRecoveryNotice({
             : "Turn on automatic resume to continue this chat after sign-in works."
           : recovery?.message}
       </p>
+      {recovery?.eligibility && (
+        <ModelLimitEligibility
+          eligibility={recovery.eligibility}
+          now={Date.now() / 1000}
+        />
+      )}
       {scheduled &&
         (typeof plannedAt === "number" || typeof nextCheckAt === "number") && (
           <p>
@@ -103,7 +110,7 @@ export default function LimitRecoveryNotice({
         </Button>
       )}
       {resumeError && <p role="alert">{resumeError}</p>}
-      {recovery?.resetAt && (
+      {recovery?.resetAt && !recovery.eligibility && (
         <p>
           Reported reset:{" "}
           <time dateTime={new Date(recovery.resetAt * 1000).toISOString()}>
