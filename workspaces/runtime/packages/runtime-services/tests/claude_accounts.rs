@@ -263,7 +263,7 @@ fn public_organization_metadata_keeps_pins_and_excludes_private_identity() {
         .refresh_claude_verified(&key, &profile, &changed, true)
         .expect("organization mismatch persists");
     assert_eq!(refused["status"], "changed");
-    let snapshot = driver.listing_snapshot().expect("account snapshot reads");
+    let snapshot = driver.snapshot().expect("account snapshot reads");
     let account = snapshot
         .accounts
         .iter()
@@ -290,7 +290,7 @@ fn public_organization_metadata_keeps_pins_and_excludes_private_identity() {
     driver
         .refresh_claude_verified(&key, &refused, &original, true)
         .expect("original organization restores");
-    let restored = driver.listing_snapshot().expect("restored snapshot reads");
+    let restored = driver.snapshot().expect("restored snapshot reads");
     let account = restored
         .accounts
         .iter()
