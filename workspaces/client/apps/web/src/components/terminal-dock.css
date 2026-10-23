@@ -309,27 +309,34 @@
    combined window has no sidebar of its own (the shell shows it), so there the closed dock stays
    a full-width bar and the page keeps its height above it. */
 @media (min-width: 761px) {
-  html body #root:has(#sidebar):has(.terminal-dock:not(.is-open)) {
+  html[data-inline-sidebar][data-terminal-dock="closed"] body #root {
     height: 100dvh;
   }
-  #root:has(.terminal-dock:not(.is-open)) #sidebar {
+  html[data-terminal-dock="closed"] #root #sidebar {
     height: calc(100% - 38px);
   }
-  #root:has(#sidebar) .terminal-dock:not(.is-open) {
+  html[data-inline-sidebar] #root .terminal-dock:not(.is-open) {
     right: auto;
     width: var(--studio-sidebar-width, 240px);
     background: var(--sidebar);
     border-right: 1px solid var(--line);
   }
-  #root:has(#sidebar) .terminal-dock:not(.is-open) .terminal-dock-bar {
+  html[data-inline-sidebar]
+    #root
+    .terminal-dock:not(.is-open)
+    .terminal-dock-bar {
     padding-inline: 16px;
     gap: 8px;
   }
-  #root:has(#sidebar) .terminal-dock:not(.is-open) .terminal-dock-toggle {
+  html[data-inline-sidebar]
+    #root
+    .terminal-dock:not(.is-open)
+    .terminal-dock-toggle {
     flex: 1;
     min-width: 0;
   }
-  #root:has(#sidebar)
+  html[data-inline-sidebar]
+    #root
     .terminal-dock:not(.is-open)
     :is(
       .terminal-dock-running,
@@ -339,7 +346,8 @@
     ) {
     display: none;
   }
-  #root:has(#sidebar)
+  html[data-inline-sidebar]
+    #root
     .terminal-dock:not(.is-open)
     .terminal-dock-bar
     > .mantine-Button-root {
@@ -348,7 +356,10 @@
     height: 28px;
     padding: 0;
   }
-  #root:has(#sidebar) .terminal-dock:not(.is-open) .mantine-Button-section {
+  html[data-inline-sidebar]
+    #root
+    .terminal-dock:not(.is-open)
+    .mantine-Button-section {
     margin: 0;
   }
 }
@@ -418,15 +429,15 @@
   }
   html[data-server-view]:not(
       [data-server-navigation="classic"]
-    )[data-shell-sidebar]
+    )[data-shell-sidebar][data-terminal-dock="closed"]
     body
-    #root:has(.terminal-dock:not(.is-open)) {
+    #root {
     height: 100dvh;
   }
   html[data-server-view]:not(
       [data-server-navigation="classic"]
-    )[data-shell-sidebar]
-    #root:has(.terminal-dock.is-open) {
+    )[data-shell-sidebar][data-terminal-dock="open"]
+    #root {
     box-sizing: border-box;
     padding-left: var(--shell-sidebar-width, 0px);
   }

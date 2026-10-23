@@ -1720,7 +1720,7 @@ p {
 }
 
 /* Reserve space only in the document that contains the terminal dock. */
-html body #root:has(.terminal-dock) {
+html[data-terminal-dock] body #root {
   height: calc(100dvh - var(--terminal-dock-height, 38px));
   min-height: 0;
 }

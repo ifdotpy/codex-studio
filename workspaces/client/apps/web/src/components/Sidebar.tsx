@@ -10,6 +10,7 @@ import {
 import {
   Fragment,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -210,6 +211,17 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
   const runtime = p.data.runtime;
   const aliases = useServerAliases(readServerAliases);
   const compact = useMediaQuery("(max-width: 760px)");
+  const inline = !compact && !p.collapsed;
+  // Page layout rules read this flag. It replaces #root:has(#sidebar), which
+  // the browser had to test against the whole tree after each DOM change.
+  useLayoutEffect(() => {
+    if (!inline) return;
+    const root = document.documentElement;
+    root.dataset.inlineSidebar = "true";
+    return () => {
+      delete root.dataset.inlineSidebar;
+    };
+  }, [inline]);
   const [query, setQuery] = useState(""),
     [renaming, setRenaming] = useState<string | null>(null),
     [name, setName] = useState(""),
