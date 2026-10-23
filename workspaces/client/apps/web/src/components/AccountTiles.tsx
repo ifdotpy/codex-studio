@@ -11,6 +11,7 @@ import { accountDisplayName, accountTooltip } from "../accountName";
 import { formatPercent, readBuckets } from "./Usage";
 import type { Account } from "./Accounts";
 import "./account-tiles.css";
+import { remainingLimitColor } from "./accountLimitColor";
 export function setupAccountName(account?: Account) {
   return account ? accountDisplayName(account) : "";
 }
@@ -96,14 +97,7 @@ export function AccountRemainingBar({
       <span
         style={{
           width: `${remaining ?? 0}%`,
-          background:
-            remaining === null
-              ? undefined
-              : remaining > 50
-                ? "var(--mantine-color-green-6)"
-                : remaining >= 15
-                  ? "var(--mantine-color-yellow-6)"
-                  : "var(--mantine-color-red-6)",
+          background: remainingLimitColor(remaining),
         }}
       />
     </span>
