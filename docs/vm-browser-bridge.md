@@ -551,6 +551,14 @@ at phone width (one column, buttons in a row that wraps).
 - Actions before the approval: "Decline" and "Open in browser". A desktop that can hold the port
   opens with the forward. Every other window (a phone, a browser tab on another computer) opens
   in paste mode.
+- Alert: when a card is still pending 10 s after its creation (`SIGN_IN_ALERT_GRACE_SECONDS`,
+  owner `web/src/desktop/desktopAlerts.ts`), every Studio window shows one alert with sound:
+  "<chat>: Sign-in needed", "Sign in at <host>. Open the card in this chat." Windows on a
+  paired Mac show it too, through the alerts of their server frames. A card that the browser
+  of this Mac finishes within the grace gives no alert. One reminder with sound comes 5 minutes
+  before the card closes (`SIGN_IN_REMINDER_SECONDS`), but not while a phone sign-in waits for
+  its pasted result. Other alerts stay silent. A focused window with the card's chat open shows
+  no alert.
 - After an approval in paste mode the card stays in the chat: "Sign in on the page that opened.
   At the end the browser shows a page that does not load. Copy its address and paste it here."
   It has a text field, "Paste" (it reads the clipboard when the browser allows it), "Send to

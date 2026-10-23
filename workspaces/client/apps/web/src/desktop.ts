@@ -75,6 +75,8 @@ export interface DesktopBridge {
   notify(value: {
     title: string;
     body: string;
+    /** Play the system sound (sign-in cards); other alerts are silent. */
+    sound?: boolean;
     target: {
       serverId?: string;
       agentId: string;
