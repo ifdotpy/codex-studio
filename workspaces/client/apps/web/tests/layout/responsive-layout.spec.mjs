@@ -14,7 +14,9 @@ test("conversation controls fit the measured column and large text", async ({
   page,
 }) => {
   test.setTimeout(90_000);
-  const root = await mkdtemp(join(tmpdir(), "studio-responsive-layout-"));
+  const root = await mkdtemp(
+    join(process.platform === "darwin" ? "/tmp" : tmpdir(), "rpl-"),
+  );
   const fixture = spawnFixture(process.execPath, [rustUiFixture, root], {
     stdio: ["pipe", "pipe", "pipe"],
   });
