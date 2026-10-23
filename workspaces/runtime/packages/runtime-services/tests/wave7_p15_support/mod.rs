@@ -138,7 +138,7 @@ impl MonitorPort for Port {
             Ok(ReattachOutcome::Running(ReattachProof {
                 operation: snapshot.operation().expect("operation").clone(),
                 operation_id: format!("monitor:{}", snapshot.id()),
-                native_id: 42,
+                native_id: Some(42),
                 current_connection: "restarted".into(),
             }))
         })

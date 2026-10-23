@@ -336,6 +336,68 @@ impl RetainedMonitorPort {
         Ok(())
     }
 
+    /// Reattach a command from Studio's retained request ledger before any
+    /// provider query. A checkpointed provider answer is the command's outcome.
+    /// A host command that the current provider generation received is still
+    /// owed its answer by that provider process, which outlives a backend
+    /// restart: the host provider has no operation status, so the retained
+    /// request is the proof. `None` leaves the decision to the provider.
+    async fn retained_reattach(
+        &self,
+        snapshot: &MonitorSnapshot,
+        operation: &Operation,
+        operation_id: &str,
+        scope: &studio_runtime_services::account_session_runtime::ConnectionScope,
+    ) -> Result<Option<ReattachOutcome>, MonitorError> {
+        use studio_runtime_services::account_worker::{WorkerError, retained};
+        let id = snapshot.id();
+        match retained::monitor_result(&self.store, id, operation).await {
+            Ok(Some(response)) => {
+                return match self.command_result(id, operation, response).await {
+                    Ok(()) => Ok(Some(ReattachOutcome::TerminalQueued)),
+                    Err(MonitorError::Refused(_)) => Ok(Some(ReattachOutcome::Gone(
+                        "invalid_terminal_receipt".into(),
+                    ))),
+                    Err(error) => Err(error),
+                };
+            }
+            Ok(None) => {}
+            Err(WorkerError::Store(error)) => return Err(error.into()),
+            // A changed identity proves nothing here; the provider decides.
+            Err(_) => return Ok(None),
+        }
+        let generation =
+            match retained::monitor_request_generation(&self.store, id, operation).await {
+                Ok(generation) => generation,
+                Err(WorkerError::Store(error)) => return Err(error.into()),
+                Err(_) => return Ok(None),
+            };
+        if generation != Some(scope.generation) {
+            return Ok(None);
+        }
+        // A VM actor's command runs in its guest provider, which answers
+        // operation status itself and has its own generation.
+        let agent = snapshot.agent().to_owned();
+        let vm_owner = self
+            .store
+            .read_async("runtime-server/monitor-reattach-owner", move |db| {
+                retained::vm_actor(db, &agent)
+            })
+            .await;
+        match vm_owner {
+            Ok(false) => {}
+            Ok(true) => return Ok(None),
+            Err(WorkerError::Store(error)) => return Err(error.into()),
+            Err(_) => return Ok(None),
+        }
+        Ok(Some(ReattachOutcome::Running(ReattachProof {
+            operation: operation.clone(),
+            operation_id: operation_id.to_owned(),
+            native_id: None,
+            current_connection: scope.connection.clone(),
+        })))
+    }
+
     /// Run one managed start in its own task. command/exec answers only when
     /// the process exits, so the monitor timer must not wait for it.
     fn spawn_monitor_start(&self, id: &str, now: f64) -> Result<(), MonitorError> {
@@ -1372,6 +1434,12 @@ impl MonitorPort for RetainedMonitorPort {
             let Some(scope) = self.session.current_scope(&operation.account_key) else {
                 return Ok(ReattachOutcome::Pending);
             };
+            if let Some(outcome) = self
+                .retained_reattach(snapshot, operation, &operation_id, &scope)
+                .await?
+            {
+                return Ok(outcome);
+            }
             let receipt = match self
                 .request(
                     operation,
@@ -1437,7 +1505,7 @@ impl MonitorPort for RetainedMonitorPort {
             Ok(ReattachOutcome::Running(ReattachProof {
                 operation: operation.clone(),
                 operation_id,
-                native_id,
+                native_id: Some(native_id),
                 current_connection: scope.connection,
             }))
         })
@@ -2343,7 +2411,7 @@ mod tests {
             let proof = ReattachProof {
                 operation: operation.clone(),
                 operation_id: "monitor:watch".into(),
-                native_id: 42,
+                native_id: Some(42),
                 current_connection: "current".into(),
             };
             studio_runtime_services::monitor_runtime::reattach(&store, "watch", &proof, now)
@@ -2392,6 +2460,178 @@ mod tests {
                 .expect("owner read")
                 .expect("owner");
             assert_eq!(owner.status, studio_runtime_store::AgentStatus::Queued);
+        }
+    }
+
+    /// A backend restart leaves a host command running in the provider process,
+    /// which keeps its generation. The host provider rejects `operationStatus`,
+    /// so that rejection proves nothing. Studio's retained request for the same
+    /// generation decides: the monitor waits for that answer and reports its
+    /// exit, without another command/exec. A new generation is a new provider
+    /// process, and the outcome stays unknown.
+    #[tokio::test]
+    async fn reattached_exit_host_command_waits_for_its_retained_answer_when_status_is_rejected() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        struct RestartedHost {
+            generation: u64,
+            status_requests: AtomicUsize,
+        }
+        impl AccountSessionPort for RestartedHost {
+            fn current_scope(
+                &self,
+                account: &str,
+            ) -> Option<studio_runtime_services::account_session_runtime::ConnectionScope>
+            {
+                Some(
+                    studio_runtime_services::account_session_runtime::ConnectionScope {
+                        account: account.into(),
+                        connection: "current".into(),
+                        generation: self.generation,
+                    },
+                )
+            }
+            fn provider_request<'a>(
+                &'a self,
+                request: ProviderRequest,
+            ) -> studio_runtime_services::account_session_runtime::AccountSessionFuture<
+                'a,
+                SessionReceipt,
+            > {
+                Box::pin(async move {
+                    assert_eq!(
+                        request.method,
+                        Method::OperationStatus,
+                        "a retained command is never sent again"
+                    );
+                    self.status_requests.fetch_add(1, Ordering::SeqCst);
+                    Ok(SessionReceipt {
+                        scope: request.expected_scope.expect("scope"),
+                        operation: request.operation,
+                        ticket: None,
+                        certainty: RequestCertainty::Written,
+                        result: Some(ProviderResponse::Rejected(
+                            json!({"code":-32601,"message":"method not found"}),
+                        )),
+                        not_sent_reason: None,
+                        replayed: false,
+                    })
+                })
+            }
+        }
+        // (current provider generation, answer recorded before the reattach)
+        for (generation, answered) in [(1, false), (1, true), (2, false)] {
+            let case = format!("generation {generation}, answered {answered}");
+            let root = tempfile::tempdir().expect("state root");
+            let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
+            let now = studio_runtime_services::event_write::unix_time().expect("clock");
+            let operation = Operation {
+                agent: "owner".into(),
+                epoch: 0,
+                account_key: "default".into(),
+                connection_id: "old".into(),
+                evidence: BTreeMap::new(),
+            };
+            let mut watch = starting_watch(root.path(), "watch");
+            watch["status"] = json!("running");
+            watch["created"] = json!(now);
+            watch["operation"] = json!(operation);
+            let owner = owner(root.path(), true);
+            let key = format!(
+                "retained:default:{}",
+                studio_runtime_store::sha256_hex(b"monitor:watch")
+            );
+            let submitted = json!({
+                "call":{"scope":{"account":"default","connection":"old","generation":1},
+                    "operation":"monitor:watch","actor":{"agent":"owner","epoch":0},
+                    "transfer":null,"deleted_actor_session":null,"method":"command/exec",
+                    "params":{"processId":"watch","cwd":root.path().to_string_lossy(),"command":["true"]}},
+                "request":{"id":key,"generation":1,"method":"command/exec","operation":key,
+                    "thread":null,"lightweight":true,"deadline":60000,"remoteId":null}
+            });
+            let submitted_id = format!("account-worker:{key}:submitted");
+            store.transaction(move |tx| {
+                AgentRepository::put(tx, &AgentRecord::from_value(owner)?)?;
+                studio_runtime_store::Table::new(tx).put(&studio_runtime_store::MonitorRecord::from_value(watch)?)?;
+                tx.execute("INSERT INTO runtime_operation_receipts(id,signature,result) VALUES (?1,'test',?2)", (submitted_id, submitted.to_string()))?;
+                Ok::<_, studio_runtime_store::StoreError>(())
+            }).await.expect("persist retained command before restart");
+            async fn answer(store: &RuntimeStore, key: String) {
+                store.transaction(move |tx| {
+                    for (id, result) in [
+                        (format!("account-worker:{key}:result"), json!({"result":{"Reply":{"exitCode":0}},"cursor":1})),
+                        ("account-worker:cursor:default:1:ack".into(),json!(1)),
+                    ] {
+                        tx.execute("INSERT OR REPLACE INTO runtime_operation_receipts(id,signature,result) VALUES (?1,'test',?2)",(id,result.to_string()))?;
+                    }
+                    Ok::<_, studio_runtime_store::StoreError>(())
+                }).await.expect("retained native reply and checkpoint commit");
+            }
+            if answered {
+                answer(&store, key.clone()).await;
+            }
+            studio_runtime_services::monitor_runtime::recover_on_startup(&store, now)
+                .await
+                .expect("startup");
+            let session = Arc::new(RestartedHost {
+                generation,
+                status_requests: AtomicUsize::new(0),
+            });
+            let port = RetainedMonitorPort::new(
+                Arc::clone(&store),
+                Arc::clone(&session) as Arc<dyn AccountSessionPort>,
+            );
+            let wake = Arc::new(Notify::new());
+            port.set_dispatch_wake(Arc::clone(&wake))
+                .expect("install wake");
+            let runtime = studio_runtime_services::monitor_runtime_wiring::MonitorRuntime::new(
+                Arc::clone(&store),
+                Arc::clone(&port) as Arc<dyn MonitorPort>,
+                Arc::new(Notify::new()),
+            );
+            runtime.tick(now + 1.0).await.expect("reattach pass");
+            let read = |store: Arc<RuntimeStore>| async move {
+                store
+                    .read_async("test/reattach-watch", |tx| {
+                        MonitorsRepository::get(tx, "watch")
+                    })
+                    .await
+                    .expect("read")
+                    .expect("watch")
+                    .value()
+                    .clone()
+            };
+            if generation == 2 {
+                let watch = read(Arc::clone(&store)).await;
+                assert_eq!(watch["status"], "lost", "{case}");
+                assert_eq!(session.status_requests.load(Ordering::SeqCst), 1, "{case}");
+                continue;
+            }
+            if !answered {
+                let watch = read(Arc::clone(&store)).await;
+                assert_eq!(watch["status"], "running", "{case}: still owed its answer");
+                assert!(watch["reattachRecovery"].is_null(), "{case}");
+                answer(&store, key.clone()).await;
+            }
+            // The restored waiter queues the exit after the answer commits.
+            let watch = tokio::time::timeout(Duration::from_secs(10), async {
+                loop {
+                    runtime.tick(now + 2.0).await.expect("terminal delivery");
+                    let watch = read(Arc::clone(&store)).await;
+                    if watch["status"] != "running" {
+                        return watch;
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .expect("the retained answer finishes the monitor");
+            assert_eq!(watch["status"], "completed", "{case}");
+            assert_eq!(watch["exitCode"], 0, "{case}");
+            assert_eq!(
+                session.status_requests.load(Ordering::SeqCst),
+                0,
+                "{case}: the retained request is the proof"
+            );
         }
     }
 

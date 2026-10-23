@@ -11,6 +11,7 @@ pub const MAX_DRAFT_TEXT_CODEPOINTS: usize = 2_000_000;
 pub const MAX_DRAFT_ID_BYTES: usize = 300;
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, JsonSchema)]
+#[schemars(deny_unknown_fields)]
 pub struct DraftVersion {
     pub id: String,
     pub session: String,
@@ -27,7 +28,9 @@ pub struct DraftVersion {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     #[schemars(schema_with = "seen_schema")]
     pub seen: BTreeMap<String, u64>,
+    // Historical extras survive decoding and merging, but are not new push fields.
     #[serde(flatten)]
+    #[schemars(skip)]
     pub extra: BTreeMap<String, Value>,
 }
 

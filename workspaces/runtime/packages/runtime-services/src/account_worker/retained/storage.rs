@@ -12,6 +12,16 @@ fn monitor_account_sql(agent_param: usize) -> String {
     )
 }
 
+/// Whether `agent` runs its provider in a VM. Only such an actor has its own
+/// session and journal lane. Every other authorized actor's request is sent
+/// and answered on the host session.
+pub fn vm_actor(connection: &rusqlite::Connection, agent: &str) -> Result<bool, WorkerError> {
+    let record = AgentRepository::get(connection, &AgentId::from(agent))?;
+    Ok(record.is_some_and(|record| {
+        record.extra.get("executionMode").and_then(Value::as_str) == Some("vm")
+    }))
+}
+
 pub(super) fn authorize(tx: &rusqlite::Transaction<'_>, call: &Call) -> Result<bool, WorkerError> {
     let Some(actor) = call.actor.as_ref() else {
         if let Some(transfer) = call.transfer.as_ref() {
@@ -560,7 +570,12 @@ pub(in crate::account_worker) async fn recover(
                 && value["result"] != json!("Unknown")
                 && value["cursor"].as_u64().is_some_and(|c| c <= checkpoint) { continue; }
             let request = store::decode(&store::receipt(tx, &call.key(), "written")?.unwrap_or(value["request"].clone()))?;
-            let actor_id = call.actor.as_ref().map(|actor| actor.agent.clone());
+            // The answer comes back on the lane the request was sent on, as
+            // in `retained_request`: a host request keeps no actor lane.
+            let actor_id = match call.actor.as_ref() {
+                Some(actor) if vm_actor(tx, &actor.agent)? => Some(actor.agent.clone()),
+                _ => None,
+            };
             result.push((PendingRequest {
                 call,
                 ticket: request.ticket.clone(),

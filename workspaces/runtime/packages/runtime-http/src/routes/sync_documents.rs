@@ -948,7 +948,7 @@ mod vault_maintenance_tests {
         use tower::ServiceExt;
         let directory = tempfile::tempdir().unwrap();
         let store = Arc::new(RuntimeStore::open(Some(directory.path())).await.unwrap());
-        let legacy = json!({"device":"phone","session":"chat","text":"x","updated":1.5});
+        let legacy = json!({"device":"phone","session":"chat","text":"x","updated":1.5,"legacyExtra":{"keep":true}});
         let raw = legacy.to_string();
         let original = raw.clone();
         store
@@ -1002,6 +1002,20 @@ mod vault_maintenance_tests {
             json!({"id":"phone:chat","device":"phone","session":"chat","text":"next","updated":2});
         let rows = json!({"rows":[{"newDocumentState":{"id":"phone:chat","payload":canonical.to_string(),"seq":0,"deleted":false},
             "assumedMasterState":{"id":"phone:chat","payload":original,"seq":1,"deleted":false}}]});
+        let mut extra_rows = rows.clone();
+        let mut extra_payload = canonical.clone();
+        extra_payload["legacyExtra"] = json!({"keep":true});
+        extra_rows["rows"][0]["newDocumentState"]["payload"] = json!(extra_payload.to_string());
+        let response = app
+            .clone()
+            .oneshot(request("POST", "/api/sync/drafts", extra_rows))
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::BAD_REQUEST,
+            "new pushes must reject extras while the assumed legacy master stays readable"
+        );
         let response = app
             .oneshot(request("POST", "/api/sync/drafts", rows))
             .await

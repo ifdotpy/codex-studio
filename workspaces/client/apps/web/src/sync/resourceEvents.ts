@@ -5,7 +5,11 @@ import {
 
 import { serverStorageName } from "../servers/environment";
 
-import { SYNC_PROTOCOL_VERSION, type components } from "../generated/api";
+import {
+  SYNC_PROTOCOL_VERSION,
+  type components,
+  type operations,
+} from "../generated/api";
 
 import { API_SCHEMA_HASH, API_SCHEMA_HASH_PARAM } from "../generated/apiSchema";
 
@@ -606,17 +610,18 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     }
     if (fromPeer && (owner || independent)) return;
     if (!fromPeer) refreshHeartbeatTimeout();
-    if (lastTokenEpoch !== event.epoch) {
-      lastTokenEpoch = event.epoch;
-      lastTokenRevision = undefined;
-      lastTokenEvent = undefined;
-    }
-    if (lastTokenRevision !== undefined && event.revision <= lastTokenRevision)
+    if (
+      lastTokenEpoch === event.epoch &&
+      lastTokenRevision !== undefined &&
+      event.revision <= lastTokenRevision
+    )
       return;
+    if (!receiveResourceTokenRates(event))
+      throw new TypeError("Invalid token-rate snapshot");
+    lastTokenEpoch = event.epoch;
     lastTokenRevision = event.revision;
     lastTokenEvent = event;
     setStatus("live");
-    receiveResourceTokenRates(event);
     for (const listener of tokenRateListeners) listener(event);
     if (owner || independent) broadcast({ kind: "token-rates", event });
   }
@@ -974,11 +979,20 @@ export function createResourceEvents(options: ResourceEventsOptions) {
       setStatus("connecting");
     keepLiveOnReconfigure = false;
     try {
-      const query = new URLSearchParams({
+      const subscription: NonNullable<
+        operations["sync_stream_api_sync_stream_get"]["parameters"]["query"]
+      > = {
         protocol: String(SYNC_PROTOCOL_VERSION),
         resources: JSON.stringify(resources),
+        tokenRates,
         [API_SCHEMA_HASH_PARAM]: API_SCHEMA_HASH,
-      });
+      };
+      const query = new URLSearchParams(
+        Object.entries(subscription).map(([key, value]) => [
+          key,
+          String(value),
+        ]),
+      );
       const connected = openServerEvents(`/api/sync/stream?${query}`);
       source = connected;
       notifyConnectionListeners();

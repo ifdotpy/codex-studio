@@ -23,44 +23,48 @@ it("rejects an oversized incomplete event", () => {
     "size limit",
   );
 });
-it("uses signed fetch for remote events and cancels the stream on close", async () => {
-  vi.stubGlobal("location", { origin: "http://studio.test", search: "" });
-  const { SignedEventSource } = await import("./eventSource");
-  let stream!: ReadableStreamDefaultController<Uint8Array>;
-  const fetchRequest = vi.fn(async (request: Request) => {
-    expect(request.headers.get("Accept")).toBe("text/event-stream");
-    expect(request.redirect).toBe("error");
-    return new Response(
-      new ReadableStream<Uint8Array>({
-        start(controller) {
-          stream = controller;
-        },
-      }),
-      { headers: { "Content-Type": "text/event-stream" } },
+it.each(["", "&tokenRates=false", "&tokenRates=true"])(
+  "uses signed fetch for remote events with selector %s and cancels the stream on close",
+  async (selector) => {
+    vi.stubGlobal("location", { origin: "http://studio.test", search: "" });
+    const { SignedEventSource } = await import("./eventSource");
+    let stream!: ReadableStreamDefaultController<Uint8Array>;
+    const fetchRequest = vi.fn(async (request: Request) => {
+      expect(new URL(request.url).search).toBe(`?protocol=3${selector}`);
+      expect(request.headers.get("Accept")).toBe("text/event-stream");
+      expect(request.redirect).toBe("error");
+      return new Response(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            stream = controller;
+          },
+        }),
+        { headers: { "Content-Type": "text/event-stream" } },
+      );
+    });
+    const source = new SignedEventSource(
+      `/api/sync/stream?protocol=3${selector}`,
+      fetchRequest,
     );
-  });
-  const source = new SignedEventSource(
-    "/api/sync/stream?protocol=3",
-    fetchRequest,
-  );
-  const frames: string[] = [];
-  source.addEventListener("resources", (event) =>
-    frames.push((event as MessageEvent).data),
-  );
-  const errors = vi.fn();
-  source.onerror = errors;
-  await vi.waitFor(() => expect(fetchRequest).toHaveBeenCalledOnce());
-  stream.enqueue(new TextEncoder().encode("event: resources\ndata: {}\n\n"));
-  await vi.waitFor(() => expect(frames).toEqual(["{}"]));
-  source.close();
-  expect(fetchRequest.mock.calls[0][0].signal.aborted).toBe(true);
-  stream.enqueue(
-    new TextEncoder().encode("event: resources\ndata: ignored\n\n"),
-  );
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  expect(frames).toEqual(["{}"]);
-  expect(errors).not.toHaveBeenCalled();
-});
+    const frames: string[] = [];
+    source.addEventListener("resources", (event) =>
+      frames.push((event as MessageEvent).data),
+    );
+    const errors = vi.fn();
+    source.onerror = errors;
+    await vi.waitFor(() => expect(fetchRequest).toHaveBeenCalledOnce());
+    stream.enqueue(new TextEncoder().encode("event: resources\ndata: {}\n\n"));
+    await vi.waitFor(() => expect(frames).toEqual(["{}"]));
+    source.close();
+    expect(fetchRequest.mock.calls[0][0].signal.aborted).toBe(true);
+    stream.enqueue(
+      new TextEncoder().encode("event: resources\ndata: ignored\n\n"),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(frames).toEqual(["{}"]);
+    expect(errors).not.toHaveBeenCalled();
+  },
+);
 it("cancels a rejected event response", async () => {
   vi.stubGlobal("location", { origin: "http://studio.test", search: "" });
   const { SignedEventSource } = await import("./eventSource");
