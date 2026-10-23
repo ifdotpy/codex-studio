@@ -4,12 +4,12 @@
   flex-basis: var(--studio-team-size);
   max-inline-size: 100%;
   min-inline-size: 0;
-  padding: var(--mantine-spacing-md) var(--mantine-spacing-xs);
+  padding: var(--mantine-spacing-md);
   background: var(--surface);
   border-inline-start: var(--studio-border-width) solid var(--line);
 }
 #team .team-heading {
-  padding: 0 var(--mantine-spacing-xs) var(--mantine-spacing-sm);
+  padding: 0 0 var(--mantine-spacing-sm);
   gap: var(--mantine-spacing-xs);
 }
 #team .team-heading h2 {
@@ -95,7 +95,7 @@
 }
 #team .team-status-group h3 {
   margin: 0;
-  padding: var(--mantine-spacing-xs) calc(var(--mantine-spacing-xs) / 2);
+  padding: var(--mantine-spacing-xs) 0;
   color: var(--muted);
   font-size: var(--studio-text-meta);
   font-weight: 500;
@@ -345,7 +345,7 @@
   font-size: var(--studio-text-meta);
 }
 #team .worker-group > summary {
-  padding: var(--mantine-spacing-xs) calc(var(--mantine-spacing-xs) / 2);
+  padding: var(--mantine-spacing-xs) 0;
   color: var(--muted);
   cursor: pointer;
   font-size: var(--studio-text-meta);
@@ -392,4 +392,19 @@
   .team-summary-filters button {
     min-block-size: var(--studio-touch-target);
   }
+}
+
+#team .team-lead-report {
+  flex-shrink: 0;
+  margin-block-end: var(--mantine-spacing-sm);
+  font-size: var(--studio-text-meta);
+}
+#team .team-lead-report summary {
+  cursor: pointer;
+  color: var(--muted);
+}
+#team .team-lead-report p {
+  margin-block: var(--mantine-spacing-xs);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }

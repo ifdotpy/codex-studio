@@ -67,7 +67,7 @@ export default function TeamPanel({
     <UIErrorBoundary key={a.id} label="this subagent" resetKey={a.id}>
       <WorkerCard
         agent={a}
-        depth={workerDepth(a, byId)}
+        depth={workerDepth(a, byId, lead?.id)}
         accounts={accounts}
         selected={opened === a.id}
         awaitingAnswer={workerState(a, answerIds, deferredIds) === "answer"}
@@ -120,6 +120,38 @@ export default function TeamPanel({
             <X size={16} />
           </ActionIcon>
         </div>
+        {lead && (lead.overview?.result || lead.overview?.resultFile) && (
+          <details className="team-lead-report">
+            <summary>Main agent report</summary>
+            {lead.overview.result && <p>{lead.overview.result}</p>}
+            {lead.overview.resultTruncated && (
+              <Button
+                variant="subtle"
+                size="compact-xs"
+                onClick={() => open(lead.id)}
+              >
+                Continue in main chat
+              </Button>
+            )}
+            {lead.overview.resultFile && (
+              <Button
+                component="a"
+                href={lead.overview.resultFile}
+                variant="subtle"
+                size="compact-xs"
+                onClick={(event) => {
+                  event.preventDefault();
+                  previewResult({
+                    agent: lead.id,
+                    path: lead.overview?.resultFile ?? undefined,
+                  });
+                }}
+              >
+                Open main agent submitted result
+              </Button>
+            )}
+          </details>
+        )}
         <TeamSummary
           workers={workers}
           indicators={indicators}
@@ -162,24 +194,6 @@ export default function TeamPanel({
           </>
         )}
         <div id="workers">
-          {lead && (
-            <WorkerCard
-              agent={lead}
-              lead
-              accounts={accounts}
-              selected={opened === lead.id}
-              awaitingAnswer={answerIds.has(lead.id)}
-              deferred={deferredIds.has(lead.id)}
-              indicator={indicators.get(lead.id)}
-              open={() => open(lead.id)}
-              previewResult={() =>
-                previewResult({
-                  agent: lead.id,
-                  path: lead.overview?.resultFile ?? undefined,
-                })
-              }
-            />
-          )}
           {groups.map((group) =>
             group.workers.length ? (
               <section

@@ -303,3 +303,83 @@ export const Workspace: Story = {
     </div>
   ),
 };
+
+export const ImplicitLead: Story = {
+  args: {
+    opened: "running",
+    lead: {
+      ...lead,
+      overview: {
+        result: "Release verification passed.",
+        resultTruncated: true,
+        resultFile: "reports/release.md",
+      },
+    },
+  },
+  play: async ({ canvasElement, args }) => {
+    const canvas = within(canvasElement);
+    await expect(
+      canvasElement.querySelector("[data-lead]"),
+    ).not.toBeInTheDocument();
+    const root = canvasElement
+      .querySelector('[data-worker="running"]')!
+      .closest(".worker-entry")!;
+    const child = canvasElement
+      .querySelector('[data-worker="child"]')!
+      .closest(".worker-entry")!;
+    await expect(
+      (root as HTMLElement).style.getPropertyValue("--worker-depth"),
+    ).toBe("0");
+    await expect(
+      (child as HTMLElement).style.getPropertyValue("--worker-depth"),
+    ).toBe("1");
+    await userEvent.click(
+      canvas.getByRole("button", { name: "Back to main agent" }),
+    );
+    await expect(args.open).toHaveBeenLastCalledWith("lead");
+    await userEvent.click(canvas.getByText("Main agent report"));
+    await expect(
+      canvas.getByText("Release verification passed."),
+    ).toBeVisible();
+    await userEvent.click(
+      canvas.getByRole("button", { name: "Continue in main chat" }),
+    );
+    await expect(args.open).toHaveBeenLastCalledWith("lead");
+    await userEvent.click(
+      canvas.getByRole("link", { name: "Open main agent submitted result" }),
+    );
+    await expect(args.previewResult).toHaveBeenLastCalledWith({
+      agent: "lead",
+      path: "reports/release.md",
+    });
+  },
+};
+
+export const SharedGutter: Story = {
+  play: async ({ canvasElement }) => {
+    const panel = canvasElement.querySelector("#team")!;
+    const computed = getComputedStyle(panel);
+    const gutterProbe = document.createElement("div");
+    gutterProbe.style.width = "var(--mantine-spacing-md)";
+    panel.append(gutterProbe);
+    const gutter = gutterProbe.getBoundingClientRect().width;
+    gutterProbe.remove();
+    await expect(parseFloat(computed.paddingInlineStart)).toBe(gutter);
+    const edge =
+      panel.getBoundingClientRect().left +
+      parseFloat(computed.borderInlineStartWidth) +
+      gutter;
+    for (const selector of [
+      ".team-heading h2",
+      ".team-summary-filters",
+      ".mantine-TextInput-root",
+      ".team-status-group h3",
+      ".worker-group > summary",
+      ".worker-entry:not([data-has-parent])",
+    ]) {
+      for (const element of panel.querySelectorAll(selector)) {
+        await expect(element.getBoundingClientRect().left).toBeCloseTo(edge, 0);
+      }
+    }
+  },
+};

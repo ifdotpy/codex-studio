@@ -160,11 +160,15 @@ export function filterTeamWorkers(
 }
 
 /** Indentation follows the server-owned parent relation, including filtered parents. */
-export function workerDepth(agent: Agent, agents: Map<string, Agent>) {
+export function workerDepth(
+  agent: Agent,
+  agents: Map<string, Agent>,
+  implicitRootId?: string,
+) {
   const seen = new Set([agent.id]);
   let parentId = agent.parentId;
   let depth = 0;
-  while (parentId && !seen.has(parentId)) {
+  while (parentId && parentId !== implicitRootId && !seen.has(parentId)) {
     seen.add(parentId);
     depth++;
     parentId = agents.get(parentId)?.parentId;
