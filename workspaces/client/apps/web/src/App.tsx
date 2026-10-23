@@ -17,7 +17,8 @@ import { writePreferenceEdit } from "./sync/uiPreferenceStore";
 import { createUiPreferenceBridge } from "./sync/uiPreferenceBridge";
 import type { UiPreferenceProjection } from "./sync/entityProjection";
 import { Tooltip } from "@mantine/core";
-import StudioSettingsTabs, {
+import {
+  StudioSettingsLayout,
   isStudioSettingsTab,
   type StudioSettingsTab,
 } from "./components/StudioSettingsTabs";
@@ -3326,12 +3327,10 @@ export default function App({ active = true }: { active?: boolean }) {
         classNames={{ body: "studio-settings-body" }}
       >
         <div className="studio-settings-panel" data-testid="studio-settings">
-          <Tabs
+          <StudioSettingsLayout
             value={studioSettingsTab}
             onChange={activateSettingsTab}
-            className="studio-settings-tabs"
           >
-            <StudioSettingsTabs />
             <Tabs.Panel value="accounts" pt="md">
               <section className="settings-group" aria-label="Studio accounts">
                 <ServerAccountsPanel
@@ -3804,7 +3803,7 @@ export default function App({ active = true }: { active?: boolean }) {
                 </SettingsRow>
               </section>
             </Tabs.Panel>
-          </Tabs>
+          </StudioSettingsLayout>
           {studioPreferencesError && (
             <p className="studio-preferences-error" role="alert">
               {studioPreferencesError}

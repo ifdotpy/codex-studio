@@ -25,6 +25,7 @@ import {
   Group,
   Menu,
   Modal,
+  Progress,
   Stack,
   TextInput,
   Tooltip,
@@ -51,6 +52,7 @@ import {
 import { errorText, type GetResult } from "../api";
 import type { Agent } from "../types";
 import "./accounts.css";
+import { remainingLimitColor } from "./accountLimitColor";
 import AccountSignIn from "./AccountSignIn";
 import AccountManagerHost from "./AccountManagerHost";
 import AccountAddDialog, { type AddAccountIntent } from "./AccountAddDialog";
@@ -334,28 +336,21 @@ export function AccountCapacityView({
                 : remainingText(remaining)}
             </span>
           </div>
-          <span
+          <Progress.Root
             className="account-limit-bar"
+            size="xs"
             role={remaining === null ? undefined : "meter"}
             aria-label="Remaining limit"
             aria-valuemin={0}
             aria-valuemax={100}
             aria-valuenow={remaining ?? undefined}
           >
-            {remaining !== null && (
-              <span
-                style={{
-                  width: `${remaining}%`,
-                  background:
-                    remaining > 50
-                      ? "var(--mantine-color-green-6)"
-                      : remaining >= 15
-                        ? "var(--mantine-color-yellow-6)"
-                        : "var(--mantine-color-red-6)",
-                }}
-              />
-            )}
-          </span>
+            <Progress.Section
+              value={remaining ?? 0}
+              color={remainingLimitColor(remaining)}
+              withAria={false}
+            />
+          </Progress.Root>
           {note && <small className="account-limit-note">{note}</small>}
           {account.status !== "ready" ? null : limitsError ? (
             details
