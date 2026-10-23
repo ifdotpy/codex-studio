@@ -6,13 +6,26 @@ import https from "node:https";
 import { createBrotliDecompress } from "node:zlib";
 import { readFile, writeFile } from "node:fs/promises";
 import { parseArgs } from "node:util";
-import { SYNC_PROTOCOL_VERSION } from "../../../client/apps/web/src/generated/api.ts";
+
+// Inspect the contract owner as tooling metadata; do not import application code.
+const protocolOwner = await readFile(
+  new URL(
+    "../../../runtime/packages/runtime-schema/src/sync_protocol.rs",
+    import.meta.url,
+  ),
+  "utf8",
+);
+const protocolVersion = protocolOwner.match(
+  /pub const SYNC_PROTOCOL_VERSION: u32 = (\d+);/,
+)?.[1];
+if (!protocolVersion)
+  throw new Error("Cannot read SYNC_PROTOCOL_VERSION from its Rust owner");
 
 const { values } = parseArgs({
   options: {
     url: { type: "string" },
     seconds: { type: "string", default: "30" },
-    protocol: { type: "string", default: String(SYNC_PROTOCOL_VERSION) },
+    protocol: { type: "string", default: protocolVersion },
     resources: { type: "string" },
     "resources-file": { type: "string" },
     output: { type: "string" },
