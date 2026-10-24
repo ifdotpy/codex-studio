@@ -173,6 +173,25 @@ baselines. The owner retains versions for its active aggregate and at most 128
 inactive references; an evicted reference requires a fresh server baseline.
 A late follower receives a targeted baseline without waiting for a source change.
 
+### Durable per-ref resume cursors
+
+The [OpenAPI subscription contract](../workspaces/runtime/packages/runtime-http/openapi.json)
+defines `SubscriptionAdd`, `SubscriptionCursor`, and `SubscriptionReplyKind`.
+Each added ref carries an optional `since: { workspaceId, seq }` cursor. The
+stream's initial request carries the same entries in its `since` query parameter.
+The server returns `replyKind: delta` and only records newer than the applied
+cursor when retained history covers it. A current cursor returns an empty delta.
+Missing, foreign, future, or expired cursors return `replyKind: snapshot` and
+replace that ref's projection. The durable store sequence and records come from
+the same SQLite boundary; stream epochs are independent of these cursors.
+
+The client stores each cursor in its IndexedDB projection after its records are
+applied, under the projection write lock. A failed, cancelled, incomplete, or
+oversized delivery cannot advance the cursor. Reconnect resends active refs with
+these applied cursors through the same subscription path. A covered reconnect
+requires no sync pull. Transient resources retain their existing in-memory
+snapshot owners and do not create durable cursor rows.
+
 ### Connection loss and recovery
 
 Named `heartbeat` events prove liveness and never trigger resource reads.

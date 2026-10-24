@@ -616,8 +616,13 @@ async fn attach_initial_entries(
     for (resource, entry) in event.resources.iter().zip(&mut event.resource_versions) {
         let value = serde_json::to_value(resource).map_err(|_| ApiError::internal())?;
         let cursor = since.get(&value.to_string()).cloned();
-        *entry =
+        let initial =
             super::subscriptions::initial_snapshot(state.clone(), resource.clone(), cursor).await?;
+        // Passive handlers leave transient and legacy inline fields with their
+        // existing owner. A failed durable interval still supplies its revision.
+        if initial.cursor.is_some() || initial.resource.is_some() {
+            *entry = initial;
+        }
     }
     Ok(())
 }
