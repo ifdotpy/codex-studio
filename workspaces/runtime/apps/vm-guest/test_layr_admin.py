@@ -57,18 +57,27 @@ class BrokerTests(unittest.IsolatedAsyncioTestCase):
     async def test_concurrent_same_identity_joins_one_operation(self):
         applied = []
         gate = asyncio.Event()
+        started, joined = asyncio.Event(), asyncio.Event()
 
         async def dispatch(*args):
             applied.append(args)
+            started.set()
             await gate.wait()
             return {"ok": True}
 
         self.broker.dispatch = dispatch
         request = {"id": "concurrent", "method": "project.import", "params": {}}
         first = asyncio.create_task(self.broker.request(request, None))
-        await asyncio.sleep(0)
-        second = asyncio.create_task(self.broker.request(request, None))
-        await asyncio.sleep(0)
+        await asyncio.wait_for(started.wait(), 5)
+        shield = asyncio.shield
+
+        def observe(task):
+            joined.set()
+            return shield(task)
+
+        with patch("layr_admin.asyncio.shield", side_effect=observe):
+            second = asyncio.create_task(self.broker.request(request, None))
+            await asyncio.wait_for(joined.wait(), 5)
         gate.set()
         self.assertEqual(await first, await second)
         self.assertEqual(len(applied), 1)
