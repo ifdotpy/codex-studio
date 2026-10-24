@@ -9,6 +9,10 @@ use serde::Serialize;
 use std::{cell::RefCell, collections::BTreeMap};
 use unicode_segmentation::UnicodeSegmentation;
 
+// Parser budgets count UTF-8 input bytes and appended presentation nodes.
+const MAX_DOCUMENT_BYTES: usize = 8 * 1024 * 1024;
+const MAX_DOCUMENT_ELEMENTS: usize = 100_000;
+
 #[derive(Default, Serialize, Debug, JsonSchema)]
 pub struct MarkdownNode {
     #[serde(skip_serializing_if = "String::is_empty")]
@@ -58,7 +62,7 @@ struct Tree {
 impl Tree {
     fn append(&mut self, node: MarkdownNode) {
         self.nodes += 1;
-        if self.nodes > 100_000 {
+        if self.nodes > MAX_DOCUMENT_ELEMENTS {
             self.error = Some("This Markdown document has too many elements.".into());
             return;
         }
@@ -338,7 +342,7 @@ fn closed_fence(raw: &str) -> bool {
     count >= 3 && last.len() >= count && last.chars().all(|c| c == ch)
 }
 pub fn parse(text: &str, streaming: bool) -> Result<Vec<MarkdownBlock>, String> {
-    if text.len() > 8 * 1024 * 1024 {
+    if text.len() > MAX_DOCUMENT_BYTES {
         return Err("This Markdown document exceeds 8 MiB.".into());
     }
     let events = Parser::new_ext(
@@ -482,7 +486,33 @@ mod tests {
     }
     #[test]
     fn oversized_or_deep_fragments_fail_without_partial_success() {
-        assert!(tree("<div>".repeat(140)).is_err());
+        assert_eq!(
+            tree("<div>".repeat(140)).expect_err("depth limit"),
+            "This Markdown document is nested too deeply."
+        );
+        let mut text = " ".repeat(MAX_DOCUMENT_BYTES);
+        assert!(
+            super::parse(&text, false)
+                .expect("size boundary")
+                .is_empty()
+        );
+        text.push(' ');
+        assert_eq!(
+            super::parse(&text, false).expect_err("size limit"),
+            "This Markdown document exceeds 8 MiB."
+        );
+        let mut tree = Tree {
+            nodes: MAX_DOCUMENT_ELEMENTS - 1,
+            stack: vec![MarkdownNode::default()],
+            ..Tree::default()
+        };
+        tree.append(MarkdownNode::default());
+        assert!(tree.error.is_none());
+        tree.append(MarkdownNode::default());
+        assert_eq!(
+            tree.error.as_deref(),
+            Some("This Markdown document has too many elements.")
+        );
         assert!(!safe_uri("java\nscript:bad", false));
         assert!(!safe_uri("javascript:bad", false));
         assert!(safe_uri("src/lib.rs:12", false));

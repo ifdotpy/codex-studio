@@ -835,11 +835,7 @@ pub(crate) mod tests {
             );
             // Simulate a committed server mutation whose response is lost.
             drop(mutation);
-            assert!(
-                tokio::time::timeout(Duration::from_millis(100), listener.accept())
-                    .await
-                    .is_err()
-            );
+            listener
         });
         let backend = Backend::new(&origin).unwrap();
         let response = backend.dispatch(Request { id: "transport-id".into(), method: "api.request".into(), params: serde_json::json!({
@@ -847,10 +843,11 @@ pub(crate) mod tests {
         }) }).await;
         assert_eq!(response.id, "transport-id");
         assert_eq!(response.error.unwrap().code, "network");
-        tokio::time::timeout(Duration::from_secs(2), server)
-            .await
-            .unwrap()
-            .unwrap();
+        let listener = server.await.expect("server").into_std().expect("listener");
+        assert_eq!(
+            listener.accept().expect_err("no connection").kind(),
+            std::io::ErrorKind::WouldBlock
+        );
     }
 
     #[tokio::test]
@@ -923,10 +920,10 @@ pub(crate) mod tests {
             unverified.prepare_session().await.unwrap_err().code,
             "backend_unverified"
         );
-        assert!(
-            tokio::time::timeout(Duration::from_millis(100), listener.accept())
-                .await
-                .is_err()
+        let listener = listener.into_std().expect("listener");
+        assert_eq!(
+            listener.accept().expect_err("no connection").kind(),
+            std::io::ErrorKind::WouldBlock
         );
     }
 

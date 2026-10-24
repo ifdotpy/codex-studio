@@ -198,8 +198,11 @@ mod tests {
             .remove("server:missing");
         archive["owners"]["server:../other"] = json!("remote");
         assert!(select_workspace(&archive).is_err());
-        archive["owners"].as_object_mut().unwrap().remove("root");
-        assert!(select_workspace(&archive).is_err());
+        archive["owners"] = json!({"server:remote":"remote"});
+        assert_eq!(
+            select_workspace(&archive).expect_err("missing root"),
+            "The profile archive needs a root owner."
+        );
     }
     #[test]
     fn chunks_require_the_owner_exact_bytes_and_a_regular_file() {

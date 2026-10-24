@@ -823,11 +823,7 @@ mod tests {
         let submitted = inputs.recv().await.unwrap();
         assert_eq!(submitted["text"], "first");
         assert_eq!(submitted["request_id"].as_str().unwrap().len(), 36);
-        assert!(
-            tokio::time::timeout(Duration::from_millis(450), inputs.recv())
-                .await
-                .is_err()
-        );
+        assert_eq!(inputs.try_recv(), Err(mpsc::error::TryRecvError::Empty));
         terminals
             .queue(
                 &backend,
