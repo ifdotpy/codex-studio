@@ -20,11 +20,17 @@ fn a_launchd_soft_limit_of_256_is_raised_and_the_hard_limit_is_kept() {
     .expect("lower the soft limit as launchd does");
     let raised = raise_open_file_limit().expect("a finite soft limit");
     let after = getrlimit(Resource::Nofile);
-    assert_eq!(after.maximum, before.maximum, "the hard limit never changes");
+    assert_eq!(
+        after.maximum, before.maximum,
+        "the hard limit never changes"
+    );
     assert_eq!(after.current, Some(raised));
     // macOS caps the soft limit at kern.maxfilesperproc (61440 on some Macs), so the
     // limit may stay below the target, but it must be far above 256.
-    assert!(raised > 256 && raised <= reachable(before.maximum), "{raised}");
+    assert!(
+        raised > 256 && raised <= reachable(before.maximum),
+        "{raised}"
+    );
     assert!(
         SOFT_LIMIT_STEPS.contains(&raised) || raised == reachable(before.maximum),
         "{raised}"
@@ -58,6 +64,10 @@ fn a_higher_soft_limit_is_never_lowered() {
 }
 
 #[test]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "the test reads the limit of a real child process"
+)]
 fn a_child_process_inherits_the_raised_limit() {
     let before = getrlimit(Resource::Nofile);
     setrlimit(
