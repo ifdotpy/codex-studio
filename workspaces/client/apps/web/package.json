@@ -33,7 +33,7 @@
     "test:skill-autocomplete": "pnpm run build && PLAYWRIGHT_INCLUDE_SPECIAL=1 playwright test --config playwright.config.ts --project=client --project=performance skill-autocomplete-ui.spec.mjs",
     "test:prompt-composer": "pnpm run build && node src/components/prompt-composer/verify.mjs",
     "benchmark:prompt-composer": "pnpm run build && node src/components/prompt-composer/benchmark.mjs",
-    "test:diagnostics": "pnpm run test:unit && pnpm run build && PLAYWRIGHT_INCLUDE_SPECIAL=1 playwright test --config playwright.config.ts --project=client --project=performance http-error-diagnostics-browser.spec.mjs account-settings-errors-browser.spec.mjs structured-operational-errors-ui.spec.mjs native-error-ui.spec.mjs",
+    "test:diagnostics": "pnpm run test:unit && pnpm run build && PLAYWRIGHT_INCLUDE_SPECIAL=1 playwright test --config playwright.config.ts --project=client --project=performance account-settings-errors-browser.spec.mjs structured-operational-errors-ui.spec.mjs native-error-ui.spec.mjs",
     "test:responsiveness": "pnpm run test:unit && pnpm run build && PLAYWRIGHT_INCLUDE_SPECIAL=1 playwright test --config playwright.config.ts --project=client --project=performance draft-render-performance-browser.spec.mjs transcript-render-performance-browser.spec.mjs completed-markdown-cache-browser.spec.mjs scroll-restart-browser.spec.mjs ui-responsiveness-browser.spec.mjs",
     "storybook": "pnpm run build:wasm && STORYBOOK_DISABLE_TELEMETRY=1 storybook dev --config-dir .storybook --disable-telemetry --host 127.0.0.1 --no-open",
     "build-storybook": "pnpm run build:wasm && STORYBOOK_DISABLE_TELEMETRY=1 storybook build --config-dir .storybook --disable-telemetry",

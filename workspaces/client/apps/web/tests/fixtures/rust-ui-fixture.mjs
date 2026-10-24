@@ -37,7 +37,8 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { connect, createServer } from "node:net";
+import { connect } from "node:net";
+import { waitForFixturePort } from "../fixture-readiness.mjs";
 import { createInterface } from "node:readline";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -183,19 +184,6 @@ export function serverBinary() {
   )[0];
 }
 
-function freePort() {
-  return new Promise((resolvePort, reject) => {
-    const probe = createServer();
-    probe.once("error", reject);
-    probe.listen(0, "127.0.0.1", () => {
-      const { port } = /** @type {import("node:net").AddressInfo} */ (
-        probe.address()
-      );
-      probe.close(() => resolvePort(port));
-    });
-  });
-}
-
 /**
  * @param {string} stateDir
  * @param {{ modelsFile?: string, scriptFile?: string, controlDirectory?: string }} [options]
@@ -204,8 +192,6 @@ export async function startRustBackend(
   stateDir,
   { modelsFile, scriptFile, controlDirectory } = {},
 ) {
-  const port = await freePort();
-  const origin = `http://127.0.0.1:${port}`;
   // The server approves any `codex` on PATH ahead of CODEX_BIN; hide the host's.
   // That folder can also hold `node` (Homebrew puts both in /opt/homebrew/bin),
   // and the scripted provider starts through `env node`, so a private folder
@@ -218,8 +204,8 @@ export async function startRustBackend(
       .split(delimiter)
       .filter((entry) => !existsSync(join(entry, "codex"))),
   ].join(delimiter);
-  const child = spawn(serverBinary(), ["--port", String(port)], {
-    stdio: ["ignore", 2, 2],
+  const child = spawn(serverBinary(), ["--port", "0"], {
+    stdio: ["ignore", "pipe", 2],
     env: {
       ...process.env,
       PATH: path,
@@ -234,25 +220,18 @@ export async function startRustBackend(
   const removeNodeBin = () => rmSync(nodeBin, { recursive: true, force: true });
   child.once("exit", removeNodeBin);
   child.once("error", removeNodeBin);
-  const exited = new Promise((_, reject) => {
-    child.once("error", reject);
-    child.once("exit", (code, signal) =>
-      reject(new Error(`studio-runtime-server exited ${code ?? signal}`)),
-    );
-  });
-  exited.catch(() => {});
-  const deadline = Date.now() + SERVER_START_TIMEOUT_MS;
-  for (;;) {
-    if (child.exitCode !== null || child.signalCode !== null) await exited;
-    try {
-      if ((await fetch(`${origin}/api/session`)).ok) break;
-    } catch {}
-    if (Date.now() > deadline) throw new Error("server start timed out");
-    await Promise.race([
-      exited,
-      new Promise((resolveWait) => setTimeout(resolveWait, 50)),
-    ]);
+  let port;
+  try {
+    port = await waitForFixturePort(child, {
+      label: "studio-runtime-server",
+      timeoutMs: SERVER_START_TIMEOUT_MS,
+      portPattern: /^Codex Canvas: http:\/\/127\.0\.0\.1:(\d+)$/,
+    });
+  } catch (error) {
+    child.kill();
+    throw error;
   }
+  const origin = `http://127.0.0.1:${port}`;
   const { token } = await (await fetch(`${origin}/api/session`)).json();
   const post = async (path, body) => {
     // The provider catalog loads in the background; admission reports a transient error until it lands.

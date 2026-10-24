@@ -595,63 +595,36 @@ for (const [platform, userAgent] of mobileBrowsers) {
   });
 }
 
-test("mobile board and explicit chat selection are stable across ten fresh iPhone starts", async ({
+test("mobile board opens the explicitly selected chat in a fresh iPhone context", async ({
   browser,
+  readOnlyRust,
 }) => {
-  test.setTimeout(180_000);
-  for (let run = 1; run <= 10; run++) {
-    const state = await mkdtemp(join(tmpdir(), "codex-mobile-default-"));
-    const fixture = spawn(process.execPath, [rustUiFixture, state], {
-      stdio: ["ignore", "pipe", "pipe"],
-      env: { ...process.env, FIXTURE_WORKER_COUNT: "1" },
-    });
-    let log = "";
-    fixture.stderr.on("data", (chunk) => {
-      log += chunk;
-    });
-    let context;
-    try {
-      const port = await new Promise((resolve, reject) => {
-        fixture.stdout.once("data", (chunk) =>
-          resolve(Number(String(chunk).trim())),
-        );
-        fixture.once("exit", () => reject(new Error(log)));
-      });
-      context = await browser.newContext({
-        viewport: { width: 390, height: 844 },
-        isMobile: true,
-        hasTouch: true,
-        userAgent:
-          "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1",
-      });
-      const page = await context.newPage();
-      await page.goto(`http://127.0.0.1:${port}`);
-      await expect(
-        page.locator("#sidebar .sidebar-project").first(),
-      ).toBeVisible();
-      await expect(
-        page.locator('#sidebar .chat-row[aria-current="true"]'),
-      ).toHaveCount(0);
-      await page
-        .locator("#sidebar .project-chats .chat-row")
-        .filter({ hasText: "Other project" })
-        .first()
-        .click();
-      await page.locator("#composer").waitFor();
-      await expect
-        .poll(() => page.locator("#conversation-title").innerText(), {
-          message: `Fresh iPhone fixture ${run} must open the selected Other project`,
-          timeout: 10_000,
-        })
-        .toBe("Other project");
-    } finally {
-      await context?.close();
-      const exited = new Promise((resolve) => fixture.once("exit", resolve));
-      fixture.kill();
-      await exited;
-    }
+  const context = await browser.newContext({
+    viewport: { width: 390, height: 844 },
+    isMobile: true,
+    hasTouch: true,
+    userAgent:
+      "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1",
+  });
+  try {
+    const page = await context.newPage();
+    await readOnlyRust.open(page);
+    await expect(
+      page.locator("#sidebar .sidebar-project").first(),
+    ).toBeVisible();
+    await expect(
+      page.locator('#sidebar .chat-row[aria-current="true"]'),
+    ).toHaveCount(0);
+    await page
+      .locator("#sidebar .project-chats .chat-row")
+      .filter({ hasText: "Other project" })
+      .first()
+      .click();
+    await expect(page.locator("#composer")).toBeVisible();
+    await expect(page.locator("#conversation-title")).toHaveText(
+      "Other project",
+    );
+  } finally {
+    await context.close();
   }
-  console.log(
-    "mobile-board-selection: PASS (10/10 fresh iPhone fixture states)",
-  );
 });

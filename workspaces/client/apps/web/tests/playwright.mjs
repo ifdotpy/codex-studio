@@ -454,11 +454,13 @@ async function stopFixtureChild(child) {
  * apiSchemaFixtureHeaders: boolean;
  * apiSchemaFixtureHeaderSetup: void;
  * fixtureChildCleanup: void;
+ * readOnlyRust: { origin: string; open: (page: import("playwright").Page) => Promise<void> };
  * }} ClientTestFixtures
  */
 /** @typedef {import("@playwright/test").PlaywrightWorkerArgs & import("@playwright/test").PlaywrightWorkerOptions & {
  * apiSchemaFixtureBrowserSetup: void;
  * browserStageTiming: void;
+ * readOnlyRustOrigin: string;
  * }} ClientWorkerFixtures
  */
 /** @type {import("@playwright/test").Fixtures<
@@ -599,6 +601,108 @@ const sharedFixtures = {
     },
     { scope: "worker", auto: true },
   ],
+  // Opt in only for layout/navigation witnesses. Mutating integration tests keep
+  // their own backend, while these tests reuse one minimal seed per worker.
+  readOnlyRustOrigin: [
+    // oxlint-disable-next-line no-empty-pattern
+    async ({}, use, workerInfo) => {
+      const scope = { children: new Set(), scratchDirs: new Map(), errors: [] };
+      const root = mkdtempSync(join(playwrightScratch.root, "readonly-rust-"));
+      const child = spawnScopedFixture(
+        scope,
+        {
+          ...workerInfo,
+          titlePath: ["read-only Rust fixture"],
+          file: "",
+        },
+        process.execPath,
+        [rustUiFixture, root, "--workers", "0"],
+        {
+          stdio: ["ignore", "pipe", "pipe"],
+        },
+      );
+      let diagnostics = "";
+      child.stderr.on("data", (chunk) => {
+        diagnostics += chunk;
+      });
+      try {
+        const port = await waitForFixturePort(child, {
+          diagnostics: () => diagnostics,
+        });
+        await use(`http://127.0.0.1:${port}`);
+      } finally {
+        await stopFixtureChild(child);
+        rmSync(root, { recursive: true, force: true });
+        rmSync(rustFixtureStateDirectory(root), {
+          recursive: true,
+          force: true,
+        });
+      }
+      if (scope.errors.length)
+        throw new AggregateError(
+          scope.errors,
+          "Read-only fixture cleanup failed",
+        );
+    },
+    { scope: "worker", timeout: 60_000 },
+  ],
+  readOnlyRust: async ({ readOnlyRustOrigin }, use) => {
+    const writes = [];
+    await use({
+      origin: readOnlyRustOrigin,
+      async open(page) {
+        // Browser storage and preference replies remain private to each context.
+        // Any other persistent mutation means this test needs an isolated server.
+        await page.context().route("**/api/**", (route) => {
+          const request = route.request();
+          const path = new URL(request.url()).pathname;
+          if (
+            request.method() === "GET" ||
+            request.method() === "HEAD" ||
+            path === "/api/sync/subscriptions"
+          )
+            return route.fallback();
+          if (path === "/api/sync/preferences")
+            return route.fulfill({
+              json: { fields: request.postDataJSON().fields },
+            });
+          if (path === "/api/organization") {
+            const body = request.postDataJSON();
+            if (
+              body.read_state &&
+              Object.keys(body).every(
+                (key) => key === "id" || key === "read_state",
+              )
+            ) {
+              const { thread_id, turn_id, read, expected_revision } =
+                body.read_state;
+              return route.fulfill({
+                json: {
+                  id: body.id,
+                  readState: {
+                    threadId: thread_id,
+                    turnId: turn_id,
+                    read,
+                    revision: expected_revision + 1,
+                  },
+                },
+              });
+            }
+          }
+          writes.push(`${request.method()} ${path}`);
+          return route.fulfill({
+            status: 405,
+            json: { error: "Read-only fixture" },
+          });
+        });
+        await page.goto(readOnlyRustOrigin);
+      },
+    });
+    expect(
+      writes,
+      "Read-only witnesses must not mutate the shared backend",
+    ).toEqual([]);
+  },
   fixtureChildCleanup: [
     // oxlint-disable-next-line no-empty-pattern
     async ({}, use, testInfo) => {
@@ -696,6 +800,10 @@ export function spawnFixture(command, args, options) {
       "spawnFixture is only available before test cleanup begins",
     );
 
+  return spawnScopedFixture(scope, testInfo, command, args, options);
+}
+
+function spawnScopedFixture(scope, testInfo, command, args, options) {
   const fixtureScratch = mkdtempSync(join(playwrightScratch.root, "fixture-"));
   const home = join(fixtureScratch, "home");
   const inheritedCodexHome = options?.env?.CODEX_HOME;

@@ -288,18 +288,42 @@ describe("OpenAPI transport facade", () => {
     ).rejects.toBe(lost);
   });
 
-  it("uses the established ApiError class for parsed HTTP failures", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () =>
-        Response.json({ message: "Rejected" }, { status: 400 }),
-      ),
-    );
-
-    const error = await get("/api/session").catch((reason: unknown) => reason);
-    expect(error).toBeInstanceOf(ApiError);
-    expect(error).toMatchObject({ status: 400, message: "Rejected" });
-  });
+  it.each([
+    [400, { message: "Rejected" }, "Rejected"],
+    [
+      429,
+      { error: "Provider quota exhausted", location: ["body", "account_key"] },
+      "Provider quota exhausted",
+    ],
+    [401, { error: "Sign in again" }, "Sign in again"],
+    [
+      403,
+      { error: "Permission denied", location: ["query", "id"] },
+      "Permission denied",
+    ],
+    [409, "Request conflict", "Request conflict"],
+    [500, null, "Request failed (500)"],
+  ])(
+    "preserves HTTP %i diagnostics without retrying",
+    async (status, body, message) => {
+      const fetch = vi.fn(async (_request: Request) =>
+        Response.json(body, { status }),
+      );
+      vi.stubGlobal("fetch", fetch);
+      const error = await get("/api/session").catch(
+        (reason: unknown) => reason,
+      );
+      expect(error).toBeInstanceOf(ApiError);
+      expect(error).toMatchObject({ status, message });
+      expect((error as ApiError).location).toEqual(
+        body && typeof body === "object" && "location" in body
+          ? body.location
+          : undefined,
+      );
+      expect(fetch).toHaveBeenCalledTimes(1);
+      expect(fetch.mock.calls[0]?.[0]?.method).toBe("GET");
+    },
+  );
 });
 
 it("shows rejected field paths without echoing submitted values", () => {
