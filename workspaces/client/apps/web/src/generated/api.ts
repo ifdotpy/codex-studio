@@ -379,23 +379,6 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
-  "/api/agents/continue": {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Post Message */
-    post: operations["continue_worker_api_agents_continue_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
   "/api/agents/finder-view": {
     parameters: {
       query?: never;
@@ -1750,6 +1733,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/retained-worktrees": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Retained Worktrees */
+    get: operations["retained_worktrees_api_retained_worktrees_get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/room/delete": {
     parameters: {
       query?: never;
@@ -2083,23 +2083,6 @@ export interface paths {
     };
     /** Read bounded task output within its owner workspace */
     get: operations["task_output_api_task_output_get"];
-    put?: never;
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  "/api/team-budget": {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    /** Processes */
-    get: operations["team_budget_api_team_budget_get"];
     put?: never;
     post?: never;
     delete?: never;
@@ -4084,10 +4067,8 @@ export interface components {
       archived?: boolean | null;
       /** Autowake */
       autoWake?: boolean | null;
-      budgetBlocked?: string | null;
       /** Cansend */
       canSend?: boolean | null;
-      capabilityProfile?: components["schemas"]["WorkerCapabilitiesDto"] | null;
       capacityRetry?:
         | components["schemas"]["AgentEntityCapacityRetryDto"]
         | null;
@@ -4108,7 +4089,6 @@ export interface components {
       commandProgress?: components["schemas"]["AgentCommandProgress"][];
       /** Compactions */
       compactions?: number | null;
-      completedWorkerTurns?: number | null;
       /** Concurrency */
       concurrency?: number | null;
       connectionCheck?: components["schemas"]["ConnectionCheckDto"] | null;
@@ -4290,13 +4270,10 @@ export interface components {
       subagentConcurrencyVersion?: number | null;
       /** Tail */
       tail?: null | string;
-      terminalReason?: string | null;
       /** Threadid */
       threadId?: null | string;
-      tokenBudget?: number | null;
       /** Tokensused */
       tokensUsed?: number | null;
-      tokenUsageAccounting?: string | null;
       /** Turnid */
       turnId?: null | string;
       turnStatus?: components["schemas"]["AgentStatus"] | null;
@@ -20114,6 +20091,14 @@ export interface components {
     } & {
       [key: string]: components["schemas"]["JsonValue"];
     };
+    RetainedWorktreesResponse: {
+      retainedWorktrees: {
+        cleanup: components["schemas"]["WorkspaceCleanupSummaryDto"];
+        id: string;
+        name?: string | null;
+      }[];
+      rootId: string;
+    };
     /**
      * RetryAction
      * @enum {string}
@@ -23688,21 +23673,6 @@ export interface components {
       limit: 3;
       retryAllowed: boolean;
     };
-    TeamBudgetSummary: {
-      incomplete: {
-        agentId: string;
-        reason: string;
-      }[];
-      reached: boolean;
-      retainedWorktrees?: {
-        cleanup: components["schemas"]["WorkspaceCleanupSummaryDto"];
-        id: string;
-        name?: string | null;
-      }[];
-      rootId: string;
-      tokenBudget: number | null;
-      tokensUsed?: number;
-    };
     /** TerminalClose */
     TerminalClose: {
       /** Id */
@@ -26844,17 +26814,6 @@ export interface components {
       /** Title */
       title?: null | string;
     };
-    WorkerCapabilitiesDto: {
-      allowedTools?: string[] | null;
-      disallowedTools?: string[] | null;
-      maxTurns?: number | null;
-      mcpServers?: string[] | null;
-      skills?: string[] | null;
-    };
-    WorkerContinueRequest: {
-      id: string;
-      request_id: string;
-    };
     /** WorkerDefaults */
     WorkerDefaults: {
       /**
@@ -29549,69 +29508,6 @@ export interface operations {
       403: components["responses"]["ApiError403"];
       /** @description Not Found */
       404: components["responses"]["ApiError404"];
-      /** @description Request Timeout */
-      408: components["responses"]["ApiError408"];
-      /** @description Conflict */
-      409: components["responses"]["ApiError409"];
-      /** @description Gone */
-      410: components["responses"]["ApiError410"];
-      /** @description Content Too Large */
-      413: components["responses"]["ApiError413"];
-      /** @description Unsupported Media Type */
-      415: components["responses"]["ApiError415"];
-      /** @description Upgrade Required */
-      426: components["responses"]["ApiError426"];
-      /** @description Too Many Requests */
-      429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
-      500: components["responses"]["ApiError500"];
-      /** @description Bad Gateway */
-      502: components["responses"]["ApiError502"];
-      /** @description Service Unavailable */
-      503: components["responses"]["ApiError503"];
-    };
-  };
-  continue_worker_api_agents_continue_post: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        "application/json": components["schemas"]["WorkerContinueRequest"];
-      };
-    };
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
-          "Access-Control-Expose-Headers": components["headers"]["AccessControlExposeHeaders"];
-          "Cache-Control": components["headers"]["CacheControl"];
-          "Content-Encoding": components["headers"]["ContentEncoding"];
-          "Content-Length": components["headers"]["ContentLength"];
-          "Content-Security-Policy": components["headers"]["ContentSecurityPolicy"];
-          "Content-Type": components["headers"]["ContentType"];
-          "Referrer-Policy": components["headers"]["ReferrerPolicy"];
-          "Server-Timing": components["headers"]["ServerTiming"];
-          Vary: components["headers"]["Vary"];
-          "X-Content-Type-Options": components["headers"]["XContentTypeOptions"];
-          "X-Studio-API-Schema": components["headers"]["StudioApiSchema"];
-          "X-Studio-Server": components["headers"]["StudioServer"];
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["studio_api__work__models__MessageReceipt"];
-        };
-      };
-      /** @description Bad Request */
-      400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
-      401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
-      403: components["responses"]["ApiError403"];
       /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
       /** @description Conflict */
@@ -35419,6 +35315,53 @@ export interface operations {
       503: components["responses"]["ApiError503"];
     };
   };
+  retained_worktrees_api_retained_worktrees_get: {
+    parameters: {
+      query: {
+        agent: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
+          "Access-Control-Expose-Headers": components["headers"]["AccessControlExposeHeaders"];
+          "Cache-Control": components["headers"]["CacheControl"];
+          "Content-Encoding": components["headers"]["ContentEncoding"];
+          "Content-Length": components["headers"]["ContentLength"];
+          "Content-Security-Policy": components["headers"]["ContentSecurityPolicy"];
+          "Content-Type": components["headers"]["ContentType"];
+          "Referrer-Policy": components["headers"]["ReferrerPolicy"];
+          "Server-Timing": components["headers"]["ServerTiming"];
+          Vary: components["headers"]["Vary"];
+          "X-Content-Type-Options": components["headers"]["XContentTypeOptions"];
+          "X-Studio-API-Schema": components["headers"]["StudioApiSchema"];
+          "X-Studio-Server": components["headers"]["StudioServer"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["RetainedWorktreesResponse"];
+        };
+      };
+      /** @description Bad Request */
+      400: components["responses"]["ApiError400"];
+      /** @description Unauthorized */
+      401: components["responses"]["ApiError401"];
+      /** @description Forbidden */
+      403: components["responses"]["ApiError403"];
+      /** @description Too Many Requests */
+      429: components["responses"]["ApiError429"];
+      /** @description Internal Server Error */
+      500: components["responses"]["ApiError500"];
+      /** @description Service Unavailable */
+      503: components["responses"]["ApiError503"];
+    };
+  };
   delete_room_api_room_delete_post: {
     parameters: {
       query?: never;
@@ -36569,53 +36512,6 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["TaskOutputResponse"];
-        };
-      };
-      /** @description Bad Request */
-      400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
-      401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
-      403: components["responses"]["ApiError403"];
-      /** @description Too Many Requests */
-      429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
-      500: components["responses"]["ApiError500"];
-      /** @description Service Unavailable */
-      503: components["responses"]["ApiError503"];
-    };
-  };
-  team_budget_api_team_budget_get: {
-    parameters: {
-      query: {
-        agent: string;
-      };
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
-          "Access-Control-Expose-Headers": components["headers"]["AccessControlExposeHeaders"];
-          "Cache-Control": components["headers"]["CacheControl"];
-          "Content-Encoding": components["headers"]["ContentEncoding"];
-          "Content-Length": components["headers"]["ContentLength"];
-          "Content-Security-Policy": components["headers"]["ContentSecurityPolicy"];
-          "Content-Type": components["headers"]["ContentType"];
-          "Referrer-Policy": components["headers"]["ReferrerPolicy"];
-          "Server-Timing": components["headers"]["ServerTiming"];
-          Vary: components["headers"]["Vary"];
-          "X-Content-Type-Options": components["headers"]["XContentTypeOptions"];
-          "X-Studio-API-Schema": components["headers"]["StudioApiSchema"];
-          "X-Studio-Server": components["headers"]["StudioServer"];
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["TeamBudgetSummary"];
         };
       };
       /** @description Bad Request */
