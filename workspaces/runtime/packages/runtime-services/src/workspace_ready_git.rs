@@ -22,7 +22,7 @@ use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use studio_runtime_store::path_identity::CanonicalPath;
 use studio_runtime_store::workspace_ready::WorkspacePaths;
 use studio_runtime_store::workspace_ready::{
@@ -31,9 +31,10 @@ use studio_runtime_store::workspace_ready::{
 use studio_runtime_store::{
     CheckpointsRepository, RuntimeStore, StoreError, WorkspaceSnapshot, path_identity,
 };
+use tokio::time::Instant;
 
-/// Git budget of one preparation phase, in wall time. The unlocked observation,
-/// the effect under the repository lock, the adoption check after a failed
+/// Git budget of one preparation phase, on Tokio's monotonic clock. The unlocked
+/// observation, the effect under the repository lock, the adoption check after a failed
 /// effect and the publication check each start their own budget with their
 /// first Git command. Waiting for the repository lock is not Git time.
 const GIT_TIMEOUT: Duration = Duration::from_secs(30);
