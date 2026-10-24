@@ -286,3 +286,78 @@ async fn content_fingerprint(state: HttpState, resource: ResourceRef) -> Option<
         _ => None,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use std::collections::BTreeSet;
+
+    #[test]
+    fn every_generated_resource_has_exactly_one_handler_and_data_contract() {
+        let document: Value =
+            serde_json::from_str(include_str!("../../openapi.json")).expect("OpenAPI owner");
+        let schemas = &document["components"]["schemas"];
+        let kinds = schemas["ResourceRef"]["discriminator"]["mapping"]
+            .as_object()
+            .expect("resource kinds");
+        let data = schemas["SubscriptionDataMap"]["properties"]
+            .as_object()
+            .expect("generated data mapping");
+        assert_eq!(
+            kinds.keys().collect::<BTreeSet<_>>(),
+            data.keys().collect(),
+            "OpenAPI owns resource data kinds"
+        );
+        let mut used = BTreeSet::new();
+        for (kind, path) in kinds {
+            let name = path
+                .as_str()
+                .expect("schema path")
+                .rsplit('/')
+                .next()
+                .expect("name");
+            let properties = schemas[name]["properties"]
+                .as_object()
+                .expect("selector fields");
+            let mut value = serde_json::Map::new();
+            for (field, schema) in properties {
+                let value = schema
+                    .get("const")
+                    .cloned()
+                    .or_else(|| {
+                        schema
+                            .get("enum")
+                            .and_then(|items| items[0].as_str())
+                            .map(|s| json!(s))
+                    })
+                    .unwrap_or_else(|| {
+                        if schema["type"] == "integer" {
+                            schema.get("minimum").cloned().unwrap_or(json!(1))
+                        } else {
+                            json!("test")
+                        }
+                    });
+                value.insert(field.clone(), value);
+            }
+            value.insert("kind".into(), json!(kind));
+            let resource: ResourceRef =
+                serde_json::from_value(Value::Object(value)).expect("generated reference");
+            let matches: Vec<_> = REGISTRY
+                .iter()
+                .enumerate()
+                .filter(|(_, handler)| handler.accepts(&resource))
+                .collect();
+            assert_eq!(matches.len(), 1, "exactly one registry handler for {kind}");
+            used.insert(matches[0].0);
+            assert!(matches[0].1.max_bytes() <= SYNC_STREAM_EVENT_MAX_BYTES);
+            assert!(matches[0].1.matches_change(&resource, &resource));
+            assert!(!matches[0].1.debug_key(&resource).is_empty());
+        }
+        assert_eq!(
+            used.len(),
+            REGISTRY.len(),
+            "registry contains no extra kinds"
+        );
+    }
+}
