@@ -193,6 +193,11 @@ pub struct StdioProviderTaskFactory {
     pub stderr_log: Option<OperationalLog>,
 }
 
+enum StdioIoCompletion {
+    Read(Result<(), AdapterError>),
+    Write(Result<(), AdapterError>),
+}
+
 impl ProviderTaskFactory for StdioProviderTaskFactory {
     fn open(
         &self,
@@ -303,28 +308,29 @@ impl StdioProviderTaskFactory {
                 tokio::pin!(reader);
                 let mut pending_write = None;
                 let exchange = async {
-                    let stdin = stdin.ok_or(AdapterError::InvalidConfiguration)?;
+                    let Some(stdin) = stdin else {
+                        return StdioIoCompletion::Read(Err(AdapterError::InvalidConfiguration));
+                    };
                     if !stderr_available {
-                        return Err(AdapterError::InvalidConfiguration);
+                        return StdioIoCompletion::Read(Err(AdapterError::InvalidConfiguration));
                     }
-                    tokio::try_join!(
-                        write_commands(
+                    tokio::select! {
+                        result = write_commands(
                             stdin,
                             &mut inbox,
                             diagnostic_handle,
                             generation,
                             pending_replies,
                             &mut pending_write,
-                        ),
-                        &mut reader,
-                    )?;
-                    Ok(())
+                        ) => StdioIoCompletion::Write(result),
+                        result = &mut reader => StdioIoCompletion::Read(result),
+                    }
                 };
                 let bounded = async {
                     match deadline {
                         Some(deadline) => tokio::time::timeout_at(deadline, exchange)
                             .await
-                            .unwrap_or(Err(AdapterError::Timeout)),
+                            .unwrap_or(StdioIoCompletion::Read(Err(AdapterError::Timeout))),
                         None => exchange.await,
                     }
                 };
@@ -345,12 +351,28 @@ impl StdioProviderTaskFactory {
                     exited = leader_exit => match exited {
                         Ok(()) => {
                             interrupt_stdin_write(&mut pending_write);
-                            (drain_stdout_after_exit(&mut reader, &mut inbox, &mut stop, deadline).await, false)
+                            (drain_stdout_before_cleanup(&mut reader, &mut inbox, &mut stop, deadline).await, false)
                         },
                         Err(error) => (Err(process_error(error)), true),
                     },
                     // A full journal must never prevent observing and reaping the child.
-                    result = bounded => (result, false),
+                    result = bounded => match result {
+                        StdioIoCompletion::Write(Err(error)) if matches!(&error,
+                            AdapterError::Supervisor(SupervisorError::Io(cause))
+                            if cause.kind() == io::ErrorKind::BrokenPipe
+                        ) => {
+                            // A child can close stdin before exiting. EPIPE must
+                            // stop writes without dropping its final stdout.
+                            interrupt_stdin_write(&mut pending_write);
+                            let drained = drain_stdout_before_cleanup(&mut reader, &mut inbox, &mut stop, deadline).await;
+                            let result = match drained {
+                                Err(AdapterError::Supervisor(SupervisorError::ConnectionLost)) => Err(error),
+                                result => result,
+                            };
+                            (result, false)
+                        }
+                        StdioIoCompletion::Read(result) | StdioIoCompletion::Write(result) => (result, false),
+                    },
                 };
                 interrupt_stdin_write(&mut pending_write);
                 close_commands(&mut inbox);
@@ -384,6 +406,11 @@ impl StdioProviderTaskFactory {
                     })
                     .and(reaped.map(|_| ()))
                     .map_err(process_error);
+                // close() fences new admission but outstanding Tokio permits can
+                // still enqueue. After bounded reaping, this task owns only the
+                // closed channel and rejects late writes without holding cleanup.
+                // recv() ends when the remaining permits are sent or dropped.
+                drop(tokio::spawn(reject_late_commands(inbox)));
                 let stderr_result = match stderr_drain {
                     Some(mut stderr_drain) => {
                         match tokio::time::timeout(REAP_GRACE, &mut stderr_drain).await {
@@ -425,7 +452,7 @@ impl StdioProviderTaskFactory {
     }
 }
 
-async fn drain_stdout_after_exit(
+async fn drain_stdout_before_cleanup(
     reader: impl std::future::Future<Output = Result<(), AdapterError>>,
     commands: &mut mpsc::Receiver<AdapterCommand>,
     stop: &mut watch::Receiver<bool>,
@@ -462,6 +489,12 @@ async fn drain_stdout_after_exit(
 fn close_commands(commands: &mut mpsc::Receiver<AdapterCommand>) {
     commands.close();
     while let Ok(command) = commands.try_recv() {
+        command.reject();
+    }
+}
+
+async fn reject_late_commands(mut commands: mpsc::Receiver<AdapterCommand>) {
+    while let Some(command) = commands.recv().await {
         command.reject();
     }
 }
@@ -842,7 +875,7 @@ mod tests {
             Err(SupervisorError::ConnectionLost.into())
         };
         let result =
-            drain_stdout_after_exit(reader, &mut inbox, &mut shutdown.subscribe(), None).await;
+            drain_stdout_before_cleanup(reader, &mut inbox, &mut shutdown.subscribe(), None).await;
         assert!(matches!(
             result,
             Err(AdapterError::Supervisor(SupervisorError::ConnectionLost))
@@ -866,7 +899,7 @@ mod tests {
             let shutdown = Shutdown::default();
             let (_commands, mut inbox) = mpsc::channel(LANE_CAPACITY);
             let started = Instant::now();
-            let result = drain_stdout_after_exit(
+            let result = drain_stdout_before_cleanup(
                 read_entries(
                     &b"first\nsecond\n"[..],
                     entries,
@@ -909,7 +942,7 @@ mod tests {
             let mut stop = shutdown.subscribe();
             let started = Instant::now();
             let (result, ()) = tokio::join!(
-                drain_stdout_after_exit(
+                drain_stdout_before_cleanup(
                     read_entries(
                         stdout,
                         entries,

@@ -1514,6 +1514,8 @@ function fastTierCommands(root) {
                   nextestAnyOf([
                     "test(/^provider_stdio::final_stdout_is_journaled_when_the_child_exits_before_the_owner_is_polled$/)",
                     "test(/^provider_stdio::writes_after_confirmed_exit_are_not_sent_and_do_not_block_ack_or_stdout$/)",
+                    "test(/^provider_stdio::a_reserved_write_arriving_after_completion_is_rejected_without_delaying_reap$/)",
+                    "test(/^provider_stdio::stdin_epipe_before_leader_exit_still_drains_final_stdout$/)",
                     "test(/^provider_stdio::killed_provider_is_reaped_with_full_journal_and_unobserved_write$/)",
                     "test(/^provider_stdio::cancellation_stops_the_entire_owned_process_group$/)",
                     "test(/^wave7_p01_factory::running_child_started_with_a_previous_command_reattaches$/)",

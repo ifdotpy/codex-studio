@@ -249,6 +249,14 @@ receipt keeps journal reads and ACKs running, including during initialization.
 Writes refused while draining use the same receipt with zero accepted bytes.
 When draining finishes, the owner closes command admission and rejects every
 admitted command that never started as `NotSent` before cleanup begins.
+After reaping, a detached rejector retains only the closed command receiver so
+permits reserved before closure can still deliver a command and receive `NotSent`.
+It ends when those permits are sent or dropped; outstanding permits never delay
+process cleanup.
+
+A stdin `BrokenPipe` can precede child exit. It uses the same bounded stdout
+drain and ACK service before cleanup. The original write error remains the result
+unless shutdown, the exchange deadline, or an output bound intervenes.
 
 The model catalog consumes it through the accepted session task. Its cache is
 process-local, so consumed entries are settled without a durable journal.

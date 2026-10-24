@@ -11,6 +11,130 @@ const PROVIDER_STDERR_COMPLETION_TIMEOUT: Duration = Duration::from_secs(10);
 #[cfg(target_os = "linux")]
 const PROVIDER_EXIT_HANG_GUARD: Duration = Duration::from_secs(10);
 
+#[tokio::test]
+async fn a_reserved_write_arriving_after_completion_is_rejected_without_delaying_reap() {
+    use studio_runtime_process::OperationId;
+    use studio_runtime_providers::{Frame, Method, RequestFrame, RequestId};
+
+    let mut attachment = child("exit 0").await;
+    let child_pid = pid(&attachment);
+    let sender = attachment.commands.clone();
+    let permit = sender.reserve().await.expect("admission before closure");
+    tokio::time::timeout(PROVIDER_STDERR_COMPLETION_TIMEOUT, sender.closed())
+        .await
+        .expect("command admission closes");
+    let exit = tokio::time::timeout(PROVIDER_STDERR_COMPLETION_TIMEOUT, attachment.completion())
+        .await
+        .expect("a held permit must not delay completion");
+    assert!(exit.cleanup_error.is_none());
+    assert_reaped(child_pid);
+
+    let frame = Frame::Request(RequestFrame {
+        id: RequestId::Number(42),
+        method: Method::ModelList,
+        params: None,
+        fields: Default::default(),
+    });
+    let (command, receipt) = AdapterCommand::write(
+        PreparedWrite::new(OperationId("late-permit".into()), &frame).expect("write"),
+    );
+    permit.send(command);
+    assert!(matches!(
+        tokio::time::timeout(PROVIDER_STDERR_COMPLETION_TIMEOUT, receipt.receive())
+            .await
+            .expect("late command receipt"),
+        CommandReceipt::NotSent
+    ));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn stdin_epipe_before_leader_exit_still_drains_final_stdout() {
+    use studio_runtime_process::OperationId;
+    use studio_runtime_providers::{Frame, Method, RequestFrame, RequestId};
+
+    const FINAL_FRAMES: usize = 6 * LANE_CAPACITY + 1;
+    let root = tempfile::tempdir().expect("isolated EPIPE fixture");
+    let ready = root.path().join("ready");
+    rustix::fs::mknodat(
+        rustix::fs::CWD,
+        &ready,
+        rustix::fs::FileType::Fifo,
+        rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR,
+        0,
+    )
+    .expect("independent pipe-closed witness");
+    let script = format!(
+        r#"exec 0<&-
+index=0
+while [ "$index" -lt {FINAL_FRAMES} ]; do
+    printf '{{"method":"fixture/final","index":%s}}\n' "$index"
+    index=$((index + 1))
+done
+printf done > ready
+exec sleep infinity"#
+    );
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("fixture runtime");
+    let attachment = runtime.block_on(
+        StdioProviderTaskFactory {
+            deadline: None,
+            max_frame_bytes: 1024,
+            max_output_bytes: None,
+            stderr_log: None,
+        }
+        .open(
+            ProviderHandle::for_account("epipe-before-exit"),
+            OpenOptions {
+                clock: SessionClock::default(),
+                expected_generation: None,
+                launch: ProviderLaunchSpec::new(
+                    vec!["/bin/sh".into(), "-c".into(), script],
+                    BTreeMap::new(),
+                    root.path().to_path_buf(),
+                ),
+            },
+            Shutdown::default(),
+        ),
+    );
+    let mut attachment = attachment.expect("fixture starts");
+    let child_pid = pid(&attachment);
+    // The owner cannot read stdout yet. The child closed stdin and wrote its
+    // finite tail, but remains alive; the first write must fail with EPIPE.
+    assert_eq!(std::fs::read(ready).expect("closed stdin witness"), b"done");
+    assert!(
+        !studio_runtime_process::owned_process_group::exited_unreaped_now(child_pid)
+            .expect("owned leader")
+    );
+    let frame = Frame::Request(RequestFrame {
+        id: RequestId::Number(7),
+        method: Method::ModelList,
+        params: None,
+        fields: Default::default(),
+    });
+    let (command, receipt) = AdapterCommand::write(
+        PreparedWrite::new(OperationId("write-to-closed-stdin".into()), &frame).expect("write"),
+    );
+    attachment
+        .commands
+        .try_send(command)
+        .expect("admitted write");
+    runtime.block_on(async {
+        tokio::time::timeout(PROVIDER_STDERR_COMPLETION_TIMEOUT, async {
+            assert!(matches!(receipt.receive().await, CommandReceipt::WriteInterrupted { bytes_written: 0 }));
+            let mut entries = vec![];
+            while let Some(entry) = attachment.journal.recv().await { entries.push(entry); }
+            let exit = attachment.completion().await;
+            assert_eq!(entries.len(), FINAL_FRAMES, "EPIPE must not discard the final stdout tail");
+            assert!(matches!(exit.result, Err(AdapterError::Supervisor(studio_runtime_process::SupervisorError::Io(error))) if error.kind() == std::io::ErrorKind::BrokenPipe));
+            assert!(exit.cleanup_error.is_none());
+            assert_reaped(child_pid);
+        }).await.expect("EPIPE drain hang guard");
+    });
+}
+
 #[test]
 fn final_stdout_is_journaled_when_the_child_exits_before_the_owner_is_polled() {
     assert_final_stdout_is_journaled(false);
