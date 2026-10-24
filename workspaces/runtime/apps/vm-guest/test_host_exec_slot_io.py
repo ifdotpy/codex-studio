@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import os
 import sys
 import tempfile
 import unittest
@@ -34,7 +35,7 @@ class CollectTests(unittest.TestCase):
             folder.mkdir()
         (tools / "layr").write_text(FAKE_LAYR)
         (tools / "layr").chmod(0o755)
-        self.env = {"PATH": f"{tools}:/usr/local/bin:/usr/bin:/bin", "FAKE_BASE": str(self.base)}
+        self.env = {"PATH": str(tools) + os.pathsep + os.environ.get("PATH", os.defpath), "FAKE_BASE": str(self.base)}
 
     def tearDown(self):
         self.temp.cleanup()

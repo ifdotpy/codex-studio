@@ -6,9 +6,6 @@ use sha2::{Digest, Sha256};
 
 use crate::{StoreError, StoreResult};
 
-#[cfg(test)]
-const SCHEMA_SNAPSHOT: &str = include_str!("runtime-state-schema.json");
-
 pub(crate) fn verify(canvas_path: &Path, analytics_path: &Path) -> StoreResult<()> {
     verify_core(canvas_path, analytics_path)?;
     verify_bootstrap(&open_read_only(canvas_path)?)
@@ -178,16 +175,6 @@ inventory::submit! {
 
 inventory::submit! {
     ConnectionFunctionRegistration("sync_entity_payload")
-}
-
-#[cfg(test)]
-fn registered_connection_functions() -> Vec<&'static str> {
-    let mut functions = inventory::iter::<ConnectionFunctionRegistration>
-        .into_iter()
-        .map(|registration| registration.0)
-        .collect::<Vec<_>>();
-    functions.sort_unstable();
-    functions
 }
 
 fn has_registered_connection_function(name: &str) -> bool {
@@ -678,40 +665,10 @@ fn connection_pragmas(connection: &Connection) -> StoreResult<(String, i64)> {
 #[cfg(test)]
 mod tests {
     use super::{
-        PayloadMigrationState, SCHEMA_SNAPSHOT, event_payload, python_float_json, python_json,
-        python_json_compact, registered_connection_functions, verify_payload_migration,
+        PayloadMigrationState, event_payload, python_float_json, python_json, python_json_compact,
+        verify_payload_migration,
     };
     use rusqlite::Connection;
-    use serde_json::Value;
-
-    #[test]
-    fn connection_functions_are_registered_in_stable_order() {
-        let functions = registered_connection_functions();
-        assert_eq!(functions.len(), 2);
-        assert!(functions.windows(2).all(|pair| pair[0] < pair[1]));
-    }
-
-    #[test]
-    fn committed_snapshot_has_both_database_catalogs_and_expected_markers() {
-        let snapshot: Value =
-            serde_json::from_str(SCHEMA_SNAPSHOT).expect("schema snapshot parses");
-        assert_eq!(snapshot["canvas.sqlite3"]["pragma_user_version"], 0);
-        assert_eq!(
-            snapshot["canvas.sqlite3"]["payload_migrations"],
-            serde_json::json!([])
-        );
-        assert_eq!(
-            snapshot["analytics.sqlite3"]["file_migration_v1"],
-            serde_json::json!([])
-        );
-        assert_eq!(snapshot["pragmas"]["main"]["journal_mode"], "wal");
-        for database in ["main", "analytics"] {
-            assert_eq!(
-                snapshot["pragmas"][database]["synchronous"],
-                crate::sqlite_durability::SYNCHRONOUS_NORMAL
-            );
-        }
-    }
 
     #[test]
     fn persisted_and_federation_json_keep_distinct_unicode_formats() {

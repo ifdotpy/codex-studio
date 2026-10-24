@@ -659,8 +659,8 @@ function browserPlan(root, smoke = false) {
   return value;
 }
 
-// Three fixed lanes share named preparation milestones. Only the Rust lane compiles
-// Cargo targets; the guest waits for its explicit debug supervisor binary.
+// Bounded lanes share preparation milestones. Only Rust compiles Cargo targets;
+// types wait for WASM, web and guest tests wait for the workspace, tools start immediately.
 export function gateSteps(root, name) {
   const packages = discover(root);
   const web = packageTarget(packages, "codex-agents-web");
@@ -670,7 +670,7 @@ export function gateSteps(root, name) {
   const script = (id, item, command, options = {}) => ({
     id,
     label: id,
-    lane: "js",
+    lane: "types",
     requires: "wasm",
     item,
     options: { ...options, script: command },
@@ -775,6 +775,7 @@ export function gateSteps(root, name) {
         fast ? "test:unit:fast" : "test:unit:prepared",
       ),
       requires: "workspace",
+      lane: "web",
     },
     ...["studio-claude-bridge", "codex-agents-desktop"].map((packageName) => ({
       ...script(
@@ -783,6 +784,7 @@ export function gateSteps(root, name) {
         fast || packageName === "codex-agents-desktop" ? "test:fast" : "test",
       ),
       requires: null,
+      lane: "js",
     })),
     nodeTest("retained-helpers", "retained Python helper boundaries", [
       "workspaces/client/apps/desktop/retained-helper-witness.test.cjs",
@@ -846,6 +848,7 @@ export function gateSteps(root, name) {
               browserSmokeTestOptions(),
             ),
             requires: "workspace",
+            lane: "web",
           },
         ]
       : []),
@@ -913,12 +916,12 @@ export function recipePlan(root, name) {
         : `Frozen pnpm dependencies; pinned Rust, wasm-bindgen and nextest; one WASM and renderer preparation${name === "test-comprehensive" || name === "test-heavy" ? "; browser binaries" : "; no browser or model provider"}`,
     reason: fast
       ? name === "test-fast"
-        ? "Run selected deterministic safety witnesses and read-only contract guards in three bounded concurrent lanes with one Cargo build universe."
+        ? "Run selected deterministic safety witnesses and read-only contract guards in five bounded concurrent lanes with one Cargo build universe."
         : name === "test-comprehensive"
-          ? "Run the broad local regression recipe in three bounded concurrent lanes with one Cargo build universe."
+          ? "Run the broad local regression recipe in five bounded concurrent lanes with one Cargo build universe."
           : name === "test-fast-rest-non-rust"
-            ? "Run JS and guest lanes against the workspace build artifacts without Rust compilation."
-            : "Run the comprehensive remainder in three bounded concurrent lanes with one Cargo build universe."
+            ? "Run type, web, independent check and guest lanes against the workspace build artifacts without Rust compilation."
+            : "Run the comprehensive remainder in five bounded concurrent lanes with one Cargo build universe."
       : "Run the full browser project as an announced manual check.",
     notStarted: "Electron, provider-dependent opt-in suites, load-class suites",
     costCategory: fast
@@ -975,7 +978,7 @@ export async function executeRecipe(root, name, steps, options = {}) {
     STUDIO_DRAFT_SERVER_BINARY: debugBinary(root, "examples/draft-server"),
     CODEX_STUDIO_RUNTIME_SERVER: debugBinary(root, "studio-runtime-server"),
   };
-  // Fixed Rust, JS and guest lanes: no generic graph scheduler or resource inference.
+  // Named serial lanes: no generic graph scheduler or resource inference.
   // Only Rust owns compilation; wasm and workspace build receipts unblock consumers.
   const runLane = async (lane) => {
     for (const [index, step] of steps.entries()) {
@@ -1035,7 +1038,9 @@ export async function executeRecipe(root, name, steps, options = {}) {
     }
   };
   try {
-    await Promise.all([runLane("rust"), runLane("js"), runLane("guest")]);
+    await Promise.all(
+      [...new Set(steps.map((step) => step.lane ?? "rust"))].map(runLane),
+    );
   } finally {
     handlers.forEach((signal) => process.removeListener(signal, abort));
     options.signal?.removeEventListener("abort", abort);

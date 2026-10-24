@@ -92,13 +92,9 @@ async fn a_start_that_stays_unsent_fails_with_its_cause_and_keeps_its_input() {
     for _ in 0..=studio_runtime_store::START_RETURN_LIMIT {
         expire_held_submission(&state).await;
     }
-    tokio::time::timeout(std::time::Duration::from_secs(20), async {
-        while state.record().await["status"] != "failed" {
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        }
-    })
-    .await
-    .expect("the start fails after its returns are used up");
+    state
+        .wait_record(|record| record["status"] == "failed")
+        .await;
     *state.bridge.faults.pause_operation.lock().unwrap() = None;
     let record = state.record().await;
     assert_eq!(record["error"], DEADLINE_REASON, "{record}");
@@ -130,13 +126,9 @@ async fn a_submitted_turn_start_that_stays_unsent_keeps_its_input_pending() {
         expire_held_submission(&state).await;
         *state.bridge.faults.pause_operation.lock().unwrap() = None;
     }
-    tokio::time::timeout(std::time::Duration::from_secs(20), async {
-        while state.record().await["status"] != "failed" {
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        }
-    })
-    .await
-    .expect("the start fails after its returns are used up");
+    state
+        .wait_record(|record| record["status"] == "failed")
+        .await;
     *state.bridge.faults.pause_operation.lock().unwrap() = None;
     let record = state.record().await;
     assert_eq!(

@@ -764,12 +764,8 @@ fn all_recorded_replay_fixture_frames_parse_through_the_session() {
         }
         let value: Value =
             serde_json::from_slice(&std::fs::read(&path).expect("fixture")).expect("JSON");
-        // RPC-only and raw SDK fixtures are exercised by their own callers below
-        // and by codec.rs; this witness admits protocol event fixtures only.
-        if path.file_name().expect("name") == "codex-rpc-replies.json"
-            || value["boundaryOnly"] == true && value.get("events").is_none()
-            || value.get("sdkEvents").is_some()
-        {
+        // RPC replies have a dedicated session witness below.
+        if path.file_name().expect("name") == "codex-rpc-replies.json" {
             continue;
         }
         let mut session = state(value["provider"] == "claude");
@@ -791,6 +787,15 @@ fn all_recorded_replay_fixture_frames_parse_through_the_session() {
                 .push(&bytes)
                 .expect("scripted test operation")
                 .remove(0);
+            assert_eq!(
+                serde_json::from_slice::<Value>(
+                    &studio_runtime_providers::encode_line(&frame).expect("frame encodes")
+                )
+                .expect("encoded frame is JSON"),
+                expected_frame,
+                "{}: wire round trip preserves the recorded frame",
+                path.display()
+            );
             let actions = session
                 .receive(frame.clone())
                 .expect("scripted test operation");

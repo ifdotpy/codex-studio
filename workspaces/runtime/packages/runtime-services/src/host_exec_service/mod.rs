@@ -143,6 +143,8 @@ pub(crate) struct HostService {
     inner: Mutex<Inner>,
     locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     stopped: tokio::sync::Notify,
+    #[cfg(test)]
+    command_finished: tokio::sync::Notify,
 }
 
 /// The project settings of one operation.
@@ -281,6 +283,8 @@ impl HostService {
             inner: Mutex::new(Inner::default()),
             locks: Mutex::new(HashMap::new()),
             stopped: tokio::sync::Notify::new(),
+            #[cfg(test)]
+            command_finished: tokio::sync::Notify::new(),
         })
     }
 

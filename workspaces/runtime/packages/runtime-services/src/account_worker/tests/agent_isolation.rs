@@ -6,8 +6,6 @@ use super::*;
 /// Bounds a wait for progress that a stalled journal would never make;
 /// unit: wall time.
 const PROGRESS_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
-/// How long a running worker must stay up to count as not ended; unit: wall time.
-const STILL_RUNNING: std::time::Duration = std::time::Duration::from_millis(300);
 /// Provider frames sent behind an unsettled one: more than the session's
 /// unsettled bound, so a held cursor would stop the journal intake.
 const FRAMES_PAST_THE_UNSETTLED_BOUND: usize = crate::provider_session_task::MAX_UNSETTLED + 8;
@@ -69,10 +67,9 @@ async fn corrupt(state: &State, id: &str, sql: &'static str) {
 }
 
 async fn assert_running(worker: &mut AccountHandle) {
+    worker_barrier(worker).await;
     assert!(
-        tokio::time::timeout(STILL_RUNNING, worker.completion())
-            .await
-            .is_err(),
+        !*worker.completion_signal().borrow(),
         "the account worker keeps running"
     );
 }
@@ -227,9 +224,10 @@ async fn poisoned_durable_effect_is_parked_once_and_does_not_end_the_worker() {
     // The worker runs the recovered effect at start and settles it.
     let peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
+    let mut changes = state.commits();
     let settled = async {
         while effects().await != 0 {
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            changes.changed().await.expect("effect settlement commit");
         }
     };
     tokio::select! {

@@ -67,6 +67,7 @@ const notify = (resource: ResourceRef, version?: ResourceVersion) => {
 
 describe("watchResourceReads", () => {
   beforeEach(() => {
+    vi.useFakeTimers();
     watchers.clear();
     resumeListeners.clear();
     connectionListeners.clear();
@@ -81,7 +82,6 @@ describe("watchResourceReads", () => {
   });
 
   it("subscribes only to the supplied owner and releases its watchers", async () => {
-    vi.useFakeTimers();
     const callbacks = new Map<string, (version?: ResourceVersion) => void>();
     const changed = vi.fn(async () => {});
     const disconnected = vi.fn();
@@ -108,7 +108,6 @@ describe("watchResourceReads", () => {
   });
 
   it("refreshes account limits after their typed resource event", async () => {
-    vi.useFakeTimers();
     const displayed: number[] = [];
     const read = vi.fn(async () => {
       displayed.push(displayed.length === 0 ? 20 : 80);
@@ -132,12 +131,14 @@ describe("watchResourceReads", () => {
     });
     const stopUnrelated = watchResourceReads(terminals, unrelatedRead, vi.fn());
     notify(terminals, { epoch: "workspace", revision: 1 });
-    await vi.waitFor(() => expect(unrelatedRead).toHaveBeenCalledTimes(1));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(unrelatedRead).toHaveBeenCalledTimes(1);
     await Promise.resolve();
     expect(read).not.toHaveBeenCalled();
 
     notify(multiServer, { epoch: "workspace", revision: 2 });
-    await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(1));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(read).toHaveBeenCalledTimes(1);
     expect(read).toHaveBeenCalledWith({ epoch: "workspace", revision: 2 });
     stop();
     stopUnrelated();
@@ -157,11 +158,13 @@ describe("watchResourceReads", () => {
     const stop = watchResourceReads(limits, read, vi.fn());
 
     notify(limits, { epoch: "workspace", revision: 1 });
-    await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(1));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(read).toHaveBeenCalledTimes(1);
     notify(limits, { epoch: "workspace", revision: 2 });
     finish();
 
-    await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(2));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(read).toHaveBeenCalledTimes(2);
     expect(read.mock.calls[0]?.[0]).toEqual({
       epoch: "workspace",
       revision: 1,
@@ -180,7 +183,8 @@ describe("watchResourceReads", () => {
     });
 
     notify(limits, { epoch: "workspace", revision: 4 });
-    await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(1));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(read).toHaveBeenCalledTimes(1);
     notify(limits, { epoch: "workspace", revision: 4 });
     await Promise.resolve();
     expect(read).toHaveBeenCalledTimes(1);
@@ -194,11 +198,14 @@ describe("watchResourceReads", () => {
     });
 
     notify(limits, { epoch: "workspace", revision: 4 });
-    await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(1));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(read).toHaveBeenCalledTimes(1);
     notify(limits, { epoch: "workspace", revision: 5 });
-    await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(2));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(read).toHaveBeenCalledTimes(2);
     notify(limits, { epoch: "new-workspace", revision: 5 });
-    await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(3));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(read).toHaveBeenCalledTimes(3);
     stop();
   });
 
@@ -213,10 +220,12 @@ describe("watchResourceReads", () => {
     });
 
     notify(limits, { epoch: "workspace", revision: 4 });
-    await vi.waitFor(() => expect(failed).toHaveBeenCalledTimes(1));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(failed).toHaveBeenCalledTimes(1);
     expect(read).toHaveBeenCalledTimes(1);
     notify(limits, { epoch: "workspace", revision: 4 });
-    await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(2));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(read).toHaveBeenCalledTimes(2);
     stop();
   });
 
@@ -228,13 +237,13 @@ describe("watchResourceReads", () => {
       waitForBaseline: true,
     });
 
-    await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(1));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(read).toHaveBeenCalledTimes(1);
     expect(read).toHaveBeenCalledWith(version);
     stop();
   });
 
   it("uses one fallback read when no stream is available", async () => {
-    vi.useFakeTimers();
     connectionState.status = "offline";
     connectionState.stream = "stopped";
     const read = vi.fn(async () => {});
@@ -248,7 +257,6 @@ describe("watchResourceReads", () => {
   });
 
   it("recovers a failed read without another resource change", async () => {
-    vi.useFakeTimers();
     vi.stubGlobal("document", {
       hidden: false,
       addEventListener: vi.fn(),
@@ -279,7 +287,6 @@ describe("watchResourceReads", () => {
   });
 
   it("does not back off and retry an unsupported read, but accepts a later event", async () => {
-    vi.useFakeTimers();
     const read = vi
       .fn<() => Promise<void>>()
       .mockRejectedValueOnce(new ApiError("Not implemented", 501))
@@ -306,7 +313,6 @@ describe("watchResourceReads", () => {
   it.each(["offline", "hidden"])(
     "pauses a pending retry while %s and reads once on resume",
     async (reason) => {
-      vi.useFakeTimers();
       const windowListeners = new Map<string, () => void>();
       const documentListeners = new Map<string, () => void>();
       const documentStub = {
@@ -356,7 +362,6 @@ describe("watchResourceReads", () => {
   );
 
   it("cancels retries after disposal and ignores an in-flight failure", async () => {
-    vi.useFakeTimers();
     let reject!: (error: unknown) => void;
     const read = vi.fn(
       () =>
@@ -389,7 +394,6 @@ describe("watchResourceReads", () => {
   });
 
   it("keeps repeated failures serial and increases the retry delay", async () => {
-    vi.useFakeTimers();
     const read = vi.fn(async () => {
       throw new TypeError("Failed to fetch");
     });
@@ -409,7 +413,6 @@ describe("watchResourceReads", () => {
     "reconnect",
     "user retry",
   ])("exhausts persistent 503 reads and resets only on %s", async (reset) => {
-    vi.useFakeTimers();
     const read = vi.fn(async () => {
       throw new ApiError("Unavailable", 503);
     });
@@ -449,7 +452,6 @@ describe("watchResourceReads", () => {
   });
 
   it("preserves the backoff during frequent resource changes", async () => {
-    vi.useFakeTimers();
     const read = vi.fn(async () => {
       throw new TypeError("Failed to fetch");
     });
@@ -466,7 +468,6 @@ describe("watchResourceReads", () => {
   });
 
   it("recovers the original read when its failure reporter throws", async () => {
-    vi.useFakeTimers();
     const read = vi
       .fn<() => Promise<void>>()
       .mockRejectedValueOnce(new TypeError("Failed to fetch"))
@@ -490,7 +491,6 @@ describe("watchResourceReads", () => {
   });
 
   it("does not install a retry after the failure reporter disposes the watcher", async () => {
-    vi.useFakeTimers();
     const read = vi.fn(async () => {
       throw new TypeError("Failed to fetch");
     });
@@ -509,7 +509,8 @@ describe("watchResourceReads", () => {
     const callback = watchers.get(JSON.stringify(terminals));
     if (!callback) throw new Error("Resource watcher is not registered");
     notify(terminals);
-    await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(1));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(read).toHaveBeenCalledTimes(1);
     stop();
     callback();
     await Promise.resolve();
@@ -522,11 +523,14 @@ describe("watchResourceReads", () => {
     const stop = watchResourceReads(terminals, read, vi.fn());
 
     notify(terminals); // initial baseline
-    await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(1));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(read).toHaveBeenCalledTimes(1);
     notify(terminals); // resource change
-    await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(2));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(read).toHaveBeenCalledTimes(2);
     notify(terminals); // reconnect baseline
-    await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(3));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(read).toHaveBeenCalledTimes(3);
     stop();
   });
 
@@ -544,12 +548,14 @@ describe("watchResourceReads", () => {
     const stop = watchResourceReads(output, read, vi.fn());
 
     notify(output);
-    await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(1));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(read).toHaveBeenCalledTimes(1);
     notify(output);
     expect(read).toHaveBeenCalledTimes(1);
 
     finish();
-    await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(2));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(read).toHaveBeenCalledTimes(2);
     stop();
   });
 
@@ -562,13 +568,13 @@ describe("watchResourceReads", () => {
     const stop = watchResourceReads(terminals, read, failed);
 
     notify(terminals);
-    await vi.waitFor(() =>
-      expect(failed).toHaveBeenCalledWith(expect.any(Error)),
-    );
+    await vi.advanceTimersByTimeAsync(0);
+    expect(failed).toHaveBeenCalledWith(expect.any(Error));
     expect(read).toHaveBeenCalledTimes(1);
 
     notify(terminals);
-    await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(2));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(read).toHaveBeenCalledTimes(2);
     stop();
   });
 
@@ -578,7 +584,8 @@ describe("watchResourceReads", () => {
 
     notify(terminals);
     notify(output);
-    await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(1));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(read).toHaveBeenCalledTimes(1);
     stop();
   });
 });

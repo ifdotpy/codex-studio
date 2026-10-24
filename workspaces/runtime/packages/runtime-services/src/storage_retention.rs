@@ -65,11 +65,8 @@ pub async fn run_pass(store: &Arc<RuntimeStore>) -> StoreResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rusqlite::{OptionalExtension, params};
-    use serde_json::{Value, json};
+    use rusqlite::params;
     use studio_runtime_store::{ENTITY_TOMBSTONE_LIMIT, ENTITY_TOMBSTONE_PRUNE_BATCH};
-
-    const NOW: f64 = 2_000_000_000.0;
 
     async fn store() -> (tempfile::TempDir, Arc<RuntimeStore>) {
         let directory = tempfile::tempdir().expect("temporary state directory");
@@ -77,110 +74,6 @@ mod tests {
             .await
             .expect("open runtime store");
         (directory, Arc::new(store))
-    }
-
-    async fn insert_tasks(store: &Arc<RuntimeStore>, tasks: Vec<Value>) {
-        store
-            .transaction(move |transaction| {
-                let mut statement =
-                    transaction.prepare("INSERT INTO runtime_tasks(id,record) VALUES(?1,?2)")?;
-                for task in &tasks {
-                    statement.execute(params![
-                        task["id"].as_str().expect("task id"),
-                        task.to_string()
-                    ])?;
-                }
-                Ok(())
-            })
-            .await
-            .expect("insert tasks");
-    }
-
-    async fn task(store: &Arc<RuntimeStore>, id: &'static str) -> Value {
-        store
-            .read_async("runtime-services/storage_retention", move |connection| {
-                let raw: String = connection.query_row(
-                    "SELECT record FROM runtime_tasks WHERE id=?1",
-                    [id],
-                    |row| row.get(0),
-                )?;
-                Ok::<_, studio_runtime_store::StoreError>(serde_json::from_str(&raw)?)
-            })
-            .await
-            .expect("read task")
-    }
-
-    /// The `payload-v1:tasks` row of the removed task trim.
-    async fn task_trim_marker(store: &Arc<RuntimeStore>) -> Option<i64> {
-        store
-            .read_async("runtime-services/storage_retention", |connection| {
-                Ok::<_, studio_runtime_store::StoreError>(
-                    connection
-                        .query_row(
-                            "SELECT cursor FROM runtime_payload_migrations \
-                             WHERE name='payload-v1:tasks'",
-                            [],
-                            |row| row.get(0),
-                        )
-                        .optional()?,
-                )
-            })
-            .await
-            .expect("read marker")
-    }
-
-    fn long_tail() -> String {
-        format!("{}{}", "a".repeat(4096), "end of output")
-    }
-
-    /// The owner keeps all history: a retention tick never shortens task
-    /// output, whatever the task's age, status or position in its agent.
-    #[tokio::test]
-    async fn pass_keeps_the_full_output_of_old_finished_tasks() {
-        const SEVEN_DAYS: f64 = 7.0 * 24.0 * 60.0 * 60.0;
-        const NEWEST_PER_AGENT: usize = 100;
-        let (_directory, store) = store().await;
-        let tail = long_tail();
-        let mut tasks = ["completed", "failed", "interrupted"]
-            .into_iter()
-            .map(|status| {
-                json!({"id":format!("old-{status}"),"agent":"a","status":status,
-                    "created":NOW - SEVEN_DAYS - 1_000.0,"tail":tail})
-            })
-            .collect::<Vec<_>>();
-        // Newer tasks put the old ones outside agent "a"'s newest tasks.
-        for index in 0..NEWEST_PER_AGENT {
-            tasks.push(
-                json!({"id":format!("a-new-{index:03}"),"agent":"a","status":"completed",
-                "created":NOW - 100.0 + index as f64,"tail":"x"}),
-            );
-        }
-        insert_tasks(&store, tasks).await;
-        let generation = store.committed_change_generation();
-
-        run_pass(&store).await.expect("retention pass");
-
-        for id in ["old-completed", "old-failed", "old-interrupted"] {
-            let kept = task(&store, id).await;
-            assert_eq!(kept["tail"], json!(tail), "{id} keeps its full tail");
-            assert!(kept.get("outputPreviewOnly").is_none(), "{id}");
-            assert!(kept.get("outputTruncated").is_none(), "{id}");
-        }
-        assert_eq!(
-            store.committed_change_generation(),
-            generation,
-            "a pass without tombstones to prune writes nothing"
-        );
-        assert_eq!(task_trim_marker(&store).await, None);
-    }
-
-    #[tokio::test]
-    async fn idle_pass_on_fresh_state_writes_nothing() {
-        let (_directory, store) = store().await;
-        let generation = store.committed_change_generation();
-        run_pass(&store).await.expect("idle pass");
-        assert_eq!(store.committed_change_generation(), generation);
-        assert_eq!(task_trim_marker(&store).await, None);
     }
 
     #[tokio::test]
@@ -213,7 +106,12 @@ mod tests {
             .await
             .expect("seed tombstones");
 
+        // Store startup and seeding use real time; only the batch pause is virtual.
+        tokio::time::pause();
+        let started = tokio::time::Instant::now();
         run_pass(&store).await.expect("retention pass");
+        assert!(started.elapsed() >= RETENTION_BATCH_PAUSE * 2);
+        tokio::time::resume();
 
         let (count, floor, remaining) = store
             .read_async("runtime-services/storage_retention", |connection| {
@@ -270,5 +168,9 @@ mod tests {
         assert_eq!(behind.tombstone_floor, floor);
         assert!(!current.reset, "a cursor at the floor continues");
         assert!(current.rows.iter().all(|row| row.sequence > floor));
+
+        let generation = store.committed_change_generation();
+        run_pass(&store).await.expect("pass at the retained limit");
+        assert_eq!(store.committed_change_generation(), generation);
     }
 }

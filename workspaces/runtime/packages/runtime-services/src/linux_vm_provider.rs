@@ -1294,6 +1294,7 @@ mod tests {
         write_entered: tokio::sync::Notify,
         endless_events: Mutex<bool>,
         next_calls: Mutex<usize>,
+        next_changed: tokio::sync::Notify,
         /// `next` answers with these guest errors first, in order.
         next_failures: Mutex<Vec<GuestError>>,
         next_attempts: Mutex<usize>,
@@ -1316,6 +1317,7 @@ mod tests {
                 write_entered: tokio::sync::Notify::new(),
                 endless_events: Mutex::new(false),
                 next_calls: Mutex::new(0),
+                next_changed: tokio::sync::Notify::new(),
                 next_failures: Mutex::new(Vec::new()),
                 next_attempts: Mutex::new(0),
             }
@@ -1375,6 +1377,7 @@ mod tests {
                     "info" => Ok(Self::info()),
                     "next" if *self.endless_events.lock().unwrap() => {
                         *self.next_calls.lock().unwrap() += 1;
+                        self.next_changed.notify_one();
                         let sequence = params["cursor"].as_u64().unwrap() + 1;
                         let payload = json!({"method":"item/started","params":{}});
                         Ok(
@@ -2104,13 +2107,15 @@ mod tests {
         // previous one. Read LANE_CAPACITY + 3 thus proves that the lane is
         // full and the attachment waits to send entry LANE_CAPACITY + 1.
         let blocked_reads = LANE_CAPACITY + 3;
+        tokio::time::pause();
         tokio::time::timeout(Duration::from_secs(10), async {
             while *guest.next_calls.lock().unwrap() < blocked_reads {
-                tokio::time::sleep(Duration::from_millis(10)).await;
+                guest.next_changed.notified().await;
             }
         })
         .await
         .expect("the attachment fills its journal lane");
+        tokio::time::resume();
 
         let exit = tokio::time::timeout(Duration::from_secs(3), attachment.shutdown())
             .await

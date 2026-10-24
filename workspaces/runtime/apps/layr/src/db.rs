@@ -764,8 +764,7 @@ mod tests {
 
     #[test]
     fn records_set_the_stack_of_a_line() {
-        let dir = std::env::temp_dir().join(format!("layr-db-stack-{}", std::process::id()));
-        let db = Db::open(&dir).unwrap();
+        let db = Db::open(Path::new(":memory:")).unwrap();
         let line = "01a12290-0000-7000-8000-00000000eeee";
         let layers = |s: &str| serde_json::json!([{"overlay": "keys", "state": s}]);
         let rec = |seq: u64, time: i64, machine: &str, st: &str| {
@@ -788,13 +787,11 @@ mod tests {
         db.derive(&rec(3, 30, other, a), &|_| true, local).unwrap();
         assert_eq!(db.config(&format!("stack.{line}")).unwrap(), Some(layers(b)));
         assert_eq!(db.config(&format!("stack.{line}@{other}")).unwrap(), Some(layers(a)));
-        let _ = std::fs::remove_file(&dir);
     }
 
     #[test]
     fn records_of_caches_add_to_the_caches_of_a_state() {
-        let dir = std::env::temp_dir().join(format!("layr-db-caches-{}", std::process::id()));
-        let db = Db::open(&dir).unwrap();
+        let db = Db::open(Path::new(":memory:")).unwrap();
         let st = "01a12290-0000-7000-8000-00000000c0c0";
         let machine = "01a12290-0000-7000-8000-00000000aaaa";
         db.derive(&state_record(1, st, vec![]), &|_| true, machine).unwrap();
@@ -819,19 +816,16 @@ mod tests {
         {
             assert_eq!(db.cache_uuid(st, &format!("{st}@{path}")).unwrap().as_deref(), Some(uuid));
         }
-        let _ = std::fs::remove_file(&dir);
     }
 
     #[test]
     fn a_state_id_cannot_be_named_twice() {
-        let dir = std::env::temp_dir().join(format!("layr-db-test-{}", std::process::id()));
-        let db = Db::open(&dir).unwrap();
+        let db = Db::open(Path::new(":memory:")).unwrap();
         let st = "01a12290-0000-7000-8000-00000000bbbb";
         let parent = "01a12290-0000-7000-8000-00000000cccc".to_string();
         db.derive(&state_record(1, st, vec![parent.clone()]), &|_| true, "x").unwrap();
         let other = "01a12290-0000-7000-8000-00000000dddd".to_string();
         assert!(db.derive(&state_record(2, st, vec![other]), &|_| true, "x").is_err());
         assert_eq!(db.state(st).unwrap().unwrap().parents, vec![parent]);
-        let _ = std::fs::remove_file(&dir);
     }
 }

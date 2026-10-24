@@ -3047,13 +3047,9 @@ mod tests;
 #[cfg(test)]
 mod account_scope_tests {
     /// Account-scoped agent reads search the account index instead of scanning agents.
-    #[tokio::test]
-    async fn account_agents_search_the_account_scope_index() {
-        let directory = tempfile::tempdir().expect("temporary state directory");
-        let store = crate::RuntimeStore::open(Some(directory.path()))
-            .await
-            .expect("open runtime store");
-        let reader = store.test_reader().expect("reader");
+    #[test]
+    fn account_agents_search_the_account_scope_index() {
+        let reader = crate::fresh_state::test_canvas();
         let plan = reader
             .prepare(&format!(
                 "EXPLAIN QUERY PLAN {}",

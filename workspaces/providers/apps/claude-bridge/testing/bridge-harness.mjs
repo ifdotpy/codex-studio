@@ -1,4 +1,5 @@
 // Start the real bridge with a scripted Agent SDK. No model calls are made.
+import { once } from "node:events";
 import { spawn } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -6,15 +7,19 @@ import path from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 
+// Maximum simulated wait and per-step advancement, both in milliseconds.
+const VIRTUAL_NOTIFICATION_BUDGET_MS = 10_000;
+const VIRTUAL_STEP_MS = 10;
 const BRIDGE = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
-export const HANG_GUARD_MS = 10_000;
+import { HANG_GUARD_MS } from "./file-signals.mjs";
+export { HANG_GUARD_MS };
 
 // Copies the bridge sources to a temporary folder, replaces the SDK import with
 // `fakeSdk` (module source text) and starts the bridge with one new thread.
 export async function startBridge(
   fakeSdk,
   prefix = "claude-bridge-",
-  { env = {}, thread = {} } = {},
+  { env = {}, thread = {}, clock = false } = {},
 ) {
   const root = await fs.realpath(
     await fs.mkdtemp(path.join(os.tmpdir(), prefix)),
@@ -29,10 +34,12 @@ export async function startBridge(
   }
   await fs.writeFile(
     path.join(root, "fake.mjs"),
-    fakeSdk.includes("export const resolveSettings") ||
+    `import { waitForFile } from ${JSON.stringify(path.join(BRIDGE, "testing/file-signals.mjs"))};\n` +
+      (fakeSdk.includes("export const resolveSettings") ||
       fakeSdk.includes("export function resolveSettings")
-      ? fakeSdk
-      : "export const resolveSettings=async()=>({effective:{}});\n" + fakeSdk,
+        ? fakeSdk
+        : "export const resolveSettings=async()=>({effective:{}});\n" +
+          fakeSdk),
   );
   await fs.symlink(
     path.join(BRIDGE, "node_modules"),
@@ -41,10 +48,16 @@ export async function startBridge(
   const launch = () =>
     spawn(
       process.execPath,
-      [path.join(root, "bridge.mjs"), path.join(root, "state")],
+      [
+        ...(clock
+          ? ["--import", path.join(BRIDGE, "testing/virtual-time.mjs")]
+          : []),
+        path.join(root, "bridge.mjs"),
+        path.join(root, "state"),
+      ],
       {
         cwd: root,
-        stdio: ["pipe", "pipe", "pipe"],
+        stdio: ["pipe", "pipe", "pipe", ...(clock ? ["ipc"] : [])],
         env: {
           ...process.env,
           STUDIO_CLAUDE_ACCOUNT: "test@example.test",
@@ -80,6 +93,33 @@ export async function startBridge(
   const bridge = {
     root,
     notes,
+    async advanceTime(ms) {
+      const controller = new AbortController();
+      const timer = setTimeout(
+        () => controller.abort(new Error("virtual clock hung")),
+        HANG_GUARD_MS,
+      );
+      try {
+        const advanced = once(child, "message", { signal: controller.signal });
+        child.send({ advance: ms });
+        await advanced;
+      } finally {
+        clearTimeout(timer);
+      }
+    },
+    async advanceUntil(predicate) {
+      // Drive virtual time while disk and RPC work completes; no wall-clock polls.
+      for (
+        let elapsed = 0;
+        elapsed < VIRTUAL_NOTIFICATION_BUDGET_MS;
+        elapsed += VIRTUAL_STEP_MS
+      ) {
+        const found = notes.find(predicate);
+        if (found) return found;
+        await bridge.advanceTime(VIRTUAL_STEP_MS);
+      }
+      throw new Error("notification missing after virtual deadline\n" + stderr);
+    },
     async call(method, params) {
       const id = ++sequence;
       let timer;
