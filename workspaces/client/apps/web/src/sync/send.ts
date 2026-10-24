@@ -15,7 +15,7 @@ import {
 
 import type { PostBody, PostResult } from "../api";
 
-import { syncDatabase } from "./client";
+import { syncDatabase, type SyncDocument } from "./client";
 
 import { onResume } from "./resume";
 
@@ -703,7 +703,7 @@ export function createOutbox(options: {
         if (stop || subscribing || subscribed) return;
         subscribing = true;
         try {
-          const { db } = await syncDatabase();
+          const { db, workspaceId } = await syncDatabase();
           if (stop) return;
           let subscriptionReady = false;
           let bufferedDocs: any[] | undefined;
@@ -730,12 +730,63 @@ export function createOutbox(options: {
             scheduleRetry();
             return;
           }
+          const receiptController = new AbortController();
+          let receiptQueue = Promise.resolve();
+          const applyReceipt = (document: SyncDocument) => {
+            const entity = document.entity;
+            if (
+              document._deleted ||
+              entity?.collection !== "messageReceipt" ||
+              document.id !== `entity:messageReceipt:${entity.id}` ||
+              typeof entity.value.agent !== "string" ||
+              !matchesMessageDelivery(entity.value, entity.id)
+            )
+              return;
+            const room = entity.value.agent;
+            const receipt = entity.value;
+            receiptQueue = receiptQueue
+              .then(async () => {
+                if (!stop && !receiptController.signal.aborted)
+                  await reconcileOutboxReceipts(
+                    room,
+                    [receipt],
+                    workspaceId,
+                    receiptController.signal,
+                  );
+              })
+              .catch((error: unknown) => {
+                if (!stop) setError(errorText(error));
+              });
+          };
+          const receiptSubscription = db.projections.$.subscribe((event) =>
+            applyReceipt(event.documentData),
+          );
+          unsubscribe = () => {
+            sub.unsubscribe();
+            receiptSubscription.unsubscribe();
+            receiptController.abort();
+          };
           subscribed = true;
           clearRetry();
           subscriptionReady = true;
           if (bufferedDocs) handleOutboxDocuments(bufferedDocs);
           void drain();
           recoverReceipts();
+          // A hidden accepted row still owns delivery state. Read cached receipts
+          // once, then apply their persisted stream changes without another GET.
+          const outbox = bufferedDocs ?? (await db.outbox.find().exec());
+          const ids = outbox
+            .filter((doc: any) =>
+              ["accepted", "uncertain"].includes(
+                JSON.parse(doc.getLatest().payload).status,
+              ),
+            )
+            .map((doc: any) => `entity:messageReceipt:${doc.id}`);
+          if (ids.length) {
+            const receipts =
+              await db.projections.storageInstance.findDocumentsById(ids, true);
+            for (const receipt of receipts) applyReceipt(receipt);
+          }
         } catch (error) {
           if (!stop) {
             setError(errorText(error));

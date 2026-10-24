@@ -42,6 +42,7 @@ test("workspace ui", async ({ page: testPage }) => {
   );
   const proc = spawn(process.execPath, [rustUiFixture, root], {
     stdio: ["pipe", "pipe", "pipe"],
+    env: { ...process.env, FIXTURE_HOLD: "lead" },
   });
   let log = "",
     page;

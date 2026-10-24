@@ -118,6 +118,30 @@ window.renderFixture=(data,leadId='lead',initialFocus)=>root.render(
             syncProtocol: 2,
           },
         });
+      if (url.pathname === "/api/processes")
+        return route.fulfill({
+          json: {
+            responseTarget: null,
+            processes: data.runtime.monitors
+              .filter((task) =>
+                ["approval", "running", "starting"].includes(task.status),
+              )
+              .map((task) => ({
+                ...task,
+                key: task.id,
+                generation: "fixture",
+                source: "monitor",
+                name: task.command,
+                output: task.tail,
+                capabilities: {
+                  readOutput: true,
+                  sendInput: false,
+                  resize: false,
+                  stop: true,
+                },
+              })),
+          },
+        });
       if (url.pathname === "/api/workspace/tasks")
         return route.fulfill({
           status: 503,
