@@ -365,6 +365,7 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
         std::process::exit(if ok { 0 } else { 1 });
     }
     let port = parse_port(args.into_iter())?;
+    studio_runtime_schema::initialize()?;
     startup_trace("backend-identity-started");
     let backend_build = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-server/backend-identity",
