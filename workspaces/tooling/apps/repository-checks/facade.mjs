@@ -14,7 +14,7 @@ import {
 } from "node:fs";
 import { createHash } from "node:crypto";
 import { runLogged } from "./owned-process.mjs";
-import { CARGO_BUILD_JOBS } from "./gate-config.mjs";
+import { CARGO_BUILD_JOBS, scrubAgentEnvironment } from "./gate-config.mjs";
 import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -1315,7 +1315,7 @@ export async function execute(
     const baseEnv =
       bin === "cargo"
         ? {
-            ...process.env,
+            ...scrubAgentEnvironment({ ...process.env }),
             CARGO_TARGET_DIR: cargoTarget(root),
             ...(args[0] === "nextest"
               ? {
@@ -1331,7 +1331,7 @@ export async function execute(
                 }
               : {}),
           }
-        : process.env;
+        : scrubAgentEnvironment({ ...process.env });
     const commandEnv = {
       ...baseEnv,
       CARGO_BUILD_JOBS: String(CARGO_BUILD_JOBS),

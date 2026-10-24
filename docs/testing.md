@@ -118,6 +118,9 @@ for future reproductions. Gates save one log per step and an aggregate `full.log
 and `summary.json` in declaration order, including per-step wall times and every
 independent failure. A failed preparation skips its consumers; the first declared
 failure is `failedStep`. Interrupts stop and reap only the run's owned process groups.
+Gate test children and bridge Vitest workers discard ambient `CLAUDE*`, `STUDIO_*`
+and `AI_AGENT` settings using `scrubAgentEnvironment` in `gate-config.mjs`;
+fixtures and the gate supply their explicit binary paths afterward.
 
 `just test-fast-rest` runs the comprehensive remainder without browser smoke.
 `just test-fast-rest-non-rust` consumes prebuilt WASM and a debug supervisor and

@@ -39,6 +39,70 @@ const fakeStep = (id, lane, extra = {}) => ({
   ...extra,
 });
 
+test("bridge config removes ambient agent settings before workers inherit them", () => {
+  const result = spawnSync(
+    process.execPath,
+    [
+      "--input-type=module",
+      "-e",
+      `
+    await import(${JSON.stringify(new URL("../../../../providers/apps/claude-bridge/vitest.config.mjs", import.meta.url).href)});
+    const assert = await import('node:assert/strict');
+    for (const key of ['CLAUDE_CONFIG_DIR', 'CLAUDECODE', 'STUDIO_CLAUDE_OPTIONS', 'AI_AGENT'])
+      assert.equal(process.env[key], undefined, key);
+    assert.equal(process.env.PATH, ${JSON.stringify(process.env.PATH)});
+  `,
+    ],
+    {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        CLAUDE_CONFIG_DIR: "ambient",
+        CLAUDECODE: "1",
+        STUDIO_CLAUDE_OPTIONS: "{",
+        AI_AGENT: "ambient",
+      },
+    },
+  );
+  assert.equal(result.status, 0, result.stderr);
+});
+
+test("gate children discard ambient agent settings and keep explicit fixture settings", async () => {
+  const { execute } = await import("../facade.mjs");
+  const previous = process.env.STUDIO_CLAUDE_OPTIONS;
+  process.env.STUDIO_CLAUDE_OPTIONS = "{";
+  try {
+    const result = await execute(
+      process.cwd(),
+      { name: "environment fixture", ecosystem: "pnpm" },
+      "",
+      false,
+      {
+        commands: [
+          [
+            process.execPath,
+            [
+              "-e",
+              `
+        const assert = require('node:assert/strict');
+        assert.equal(process.env.STUDIO_CLAUDE_OPTIONS, undefined);
+        assert.equal(process.env.STUDIO_SUPERVISOR_BINARY, '/explicit/fixture');
+      `,
+            ],
+          ],
+        ],
+        env: { STUDIO_SUPERVISOR_BINARY: "/explicit/fixture" },
+        allowZeroTests: true,
+        write: () => {},
+      },
+    );
+    assert.equal(result.exitCode, 0, readFileSync(result.logPath, "utf8"));
+  } finally {
+    if (previous === undefined) delete process.env.STUDIO_CLAUDE_OPTIONS;
+    else process.env.STUDIO_CLAUDE_OPTIONS = previous;
+  }
+});
+
 test("fixed lanes overlap, gate the guest build, and summarize failures in declaration order", async () => {
   const trace = [];
   const releaseBuild = Promise.withResolvers();
