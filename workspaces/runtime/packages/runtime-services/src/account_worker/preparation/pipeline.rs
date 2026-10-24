@@ -787,8 +787,31 @@ pub(crate) async fn admit(
     resources: &PreparationResources,
     intent: &TurnIntent,
 ) -> Result<Admission, WorkerError> {
+    before_start(&store, resources, &intent.agent_id).await?;
     admit_for_purpose(store, resources, intent, false).await
 }
+
+/// Every ordinary native method passes the transfer gate before its snapshot.
+pub(crate) async fn before_start(
+    store: &Arc<RuntimeStore>,
+    resources: &PreparationResources,
+    agent_id: &str,
+) -> Result<(), WorkerError> {
+    // Transfer preparation can itself prepare a destination thread. Its exact
+    // Reading owner bypasses this entry in prepare_native_snapshot.
+    Box::pin(crate::account_transfer_executor::before_start(
+        Arc::clone(store),
+        resources.account_session.clone(),
+        &resources.model_catalog,
+        resources,
+        agent_id,
+        now(),
+    ))
+    .await
+    .map(|_| ())
+    .map_err(|error| refusal(error.to_string()))
+}
+
 async fn admit_for_purpose(
     store: Arc<RuntimeStore>,
     resources: &PreparationResources,
@@ -1533,6 +1556,9 @@ async fn prepare_native_snapshot(
     allow_paused_start: bool,
     account_transfer_owner: Option<&str>,
 ) -> Result<thread::Snapshot, WorkerError> {
+    if account_transfer_owner.is_none() {
+        before_start(&store, resources, agent_id).await?;
+    }
     let record = stored_agent_value(&store, agent_id).await?;
     let intent = TurnIntent {
         agent_id: agent_id.into(),

@@ -3,6 +3,7 @@ mod account_login_registry_cleanup;
 mod account_login_session_start;
 mod account_transfer_corpus;
 mod account_transfer_driver;
+mod account_transfer_progress;
 mod agent_management_corpus;
 mod agent_management_store;
 mod analytics_capture_corpus;

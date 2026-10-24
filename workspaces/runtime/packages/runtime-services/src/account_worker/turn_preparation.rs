@@ -365,13 +365,17 @@ async fn prepare(
     if let Some(token) = run.carried.clone() {
         let i = intent.clone();
         let r = resources.clone();
-        stage(
+        let gate = stage(
             "turn_preparation.admit",
             bridge.prepare_run("preparation", move |s| async move {
-                before_start(&s, &r, &i).await
+                store::preparation_step(&s, &r, &i, preparation::before_start(&s, &r, &i.agent_id))
+                    .await
             }),
         )
         .await?;
+        if let Err(step) = gate.into_ready::<preparation::RequestPreparation>() {
+            return Ok(step);
+        }
         match Box::pin(ready(run, None, token)).await {
             // A stale carried token or unfrozen settings take the full path.
             Err(WorkerError::PreparationRefused(_)) => {}
@@ -383,9 +387,6 @@ async fn prepare(
     let selection = match stage(
         "turn_preparation.admit",
         bridge.prepare_run("preparation", move |s| async move {
-            if may_start_turn {
-                before_start(&s, &r, &i).await?;
-            }
             store::preparation_step(&s, &r, &i, preparation::admit(Arc::clone(&s), &r, &i)).await
         }),
     )
@@ -512,25 +513,6 @@ async fn advance_transfer(wake: &Wake) -> Result<bool, WorkerError> {
         }
         Err(error) => Err(error),
     }
-}
-
-/// Apply an account transfer requested before this turn starts.
-async fn before_start(
-    store: &Arc<RuntimeStore>,
-    resources: &preparation::PreparationResources,
-    intent: &TurnIntent,
-) -> Result<(), WorkerError> {
-    crate::account_transfer_executor::before_start(
-        Arc::clone(store),
-        resources.account_session.clone(),
-        &resources.model_catalog,
-        resources,
-        &intent.agent_id,
-        now(),
-    )
-    .await
-    .map(|_| ())
-    .map_err(|error| WorkerError::PreparationRefused(error.to_string()))
 }
 
 async fn ready(
