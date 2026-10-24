@@ -1609,6 +1609,7 @@ mod vault_maintenance_tests {
                 .await
                 .expect("runtime store opens"),
         );
+        studio_runtime_services::entity_publication::install(&store);
         store
             .transaction(|transaction| {
                 transaction.execute(
@@ -1664,6 +1665,7 @@ mod vault_maintenance_tests {
                 .await
                 .expect("runtime store opens"),
         );
+        studio_runtime_services::entity_publication::install(&store);
         store
             .transaction(|transaction| {
                 for index in 0..ENTITY_COUNT {

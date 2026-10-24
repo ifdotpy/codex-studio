@@ -3112,6 +3112,25 @@ export interface components {
        */
       unknownModels?: string[] | null;
     };
+    /** AccountCostEntityDto */
+    AccountCostEntityDto: {
+      /** Accountkey */
+      accountKey: string;
+      /** At */
+      at: number | null;
+      /**
+       * Checkedat
+       * @default null
+       */
+      checkedAt?: null | number;
+      data: components["schemas"]["AccountCostData"] | null;
+      /** Error */
+      error: null | string;
+      /** Refreshing */
+      refreshing: boolean;
+      /** Stale */
+      stale: boolean;
+    };
     /** AccountCostResponse */
     AccountCostResponse: {
       /** Accountkey */
@@ -3351,6 +3370,24 @@ export interface components {
       defaultAccountKey: string;
       /** Logins */
       logins: components["schemas"]["CodexLoginReceipt"][];
+      /** Supportsdelete */
+      supportsDelete: boolean;
+      /** Supportsdisconnect */
+      supportsDisconnect: boolean;
+    };
+    /** AccountsSummaryDto */
+    AccountsSummaryDto: {
+      /** Accounts */
+      accounts: components["schemas"]["Account"][];
+      /** Archivedaccounts */
+      archivedAccounts: components["schemas"]["Account"][];
+      /**
+       * Defaultaccountgroups
+       * @description The default account order: group names that projects without their own order prefer, first to last.
+       */
+      defaultAccountGroups: string[];
+      /** Defaultaccountkey */
+      defaultAccountKey: string;
       /** Supportsdelete */
       supportsDelete: boolean;
       /** Supportsdisconnect */
@@ -11454,6 +11491,52 @@ export interface components {
       | "steer"
       | "after_tool"
       | "after_turn";
+    /** DesktopEntityDto */
+    DesktopEntityDto: {
+      /** Application */
+      application: string;
+      /** Backendbuild */
+      backendBuild: string;
+      browser: components["schemas"]["BrowserStatus"] | null;
+      /** @default null */
+      diskSpace?: components["schemas"]["DiskSpaceStatus"] | null;
+      /** @default null */
+      linuxVm?: components["schemas"]["LinuxVMStatus"] | null;
+      liveUpdate: components["schemas"]["LiveUpdateStatus"] | null;
+      /** Mobileprotocol */
+      mobileProtocol: number;
+      nativeRuntime: components["schemas"]["NativeRuntimeStatus"] | null;
+      /** @default null */
+      peerUpdate?: components["schemas"]["PeerUpdateStatus"] | null;
+      /** Pid */
+      pid: number;
+      /** Protocol */
+      protocol: number;
+      providerVersions: components["schemas"]["ProviderVersions"];
+      /** Publicorigin */
+      publicOrigin: null | string;
+      /** Restartenvironment */
+      restartEnvironment: {
+        [key: string]: string;
+      };
+      /** Statedir */
+      stateDir: string;
+      /** Supervisor */
+      supervisor:
+        | components["schemas"]["SupervisorError"]
+        | components["schemas"]["SupervisorHealth"]
+        | null;
+      /** Supervisorerror */
+      supervisorError: null | string;
+      /** Supervisorfallback */
+      supervisorFallback: boolean;
+      /** Supervisormode */
+      supervisorMode: boolean;
+      /** Supervisornotice */
+      supervisorNotice: null | string;
+      /** Supervisorrequired */
+      supervisorRequired: boolean;
+    };
     /** DesktopResource */
     DesktopResource: {
       /**
@@ -17541,6 +17624,14 @@ export interface components {
       /** Text */
       text: string;
     };
+    /** QueueEntityDto */
+    QueueEntityDto: {
+      capabilities: components["schemas"]["QueueCapabilities"];
+      /** Items */
+      items: components["schemas"]["QueueItem"][];
+      /** Revision */
+      revision: string;
+    };
     /** QueueFirstBody */
     QueueFirstBody: {
       /**
@@ -20210,6 +20301,44 @@ export interface components {
       /** Unsavedsessions */
       unsavedSessions: number;
     };
+    /** SessionCostEntityDto */
+    SessionCostEntityDto: {
+      breakdown: components["schemas"]["CostBreakdown"];
+      /** Cacheageseconds */
+      cacheAgeSeconds: number;
+      /**
+       * Claudehistoryincomplete
+       * @default null
+       */
+      claudeHistoryIncomplete?: boolean | null;
+      /** Estimated */
+      estimated: boolean;
+      /**
+       * Generation
+       * @default null
+       */
+      generation?: number | null;
+      /**
+       * Method
+       * @default null
+       */
+      method?: null | string;
+      /** Pricedsamples */
+      pricedSamples: number;
+      /**
+       * Pricingstate
+       * @enum {string}
+       */
+      pricingState: "loading" | "ready";
+      /** Refreshing */
+      refreshing: boolean;
+      /** Rootid */
+      rootId: string;
+      /** Totalusd */
+      totalUSD: number | null;
+      /** Unknownmodels */
+      unknownModels: string[];
+    };
     /** SessionCostResource */
     SessionCostResource: {
       /** Agentid */
@@ -21453,6 +21582,26 @@ export interface components {
        */
       fallbackReady?: boolean | null;
     };
+    /** SyncAccountCostEntityPayload */
+    SyncAccountCostEntityPayload: {
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      collection: "accountCost";
+      id: string;
+      value: components["schemas"]["AccountCostEntityDto"];
+    };
+    /** SyncAccountsEntityPayload */
+    SyncAccountsEntityPayload: {
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      collection: "accounts";
+      id: string;
+      value: components["schemas"]["AccountsSummaryDto"];
+    };
     /** SyncAgentEntityPayload */
     SyncAgentEntityPayload: {
       /**
@@ -21501,6 +21650,16 @@ export interface components {
       /** Id */
       id: string;
       value: components["schemas"]["ComplaintEntityDto"];
+    };
+    /** SyncDesktopEntityPayload */
+    SyncDesktopEntityPayload: {
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      collection: "desktop";
+      id: string;
+      value: components["schemas"]["DesktopEntityDto"];
     };
     /** SyncDocument */
     SyncDocument: {
@@ -21706,9 +21865,64 @@ export interface components {
             | "messageReceipt"
             | "plan"
             | "annotation"
-            | "studioError";
+            | "studioError"
+            | "queue"
+            | "accounts"
+            | "accountCost"
+            | "sessionCost"
+            | "desktop"
+            | "terminal";
           /** @constant */
           op: "delete";
+        }
+      | {
+          /** @constant */
+          collection: "queue";
+          /** @constant */
+          op: "upsert";
+          value: components["schemas"]["QueueView"];
+        }
+      | {
+          /** @constant */
+          collection: "queue";
+          /** @constant */
+          op: "upsert";
+          value: components["schemas"]["QueueEntityDto"];
+        }
+      | {
+          /** @constant */
+          collection: "accounts";
+          /** @constant */
+          op: "upsert";
+          value: components["schemas"]["AccountsSummaryDto"];
+        }
+      | {
+          /** @constant */
+          collection: "accountCost";
+          /** @constant */
+          op: "upsert";
+          value: components["schemas"]["AccountCostEntityDto"];
+        }
+      | {
+          /** @constant */
+          collection: "sessionCost";
+          /** @constant */
+          op: "upsert";
+          value: components["schemas"]["SessionCostEntityDto"];
+        }
+      | {
+          /** @constant */
+          collection: "desktop";
+          /** @constant */
+          op: "upsert";
+          value: components["schemas"]["DesktopEntityDto"];
+        }
+      | {
+          /** @constant */
+          collection: "terminal";
+          /** @constant */
+          op: "upsert";
+          value: components["schemas"]["TerminalEntityDto"];
         }
     );
     SyncEntityPayload:
@@ -21732,7 +21946,13 @@ export interface components {
       | components["schemas"]["SyncMessageReceiptEntityPayload"]
       | components["schemas"]["SyncPlanEntityPayload"]
       | components["schemas"]["SyncAnnotationEntityPayload"]
-      | components["schemas"]["SyncStudioErrorEntityPayload"];
+      | components["schemas"]["SyncStudioErrorEntityPayload"]
+      | components["schemas"]["SyncQueueEntityPayload"]
+      | components["schemas"]["SyncAccountsEntityPayload"]
+      | components["schemas"]["SyncAccountCostEntityPayload"]
+      | components["schemas"]["SyncSessionCostEntityPayload"]
+      | components["schemas"]["SyncDesktopEntityPayload"]
+      | components["schemas"]["SyncTerminalEntityPayload"];
     /** SyncEventEntityPayload */
     SyncEventEntityPayload: {
       /**
@@ -21901,6 +22121,16 @@ export interface components {
       /** Workspaceid */
       workspaceId: string;
     };
+    /** SyncQueueEntityPayload */
+    SyncQueueEntityPayload: {
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      collection: "queue";
+      id: string;
+      value: components["schemas"]["QueueEntityDto"];
+    };
     /** SyncRateLimitEntityPayload */
     SyncRateLimitEntityPayload: {
       /**
@@ -21953,6 +22183,16 @@ export interface components {
       id: string;
       value: components["schemas"]["RuleEntityDto"];
     };
+    /** SyncSessionCostEntityPayload */
+    SyncSessionCostEntityPayload: {
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      collection: "sessionCost";
+      id: string;
+      value: components["schemas"]["SessionCostEntityDto"];
+    };
     /** SyncSessionEvent */
     SyncSessionEvent: {
       sessionId: string;
@@ -21990,6 +22230,16 @@ export interface components {
       /** Id */
       id: string;
       value: components["schemas"]["TaskEntityDto"];
+    };
+    /** SyncTerminalEntityPayload */
+    SyncTerminalEntityPayload: {
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      collection: "terminal";
+      id: string;
+      value: components["schemas"]["TerminalEntityDto"];
     };
     /** SyncUiPreferencesEntityPayload */
     SyncUiPreferencesEntityPayload: {
@@ -22347,6 +22597,40 @@ export interface components {
        * @default 28
        */
       rows?: number;
+    };
+    /**
+     * TerminalEntityDto
+     * @description Known fields; terminal actions return the persisted user_terminal record.
+     */
+    TerminalEntityDto: {
+      /** Agent */
+      agent: string;
+      /** Created */
+      created: number;
+      /** Cwd */
+      cwd: string;
+      /**
+       * Error
+       * @default null
+       */
+      error?: null | string;
+      /**
+       * Exitcode
+       * @default null
+       */
+      exitCode?: number | null;
+      /** Id */
+      id: string;
+      status: components["schemas"]["TerminalState"];
+      /** Title */
+      title: string;
+      /**
+       * Updated
+       * @default null
+       */
+      updated?: null | number;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
     };
     /** TerminalInput */
     TerminalInput: {
@@ -37040,10 +37324,13 @@ export type JsonValue =
   | string
   | JsonValue[]
   | { [key: string]: JsonValue };
+export type AccountCostEntityDto =
+  components["schemas"]["AccountCostEntityDto"];
 export type AgentEntityDto = components["schemas"]["AgentEntityDto"];
 export type AnnotationEntityDto = components["schemas"]["AnnotationEntityDto"];
 export type ChatEntityDto = components["schemas"]["ChatEntityDto"];
 export type ComplaintEntityDto = components["schemas"]["ComplaintEntityDto"];
+export type DesktopEntityDto = components["schemas"]["DesktopEntityDto"];
 export type EdgeEntityDto = components["schemas"]["EdgeEntityDto"];
 export type EventEntityDto = components["schemas"]["EventEntityDto"];
 export type MessageReceiptEntityDto =
@@ -37054,10 +37341,14 @@ export type PeerTeamEntityDto = components["schemas"]["PeerTeamEntityDto"];
 export type PlanSummaryEntityDto =
   components["schemas"]["PlanSummaryEntityDto"];
 export type ProjectEntityDto = components["schemas"]["ProjectEntityDto"];
+export type QueueEntityDto = components["schemas"]["QueueEntityDto"];
 export type RequestEntityDto = components["schemas"]["RequestEntityDto"];
 export type RoomEntityDto = components["schemas"]["RoomEntityDto"];
 export type RuleEntityDto = components["schemas"]["RuleEntityDto"];
+export type SessionCostEntityDto =
+  components["schemas"]["SessionCostEntityDto"];
 export type TaskEntityDto = components["schemas"]["TaskEntityDto"];
+export type TerminalEntityDto = components["schemas"]["TerminalEntityDto"];
 export type WorkEntityDto = components["schemas"]["WorkEntityDto"];
 export type WorkspaceEntityDto = components["schemas"]["WorkspaceEntityDto"];
 export type SyncEntityPayload = components["schemas"]["SyncEntityPayload"];

@@ -1263,7 +1263,12 @@ it("projects Studio error entities and removes dismissed rows by tombstone", () 
         },
         seq: 1,
       },
-      { id: `entity:studioError:${item.id}`, seq: 3, payload: "{}", _deleted: true },
+      {
+        id: `entity:studioError:${item.id}`,
+        seq: 3,
+        payload: "{}",
+        _deleted: true,
+      },
     ],
     true,
   );
