@@ -494,6 +494,9 @@ impl Peer {
                                 }
                                 let (receipt, result) = oneshot::channel();
                                 tokio::select! {biased; _=Shutdown::cancelled(&mut stopped)=>break, sent=out.send(Wire {value:write.message().clone(),receipt})=>{sent.unwrap();}}
+                                if let Some(context) = &matrix {
+                                    context.provider_write.notify_one();
+                                }
                                 // Preserve an available receipt when shutdown is also ready.
                                 tokio::select! {biased; r=result=>r.unwrap_or(CommandReceipt::Unknown), _=Shutdown::cancelled(&mut stopped)=>break}
                             }
