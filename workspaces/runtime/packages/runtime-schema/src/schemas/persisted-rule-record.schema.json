@@ -359,6 +359,19 @@
       ],
       "title": "Nextat"
     },
+    "ownerHold": {
+      "anyOf": [
+        {
+          "enum": ["failed_input_held", "native_failure_hold", "archived"],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Why the tick paused this rule while its owner cannot act on a wake. The tick resumes the rule when the owner can run again; a manual pause or resume removes it.",
+      "title": "Ownerhold"
+    },
     "path": {
       "anyOf": [
         {

@@ -12,6 +12,7 @@ mod project_preparation;
 mod recovery_http;
 mod remote_access_origin;
 mod retained_worktrees;
+mod rules_owner_hold;
 mod studio_errors;
 mod task_output;
 mod task_review;
