@@ -4,7 +4,7 @@ use rusqlite::{Connection, Transaction};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use studio_runtime_store::{
-    AgentId, AgentRepository, EventWriteRepository, MonitorsRepository, StoreError,
+    AgentId, AgentRecord, AgentRepository, EventWriteRepository, MonitorsRepository, StoreError,
 };
 
 use crate::monitor_policy::{self, Effect, Input, InputOutcome, MonitorError, Operation};
@@ -21,12 +21,30 @@ struct Receipt {
     status: Status,
 }
 
-#[derive(Deserialize, Serialize)]
-enum Status {
+#[derive(Clone, Copy, Deserialize, Serialize)]
+pub(crate) enum Status {
     Pending,
     Acknowledged,
     Rejected,
     Unknown,
+}
+
+impl Status {
+    pub(crate) fn replay(self) -> Result<(), MonitorError> {
+        match self {
+            Self::Acknowledged => Ok(()),
+            Self::Rejected => Err(MonitorError::Refused("Monitor input rejected")),
+            Self::Pending | Self::Unknown => Err(MonitorError::InputOutcomeUnknown),
+        }
+    }
+}
+
+struct RequestContext {
+    snapshot: monitor_policy::MonitorSnapshot,
+    actor: AgentRecord,
+    operation: Operation,
+    signature: String,
+    existing: Option<Receipt>,
 }
 
 pub(crate) struct Reservation {
@@ -80,13 +98,12 @@ pub(crate) fn read(connection: &Connection, query: &Value) -> Result<Value, Moni
     )
 }
 
-pub(crate) fn reserve(
+fn request_context(
     tx: &Transaction<'_>,
     id: &str,
     request_id: &str,
     input: &Input,
-    now: f64,
-) -> Result<Option<Reservation>, MonitorError> {
+) -> Result<RequestContext, MonitorError> {
     if request_id.is_empty() {
         return Err(MonitorError::Refused(
             "Monitor input request identity is required",
@@ -98,53 +115,99 @@ pub(crate) fn reserve(
             "Monitor input owner is no longer active",
         ));
     }
-    let operation = snapshot.operation().ok_or(MonitorError::Refused(
+    let operation = snapshot.operation().cloned().ok_or(MonitorError::Refused(
         "This interactive monitor is not active",
     ))?;
     let signature = format!(
         "http-input-v1:{}",
         studio_runtime_store::sha256_hex(
-            &serde_json::to_vec(&(id, operation, input)).map_err(StoreError::from)?
+            &serde_json::to_vec(&(id, &operation, input)).map_err(StoreError::from)?
         )
     );
     let key = format!("{PREFIX}{request_id}");
-    if let Some(saved) = EventWriteRepository::receipt(tx, &key)? {
+    let existing = if let Some(saved) = EventWriteRepository::receipt(tx, &key)? {
         if saved.signature != signature {
             return Err(MonitorError::Refused(
                 "Monitor input request content changed",
             ));
         }
         let receipt: Receipt = serde_json::from_str(&saved.result).map_err(StoreError::from)?;
-        if receipt.monitor != id || &receipt.operation != operation {
+        if receipt.monitor != id || receipt.operation != operation {
             return Err(MonitorError::Refused("Monitor input request owner changed"));
         }
-        return match receipt.status {
-            Status::Acknowledged => Ok(None),
-            Status::Rejected => Err(MonitorError::Refused("Monitor input rejected")),
-            Status::Pending | Status::Unknown => Err(MonitorError::InputOutcomeUnknown),
-        };
+        Some(receipt)
+    } else {
+        None
+    };
+    Ok(RequestContext {
+        snapshot,
+        actor,
+        operation,
+        signature,
+        existing,
+    })
+}
+
+fn put_receipt(
+    tx: &Transaction<'_>,
+    request_id: &str,
+    context: &RequestContext,
+    status: Status,
+) -> Result<(), MonitorError> {
+    let receipt = Receipt {
+        operation: context.operation.clone(),
+        monitor: context.snapshot.id().into(),
+        status,
+    };
+    EventWriteRepository::put_receipt(
+        tx,
+        &format!("{PREFIX}{request_id}"),
+        &context.signature,
+        &serde_json::to_string(&receipt).map_err(StoreError::from)?,
+    )?;
+    Ok(())
+}
+
+/// A busy sequence proves this new request never reached native admission.
+/// Return a value so the caller commits this refusal before returning an error.
+pub(crate) fn refuse_busy(
+    tx: &Transaction<'_>,
+    id: &str,
+    request_id: &str,
+    input: &Input,
+) -> Result<Status, MonitorError> {
+    let context = request_context(tx, id, request_id, input)?;
+    if let Some(receipt) = &context.existing {
+        return Ok(receipt.status);
+    }
+    put_receipt(tx, request_id, &context, Status::Rejected)?;
+    Ok(Status::Rejected)
+}
+
+pub(crate) fn reserve(
+    tx: &Transaction<'_>,
+    id: &str,
+    request_id: &str,
+    input: &Input,
+    now: f64,
+) -> Result<Option<Reservation>, MonitorError> {
+    let context = request_context(tx, id, request_id, input)?;
+    if let Some(receipt) = &context.existing {
+        receipt.status.replay()?;
+        return Ok(None);
     }
     let ticket = format!("{TICKET_PREFIX}{request_id}");
-    let decision = monitor_policy::begin_input(&snapshot, operation, &ticket, input, now)?;
+    let decision =
+        monitor_policy::begin_input(&context.snapshot, &context.operation, &ticket, input, now)?;
     let effect = decision
         .effects
         .first()
         .cloned()
         .ok_or(MonitorError::Refused("Missing monitor input"))?;
-    let receipt = Receipt {
-        operation: operation.clone(),
-        monitor: id.into(),
-        status: Status::Pending,
-    };
-    monitor_runtime::apply(tx, &snapshot, &actor, &decision, now)?;
-    EventWriteRepository::put_receipt(
-        tx,
-        &key,
-        &signature,
-        &serde_json::to_string(&receipt).map_err(StoreError::from)?,
-    )?;
+    monitor_runtime::apply(tx, &context.snapshot, &context.actor, &decision, now)?;
+    put_receipt(tx, request_id, &context, Status::Pending)?;
     Ok(Some(Reservation {
-        operation: operation.clone(),
+        operation: context.operation,
         ticket,
         effect,
     }))
