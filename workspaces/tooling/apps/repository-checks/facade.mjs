@@ -1449,6 +1449,7 @@ function fastTierCommands(root) {
               "test(account_worker::tests::disconnected_unknown_start::)",
               "test(account_worker::tests::callback_head_of_line)",
               "test(account_worker::tests::native_requests::)",
+              "test(account_worker::tests::crash_matrix::a_replacement_waits_for_its_own_recovery_before_the_health_turn)",
               "test(stale_stamp_of_an_undelivered_steer_batch_does_not_block_the_next_turn)",
               "test(stamp_tests::)",
               "test(start_submission_replaces_an_earlier_unsent_attempt)",
