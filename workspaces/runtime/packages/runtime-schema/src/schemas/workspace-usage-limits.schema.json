@@ -369,32 +369,6 @@
     "UsageLimitsResponse": {
       "additionalProperties": false,
       "properties": {
-        "_syncEntities": {
-          "anyOf": [
-            {
-              "items": {
-                "$ref": "#/$defs/SyncEntity"
-              },
-              "type": "array"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "title": "Syncentities"
-        },
-        "_syncEntitiesAfter": {
-          "anyOf": [
-            {
-              "type": "integer",
-              "x-safe-integer": "unsigned"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "title": "Syncentitiesafter"
-        },
         "accountKey": {
           "title": "Accountkey",
           "type": "string"

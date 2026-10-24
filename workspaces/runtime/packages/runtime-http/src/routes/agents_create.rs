@@ -2119,11 +2119,8 @@ async fn rename(
                 .await;
             }));
         }
-        let mut response =
+        let response =
             Json(super::generated_json::<generated::RenameResponse>(receipt)?).into_response();
-        response
-            .extensions_mut()
-            .insert(crate::mutation_sync::SkipMutationSyncEnvelope);
         return Ok(response);
     }
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
@@ -2149,15 +2146,10 @@ async fn rename(
     if !result.replayed {
         state.event_wake.notify_one();
     }
-    let mut response = super::generated_json::<generated::RenameResponse>(result.response)
+    let response = super::generated_json::<generated::RenameResponse>(result.response)
         .map(Json)
         .map_err(|_| ApiError::internal())?
         .into_response();
-    if result.replayed {
-        response
-            .extensions_mut()
-            .insert(crate::mutation_sync::SkipMutationSyncEnvelope);
-    }
     Ok(response)
 }
 fn operation_error(error: OperationError) -> ApiError {

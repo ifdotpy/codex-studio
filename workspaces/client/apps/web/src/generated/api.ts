@@ -2812,16 +2812,6 @@ export interface components {
     };
     /** AccessAuditResponse */
     AccessAuditResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** Records */
       records: components["schemas"]["AccessAudit"][];
     };
@@ -2931,16 +2921,6 @@ export interface components {
     };
     /** AccessSnapshot */
     AccessSnapshot: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** Clients */
       clients: components["schemas"]["AccessClient"][];
       identity: components["schemas"]["ServerIdentity"];
@@ -3134,16 +3114,6 @@ export interface components {
     };
     /** AccountCostResponse */
     AccountCostResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** Accountkey */
       accountKey: string;
       /** At */
@@ -3178,16 +3148,6 @@ export interface components {
     };
     /** AccountHistoryRecordResponse */
     AccountHistoryRecordResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /**
        * Accountkey
        * @default null
@@ -3271,16 +3231,6 @@ export interface components {
     };
     /** AccountLoginResponse */
     AccountLoginResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** Accountkey */
       accountKey: string;
       /**
@@ -3388,16 +3338,6 @@ export interface components {
     };
     /** AccountsResponse */
     AccountsResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** Accounts */
       accounts: components["schemas"]["Account"][];
       /** Archivedaccounts */
@@ -3495,16 +3435,6 @@ export interface components {
     };
     /** AccountTransferBlockedRecordResponse */
     AccountTransferBlockedRecordResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** Id */
       id: string;
       /**
@@ -3537,16 +3467,6 @@ export interface components {
     };
     /** AccountTransferInterruptedRecordResponse */
     AccountTransferInterruptedRecordResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** Id */
       id: string;
       /**
@@ -3581,16 +3501,6 @@ export interface components {
     };
     /** AccountTransferLeftOnSourceRecordResponse */
     AccountTransferLeftOnSourceRecordResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** Id */
       id: string;
       /**
@@ -3722,16 +3632,6 @@ export interface components {
     };
     /** AccountTransferSummaryRecordResponse */
     AccountTransferSummaryRecordResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /**
        * Blocked
        * @default null
@@ -3865,16 +3765,6 @@ export interface components {
     };
     /** ActiveToolRecordResponse */
     ActiveToolRecordResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** Id */
       id: string;
       /** Name */
@@ -3905,16 +3795,6 @@ export interface components {
     /** AgentActivityRecordResponse */
     AgentActivityRecordResponse: {
       /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
-      /**
        * At
        * @default null
        */
@@ -3934,16 +3814,6 @@ export interface components {
     };
     /** AgentArchiveRecordResponse */
     AgentArchiveRecordResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /**
        * At
        * @default null
@@ -3993,16 +3863,6 @@ export interface components {
     };
     /** AgentDraftRecordResponse */
     AgentDraftRecordResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /**
        * Assets
        * @default null
@@ -4381,16 +4241,6 @@ export interface components {
     };
     /** AgentInboxEntry */
     AgentInboxEntry: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** Agent */
       agent: string;
       /** Id */
@@ -4450,16 +4300,6 @@ export interface components {
     };
     /** AgentNativeStatusRecordResponse */
     AgentNativeStatusRecordResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /**
        * At
        * @default null
@@ -4538,16 +4378,6 @@ export interface components {
     AgentProvider: "codex" | "claude";
     /** AgentRecordResponse */
     AgentRecordResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /**
        * Accounthistory
        * @default null
@@ -5600,16 +5430,6 @@ export interface components {
     };
     /** AgentRequest */
     AgentRequest: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** Agent */
       agent: string;
       /**
@@ -5703,16 +5523,6 @@ export interface components {
      * @description Agent entity response that also accepts the HTTP sync envelope.
      */
     AgentResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /**
        * Accountkey
        * @default null
@@ -6329,16 +6139,6 @@ export interface components {
       | "waiting_on_monitor";
     /** AmbiguousToolRequestResponse */
     AmbiguousToolRequestResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** Id */
       id: string;
       /** Message */
@@ -7253,16 +7053,6 @@ export interface components {
     /** AnalyticsResponse */
     AnalyticsResponse: {
       /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
-      /**
        * Accountkey
        * @default null
        */
@@ -7909,16 +7699,6 @@ export interface components {
     };
     /** AnnotationReceipt */
     AnnotationReceipt: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** Agent */
       agent: string;
       /** Created */
@@ -8017,16 +7797,6 @@ export interface components {
     };
     /** AnswerResult */
     AnswerResult: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** @default null */
       forward?: components["schemas"]["BrowserForward"] | null;
       /**
@@ -8166,16 +7936,6 @@ export interface components {
      * @description Known fields; asset_view removes path and passes every other stored field.
      */
     AssetRecord: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** Agent */
       agent: string;
       /** Created */
@@ -8362,16 +8122,6 @@ export interface components {
      * @description Canonical public agent projection plus the branch draft payload.
      */
     BranchResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /**
        * Accountkey
        * @default null
@@ -8941,16 +8691,6 @@ export interface components {
     /** BrowserForwardResult */
     BrowserForwardResult: {
       /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
-      /**
        * Replayed
        * @default null
        */
@@ -8963,16 +8703,6 @@ export interface components {
     };
     /** BrowserRecoveryRecordResponse */
     BrowserRecoveryRecordResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /**
        * Accountkey
        * @default null
@@ -9072,16 +8802,6 @@ export interface components {
     /** BrowserRecoveryRequestRecordResponse */
     BrowserRecoveryRequestRecordResponse: {
       /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
-      /**
        * Id
        * @default null
        */
@@ -9123,16 +8843,6 @@ export interface components {
     };
     /** BudgetWaitRecordResponse */
     BudgetWaitRecordResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /**
        * Accountkey
        * @default null
@@ -9201,16 +8911,6 @@ export interface components {
     };
     /** CapabilitiesResponse */
     CapabilitiesResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** Agent */
       agent: string;
       /** At */
@@ -9266,16 +8966,6 @@ export interface components {
       | "diskFull";
     /** CapacityRetryRecordResponse */
     CapacityRetryRecordResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /**
        * Acceptedturnid
        * @default null
@@ -9456,16 +9146,6 @@ export interface components {
     /** ChangesResponse */
     ChangesResponse: {
       /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
-      /**
        * Diff
        * @default null
        */
@@ -9518,16 +9198,6 @@ export interface components {
     };
     /** ChatCreated */
     ChatCreated: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** Id */
       id: string;
     };
@@ -9571,16 +9241,6 @@ export interface components {
     };
     /** ChatRead */
     ChatRead: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** Messages */
       messages: components["schemas"]["ChatMessage"][];
       /**
@@ -9597,16 +9257,6 @@ export interface components {
     };
     /** ChatReceipt */
     ChatReceipt: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** Connected */
       connected: boolean;
       /** Id */
@@ -9627,16 +9277,6 @@ export interface components {
      * @description Flat checkpoint summary returned by the legacy capture endpoint.
      */
     CheckpointCaptureResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** Agent */
       agent: string;
       /**
@@ -9747,16 +9387,6 @@ export interface components {
     };
     /** CheckpointPreviewResponse */
     CheckpointPreviewResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** Canrestore */
       canRestore: boolean;
       checkpoint: components["schemas"]["CheckpointSummary"];
@@ -9790,16 +9420,6 @@ export interface components {
     };
     /** CheckpointRestoreResponse */
     CheckpointRestoreResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** Checkpoint */
       checkpoint: string;
       /**
@@ -9810,16 +9430,6 @@ export interface components {
     };
     /** CheckpointsResponse */
     CheckpointsResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** Checkpoints */
       checkpoints: components["schemas"]["CheckpointSummary"][];
     };
@@ -10026,16 +9636,6 @@ export interface components {
     /** ClaudeDeliveryResponse */
     ClaudeDeliveryResponse: {
       /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
-      /**
        * Error
        * @default null
        */
@@ -10074,16 +9674,6 @@ export interface components {
      * @description Known receipt fields; LoginManager returns its saved receipt directly.
      */
     ClaudeLoginResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** Accountkey */
       accountKey: string;
       /**
@@ -10169,16 +9759,6 @@ export interface components {
     };
     /** ClaudePreInputRetryRecordResponse */
     ClaudePreInputRetryRecordResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /**
        * Accountkey
        * @default null
@@ -10267,16 +9847,6 @@ export interface components {
     };
     /** ClaudeRollbackResponse */
     ClaudeRollbackResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       fileResult?: {
         [key: string]: unknown;
       };
@@ -10388,16 +9958,6 @@ export interface components {
     /** ClaudeSessionStateResponse */
     ClaudeSessionStateResponse: {
       /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
-      /**
        * Contextwindow
        * @default null
        */
@@ -10453,16 +10013,6 @@ export interface components {
     };
     /** ClaudeSettingsResponse */
     ClaudeSettingsResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       settings: components["schemas"]["ClaudeSessionSettings"];
     };
     /** ClaudeStartRequest */
@@ -10473,18 +10023,7 @@ export interface components {
       login_id: string;
     };
     /** ClaudeStopTaskResponse */
-    ClaudeStopTaskResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
-    };
+    ClaudeStopTaskResponse: Record<string, never>;
     /** ClaudeTurn */
     ClaudeTurn: {
       /** @default false */
@@ -10509,16 +10048,6 @@ export interface components {
     };
     /** CleanedImageWorkspaceRecordResponse */
     CleanedImageWorkspaceRecordResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /**
        * Branch
        * @default null
@@ -10711,16 +10240,6 @@ export interface components {
     /** ComplaintDetailResponse */
     ComplaintDetailResponse: {
       /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
-      /**
        * Author
        * @default null
        */
@@ -10826,16 +10345,6 @@ export interface components {
     };
     /** ComplaintInboxEntry */
     ComplaintInboxEntry: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** Agent */
       agent: string;
       complaint: components["schemas"]["ComplaintRecordResponse"];
@@ -10853,16 +10362,6 @@ export interface components {
     };
     /** ComplaintRecordResponse */
     ComplaintRecordResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** Author */
       author: string;
       /** Created */
@@ -10981,16 +10480,6 @@ export interface components {
     };
     /** ConfigureResponse */
     ConfigureResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       agentMode: components["schemas"]["AgentMode"];
       /** Agentmoderevision */
       agentModeRevision: number;
@@ -11066,16 +10555,6 @@ export interface components {
     /** ConnectionCheckRecordResponse */
     ConnectionCheckRecordResponse: {
       /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
-      /**
        * Accountkey
        * @default null
        */
@@ -11122,16 +10601,6 @@ export interface components {
     };
     /** ConnectionRecoveryRecordResponse */
     ConnectionRecoveryRecordResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /**
        * At
        * @default null
@@ -11203,16 +10672,6 @@ export interface components {
     };
     /** ContextRepairRecordResponse */
     ContextRepairRecordResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /**
        * Agent
        * @default null
@@ -11302,16 +10761,6 @@ export interface components {
     };
     /** ContextRepairResponse */
     ContextRepairResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** Id */
       id: string;
       /** @default null */
@@ -11319,16 +10768,6 @@ export interface components {
     };
     /** ContextRepairSnapshotRecordResponse */
     ContextRepairSnapshotRecordResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /**
        * Ancestry
        * @default null
@@ -11400,16 +10839,6 @@ export interface components {
     /** ContextRepairSourceCleanupRecordResponse */
     ContextRepairSourceCleanupRecordResponse: {
       /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
-      /**
        * Accountkey
        * @default null
        */
@@ -11445,16 +10874,6 @@ export interface components {
     /** ContextRepairSourceRecordResponse */
     ContextRepairSourceRecordResponse: {
       /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
-      /**
        * Accountkey
        * @default null
        */
@@ -11489,16 +10908,6 @@ export interface components {
     };
     /** ContextRepairWaitRecordResponse */
     ContextRepairWaitRecordResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /**
        * Action
        * @default null
@@ -11603,16 +11012,6 @@ export interface components {
     /** ContextUsageRecordResponse */
     ContextUsageRecordResponse: {
       /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
-      /**
        * At
        * @default null
        */
@@ -11716,16 +11115,6 @@ export interface components {
     };
     /** ConvertedFromLeadRecordResponse */
     ConvertedFromLeadRecordResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** At */
       at: number;
       /**
@@ -11891,16 +11280,6 @@ export interface components {
     };
     /** CreateInviteResponse */
     CreateInviteResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** Expires */
       expires: number;
       invitation: components["schemas"]["FederationInvitation"];
@@ -12024,46 +11403,16 @@ export interface components {
     };
     /** DeletedResponse */
     DeletedResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** Deleted */
       deleted: string[];
     };
     /** DeletedRuleReceipt */
     DeletedRuleReceipt: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** Deleted */
       deleted: string;
     };
     /** DeliveredModeRecordResponse */
     DeliveredModeRecordResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /**
        * Epoch
        * @default null
@@ -12115,16 +11464,6 @@ export interface components {
     };
     /** DesktopResponse */
     DesktopResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** Application */
       application: string;
       /** Backendbuild */
@@ -12201,16 +11540,6 @@ export interface components {
     };
     /** DevicePairResponse */
     DevicePairResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** Clientid */
       clientId: string;
       /** Label */
@@ -12236,16 +11565,6 @@ export interface components {
     };
     /** DiagnosticsResponse */
     DiagnosticsResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       analyticsCapture: components["schemas"]["AnalyticsCaptureStatus"];
       /** At */
       at: string;
@@ -12285,16 +11604,6 @@ export interface components {
     };
     /** DirectoriesResponse */
     DirectoriesResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** Directories */
       directories: components["schemas"]["DirectoryEntry"][];
       /** Parent */
@@ -12311,16 +11620,6 @@ export interface components {
     };
     /** DisconnectRecoveryRecordResponse */
     DisconnectRecoveryRecordResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /**
        * Accountkey
        * @default null
@@ -12447,16 +11746,6 @@ export interface components {
     };
     /** DiscoveryIdentity */
     DiscoveryIdentity: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** Autopair */
       autoPair: boolean;
       /** Label */
@@ -12542,16 +11831,6 @@ export interface components {
     };
     /** EmptyTransferRecoveryRecordResponse */
     EmptyTransferRecoveryRecordResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /**
        * Accountkey
        * @default null
@@ -12684,16 +11963,6 @@ export interface components {
      * @description Standard API error envelope with an optional first-problem location.
      */
     ErrorResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /**
        * Catalogpending
        * @default null
@@ -13534,16 +12803,6 @@ export interface components {
     };
     /** FederationSnapshot */
     FederationSnapshot: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** Enabled */
       enabled: boolean;
       identity: components["schemas"]["FederationIdentity"] | null;
@@ -13560,16 +12819,6 @@ export interface components {
     };
     /** FileContent */
     FileContent: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** Base64 */
       base64: string;
       /** Mime */
@@ -13579,16 +12828,6 @@ export interface components {
     };
     /** FileInfo */
     FileInfo: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** Mime */
       mime: string;
       /** Name */
@@ -13600,16 +12839,6 @@ export interface components {
     };
     /** HistoricalInputProofRecordResponse */
     HistoricalInputProofRecordResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /**
        * Deliveryoutcome
        * @default null
@@ -13751,16 +12980,6 @@ export interface components {
     /** ImageWorkspaceCleanupResultRecordResponse */
     ImageWorkspaceCleanupResultRecordResponse: {
       /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
-      /**
        * Bytes
        * @default null
        */
@@ -13794,16 +13013,6 @@ export interface components {
     };
     /** ImageWorkspaceCleanupRetryRecordResponse */
     ImageWorkspaceCleanupRetryRecordResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** At */
       at: number;
       /** Attempts */
@@ -13817,16 +13026,6 @@ export interface components {
     };
     /** ImageWorkspaceCollectRepositoryRecordResponse */
     ImageWorkspaceCollectRepositoryRecordResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /**
        * Branch
        * @default null
@@ -13859,16 +13058,6 @@ export interface components {
     };
     /** ImageWorkspaceCollectResultRecordResponse */
     ImageWorkspaceCollectResultRecordResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /**
        * Branch
        * @default null
@@ -13915,16 +13104,6 @@ export interface components {
     /** ImportListResponse */
     ImportListResponse: {
       /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
-      /**
        * Data
        * @default []
        */
@@ -13967,16 +13146,6 @@ export interface components {
     };
     /** InvitationResponse */
     InvitationResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** Expires */
       expires: number;
       invitation: components["schemas"]["AccessInvitation"];
@@ -14008,16 +13177,6 @@ export interface components {
     /** LazyAccountTransferRecordResponse */
     LazyAccountTransferRecordResponse: {
       /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
-      /**
        * Id
        * @default null
        */
@@ -14039,16 +13198,6 @@ export interface components {
     };
     /** LazyAccountTransferSourceRecordResponse */
     LazyAccountTransferSourceRecordResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** @default null */
       claudeOptions?: components["schemas"]["JsonObjectResponse"] | null;
       cyberAccessProgram?: components["schemas"]["JsonValue"];
@@ -14111,16 +13260,6 @@ export interface components {
     };
     /** LimitResetResponse */
     LimitResetResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** Account Id */
       account_id: string;
       /** Account Key */
@@ -14203,16 +13342,6 @@ export interface components {
     };
     /** LinuxVMSettingsResponse */
     LinuxVMSettingsResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /**
        * Allocateddiskbytes
        * @default null
@@ -14440,16 +13569,6 @@ export interface components {
     /** MacSyncResolveResponse */
     MacSyncResolveResponse: {
       /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
-      /**
        * Choice
        * @enum {string}
        */
@@ -14486,16 +13605,6 @@ export interface components {
      *     for the lead; deletes counts Mac deletions that wait for a confirmation.
      */
     MacSyncStatusResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** At */
       at: null | number;
       /** Choices */
@@ -14536,16 +13645,6 @@ export interface components {
     };
     /** ManagedProcessRecord */
     ManagedProcessRecord: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** Accountkey */
       accountKey: string;
       /** Agent */
@@ -14689,16 +13788,6 @@ export interface components {
     };
     /** MessageReceipts */
     MessageReceipts: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** Agent */
       agent: string;
       /** Items */
@@ -14766,16 +13855,6 @@ export interface components {
     };
     /** MissingToolRequestResponse */
     MissingToolRequestResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** Id */
       id: string;
       /** Message */
@@ -14795,16 +13874,6 @@ export interface components {
     };
     /** ModelCatalogResponse */
     ModelCatalogResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /**
        * Accountkey
        * @default null
@@ -14856,16 +13925,6 @@ export interface components {
     };
     /** MonitorActionResult */
     MonitorActionResult: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /**
        * Cancelrequested
        * @default null
@@ -15003,16 +14062,6 @@ export interface components {
     };
     /** MonitorInboxEntry */
     MonitorInboxEntry: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** Agent */
       agent: string;
       /** Id */
@@ -15061,16 +14110,6 @@ export interface components {
     };
     /** MonitorRecordResponse */
     MonitorRecordResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /**
        * Activityat
        * @default null
@@ -15265,16 +14304,6 @@ export interface components {
       | "lost";
     /** MovedToolRequestResponse */
     MovedToolRequestResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** Id */
       id: string;
       move: components["schemas"]["JsonObjectResponse"];
@@ -15309,16 +14338,6 @@ export interface components {
     /** MovePointerRecordResponse */
     MovePointerRecordResponse: {
       /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
-      /**
        * Agentid
        * @default null
        */
@@ -15340,16 +14359,6 @@ export interface components {
     };
     /** MutationReceipt */
     MutationReceipt: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** @default null */
       capabilities?: components["schemas"]["QueueCapabilities"] | null;
       /**
@@ -15417,16 +14426,6 @@ export interface components {
      */
     NativeActionOutcome: {
       /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
-      /**
        * Error
        * @default null
        */
@@ -15449,16 +14448,6 @@ export interface components {
      * @description Persisted admission receipt returned directly on native-action replay.
      */
     NativeActionReceipt: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** Acceptedat */
       acceptedAt: number;
       /** Accountkey */
@@ -15501,16 +14490,6 @@ export interface components {
     };
     /** NativeActionResponse */
     NativeActionResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /**
        * Acceptedturnid
        * @default null
@@ -15735,16 +14714,6 @@ export interface components {
     /** NativeCommandResponse */
     NativeCommandResponse: {
       /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
-      /**
        * Error
        * @default null
        */
@@ -15782,16 +14751,6 @@ export interface components {
      */
     NativeFinderViewResponse: {
       /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
-      /**
        * Kind
        * @constant
        */
@@ -15801,16 +14760,6 @@ export interface components {
     };
     /** NativeNameFailureRecordResponse */
     NativeNameFailureRecordResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /**
        * Attempts
        * @default null
@@ -15829,16 +14778,6 @@ export interface components {
     };
     /** NativeNameIdentityRecordResponse */
     NativeNameIdentityRecordResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** Accountkey */
       accountKey: string;
       /** Name */
@@ -15850,16 +14789,6 @@ export interface components {
     };
     /** NativeNameSyncedRecordResponse */
     NativeNameSyncedRecordResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /**
        * Accountkey
        * @default null
@@ -15982,16 +14911,6 @@ export interface components {
       | "resumed";
     /** NativeReleaseRecordResponse */
     NativeReleaseRecordResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /**
        * Accountkey
        * @default null
@@ -16125,16 +15044,6 @@ export interface components {
     /** NativeReviewRecordResponse */
     NativeReviewRecordResponse: {
       /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
-      /**
        * Actorid
        * @default null
        */
@@ -16229,16 +15138,6 @@ export interface components {
     };
     /** NativeSafetyBufferingRecordResponse */
     NativeSafetyBufferingRecordResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /**
        * Accountkey
        * @default null
@@ -16355,16 +15254,6 @@ export interface components {
     /** NativeSafetyRetryViewRecordResponse */
     NativeSafetyRetryViewRecordResponse: {
       /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
-      /**
        * Acceptedturnid
        * @default null
        */
@@ -16474,16 +15363,6 @@ export interface components {
     };
     /** NativeThreadBlockRecordResponse */
     NativeThreadBlockRecordResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** @default null */
       error?: components["schemas"]["JsonObjectResponse"];
       /**
@@ -16496,16 +15375,6 @@ export interface components {
     };
     /** NativeToolSourceRecordResponse */
     NativeToolSourceRecordResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /**
        * Digest
        * @default null
@@ -16526,16 +15395,6 @@ export interface components {
     };
     /** NativeToolUpdateRecordResponse */
     NativeToolUpdateRecordResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /**
        * Message
        * @default null
@@ -16563,16 +15422,6 @@ export interface components {
     };
     /** NativeTurnErrorRecordResponse */
     NativeTurnErrorRecordResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** @default null */
       error?: components["schemas"]["JsonObjectResponse"] | null;
       /**
@@ -16599,16 +15448,6 @@ export interface components {
     };
     /** OrchestrationSettingsResponse */
     OrchestrationSettingsResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       settings: components["schemas"]["OrchestrationSettings"];
     };
     /** OrganizationBody */
@@ -16691,16 +15530,6 @@ export interface components {
     /** ParkReceiptRecordResponse */
     ParkReceiptRecordResponse: {
       /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
-      /**
        * Cancelledatepoch
        * @default null
        */
@@ -16761,16 +15590,6 @@ export interface components {
       | "error";
     /** PeerConversionResponse */
     PeerConversionResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** Id */
       id: string;
       /** Movedagents */
@@ -16787,16 +15606,6 @@ export interface components {
      * @description Project record returned by peer team save/delete/move operations.
      */
     PeerProjectResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /**
        * Accountgroups
        * @default null
@@ -16932,16 +15741,6 @@ export interface components {
     };
     /** PeerRadioResponse */
     PeerRadioResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       room: components["schemas"]["PeerRoomResponse"];
     };
     /** PeerRoomRadio */
@@ -17339,16 +16138,6 @@ export interface components {
     /** PendingSettingsRecordResponse */
     PendingSettingsRecordResponse: {
       /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
-      /**
        * Daybreakenabled
        * @default null
        */
@@ -17418,16 +16207,6 @@ export interface components {
      * @description Known fields; runtime_plans records are returned without projection.
      */
     PlanView: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** Id */
       id: string;
       /** @default null */
@@ -17450,16 +16229,6 @@ export interface components {
     };
     /** PortableHistoryRecordResponse */
     PortableHistoryRecordResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /**
        * Bytes
        * @default null
@@ -17499,16 +16268,6 @@ export interface components {
     };
     /** PortableHistorySourceRecordResponse */
     PortableHistorySourceRecordResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /**
        * Accountkey
        * @default null
@@ -17557,16 +16316,6 @@ export interface components {
     };
     /** PreferencePushResponse */
     PreferencePushResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** Fields */
       fields: {
         [key: string]: components["schemas"]["PreferenceField"];
@@ -17574,16 +16323,6 @@ export interface components {
     };
     /** PreparedContextRecordResponse */
     PreparedContextRecordResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /**
        * Epoch
        * @default null
@@ -17601,16 +16340,6 @@ export interface components {
     };
     /** ProcessActionResult */
     ProcessActionResult: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /**
        * Error
        * @default null
@@ -17640,16 +16369,6 @@ export interface components {
     };
     /** ProcessCapabilities */
     ProcessCapabilities: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** Readoutput */
       readOutput: boolean;
       /** Resize */
@@ -17740,16 +16459,6 @@ export interface components {
     };
     /** ProcessList */
     ProcessList: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** Processes */
       processes: components["schemas"]["ManagedProcessRecord"][];
       /** @default null */
@@ -17757,16 +16466,6 @@ export interface components {
     };
     /** ProcessReceipt */
     ProcessReceipt: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** Found */
       found: boolean;
       /** @default null */
@@ -17859,31 +16558,11 @@ export interface components {
     };
     /** ProfileList */
     ProfileList: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** Profiles */
       profiles: components["schemas"]["ProfileRecord"][];
     };
     /** ProfileMutation */
     ProfileMutation: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /**
        * Deleted
        * @default null
@@ -18233,16 +16912,6 @@ export interface components {
     /** ProjectLocationQueryResponse */
     ProjectLocationQueryResponse: {
       /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
-      /**
        * Githead
        * @default null
        */
@@ -18282,16 +16951,6 @@ export interface components {
      * @description A project record returned directly by successful project writes.
      */
     ProjectMutationRecord: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /**
        * Accountgroups
        * @default null
@@ -18406,16 +17065,6 @@ export interface components {
     };
     /** ProjectReadResponse */
     ProjectReadResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** Items */
       items: components["schemas"]["Project"][];
     };
@@ -18440,16 +17089,6 @@ export interface components {
     };
     /** ProjectRemovalResponse */
     ProjectRemovalResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** Id */
       id: string;
       /** Removed */
@@ -18495,16 +17134,6 @@ export interface components {
      * @description The secret names of a layr project, never a value.
      */
     ProjectSecretsResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** Names */
       names: string[];
       /** Projectid */
@@ -18814,16 +17443,6 @@ export interface components {
     };
     /** QuestionHistory */
     QuestionHistory: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** Items */
       items: components["schemas"]["AgentRequest"][];
     };
@@ -19044,16 +17663,6 @@ export interface components {
     };
     /** QueueView */
     QueueView: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       capabilities: components["schemas"]["QueueCapabilities"];
       /** Items */
       items: components["schemas"]["QueueItem"][];
@@ -19251,16 +17860,6 @@ export interface components {
     };
     /** ReadStateRecordResponse */
     ReadStateRecordResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** Read */
       read: boolean;
       /** Revision */
@@ -19289,16 +17888,6 @@ export interface components {
     RecoveryOutcome: "completed" | "failed" | "interrupted";
     /** RecoveryResponse */
     RecoveryResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /**
        * Attemptid
        * @default null
@@ -19370,16 +17959,6 @@ export interface components {
     };
     /** RemoteParentLinkRecordResponse */
     RemoteParentLinkRecordResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** Home */
       home: string;
       /** Link */
@@ -19389,16 +17968,6 @@ export interface components {
     };
     /** RemoteProjectRegistrationResponse */
     RemoteProjectRegistrationResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /**
        * Error
        * @default null
@@ -19436,16 +18005,6 @@ export interface components {
     };
     /** RemoteWorkerLinkRecordResponse */
     RemoteWorkerLinkRecordResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** Link */
       link: string;
       /** Server */
@@ -19470,16 +18029,6 @@ export interface components {
     };
     /** RenameResponse */
     RenameResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /**
        * Error
        * @default null
@@ -19512,16 +18061,6 @@ export interface components {
     };
     /** RequestAnswerRecordResponse */
     RequestAnswerRecordResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       answer?: components["schemas"]["JsonValue"];
       /**
        * Id
@@ -19582,16 +18121,6 @@ export interface components {
     };
     /** RequestInboxEntry */
     RequestInboxEntry: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** Agent */
       agent: string;
       /** Id */
@@ -19717,16 +18246,6 @@ export interface components {
     };
     /** RequestRecordResponse */
     RequestRecordResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /**
        * Accountkey
        * @default null
@@ -20151,16 +18670,6 @@ export interface components {
     /** RestartRecoveryRecordResponse */
     RestartRecoveryRecordResponse: {
       /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
-      /**
        * Accountkey
        * @default null
        */
@@ -20253,16 +18762,6 @@ export interface components {
      * @description Capacity retry endpoint DTO using the canonical sync receipt fields.
      */
     RetryResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /**
        * Acceptedturnid
        * @default null
@@ -20397,16 +18896,6 @@ export interface components {
     };
     /** ReviewDefaultsRecordResponse */
     ReviewDefaultsRecordResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** Effort */
       effort: null | string;
       /** Model */
@@ -20879,16 +19368,6 @@ export interface components {
     };
     /** RuleInboxEntry */
     RuleInboxEntry: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** Agent */
       agent: string;
       /** Id */
@@ -20905,31 +19384,11 @@ export interface components {
     };
     /** RuleList */
     RuleList: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** Rules */
       rules: components["schemas"]["RuleRecordResponse"][];
     };
     /** RuleRecordResponse */
     RuleRecordResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /**
        * Activeworkers
        * @default null
@@ -21149,16 +19608,6 @@ export interface components {
     };
     /** RuleRestartCheckRecordResponse */
     RuleRestartCheckRecordResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** Checks */
       checks: number;
       /** Epoch */
@@ -21251,16 +19700,6 @@ export interface components {
      *     so unknown source fields pass through.
      */
     SearchItemResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /**
        * Accountwide
        * @default null
@@ -21657,16 +20096,6 @@ export interface components {
       | "complete";
     /** SearchResponse */
     SearchResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** Limit */
       limit: number;
       /** Query */
@@ -21726,16 +20155,6 @@ export interface components {
     };
     /** ServerIdentityResponse */
     ServerIdentityResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** Label */
       label: string;
       /** Origin */
@@ -21763,16 +20182,6 @@ export interface components {
     };
     /** ServerOperationResponse */
     ServerOperationResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /**
        * Error
        * @default null
@@ -21813,16 +20222,6 @@ export interface components {
     };
     /** SessionCostResponse */
     SessionCostResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       breakdown: components["schemas"]["CostBreakdown"];
       /** Cacheageseconds */
       cacheAgeSeconds: number;
@@ -21861,16 +20260,6 @@ export interface components {
     };
     /** SessionResponse */
     SessionResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** Token */
       token: string;
     };
@@ -21958,16 +20347,6 @@ export interface components {
     };
     /** SidebarOrderResponse */
     SidebarOrderResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** Groups */
       groups: {
         [key: string]: string[];
@@ -22023,16 +20402,6 @@ export interface components {
     };
     /** SignedMessageResponse */
     SignedMessageResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** Nonce */
       nonce: string;
       result: components["schemas"]["studio_api__federation__models__MessageReceipt"];
@@ -22045,16 +20414,6 @@ export interface components {
     };
     /** SignedPairResponse */
     SignedPairResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** Nonce */
       nonce: string;
       result: components["schemas"]["SignedPairResult"];
@@ -22085,16 +20444,6 @@ export interface components {
     };
     /** SignedPullResponse */
     SignedPullResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** Nonce */
       nonce: string;
       result: components["schemas"]["PullResult"];
@@ -22107,16 +20456,6 @@ export interface components {
     };
     /** SignedStatusResponse */
     SignedStatusResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** Nonce */
       nonce: string;
       result: components["schemas"]["SignedStatusResult"];
@@ -22141,10 +20480,6 @@ export interface components {
     };
     /** SkillResponse */
     SkillResponse: {
-      /** Syncentities */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /** Syncentitiesafter */
-      _syncEntitiesAfter?: number | null;
       /** Description */
       description: string;
       /** Name */
@@ -22154,16 +20489,6 @@ export interface components {
     };
     /** SkillsResponse */
     SkillsResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** Errors */
       errors: string[];
       /** Skills */
@@ -22455,16 +20780,6 @@ export interface components {
     };
     /** StartActionIdentityRecordResponse */
     StartActionIdentityRecordResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** Accountkey */
       accountKey: string;
       /** Epoch */
@@ -22476,16 +20791,6 @@ export interface components {
     };
     /** StartAttemptRecordResponse */
     StartAttemptRecordResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /**
        * Accountkey
        * @default null
@@ -22607,16 +20912,6 @@ export interface components {
     /** StartModelSettingsRecordResponse */
     StartModelSettingsRecordResponse: {
       /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
-      /**
        * Accountkey
        * @default null
        */
@@ -22653,16 +20948,6 @@ export interface components {
     };
     /** StartWaitRecordResponse */
     StartWaitRecordResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** Epoch */
       epoch: number;
       /**
@@ -22735,16 +21020,6 @@ export interface components {
     };
     /** StopResponse */
     StopResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** Stopped */
       stopped: string[];
     };
@@ -22788,10 +21063,6 @@ export interface components {
       | "reviewer";
     /** MessageReceipt */
     studio_api__work__models__MessageReceipt: {
-      /** Syncentities */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /** Syncentitiesafter */
-      _syncEntitiesAfter?: number | null;
       /** Agent */
       agent?: null | string;
       /** At */
@@ -22917,16 +21188,6 @@ export interface components {
     };
     /** StudioErrorsResponse */
     StudioErrorsResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** Items */
       items: components["schemas"]["StudioError"][];
     };
@@ -23159,16 +21420,6 @@ export interface components {
     };
     /** SupervisorIdentityRecordResponse */
     SupervisorIdentityRecordResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /**
        * Generation
        * @default null
@@ -23487,16 +21738,6 @@ export interface components {
     /** SyncIdentityResponse */
     SyncIdentityResponse: {
       /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
-      /**
        * Syncprotocol
        * @constant
        */
@@ -23572,16 +21813,6 @@ export interface components {
     };
     /** SyncProtocolResponse */
     SyncProtocolResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** Capabilities */
       capabilities: string[];
       /** Maxentitypage */
@@ -23614,16 +21845,6 @@ export interface components {
     };
     /** SyncPullResetResponse */
     SyncPullResetResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** Floor */
       floor: number;
       /** Generation */
@@ -23640,16 +21861,6 @@ export interface components {
     };
     /** SyncPullResponse */
     SyncPullResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       checkpoint: components["schemas"]["SyncCheckpoint"];
       /** Documents */
       documents: (
@@ -23816,16 +22027,6 @@ export interface components {
     };
     /** TaskDetailResponse */
     TaskDetailResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** Agent */
       agent: string;
       /**
@@ -24143,16 +22344,6 @@ export interface components {
     TerminalInputDelivery: "sent" | "uncertain";
     /** TerminalInputResult */
     TerminalInputResult: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       delivery: components["schemas"]["TerminalInputDelivery"];
       /**
        * Error
@@ -24164,31 +22355,11 @@ export interface components {
     };
     /** TerminalList */
     TerminalList: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** Items */
       items: components["schemas"]["TerminalRecord"][];
     };
     /** TerminalOutput */
     TerminalOutput: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /**
        * Availableoffset
        * @default null
@@ -24227,16 +22398,6 @@ export interface components {
      * @description Known fields; terminal actions return the persisted user_terminal record.
      */
     TerminalRecord: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** Agent */
       agent: string;
       /** Created */
@@ -24385,31 +22546,11 @@ export interface components {
     };
     /** ToolRequestList */
     ToolRequestList: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** Requests */
       requests: components["schemas"]["ToolRequestRecordResponse"][];
     };
     /** ToolRequestRecordResponse */
     ToolRequestRecordResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /**
        * Accountkey
        * @default null
@@ -24574,16 +22715,6 @@ export interface components {
     };
     /** ToolRequestTimingRecordResponse */
     ToolRequestTimingRecordResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /**
        * Admissiondelayms
        * @default null
@@ -24808,16 +22939,6 @@ export interface components {
      * @description Full transcript item projection, including its canonical sync envelope.
      */
     TranscriptItemResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /**
        * Accountwide
        * @default null
@@ -25228,16 +23349,6 @@ export interface components {
     };
     /** TranscriptPageResponse */
     TranscriptPageResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** @default null */
       agent?: components["schemas"]["TranscriptAgent"] | null;
       /**
@@ -25282,16 +23393,6 @@ export interface components {
     };
     /** TranscriptSearchResponse */
     TranscriptSearchResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** Results */
       results: components["schemas"]["TranscriptSearchResult"][];
       /** Truncated */
@@ -25424,16 +23525,6 @@ export interface components {
     TransferInterruptOutcome: "acknowledged" | "unknown";
     /** TransferMemberNotice */
     TransferMemberNotice: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** Id */
       id: string;
       /**
@@ -25472,16 +23563,6 @@ export interface components {
       | "left";
     /** TransferMemberResponse */
     TransferMemberResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /**
        * Continueaftertransfer
        * @default null
@@ -25545,16 +23626,6 @@ export interface components {
     };
     /** TransferRequestReceipt */
     TransferRequestReceipt: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** Leadid */
       leadId: string;
       /** @default null */
@@ -25564,16 +23635,6 @@ export interface components {
     };
     /** TransferResponse */
     TransferResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /**
        * Blocked
        * @default null
@@ -25706,16 +23767,6 @@ export interface components {
     /** TurnRecoveryRecordResponse */
     TurnRecoveryRecordResponse: {
       /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
-      /**
        * At
        * @default null
        */
@@ -25769,16 +23820,6 @@ export interface components {
     };
     /** UiSummaryResponse */
     UiSummaryResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /**
        * Accounts
        * @default []
@@ -25889,16 +23930,6 @@ export interface components {
     };
     /** UsageLimitsResponse */
     UsageLimitsResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** Accountkey */
       accountKey: string;
       /**
@@ -25937,16 +23968,6 @@ export interface components {
     UsageResumeCause: "usage_limit" | "rate_limit" | "auth";
     /** UsageResumeRecordResponse */
     UsageResumeRecordResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /**
        * Accountkey
        * @default null
@@ -26066,16 +24087,6 @@ export interface components {
      * @description Usage resume endpoint DTO using the canonical sync receipt fields.
      */
     UsageResumeResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** Accountkey */
       accountKey: string;
       /**
@@ -26162,16 +24173,6 @@ export interface components {
      */
     VaultAwsProfileDto: {
       /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
-      /**
        * Error
        * @default null
        */
@@ -26209,16 +24210,6 @@ export interface components {
      * @description One AWS sign-in: running (page and code once AWS gives them), done or failed.
      */
     VaultLoginResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /**
        * Code
        * @default null
@@ -26264,16 +24255,6 @@ export interface components {
      *     failed (error).
      */
     VaultPullResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /**
        * Bytes
        * @default null
@@ -26351,16 +24332,6 @@ export interface components {
      *     the AWS profiles.
      */
     VaultSetupFactsResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** Gatewayprofile */
       gatewayProfile: null | string;
       /** Keys */
@@ -26396,16 +24367,6 @@ export interface components {
      *     AWS profile needs a sign-in first.
      */
     VaultSetupResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /**
        * Error
        * @default null
@@ -26443,16 +24404,6 @@ export interface components {
     };
     /** VaultUnlockResponse */
     VaultUnlockResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** Unlocked */
       unlocked: boolean;
     };
@@ -26461,16 +24412,6 @@ export interface components {
      * @description A VM chat: the read-only ~/Studio view of its layr project. The path is set only when mounted.
      */
     VmFinderViewResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** Error */
       error: null | string;
       /**
@@ -26488,16 +24429,6 @@ export interface components {
     };
     /** VoiceApprovalResponse */
     VoiceApprovalResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /**
        * Replayed
        * @default null
@@ -26523,16 +24454,6 @@ export interface components {
     };
     /** VoiceApprovalsResponse */
     VoiceApprovalsResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** Requests */
       requests: components["schemas"]["JsonValue"][];
     };
@@ -26567,16 +24488,6 @@ export interface components {
     VoiceAuth: "chatgpt";
     /** VoiceDeliveryResponse */
     VoiceDeliveryResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /**
        * Error
        * @default null
@@ -26672,16 +24583,6 @@ export interface components {
     };
     /** VoiceRecordResponse */
     VoiceRecordResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** Agent */
       agent: string;
       /** Created */
@@ -26714,16 +24615,6 @@ export interface components {
     };
     /** VoiceRecordsResponse */
     VoiceRecordsResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** Cursor */
       cursor: number;
       /** Delivered */
@@ -26744,16 +24635,6 @@ export interface components {
     };
     /** VoiceSessionResponse */
     VoiceSessionResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** Ended */
       ended: number | null;
       /** Error */
@@ -26778,16 +24659,6 @@ export interface components {
       | "unknown";
     /** VoiceSpeechQueuedResponse */
     VoiceSpeechQueuedResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** Id */
       id: string;
       playback: components["schemas"]["VoicePlaybackConfirmation"];
@@ -26795,16 +24666,6 @@ export interface components {
     };
     /** VoiceSpeechReceiptResponse */
     VoiceSpeechReceiptResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** Error */
       error: null | string;
       /** Id */
@@ -26845,16 +24706,6 @@ export interface components {
     };
     /** VoiceStatusResponse */
     VoiceStatusResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       auth: components["schemas"]["VoiceAuth"];
       /** Configured */
       configured: boolean;
@@ -26985,16 +24836,6 @@ export interface components {
     /** WorkArchiveIntentRecordResponse */
     WorkArchiveIntentRecordResponse: {
       /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
-      /**
        * Attempts
        * @default null
        */
@@ -27055,16 +24896,6 @@ export interface components {
     };
     /** WorkArchiveRecordResponse */
     WorkArchiveRecordResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /**
        * Reason
        * @default null
@@ -27228,16 +25059,6 @@ export interface components {
     };
     /** WorkDecisionRecordResponse */
     WorkDecisionRecordResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** By */
       by: string;
       /** Created */
@@ -27342,16 +25163,6 @@ export interface components {
     /** WorkerDefaultsRecordResponse */
     WorkerDefaultsRecordResponse: {
       /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
-      /**
        * Accountkey
        * @default null
        */
@@ -27382,16 +25193,6 @@ export interface components {
     };
     /** WorkInboxEntry */
     WorkInboxEntry: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** Agent */
       agent: string;
       /** Id */
@@ -27412,16 +25213,6 @@ export interface components {
      * @description work_view spreads stored records; retain their unknown top-level and nested fields.
      */
     WorkItem: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** @default null */
       archive?: components["schemas"]["WorkArchiveRecord"] | null;
       /** @default null */
@@ -27512,16 +25303,6 @@ export interface components {
     };
     /** WorkList */
     WorkList: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** Items */
       items: components["schemas"]["WorkItem"][];
       rootId?: string;
@@ -27598,16 +25379,6 @@ export interface components {
     };
     /** WorkResultRecordResponse */
     WorkResultRecordResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** Agent */
       agent: string;
       /**
@@ -27695,16 +25466,6 @@ export interface components {
     };
     /** WorkspaceTaskFeed */
     WorkspaceTaskFeed: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** @default null */
       cursor?: components["schemas"]["TaskCursor"] | null;
       /** Hasmore */
@@ -27853,16 +25614,6 @@ export interface components {
     /** WorkspaceView */
     WorkspaceView: {
       /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
-      /**
        * Annotations
        * @default null
        */
@@ -27920,16 +25671,6 @@ export interface components {
     /** WorkspaceWaitRecordResponse */
     WorkspaceWaitRecordResponse: {
       /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
-      /**
        * At
        * @default null
        */
@@ -27954,16 +25695,6 @@ export interface components {
     };
     /** WorktreeCleanupErrorRecordResponse */
     WorktreeCleanupErrorRecordResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** At */
       at: number;
       /** By */
@@ -27990,16 +25721,6 @@ export interface components {
     };
     /** WorktreeCleanupRecordResponse */
     WorktreeCleanupRecordResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /**
        * At
        * @default null
@@ -28072,16 +25793,6 @@ export interface components {
     };
     /** WorktreeRegistrationRepairRecordResponse */
     WorktreeRegistrationRepairRecordResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** Gitdir */
       gitdir: string;
       /** Gitfile */
@@ -28093,16 +25804,6 @@ export interface components {
     };
     /** WorkViewRecordResponse */
     WorkViewRecordResponse: {
-      /**
-       * Syncentities
-       * @default null
-       */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /**
-       * Syncentitiesafter
-       * @default null
-       */
-      _syncEntitiesAfter?: number | null;
       /** @default null */
       archive?: components["schemas"]["WorkArchiveRecordResponse"];
       /** @default null */

@@ -110,6 +110,18 @@ impl Fault for StopAt {
 fn observation() -> usage_resume::LimitsObservation {
     usage_resume::LimitsObservation::from_record(json!({"accountKey":"default","at":1000.0,"data":{"rateLimits":{"primary":{"usedPercent":10.0,"resetsAt":2000.0}}}}),None).expect("observation")
 }
+#[test]
+fn stored_limits_observation_accepts_legacy_mutation_envelope_keys() {
+    let legacy = json!({
+        "accountKey":"default",
+        "at":1000.0,
+        "data":{"rateLimits":{"primary":{"usedPercent":10.0,"resetsAt":2000.0}}},
+        "_syncEntities":[],
+        "_syncEntitiesAfter":12
+    });
+    usage_resume::LimitsObservation::from_record(legacy, None)
+        .expect("existing stored observations with legacy envelope fields still load");
+}
 #[tokio::test]
 async fn every_store_boundary_rolls_back_or_replays_the_one_committed_followup() {
     let full = std::env::var("STUDIO_RUNTIME_CORPUS_FULL").as_deref() == Ok("1");

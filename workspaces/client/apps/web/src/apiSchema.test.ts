@@ -271,7 +271,7 @@ it("accepts the identity when its server schema hash matches", async () => {
   expect(api.isApiSchemaMismatch()).toBe(false);
 });
 
-it("does not return mismatched pull rows or persist mismatched mutation entities", async () => {
+it("rejects mismatched pull and mutation responses", async () => {
   stubBrowser();
   vi.stubGlobal(
     "fetch",
@@ -303,7 +303,6 @@ it("does not return mismatched pull rows or persist mismatched mutation entities
   ).rejects.toBeInstanceOf(api.ApiSchemaMismatchError);
 
   vi.resetModules();
-  const persist = vi.fn();
   vi.stubGlobal(
     "fetch",
     async () =>
@@ -311,19 +310,11 @@ it("does not return mismatched pull rows or persist mismatched mutation entities
         JSON.stringify({
           groups: { projects: [] },
           revision: 1,
-          _syncEntities: [
-            {
-              id: "entity:workspace:current",
-              seq: 1,
-              payload: "{}",
-            },
-          ],
         }),
         { headers: { [API_SCHEMA_HASH_HEADER]: "foreign-schema" } },
       ),
   );
   api = await import("./api");
-  api.registerSyncEntityPersister(persist);
   await expect(
     api.post("/api/projects", {
       action: "reorder",
@@ -332,7 +323,6 @@ it("does not return mismatched pull rows or persist mismatched mutation entities
       request_id: "p6-mismatched-response",
     }),
   ).rejects.toBeInstanceOf(api.ApiSchemaMismatchError);
-  expect(persist).not.toHaveBeenCalled();
 });
 
 it("does not treat an unmarked HTTP 426 as an API schema mismatch", async () => {

@@ -864,10 +864,6 @@ fn with_boundary(router: Router<HttpState>, state: HttpState) -> Router {
             middleware::diagnostics_http_timing,
         ))
         .layer(axum_middleware::from_fn_with_state(
-            state.clone(),
-            crate::mutation_sync::envelope,
-        ))
-        .layer(axum_middleware::from_fn_with_state(
             Arc::clone(&state.mutation_tasks),
             crate::mutation_tasks::own_mutations,
         ))
@@ -882,7 +878,7 @@ fn with_boundary(router: Router<HttpState>, state: HttpState) -> Router {
             state.clone(),
             middleware::response_safety,
         ))
-        // Encode only after mutation envelopes, ETag hashes and 304 handling are final.
+        // Encode only after ETag hashes and 304 handling are final.
         .layer(
             CompressionLayer::new()
                 .no_gzip()
@@ -1175,27 +1171,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn brotli_compresses_the_final_mutation_sync_envelope() {
+    async fn brotli_compresses_mutation_results_without_entity_envelopes() {
         use axum::http::header;
         use std::io::Read;
-        #[derive(serde::Deserialize)]
-        #[serde(deny_unknown_fields)]
-        struct Envelope {
-            ok: bool,
-            #[serde(rename = "_syncEntities")]
-            entities: Vec<Value>,
-            #[serde(rename = "_syncEntitiesAfter")]
-            after: i64,
-        }
         let mut bodies = Vec::new();
         for encoding in ["identity", "br"] {
             let (mut state, store, _directory) = state_with_store().await;
-            let before = store
-                .read_async("brotli fixture cursor", |tx| {
-                    SyncDocumentsRepository::entity_sequence(tx)
-                })
-                .await
-                .expect("initial entity cursor");
             state.validators =
                 crate::validation::Registry::compile(&[("POST".into(), "/api/messages".into())])
                     .expect("validator");
@@ -1204,7 +1185,10 @@ mod tests {
                     SyncDocumentsRepository::put_entity(tx, "agent", "agent", serde_json::json!({"id": "agent", "name":"Agent", "status":"idle", "source":"managed", "tail": "entity content ".repeat(512)}), false)?;
                     Ok(())
                 }).await.expect("entity mutation");
-                Json(serde_json::json!({"ok": true}))
+                Json(serde_json::json!({
+                    "ok": true,
+                    "result": "mutation result ".repeat(512),
+                }))
             })), state);
             let request = Request::builder()
                 .method("POST")
@@ -1236,10 +1220,20 @@ mod tests {
             } else {
                 bytes.to_vec()
             };
-            let envelope: Envelope = serde_json::from_slice(&bytes).expect("final sync envelope");
-            assert!(envelope.ok);
-            assert_eq!(envelope.entities.len(), 1);
-            assert_eq!(envelope.after, before);
+            let result: Value = serde_json::from_slice(&bytes).expect("mutation result");
+            assert_eq!(result["ok"], true);
+            assert!(
+                result["result"]
+                    .as_str()
+                    .is_some_and(|value| !value.is_empty())
+            );
+            assert!(!result.as_object().unwrap().contains_key("_syncEntities"));
+            assert!(
+                !result
+                    .as_object()
+                    .unwrap()
+                    .contains_key("_syncEntitiesAfter")
+            );
             bodies.push(bytes);
         }
         assert_eq!(bodies[0], bodies[1]);

@@ -61,7 +61,6 @@ export function createServerServices(server: StudioServer) {
     ),
     beginMutation: createMutationJournal(transport.owner.id, storage),
     beginActivity: activity.beginServerActivity,
-    entityCheckpoint: sequences.getEntitySequenceCheckpointForWorkspace,
   });
   const audio = createServerAudio();
   const sessionCosts = createSessionCostCache(storage);

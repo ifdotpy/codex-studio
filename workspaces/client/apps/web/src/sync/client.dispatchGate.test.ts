@@ -21,7 +21,6 @@ const mocks = vi.hoisted(() => ({
         after: number,
       ) => Record<string, unknown> | Promise<Record<string, unknown>>)
     | undefined,
-  mutationResponse: null as Record<string, unknown> | null,
   invalidate: undefined as
     | ((version?: {
         epoch: string;
@@ -61,7 +60,6 @@ async function setup({ ready = true } = {}) {
   const workspaceId = "e".repeat(32);
   mocks.pulls = undefined;
   mocks.pullResponse = undefined;
-  mocks.mutationResponse = null;
   const rows = new Map<string, Record<string, unknown>>([
     [
       "state:entities:checkpoint",
@@ -171,17 +169,12 @@ async function setup({ ready = true } = {}) {
           { headers: { [API_SCHEMA_HASH_HEADER]: API_SCHEMA_HASH } },
         );
       }
-      if (request.method === "POST" && url.pathname === "/api/sync/drafts")
-        return Response.json(mocks.mutationResponse ?? {}, {
-          headers: { [API_SCHEMA_HASH_HEADER]: API_SCHEMA_HASH },
-        });
       throw new Error(
         `unexpected API request ${request.method} ${url.pathname}`,
       );
     }),
   );
   const client = await import("./client");
-  const api = await import("../api");
   const entitySequence = await import("./entitySequence");
   const failures: unknown[] = [];
   const accepted = vi.fn();
@@ -201,7 +194,6 @@ async function setup({ ready = true } = {}) {
       );
     });
   return {
-    api,
     accepted,
     client,
     entitySequence,
@@ -333,28 +325,10 @@ describe("entity pull dispatch gate", () => {
     mocks.watchResourceChanges.mockReset();
     mocks.pulls = undefined;
     mocks.pullResponse = undefined;
-    mocks.mutationResponse = null;
     mocks.invalidate = undefined;
     mocks.accountsBaseline = undefined;
     mocks.connectionListener = undefined;
   });
-
-  const installMutationResponse = () => {
-    const documents = [
-      {
-        op: "upsert",
-        collection: "agent",
-        id: "created",
-        value: { id: "created", name: "new" },
-        seq: 101,
-      },
-    ];
-    mocks.mutationResponse = {
-      _syncEntities: documents,
-      _syncEntitiesAfter: 100,
-    };
-    return documents;
-  };
 
   const configurePulls = (
     workspaceId: string,
@@ -530,167 +504,6 @@ describe("entity pull dispatch gate", () => {
     mocks.invalidate?.({ epoch: "state-only-frame", entitySequence: 101 });
 
     await vi.waitFor(() => expect(pulls).toEqual([100]));
-    stop();
-  });
-
-  it("runs a real post through the held persister and gates the real pull loop", async () => {
-    const { api, entitySequence, rows, storageInstance, stop, workspaceId } =
-      await setup();
-    const documents = installMutationResponse();
-    const pulls: number[] = [];
-    configurePulls(workspaceId, pulls, documents);
-    const checkpoint = entitySequence.getEntitySequenceCheckpoint(
-      "state:entities:v1",
-      API_SCHEMA_HASH,
-    );
-    let release!: () => void;
-    const hold = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    let entered!: () => void;
-    const persisterEntered = new Promise<void>((resolve) => {
-      entered = resolve;
-    });
-    storageInstance.bulkWrite.mockImplementation(async (writes) => {
-      if (
-        writes.some(
-          ({ document }) =>
-            document.id ===
-            `entity:${documents[0]?.collection}:${documents[0]?.id}`,
-        )
-      ) {
-        entered();
-        await hold;
-      }
-      for (const { document } of writes)
-        rows.set(String(document.id), document);
-      return { error: [] };
-    });
-
-    const post = api.post("/api/sync/drafts", { rows: [] });
-    await persisterEntered;
-    const readsBeforeFrame =
-      storageInstance.findDocumentsById.mock.calls.length;
-    mocks.invalidate?.({ epoch: "held", entitySequence: 101 });
-    await vi.waitFor(() =>
-      expect(
-        storageInstance.findDocumentsById.mock.calls.length,
-      ).toBeGreaterThan(readsBeforeFrame),
-    );
-    expect(pulls).toEqual([]);
-    release();
-    await post;
-    expect(pulls).toEqual([]);
-    expect(
-      rows.get(`entity:${documents[0]!.collection}:${documents[0]!.id}`),
-    ).toMatchObject({ seq: 101 });
-    expect(checkpoint.value).toBe(101);
-    stop();
-  });
-
-  it.each(["reject", "250ms timeout"] as const)(
-    "dispatches exactly one fallback pull when a real held persister %s",
-    async (mode) => {
-      const { api, rows, storageInstance, stop, workspaceId } = await setup();
-      vi.useFakeTimers();
-      const documents = installMutationResponse();
-      const pulls: number[] = [];
-      configurePulls(workspaceId, pulls, documents);
-      let release!: () => void;
-      let rejectWrite!: (error: Error) => void;
-      const hold = new Promise<void>((resolve, reject) => {
-        release = resolve;
-        rejectWrite = reject;
-      });
-      let entered!: () => void;
-      const persisterEntered = new Promise<void>((resolve) => {
-        entered = resolve;
-      });
-      let held = false;
-      storageInstance.bulkWrite.mockImplementation(async (writes) => {
-        if (
-          !held &&
-          writes.some(
-            ({ document }) =>
-              document.id ===
-              `entity:${documents[0]?.collection}:${documents[0]?.id}`,
-          )
-        ) {
-          held = true;
-          entered();
-          await hold;
-        }
-        for (const { document } of writes)
-          rows.set(String(document.id), document);
-        return { error: [] };
-      });
-      const post = api.post("/api/sync/drafts", { rows: [] });
-      await persisterEntered;
-      const readsBeforeFrame =
-        storageInstance.findDocumentsById.mock.calls.length;
-      mocks.invalidate?.({ epoch: "held", entitySequence: 101 });
-      await vi.advanceTimersByTimeAsync(0);
-      expect(
-        storageInstance.findDocumentsById.mock.calls.length,
-      ).toBeGreaterThan(readsBeforeFrame);
-      expect(pulls).toEqual([]);
-      if (mode === "reject") rejectWrite(new Error("test persistence failure"));
-      else {
-        await vi.advanceTimersByTimeAsync(249);
-        expect(pulls).toEqual([]);
-        await vi.advanceTimersByTimeAsync(1);
-      }
-      await post;
-      await vi.advanceTimersByTimeAsync(0);
-      expect(pulls).toHaveLength(1);
-      release();
-      await vi.advanceTimersByTimeAsync(0);
-      expect(pulls).toHaveLength(1);
-      stop();
-    },
-  );
-
-  it("pulls once when a reset arrives during the real held persister", async () => {
-    const { api, entitySequence, rows, storageInstance, stop, workspaceId } =
-      await setup();
-    const documents = installMutationResponse();
-    const pulls: number[] = [];
-    configurePulls(workspaceId, pulls, documents);
-    let release!: () => void;
-    const hold = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    let entered!: () => void;
-    const persisterEntered = new Promise<void>((resolve) => {
-      entered = resolve;
-    });
-    storageInstance.bulkWrite.mockImplementation(async (writes) => {
-      if (
-        writes.some(
-          ({ document }) =>
-            document.id ===
-            `entity:${documents[0]?.collection}:${documents[0]?.id}`,
-        )
-      ) {
-        entered();
-        await hold;
-      }
-      for (const { document } of writes)
-        rows.set(String(document.id), document);
-      return { error: [] };
-    });
-    const post = api.post("/api/sync/drafts", { rows: [] });
-    await persisterEntered;
-    mocks.invalidate?.({ epoch: "reset", entitySequenceReset: true });
-    await vi.waitFor(() => expect(pulls).toHaveLength(1));
-    release();
-    await post;
-    expect(pulls).toHaveLength(1);
-    expect(
-      entitySequence
-        .getEntitySequenceCheckpoint("state:entities:v1", API_SCHEMA_HASH)
-        .effectiveCoverage(),
-    ).toBe(101);
     stop();
   });
 

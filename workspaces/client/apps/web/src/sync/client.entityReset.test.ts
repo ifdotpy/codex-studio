@@ -57,7 +57,6 @@ vi.mock("rxdb/plugins/replication", () => ({
 }));
 vi.mock("../api", () => ({
   ApiError: mocks.ApiError,
-  registerSyncEntityPersister: mocks.registerPersister,
   isApiSchemaMismatch: mocks.isApiSchemaMismatch,
   onMatchingApiSchemaResponse: vi.fn((listener: () => void) => {
     mocks.matchingSchemaListener = listener;

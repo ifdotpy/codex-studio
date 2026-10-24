@@ -36,7 +36,6 @@ import {
   setWorkspace,
   isApiSchemaMismatch,
   onMatchingApiSchemaResponse,
-  registerSyncEntityPersister,
 } from "../api";
 
 import type { SyncEntityPayload } from "../generated/api";
@@ -44,7 +43,6 @@ import type { SyncEntityPayload } from "../generated/api";
 import type { Snapshot, TranscriptPageData } from "../types";
 
 import {
-  canAcknowledgeEntitySequenceBatch,
   entitySequenceInvalidationCovered,
   EntitySequenceCheckpoint,
   getEntitySequenceCheckpoint,
@@ -52,7 +50,6 @@ import {
 } from "./entitySequence";
 
 import {
-  acknowledgeEntitySequences,
   watchResourceChanges,
   watchResourceConnection,
   type ResourceConnectionState,
@@ -119,16 +116,6 @@ export function entityCacheRow(
   };
 }
 
-export type SyncEntityPersisterProbe = {
-  sequences: number[];
-  checkpoint: number;
-  advanced: boolean;
-  acknowledged: boolean;
-  checkpointBefore: number;
-  syncEntitiesAfter: number | null | undefined;
-  at: number;
-};
-
 export {
   watchResourceChanges,
   watchResourceConnection,
@@ -173,13 +160,10 @@ export type SyncClientOptions = {
     | "setWorkspace"
     | "isApiSchemaMismatch"
     | "onMatchingApiSchemaResponse"
-    | "registerSyncEntityPersister"
   >;
   resources: Pick<
     typeof import("./resourceEvents"),
-    | "acknowledgeEntitySequences"
-    | "watchResourceChanges"
-    | "watchResourceConnection"
+    "watchResourceChanges" | "watchResourceConnection"
   >;
   sequences: Pick<
     ReturnType<typeof import("./entitySequence").createEntitySequenceScope>,
@@ -199,13 +183,8 @@ export function createSyncClient(options: SyncClientOptions) {
     setWorkspace,
     isApiSchemaMismatch,
     onMatchingApiSchemaResponse,
-    registerSyncEntityPersister,
   } = options.api;
-  const {
-    acknowledgeEntitySequences,
-    watchResourceChanges,
-    watchResourceConnection,
-  } = options.resources;
+  const { watchResourceChanges, watchResourceConnection } = options.resources;
   const { getEntitySequenceCheckpoint, setEntitySequenceProjection } =
     options.sequences;
   const {
@@ -488,10 +467,7 @@ export function createSyncClient(options: SyncClientOptions) {
     );
     const resetVersion = checkpoint.resetVersion;
     const entities = documents.map(entityCacheRow);
-    let checkpointAdvanced = false;
     let checkpointBefore = 0;
-    let checkpointAfter = 0;
-    let checkpointAcknowledged = false;
     await persistProjectionBatch(
       db.projections,
       entities,
@@ -504,7 +480,6 @@ export function createSyncClient(options: SyncClientOptions) {
           true,
         );
       checkpointBefore = persistedCheckpoint?.seq ?? 0;
-      checkpointAfter = checkpointBefore;
       if (
         readyMarker?.payload !== "resetting" &&
         checkpoint.canUseDurableCheckpoint &&
@@ -525,14 +500,14 @@ export function createSyncClient(options: SyncClientOptions) {
         isPersistenceCurrent() &&
         readyMarker?.payload !== "resetting"
       ) {
-        checkpointAdvanced = await checkpoint.advanceIfContiguous(
+        const checkpointAdvanced = await checkpoint.advanceIfContiguous(
           syncEntitiesAfter,
           highestSequence,
           resetVersion,
           checkpointBefore,
           async () => {
             if (!isPersistenceCurrent())
-              throw new Error("Mutation persistence is no longer current");
+              throw new Error("Stream persistence is no longer current");
             await persistProjection(db.projections, {
               id: "state:entities:checkpoint",
               payload: persistedCheckpoint?.payload ?? "{}",
@@ -542,47 +517,10 @@ export function createSyncClient(options: SyncClientOptions) {
         );
         if (checkpointAdvanced) {
           checkpoint.markDurableCheckpointValid();
-          checkpointAfter = highestSequence;
         }
       }
-      const checkpointAlreadyCoversRows = canAcknowledgeEntitySequenceBatch(
-        checkpointAfter,
-        highestSequence,
-        isPersistenceCurrent(),
-        checkpointAdvanced || checkpointBefore >= highestSequence,
-      );
-      if (isPersistenceCurrent() && checkpointAlreadyCoversRows) {
-        // The exact envelope can suppress a later matching frame only after
-        // either this response advanced the checkpoint or it was already
-        // covered by a completed pull.
-        acknowledgeEntitySequences(
-          entities.map((document) => document.seq),
-          targetWorkspaceId,
-        );
-        checkpointAcknowledged = true;
-      }
     }
-    const probe = (
-      window as Window & {
-        __studioSyncEntityPersisterProbe?: (
-          value: SyncEntityPersisterProbe,
-        ) => void;
-      }
-    ).__studioSyncEntityPersisterProbe;
-    if (probe !== undefined)
-      probe({
-        sequences: entities.map((document) => document.seq),
-        checkpoint: checkpointAfter,
-        advanced: checkpointAdvanced,
-        acknowledged: checkpointAcknowledged,
-        checkpointBefore,
-        syncEntitiesAfter,
-        at: performance.timeOrigin + performance.now(),
-      });
   }
-
-  if (typeof window !== "undefined")
-    registerSyncEntityPersister(persistEntityDocuments);
 
   async function persistResourceEntityChanges(
     event: import("./resourceEvents").ResourceChangeEvent,
@@ -2571,12 +2509,8 @@ const defaultSyncClient = createSyncClient({
     setWorkspace,
     isApiSchemaMismatch,
     onMatchingApiSchemaResponse,
-    registerSyncEntityPersister,
   },
   resources: {
-    acknowledgeEntitySequences: (
-      ...args: Parameters<typeof acknowledgeEntitySequences>
-    ) => acknowledgeEntitySequences(...args),
     watchResourceChanges: (...args: Parameters<typeof watchResourceChanges>) =>
       watchResourceChanges(...args),
     watchResourceConnection: (

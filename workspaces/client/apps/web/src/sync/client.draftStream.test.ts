@@ -42,7 +42,6 @@ vi.mock("../api", () => ({
   setWorkspace: vi.fn(),
   isApiSchemaMismatch: () => false,
   onMatchingApiSchemaResponse: () => () => {},
-  registerSyncEntityPersister: vi.fn(),
 }));
 vi.mock("./resourceEvents", () => ({
   acknowledgeEntitySequences: vi.fn(),

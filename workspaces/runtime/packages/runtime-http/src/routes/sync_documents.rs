@@ -172,8 +172,6 @@ pub(crate) async fn pull(
                         .map_err(|_| ApiError::internal())?;
                     let checkpoint = documents.last().map_or(after, |document| document.sequence);
                     let response = crate::generated::SyncPullResponse {
-                        sync_entities: None,
-                        sync_entities_after: None,
                         checkpoint: crate::generated::SyncCheckpoint { seq: checkpoint },
                         documents: documents
                             .into_iter()
@@ -728,8 +726,6 @@ fn pull_entities(
             );
         }
         let response = crate::generated::SyncPullResetResponse {
-            sync_entities: None,
-            sync_entities_after: None,
             floor: page.tombstone_floor,
             generation,
             max_seq: page.max_sequence,
@@ -799,8 +795,6 @@ fn pull_entities(
         checkpoint = next_after;
     }
     let response = crate::generated::SyncPullResponse {
-        sync_entities: None,
-        sync_entities_after: None,
         checkpoint: crate::generated::SyncCheckpoint { seq: checkpoint },
         documents,
         floor: None,
@@ -1134,8 +1128,6 @@ mod vault_maintenance_tests {
         let page: crate::generated::SyncPullResponse =
             serde_json::from_value(page_json).expect("legacy page projects to DTO");
         let direct_page = crate::generated::SyncPullResponse {
-            sync_entities: None,
-            sync_entities_after: None,
             checkpoint: crate::generated::SyncCheckpoint { seq: 8 },
             documents: vec![
                 crate::generated::SyncPullResponseDocumentsItemUnion::SyncDocument(
@@ -1166,8 +1158,6 @@ mod vault_maintenance_tests {
         let reset: crate::generated::SyncPullResetResponse =
             serde_json::from_value(reset_json).expect("legacy reset projects to DTO");
         let direct_reset = crate::generated::SyncPullResetResponse {
-            sync_entities: None,
-            sync_entities_after: None,
             floor: 3,
             generation: 7,
             max_seq: 10,

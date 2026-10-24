@@ -1199,6 +1199,37 @@ test("tests retain temporary state ownership and follow the platform temp root",
   );
 });
 
+test("temporary state scan skips tracked files removed by the current change", async () => {
+  const { repositoryTemporaryStateFindings } =
+    await import("../test-temp-state.mjs");
+  const root = mkdtempSync(
+    path.join(os.tmpdir(), "studio-temp-state-deleted-"),
+  );
+  try {
+    for (const args of [
+      ["init", "--quiet"],
+      ["config", "user.email", "checks@example.invalid"],
+      ["config", "user.name", "Repository checks"],
+    ]) {
+      const result = spawnSync("git", args, { cwd: root, encoding: "utf8" });
+      assert.equal(result.status, 0, result.stderr);
+    }
+    writeFileSync(
+      path.join(root, "removed.test.mjs"),
+      "const root = '/tmp';\n",
+    );
+    let result = spawnSync("git", ["add", "removed.test.mjs"], {
+      cwd: root,
+      encoding: "utf8",
+    });
+    assert.equal(result.status, 0, result.stderr);
+    rmSync(path.join(root, "removed.test.mjs"));
+    assert.deepEqual(repositoryTemporaryStateFindings(root), []);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("installer recipe preserves directory arguments as literal positional values", () => {
   const root = mkdtempSync(path.join(os.tmpdir(), "studio-install-recipe-"));
   try {

@@ -21,9 +21,7 @@ import type {
   PathsWithMethod,
 } from "openapi-typescript-helpers";
 
-import type { components, paths } from "./generated/api";
-
-import { SYNC_ENTITY_SCOPE } from "./generated/api";
+import type { paths } from "./generated/api";
 
 import {
   API_SCHEMA_HASH,
@@ -42,8 +40,6 @@ import type {
 import { onResume } from "./sync/resume";
 
 import { displayError } from "./errorPresentation";
-
-import { getEntitySequenceCheckpointForWorkspace } from "./sync/entitySequence";
 
 type Method = "get" | "post";
 
@@ -295,22 +291,6 @@ function requestController(options: ApiOptions, timeoutMs: number | undefined) {
   };
 }
 
-type SyncEnvelope = {
-  _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-  _syncEntitiesAfter?: number | null;
-};
-
-type SyncEntityDocument = components["schemas"]["SyncEntity"];
-
-type SyncEntityPersister = (
-  workspaceId: string,
-  documents: SyncEntityDocument[],
-  syncEntitiesAfter: number | null | undefined,
-  isPersistenceCurrent: () => boolean,
-) => Promise<void>;
-
-const SYNC_ENTITY_PERSIST_TIMEOUT_MS = 250;
-
 // Only reads and operations with a durable request identity use this deadline.
 type SyncGetOptions<Path extends PathsFor<"get">> = Omit<
   GetOptions<Path>,
@@ -339,7 +319,6 @@ export type ApiScopeOptions = {
   sessionStorage: Storage;
   beginMutation: typeof beginServerMutation;
   beginActivity: typeof beginServerActivity;
-  entityCheckpoint: typeof getEntitySequenceCheckpointForWorkspace;
 };
 export function createApiScope(options: ApiScopeOptions) {
   const { localStorage, sessionStorage } = options;
@@ -347,7 +326,6 @@ export function createApiScope(options: ApiScopeOptions) {
   const serverFetch = options.fetch;
   const beginServerMutation = options.beginMutation;
   const beginServerActivity = options.beginActivity;
-  const getEntitySequenceCheckpointForWorkspace = options.entityCheckpoint;
 
   let token = "";
 
@@ -536,7 +514,7 @@ export function createApiScope(options: ApiScopeOptions) {
       markApiSchemaMismatch(serverHash);
       await response.body?.cancel().catch(() => {});
       // Do not let a response from another contract reach a projection or
-      // mutation persister. The update gate is still raised before rejection.
+      // caller. The update gate is still raised before rejection.
       throw new ApiSchemaMismatchError(true);
     } else if (serverHash === API_SCHEMA_HASH) {
       matchingSchemaResponseGeneration++;
@@ -628,87 +606,6 @@ export function createApiScope(options: ApiScopeOptions) {
     successfulSession = undefined;
     confirmedSession = undefined;
     token = value;
-  }
-
-  let syncEntityPersister: SyncEntityPersister | undefined;
-
-  function registerSyncEntityPersister(
-    persist: SyncEntityPersister,
-  ): () => void {
-    syncEntityPersister = persist;
-    return () => {
-      if (syncEntityPersister === persist) syncEntityPersister = undefined;
-    };
-  }
-
-  async function syncDocuments(
-    value: SyncEnvelope | null | undefined,
-    workspaceId: string | undefined,
-  ): Promise<void> {
-    if (!value?._syncEntities?.length || typeof window === "undefined") return;
-    const targetWorkspaceId = workspaceId ?? workspace;
-    if (syncEntityPersister) {
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      let persistenceCurrent = true;
-      try {
-        await Promise.race([
-          syncEntityPersister(
-            targetWorkspaceId,
-            value._syncEntities,
-            value._syncEntitiesAfter,
-            () => persistenceCurrent,
-          ),
-          new Promise<never>((_, reject) => {
-            timer = setTimeout(() => {
-              persistenceCurrent = false;
-              reject(new Error("IndexedDB persistence timed out"));
-            }, SYNC_ENTITY_PERSIST_TIMEOUT_MS);
-          }),
-        ]);
-      } catch (error) {
-        persistenceCurrent = false;
-        console.error("Mutation entity persistence failed", {
-          workspaceId: targetWorkspaceId,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      } finally {
-        clearTimeout(timer);
-      }
-    }
-  }
-
-  function beginMutationEntityCoverage(
-    value: SyncEnvelope | null | undefined,
-    targetWorkspaceId: string,
-  ):
-    | {
-        checkpoint: NonNullable<
-          ReturnType<typeof getEntitySequenceCheckpointForWorkspace>
-        >;
-        token: number;
-      }
-    | undefined {
-    const rows = value?._syncEntities;
-    const after = value?._syncEntitiesAfter;
-    if (
-      !rows?.length ||
-      !syncEntityPersister ||
-      typeof after !== "number" ||
-      !Number.isSafeInteger(after) ||
-      typeof window === "undefined"
-    )
-      return undefined;
-    const entities = rows;
-    if (entities.length === 0) return undefined;
-    const through = Math.max(...entities.map((document) => document.seq));
-    const checkpoint = getEntitySequenceCheckpointForWorkspace(
-      targetWorkspaceId,
-      SYNC_ENTITY_SCOPE,
-      API_SCHEMA_HASH,
-    );
-    if (!checkpoint) return undefined;
-    const token = checkpoint.beginInFlightCoverage(after, through);
-    return token === undefined ? undefined : { checkpoint, token };
   }
 
   async function performGet<Path extends PathsFor<"get">>(
@@ -828,16 +725,6 @@ export function createApiScope(options: ApiScopeOptions) {
       if (result.data === null)
         throw new Error("Successful response did not contain a body.");
       const data = result.data as PostResult<Path>;
-      const coverage = beginMutationEntityCoverage(
-        data as SyncEnvelope,
-        targetWorkspaceId,
-      );
-      try {
-        await syncDocuments(data as SyncEnvelope, targetWorkspaceId);
-      } finally {
-        if (coverage)
-          coverage.checkpoint.settleInFlightCoverage(coverage.token);
-      }
       mutation?.finish();
       return data;
     } catch (error) {
@@ -1004,7 +891,6 @@ export function createApiScope(options: ApiScopeOptions) {
     serverAccess,
     setWorkspace,
     setToken,
-    registerSyncEntityPersister,
     get,
     post,
     apiDownload,
@@ -1025,7 +911,6 @@ const defaultApi = createApiScope({
   sessionStorage,
   beginMutation: beginServerMutation,
   beginActivity: beginServerActivity,
-  entityCheckpoint: getEntitySequenceCheckpointForWorkspace,
 });
 export const {
   isApiSchemaMismatch,
@@ -1042,7 +927,6 @@ export const {
   serverAccess,
   setWorkspace,
   setToken,
-  registerSyncEntityPersister,
   get,
   post,
   apiDownload,

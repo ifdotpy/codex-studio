@@ -94,8 +94,6 @@ pub(super) fn accounts_response(
         .map_err(|_| crate::error::ApiError::internal())?;
 
     Ok(axum::Json(AccountsResponse {
-        sync_entities: None,
-        sync_entities_after: None,
         accounts,
         archived_accounts,
         default_account_key: serde_json::from_value(snapshot.default_account_key)

@@ -215,38 +215,24 @@ async function setup(entitySequence = 0) {
   );
   const api = await import("./api");
   api.setToken("test-token");
-  const events = await import("./sync/resourceEvents");
-  const acknowledge = events.acknowledgeEntitySequences;
-  // Model the registered persister used by sync/client.ts. The API no longer
-  // sends a window event after POST responses; it awaits this persister.
-  api.registerSyncEntityPersister(async (targetWorkspaceId, documents) => {
-    acknowledge(
-      documents.map((document) => document.seq),
-      targetWorkspaceId,
-    );
-  });
   api.setWorkspace(workspaceId);
   const post = () =>
     api
       .post("/api/stop" as never, { id: "x" } as never)
       .catch((error: unknown) => error);
-  return { hub, posts, post, watch: events.watchResourceChanges };
+  return {
+    hub,
+    posts,
+    post,
+    watch: (await import("./sync/resourceEvents")).watchResourceChanges,
+  };
 }
 
 const tick = (ms = 300) => vi.advanceTimersByTimeAsync(ms);
 const state: Ref = { kind: "state" };
 const accounts: Ref = { kind: "accounts" };
 const costs: Ref = { kind: "costs" };
-const envelope = (...sequences: number[]) =>
-  Response.json({
-    ok: true,
-    _syncEntities: sequences.map((seq) => ({
-      id: `entity:agent:a${seq}`,
-      seq,
-      payload: "{}",
-      _deleted: false,
-    })),
-  });
+const mutationResult = () => Response.json({ ok: true });
 
 describe("round two: freshness with the real hub revision rules", () => {
   afterEach(() => {
@@ -398,14 +384,13 @@ describe("round two: acting-tab suppression", () => {
     const base = s;
     const pending = post();
     await tick(1);
-    posts[0]!.resolve(envelope(41));
+    posts[0]!.resolve(mutationResult());
     await pending;
-    // The response envelope acknowledges this exact sequence batch before its
-    // trailing StateResource event reaches the tab.
+    // Only stream application delivers entity state after a mutation.
     deliver(hub.publishEntitySequence(41));
     await tick(50);
     console.log("S1", JSON.stringify({ pulls: s - base }));
-    expect(s - base).toBe(0);
+    expect(s - base).toBeGreaterThanOrEqual(1);
   });
 
   it("S2 the POST fails after the server committed: the held event is released", async () => {
@@ -426,8 +411,7 @@ describe("round two: acting-tab suppression", () => {
   });
 
   it("S3 another writer's commit just before this tab's POST is not lost", async () => {
-    // Order on the server: other writer commits 41; this tab's POST samples
-    // after=41 and commits 42; the envelope carries only 42 (seq > 41).
+    // Both commits arrive through the stream while the mutation is pending.
     const { hub, posts, post, watch } = await setup(40);
     let s = 0;
     watch(state as never, () => s++);
@@ -438,14 +422,14 @@ describe("round two: acting-tab suppression", () => {
     deliver(hub.publishEntitySequence(41)); // other writer's event arrives, is held
     deliver(hub.publishEntitySequence(42)); // own commit
     await tick(50);
-    posts[0]!.resolve(envelope(42));
+    posts[0]!.resolve(mutationResult());
     await pending;
     await tick(5000);
     console.log(
       "S3",
       JSON.stringify({
         pulls: s - base,
-        note: "row 41 is in neither the envelope nor a pull",
+        note: "the stream is the entity delivery path",
       }),
     );
     expect(s - base).toBeGreaterThanOrEqual(1);
@@ -462,7 +446,7 @@ describe("round two: acting-tab suppression", () => {
     deliver(hub.publishEntitySequence(41));
     await tick(5);
     deliver(hub.publishEntitySequence(42));
-    posts[0]!.resolve(envelope(42));
+    posts[0]!.resolve(mutationResult());
     await pending;
     await tick(5000);
     console.log("S4", JSON.stringify({ pulls: s - base }));
