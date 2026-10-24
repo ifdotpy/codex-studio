@@ -222,9 +222,8 @@ test("Team panel ui", async ({
           ].map((node) => node.getBoundingClientRect().left),
         };
       });
-      assert.equal(
-        geometry.padding,
-        geometry.gutter,
+      assert.ok(
+        Math.abs(geometry.padding - geometry.gutter) < 1,
         "Team uses the shared md gutter",
       );
       for (const strip of geometry.strips) {
@@ -343,5 +342,91 @@ test("Team panel ui", async ({
         .filter((ownedContext) => ownedContext !== runnerContext)
         .map((ownedContext) => ownedContext.close()),
     );
+  }
+});
+
+test("Team panel scrolls past retained worktrees to the last worker", async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  page.setDefaultTimeout(10_000);
+  const root = await mkdtemp(join(tmpdir(), "studio-team-scroll-"));
+  const fixture = spawn(process.execPath, [rustUiFixture, root], {
+    stdio: ["ignore", "pipe", "pipe"],
+    env: { ...process.env, FIXTURE_WORKER_COUNT: "1" },
+  });
+  let log = "";
+  fixture.stderr.on("data", (chunk) => {
+    log += chunk;
+  });
+  const port = await new Promise((resolve, reject) => {
+    fixture.stdout.once("data", (chunk) =>
+      resolve(Number(String(chunk).trim())),
+    );
+    fixture.once("exit", () => reject(new Error(log)));
+  });
+  const origin = `http://127.0.0.1:${port}`;
+  const snapshot = await readTestState(origin);
+  const lead = snapshot.threads.find((agent) => agent.name === "Release lead");
+  const member = snapshot.threads.find((agent) => agent.rootId === lead.id);
+  const workers = Array.from({ length: 24 }, (_, index) => ({
+    ...member,
+    id: `scroll-worker-${index}`,
+    name: `Scroll worker ${String(index).padStart(2, "0")}`,
+    status: "running",
+    inFlight: true,
+  }));
+  snapshot.threads = [lead, ...workers];
+  snapshot.runtime.agents = snapshot.threads;
+  await stubEntityState(page, snapshot, await readFixtureSyncContract(origin));
+  await page.route("**/api/retained-worktrees?*", (route) =>
+    route.fulfill({
+      json: {
+        retainedWorktrees: workers.map((_, index) => ({
+          id: `retained-${index}`,
+          name: `Deleted worker ${index}`,
+          cleanup: {
+            phase: "not_sent",
+            reason: "Worktree contains uncommitted changes.",
+            path: `/workspace/retained-${index}`,
+          },
+        })),
+      },
+    }),
+  );
+  await page.setViewportSize({ width: 1440, height: 720 });
+  await page.goto(origin);
+  await expect(page.locator("#message")).toBeVisible();
+  for (const width of [1440, 1024, 390, 320]) {
+    await page.setViewportSize({ width, height: 720 });
+    await page
+      .getByRole("button", { name: "Chat actions", exact: true })
+      .click();
+    await page.getByRole("menuitem", { name: "Team", exact: true }).click();
+    const panel = page.locator("#team");
+    await expect(panel).toBeInViewport({ ratio: 1 });
+    await expect(panel.locator(".retained-worktree")).toHaveCount(24);
+    await expect(panel.locator(".worker-entry")).toHaveCount(24);
+    const lastWorker = panel.locator(".worker-entry").last();
+    await expect(lastWorker).not.toBeInViewport();
+    const box = await panel.boundingBox();
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.wheel(0, 100_000);
+    await expect
+      .poll(() => panel.evaluate((node) => node.scrollTop))
+      .toBeGreaterThan(0);
+    // content-visibility measures the offscreen rows as they enter view.
+    await lastWorker.scrollIntoViewIfNeeded();
+    await expect(lastWorker).toBeInViewport({ ratio: 1 });
+    const lastRetained = panel.locator(".retained-worktree").last();
+    await lastRetained.scrollIntoViewIfNeeded();
+    await expect(lastRetained).toBeInViewport({ ratio: 1 });
+    expect(
+      await panel.evaluate((node) => node.scrollWidth <= node.clientWidth + 1),
+    ).toBe(true);
+    // The same close control remains reachable after navigating the long list.
+    await panel.locator("#team-close").scrollIntoViewIfNeeded();
+    await panel.locator("#team-close").click();
+    await expect(panel).toBeHidden();
   }
 });

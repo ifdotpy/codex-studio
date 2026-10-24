@@ -508,13 +508,14 @@ p {
   border-top: 1px solid var(--line);
 }
 
-/* Team: compact rows, with independent scroll for dozens of workers. */
+/* Team: scroll retained worktrees and workers together within the panel. */
 #team {
   width: 248px;
   flex: 0 0 248px;
   display: flex;
   flex-direction: column;
   min-height: 0;
+  overflow-y: auto;
   background: light-dark(#f4f5f8, #18181d);
   border-left: 1px solid var(--line);
   padding: 26px 14px 14px;
@@ -554,7 +555,7 @@ p {
 #workers {
   /* Contain hidden absolute status text so rows below the fold cannot grow the page. */
   position: relative;
-  flex: 1;
+  flex: 1 0 auto;
   min-height: 0;
   overflow: auto;
   scrollbar-width: thin;
