@@ -160,12 +160,16 @@ for (const [name, sql] of [
     `INSERT INTO analytics_usage VALUES('{"accountKey":"${account}"}');`,
   ],
   ["active provider", `INSERT INTO handles VALUES('account:${account}',NULL);`],
-  ["closed provider", `INSERT INTO handles VALUES('account:${account}',1);`],
 ])
   test(`a fresh profile with a ${name} footprint is refused`, (t) => {
     const f = fixture(t);
     f.reserve();
     f.added();
+    if (!name.endsWith("provider"))
+      f.sql(
+        "supervisor.sqlite3",
+        `INSERT INTO handles VALUES('account:${account}',1);`,
+      );
     f.sql(
       name === "live chat" || name === "execution" || name === "transfer"
         ? "canvas.sqlite3"
@@ -176,6 +180,17 @@ for (const [name, sql] of [
     );
     assert.throws(f.bind);
   });
+test("a fresh excluded profile may retain a closed automatic metadata SDK handle", (t) => {
+  const f = fixture(t);
+  f.reserve();
+  f.added();
+  f.sql(
+    "supervisor.sqlite3",
+    `INSERT INTO handles VALUES('account:${account}',1);`,
+  );
+  assert.doesNotThrow(f.bind);
+  assert.equal(f.read().config, f.config);
+});
 test("the real canary registry and native environment retain the bound Studio identity", (t) => {
   const f = fixture(t),
     codex = path.join(f.root, "codex");

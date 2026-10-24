@@ -253,7 +253,10 @@ function unused(r, key) {
     live,
     "supervisor.sqlite3",
     "handles",
-    `SELECT EXISTS(SELECT 1 FROM handles WHERE id>='account:${key}' AND id<'account:${key};');`,
+    // AccountRegistry starts SDK workers for empty pages and model metadata.
+    // A closed handle alone does not prove chat or model input. All such input
+    // footprints remain forbidden; a live handle still shares this profile.
+    `SELECT EXISTS(SELECT 1 FROM handles WHERE id>='account:${key}' AND id<'account:${key};' AND closed_at IS NULL);`,
   );
 }
 function binaryIdentity(file) {
