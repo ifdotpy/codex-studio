@@ -75,6 +75,15 @@ Chat creation selects `workspaceMode`.
 | `image`    | macOS           | Native agents in ASIF images                        |
 | `worktree` | macOS and Linux | Native agents in Git worktrees                      |
 
+A `worktree` worker gets its Git worktree at `<root>/codex-agents/<agent id>`.
+By default `<root>` is `.worktrees` in the worker's repository. To place the
+worktrees of every repository on another disk, write `worktree-root.json` in the
+server state directory, for example
+`{"root": "/work/ssd2/codex-studio-worktrees"}`. The root must be an existing
+absolute directory; an invalid file or missing directory refuses new worktrees
+instead of falling back. Each new worktree reads the file, so a change needs no
+restart. Archive and cleanup still manage worktrees under the previous root.
+
 The first layr chat imports the project once. Later chats reuse the VM main line.
 The Mac folder stays separate. Export a copy only on request.
 See [VM chats](linux-vm-workspaces.md) and [ASIF images](workspace-images.md).
