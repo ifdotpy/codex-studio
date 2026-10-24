@@ -993,10 +993,10 @@ async fn subscription_frame(state: &mut ResourceStream, update: SubscriptionChan
         .resources
         .iter()
         .any(|resource| resource["kind"] == "vault-readiness");
-    if readiness_interest != state.vault_readiness.is_some() {
-        if let Some(http) = &state.http_state {
-            state.vault_readiness = readiness_source(http, &state.resources).await.ok()?;
-        }
+    if readiness_interest != state.vault_readiness.is_some()
+        && let Some(http) = &state.http_state
+    {
+        state.vault_readiness = readiness_source(http, &state.resources).await.ok()?;
     }
     state.transcript_sequences.retain(|id, _| {
         state
