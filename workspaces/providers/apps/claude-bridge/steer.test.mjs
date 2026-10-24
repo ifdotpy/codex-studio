@@ -1041,3 +1041,32 @@ Object.defineProperty(process.stdout, 'writableLength', {configurable:true, get(
   assert.notEqual(answer.params.turnId, old);
   await completed(bridge, answer.params.turnId);
 });
+
+test("a throwing CLI close still completes the turn and preserves unknown input", async () => {
+  const sdk = FAKE_SDK.replace(
+    "close(){abort.abort();}",
+    "close(){if(fs.existsSync(cwd+'/.throw-close')&&!fs.existsSync(cwd+'/.close-thrown')){fs.writeFileSync(cwd+'/.close-thrown','');throw Error('injected close failure');}abort.abort();}",
+  );
+  const bridge = await startBridge({}, sdk);
+  const turn = await running(bridge, "success-late");
+  await steer(bridge, turn, "close-failure");
+  await read(bridge, "steer text");
+  await release(bridge, ".throw-close");
+  await end(bridge);
+  const done = await completed(bridge, turn);
+  assert.ok(existsSync(path.join(bridge.root, ".close-thrown")));
+  assert.equal(done.params.turn.status, "failed");
+  assert.match(done.params.turn.error.message, /injected close failure/);
+  assert.equal(done.params.turn.unappliedSteers, undefined);
+  assert.equal(
+    (await turnItems(bridge, turn)).find((i) => i.id === "close-failure")
+      .deliveryStatus,
+    "submitted",
+  );
+  assert.deepEqual((await bridge.call("thread/loaded/list", {})).data, []);
+  assert.deepEqual(await inputs(bridge), ["success-late", "steer text"]);
+  assert.equal(
+    bridge.notes.filter((n) => n.method === "turn/completed").length,
+    1,
+  );
+});

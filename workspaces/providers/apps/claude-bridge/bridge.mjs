@@ -1061,6 +1061,7 @@ async function finishTurn(s, active, result, error) {
   let finished;
   finishingTurns.set(turn, new Promise((resolve) => (finished = resolve)));
   const stall = active.stall?.turnId === turn.id ? active.stall : null;
+  let closeError;
   let closed = Boolean(stall?.closed);
   if (closed) await stall.closed;
   // A handed-off steer without an echo cannot coexist with a later turn on
@@ -1077,7 +1078,8 @@ async function finishTurn(s, active, result, error) {
   if (unknown && !closed) {
     closed = true;
     active.input.close();
-    active.q?.close();
+    closeError = closeQuery(active);
+    error ||= closeError;
     await new Promise((resolve) => setTimeout(resolve, limits.exitWaitMs));
   }
   clearDeferredResult(active);
@@ -1182,7 +1184,8 @@ async function finishTurn(s, active, result, error) {
   }
   if (closed) {
     active.input.withdraw();
-    await reconcileClosedSteers(s, turn, unappliedSteers);
+    // A failed close cannot prove that the SDK stopped applying input.
+    if (!closeError) await reconcileClosedSteers(s, turn, unappliedSteers);
   }
   for (const response of active.responseUsages.values()) {
     const total =
@@ -2125,7 +2128,7 @@ async function startSession(s, active, p) {
     allowed = false;
     admit();
     active.input.close();
-    active.q?.close();
+    closeQuery(active);
     if (queries.get(s.id) === active) {
       queries.delete(s.id);
       armStallWatch();
@@ -2140,10 +2143,18 @@ function deadQuery(error) {
     String(error?.message || error),
   );
 }
+function closeQuery(active) {
+  try {
+    active.q?.close();
+  } catch (error) {
+    process.stderr.write("Claude query close failed: " + error.message + "\n");
+    return error;
+  }
+}
 function discardQuery(s, active) {
   clearTurnTimers(active);
   active.input.close();
-  active.q?.close();
+  closeQuery(active);
   if (queries.get(s.id) === active) {
     queries.delete(s.id);
     armStallWatch();

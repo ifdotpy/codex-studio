@@ -1320,10 +1320,10 @@ async fn stop_receipt_settles_cancellation_when_background_stop_fails() {
     worker.shutdown().await.unwrap();
 }
 
-/// A late echo belongs to the original turn; the bridge's continuation is a
-/// separate provider-started turn. Each completion reports to the parent once.
+/// A late acknowledgement belongs to the original turn. An independent
+/// provider-started background turn reports its own completion to the parent once.
 #[tokio::test]
-async fn claude_late_steer_continuation_reports_each_turn_to_parent_once() {
+async fn claude_late_ack_and_background_turn_report_each_turn_to_parent_once() {
     let (state, mut peer, mut worker) = running_turn("claude").await;
     let parent = adopt_parent(&state).await;
     let request = steer(&state, &mut peer, &worker).await;
