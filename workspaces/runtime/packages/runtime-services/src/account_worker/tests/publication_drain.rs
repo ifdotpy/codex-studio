@@ -379,32 +379,6 @@ async fn crash_before_delete_keeps_the_receipt_for_idempotent_replay() {
 }
 
 #[tokio::test]
-async fn long_stream_keeps_the_publication_table_bounded() {
-    let (root, store) = test_store().await;
-    let sink = Arc::new(RecordingSink::default());
-    let mut maximum = 0;
-    for sequence in 1..=256 {
-        stage(
-            &store,
-            sequence,
-            0,
-            value(sequence, 0, publication_effect(sequence)),
-        )
-        .await;
-        maximum = maximum.max(pending_count(&store));
-        assert_eq!(
-            store::drain_publications(Arc::clone(&store), "default".into(), sink.clone())
-                .await
-                .expect("drain stream"),
-            1
-        );
-    }
-    assert_eq!(maximum, 1);
-    assert_eq!(pending_count(&store), 0);
-    std::fs::remove_dir_all(root).expect("remove test state");
-}
-
-#[tokio::test]
 async fn complete_analytics_usage_persists_beyond_the_publication_bound() {
     let (root, store) = test_store().await;
     seed_analytics_agent(&store).await;

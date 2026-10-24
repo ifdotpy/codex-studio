@@ -11,8 +11,6 @@ const SCOPE: &str = "default";
 /// Provider events after one held answer; more than the session's unsettled
 /// bound, so the old cursor-held design would stop reading in the middle.
 const EVENTS_BEHIND_HELD_ANSWER: u64 = crate::provider_session_task::MAX_UNSETTLED as u64 + 6;
-/// Requests in one burst; more than both callback limits.
-const BURST: u64 = 100;
 
 fn request(id: &str) -> Value {
     json!({"id":id,"method":"unknown/providerMethod","params":{}})
@@ -518,17 +516,18 @@ async fn an_unanswered_request_does_not_stop_events_or_new_work() {
     worker.shutdown().await.unwrap();
 }
 
-/// More requests than the handler and answer limits are all accepted, read past
-/// and answered once; the limits only delay their start.
+/// A burst larger than either callback limit is accepted and answered once.
+/// Immediate receipts exercise throughput, without holding either lane full.
 #[tokio::test]
 async fn a_burst_beyond_the_callback_limits_is_answered_once_each() {
+    let burst = MAX_RUNNING_CALLBACKS.max(MAX_QUEUED_CALLBACK_ANSWERS) + 1;
     let state = State::new().await;
     let mut peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
     let mut acked = 0;
     let mut answered = Vec::new();
     let mut last = 0;
-    for index in 0..BURST {
+    for index in 0..burst {
         last = flood(
             &mut peer,
             &mut acked,
@@ -538,7 +537,7 @@ async fn a_burst_beyond_the_callback_limits_is_answered_once_each() {
         .await;
     }
     tokio::time::timeout(std::time::Duration::from_secs(60), async {
-        while acked < last || answered.len() < BURST as usize {
+        while acked < last || answered.len() < burst {
             tokio::select! {
                 ack = peer.acks.recv() => acked = acked.max(ack.expect("ack lane").0),
                 wire = peer.writes.recv() => {
@@ -554,12 +553,12 @@ async fn a_burst_beyond_the_callback_limits_is_answered_once_each() {
     })
     .await
     .expect("every request is acknowledged and answered");
-    let distinct = answered.iter().collect::<BTreeSet<_>>();
-    assert_eq!(
-        distinct.len(),
-        BURST as usize,
-        "every request is answered once"
-    );
+    let mut expected = (0..burst)
+        .map(|index| format!("callback-{index}"))
+        .collect::<Vec<_>>();
+    expected.sort();
+    answered.sort();
+    assert_eq!(answered, expected, "every request is answered exactly once");
     callbacks_retired(&state).await;
     worker_barrier(&worker).await;
     assert!(peer.writes.try_recv().is_err());

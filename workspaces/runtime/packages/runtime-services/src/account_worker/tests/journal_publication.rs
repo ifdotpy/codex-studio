@@ -8,8 +8,8 @@ const AGENTS: [(&str, &str); 2] = [("agent", "thread"), ("second", "second-threa
 const FIRST_CURSOR: u64 = 1;
 const LONG_ANSWER_CHARS: usize = crate::sync_views::AGENT_SYNC_LAST_ANSWER_CHARS + 1;
 
-async fn fixture() -> Arc<RuntimeStore> {
-    let (_directory, store) = running_store().await;
+async fn fixture() -> (tempfile::TempDir, Arc<RuntimeStore>) {
+    let (directory, store) = running_store().await;
     store
         .transaction(|tx| {
             let mut second = AgentRepository::get(tx, &AgentId::from("agent"))?
@@ -23,7 +23,7 @@ async fn fixture() -> Arc<RuntimeStore> {
         })
         .await
         .expect("second agent");
-    store
+    (directory, store)
 }
 
 async fn start_counting(store: &RuntimeStore) {
@@ -83,7 +83,12 @@ fn notifications() -> Vec<JournalEntry> {
 /// with repeated source writes must still project and validate each agent once.
 #[tokio::test]
 async fn long_answers_use_canonical_bounded_agent_sync_projection() {
-    let store = fixture().await;
+    let (_directory, store) = fixture().await;
+    drop(
+        store
+            .test_reader()
+            .expect("fixture database remains readable"),
+    );
     start_counting(&store).await;
     let streams = journal(&store, NotificationStreamBuffer::default(), notifications()).await;
     assert_once(calls(&store).await);
@@ -118,7 +123,7 @@ async fn long_answers_use_canonical_bounded_agent_sync_projection() {
 
 #[tokio::test]
 async fn stream_flush_batch_publishes_each_agent_once() {
-    let store = fixture().await;
+    let (_directory, store) = fixture().await;
     let entries = AGENTS
         .into_iter()
         .enumerate()
@@ -148,7 +153,7 @@ async fn stream_flush_batch_publishes_each_agent_once() {
 
 #[tokio::test]
 async fn journal_projection_failure_rolls_back_sources_and_receipts() {
-    let store = fixture().await;
+    let (_directory, store) = fixture().await;
     store.transaction(|tx| {
         tx.execute_batch("CREATE TRIGGER reject_agent_projection BEFORE INSERT ON sync_entities WHEN NEW.collection='agent' BEGIN SELECT RAISE(ABORT,'projection failure'); END;")?;
         Ok(())
@@ -198,7 +203,7 @@ async fn journal_projection_failure_rolls_back_sources_and_receipts() {
 
 #[tokio::test]
 async fn changed_agents_decode_once_through_final_publication() {
-    let store = fixture().await;
+    let (_directory, store) = fixture().await;
     store
         .transaction(|tx| {
             let mut unrelated = AgentRepository::get(tx, &AgentId::from("agent"))?

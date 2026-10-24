@@ -576,6 +576,8 @@ async fn scenario_matrix(index: usize) -> (usize, f64, f64) {
         }
         let full = std::env::var_os("STUDIO_RUNTIME_CORPUS_FULL").is_some();
         let mut covered = std::collections::BTreeSet::new();
+        let mut skipped = std::collections::BTreeSet::new();
+        let mut attempted = 0;
         for (name, occurrence, identity) in &operations {
             for after in [false, true] {
                 if !full && !(after && (name == "finish" || (index == 0 && name == "claim"))) {
@@ -584,6 +586,7 @@ async fn scenario_matrix(index: usize) -> (usize, f64, f64) {
                 eprintln!(
                     "matrix scenario={index} operation={name} occurrence={occurrence} identity={identity:?} after={after}"
                 );
+                attempted += 1;
                 let started = std::time::Instant::now();
                 let Some(context) = execute(
                     index,
@@ -591,7 +594,14 @@ async fn scenario_matrix(index: usize) -> (usize, f64, f64) {
                 )
                 .await
                 else {
-                    covered.insert((name.clone(), *occurrence, identity.clone(), after));
+                    assert!(
+                        *occurrence > 0 || timing_dependent(name, identity.as_deref()),
+                        "missing required boundary"
+                    );
+                    skipped.insert((name.clone(), *occurrence, identity.clone(), after));
+                    eprintln!(
+                        "skipped unfired boundary scenario={index} operation={name} occurrence={occurrence} identity={identity:?} after={after}"
+                    );
                     continue;
                 };
                 scenario_seconds += started.elapsed().as_secs_f64();
@@ -610,11 +620,24 @@ async fn scenario_matrix(index: usize) -> (usize, f64, f64) {
                 cases += 1;
             }
         }
+        assert!(cases > 0, "scenario {index} fired no failpoints");
+        assert_eq!(attempted, covered.len() + skipped.len());
+        eprintln!(
+            "matrix coverage scenario={index} attempted={attempted} fired={} skipped={}",
+            covered.len(),
+            skipped.len()
+        );
         if full {
             for (name, occurrence, identity) in operations {
                 for after in [false, true] {
                     assert!(
-                        covered.contains(&(name.clone(), occurrence, identity.clone(), after)),
+                        covered.contains(&(name.clone(), occurrence, identity.clone(), after))
+                            || skipped.contains(&(
+                                name.clone(),
+                                occurrence,
+                                identity.clone(),
+                                after
+                            )),
                         "missing named boundary"
                     );
                 }
