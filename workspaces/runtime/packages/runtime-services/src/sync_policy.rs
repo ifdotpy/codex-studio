@@ -3210,6 +3210,20 @@ mod tests {
         let (_root, store) = task_window_store().await;
         store
             .transaction(|transaction| {
+                // Start at the production history boundary so every completed insert
+                // exercises eviction, without hundreds of below-boundary rebuilds.
+                for index in 0..TASK_WINDOW_HISTORY_ROWS {
+                    let id = format!("history-{index}");
+                    transaction.execute(
+                        "INSERT INTO runtime_tasks(id,record) VALUES(?1,?2)",
+                        rusqlite::params![
+                            id,
+                            json!({"id":id,"agent":"a","status":"completed","created":index})
+                                .to_string()
+                        ],
+                    )?;
+                }
+                maintain_task_window(transaction, &|_, _, _, _| true)?;
                 // Deterministic xorshift sequence; `created` is unique per task.
                 let mut state = 0x9E37_79B9_7F4A_7C15_u64;
                 let mut next = move |bound: u64| {
@@ -3219,10 +3233,11 @@ mod tests {
                     state % bound
                 };
                 let mut created = BTreeMap::<u64, u64>::new();
-                // This fixed stream crosses the history window at write 274.
-                for step in 0..300_u64 {
-                    let index = next(170);
-                    let created = *created.entry(index).or_insert_with(|| step * 7 + 1);
+                for step in 0..32_u64 {
+                    let index = next(12);
+                    let created = *created
+                        .entry(index)
+                        .or_insert_with(|| TASK_WINDOW_HISTORY_ROWS as u64 + step * 7 + 1);
                     let status = ["running", "completed", "failed", "completed"][next(4) as usize];
                     let agent = ["a", "b"][next(2) as usize];
                     let task = json!({
@@ -3235,6 +3250,10 @@ mod tests {
                     let full = live_task_projection(transaction);
                     assert_eq!(full, incremental, "step {step} write {task}");
                 }
+                assert!(
+                    !live_task_projection(transaction).contains_key("history-0"),
+                    "random completed writes evict the oldest history row"
+                );
                 Ok(())
             })
             .await
