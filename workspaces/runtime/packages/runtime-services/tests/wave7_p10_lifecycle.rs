@@ -30,7 +30,7 @@ async fn fixture_store(
     root: Option<&Path>,
 ) -> Result<RuntimeStore, studio_runtime_store::StoreError> {
     let store = RuntimeStore::open(root).await?;
-    studio_runtime_services::entity_publication::install(&store);
+    studio_runtime_services::entity_publication::install(&store).await?;
     Ok(store)
 }
 
