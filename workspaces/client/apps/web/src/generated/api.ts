@@ -22759,6 +22759,21 @@ export interface components {
        */
       subject: string;
     };
+    /** StudioErrorsDismissRequest */
+    StudioErrorsDismissRequest: {
+      /** @description Legacy single error id. Supply either id or ids. */
+      id?: string;
+      /** @description Error ids to dismiss atomically. Duplicate ids are reported once. */
+      ids?: string[];
+    };
+    /** StudioErrorsDismissResponse */
+    StudioErrorsDismissResponse: {
+      dismissedIds: string[];
+      /** Items */
+      items: components["schemas"]["StudioError"][];
+      /** @description Ids absent from the current error list, including already dismissed ids. */
+      unknownIds: string[];
+    };
     /** StudioErrorsResponse */
     StudioErrorsResponse: {
       /**
@@ -36203,7 +36218,7 @@ export interface operations {
     };
     requestBody: {
       content: {
-        "application/json": components["schemas"]["IdRequest"];
+        "application/json": components["schemas"]["StudioErrorsDismissRequest"];
       };
     };
     responses: {
@@ -36226,7 +36241,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["StudioErrorsResponse"];
+          "application/json": components["schemas"]["StudioErrorsDismissResponse"];
         };
       };
       /** @description Bad Request */

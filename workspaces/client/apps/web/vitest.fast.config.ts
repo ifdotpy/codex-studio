@@ -19,6 +19,9 @@ export default {
       // Token snapshots carry each agent once and derive team membership without entity projections.
       "src/usage/tokenRate.records.test.ts",
       "src/usage/tokenRate.test.mjs",
+      "src/components/StudioErrors.test.ts",
+      "src/components/SidebarWarnings.test.ts",
+      "src/components/ConversationWarnings.test.ts",
       // web unit safety witnesses
       "src/api.test.ts",
       "src/startWait.test.ts",

@@ -20,6 +20,9 @@ pub const MONITOR_WAIT_MAX_MILLISECONDS: usize = 10000;
 /// Concurrent blocking monitor waits.
 pub const MONITOR_WAIT_SLOTS: usize = 64;
 
+/// Most error ids accepted in one atomic Studio error dismissal request. Unit: ids.
+pub const STUDIO_ERRORS_DISMISS_MAX_IDS: usize = 200;
+
 // Native terminal discovery before a stop.
 /// Terminal entries per discovery page.
 pub const NATIVE_TERMINAL_ITEMS_PER_PAGE: usize = 100;

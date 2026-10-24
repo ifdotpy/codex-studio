@@ -84,7 +84,6 @@ import {
   type Room,
 } from "../types";
 import Usage from "./Usage";
-import ConversationWarnings from "./ConversationWarnings";
 import type { UsageAccount } from "./Usage";
 import PromptNavigator from "./PromptNavigator";
 import { usePromptRecall } from "./usePromptRecall";
@@ -1532,19 +1531,6 @@ export default function Conversation(p: {
           chooseChat={p.onChooseChat}
         />
       )}
-      {headerTools &&
-        agent &&
-        !p.room &&
-        createPortal(
-          <ConversationWarnings
-            key={`${p.data.stateDir}:${p.id}:${agent.accountKey || "default"}`}
-            scope={`${p.data.stateDir}:${p.id}:${agent.accountKey || "default"}`}
-            notices={runtime?.nativeNotices ?? []}
-            accountKey={agent.accountKey || "default"}
-            messages={items}
-          />,
-          headerTools,
-        )}
       {headerTools &&
         !p.room &&
         (p.id || managed) &&

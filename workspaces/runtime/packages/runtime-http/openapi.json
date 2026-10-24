@@ -51312,6 +51312,62 @@
         "title": "StudioError",
         "type": "object"
       },
+      "StudioErrorsDismissRequest": {
+        "additionalProperties": false,
+        "maxProperties": 1,
+        "minProperties": 1,
+        "properties": {
+          "id": {
+            "description": "Legacy single error id. Supply either id or ids.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "ids": {
+            "description": "Error ids to dismiss atomically. Duplicate ids are reported once.",
+            "items": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 200,
+            "minItems": 1,
+            "type": "array"
+          }
+        },
+        "title": "StudioErrorsDismissRequest",
+        "type": "object"
+      },
+      "StudioErrorsDismissResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "dismissedIds": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/StudioError"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "unknownIds": {
+            "description": "Ids absent from the current error list, including already dismissed ids.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "items",
+          "dismissedIds",
+          "unknownIds"
+        ],
+        "title": "StudioErrorsDismissResponse",
+        "type": "object"
+      },
       "StudioErrorsResponse": {
         "additionalProperties": false,
         "properties": {
@@ -79196,7 +79252,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/IdRequest"
+                "$ref": "#/components/schemas/StudioErrorsDismissRequest"
               }
             }
           },
@@ -79207,7 +79263,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/StudioErrorsResponse"
+                  "$ref": "#/components/schemas/StudioErrorsDismissResponse"
                 }
               }
             },
