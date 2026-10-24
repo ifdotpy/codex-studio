@@ -165,28 +165,6 @@ pub(super) fn authorize(tx: &rusqlite::Transaction<'_>, call: &Call) -> Result<b
         } else {
             false
         };
-    // Capability preflight can read only this actor's merged configuration.
-    // It cannot inspect another directory or run without a configured MCP limit.
-    let capability_config_read = call.method == "config/read"
-        && call
-            .operation
-            .starts_with(&format!("capability-config:{}:", actor.agent))
-        && agent_record
-            .extra
-            .get("capabilityProfile")
-            .is_some_and(|profile| profile["mcpServers"].is_array())
-        && agent_record.extra.get("provider") == Some(&json!("codex"))
-        && call.params.get("includeLayers") == Some(&json!(false))
-        && call.params.as_object().is_some_and(|params| {
-            params
-                .keys()
-                .all(|key| matches!(key.as_str(), "cwd" | "includeLayers"))
-        })
-        && call
-            .params
-            .get("cwd")
-            .and_then(Value::as_str)
-            .is_some_and(|cwd| agent_record.extra.get("cwd").and_then(Value::as_str) == Some(cwd));
     let monitor_method = matches!(
         call.method.as_str(),
         "command/exec" | "command/exec/write" | "command/exec/resize" | "command/exec/terminate"
@@ -269,7 +247,6 @@ pub(super) fn authorize(tx: &rusqlite::Transaction<'_>, call: &Call) -> Result<b
                 || thread_start
                 || ephemeral_turn
                 || config_read
-                || capability_config_read
                 || monitor_matches
                 || deleted_voice_stop))
 }

@@ -811,28 +811,6 @@ pub(crate) async fn spawn_agents(
                 record["cwd"].as_str().unwrap_or(child_directory)
             ));
         }
-        let parent_caps = crate::worker_capabilities::from_record(&parent_value)
-            .map_err(crate::managed_host_tools::Error::Invalid)?;
-        let profile_caps = profile
-            .as_ref()
-            .map(|p| p.capabilities.clone())
-            .unwrap_or_default();
-        let profile_caps = crate::worker_capabilities::narrow(&parent_caps, &profile_caps)
-            .map_err(crate::managed_host_tools::Error::Invalid)?;
-        let overrides = crate::worker_capabilities::from_value(spec)
-            .map_err(crate::managed_host_tools::Error::Invalid)?;
-        let capabilities = crate::worker_capabilities::narrow(&profile_caps, &overrides)
-            .map_err(crate::managed_host_tools::Error::Invalid)?;
-        crate::worker_capabilities::for_provider(&capabilities, provider)
-            .map_err(crate::managed_host_tools::Error::Invalid)?;
-        if provider == "codex" && vm_workspace && capabilities.mcp_servers.is_some() {
-            return Err(crate::managed_host_tools::Error::Invalid(
-                "Codex mcpServers profiles are not supported for VM workers",
-            )
-            .into());
-        }
-        record["capabilityProfile"] = json!(capabilities);
-        record["completedWorkerTurns"] = json!(0);
         record["provider"] = json!(provider);
         record["workerBaseMainRef"] = json!(main_ref.clone());
         record["workerBaseBehindMain"] = json!(behind_main);

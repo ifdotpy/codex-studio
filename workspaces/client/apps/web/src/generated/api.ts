@@ -11698,7 +11698,6 @@ export interface components {
        * @default default
        */
       account_key?: string;
-      allowedTools?: string[] | null;
       /**
        * Concurrency
        * @default 32
@@ -11714,7 +11713,6 @@ export interface components {
        * @default null
        */
       daybreak_enabled?: boolean | null;
-      disallowedTools?: string[] | null;
       /**
        * Effort
        * @default null
@@ -11735,8 +11733,6 @@ export interface components {
        * @default 64
        */
       maxAgents?: number;
-      maxTurns?: number | null;
-      mcpServers?: string[] | null;
       /**
        * Model
        * @default null
@@ -11771,7 +11767,6 @@ export interface components {
       prompt: string;
       /** @default orchestrator */
       role?: components["schemas"]["AgentRole-Input"];
-      skills?: string[] | null;
       /**
        * Tokenbudget
        * @default null
@@ -17675,8 +17670,6 @@ export interface components {
        * @enum {string}
        */
       action?: "save" | "delete";
-      allowedTools?: string[] | null;
-      disallowedTools?: string[] | null;
       /**
        * Effort
        * @default null
@@ -17697,8 +17690,6 @@ export interface components {
        * @default null
        */
       isNew?: boolean | null;
-      maxTurns?: number | null;
-      mcpServers?: string[] | null;
       /**
        * Model
        * @default null
@@ -17715,7 +17706,6 @@ export interface components {
        * @enum {string}
        */
       role?: "reviewer" | "implementer";
-      skills?: string[] | null;
     };
     /** ProfileList */
     ProfileList: {
@@ -17744,13 +17734,11 @@ export interface components {
        * @default null
        */
       _syncEntitiesAfter?: number | null;
-      allowedTools?: string[] | null;
       /**
        * Deleted
        * @default null
        */
       deleted?: null | string;
-      disallowedTools?: string[] | null;
       /**
        * Effort
        * @default null
@@ -17766,8 +17754,6 @@ export interface components {
        * @default null
        */
       instructions?: null | string;
-      maxTurns?: number | null;
-      mcpServers?: string[] | null;
       /**
        * Model
        * @default null
@@ -17783,20 +17769,15 @@ export interface components {
        * @default null
        */
       role?: ("reviewer" | "implementer") | null;
-      skills?: string[] | null;
     };
     /** ProfileRecord */
     ProfileRecord: {
-      allowedTools?: string[] | null;
-      disallowedTools?: string[] | null;
       /** Effort */
       effort: ("low" | "medium" | "high" | "xhigh" | "max" | "ultra") | null;
       /** Id */
       id: string;
       /** Instructions */
       instructions: string;
-      maxTurns?: number | null;
-      mcpServers?: string[] | null;
       /** Model */
       model: string;
       /** Name */
@@ -17806,7 +17787,6 @@ export interface components {
        * @enum {string}
        */
       role: "reviewer" | "implementer";
-      skills?: string[] | null;
     };
     /**
      * Project
