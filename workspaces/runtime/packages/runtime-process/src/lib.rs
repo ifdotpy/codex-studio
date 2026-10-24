@@ -5,9 +5,9 @@ pub mod child_priority;
 mod client;
 #[cfg(unix)]
 pub mod clock;
-pub mod operational_log;
 #[cfg(unix)]
 pub mod open_files;
+pub mod operational_log;
 #[cfg(unix)]
 pub mod owned_process_group;
 mod ports;

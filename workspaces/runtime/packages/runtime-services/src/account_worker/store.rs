@@ -1879,7 +1879,7 @@ fn record_manual_release_closure(
     let release = &record["nativeRelease"];
     if !release["id"]
         .as_str()
-        .is_some_and(|id| id.starts_with("manual-release:"))
+        .is_some_and(|id| id.starts_with(crate::agent_management_recovery::MANUAL_RELEASE_PREFIX))
     {
         return Ok(false);
     }
