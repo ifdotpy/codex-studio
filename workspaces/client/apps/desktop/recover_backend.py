@@ -11,6 +11,7 @@ from pathlib import Path
 import signal
 import socket
 import subprocess
+import sys
 import time
 import urllib.error
 import urllib.request
@@ -421,13 +422,25 @@ def run(filename, interval=5):
     # Disabling this service does not terminate the backend or its active work.
 
 
+def check_interpreter():
+    """Prove that this interpreter runs the recovery job: the imports above (StrEnum needs
+    Python 3.11) and the helpers shipped beside this file."""
+    import desktop_process  # noqa: F401
+    import desktop_updates  # noqa: F401
+    import desktop_vm  # noqa: F401
+    print(json.dumps({"python": sys.executable, "version": list(sys.version_info[:3])}))
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=Path)
     parser.add_argument("--supervisor-health", action="store_true")
     parser.add_argument("--state", type=Path)
+    parser.add_argument("--check-interpreter", action="store_true")
     args = parser.parse_args()
-    if args.supervisor_health:
+    if args.check_interpreter:
+        check_interpreter()
+    elif args.supervisor_health:
         if args.state is None:
             parser.error("--supervisor-health requires --state")
         print(json.dumps(supervisor_request(args.state.resolve(), SupervisorAction.HEALTH)))
