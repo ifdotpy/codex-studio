@@ -66,11 +66,7 @@ the client also reopens the stream with its full set and cursors.
 
 ## Read ownership and recovery
 
-Server-initiated data reaches the client as stream events (entities if bounded and
-safe to persist, transient typed frames otherwise). HTTP reads only on first
-load, recovery after reconnect/gap/oversize, or explicit user action. Unbounded
-detail (terminal output, diffs, history) stays an explicit-open bounded-page read.
-A timer or resource revision must not initiate an HTTP refresh.
+The no-polling rule is owned by [Rule: no polling, only SSE events](../sync-protocol.md#rule-no-polling-only-sse-events).
 
 Mutation responses contain only their operation result and durable request
 identity. Entity state is delivered through the entity stream; no HTTP mutation

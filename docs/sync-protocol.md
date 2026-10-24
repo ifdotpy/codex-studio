@@ -5,15 +5,48 @@ The renderer and server use protocol 3 for live notifications. Unsupported and
 unspecified stream protocol selectors receive HTTP 426. Pull projection schemas
 remain separate from the stream transport version.
 
-## Protocol 3: resource changes without polling
+## Rule: no polling, only SSE events
 
-The server sends small typed messages identifying changed resources. A subscribed
-consumer reads that resource once after an initial notification, a real change,
-or reconnection. A quiet interface sends no background state requests. This
-covers queue and receipts, terminals, accounts and login status, models,
-limits and costs, tasks, workspace, desktop status, worktree sizes, transcripts,
-rooms, drafts and voice records. User actions, media transport, and recovery of
-an already accepted write retain their own request identities and lifecycles.
+This section is the single owner of this rule. Other documents link here and do
+not restate it.
+
+**The client never polls the server.** Every change the server makes reaches the
+client as an event on the one `/api/sync/stream` SSE connection: an entity
+upsert or delete when the data is bounded and safe to persist, otherwise a
+transient typed frame. The client applies the event; it does not answer an
+event with an HTTP read.
+
+**The data travels inside the stream.** An event carries the changed records
+themselves, not a notice that something changed. When a subscription is added,
+the stream sends that resource's current records right after the
+acknowledgement. A "something changed, fetch it" signal followed by a separate
+GET or pull is not an allowed design, neither for live changes nor for the
+initial data of a new subscription. Only an event that exceeds the stream size
+limit may carry revisions alone; the client then reads that one interval.
+
+The client sends an HTTP request in exactly these cases:
+
+1. **First load** of a view, before the stream has delivered its baseline.
+2. **Recovery** after a stream reconnect, a reported gap, an expired cursor or
+   an event larger than the stream limit. One bounded read per resource,
+   inside the shared read-recovery budget.
+3. **An explicit user action**: a click, a submit, opening unbounded detail such
+   as terminal output, a diff or history, or pressing retry.
+
+Anything else is a defect, in particular:
+
+- a timer, interval or backoff loop that reads server state;
+- a refetch on window focus, tab visibility or route change;
+- a GET or pull issued because an event said that something changed;
+- a write (`POST`, `PUT`) the user did not trigger.
+
+A quiet interface on a live stream sends no HTTP requests. A new feature that
+needs server data adds a stream resource and an event; it does not add a read.
+
+## Protocol 3: resource changes
+
+User actions, media transport, and recovery of an already accepted write retain
+their own request identities and lifecycles.
 
 ### Authoritative types
 
