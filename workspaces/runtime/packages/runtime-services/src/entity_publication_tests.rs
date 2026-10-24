@@ -11,6 +11,53 @@ use studio_runtime_store::{AgentRecord, AgentRepository, StoreError};
 const CHAT: &str = "published-chat";
 
 #[tokio::test]
+async fn agent_projections_publish_together_and_summary_skips_detail_changes() {
+    let (_dir, store) = store().await;
+    seed_chat(&store, chat(json!({"name":"Visible", "threadId":"thread", "lastCompletedTurn":"turn", "lastCompletedTurnStatus":"completed", "lastAnswer":"Answer", "tail":"Output"}))).await;
+    let summary = client_entity(&store, "agentSummary", CHAT)
+        .expect("summary published")
+        .1;
+    let detail = client_entity(&store, "agentDetail", CHAT)
+        .expect("detail published")
+        .1;
+    assert_eq!(summary["name"], "Visible");
+    assert_eq!(summary["lastCompletedTurn"], "turn");
+    assert!(summary.get("lastAnswer").is_none());
+    assert!(summary.get("tail").is_none());
+    assert!(summary.get("commandProgress").is_none());
+    assert_eq!(detail["lastAnswer"], "Answer");
+    write(&store, "UPDATE runtime_agents SET record=json_set(record,'$.lastAnswer','New answer','$.tail','New output') WHERE id=?1", vec![CHAT.into()]).await;
+    assert_eq!(
+        client_entity(&store, "agentSummary", CHAT)
+            .expect("summary")
+            .1,
+        summary
+    );
+    assert_eq!(
+        client_entity(&store, "agentDetail", CHAT)
+            .expect("detail")
+            .1["lastAnswer"],
+        "New answer"
+    );
+    write(
+        &store,
+        "UPDATE runtime_agents SET record=json_set(record,'$.deletedAt',10) WHERE id=?1",
+        vec![CHAT.into()],
+    )
+    .await;
+    assert!(
+        client_entity(&store, "agentSummary", CHAT)
+            .expect("summary tombstone")
+            .0
+    );
+    assert!(
+        client_entity(&store, "agentDetail", CHAT)
+            .expect("detail tombstone")
+            .0
+    );
+}
+
+#[tokio::test]
 async fn summary_entities_publish_at_the_source_write() {
     let (_dir, store) = store().await;
     seed_chat(&store, chat(json!({}))).await;

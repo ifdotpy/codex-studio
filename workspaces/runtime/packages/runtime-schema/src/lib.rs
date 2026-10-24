@@ -670,6 +670,8 @@ fn prepare_schemas() -> SchemaResult<CompiledSchemas> {
 
     for name in [
         "AgentEntityDto",
+        "AgentSummaryEntityDto",
+        "AgentDetailEntityDto",
         "ChatEntityDto",
         "ComplaintEntityDto",
         "ConfigureResponse",

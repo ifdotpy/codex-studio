@@ -135,7 +135,13 @@ pub fn publish_agent(transaction: &Transaction<'_>, record: &Value) -> Result<Va
         .ok_or_else(|| StoreError::SchemaMismatch("agent sync projection has no id".to_owned()))?;
     let deleted = crate::event_write::truthy(record.get("deletedAt"));
     let projection = sync_projection(transaction, record)?;
-    SyncDocumentsRepository::put_entity(transaction, "agent", id, projection.clone(), deleted)?;
+    crate::sync_policy::publish_agent_projection(
+        transaction,
+        id,
+        projection.clone(),
+        deleted,
+        &|_, _, _, _| true,
+    )?;
     Ok(projection)
 }
 
@@ -426,7 +432,13 @@ fn create_agent_with_identity(
         .ok_or_else(|| StoreError::SchemaMismatch("agent sync projection has no id".to_owned()))?;
     let deleted = crate::event_write::truthy(record.get("deletedAt"));
     let projection = sync_projection(transaction, &record)?;
-    SyncDocumentsRepository::put_entity(transaction, "agent", id, projection.clone(), deleted)?;
+    crate::sync_policy::publish_agent_projection(
+        transaction,
+        id,
+        projection.clone(),
+        deleted,
+        &|_, _, _, _| true,
+    )?;
     if !draft {
         let event_id = format!("{id}:initial");
         let inserted = crate::event_write::enqueue_event(

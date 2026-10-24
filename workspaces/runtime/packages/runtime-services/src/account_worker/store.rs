@@ -781,8 +781,12 @@ pub(super) fn hold_invalid_agent_record_in(
             id: agent_id.to_owned(),
         }
     })?;
-    studio_runtime_store::SyncDocumentsRepository::put_entity(
-        tx, "agent", agent_id, projection, false,
+    crate::sync_policy::publish_agent_projection(
+        tx,
+        agent_id,
+        projection,
+        false,
+        &|_, _, _, _| true,
     )?;
     Ok(())
 }

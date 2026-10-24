@@ -416,6 +416,7 @@ fn seed_workspace(transaction: &rusqlite::Transaction<'_>, state_dir: &Path) -> 
     )?;
     // New stores have no summary or conversation-detail source rows; their empty projections are complete.
     for marker in [
+        crate::AGENT_PROJECTIONS_SEED_MARKER,
         crate::SUMMARY_ENTITIES_SEED_MARKER,
         crate::CONVERSATION_DETAILS_SEED_MARKER,
     ] {

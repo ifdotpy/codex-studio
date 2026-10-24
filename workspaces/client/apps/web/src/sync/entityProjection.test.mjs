@@ -15,6 +15,56 @@ import {
 
 import { it } from "vitest";
 
+it("renders the list from summaries and adds detail without losing unread state", () => {
+  const state = emptyEntityProjection();
+  const summary = {
+    id: "a",
+    name: "Current",
+    kind: "agent",
+    source: "managed",
+    status: "completed",
+    threadId: "thread",
+    lastCompletedTurn: "turn",
+    lastCompletedTurnStatus: "completed",
+    readState: { threadId: "thread", turnId: "turn", read: false, revision: 1 },
+  };
+  const change = (collection, value, seq) => ({
+    id: `entity:${collection}:a`,
+    seq,
+    payload: "",
+    entity: { collection, id: "a", value },
+  });
+  const first = applyEntityRows(
+    state,
+    [change("agentSummary", summary, 1)],
+    true,
+  );
+  assert.equal(first.threads[0].name, "Current");
+  assert.equal(first.threads[0].lastAnswer, undefined);
+  assert.equal(first.threads[0].readState.read, false);
+  const open = applyEntityRows(
+    state,
+    [change("agentDetail", { id: "a", lastAnswer: "Answer" }, 2)],
+    true,
+  );
+  assert.equal(open.threads[0].lastAnswer, "Answer");
+  assert.equal(open.threads[0].readState.read, false);
+  const updated = applyEntityRows(
+    state,
+    [change("agentSummary", { ...summary, name: "Renamed" }, 3)],
+    true,
+  );
+  assert.equal(updated.threads[0].name, "Renamed");
+  assert.equal(updated.threads[0].lastAnswer, "Answer");
+  const closed = applyEntityChanges(
+    state,
+    [{ id: "entity:agentDetail:a", seq: 4, payload: "", _deleted: true }],
+    true,
+  );
+  assert.equal(closed.threads[0].lastAnswer, undefined);
+  assert.equal(closed.threads[0].name, "Renamed");
+});
+
 it("projects bounded workspace summaries and receipts with deletes", () => {
   const state = emptyEntityProjection();
   const row = (collection, id, value, seq) => ({

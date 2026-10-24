@@ -40794,7 +40794,9 @@
             "vault-job-progress": "#/components/schemas/VaultJobProgressResource",
             "vault-readiness": "#/components/schemas/VaultReadinessResource",
             "voice": "#/components/schemas/VoiceResource",
-            "workspace": "#/components/schemas/WorkspaceResource"
+            "workspace": "#/components/schemas/WorkspaceResource",
+            "agentDetail": "#/components/schemas/AgentDetailResource",
+            "monitors": "#/components/schemas/MonitorsResource"
           },
           "propertyName": "kind"
         },
@@ -40870,6 +40872,12 @@
           },
           {
             "$ref": "#/components/schemas/RenameProgressResource"
+          },
+          {
+            "$ref": "#/components/schemas/AgentDetailResource"
+          },
+          {
+            "$ref": "#/components/schemas/MonitorsResource"
           }
         ],
         "title": "ResourceRef"
@@ -48992,7 +49000,9 @@
                   "desktop",
                   "terminal",
                   "retainedWorktree",
-                  "questionHistory"
+                  "questionHistory",
+                  "agentSummary",
+                  "agentDetail"
                 ],
                 "type": "string"
               },
@@ -49174,6 +49184,48 @@
               "value"
             ],
             "type": "object"
+          },
+          {
+            "properties": {
+              "collection": {
+                "const": "agentSummary",
+                "type": "string"
+              },
+              "op": {
+                "const": "upsert",
+                "type": "string"
+              },
+              "value": {
+                "$ref": "#/components/schemas/AgentSummaryEntityDto"
+              }
+            },
+            "required": [
+              "op",
+              "collection",
+              "value"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "collection": {
+                "const": "agentDetail",
+                "type": "string"
+              },
+              "op": {
+                "const": "upsert",
+                "type": "string"
+              },
+              "value": {
+                "$ref": "#/components/schemas/AgentDetailEntityDto"
+              }
+            },
+            "required": [
+              "op",
+              "collection",
+              "value"
+            ],
+            "type": "object"
           }
         ],
         "properties": {
@@ -49238,7 +49290,9 @@
             "terminal": "#/components/schemas/SyncTerminalEntityPayload",
             "uiPreferences": "#/components/schemas/SyncUiPreferencesEntityPayload",
             "work": "#/components/schemas/SyncWorkEntityPayload",
-            "workspace": "#/components/schemas/SyncWorkspaceEntityPayload"
+            "workspace": "#/components/schemas/SyncWorkspaceEntityPayload",
+            "agentSummary": "#/components/schemas/SyncAgentSummaryEntityPayload",
+            "agentDetail": "#/components/schemas/SyncAgentDetailEntityPayload"
           },
           "propertyName": "collection"
         },
@@ -49329,6 +49383,12 @@
           },
           {
             "$ref": "#/components/schemas/SyncQuestionHistoryEntityPayload"
+          },
+          {
+            "$ref": "#/components/schemas/SyncAgentSummaryEntityPayload"
+          },
+          {
+            "$ref": "#/components/schemas/SyncAgentDetailEntityPayload"
           }
         ]
       },
@@ -60011,6 +60071,1557 @@
           "status"
         ],
         "title": "MessageReceipt",
+        "type": "object"
+      },
+      "AgentSummaryEntityDto": {
+        "additionalProperties": false,
+        "description": "Chat list identity, ordering, operational attention and durable read state. OpenAPI owns the exact summary field set; runtime projections filter through this schema.",
+        "properties": {
+          "accountKey": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Accountkey"
+          },
+          "archived": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Archived"
+          },
+          "autoWake": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Autowake"
+          },
+          "capacityRetry": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AgentEntityCapacityRetryDto"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "created": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "number"
+              }
+            ],
+            "title": "Created"
+          },
+          "cwd": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Cwd"
+          },
+          "empty": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Empty"
+          },
+          "epoch": {
+            "anyOf": [
+              {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Epoch"
+          },
+          "hasApproval": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hasapproval"
+          },
+          "hasQuestion": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hasquestion"
+          },
+          "hasUnread": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hasunread"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "inFlight": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Inflight"
+          },
+          "isLead": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Islead"
+          },
+          "kind": {
+            "anyOf": [
+              {
+                "const": "agent",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Kind"
+          },
+          "lastCompletedTurn": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Lastcompletedturn"
+          },
+          "lastCompletedTurnStatus": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Lastcompletedturnstatus"
+          },
+          "lastReadAt": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "number"
+              }
+            ],
+            "title": "Lastreadat"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Model"
+          },
+          "moveImportPending": {
+            "default": false,
+            "title": "Moveimportpending",
+            "type": "boolean"
+          },
+          "movedTo": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MovePointerDto"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Name"
+          },
+          "parentId": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Parentid"
+          },
+          "parkedEvent": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Parkedevent"
+          },
+          "pinned": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pinned"
+          },
+          "project": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Project"
+          },
+          "projectFolder": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Projectfolder"
+          },
+          "projectFolderRevision": {
+            "anyOf": [
+              {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Projectfolderrevision"
+          },
+          "projectId": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Projectid"
+          },
+          "provider": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AgentProvider"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "readState": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReadStateDto"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "readStateSupported": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Readstatesupported"
+          },
+          "remoteAnchor": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RemoteParentLinkDto"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "remoteOrigin": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RemoteParentLinkDto"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "remoteWorker": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RemoteWorkerLinkDto"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "role": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AgentRole"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "rootId": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Rootid"
+          },
+          "serverId": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Serverid"
+          },
+          "sharedRoomId": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Sharedroomid"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AgentSource"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "stall": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AgentStall"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "status": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AgentStatus"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "threadId": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Threadid"
+          },
+          "turnId": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Turnid"
+          },
+          "unreadCount": {
+            "anyOf": [
+              {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unreadcount"
+          },
+          "updated": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "number"
+              }
+            ],
+            "title": "Updated"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "title": "AgentSummaryEntityDto",
+        "type": "object"
+      },
+      "AgentDetailEntityDto": {
+        "additionalProperties": false,
+        "description": "Open chat fields. Merge with the current agentSummary by id; summaries own shared list fields.",
+        "properties": {
+          "accountTransfer": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AccountTransferSummaryDto"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "accountTransferId": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Accounttransferid"
+          },
+          "activity": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AgentActivity"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "agentMode": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AgentMode"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "agentModeRevision": {
+            "anyOf": [
+              {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agentmoderevision"
+          },
+          "agentModeSupported": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agentmodesupported"
+          },
+          "canSend": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cansend"
+          },
+          "claudeOptions": {
+            "anyOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "permissionMode": {
+                    "enum": [
+                      "default",
+                      "acceptEdits",
+                      "auto",
+                      "plan",
+                      "bypassPermissions"
+                    ],
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Claude permission mode for the worker launch preview. Other session options remain private."
+          },
+          "commandProgress": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/AgentCommandProgress"
+            },
+            "title": "Commandprogress",
+            "type": "array"
+          },
+          "compactions": {
+            "anyOf": [
+              {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Compactions"
+          },
+          "concurrency": {
+            "anyOf": [
+              {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Concurrency"
+          },
+          "connectionCheck": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ConnectionCheckDto"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "contextRepairWait": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AgentEntityContextRepairWaitDto"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "contextUsage": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ContextUsageDto"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "convertedFromLead": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ConvertedFromLeadDto"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "cyberAccessProgram": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Cyberaccessprogram"
+          },
+          "daybreakEnabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Daybreakenabled"
+          },
+          "deletedAt": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "number"
+              }
+            ],
+            "title": "Deletedat"
+          },
+          "effort": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Effort"
+          },
+          "environment": {
+            "anyOf": [
+              {
+                "enum": [
+                  "host",
+                  "linux"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Environment"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NativeProviderError"
+              },
+              {
+                "type": "null"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Error"
+          },
+          "excludedAccountKeys": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Excludedaccountkeys"
+          },
+          "executionMode": {
+            "anyOf": [
+              {
+                "enum": [
+                  "vm",
+                  "native"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Executionmode"
+          },
+          "fastMode": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fastmode"
+          },
+          "hostProjectPath": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Hostprojectpath"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "imageWorkspace": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Imageworkspace"
+          },
+          "imageWorkspaceBaseRef": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Imageworkspacebaseref"
+          },
+          "imageWorkspaceBaseRepo": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Imageworkspacebaserepo"
+          },
+          "imageWorkspaceCreatedAt": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "number"
+              }
+            ],
+            "title": "Imageworkspacecreatedat"
+          },
+          "imageWorkspaceError": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Imageworkspaceerror"
+          },
+          "imageWorkspaceHasGit": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Imageworkspacehasgit"
+          },
+          "imageWorkspacePhase": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Imageworkspacephase"
+          },
+          "imageWorkspaceReady": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Imageworkspaceready"
+          },
+          "imageWorkspaceRepo": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Imageworkspacerepo"
+          },
+          "imageWorkspaceSubpath": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Imageworkspacesubpath"
+          },
+          "lastAnswer": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Lastanswer"
+          },
+          "lastEvent": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Lastevent"
+          },
+          "launcherAlive": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Launcheralive"
+          },
+          "layrError": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Layrerror"
+          },
+          "layrLine": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Layrline"
+          },
+          "layrProjectId": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Layrprojectid"
+          },
+          "layrReady": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Layrready"
+          },
+          "layrStateId": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Layrstateid"
+          },
+          "manualName": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Manualname"
+          },
+          "movedFrom": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MovePointerDto"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "nativeError": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Nativeerror"
+          },
+          "nativeLimitErrorAt": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "number"
+              }
+            ],
+            "title": "Nativelimiterrorat"
+          },
+          "nativeRelease": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AgentNativeRelease"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "nativeSafetyBuffering": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NativeSafetyBufferingRecord"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "nativeSafetyRetry": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NativeSafetyRetryDto"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "nativeStatus": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AgentNativeStatus"
+              },
+              {
+                "$ref": "#/components/schemas/AgentNativeStatusValue"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Nativestatus"
+          },
+          "nativeThreadBlock": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NativeThreadBlockDto"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "nativeTurnError": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NativeTurnErrorDto"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "nextTurnSettingsSupported": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Nextturnsettingssupported"
+          },
+          "orchestratorId": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Orchestratorid"
+          },
+          "orchestratorName": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Orchestratorname"
+          },
+          "overview": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AgentOverview"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "panelDataVersion": {
+            "anyOf": [
+              {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Paneldataversion"
+          },
+          "panelVersion": {
+            "anyOf": [
+              {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Panelversion"
+          },
+          "pendingSettings": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ExecutionSettingsDto"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "pendingSettingsAccountKey": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Pendingsettingsaccountkey"
+          },
+          "projectServerId": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Projectserverid"
+          },
+          "queuedSettings": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ExecutionSettingsDto"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "quickCreate": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/JsonValue"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "retryAt": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "number"
+              }
+            ],
+            "title": "Retryat"
+          },
+          "reviewDefaults": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReviewDefaultsDto"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "startAttempt": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AgentStartAttempt"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "startWait": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AgentEntityStartWaitDto"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "statusDetail": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Statusdetail"
+          },
+          "subagentConcurrencyVersion": {
+            "anyOf": [
+              {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subagentconcurrencyversion"
+          },
+          "tail": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Tail"
+          },
+          "tokensUsed": {
+            "anyOf": [
+              {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tokensused"
+          },
+          "turnStatus": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AgentStatus"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "usageResume": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AgentEntityUsageResumeDto"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "voiceState": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/JsonValue"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "workerDefaults": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WorkerDefaultsDto"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "workspaceBackend": {
+            "anyOf": [
+              {
+                "enum": [
+                  "asif",
+                  "vm"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Workspacebackend"
+          },
+          "workspaceCleanupIntent": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WorkspaceCleanupSummaryDto"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "workspaceMode": {
+            "anyOf": [
+              {
+                "enum": [
+                  "layr",
+                  "image",
+                  "worktree",
+                  "shared"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Workspacemode"
+          },
+          "workspaceOperation": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Workspaceoperation"
+          },
+          "worktree": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Worktree"
+          },
+          "worktreePreparation": {
+            "anyOf": [
+              {
+                "enum": [
+                  "waiting",
+                  "preparing"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Worktreepreparation"
+          },
+          "yoloMode": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Yolomode"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "title": "AgentDetailEntityDto",
+        "type": "object"
+      },
+      "SyncAgentSummaryEntityPayload": {
+        "additionalProperties": false,
+        "properties": {
+          "collection": {
+            "const": "agentSummary",
+            "title": "Collection",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "value": {
+            "$ref": "#/components/schemas/AgentSummaryEntityDto"
+          }
+        },
+        "required": [
+          "collection",
+          "id",
+          "value"
+        ],
+        "title": "SyncAgentSummaryEntityPayload",
+        "type": "object"
+      },
+      "SyncAgentDetailEntityPayload": {
+        "additionalProperties": false,
+        "properties": {
+          "collection": {
+            "const": "agentDetail",
+            "title": "Collection",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "value": {
+            "$ref": "#/components/schemas/AgentDetailEntityDto"
+          }
+        },
+        "required": [
+          "collection",
+          "id",
+          "value"
+        ],
+        "title": "SyncAgentDetailEntityPayload",
+        "type": "object"
+      },
+      "AgentDetailResource": {
+        "additionalProperties": false,
+        "properties": {
+          "agentId": {
+            "minLength": 1,
+            "title": "Agentid",
+            "type": "string"
+          },
+          "kind": {
+            "const": "agentDetail",
+            "title": "Kind",
+            "type": "string"
+          }
+        },
+        "required": [
+          "agentId",
+          "kind"
+        ],
+        "title": "AgentDetailResource",
+        "type": "object"
+      },
+      "MonitorsResource": {
+        "additionalProperties": false,
+        "properties": {
+          "agentId": {
+            "minLength": 1,
+            "title": "Agentid",
+            "type": "string"
+          },
+          "kind": {
+            "const": "monitors",
+            "title": "Kind",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "agentId"
+        ],
+        "title": "MonitorsResource",
         "type": "object"
       }
     }

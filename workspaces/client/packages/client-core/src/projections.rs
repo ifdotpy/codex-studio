@@ -129,7 +129,27 @@ fn entity_snapshot(rows: &[Value]) -> Value {
                 .collect(),
         )
     };
-    let agents = list("agent");
+    let agents = if let Some(summaries) = collections.get("agentSummary") {
+        Value::Array(
+            summaries
+                .iter()
+                .map(|(id, summary)| {
+                    let mut agent = collections
+                        .get("agentDetail")
+                        .and_then(|details| details.get(id))
+                        .and_then(Value::as_object)
+                        .cloned()
+                        .unwrap_or_default();
+                    if let Some(fields) = summary.as_object() {
+                        agent.extend(fields.clone());
+                    }
+                    Value::Object(agent)
+                })
+                .collect(),
+        )
+    } else {
+        list("agent")
+    };
     let chats = list("chat");
     let mut nodes = agents.as_array().cloned().unwrap_or_default();
     nodes.extend(chats.as_array().cloned().unwrap_or_default());
@@ -395,6 +415,18 @@ pub fn dispatch(connection: &Connection, request: &Request) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn agent_summary_renders_without_detail_and_owns_list_fields() {
+        let summary = json!({"op":"upsert","collection":"agentSummary","id":"a","value":{"id":"a","name":"Current","status":"completed","lastCompletedTurn":"turn","readState":{"threadId":"thread","turnId":"turn","read":false,"revision":1}}});
+        let snapshot = entity_snapshot(&[summary.clone()]);
+        assert_eq!(snapshot["threads"][0]["name"], "Current");
+        assert!(snapshot["threads"][0].get("lastAnswer").is_none());
+        let detail = json!({"op":"upsert","collection":"agentDetail","id":"a","value":{"id":"a","lastAnswer":"Answer"}});
+        let snapshot = entity_snapshot(&[summary, detail]);
+        assert_eq!(snapshot["threads"][0]["lastAnswer"], "Answer");
+        assert_eq!(snapshot["threads"][0]["name"], "Current");
+    }
+
     #[test]
     fn studio_error_entities_reach_native_state_and_dismissal_removes_them() {
         let directory = tempfile::tempdir().unwrap();

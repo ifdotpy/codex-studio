@@ -220,6 +220,8 @@ fn project_schema_value(
 pub fn project_persisted_record(collection: &str, record: &Value) -> Option<Value> {
     let schema_name = match collection {
         "agent" => "AgentEntityDto",
+        "agentSummary" => "AgentSummaryEntityDto",
+        "agentDetail" => "AgentDetailEntityDto",
         "room" => "RoomEntityDto",
         "task" => "TaskEntityDto",
         "taskDetail" => "TaskDetailResponse",

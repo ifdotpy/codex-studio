@@ -43,6 +43,8 @@ export type EntityRow = Omit<
 type EntityCollection = SyncEntityPayload["collection"];
 const ENTITY_COLLECTIONS = [
   "agent",
+  "agentSummary",
+  "agentDetail",
   "room",
   "task",
   "monitor",
@@ -112,6 +114,8 @@ function emptyEntityValues(): EntityValues {
     plan: new Map(),
     annotation: new Map(),
     agent: new Map<string, AgentEntityDto>(),
+    agentSummary: new Map(),
+    agentDetail: new Map(),
     room: new Map<string, RoomEntityDto>(),
     task: new Map<string, TaskEntityDto>(),
     monitor: new Map<string, MonitorEntityDto>(),
@@ -178,9 +182,17 @@ function projectSnapshotCollections(
   values: EntityValues,
 ): Snapshot {
   const agents =
-    prior && !changed.has("agent")
+    prior &&
+    !changed.has("agent") &&
+    !changed.has("agentSummary") &&
+    !changed.has("agentDetail")
       ? prior.runtime.agents
-      : entityValues(values, "agent");
+      : values.agentSummary.size
+        ? entityValues(values, "agentSummary").map((summary) => ({
+            ...values.agentDetail.get(summary.id),
+            ...summary,
+          }))
+        : entityValues(values, "agent");
   const chats =
     prior && !changed.has("chat") ? prior.chats : entityValues(values, "chat");
   const edges =
@@ -319,7 +331,11 @@ function projectSnapshotCollections(
     threads: agents,
     chats,
     nodes:
-      prior && !changed.has("agent") && !changed.has("chat")
+      prior &&
+      !changed.has("agent") &&
+      !changed.has("agentSummary") &&
+      !changed.has("agentDetail") &&
+      !changed.has("chat")
         ? prior.nodes
         : [...agents, ...chats],
     edges,
@@ -426,6 +442,12 @@ export function applyEntityChanges(
         break;
       case "annotation":
         state.values.annotation.set(payload.id, payload.value);
+        break;
+      case "agentSummary":
+        state.values.agentSummary.set(payload.id, payload.value);
+        break;
+      case "agentDetail":
+        state.values.agentDetail.set(payload.id, payload.value);
         break;
       case "agent":
         state.values.agent.set(payload.id, payload.value);

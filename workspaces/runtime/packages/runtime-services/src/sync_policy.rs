@@ -42,7 +42,9 @@ pub const EVENT_WINDOW_ROWS: usize = 200;
 const SYNC_SEEDED_MARKER: &str = "seeded";
 const AGENT_ORGANIZATION_FIELDS_MARKER: &str = "agent_organization_fields";
 const AGENT_ORGANIZATION_FIELDS_VERSION: i64 = 3;
-use studio_runtime_store::{CONVERSATION_DETAILS_SEED_MARKER, SUMMARY_ENTITIES_SEED_MARKER};
+use studio_runtime_store::{
+    AGENT_PROJECTIONS_SEED_MARKER, CONVERSATION_DETAILS_SEED_MARKER, SUMMARY_ENTITIES_SEED_MARKER,
+};
 
 /// Whether Python's durable seed and entity-view upgrade markers prove the
 /// persisted sync projection is complete. Legacy behavior: codex_sync_entities.seed.
@@ -76,6 +78,11 @@ pub fn has_complete_entity_seed(connection: &Connection) -> StoreResult<bool> {
     complete &= connection.query_row(
         "SELECT EXISTS(SELECT 1 FROM sync_entity_meta WHERE key=?1 AND value='1')",
         [CONVERSATION_DETAILS_SEED_MARKER],
+        |row| row.get::<_, bool>(0),
+    )?;
+    complete &= connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sync_entity_meta WHERE key=?1 AND value='1')",
+        [AGENT_PROJECTIONS_SEED_MARKER],
         |row| row.get::<_, bool>(0),
     )?;
     let table_exists = |name: &str| {
@@ -459,6 +466,10 @@ pub fn maintain_entity_projections_with_server_id(
     crate::diagnostics::measure_runtime_stage("projection.event_window", || {
         maintain_event_window(transaction, &validate_projection)
     })?;
+    transaction.execute(
+        "INSERT OR REPLACE INTO sync_entity_meta(key,value) VALUES(?1,'1')",
+        [AGENT_PROJECTIONS_SEED_MARKER],
+    )?;
     seed_summary_entities(transaction)?;
     transaction.execute(
         "INSERT OR REPLACE INTO sync_entity_meta(key,value) VALUES(?1,'1')",
@@ -888,17 +899,41 @@ fn publish_agents(
             None => retire_if_live(transaction, "retainedWorktree", id, validate)?,
         }
         if truthy(record.get("deletedAt")) {
-            retire_if_live(transaction, "agent", id, validate)?;
+            for collection in ["agentSummary", "agentDetail", "agent"] {
+                retire_if_live(transaction, collection, id, validate)?;
+            }
             continue;
         }
         let context = contexts.get(id).ok_or(StoreError::RecordContract(
             "agent projection context snapshot is incomplete",
         ))?;
         if let Some(projected) = agent_entity_view(record, context) {
-            put_projection(transaction, "agent", id, projected, false, validate)?;
+            publish_agent_projection(transaction, id, projected, false, validate)?;
         }
     }
     Ok(())
+}
+
+/// The single publication owner for the list and open-chat projections. Both
+/// writes share the source transaction. The legacy DTO remains for explicit
+/// mutation envelopes until their consumers migrate; view-scoped streams exclude it.
+pub(crate) fn publish_agent_projection(
+    transaction: &Transaction<'_>,
+    id: &str,
+    view: Value,
+    deleted: bool,
+    validate: &impl Fn(&str, &str, &Value, bool) -> bool,
+) -> StoreResult<()> {
+    for collection in ["agentSummary", "agentDetail"] {
+        let projected = if deleted {
+            json!({})
+        } else {
+            project_persisted_record(collection, &view)
+                .ok_or(StoreError::RecordContract("agent projection has no id"))?
+        };
+        put_projection(transaction, collection, id, projected, deleted, validate)?;
+    }
+    put_projection(transaction, "agent", id, view, deleted, validate)
 }
 
 /// Publish one request, rule or work row; only pending requests stay live.
