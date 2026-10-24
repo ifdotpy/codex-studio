@@ -1403,7 +1403,7 @@ function fastTierCommands(root) {
               "test(callback_blob_actor_epoch_change_refuses_settlement)",
               "test(callback_blob_changed_result_refuses_settlement)",
               "test(callback_blob_late_result_refuses_stale_recovery)",
-              "test(callback_blob_abandoned_response_does_not_replay)",
+              "test(callback_blob_read_can_be_cancelled_while_io_is_blocked)",
               "test(callback_blob_recovery_write_precedes_referencing_commit)",
               "test(callback_blob_missing_file_does_not_settle_recovery)",
               "test(callback_blob_corrupt_file_does_not_settle_recovery)",
@@ -1556,7 +1556,7 @@ function fastTierCommands(root) {
             "--test",
             "integration",
             "-E",
-            "test(/^project_preparation::/) | test(/^retained_worktrees::/) | test(committed_delete_route_succeeds_with_unrelated_failing_cleanup) | test(real_rxdb_single_writer_draft_ack_echo_ordering)",
+            "test(/^project_preparation::/) | test(/^retained_worktrees::/) | test(committed_delete_route_succeeds_with_unrelated_failing_cleanup) | test(draft_push_ack_and_echo_follow_shared_contract)",
           ],
         ],
       ],
@@ -2063,6 +2063,41 @@ function fastTierCommands(root) {
           "draft stream acceptance, tombstones, gaps, reconnects and failed persistence",
         reason:
           "Normal draft changes use RxDB's master stream; recovery reads its durable checkpoint.",
+      },
+    },
+    {
+      item: web,
+      label: "Draft replication against the real HTTP fixture",
+      commands: [
+        [
+          "cargo",
+          [
+            "build",
+            "--locked",
+            "-p",
+            "studio-runtime-http",
+            "--example",
+            "draft-server",
+          ],
+        ],
+        [
+          "pnpm",
+          [
+            "--filter",
+            "codex-agents-web",
+            "exec",
+            "vitest",
+            "run",
+            "--config",
+            "vitest.unit.config.ts",
+            "src/sync/client.draftServer.test.ts",
+          ],
+        ],
+      ],
+      options: {
+        selector: "RxDB single-writer draft ACK, echo and retry ordering",
+        reason:
+          "Real RxDB replication against the Rust draft routes, using the shared draft-replication contract.",
       },
     },
     {
