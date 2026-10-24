@@ -1,3 +1,4 @@
+import { randomUUID } from "../uuid";
 import ClaudeOrganization from "./ClaudeOrganization";
 import Disclosure from "./ui/Disclosure";
 import {
@@ -162,7 +163,7 @@ function AccountNameEditor({
       return;
     }
     if (request.current?.label !== label)
-      request.current = { label, request_id: crypto.randomUUID() };
+      request.current = { label, request_id: randomUUID() };
     lock.current = true;
     setBusy(true);
     setError("");
@@ -966,7 +967,7 @@ export default function Accounts({
         target: account,
         sourceProvider: selected?.provider || owner.provider || "codex",
         agentId: owner.id,
-        requestId: crypto.randomUUID(),
+        requestId: randomUUID(),
         extend: !!extendTransfer,
       });
     } else if (!pinned)
@@ -1505,7 +1506,7 @@ export default function Accounts({
                 await post("/api/accounts/name", {
                   account_key: renameChoice.id,
                   label: renameLabel,
-                  request_id: crypto.randomUUID(),
+                  request_id: randomUUID(),
                 }),
               );
               setRenameChoice(null);

@@ -1,3 +1,4 @@
+import { randomUUID } from "../uuid";
 import ClaudeFileBackups from "./ClaudeFileBackups";
 import { useServerStorage } from "../servers/ServerServicesContext";
 import { useServerApi } from "../servers/ServerServicesContext";
@@ -165,8 +166,7 @@ export function ClaudeSettings({
     });
   const mutate = async (body: ClaudeSessionMutation) => {
     const storageKey = `claude-control:${agent.accountKey}:${agent.id}:${body.action}:${JSON.stringify({ ...body, id: undefined, action: undefined })}`;
-    const requestId =
-      saved<string | null>(storageKey, null) || crypto.randomUUID();
+    const requestId = saved<string | null>(storageKey, null) || randomUUID();
     localStorage.setItem(storageKey, JSON.stringify(requestId));
     const result = await call({ ...body, request_id: requestId });
     localStorage.removeItem(storageKey);

@@ -1,3 +1,4 @@
+import { randomUUID } from "../uuid";
 import {
   localSidebarServices,
   type SidebarBackend,
@@ -103,7 +104,7 @@ export function useSidebarOrder(
           : { ownerId: backend.ownerId }),
         body: {
           action: "reorder",
-          request_id: crypto.randomUUID(),
+          request_id: randomUUID(),
           expected_revision: server.revision,
           groups: saved(key, {}),
           migration: true,
@@ -217,7 +218,7 @@ export function useSidebarOrder(
           : { ownerId: backend.ownerId }),
         body: {
           action: "reorder",
-          request_id: crypto.randomUUID(),
+          request_id: randomUUID(),
           expected_revision: revision.current,
           groups: value,
         },

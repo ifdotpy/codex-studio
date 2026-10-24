@@ -1,3 +1,4 @@
+import { randomUUID } from "../uuid";
 import Disclosure from "./ui/Disclosure";
 import { useServerApi } from "../servers/ServerServicesContext";
 import { localDateTime, localTime } from "../local-time";
@@ -277,7 +278,7 @@ export default function Usage({
       if (typeof accountId !== "string")
         throw new Error("Refresh limits before using this reset credit.");
       const key = `${accountId}:${creditId}`;
-      const requestId = resetAttempts.current.get(key) || crypto.randomUUID();
+      const requestId = resetAttempts.current.get(key) || randomUUID();
       resetAttempts.current.set(key, requestId);
       const result = await post("/api/limits/reset", {
         credit_id: creditId,

@@ -1,3 +1,4 @@
+import { randomUUID } from "../uuid";
 import ClaudeFileBackups from "./ClaudeFileBackups";
 import { Button, NativeSelect } from "@mantine/core";
 import { useEffect, useState } from "react";
@@ -86,8 +87,7 @@ export default function ClaudeCheckpointRestore({
           setBusy(true);
           setError("");
           const key = `claude-file-restore:${agent.id}:${turn}`;
-          const requestId =
-            saved<string | null>(key, null) || crypto.randomUUID();
+          const requestId = saved<string | null>(key, null) || randomUUID();
           storage.setItem(key, JSON.stringify(requestId));
           try {
             await post(

@@ -1,3 +1,4 @@
+import { randomUUID } from "../uuid";
 import { useServerApi } from "../servers/ServerServicesContext";
 import ErrorDescription from "./ErrorDescription";
 import { Button } from "@mantine/core";
@@ -107,7 +108,7 @@ export default function AccountSignIn({
           ? receipt.requestId
           : !receipt && requestId
             ? requestId
-            : crypto.randomUUID();
+            : randomUUID();
       remember(id);
       const mutationKey = `${storageKey}:${id}:start`;
       const result = await post(

@@ -1,3 +1,4 @@
+import { randomUUID } from "../uuid";
 import type { ServerCredentialAdapter, PairAttemptIdentity } from "./transport";
 import {
   isRemoteServerView,
@@ -114,7 +115,7 @@ export class BrowserServerCredentials implements ServerCredentialAdapter {
       const publicKey = publicKeyPem(
         await crypto.subtle.exportKey("spki", keys.publicKey),
       );
-      const clientId = crypto.randomUUID();
+      const clientId = randomUUID();
       const body = JSON.stringify({
         protocol: ACCESS_PROTOCOL_VERSION,
         inviteId: invitation.inviteId,
@@ -242,7 +243,7 @@ function requestFrameSigningCredential(server: StudioServer) {
   if (current) return current;
   const pending = new Promise<{ clientId: string; privateKey: CryptoKey }>(
     (resolve, reject) => {
-      const correlation = crypto.randomUUID();
+      const correlation = randomUUID();
       const timer = setTimeout(
         () => finish(new Error("The server key request timed out.")),
         5000,

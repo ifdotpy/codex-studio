@@ -1,3 +1,4 @@
+import { randomUUID } from "../uuid";
 import {
   useServerApi,
   useServerStorage,
@@ -259,7 +260,7 @@ export function useMessageQueue(p: {
       ...change,
       agent: p.id,
       expected_revision: view.revision,
-      request_id: crypto.randomUUID(),
+      request_id: randomUUID(),
     } satisfies QueueMutation;
     // Save before HTTP so a lost response or reload reuses the same operation.
     await updateLocalDraft<unknown>(key, null, (current) => {

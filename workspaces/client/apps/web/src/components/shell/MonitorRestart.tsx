@@ -1,3 +1,4 @@
+import { randomUUID } from "../../uuid";
 import { Button, Text, Textarea, TextInput } from "@mantine/core";
 import { useState } from "react";
 import { ApiError, errorText, type PostBody } from "../../api";
@@ -50,7 +51,7 @@ export default function MonitorRestart({
       agent: task.agent,
       epoch: task.epoch,
       accountKey: task.accountKey || "default",
-      requestId: crypto.randomUUID(),
+      requestId: randomUUID(),
       outputPatterns: values,
     };
     // Retain the exact confirmed request across a lost reply or drawer close.

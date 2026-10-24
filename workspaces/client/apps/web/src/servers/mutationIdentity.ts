@@ -1,3 +1,4 @@
+import { randomUUID } from "../uuid";
 import { serverViewId } from "./environment";
 import { serverLocalStorage } from "./storage";
 const UNCERTAIN_RESPONSE_CODES = new Set([
@@ -78,7 +79,7 @@ export function createMutationJournal(
         saved = { requestId: existing, uncertain: true };
       }
     }
-    const entry = saved || { requestId: crypto.randomUUID(), uncertain: false };
+    const entry = saved || { requestId: randomUUID(), uncertain: false };
     const requestId = entry.requestId;
     const save = () => storage.setItem(key, JSON.stringify(entry));
     save();

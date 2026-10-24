@@ -1,3 +1,4 @@
+import { randomUUID } from "../../uuid";
 import { useServerStorage } from "../../servers/ServerServicesContext";
 import { useServerApi } from "../../servers/ServerServicesContext";
 import { SegmentedControl, NumberInput, Button } from "@mantine/core";
@@ -244,7 +245,7 @@ function ScopedConcurrencyControl({
       id: lead.id,
       subagent_concurrency: validDraft ? target : confirmed.concurrency,
       expected_mode_revision: expectedRevision,
-      request_id: crypto.randomUUID(),
+      request_id: randomUUID(),
       expected_account_key: lead.accountKey || "default",
     };
     const pending: Stored = { confirmed, pending: request };

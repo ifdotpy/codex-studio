@@ -1,3 +1,4 @@
+import { randomUUID } from "../uuid";
 import { audioFrameMethod, bindAudioFrames } from "./audioFrames";
 import { preferenceScope } from "./preferenceState";
 
@@ -14,7 +15,7 @@ export function isNativeFrame() {
 export function frameRequest<T>(
   method: string,
   params: unknown,
-  id: string = crypto.randomUUID(),
+  id: string = randomUUID(),
 ): Promise<T> {
   return new Promise((resolve, reject) => {
     const cleanup = () => {

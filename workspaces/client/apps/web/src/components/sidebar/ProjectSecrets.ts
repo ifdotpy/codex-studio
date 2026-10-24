@@ -1,3 +1,4 @@
+import { randomUUID } from "../../uuid";
 import type { components } from "../../generated/api";
 import type { SidebarBackend } from "./services";
 import {
@@ -37,7 +38,7 @@ export type PendingChange = { key: string; requestId: string };
 export function changeRequest(
   pending: PendingChange | null,
   key: string,
-  make: () => string = () => crypto.randomUUID(),
+  make: () => string = () => randomUUID(),
 ): PendingChange {
   return pending?.key === key ? pending : { key, requestId: make() };
 }
