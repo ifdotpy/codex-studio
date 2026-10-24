@@ -734,6 +734,7 @@ mod tests {
         let credentials = Credentials::default();
         let notified = Arc::new(StdMutex::new(Vec::new()));
         let notified_by_callback = Arc::clone(&notified);
+        let callback_root = root.clone();
 
         credentials
             .rename_with_notification(
@@ -746,7 +747,12 @@ mod tests {
                     notified_by_callback
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .push(request_id.to_owned())
+                        .push((
+                            request_id.to_owned(),
+                            remote_transport::read_multi_server_identity(&callback_root)
+                                .expect("identity at notification")
+                                .label,
+                        ))
                 },
             )
             .await
@@ -756,7 +762,7 @@ mod tests {
             *notified
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner),
-            vec!["rename-notify"]
+            vec![("rename-notify".to_owned(), "Renamed server".to_owned())]
         );
         let identity = remote_transport::read_multi_server_identity(&root).expect("identity read");
         assert_eq!(identity.label, "Renamed server");

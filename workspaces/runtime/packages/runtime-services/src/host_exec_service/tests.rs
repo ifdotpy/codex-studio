@@ -275,10 +275,13 @@ fn the_hash_cache_keeps_only_settled_files() {
     let meta = fs::symlink_metadata(&path).unwrap();
     let mut hashes = Map::new();
     // A file that just changed is not kept: a second write in the same clock step would hide.
+    let stamp = protocol::stamp(&meta);
+    let boundary =
+        i128::from(stamp[1].as_i64().unwrap().max(stamp[3].as_i64().unwrap())) + protocol::RACY_NS;
     let (checksum, known) =
-        protocol::file_hash(&path, &meta, "file", Some(&mut hashes), protocol::now_ns()).unwrap();
+        protocol::file_hash(&path, &meta, "file", Some(&mut hashes), boundary).unwrap();
     assert!(!known && hashes.is_empty());
-    let later = protocol::now_ns() + protocol::RACY_NS + 1_000_000_000;
+    let later = boundary + 1;
     let (again, known) =
         protocol::file_hash(&path, &meta, "file", Some(&mut hashes), later).unwrap();
     assert_eq!((again.as_str(), known), (checksum.as_str(), true));
@@ -385,11 +388,19 @@ async fn retirement_needs_the_token_the_build_and_an_idle_service() {
         (json!(BUILD), json!(false))
     );
     // A running command keeps the service.
-    fixture.start("busy", &["/bin/sleep", "2"], 30.0).await;
+    fixture.start("busy", &["/bin/sleep", "30"], 30.0).await;
     let busy = fixture
         .call("retire-busy", "service.retire", params.clone())
         .await;
     assert_eq!(busy.unwrap_err().0, "busy");
+    fixture
+        .call(
+            "cancel-busy",
+            "cancel",
+            json!({"operationId":"busy","agentId":"agent"}),
+        )
+        .await
+        .unwrap();
     fixture.finish("busy").await;
     let retired = fixture
         .call("retire", "service.retire", params)

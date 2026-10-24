@@ -12,7 +12,7 @@ use process_wrap::std::ProcessGroup;
 use process_wrap::std::{ChildWrapper, CommandWrap};
 use studio_runtime_process::child_priority::ChildPriority;
 
-// Each test thread can expire one child deadline after its readiness handshake.
+// Each test thread can expire one pipe-drain deadline after leader exit.
 // This seam is absent from production builds and leaves termination unchanged.
 #[cfg(test)]
 thread_local! {
@@ -149,10 +149,6 @@ fn run_with_environment(request: Request<'_>, remove_git: bool) -> Result<Output
         return Err(launch("stdin write", error));
     }
 
-    #[cfg(test)]
-    let deadline =
-        DEADLINE_OVERRIDE.with_borrow_mut(|hook| hook.take().map_or(deadline, |ready| ready()));
-
     // The exit is observed without reaping the leader, so the group ID stays
     // owned until the group signal below (`owned_process_group`).
     loop {
@@ -180,6 +176,9 @@ fn run_with_environment(request: Request<'_>, remove_git: bool) -> Result<Output
     // same deadline.
     terminate(&mut *child);
     let status = child.wait().map_err(|error| launch("wait", error))?;
+    #[cfg(test)]
+    let deadline =
+        DEADLINE_OVERRIDE.with_borrow_mut(|hook| hook.take().map_or(deadline, |ready| ready()));
     let stdout = match receive_until(&stdout_receiver, deadline, "stdout") {
         Ok(output) => output.map_err(|error| launch("stdout read", error))?,
         Err(error) => {
@@ -447,7 +446,7 @@ mod tests {
         permissions.set_mode(0o700);
         std::fs::set_permissions(&program, permissions).expect("child executable");
 
-        let started = Instant::now();
+        super::DEADLINE_OVERRIDE.set(Some(Box::new(Instant::now)));
         let result = run(Request {
             program: program.as_os_str(),
             git_directory: None,
@@ -456,7 +455,7 @@ mod tests {
             input: None,
             stdout_limit: 16,
             stderr_limit: 16,
-            timeout: Duration::from_secs(2),
+            timeout: Duration::from_secs(10),
         });
         if let Ok(pid) = std::fs::read_to_string(&marker) {
             let group = format!("-{}", pid.trim());
@@ -475,6 +474,5 @@ mod tests {
             "direct child exited before pipe timeout"
         );
         assert!(matches!(result, Err(ChildError::TimedOut)));
-        assert!(started.elapsed() < Duration::from_secs(3));
     }
 }
