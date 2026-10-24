@@ -59853,6 +59853,165 @@
         ],
         "title": "MessageReceipt",
         "type": "object"
+      },
+      "SubscriptionDataMap": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "Authoritative resource kind to domain data mapping for the screen subscription API. Keys must equal ResourceRef kinds. Transport metadata never belongs in this map.",
+        "properties": {
+          "accounts": {
+            "$ref": "#/components/schemas/AccountsResponse"
+          },
+          "auth-progress": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ClaudeLoginResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "costs": {
+            "$ref": "#/components/schemas/AccountCostResponse"
+          },
+          "desktop": {
+            "$ref": "#/components/schemas/DesktopResponse"
+          },
+          "drafts": {
+            "$ref": "#/components/schemas/DraftChangeBatch"
+          },
+          "limits": {
+            "$ref": "#/components/schemas/UsageLimitsResponse"
+          },
+          "models": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SyncEntityPayload"
+            }
+          },
+          "multi-server": {
+            "$ref": "#/components/schemas/AccessSnapshot"
+          },
+          "queue": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SyncEntityPayload"
+            }
+          },
+          "receipts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SyncEntityPayload"
+            }
+          },
+          "rename-progress": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RenameResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "room": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SyncEntityPayload"
+            }
+          },
+          "session-cost": {
+            "$ref": "#/components/schemas/SessionCostResponse"
+          },
+          "state": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SyncEntityPayload"
+            }
+          },
+          "task": {
+            "$ref": "#/components/schemas/TaskDetailResponse"
+          },
+          "tasks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SyncEntityPayload"
+            }
+          },
+          "terminal": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SyncEntityPayload"
+            }
+          },
+          "terminals": {
+            "$ref": "#/components/schemas/TerminalList"
+          },
+          "transcript": {
+            "$ref": "#/components/schemas/TranscriptPageResponse"
+          },
+          "transcripts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SyncEntityPayload"
+            }
+          },
+          "vault-job-progress": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/VaultSetupResponse"
+              },
+              {
+                "$ref": "#/components/schemas/VaultLoginResponse"
+              },
+              {
+                "$ref": "#/components/schemas/VaultPullResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "vault-readiness": {
+            "type": "boolean"
+          },
+          "voice": {
+            "$ref": "#/components/schemas/VoiceRecordBatch"
+          },
+          "workspace": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SyncEntityPayload"
+            }
+          }
+        },
+        "required": [
+          "accounts",
+          "auth-progress",
+          "costs",
+          "desktop",
+          "drafts",
+          "limits",
+          "models",
+          "multi-server",
+          "queue",
+          "receipts",
+          "rename-progress",
+          "room",
+          "session-cost",
+          "state",
+          "task",
+          "tasks",
+          "terminal",
+          "terminals",
+          "transcript",
+          "transcripts",
+          "vault-job-progress",
+          "vault-readiness",
+          "voice",
+          "workspace"
+        ]
       }
     }
   },
