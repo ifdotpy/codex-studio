@@ -1143,14 +1143,14 @@ async fn running_git_deadline_kills_child_and_keeps_durable_identity() {
     let fixture = Fixture::new().await;
     let plan = fixture.plan().identity;
     fixture.reserve(&plan).await;
-    assert!(
-        Command::new("mkfifo")
-            .args(["running-handshake", "never-released"])
-            .current_dir(&fixture.repo)
-            .status()
-            .expect("child handshake FIFOs")
-            .success()
-    );
+    // A short-lived fixture tool, like the `command` Git helper above.
+    #[allow(clippy::disallowed_methods)]
+    let fifos = Command::new("mkfifo")
+        .args(["running-handshake", "never-released"])
+        .current_dir(&fixture.repo)
+        .status()
+        .expect("child handshake FIFOs");
+    assert!(fifos.success());
     command(
         &fixture.repo,
         &[
