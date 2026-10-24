@@ -68,6 +68,9 @@ def archive(entries):
 # (native_identity.py). On another host the test cannot prove or stop that owner.
 LINUX_IDENTITY = "the native supervisor lease uses the Linux process identity of the guest"
 
+# Bounds only a hang of a wait for an exact condition (`GuestTests.until`). Unit: seconds.
+HANG_SECONDS = 60
+
 
 class GuestTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
@@ -143,6 +146,13 @@ class GuestTests(unittest.IsolatedAsyncioTestCase):
     def command(self, source):
         return {"argv": [sys.executable, "-u", "-c", source], "cwd": str(self.home)}
 
+    async def until(self, condition, message):
+        """Wait until the condition is true; the deadline bounds only a hang."""
+        deadline = asyncio.get_running_loop().time() + HANG_SECONDS
+        while not condition():
+            self.assertLess(asyncio.get_running_loop().time(), deadline, message)
+            await asyncio.sleep(0.01)
+
     async def test_exec_stream_and_exact_retry(self):
         params = self.command("import sys; print('out'); print('err',file=sys.stderr)")
         result = await self.call("exec", params, "exec-1")
@@ -194,16 +204,22 @@ class GuestTests(unittest.IsolatedAsyncioTestCase):
         self.servers.append(server)
         reader, writer = await asyncio.open_unix_connection(str(socket_path))
         marker = self.home / "proof"
-        params = self.command(f"import time; time.sleep(.2); open({str(marker)!r},'w').write('one')")
+        release = self.home / "release"
+        # The command runs until the release, so the client always disconnects during the exec.
+        params = self.command(f"import os,time\nwhile not os.path.exists({str(release)!r}): time.sleep(.01)\n"
+                              f"open({str(marker)!r},'w').write('one')")
         writer.write(json.dumps({"id": "lost-exec", "method": "exec", "params": params}).encode() + b"\n")
         await writer.drain()
         writer.close()
         await writer.wait_closed()
-        deadline = asyncio.get_running_loop().time() + 5
-        while not marker.exists() and asyncio.get_running_loop().time() < deadline:
-            await asyncio.sleep(0.025)
+        try:
+            await self.until(lambda: "lost-exec" in self.service.active and self.service.clients == 0,
+                             "the guest did not start the exec and see the disconnect")
+        finally:
+            release.touch()
+        # The operation ends after its command exits and after it saves its receipt.
+        await self.until(lambda: "lost-exec" not in self.service.active, "the exec did not end after the disconnect")
         self.assertEqual(marker.read_text(), "one")
-        await asyncio.sleep(0.2)
         result = await self.call("exec", params, "lost-exec")
         self.assertEqual(result["exitCode"], 0)
         self.assertEqual(len(self.service.list_providers()), 1)
