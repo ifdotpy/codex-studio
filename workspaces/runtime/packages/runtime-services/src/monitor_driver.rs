@@ -179,8 +179,20 @@ pub(crate) async fn input_http(
     input: &Input,
     now: f64,
 ) -> Result<Option<(Operation, String, Submission)>, MonitorError> {
-    // A concurrent native admission is uncertain to this HTTP caller.
-    let _sequence = native_sequence(store, id).map_err(|_| MonitorError::InputOutcomeUnknown)?;
+    let _sequence = match native_sequence(store, id) {
+        Ok(sequence) => sequence,
+        Err(_) => {
+            let (id, request_id, input) = (id.to_owned(), request_id.to_owned(), input.clone());
+            let outcome = store
+                .transaction_with(move |tx| {
+                    crate::monitor_http_input::refuse_busy(tx, &id, &request_id, &input)
+                })
+                .await?;
+            // The terminal refusal is durable before an HTTP error escapes.
+            outcome.replay()?;
+            return Ok(None);
+        }
+    };
     let (owned_id, owned_request, owned_input) =
         (id.to_owned(), request_id.to_owned(), input.clone());
     let admission = store

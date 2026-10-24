@@ -1086,6 +1086,109 @@ async fn http_input_retry_after_ack_replays_one_logical_input() {
 }
 
 #[tokio::test]
+async fn http_input_busy_sequence_records_a_refusal_and_preserves_prior_receipts() {
+    let root = fixtures::tempdir();
+    let mut case = running(&fixtures::corpus(root.path()));
+    case["before"]["interactive"] = json!(true);
+    let store = Arc::new(fixtures::store(root.path(), "http-input-busy").await);
+    fixtures::seed(&store, &case).await;
+    let id = case["before"]["id"]
+        .as_str()
+        .expect("monitor id")
+        .to_owned();
+    let port = Arc::new(Port::default());
+    let runtime = Arc::new(runtime(&store, &port));
+    let input = Input {
+        text: "one line".into(),
+        rows: None,
+        cols: None,
+        close_stdin: false,
+    };
+    runtime
+        .input_http(&id, "previous-ack", &input, 2000.0)
+        .await
+        .expect("previous input acknowledged");
+    let entered = Arc::new(Notify::new());
+    let (release, gate) = tokio::sync::oneshot::channel();
+    *port.input_submit_gate.lock().expect("install input gate") = Some((entered.clone(), gate));
+    let (active_runtime, active_id, active_input) = (runtime.clone(), id.clone(), input.clone());
+    let active = tokio::spawn(async move {
+        active_runtime
+            .input_http(&active_id, "active-request", &active_input, 2001.0)
+            .await
+    });
+    entered.notified().await;
+    let busy = runtime
+        .input_http(&id, "busy-fresh-request", &input, 2002.0)
+        .await;
+    let pending = runtime
+        .input_http(&id, "active-request", &input, 2002.0)
+        .await;
+    let acknowledged = runtime
+        .input_http(&id, "previous-ack", &input, 2002.0)
+        .await;
+    release
+        .send(())
+        .expect("release exact held native submission");
+    active
+        .await
+        .expect("join active input")
+        .expect("active input acknowledged");
+    assert!(
+        matches!(
+            busy,
+            Err(studio_runtime_services::monitor_policy::MonitorError::Refused(_))
+        ),
+        "a new request was never admitted: {busy:?}"
+    );
+    assert!(
+        matches!(
+            pending,
+            Err(studio_runtime_services::monitor_policy::MonitorError::InputOutcomeUnknown)
+        ),
+        "prior pending identity remains uncertain"
+    );
+    assert!(
+        acknowledged.is_ok(),
+        "prior acknowledgement replays while another request holds the sequence"
+    );
+    let query = json!({"requestId":"busy-fresh-request","agent":case["actor"]["id"],"accountKey":case["actor"]["accountKey"],"epoch":case["actor"]["epoch"]});
+    let receipt = studio_runtime_services::process_controls::receipt(
+        &store.test_reader().expect("read"),
+        &query,
+    )
+    .expect("read durable refusal");
+    assert_eq!(
+        receipt["found"], true,
+        "refusal must commit before HTTP failure"
+    );
+    assert_eq!(receipt["result"]["response"]["status"], "rejected");
+    assert_eq!(
+        record(&store, &id)["lastInputAttempt"]["id"],
+        "http:active-request",
+        "busy request never reserves an inputAttempt"
+    );
+    assert!(
+        runtime
+            .input_http(&id, "busy-fresh-request", &input, 2003.0)
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        port.submitted.lock().expect("no busy native effect").len(),
+        2
+    );
+    runtime
+        .input_http(&id, "fresh-intent-after-refusal", &input, 2004.0)
+        .await
+        .expect("confirmed refusal permits a new intentional identity");
+    assert_eq!(
+        port.submitted.lock().expect("new intentional input").len(),
+        3
+    );
+}
+
+#[tokio::test]
 async fn http_input_receipts_survive_restart_and_refuse_uncertain_or_changed_content() {
     for boundary in [
         "acknowledged",
