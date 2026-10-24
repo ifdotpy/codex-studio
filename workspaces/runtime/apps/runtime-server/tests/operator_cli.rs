@@ -363,6 +363,7 @@ exit $?
         // systemd-run, systemctl or journalctl, even on a host running Studio.
         for name in [
             "dirname", "mkdir", "flock", "rm", "tar", "cp", "mv", "ln", "ls", "tail", "date",
+            "touch",
         ] {
             std::os::unix::fs::symlink(Path::new("/usr/bin").join(name), tools.join(name)).unwrap();
         }
@@ -525,6 +526,69 @@ fn delivery_uses_unique_units_and_replays_only_the_current_invocation() {
     }
     assert_ne!(identities[0].0, identities[1].0);
     assert_ne!(identities[0].1, identities[1].1);
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn delivery_bounds_invocation_history_and_preserves_active_and_latest_records() {
+    let fixture = DeliveryFixture::new();
+    let source =
+        fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("deliver.sh")).unwrap();
+    let kept: usize = source
+        .lines()
+        .find_map(|line| line.strip_prefix("readonly KEPT_INVOCATION_RECORDS="))
+        .expect("deliver.sh owns the invocation history budget")
+        .parse()
+        .unwrap();
+    let directory = fixture.release_root.join("delivery-invocations");
+    fs::create_dir(&directory).unwrap();
+    let active = directory.join("active-fixture");
+    let active_file = fs::File::create(&active).unwrap();
+    active_file.lock_shared().unwrap();
+    active_file
+        .set_times(fs::FileTimes::new().set_modified(std::time::UNIX_EPOCH))
+        .unwrap();
+    let lock = fs::File::create(fixture.release_root.join("deliver.lock")).unwrap();
+    // Successful, lock-refused, and failed-build attempts must all prune.
+    let binary = fixture.release.join("bin/studio-runtime-server");
+    for index in 0..kept + 4 {
+        let mode = index % 3;
+        if mode == 1 {
+            lock.try_lock().unwrap();
+        } else if mode == 2 {
+            fs::remove_file(&binary).unwrap();
+        }
+        let output = fixture.command().output().unwrap();
+        assert_eq!(output.status.success(), mode == 0);
+        if mode == 1 {
+            lock.unlock().unwrap();
+        } else if mode == 2 {
+            fs::write(&binary, "fixture executable; not invoked").unwrap();
+            fs::set_permissions(&binary, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let invocation = fixture.read("journal-invocation");
+        let records: Vec<_> = fs::read_dir(&directory)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect();
+        assert!(active.exists(), "pruning removed an in-use record");
+        assert!(
+            records
+                .iter()
+                .any(|path| fs::read_to_string(path).unwrap() == invocation),
+            "pruning removed the latest attempt"
+        );
+        assert!(
+            records.len() <= kept + 1,
+            "invocation history grew past its bound: {} > {}",
+            records.len(),
+            kept + 1
+        );
+    }
+    drop(active_file);
+    assert!(fixture.command().output().unwrap().status.success());
+    assert!(!active.exists(), "inactive old record was never collected");
+    assert!(fs::read_dir(directory).unwrap().count() <= kept);
 }
 
 #[test]

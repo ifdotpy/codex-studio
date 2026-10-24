@@ -47,8 +47,11 @@ Each unit name includes a random UUID, and the worker records the manager's
 `INVOCATION_ID` under the release root's `delivery-invocations/` directory before
 building. A surviving caller filters its journal replay by
 `_SYSTEMD_INVOCATION_ID`, so a previous invocation's output cannot stand in for
-the current result. These small identity records also remain available after a
-caller disconnect.
+the current result. Recent identity records remain available after a caller
+disconnect. `KEPT_INVOCATION_RECORDS` in the delivery script owns the history
+budget. Older records are pruned after attempts, including lock refusals. Shared
+file locks preserve records still needed by a worker or by a caller awaiting its
+journal replay; those records can temporarily exceed the recent-history budget.
 Check that outcome before retrying; a lost caller result does not mean delivery
 failed. Concurrent deliveries using the same release root are refused by
 `deliver.lock` inside the unit.

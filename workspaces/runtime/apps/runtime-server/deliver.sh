@@ -19,6 +19,8 @@ readonly START_TIMEOUT_SECONDS=120
 readonly STABLE_SECONDS=30
 # Release directories kept on disk, the current and previous ones included.
 readonly KEPT_RELEASES=3
+# Recent completed invocation identity records retained, plus any still in use.
+readonly KEPT_INVOCATION_RECORDS=20
 # First systemd version supporting --expand-environment=no.
 readonly MIN_SYSTEMD_VERSION=254
 # Namespace for independently managed delivery services.
@@ -32,6 +34,40 @@ repository=$(git rev-parse --show-toplevel)
 commit=$(git -C "$repository" rev-parse --verify "${1:-HEAD}^{commit}")
 root=${CODEX_STUDIO_SERVER_ROOT:-$HOME/${layout[3]}}
 script_directory=$(cd -- "$(dirname -- "$0")" && pwd)
+invocation_directory=$root/delivery-invocations
+invocation_history_lock=$root/delivery-invocations.lock
+invocation_record_open=false
+
+# The caller and worker each keep a shared lock until they finish using the
+# record. Serialize record creation with pruning to close the open/lock race.
+open_invocation_record() {
+  mkdir -p "$invocation_directory"
+  exec 6>"$invocation_history_lock"
+  flock 6
+  (umask 077; : >> "$CODEX_STUDIO_DELIVER_INVOCATION_FILE")
+  exec 8<>"$CODEX_STUDIO_DELIVER_INVOCATION_FILE"
+  flock -s 8
+  invocation_record_open=true
+  exec 6>&-
+}
+
+prune_invocation_records() (
+  [ -d "$invocation_directory" ] || exit 0
+  exec 6>"$invocation_history_lock"
+  flock 6
+  records=("$invocation_directory"/*)
+  [ -f "${records[0]}" ] || exit 0
+  ls -1t -- "${records[@]}" | tail -n +$((KEPT_INVOCATION_RECORDS + 1)) |
+    while IFS= read -r old; do
+      # An old record may still belong to a running worker or a caller that
+      # has not replayed its output. Never wait on or remove such a record.
+      (
+        exec 7<"$old"
+        flock -xn 7 || exit 0
+        rm -f -- "$old"
+      )
+    done
+)
 
 # Trust the recursion guard only inside the named transient service. Ambient
 # environment from a server or a previous delivery does not prove membership.
@@ -90,7 +126,7 @@ if [ "$in_delivery_unit" != true ] && [ "$test_fixture" != true ]; then
   # One owner for the unique transient service identity and its journal lookup.
   readonly DELIVERY_UNIT=$DELIVERY_UNIT_PREFIX-${commit:0:12}-$unique_id.service
   export CODEX_STUDIO_DELIVER_UNIT=$DELIVERY_UNIT
-  export CODEX_STUDIO_DELIVER_INVOCATION_FILE=$root/delivery-invocations/$unique_id
+  export CODEX_STUDIO_DELIVER_INVOCATION_FILE=$invocation_directory/$unique_id
   export CODEX_STUDIO_SERVER_ROOT=$root
   script=$script_directory/${0##*/}
   environment=(--setenv=CODEX_STUDIO_DELIVER_IN_UNIT=1)
@@ -104,6 +140,7 @@ if [ "$in_delivery_unit" != true ] && [ "$test_fixture" != true ]; then
     http_proxy https_proxy all_proxy no_proxy; do
     if [[ -v $name ]]; then environment+=("--setenv=$name"); fi
   done
+  open_invocation_record
   echo "Delivery unit: $DELIVERY_UNIT"
   echo "Delivery logs: journalctl --user --unit=$DELIVERY_UNIT --no-pager"
   # Never use --pipe: the caller's death must not close the worker's output.
@@ -125,11 +162,35 @@ if [ "$in_delivery_unit" != true ] && [ "$test_fixture" != true ]; then
     echo "delivery unit did not record a verified invocation; inspect its journal" >&2
     [ "$status" -ne 0 ] || status=1
   fi
+  # Completion/replay makes this the most recent record, even after a long run.
+  touch -- "$CODEX_STUDIO_DELIVER_INVOCATION_FILE"
+  exec 8>&-
+  prune_invocation_records || {
+    echo "could not prune delivery invocation history" >&2
+    [ "$status" -ne 0 ] || status=1
+  }
   exit "$status"
 fi
 
-# The unit journal records an outcome even for a failed build, lock, or rollback.
-trap 'status=$?; echo "delivery $commit finished with exit code $status"' EXIT
+# The worker also prunes on failure or after losing its caller. Its shared lock
+# can be released now; a surviving caller still protects its pending replay.
+finish_delivery() {
+  local status=$?
+  if [ "$invocation_record_open" = true ]; then
+    touch -- "$CODEX_STUDIO_DELIVER_INVOCATION_FILE" || {
+      echo "could not update delivery invocation history" >&2
+      [ "$status" -ne 0 ] || status=1
+    }
+    exec 8>&-
+    prune_invocation_records || {
+      echo "could not prune delivery invocation history" >&2
+      [ "$status" -ne 0 ] || status=1
+    }
+  fi
+  echo "delivery $commit finished with exit code $status"
+  exit "$status"
+}
+trap finish_delivery EXIT
 
 # Record the manager's invocation identity before any build or service changes.
 # The caller can read it after --collect has removed the completed unit.
@@ -138,9 +199,10 @@ if [ -n "${CODEX_STUDIO_DELIVER_INVOCATION_FILE:-}" ]; then
     echo "delivery unit has no valid manager invocation identity" >&2
     exit 1
   }
-  mkdir -p "$(dirname -- "$CODEX_STUDIO_DELIVER_INVOCATION_FILE")"
-  (umask 077; printf '%s\n' "$INVOCATION_ID" > "$CODEX_STUDIO_DELIVER_INVOCATION_FILE")
+  open_invocation_record
+  printf '%s\n' "$INVOCATION_ID" > "$CODEX_STUDIO_DELIVER_INVOCATION_FILE"
   echo "Delivery invocation: $INVOCATION_ID"
+  prune_invocation_records
 fi
 
 release=$root/releases/$commit
