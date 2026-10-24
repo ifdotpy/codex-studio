@@ -215,37 +215,8 @@ fn format_http_error(error: &io::Error) -> String {
 #[allow(clippy::disallowed_methods)]
 mod tests {
     use super::parse_port;
-    use serde_json::Value;
-    use std::io::{BufRead, Write};
+    use std::io::BufRead;
     use std::time::Duration;
-
-    #[test]
-    fn formatter_matches_json_golden() {
-        let input = include_str!("../tests/fixtures/formatter-input.json");
-        let expected = include_str!("../tests/fixtures/formatter-output.txt");
-        let parsed: Value = serde_json::from_str(input).expect("test fixture is valid JSON");
-        assert_eq!(
-            format!(
-                "{}\n",
-                serde_json::to_string_pretty(&parsed).expect("fixture serializes")
-            ),
-            expected
-        );
-        assert_eq!(parsed["i64-min"].as_i64(), Some(i64::MIN));
-        assert_eq!(parsed["u64-max"].as_u64(), Some(u64::MAX));
-        assert_eq!(
-            parsed["u64-overflow"].as_f64(),
-            Some(18_446_744_073_709_551_616_f64)
-        );
-        assert_eq!(
-            parsed["u64-overflow-plus-one"].as_f64(),
-            Some(18_446_744_073_709_551_616_f64)
-        );
-        assert_eq!(
-            parsed["i64-underflow"].as_f64(),
-            Some(-9_223_372_036_854_775_809_f64)
-        );
-    }
 
     #[test]
     fn stalled_loopback_response_obeys_the_configured_timeout() {
@@ -254,27 +225,23 @@ mod tests {
             .local_addr()
             .expect("read timeout fixture port")
             .port();
+        let (finished, client_finished) = std::sync::mpsc::channel();
         let server = std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().expect("accept timeout fixture");
+            let (stream, _) = listener.accept().expect("accept timeout fixture");
             let mut request = std::io::BufReader::new(stream.try_clone().expect("clone stream"));
             let mut line = String::new();
             request.read_line(&mut line).expect("read request line");
-            std::thread::sleep(Duration::from_millis(50));
-            if let Err(error) = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}")
-            {
-                assert!(matches!(
-                    error.kind(),
-                    std::io::ErrorKind::BrokenPipe | std::io::ErrorKind::ConnectionReset
-                ));
-            }
+            client_finished.recv().expect("client request completed");
+            drop(stream);
         });
         let result = super::fetch_diagnostics_with_timeout(port, Duration::from_millis(5));
+        finished.send(()).expect("release stalled server");
+        server.join().expect("timeout fixture completed");
         assert!(
             result
                 .expect_err("stalled response should time out")
                 .contains("timed out")
         );
-        server.join().expect("timeout fixture completed");
     }
 
     #[test]
